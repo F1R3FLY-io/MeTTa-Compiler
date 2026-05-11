@@ -37,7 +37,12 @@ fn test_get_all_atoms_returns_added_atoms() {
     env.add_to_space(&MettaValue::sym("foo"));
     let atoms = env.get_all_atoms();
     eprintln!("get_all_atoms returned {} atoms: {:?}", atoms.len(), atoms);
-    assert_eq!(atoms.len(), 3, "Expected 3 atoms from get_all_atoms, got {}", atoms.len());
+    assert_eq!(
+        atoms.len(),
+        3,
+        "Expected 3 atoms from get_all_atoms, got {}",
+        atoms.len()
+    );
 }
 
 // ============================================================================
@@ -320,10 +325,8 @@ fn property_parallel_writes_are_isolated() {
                 barrier.wait();
 
                 // Each thread adds a unique rule
-                let (lhs, rhs) = make_test_rule(
-                    &format!("(thread{} $x)", i),
-                    &format!("(result{} $x)", i),
-                );
+                let (lhs, rhs) =
+                    make_test_rule(&format!("(thread{} $x)", i), &format!("(result{} $x)", i));
                 clone.add_rule(lhs, rhs);
 
                 // Verify this clone only has 1 rule
@@ -462,7 +465,8 @@ fn integration_parallel_eval_with_dynamic_rules() {
             thread::spawn(move || {
                 // Each thread adds rules dynamically during "evaluation"
                 for j in 0..10 {
-                    let (lhs, rhs) = make_test_rule(&format!("(eval{}_{}  $x)", i, j), "(result $x)");
+                    let (lhs, rhs) =
+                        make_test_rule(&format!("(eval{}_{}  $x)", i, j), "(result $x)");
                     env.add_rule(lhs, rhs);
                 }
 
@@ -1035,10 +1039,7 @@ mod thread_safety {
 
         // Add some base rules
         for i in 0..10 {
-            let (lhs, rhs) = make_test_rule_sexpr(
-                &format!("(base{} $x)", i),
-                "(result $x)",
-            );
+            let (lhs, rhs) = make_test_rule_sexpr(&format!("(base{} $x)", i), "(result $x)");
             base.add_rule(lhs, rhs);
         }
 
@@ -1073,7 +1074,8 @@ mod thread_safety {
             .collect();
 
         // Wait for all threads and collect results
-        let results: Vec<MettaEnvironment> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let results: Vec<MettaEnvironment> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         // Verify base is unchanged
         assert_eq!(base.rule_count(), 10, "Base should still have 10 rules");
@@ -1099,10 +1101,7 @@ mod thread_safety {
 
         // Add base rules
         for i in 0..20 {
-            let (lhs, rhs) = make_test_rule_sexpr(
-                &format!("(base{} $x)", i),
-                "(result $x)",
-            );
+            let (lhs, rhs) = make_test_rule_sexpr(&format!("(base{} $x)", i), "(result $x)");
             base.add_rule(lhs, rhs);
         }
 
@@ -1197,7 +1196,8 @@ mod thread_safety {
             .collect();
 
         // Collect all clones
-        let clones: Vec<MettaEnvironment> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let clones: Vec<MettaEnvironment> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         // Verify each clone has exactly RULES_PER_THREAD
         for (i, clone) in clones.iter().enumerate() {
@@ -1221,10 +1221,7 @@ mod thread_safety {
 
         let mut base = MettaEnvironment::default();
         for i in 0..50 {
-            let (lhs, rhs) = make_test_rule_sexpr(
-                &format!("(rule{} $x)", i),
-                "(result $x)",
-            );
+            let (lhs, rhs) = make_test_rule_sexpr(&format!("(rule{} $x)", i), "(result $x)");
             base.add_rule(lhs, rhs);
         }
 
@@ -1269,10 +1266,7 @@ mod thread_safety {
 
         let mut base = MettaEnvironment::default();
         for i in 0..20 {
-            let (lhs, rhs) = make_test_rule_sexpr(
-                &format!("(base{} $x)", i),
-                "(result $x)",
-            );
+            let (lhs, rhs) = make_test_rule_sexpr(&format!("(base{} $x)", i), "(result $x)");
             base.add_rule(lhs, rhs);
         }
 
@@ -1310,10 +1304,8 @@ mod thread_safety {
                     // Get a clone and mutate it
                     let mut clone = (*env).clone();
                     for i in 0..10 {
-                        let (lhs, rhs) = make_test_rule_sexpr(
-                            &format!("(mut{}_{} $x)", id, i),
-                            "(result $x)",
-                        );
+                        let (lhs, rhs) =
+                            make_test_rule_sexpr(&format!("(mut{}_{} $x)", id, i), "(result $x)");
                         clone.add_rule(lhs, rhs);
                         thread::sleep(Duration::from_micros(10));
                     }
@@ -1339,10 +1331,7 @@ mod thread_safety {
 
         let mut base = MettaEnvironment::default();
         for i in 0..10 {
-            let (lhs, rhs) = make_test_rule_sexpr(
-                &format!("(base{} $x)", i),
-                "(result $x)",
-            );
+            let (lhs, rhs) = make_test_rule_sexpr(&format!("(base{} $x)", i), "(result $x)");
             base.add_rule(lhs, rhs);
         }
 
@@ -1384,7 +1373,8 @@ mod thread_safety {
             .collect();
 
         // Collect results
-        let results: Vec<MettaEnvironment> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let results: Vec<MettaEnvironment> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
 
         // Verify each got its own copy
         for (i, clone) in results.iter().enumerate() {
@@ -1404,10 +1394,7 @@ mod thread_safety {
 
         let mut base = MettaEnvironment::default();
         for i in 0..30 {
-            let (lhs, rhs) = make_test_rule_sexpr(
-                &format!("(rule{} $x)", i),
-                "(result $x)",
-            );
+            let (lhs, rhs) = make_test_rule_sexpr(&format!("(rule{} $x)", i), "(result $x)");
             base.add_rule(lhs, rhs);
         }
 
@@ -1553,7 +1540,10 @@ mod thread_safety {
     fn test_env_default_owns_data() {
         let env = MettaEnvironment::default();
         assert!(env.owns_data, "Default env should own data");
-        assert!(!env.modified.load(Ordering::Relaxed), "Default env should not be modified");
+        assert!(
+            !env.modified.load(Ordering::Relaxed),
+            "Default env should not be modified"
+        );
     }
 
     #[test]
@@ -1578,7 +1568,10 @@ mod thread_safety {
     fn test_env_collect_rules_empty() {
         let env = MettaEnvironment::default();
         let rules = env.collect_rules();
-        assert!(rules.is_empty(), "collect_rules on empty env should be empty");
+        assert!(
+            rules.is_empty(),
+            "collect_rules on empty env should be empty"
+        );
     }
 
     #[test]
@@ -1627,7 +1620,10 @@ mod thread_safety {
 
         let clone = env.clone();
         assert!(!clone.owns_data, "Clone should not own data");
-        assert!(!clone.modified.load(Ordering::Relaxed), "Clone should not be modified");
+        assert!(
+            !clone.modified.load(Ordering::Relaxed),
+            "Clone should not be modified"
+        );
     }
 
     #[test]
@@ -1658,14 +1654,20 @@ mod thread_safety {
             MettaValue::Atom("$x".to_string()),
         ]);
         let clone1_has_clone2 = clone1.get_matching_rules_for_expr(&clone2_query);
-        assert!(clone1_has_clone2.is_empty(), "Clone1 should not have clone2's rules");
+        assert!(
+            clone1_has_clone2.is_empty(),
+            "Clone1 should not have clone2's rules"
+        );
 
         let clone1_query = MettaValue::SExpr(vec![
             MettaValue::Atom("clone1".to_string()),
             MettaValue::Atom("$x".to_string()),
         ]);
         let clone2_has_clone1 = clone2.get_matching_rules_for_expr(&clone1_query);
-        assert!(clone2_has_clone1.is_empty(), "Clone2 should not have clone1's rules");
+        assert!(
+            clone2_has_clone1.is_empty(),
+            "Clone2 should not have clone1's rules"
+        );
     }
 
     #[test]
@@ -1712,7 +1714,10 @@ mod thread_safety {
         // Verify the atom was added (total atoms should increase)
         // We can access internals since shared is pub(crate)
         let final_atoms = env.shared.atom_space.total_atoms.load(Ordering::Relaxed);
-        assert_eq!(final_atoms, 1, "After add_to_space, total_atoms should be 1");
+        assert_eq!(
+            final_atoms, 1,
+            "After add_to_space, total_atoms should be 1"
+        );
     }
 
     #[test]
@@ -1725,7 +1730,10 @@ mod thread_safety {
         let clone_shared_ptr = StdArc::as_ptr(&clone.shared);
 
         // Should share the same Arc
-        assert_eq!(shared_ptr_before, clone_shared_ptr, "Clone should share Arc without mutation");
+        assert_eq!(
+            shared_ptr_before, clone_shared_ptr,
+            "Clone should share Arc without mutation"
+        );
     }
 
     #[test]
@@ -1741,17 +1749,26 @@ mod thread_safety {
         let shared_ptr_after = StdArc::as_ptr(&clone.shared);
 
         // Should have different Arc after mutation
-        assert_ne!(shared_ptr_before, shared_ptr_after, "CoW should create new Arc on mutation");
+        assert_ne!(
+            shared_ptr_before, shared_ptr_after,
+            "CoW should create new Arc on mutation"
+        );
     }
 
     #[test]
     fn test_env_modified_flag_set_on_mutation() {
         let mut env = MettaEnvironment::default();
-        assert!(!env.modified.load(Ordering::Relaxed), "New env should not be modified");
+        assert!(
+            !env.modified.load(Ordering::Relaxed),
+            "New env should not be modified"
+        );
 
         let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
         env.add_rule(lhs, rhs);
-        assert!(env.modified.load(Ordering::Relaxed), "Env should be modified after add_rule");
+        assert!(
+            env.modified.load(Ordering::Relaxed),
+            "Env should be modified after add_rule"
+        );
     }
 
     #[test]
@@ -1759,10 +1776,16 @@ mod thread_safety {
         let mut env = MettaEnvironment::default();
         let (lhs, rhs) = make_test_rule("(test $x)", "(result $x)");
         env.add_rule(lhs, rhs);
-        assert!(env.modified.load(Ordering::Relaxed), "Original should be modified");
+        assert!(
+            env.modified.load(Ordering::Relaxed),
+            "Original should be modified"
+        );
 
         let clone = env.clone();
-        assert!(!clone.modified.load(Ordering::Relaxed), "Clone should have fresh modified flag");
+        assert!(
+            !clone.modified.load(Ordering::Relaxed),
+            "Clone should have fresh modified flag"
+        );
     }
 
     #[test]
@@ -1788,5 +1811,4 @@ mod thread_safety {
         // Wildcard rules should be tracked
         // (exact behavior depends on implementation)
     }
-
 }

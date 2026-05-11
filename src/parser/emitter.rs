@@ -19,7 +19,13 @@ pub trait ParseEmitter {
     fn emit_float(&mut self, value: f64, span: Span) -> Self::Output;
     fn emit_sexpr(&mut self, items: Vec<Self::Output>, span: Span) -> Self::Output;
     fn emit_conjunction(&mut self, items: Vec<Self::Output>, span: Span) -> Self::Output;
-    fn emit_prefix(&mut self, op: &str, op_span: Span, arg: Self::Output, full_span: Span) -> Self::Output;
+    fn emit_prefix(
+        &mut self,
+        op: &str,
+        op_span: Span,
+        arg: Self::Output,
+        full_span: Span,
+    ) -> Self::Output;
 }
 
 // ============================================================================
@@ -92,7 +98,9 @@ where
         if items.len() == 2 {
             if let Some(name) = items[0].as_atom() {
                 if name == "quote" {
-                    let value = self.factory.quote(items.into_iter().nth(1).expect("items has 2 elements"));
+                    let value = self
+                        .factory
+                        .quote(items.into_iter().nth(1).expect("items has 2 elements"));
                     return self.factory.spanned(value, span);
                 }
             }
@@ -194,12 +202,15 @@ impl ParseEmitter for IrEmitter {
     }
 
     #[inline]
-    fn emit_prefix(&mut self, op: &str, op_span: Span, arg: MettaExpr, full_span: Span) -> MettaExpr {
+    fn emit_prefix(
+        &mut self,
+        op: &str,
+        op_span: Span,
+        arg: MettaExpr,
+        full_span: Span,
+    ) -> MettaExpr {
         MettaExpr::List(
-            vec![
-                MettaExpr::Atom(op.to_string(), Some(op_span)),
-                arg,
-            ],
+            vec![MettaExpr::Atom(op.to_string(), Some(op_span)), arg],
             Some(full_span),
         )
     }

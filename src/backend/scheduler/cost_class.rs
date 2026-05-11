@@ -82,10 +82,7 @@ impl CostClass {
     pub fn is_memoizable(self) -> bool {
         matches!(
             self,
-            Self::GroundArith
-                | Self::SymbolicCheap
-                | Self::RecursiveBounded
-                | Self::ParallelPure
+            Self::GroundArith | Self::SymbolicCheap | Self::RecursiveBounded | Self::ParallelPure
         )
     }
 }

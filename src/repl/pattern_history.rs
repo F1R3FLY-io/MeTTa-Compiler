@@ -144,9 +144,7 @@ impl PatternHistory {
     fn value_contains_atom(value: &MettaValue, atom: &str) -> bool {
         match value.view() {
             ValueView::Atom(s) => s == atom,
-            ValueView::SExpr(items) => {
-                items.iter().any(|v| Self::value_contains_atom(v, atom))
-            }
+            ValueView::SExpr(items) => items.iter().any(|v| Self::value_contains_atom(v, atom)),
             ValueView::Error(_, details) => Self::value_contains_atom(&details, atom),
             ValueView::Type(inner) => Self::value_contains_atom(&inner, atom),
             _ => false,

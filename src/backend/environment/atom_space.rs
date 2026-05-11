@@ -139,15 +139,15 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             inferred_type_btm: RwLock::new(PathMap::new()),
             inferred_type_bloom: Arc::new(AtomicBloomFilter::new(expected_entries / 10)),
             shared_mapping,
-            head_arity_bloom: std::sync::Arc::new(RwLock::new(
-                HeadArityBloomFilter::new(expected_entries),
-            )),
-            rule_head_bloom: std::sync::Arc::new(RwLock::new(
-                HeadArityBloomFilter::new(expected_entries / 2),
-            )),
-            type_bloom: std::sync::Arc::new(RwLock::new(
-                super::bloom::TypeBloomFilter::new(expected_entries / 10),
-            )),
+            head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(
+                expected_entries,
+            ))),
+            rule_head_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(
+                expected_entries / 2,
+            ))),
+            type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(
+                expected_entries / 10,
+            ))),
             total_atoms: AtomicUsize::new(0),
             // Phase 10.5: both start at 0 — no fixpoint needed until types are registered
             inferred_type_generation: AtomicU64::new(0),
@@ -180,9 +180,7 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             inferred_type_generation: AtomicU64::new(
                 self.inferred_type_generation.load(Ordering::Acquire),
             ),
-            fixpoint_generation: AtomicU64::new(
-                self.fixpoint_generation.load(Ordering::Acquire),
-            ),
+            fixpoint_generation: AtomicU64::new(self.fixpoint_generation.load(Ordering::Acquire)),
             variable_atoms: RwLock::new(self.variable_atoms.read().clone()),
             // Same symbol mapping → same epoch (cache entries remain valid)
             mork_cache_epoch: self.mork_cache_epoch,

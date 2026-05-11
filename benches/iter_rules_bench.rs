@@ -10,17 +10,13 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use mettatron::backend::models::MettaValue;
 use mettatron::backend::{MettaEnvironment, MettaValueTrait};
 
-
 // ============================================================================
 // Helper Functions
 // ============================================================================
 
 /// Create a test rule for benchmarking with varying structure
 fn make_test_rule(pattern: &str, body: &str) -> (MettaValue, MettaValue) {
-    (
-        MettaValue::sym(pattern),
-        MettaValue::sym(body),
-    )
+    (MettaValue::sym(pattern), MettaValue::sym(body))
 }
 
 /// Create a rule with S-expression structure (more realistic)
@@ -181,7 +177,11 @@ fn bench_collect_rules_allocation(c: &mut Criterion) {
     // Test with truncation after collection (measures lazy evaluation benefits)
     group.bench_function("collect_first_10", |b| {
         b.iter(|| {
-            let rules: Vec<_> = black_box(&env).collect_rules().into_iter().take(10).collect();
+            let rules: Vec<_> = black_box(&env)
+                .collect_rules()
+                .into_iter()
+                .take(10)
+                .collect();
             black_box(rules)
         })
     });

@@ -77,8 +77,6 @@ impl<T> SetOpsInit for T {
     }
 
     fn declare_set_ops_funcs<M: Module>(module: &mut M) -> JitResult<SetOpsFuncIds> {
-
-
         // eval_if_equal: fn(ctx, pred1, pred2, then, else, ip) -> result
         let mut if_equal_sig = module.make_signature();
         if_equal_sig.params.push(AbiParam::new(types::I64)); // ctx
@@ -90,11 +88,7 @@ impl<T> SetOpsInit for T {
         if_equal_sig.returns.push(AbiParam::new(types::I64)); // result
 
         let eval_if_equal_func_id = module
-            .declare_function(
-                "jit_runtime_eval_if_equal",
-                Linkage::Import,
-                &if_equal_sig,
-            )
+            .declare_function("jit_runtime_eval_if_equal", Linkage::Import, &if_equal_sig)
             .map_err(|e| {
                 JitError::CompilationError(format!(
                     "Failed to declare jit_runtime_eval_if_equal: {}",
@@ -119,11 +113,7 @@ impl<T> SetOpsInit for T {
             })?;
 
         let alpha_unique_atom_func_id = module
-            .declare_function(
-                "jit_runtime_alpha_unique_atom",
-                Linkage::Import,
-                &unary_sig,
-            )
+            .declare_function("jit_runtime_alpha_unique_atom", Linkage::Import, &unary_sig)
             .map_err(|e| {
                 JitError::CompilationError(format!(
                     "Failed to declare jit_runtime_alpha_unique_atom: {}",
@@ -147,10 +137,7 @@ impl<T> SetOpsInit for T {
         let msort_func_id = module
             .declare_function("jit_runtime_msort", Linkage::Import, &unary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!(
-                    "Failed to declare jit_runtime_msort: {}",
-                    e
-                ))
+                JitError::CompilationError(format!("Failed to declare jit_runtime_msort: {}", e))
             })?;
 
         // binary ops: fn(ctx, left, right, ip) -> result
@@ -184,11 +171,7 @@ impl<T> SetOpsInit for T {
             })?;
 
         let subtraction_atom_func_id = module
-            .declare_function(
-                "jit_runtime_subtraction_atom",
-                Linkage::Import,
-                &binary_sig,
-            )
+            .declare_function("jit_runtime_subtraction_atom", Linkage::Import, &binary_sig)
             .map_err(|e| {
                 JitError::CompilationError(format!(
                     "Failed to declare jit_runtime_subtraction_atom: {}",

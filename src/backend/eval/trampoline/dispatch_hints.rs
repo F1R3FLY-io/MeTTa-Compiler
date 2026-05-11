@@ -44,13 +44,13 @@ use super::context::EvalContext;
 
 /// Global bloom filter for normal-form expressions (Phase 9.5).
 ///
-/// When an S-expression evaluates to itself (fixpoint), its `inner_ptr`
-/// is inserted into this filter. Subsequent evaluations of the same pointer
-/// skip the entire eval_step_generic call.
+/// When an S-expression evaluates to itself (fixpoint), its content hash is
+/// inserted into this filter. Subsequent evaluations of the same structure skip
+/// the entire eval_step_generic call.
 ///
-/// Invalidated on `add_rule()` since new rules may make previously
-/// normal-form expressions reducible. `add_rule()` is O(N) during loading
-/// and never during evaluation, so invalidation has zero eval-time cost.
+/// Invalidated on `add_rule()` and at top-level query boundaries. New rules may
+/// make previously normal-form expressions reducible, while query boundaries
+/// prevent bloom false positives from leaking across unrelated evaluations.
 ///
 /// False positives are benign: they cause us to skip evaluation for an
 /// expression that might have been reducible, but since the expression was
@@ -165,8 +165,7 @@ pub fn memoize_normal_form<V: MettaValueTrait>(value: &V) {
         if let Some(head) = items.first().and_then(|v| v.as_atom()) {
             if is_reducible_head(head) || head.starts_with('$') {
                 #[cfg(debug_assertions)]
-                NORMAL_FORM_REJECT_COUNT
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                NORMAL_FORM_REJECT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return;
             }
         }
@@ -323,8 +322,8 @@ fn extract_consistent_arg_type_from_env<C: EvalContext>(
 // (e.g., `(Truth_Deduction (stv 0.9 0.9) (stv 0.8 0.9))` evaluated many times).
 //
 // Impure operations (space mutations, state, I/O) are excluded by head symbol.
-// The cache is cleared on space mutation (add-atom/remove-atom) and at GC
-// safepoints to ensure correctness.
+// The cache is cleared on space mutation (add-atom/remove-atom) and its values
+// are registered as GC roots instead of being dropped at safepoints.
 
 /// Check whether a head symbol names an impure operation that must NOT be
 /// memoized.  These operations have side effects or depend on mutable state.
@@ -598,7 +597,9 @@ pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
         // get_mut: single hash lookup for the hot path (valid hit).
         // NLL allows pop after the if-let borrow ends.
         let mut stale = false;
-        if let Some((cached_query_gen, cached_epoch, cached_gen, entries)) = memo.get_mut(&expr_hash) {
+        if let Some((cached_query_gen, cached_epoch, cached_gen, entries)) =
+            memo.get_mut(&expr_hash)
+        {
             if *cached_query_gen == current_query_gen
                 && *cached_epoch == current_epoch
                 && is_scope_visible(*cached_gen)
@@ -622,7 +623,9 @@ pub fn eval_memo_put(expr_hash: u64, results: &[MettaValue]) {
     let gen = cache_generation();
     let entries: SmallVec<[MettaValue; 4]> = results.iter().copied().collect();
     EVAL_MEMO.with(|memo_cell| {
-        memo_cell.borrow_mut().put(expr_hash, (query_gen, epoch, gen, entries));
+        memo_cell
+            .borrow_mut()
+            .put(expr_hash, (query_gen, epoch, gen, entries));
     });
 }
 
@@ -670,7 +673,8 @@ pub fn clear_eval_memo() {
 // (common in PLN nondeterministic branching).
 
 /// Cached match result: (rhs_template, bindings, rhs_type).
-type MatchResultEntry = SmallVec<[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>); 4]>;
+type MatchResultEntry =
+    SmallVec<[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>); 4]>;
 
 thread_local! {
     /// Thread-local rule-match result cache.
@@ -707,8 +711,13 @@ pub fn match_result_get(
     let current_query_gen = query_generation();
     MATCH_RESULT_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
-        if let Some((stored_query_gen, stored_rule_epoch, stored_mutation_epoch, stored_arity, entries)) =
-            cache.get(&expr_hash)
+        if let Some((
+            stored_query_gen,
+            stored_rule_epoch,
+            stored_mutation_epoch,
+            stored_arity,
+            entries,
+        )) = cache.get(&expr_hash)
         {
             if *stored_query_gen == current_query_gen
                 && *stored_rule_epoch == current_rule_epoch
@@ -736,7 +745,13 @@ pub fn match_result_put(
     MATCH_RESULT_CACHE.with(|cache_cell| {
         cache_cell.borrow_mut().put(
             expr_hash,
-            (current_query_gen, current_rule_epoch, current_mutation_epoch, expr_arity, entries),
+            (
+                current_query_gen,
+                current_rule_epoch,
+                current_mutation_epoch,
+                expr_arity,
+                entries,
+            ),
         );
     });
 }
@@ -751,7 +766,7 @@ pub fn collect_match_result_roots(out: &mut Vec<MettaValue>) {
         for (_hash, (_query_gen, _rule_epoch, _mutation_epoch, _arity, entries)) in cache.iter() {
             for (rhs, bindings, rhs_type) in entries.iter() {
                 out.push(*rhs);
-                for (_name, val) in bindings.iter() {
+                for (_scope, _name, val) in bindings.iter_full() {
                     out.push(val.clone());
                 }
                 if let Some(t) = rhs_type {
@@ -882,7 +897,8 @@ pub fn clear_operator_cache() {
 /// route through the eval handler at `eval_loop.rs:3063`.
 #[inline(always)]
 pub(crate) fn is_embedded_kernel_op(head: &str) -> bool {
-    matches!(head,
+    matches!(
+        head,
         // Spec §06.3.6 embedded kernel ops
         "eval" | "evalc" | "chain" | "unify"
         | "cons-atom" | "decons-atom"
@@ -935,7 +951,8 @@ pub(crate) fn is_embedded_kernel_op(head: &str) -> bool {
 /// via the `reducible_heads_covers_all_known_sets` test below.
 #[inline(always)]
 pub(crate) fn is_reducible_head(head: &str) -> bool {
-    matches!(head,
+    matches!(
+        head,
         // === Special forms (eval_sexpr_step_generic match arms) ===
         "=" | "!" | "quote" | "unquote"
         | "if" | "if-reducible" | "if-equal"
@@ -1009,26 +1026,39 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
 #[inline]
 pub fn is_normal_form_bounded<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>(
     value: &V,
-    env: &crate::backend::environment::core::GenericEnvironment<V, impl MettaValueFactory<V> + Copy + Clone>,
+    env: &crate::backend::environment::core::GenericEnvironment<
+        V,
+        impl MettaValueFactory<V> + Copy + Clone,
+    >,
     max_depth: u8,
 ) -> bool {
     // S-expressions: check head + children
     if let Some(items) = value.as_sexpr() {
-        if items.is_empty() { return true; }
+        if items.is_empty() {
+            return true;
+        }
         // Head must be a plain atom (not a variable or nested expr)
         let head = match items[0].as_atom() {
             Some(name) => name,
             None => return false,
         };
         // Head must not be variable, special form, or grounded op
-        if head.starts_with('$') { return false; }
-        if is_reducible_head(head) { return false; }
+        if head.starts_with('$') {
+            return false;
+        }
+        if is_reducible_head(head) {
+            return false;
+        }
         // Head must not have user-defined rules.
         // Uses rule-only bloom (not atom bloom) to avoid false positives
         // from data constructors added via add-atom (e.g., (Type "$a")).
-        if env.may_have_rule_head(head, items.len() - 1) { return false; }
+        if env.may_have_rule_head(head, items.len() - 1) {
+            return false;
+        }
         // Check children within depth budget
-        return items[1..].iter().all(|child| is_child_normal_form(child, env, max_depth));
+        return items[1..]
+            .iter()
+            .all(|child| is_child_normal_form(child, env, max_depth));
     }
     // Atoms: normal form UNLESS &self (resolves to space) or
     // starts with $ (variable). Tokenizer bindings (bind!) are
@@ -1037,7 +1067,9 @@ pub fn is_normal_form_bounded<V: MettaValueTrait + Clone + Send + Sync + Unpin +
         return name != "&self" && !name.starts_with('$');
     }
     // Conjunctions: need eval_conjunction_step_generic
-    if value.as_conjunction().is_some() { return false; }
+    if value.as_conjunction().is_some() {
+        return false;
+    }
     // Ground types (Bool, Long, Float, String, Unit, Space, State, Memo),
     // Error, Empty, Type, Quoted — all immediately return Done.
     // This covers all remaining MettaValueInner variants.
@@ -1051,12 +1083,17 @@ pub fn is_normal_form_bounded<V: MettaValueTrait + Clone + Send + Sync + Unpin +
 #[inline]
 fn is_child_normal_form<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>(
     child: &V,
-    env: &crate::backend::environment::core::GenericEnvironment<V, impl MettaValueFactory<V> + Copy + Clone>,
+    env: &crate::backend::environment::core::GenericEnvironment<
+        V,
+        impl MettaValueFactory<V> + Copy + Clone,
+    >,
     max_depth: u8,
 ) -> bool {
     // S-expression children: recurse with depth budget
     if child.as_sexpr().is_some() {
-        if max_depth == 0 { return false; }
+        if max_depth == 0 {
+            return false;
+        }
         return is_normal_form_bounded(child, env, max_depth - 1);
     }
     // Atoms: OK unless &self or variable
@@ -1064,7 +1101,9 @@ fn is_child_normal_form<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'stat
         return name != "&self" && !name.starts_with('$');
     }
     // Conjunctions: reducible
-    if child.as_conjunction().is_some() { return false; }
+    if child.as_conjunction().is_some() {
+        return false;
+    }
     // All other types (ground, error, empty, type, quoted): normal form
     true
 }
@@ -1075,90 +1114,210 @@ mod tests {
 
     #[test]
     fn reducible_heads_covers_all_known_sets() {
-        use crate::backend::eval::helpers::{is_grounded_op, needs_special_form_redispatch, is_eager_special_form};
+        use crate::backend::eval::helpers::{
+            is_eager_special_form, is_grounded_op, needs_special_form_redispatch,
+        };
 
         // Check GROUNDED_OPS coverage
         let grounded_ops = [
-            "+", "-", "*", "/", "%", "min", "max",
-            "pow", "abs", "floor", "ceil", "round", "sqrt",
+            "+",
+            "-",
+            "*",
+            "/",
+            "%",
+            "min",
+            "max",
+            "pow",
+            "abs",
+            "floor",
+            "ceil",
+            "round",
+            "sqrt",
             "floor-div",
-            "pow-math", "sqrt-math", "abs-math", "log-math", "trunc-math",
-            "ceil-math", "floor-math", "round-math",
-            "sin-math", "asin-math", "cos-math", "acos-math",
-            "tan-math", "atan-math",
-            "isnan-math", "isinf-math",
-            "<", "<=", ">", ">=", "==", "!=",
-            "not", "and", "or", "xor",
-            "get-type", "get-metatype", "validate-atom", "get-type-space",
-            "car-atom", "cdr-atom", "cons-atom", "decons-atom", "size-atom",
-            "max-atom", "min-atom", "index-atom",
-            "tuple-concat", "tuple-count", "without", "element-of",
-            "range", "reverse-atom", "flatten-atom", "zip-atom", "take-atom", "drop-atom",
-            "sort-tuple", "best-candidate",
-            "/safe", "clamp",
+            "pow-math",
+            "sqrt-math",
+            "abs-math",
+            "log-math",
+            "trunc-math",
+            "ceil-math",
+            "floor-math",
+            "round-math",
+            "sin-math",
+            "asin-math",
+            "cos-math",
+            "acos-math",
+            "tan-math",
+            "atan-math",
+            "isnan-math",
+            "isinf-math",
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "==",
+            "!=",
+            "not",
+            "and",
+            "or",
+            "xor",
+            "get-type",
+            "get-metatype",
+            "validate-atom",
+            "get-type-space",
+            "car-atom",
+            "cdr-atom",
+            "cons-atom",
+            "decons-atom",
+            "size-atom",
+            "max-atom",
+            "min-atom",
+            "index-atom",
+            "tuple-concat",
+            "tuple-count",
+            "without",
+            "element-of",
+            "range",
+            "reverse-atom",
+            "flatten-atom",
+            "zip-atom",
+            "take-atom",
+            "drop-atom",
+            "sort-tuple",
+            "best-candidate",
+            "/safe",
+            "clamp",
         ];
         for op in &grounded_ops {
-            assert!(is_grounded_op(op), "GROUNDED_OPS has '{}' but is_grounded_op doesn't recognize it", op);
-            assert!(is_reducible_head(op), "REDUCIBLE_HEADS missing grounded op: {}", op);
+            assert!(
+                is_grounded_op(op),
+                "GROUNDED_OPS has '{}' but is_grounded_op doesn't recognize it",
+                op
+            );
+            assert!(
+                is_reducible_head(op),
+                "REDUCIBLE_HEADS missing grounded op: {}",
+                op
+            );
         }
 
         // Check SPECIAL_FORMS_REDISPATCH coverage
         let special_forms = [
-            "map-atom", "filter-atom", "foldl-atom",
-            "sort-tuple", "best-candidate",
-            "if", "if-equal", "if-reducible", "case", "switch", "switch-minimal", "switch-internal",
-            "let", "let*", "unify",
-            "chain", "function", "return",
-            "sealed", "atom-subst", "match", "match-or",
-            "catch", "is-error",
-            "eval", "quote", "unquote",
-            "collapse", "collapse-bind", "amb", "guard", "ground-with-bindings", "freeze-tuple",
-            "new-state", "get-state", "change-state!",
-            "println!", "trace!",
-            "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
+            "map-atom",
+            "filter-atom",
+            "foldl-atom",
+            "sort-tuple",
+            "best-candidate",
+            "if",
+            "if-equal",
+            "if-reducible",
+            "case",
+            "switch",
+            "switch-minimal",
+            "switch-internal",
+            "let",
+            "let*",
+            "unify",
+            "chain",
+            "function",
+            "return",
+            "sealed",
+            "atom-subst",
+            "match",
+            "match-or",
+            "catch",
+            "is-error",
+            "eval",
+            "quote",
+            "unquote",
+            "collapse",
+            "collapse-bind",
+            "amb",
+            "guard",
+            "ground-with-bindings",
+            "freeze-tuple",
+            "new-state",
+            "get-state",
+            "change-state!",
+            "println!",
+            "trace!",
+            "unique-atom",
+            "union-atom",
+            "intersection-atom",
+            "subtraction-atom",
             "=alpha",
             "match-types",
-            "assertEqual", "assertAlphaEqual",
-            "assertEqualMsg", "assertAlphaEqualMsg",
-            "assertEqualToResult", "assertAlphaEqualToResult",
-            "assertEqualToResultMsg", "assertAlphaEqualToResultMsg",
+            "assertEqual",
+            "assertAlphaEqual",
+            "assertEqualMsg",
+            "assertAlphaEqualMsg",
+            "assertEqualToResult",
+            "assertAlphaEqualToResult",
+            "assertEqualToResultMsg",
+            "assertAlphaEqualToResultMsg",
         ];
         for op in &special_forms {
             assert!(needs_special_form_redispatch(op), "SPECIAL_FORMS_REDISPATCH has '{}' but needs_special_form_redispatch doesn't recognize it", op);
-            assert!(is_reducible_head(op), "REDUCIBLE_HEADS missing special form: {}", op);
+            assert!(
+                is_reducible_head(op),
+                "REDUCIBLE_HEADS missing special form: {}",
+                op
+            );
         }
 
         // Check EAGER_SPECIAL_FORMS coverage
         let eager_forms = [
-            "map-atom", "filter-atom", "foldl-atom",
-            "sort-tuple", "best-candidate",
-            "eval", "unquote",
-            "collapse", "collapse-bind", "superpose",
+            "map-atom",
+            "filter-atom",
+            "foldl-atom",
+            "sort-tuple",
+            "best-candidate",
+            "eval",
+            "unquote",
+            "collapse",
+            "collapse-bind",
+            "superpose",
             "get-state",
             "catch",
-            "get-metatype", "validate-atom", "get-type-space",
-            "repr", "format-args",
-            "unique-atom", "union-atom", "intersection-atom", "subtraction-atom",
+            "get-metatype",
+            "validate-atom",
+            "get-type-space",
+            "repr",
+            "format-args",
+            "unique-atom",
+            "union-atom",
+            "intersection-atom",
+            "subtraction-atom",
             "=alpha",
         ];
         for op in &eager_forms {
-            assert!(is_eager_special_form(op), "EAGER_SPECIAL_FORMS has '{}' but is_eager_special_form doesn't recognize it", op);
-            assert!(is_reducible_head(op), "REDUCIBLE_HEADS missing eager form: {}", op);
+            assert!(
+                is_eager_special_form(op),
+                "EAGER_SPECIAL_FORMS has '{}' but is_eager_special_form doesn't recognize it",
+                op
+            );
+            assert!(
+                is_reducible_head(op),
+                "REDUCIBLE_HEADS missing eager form: {}",
+                op
+            );
         }
 
         // Check has_grounded_op coverage
         let generic_grounded = [
-            "+", "-", "*", "/", "%", "min", "max",
-            "<", "<=", ">", ">=", "==", "!=",
-            "and", "or", "not", "xor",
-            "/safe", "clamp",
+            "+", "-", "*", "/", "%", "min", "max", "<", "<=", ">", ">=", "==", "!=", "and", "or",
+            "not", "xor", "/safe", "clamp",
         ];
         for op in &generic_grounded {
             assert!(
                 crate::backend::grounded::has_grounded_op(op),
-                "has_grounded_op doesn't recognize: {}", op
+                "has_grounded_op doesn't recognize: {}",
+                op
             );
-            assert!(is_reducible_head(op), "REDUCIBLE_HEADS missing generic grounded op: {}", op);
+            assert!(
+                is_reducible_head(op),
+                "REDUCIBLE_HEADS missing generic grounded op: {}",
+                op
+            );
         }
     }
 

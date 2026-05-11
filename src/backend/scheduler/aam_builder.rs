@@ -16,7 +16,7 @@ use crate::backend::priority_scheduler::RuntimeTracker;
 
 use super::classification::SchedulerAutomaton;
 use super::context_weights::build_context_weights;
-use super::cost_class::{CostClass, descriptor_flags};
+use super::cost_class::{descriptor_flags, CostClass};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Builder

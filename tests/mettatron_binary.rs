@@ -541,10 +541,14 @@ fn test_pln_robot() {
 #[test]
 fn test_pln_flying_raven() {
     let binary = find_mettatron_binary();
-    let test_file = PathBuf::from("/Users/dylon/Workspace/f1r3fly.io/PLN/examples/FlyingRaven.metta");
+    let test_file =
+        PathBuf::from("/Users/dylon/Workspace/f1r3fly.io/PLN/examples/FlyingRaven.metta");
 
     if !test_file.exists() {
-        eprintln!("Skipping PLN FlyingRaven test: {} not found", test_file.display());
+        eprintln!(
+            "Skipping PLN FlyingRaven test: {} not found",
+            test_file.display()
+        );
         return;
     }
 
@@ -580,7 +584,10 @@ fn test_pln_smokes() {
     let test_file = PathBuf::from("/Users/dylon/Workspace/f1r3fly.io/PLN/examples/Smokes.metta");
 
     if !test_file.exists() {
-        eprintln!("Skipping PLN Smokes test: {} not found", test_file.display());
+        eprintln!(
+            "Skipping PLN Smokes test: {} not found",
+            test_file.display()
+        );
         return;
     }
 
@@ -613,10 +620,14 @@ fn test_pln_smokes() {
 #[test]
 fn test_pln_toothbrush() {
     let binary = find_mettatron_binary();
-    let test_file = PathBuf::from("/Users/dylon/Workspace/f1r3fly.io/PLN/examples/Toothbrush.metta");
+    let test_file =
+        PathBuf::from("/Users/dylon/Workspace/f1r3fly.io/PLN/examples/Toothbrush.metta");
 
     if !test_file.exists() {
-        eprintln!("Skipping PLN Toothbrush test: {} not found", test_file.display());
+        eprintln!(
+            "Skipping PLN Toothbrush test: {} not found",
+            test_file.display()
+        );
         return;
     }
 

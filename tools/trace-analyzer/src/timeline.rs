@@ -23,7 +23,9 @@ fn kind_label(kind: &TraceEventKind) -> String {
         TraceEventKind::EvalStart => "EvalStart".to_string(),
         TraceEventKind::EvalEnd { .. } => "EvalEnd".to_string(),
         TraceEventKind::GroundedOp { op_name, .. } => format!("GroundedOp:{op_name}"),
-        TraceEventKind::SpecialForm { form_name, phase } => format!("SpecialForm:{form_name}:{phase}"),
+        TraceEventKind::SpecialForm { form_name, phase } => {
+            format!("SpecialForm:{form_name}:{phase}")
+        }
         TraceEventKind::GcSafepoint { .. } => "GcSafepoint".to_string(),
         TraceEventKind::BranchStart { branch_index, .. } => format!("Branch[{branch_index}]"),
         TraceEventKind::BranchEnd { branch_index, .. } => format!("BranchEnd[{branch_index}]"),
@@ -81,8 +83,12 @@ pub fn run(file: &str) -> Result<(), String> {
 
     println!("=== Per-Thread Activity Timeline ===");
     println!();
-    println!("Time range: {:.3}ms - {:.3}ms ({:.3}ms total)",
-             min_ns as f64 / 1e6, max_ns as f64 / 1e6, range_ns as f64 / 1e6);
+    println!(
+        "Time range: {:.3}ms - {:.3}ms ({:.3}ms total)",
+        min_ns as f64 / 1e6,
+        max_ns as f64 / 1e6,
+        range_ns as f64 / 1e6
+    );
     println!();
 
     // Terminal width for Gantt bar
@@ -100,8 +106,10 @@ pub fn run(file: &str) -> Result<(), String> {
         // Build a coverage bitmap for this thread
         let mut bar = vec![' '; bar_width];
         for a in thread_acts {
-            let start_pos = ((a.start_ns - min_ns) as f64 / range_ns as f64 * bar_width as f64) as usize;
-            let end_pos = ((a.end_ns - min_ns) as f64 / range_ns as f64 * bar_width as f64) as usize;
+            let start_pos =
+                ((a.start_ns - min_ns) as f64 / range_ns as f64 * bar_width as f64) as usize;
+            let end_pos =
+                ((a.end_ns - min_ns) as f64 / range_ns as f64 * bar_width as f64) as usize;
             let start_pos = start_pos.min(bar_width - 1);
             let end_pos = end_pos.min(bar_width).max(start_pos + 1);
             for i in start_pos..end_pos {
@@ -110,8 +118,7 @@ pub fn run(file: &str) -> Result<(), String> {
         }
 
         let bar_str: String = bar.into_iter().collect();
-        println!("  T{:<3} [{} events] |{}|",
-                 tid, thread_acts.len(), bar_str);
+        println!("  T{:<3} [{} events] |{}|", tid, thread_acts.len(), bar_str);
     }
 
     // Summary: top activities by total duration
@@ -124,10 +131,14 @@ pub fn run(file: &str) -> Result<(), String> {
         entry.1 += 1;
     }
     let mut dur_vec: Vec<_> = dur_by_label.into_iter().collect();
-    dur_vec.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    dur_vec.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
     for (label, (total, count)) in dur_vec.iter().take(15) {
-        println!("  {:<40} {:>6} events  {:>10.3}ms total",
-                 label, count, *total as f64 / 1e6);
+        println!(
+            "  {:<40} {:>6} events  {:>10.3}ms total",
+            label,
+            count,
+            *total as f64 / 1e6
+        );
     }
 
     let _ = (min_ns, max_ns); // suppress warnings

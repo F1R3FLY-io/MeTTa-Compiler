@@ -52,9 +52,7 @@ thread_local! {
 /// Check if an expression hash is currently being evaluated (on the call stack).
 #[inline]
 pub fn is_actively_evaluating(expr_hash: u64) -> bool {
-    ACTIVE_EVAL_SET.with(|set| {
-        set.borrow().get(&expr_hash).copied().unwrap_or(0) > 0
-    })
+    ACTIVE_EVAL_SET.with(|set| set.borrow().get(&expr_hash).copied().unwrap_or(0) > 0)
 }
 
 /// Mark an expression as actively being evaluated.
@@ -176,7 +174,8 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
                 self.total_misses += 1;
                 return TableLookup::Absent;
             }
-            if !crate::backend::eval::trampoline::dispatch_hints::is_scope_visible(entry.scope_gen) {
+            if !crate::backend::eval::trampoline::dispatch_hints::is_scope_visible(entry.scope_gen)
+            {
                 // Entry from a sibling branch — not visible in current scope
                 self.total_misses += 1;
                 return TableLookup::Absent;
@@ -194,19 +193,18 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
     ///
     /// Cross-branch isolation is enforced by scope_gen (per-branch
     /// watermark) and query_generation (per-`!` watermark) on lookup.
-    pub fn complete(
-        &mut self,
-        expr_hash: u64,
-        results: SmallVec<[V; 2]>,
-    ) {
+    pub fn complete(&mut self, expr_hash: u64, results: SmallVec<[V; 2]>) {
         let epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
         let gen = crate::backend::eval::trampoline::dispatch_hints::cache_generation();
-        self.entries.insert(expr_hash, TableEntry {
-            results,
-            hit_count: 0,
-            mutation_epoch: epoch,
-            scope_gen: gen,
-        });
+        self.entries.insert(
+            expr_hash,
+            TableEntry {
+                results,
+                hit_count: 0,
+                mutation_epoch: epoch,
+                scope_gen: gen,
+            },
+        );
     }
 
     /// Remove a cached entry (e.g., for selective invalidation).
@@ -323,7 +321,7 @@ pub fn invalidate_subgoal_table() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValueFactory};
 
     fn f() -> crate::backend::models::GcFactory {
         global_factory()

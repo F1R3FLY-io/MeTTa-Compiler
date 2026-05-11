@@ -455,10 +455,7 @@ pub fn metta_error_to_par(error_msg: &str) -> Par {
     let error_value = MettaValue::Error(error_msg.to_string(), MettaValue::Unit());
 
     // Create a MettaState with the error in output
-    let error_state = MettaState::new_accumulated(
-        MettaEnvironment::default(),
-        vec![error_value],
-    );
+    let error_state = MettaState::new_accumulated(MettaEnvironment::default(), vec![error_value]);
 
     // Return as PathMap (consistent with metta_state_to_pathmap_par)
     metta_state_to_pathmap_par(&error_state)
@@ -725,7 +722,9 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                                 offset += 8;
 
                                 // Insert path with correct multiplicity directly
-                                space.btm.insert(path_bytes, Multiplicity::new(multiplicity));
+                                space
+                                    .btm
+                                    .insert(path_bytes, Multiplicity::new(multiplicity));
                                 total_atoms_added += multiplicity as usize;
                             }
                             // Update total_atoms counter for all paths inserted
@@ -816,12 +815,16 @@ pub fn par_to_environment(par: &Par) -> Result<MettaEnvironment, String> {
                                     {
                                         use crate::backend::environment::multiplicity as mult_mod;
                                         let mut wbtm = env.shared.atom_space.wide_btm.write();
-                                        mult_mod::set_multiplicity(&mut wbtm, wide_bytes, multiplicity);
+                                        mult_mod::set_multiplicity(
+                                            &mut wbtm,
+                                            wide_bytes,
+                                            multiplicity,
+                                        );
                                     }
-                                    env.shared
-                                        .atom_space
-                                        .total_atoms
-                                        .fetch_add(multiplicity as usize, std::sync::atomic::Ordering::Relaxed);
+                                    env.shared.atom_space.total_atoms.fetch_add(
+                                        multiplicity as usize,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
                                 }
                             }
                         }
@@ -999,10 +1002,7 @@ pub fn decode_space_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String> {
                 // ["large_exprs", empty_large_bytes]
                 Par::default().with_exprs(vec![Expr {
                     expr_instance: Some(ExprInstance::EListBody(EList {
-                        ps: vec![
-                            create_string_par("large_exprs".to_string()),
-                            large_par,
-                        ],
+                        ps: vec![create_string_par("large_exprs".to_string()), large_par],
                         locally_free: Vec::new(),
                         connective_used: false,
                         remainder: None,
@@ -1067,10 +1067,7 @@ pub fn decode_large_exprs_bytes_to_pars(bytes: &[u8]) -> Result<Vec<Par>, String
                 // ["large_exprs", large_expr_bytes]
                 Par::default().with_exprs(vec![Expr {
                     expr_instance: Some(ExprInstance::EListBody(EList {
-                        ps: vec![
-                            create_string_par("large_exprs".to_string()),
-                            large_par,
-                        ],
+                        ps: vec![create_string_par("large_exprs".to_string()), large_par],
                         locally_free: Vec::new(),
                         connective_used: false,
                         remainder: None,
@@ -1101,7 +1098,9 @@ pub fn has_metta_state_structure(pathmap: &EPathMap) -> bool {
     // The element must be an EList with exactly 3 fields
     let state_list_par = &pathmap.ps[0];
     let state_list = match state_list_par.exprs.first() {
-        Some(Expr { expr_instance: Some(ExprInstance::EListBody(list)) }) => list,
+        Some(Expr {
+            expr_instance: Some(ExprInstance::EListBody(list)),
+        }) => list,
         _ => return false,
     };
 
@@ -1113,13 +1112,17 @@ pub fn has_metta_state_structure(pathmap: &EPathMap) -> bool {
     let expected_tags = ["source", "environment", "output"];
     for (field_par, expected_tag) in state_list.ps.iter().zip(expected_tags.iter()) {
         match field_par.exprs.first() {
-            Some(Expr { expr_instance: Some(ExprInstance::EListBody(field_list)) }) => {
+            Some(Expr {
+                expr_instance: Some(ExprInstance::EListBody(field_list)),
+            }) => {
                 if field_list.ps.len() < 2 {
                     return false;
                 }
                 // Check tag
                 match field_list.ps[0].exprs.first() {
-                    Some(Expr { expr_instance: Some(ExprInstance::GString(tag)) }) => {
+                    Some(Expr {
+                        expr_instance: Some(ExprInstance::GString(tag)),
+                    }) => {
                         if tag != expected_tag {
                             return false;
                         }
@@ -1182,9 +1185,7 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
                     let mut offset = 0;
 
                     // Check and skip magic number if present
-                    if space_dump_bytes.len() >= 4
-                        && &space_dump_bytes[0..4] == METTA_SPACE_MAGIC
-                    {
+                    if space_dump_bytes.len() >= 4 && &space_dump_bytes[0..4] == METTA_SPACE_MAGIC {
                         offset += 4;
                     }
 
@@ -1196,10 +1197,14 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
                         return Ok(env);
                     }
                     let sym_len = u64::from_be_bytes([
-                        space_dump_bytes[offset], space_dump_bytes[offset + 1],
-                        space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
-                        space_dump_bytes[offset + 4], space_dump_bytes[offset + 5],
-                        space_dump_bytes[offset + 6], space_dump_bytes[offset + 7],
+                        space_dump_bytes[offset],
+                        space_dump_bytes[offset + 1],
+                        space_dump_bytes[offset + 2],
+                        space_dump_bytes[offset + 3],
+                        space_dump_bytes[offset + 4],
+                        space_dump_bytes[offset + 5],
+                        space_dump_bytes[offset + 6],
+                        space_dump_bytes[offset + 7],
                     ]) as usize;
                     offset += 8;
 
@@ -1231,10 +1236,14 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
                     // Read path count
                     if offset + 8 <= space_dump_bytes.len() {
                         let path_count = u64::from_be_bytes([
-                            space_dump_bytes[offset], space_dump_bytes[offset + 1],
-                            space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
-                            space_dump_bytes[offset + 4], space_dump_bytes[offset + 5],
-                            space_dump_bytes[offset + 6], space_dump_bytes[offset + 7],
+                            space_dump_bytes[offset],
+                            space_dump_bytes[offset + 1],
+                            space_dump_bytes[offset + 2],
+                            space_dump_bytes[offset + 3],
+                            space_dump_bytes[offset + 4],
+                            space_dump_bytes[offset + 5],
+                            space_dump_bytes[offset + 6],
+                            space_dump_bytes[offset + 7],
                         ]);
                         offset += 8;
 
@@ -1245,8 +1254,10 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
                             }
 
                             let len = u32::from_be_bytes([
-                                space_dump_bytes[offset], space_dump_bytes[offset + 1],
-                                space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
+                                space_dump_bytes[offset],
+                                space_dump_bytes[offset + 1],
+                                space_dump_bytes[offset + 2],
+                                space_dump_bytes[offset + 3],
                             ]) as usize;
                             offset += 4;
 
@@ -1260,10 +1271,14 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
                             // LENIENT multiplicity handling
                             let multiplicity = if offset + 8 <= space_dump_bytes.len() {
                                 let mult = u64::from_be_bytes([
-                                    space_dump_bytes[offset], space_dump_bytes[offset + 1],
-                                    space_dump_bytes[offset + 2], space_dump_bytes[offset + 3],
-                                    space_dump_bytes[offset + 4], space_dump_bytes[offset + 5],
-                                    space_dump_bytes[offset + 6], space_dump_bytes[offset + 7],
+                                    space_dump_bytes[offset],
+                                    space_dump_bytes[offset + 1],
+                                    space_dump_bytes[offset + 2],
+                                    space_dump_bytes[offset + 3],
+                                    space_dump_bytes[offset + 4],
+                                    space_dump_bytes[offset + 5],
+                                    space_dump_bytes[offset + 6],
+                                    space_dump_bytes[offset + 7],
                                 ]);
                                 if mult > (1u64 << 32) {
                                     // Unreasonably large — these bytes are likely the next
@@ -1278,7 +1293,9 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
                                 1u64
                             };
 
-                            space.btm.insert(path_bytes, Multiplicity::new(multiplicity));
+                            space
+                                .btm
+                                .insert(path_bytes, Multiplicity::new(multiplicity));
                             total_atoms_added += multiplicity as usize;
                         }
                         env.shared
@@ -1307,10 +1324,14 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
 
                             if offset + 8 <= large_bytes.len() {
                                 let count = u64::from_be_bytes([
-                                    large_bytes[offset], large_bytes[offset + 1],
-                                    large_bytes[offset + 2], large_bytes[offset + 3],
-                                    large_bytes[offset + 4], large_bytes[offset + 5],
-                                    large_bytes[offset + 6], large_bytes[offset + 7],
+                                    large_bytes[offset],
+                                    large_bytes[offset + 1],
+                                    large_bytes[offset + 2],
+                                    large_bytes[offset + 3],
+                                    large_bytes[offset + 4],
+                                    large_bytes[offset + 5],
+                                    large_bytes[offset + 6],
+                                    large_bytes[offset + 7],
                                 ]);
                                 offset += 8;
 
@@ -1320,8 +1341,10 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
                                     }
 
                                     let len = u32::from_be_bytes([
-                                        large_bytes[offset], large_bytes[offset + 1],
-                                        large_bytes[offset + 2], large_bytes[offset + 3],
+                                        large_bytes[offset],
+                                        large_bytes[offset + 1],
+                                        large_bytes[offset + 2],
+                                        large_bytes[offset + 3],
                                     ]) as usize;
                                     offset += 4;
 
@@ -1335,10 +1358,14 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
                                     // LENIENT multiplicity handling
                                     let multiplicity = if offset + 8 <= large_bytes.len() {
                                         let mult = u64::from_be_bytes([
-                                            large_bytes[offset], large_bytes[offset + 1],
-                                            large_bytes[offset + 2], large_bytes[offset + 3],
-                                            large_bytes[offset + 4], large_bytes[offset + 5],
-                                            large_bytes[offset + 6], large_bytes[offset + 7],
+                                            large_bytes[offset],
+                                            large_bytes[offset + 1],
+                                            large_bytes[offset + 2],
+                                            large_bytes[offset + 3],
+                                            large_bytes[offset + 4],
+                                            large_bytes[offset + 5],
+                                            large_bytes[offset + 6],
+                                            large_bytes[offset + 7],
                                         ]);
                                         if mult > (1u64 << 32) {
                                             1u64
@@ -1353,12 +1380,16 @@ pub fn par_to_environment_lenient(par: &Par) -> Result<MettaEnvironment, String>
                                     {
                                         use crate::backend::environment::multiplicity as mult_mod;
                                         let mut wbtm = env.shared.atom_space.wide_btm.write();
-                                        mult_mod::set_multiplicity(&mut wbtm, wide_bytes, multiplicity);
+                                        mult_mod::set_multiplicity(
+                                            &mut wbtm,
+                                            wide_bytes,
+                                            multiplicity,
+                                        );
                                     }
-                                    env.shared
-                                        .atom_space
-                                        .total_atoms
-                                        .fetch_add(multiplicity as usize, std::sync::atomic::Ordering::Relaxed);
+                                    env.shared.atom_space.total_atoms.fetch_add(
+                                        multiplicity as usize,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
                                 }
                             }
                         }
@@ -1401,13 +1432,17 @@ pub fn pathmap_par_to_metta_state_lenient(par: &Par) -> Result<MettaState, Strin
 
     // Structure is valid — attempt lenient deserialization
     let pathmap = match par.exprs.first() {
-        Some(Expr { expr_instance: Some(ExprInstance::EPathmapBody(pm)) }) => pm,
+        Some(Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(pm)),
+        }) => pm,
         _ => return Err("Par does not contain EPathMap".to_string()),
     };
 
     let state_list_par = &pathmap.ps[0];
     let state_list = match state_list_par.exprs.first() {
-        Some(Expr { expr_instance: Some(ExprInstance::EListBody(list)) }) => list,
+        Some(Expr {
+            expr_instance: Some(ExprInstance::EListBody(list)),
+        }) => list,
         _ => return Err("Expected EListBody in PathMap".to_string()),
     };
 
@@ -1522,7 +1557,8 @@ mod tests {
         assert_eq!(par.exprs.len(), 1);
         if let Some(ExprInstance::EListBody(env_list)) = par.exprs[0].expr_instance.as_ref() {
             assert_eq!(
-                env_list.ps.len(), 2,
+                env_list.ps.len(),
+                2,
                 "Expected EList with 2 fields, got {}",
                 env_list.ps.len()
             );
@@ -2088,7 +2124,10 @@ mod tests {
         let env2 = par_to_environment(&par).expect("Deserialization failed");
 
         // Verify the deserialized environment contains the fact
-        assert!(env2.shared.atom_space.total_atoms.load(Ordering::Relaxed) > 0, "Should find the connected fact after deserialization");
+        assert!(
+            env2.shared.atom_space.total_atoms.load(Ordering::Relaxed) > 0,
+            "Should find the connected fact after deserialization"
+        );
 
         println!("✓ Deserialized Environment can be used after reserved-byte roundtrip!");
     }
@@ -2105,13 +2144,15 @@ mod tests {
             let source = state.source();
             assert_eq!(source.len(), 1, "Source should have 1 expression");
             assert!(
-                source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!")),
+                source[0].as_sexpr().map_or(false, |items| !items.is_empty()
+                    && items[0].as_atom() == Some("!")),
                 "Source[0] should be an eval expression (starts with !)"
             );
             println!(
                 "After compile: source = {:?}, is_eval_expr = {}",
                 source[0],
-                source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!"))
+                source[0].as_sexpr().map_or(false, |items| !items.is_empty()
+                    && items[0].as_atom() == Some("!"))
             );
         }
 
@@ -2132,12 +2173,14 @@ mod tests {
             println!(
                 "After deserialize: source = {:?}, is_eval_expr = {}",
                 source[0],
-                source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!"))
+                source[0].as_sexpr().map_or(false, |items| !items.is_empty()
+                    && items[0].as_atom() == Some("!"))
             );
 
             // Critical: Check that is_eval_expr() still returns true
             assert!(
-                source[0].as_sexpr().map_or(false, |items| !items.is_empty() && items[0].as_atom() == Some("!")),
+                source[0].as_sexpr().map_or(false, |items| !items.is_empty()
+                    && items[0].as_atom() == Some("!")),
                 "Deserialized source[0] should still be an eval expression"
             );
         }
@@ -2263,7 +2306,7 @@ mod tests {
         assert_eq!(par.exprs.len(), 1);
         if let Some(ExprInstance::EListBody(list)) = &par.exprs[0].expr_instance {
             assert_eq!(list.ps.len(), 3); // tag + 2 goals
-            // First should be "conjunction" tag
+                                          // First should be "conjunction" tag
             if let Some(ExprInstance::GString(tag)) = list.ps[0]
                 .exprs
                 .first()
@@ -2594,11 +2637,15 @@ mod tests {
 
         // Compare multiplicities
         let deserialized_multiplicities = deserialized_env.get_multiplicities();
-        println!("Deserialized multiplicities: {:?}", deserialized_multiplicities);
+        println!(
+            "Deserialized multiplicities: {:?}",
+            deserialized_multiplicities
+        );
 
         // Verify each original entry is preserved with correct count
         for (key, original_count) in &original_multiplicities {
-            let deserialized_count = deserialized_multiplicities.get(key)
+            let deserialized_count = deserialized_multiplicities
+                .get(key)
                 .unwrap_or_else(|| panic!("Missing key '{}' after deserialization", key));
             assert_eq!(
                 *original_count, *deserialized_count,
@@ -2643,7 +2690,8 @@ mod tests {
 
         // Verify all counts are stable after 3 round-trips
         for (key, original_count) in &original_multiplicities {
-            let final_count = final_multiplicities.get(key)
+            let final_count = final_multiplicities
+                .get(key)
                 .unwrap_or_else(|| panic!("Missing key '{}' after 3 round-trips", key));
             assert_eq!(
                 *original_count, *final_count,
@@ -2666,8 +2714,14 @@ mod tests {
         );
         let par = metta_state_to_pathmap_par(&state);
 
-        if let Some(Expr { expr_instance: Some(ExprInstance::EPathmapBody(pathmap)) }) = par.exprs.first() {
-            assert!(has_metta_state_structure(pathmap), "Valid MettaState PathMap should pass structure check");
+        if let Some(Expr {
+            expr_instance: Some(ExprInstance::EPathmapBody(pathmap)),
+        }) = par.exprs.first()
+        {
+            assert!(
+                has_metta_state_structure(pathmap),
+                "Valid MettaState PathMap should pass structure check"
+            );
         } else {
             panic!("Expected EPathmapBody");
         }
@@ -2684,7 +2738,10 @@ mod tests {
             connective_used: false,
             remainder: None,
         };
-        assert!(!has_metta_state_structure(&pathmap), "{{| true |}} should not match MeTTa State structure");
+        assert!(
+            !has_metta_state_structure(&pathmap),
+            "{{| true |}} should not match MeTTa State structure"
+        );
     }
 
     #[test]
@@ -2694,10 +2751,7 @@ mod tests {
             ps: vec![
                 Par::default().with_exprs(vec![Expr {
                     expr_instance: Some(ExprInstance::EListBody(EList {
-                        ps: vec![
-                            create_string_par("wrong_tag".to_string()),
-                            Par::default(),
-                        ],
+                        ps: vec![create_string_par("wrong_tag".to_string()), Par::default()],
                         locally_free: Vec::new(),
                         connective_used: false,
                         remainder: None,
@@ -2705,10 +2759,7 @@ mod tests {
                 }]),
                 Par::default().with_exprs(vec![Expr {
                     expr_instance: Some(ExprInstance::EListBody(EList {
-                        ps: vec![
-                            create_string_par("environment".to_string()),
-                            Par::default(),
-                        ],
+                        ps: vec![create_string_par("environment".to_string()), Par::default()],
                         locally_free: Vec::new(),
                         connective_used: false,
                         remainder: None,
@@ -2716,10 +2767,7 @@ mod tests {
                 }]),
                 Par::default().with_exprs(vec![Expr {
                     expr_instance: Some(ExprInstance::EListBody(EList {
-                        ps: vec![
-                            create_string_par("output".to_string()),
-                            Par::default(),
-                        ],
+                        ps: vec![create_string_par("output".to_string()), Par::default()],
                         locally_free: Vec::new(),
                         connective_used: false,
                         remainder: None,
@@ -2738,7 +2786,10 @@ mod tests {
             connective_used: false,
             remainder: None,
         };
-        assert!(!has_metta_state_structure(&pathmap), "Wrong tags should not match");
+        assert!(
+            !has_metta_state_structure(&pathmap),
+            "Wrong tags should not match"
+        );
     }
 
     #[test]
@@ -2748,13 +2799,21 @@ mod tests {
             Some(ExprInstance::EListBody(list)) => {
                 assert_eq!(list.ps.len(), 2);
                 // Check error code
-                if let Some(ExprInstance::GString(code)) = list.ps[0].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                if let Some(ExprInstance::GString(code)) = list.ps[0]
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+                {
                     assert_eq!(code, "test_code");
                 } else {
                     panic!("Expected GString error code");
                 }
                 // Check message
-                if let Some(ExprInstance::GString(msg)) = list.ps[1].exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                if let Some(ExprInstance::GString(msg)) = list.ps[1]
+                    .exprs
+                    .first()
+                    .and_then(|e| e.expr_instance.as_ref())
+                {
                     assert_eq!(msg, "test message");
                 } else {
                     panic!("Expected GString message");
@@ -2787,7 +2846,11 @@ mod tests {
 
         // Lenient should succeed (strict should also succeed for this case)
         let result = pathmap_par_to_metta_state_lenient(&par);
-        assert!(result.is_ok(), "Lenient deserialization of valid state should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Lenient deserialization of valid state should succeed: {:?}",
+            result.err()
+        );
         let deserialized = result.expect("already checked");
         assert_eq!(deserialized.source().len(), 1);
         assert_eq!(deserialized.output().len(), 1);

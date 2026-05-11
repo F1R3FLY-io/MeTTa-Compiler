@@ -7,9 +7,7 @@
 //! - debug_print, debug_stack - Debugging utilities
 
 use super::helpers::value_to_jit_generic;
-use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, JitValue, TAG_UNIT,
-};
+use crate::backend::bytecode::jit::types::{JitBailoutReason, JitContext, JitValue, TAG_UNIT};
 use tracing::trace;
 
 // =============================================================================

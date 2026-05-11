@@ -125,4 +125,3 @@ pub const MAX_STACK_SAVE_VALUES: usize = 256;
 /// Direct-mapped cache: slot = name_hash % VAR_INDEX_CACHE_SIZE
 /// 32 slots × 12 bytes = 384 bytes overhead per JitContext.
 pub const VAR_INDEX_CACHE_SIZE: usize = 32;
-

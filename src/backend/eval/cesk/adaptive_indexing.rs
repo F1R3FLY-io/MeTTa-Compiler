@@ -100,7 +100,8 @@ impl GroupStats {
             return None;
         }
 
-        let current_score = self.distinct_heads_per_arg
+        let current_score = self
+            .distinct_heads_per_arg
             .get(self.primary_index_arg as usize)
             .copied()
             .unwrap_or(0);
@@ -118,7 +119,8 @@ impl GroupStats {
         // Only switch if improvement exceeds threshold
         if best_pos != self.primary_index_arg
             && current_score > 0
-            && (best_score as f32 - current_score as f32) / current_score as f32 >= config.rebalance_threshold
+            && (best_score as f32 - current_score as f32) / current_score as f32
+                >= config.rebalance_threshold
         {
             Some(best_pos)
         } else if best_pos != self.primary_index_arg && current_score == 0 && best_score > 0 {
@@ -162,13 +164,10 @@ impl AdaptiveRegistry {
     }
 
     /// Record a query for a (head, arity) group.
-    pub fn record_query(
-        &mut self,
-        head_hash: u64,
-        arity: usize,
-        arg_heads: &[Option<&str>],
-    ) {
-        let stats = self.groups.entry((head_hash, arity))
+    pub fn record_query(&mut self, head_hash: u64, arity: usize, arg_heads: &[Option<&str>]) {
+        let stats = self
+            .groups
+            .entry((head_hash, arity))
             .or_insert_with(|| GroupStats::new(arity));
         stats.record_query(arg_heads);
     }
@@ -190,7 +189,8 @@ impl AdaptiveRegistry {
 
     /// Get the currently selected index argument for a group.
     pub fn index_arg_for(&self, head_hash: u64, arity: usize) -> u8 {
-        self.groups.get(&(head_hash, arity))
+        self.groups
+            .get(&(head_hash, arity))
             .map(|s| s.primary_index_arg)
             .unwrap_or(0) // Default: first argument
     }

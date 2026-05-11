@@ -90,9 +90,15 @@ pub(crate) fn pattern_match_impl(
                     && p != "&"
                     && p != "$_" =>
             {
-                // Check if variable is already bound (linear search for SmartBindings)
+                // Check if variable is already bound (linear search for SmartBindings).
+                // BUG-T0-006 (spec §04.1): repeated-var consistency uses *unification*,
+                // not PartialEq. The previously-bound value may itself contain
+                // unbound variables — testing structural equality misses cases where
+                // they would still unify. Push (existing, val) onto the work stack so
+                // the outer iterative loop unifies them. Stack-safe: no recursion.
                 if let Some((_, existing)) = bindings.iter().find(|(name, _)| *name == p) {
-                    existing == &val
+                    work_stack.push((*existing, val));
+                    true
                 } else {
                     bindings.insert(p, val);
                     true
@@ -155,10 +161,7 @@ pub(crate) fn pattern_match_impl(
             }
 
             // Errors: check message match, push details onto work stack
-            (
-                ValueView::Error(p_msg, p_details),
-                ValueView::Error(v_msg, v_details),
-            ) => {
+            (ValueView::Error(p_msg, p_details), ValueView::Error(v_msg, v_details)) => {
                 if p_msg != v_msg {
                     return false; // Message mismatch
                 }
@@ -191,4 +194,160 @@ pub(crate) fn pattern_match_impl(
     }
 
     true // All pairs matched successfully
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::models::global_factory;
+    use crate::backend::models::MettaValueFactory;
+
+    /// BUG-T0-006 regression: repeated variables in a pattern must unify
+    /// via the work-stack, not via PartialEq. `(foo $a $a)` matched against
+    /// `(foo (g 1) (g 1))` succeeds (structurally equal bound values), and
+    /// `(foo $a $a)` against `(foo 1 2)` fails (non-equal bound values).
+    #[test]
+    fn pattern_repeated_var_matches_when_structurally_equal() {
+        let f = global_factory();
+        let pattern = f.sexpr(vec![f.atom("foo"), f.atom("$a"), f.atom("$a")]);
+        let value = f.sexpr(vec![
+            f.atom("foo"),
+            f.sexpr(vec![f.atom("g"), f.long(1)]),
+            f.sexpr(vec![f.atom("g"), f.long(1)]),
+        ]);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(bindings.is_some(), "repeated-var matches when values agree");
+        let b = bindings.expect("Some");
+        let bound = b
+            .iter()
+            .find(|(name, _)| *name == "$a")
+            .expect("$a is bound");
+        assert!(bound.1.is_sexpr(), "$a bound to (g 1)");
+    }
+
+    #[test]
+    fn pattern_repeated_var_fails_when_unequal() {
+        let f = global_factory();
+        let pattern = f.sexpr(vec![f.atom("foo"), f.atom("$a"), f.atom("$a")]);
+        let value = f.sexpr(vec![f.atom("foo"), f.long(1), f.long(2)]);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(
+            bindings.is_none(),
+            "repeated-var rejects mismatched repeat"
+        );
+    }
+
+    /// BUG-T0-006 deeper case: the second occurrence of `$a` should unify
+    /// with the previously-bound value, which itself contains a fresh
+    /// pattern variable `$x`. The unifier must bind `$x` (not give up via
+    /// PartialEq mismatch).
+    /// Regression: pattern `($x leaf2)` against fact `(leaf0 leaf1)` MUST FAIL
+    /// because `leaf2 != leaf1`. Reported broken by `tests::test_match_basic_pattern`.
+    #[test]
+    fn pattern_partial_atom_mismatch_in_sexpr_fails() {
+        let f = global_factory();
+        let pattern = f.sexpr(vec![f.atom("$x"), f.atom("leaf2")]);
+        let value = f.sexpr(vec![f.atom("leaf0"), f.atom("leaf1")]);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(
+            bindings.is_none(),
+            "pattern ($x leaf2) vs (leaf0 leaf1) must fail; got: {:?}",
+            bindings
+        );
+    }
+
+    /// Regression for the generic matcher: `($x leaf2)` vs `(leaf1 leaf2)` MUST
+    /// succeed binding $x=leaf1. The generic matcher is the path used by
+    /// `env.match_space()` which the bytecode VM's `op_match_self` invokes.
+    #[test]
+    fn pattern_generic_partial_atom_match_binds_variable() {
+        use crate::backend::eval::bindings::pattern_match_generic;
+        let f = global_factory();
+        let pattern = f.sexpr(vec![f.atom("$x"), f.atom("leaf2")]);
+        let value = f.sexpr(vec![f.atom("leaf1"), f.atom("leaf2")]);
+        let bindings = pattern_match_generic(&pattern, &value);
+        let b = bindings.expect("pattern_match_generic succeeds");
+        let bound = b
+            .get("$x")
+            .expect("$x is bound by pattern_match_generic");
+        assert_eq!(bound.as_atom(), Some("leaf1"));
+    }
+
+    /// BUG-T0-006 generic-path regression: repeated-var unification works in
+    /// `pattern_match_generic_impl` (used by `env.match_space()`, rule
+    /// dispatch, MORK forms). Mirrors the canonical-matcher test above.
+    #[test]
+    fn pattern_generic_repeated_var_matches_when_equal() {
+        use crate::backend::eval::bindings::pattern_match_generic;
+        let f = global_factory();
+        let pattern = f.sexpr(vec![f.atom("foo"), f.atom("$a"), f.atom("$a")]);
+        let value = f.sexpr(vec![
+            f.atom("foo"),
+            f.sexpr(vec![f.atom("g"), f.long(1)]),
+            f.sexpr(vec![f.atom("g"), f.long(1)]),
+        ]);
+        let bindings = pattern_match_generic(&pattern, &value);
+        assert!(
+            bindings.is_some(),
+            "generic matcher accepts repeated-var match"
+        );
+    }
+
+    #[test]
+    fn pattern_generic_repeated_var_fails_when_unequal() {
+        use crate::backend::eval::bindings::pattern_match_generic;
+        let f = global_factory();
+        let pattern = f.sexpr(vec![f.atom("foo"), f.atom("$a"), f.atom("$a")]);
+        let value = f.sexpr(vec![f.atom("foo"), f.long(1), f.long(2)]);
+        let bindings = pattern_match_generic(&pattern, &value);
+        assert!(
+            bindings.is_none(),
+            "generic matcher rejects mismatched repeated-var"
+        );
+    }
+
+    /// Regression: pattern `($x leaf2)` against fact `(leaf1 leaf2)` MUST succeed
+    /// binding $x=leaf1.
+    #[test]
+    fn pattern_partial_atom_match_binds_variable() {
+        let f = global_factory();
+        let pattern = f.sexpr(vec![f.atom("$x"), f.atom("leaf2")]);
+        let value = f.sexpr(vec![f.atom("leaf1"), f.atom("leaf2")]);
+        let bindings = pattern_match(&pattern, &value);
+        let b = bindings.expect("matches");
+        let bound = b
+            .iter()
+            .find(|(name, _)| *name == "$x")
+            .expect("$x is bound");
+        assert_eq!(bound.1.as_atom(), Some("leaf1"));
+    }
+
+    #[test]
+    fn pattern_repeated_var_unifies_through_inner_variable() {
+        let f = global_factory();
+        // pattern: (foo (g $x) $a) — but $a appears twice means: $a := (g $x),
+        // then second $a binding must unify $x against something concrete.
+        // Use: pattern (foo $a $a) against value (foo (g $x) (g 1)).
+        // First $a := (g $x); second $a vs (g 1) must unify $x := 1.
+        let pattern = f.sexpr(vec![f.atom("foo"), f.atom("$a"), f.atom("$a")]);
+        let value = f.sexpr(vec![
+            f.atom("foo"),
+            f.sexpr(vec![f.atom("g"), f.atom("$x")]),
+            f.sexpr(vec![f.atom("g"), f.long(1)]),
+        ]);
+        let bindings = pattern_match(&pattern, &value);
+        assert!(
+            bindings.is_some(),
+            "repeated-var unifies through inner variable (BUG-T0-006)"
+        );
+        let b = bindings.expect("Some");
+        // $x should be bound to 1 (or to the result of unifying via the work stack).
+        let x_bound = b.iter().find(|(name, _)| *name == "$x");
+        assert!(
+            x_bound.is_some(),
+            "$x bound by repeated-var unification, got bindings: {:?}",
+            b.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(x_bound.expect("Some").1.as_long(), Some(1));
+    }
 }

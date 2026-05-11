@@ -14,14 +14,18 @@
 //! Special forms use generic implementations that work with `GenericEnvironment`,
 //! achieving full genericization over the value type.
 
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 
 use tracing::trace;
 
+use super::grounded::{
+    find_grounded_arg_indices_generic, find_typed_arg_indices_generic, is_declared_value_type,
+    validate_grounded_arg_types,
+};
 use super::types::GenericEvalStep;
-use super::grounded::{find_grounded_arg_indices_generic, find_typed_arg_indices_generic, is_declared_value_type, validate_grounded_arg_types};
 
 use crate::backend::eval::bindings::{eval_atom_subst_generic, eval_sealed_generic};
+use crate::backend::eval::list_ops::helpers::suggest_variable_format;
 use crate::backend::eval::list_ops::ops::{
     eval_append_generic, eval_car_atom_generic, eval_cdr_atom_generic, eval_cons_atom_generic,
     eval_cut_generic, eval_decons_atom_generic, eval_drop_atom_generic, eval_element_of_generic,
@@ -31,23 +35,22 @@ use crate::backend::eval::list_ops::ops::{
     eval_take_atom_generic, eval_tuple_concat_generic, eval_tuple_count_generic,
     eval_without_generic, eval_zip_atom_generic,
 };
-use crate::backend::eval::list_ops::helpers::suggest_variable_format;
 // Generic module operations - used directly (no boundary conversion)
 use crate::backend::eval::modules::{
     eval_import_generic, eval_include_generic, eval_mod_space_generic, eval_print_mods_generic,
 };
 // Generic MORK operations - used directly (no boundary conversion)
+use crate::backend::environment::dispatch_overrides::{overridable_op_id, OverridableOpId};
 use crate::backend::eval::mork_forms::{
     eval_coalg_generic, eval_exec_generic, eval_lookup_generic, eval_rulify_generic,
 };
-use crate::backend::environment::dispatch_overrides::{
-    overridable_op_id, OverridableOpId,
+use crate::backend::eval::trampoline::{EvalContext, MettaEnvironment};
+use crate::backend::eval::types::{
+    eval_check_type_generic, eval_get_type_generic, types_match_generic,
 };
-use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
-use crate::backend::eval::types::{eval_check_type_generic, eval_get_type_generic, types_match_generic};
 use crate::backend::grounded::{has_grounded_op, GroundedState};
-use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 use crate::backend::models::metta_value::MettaValueInner;
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 
 /// Generic S-expression step evaluation.
 ///
@@ -115,7 +118,11 @@ where
     let orig_len = items.len();
     let items = preprocess_space_refs_generic(items, ctx);
     // If preprocessing changed items, the original_sexpr is no longer valid
-    let original_sexpr = if items.len() != orig_len { None } else { original_sexpr };
+    let original_sexpr = if items.len() != orig_len {
+        None
+    } else {
+        original_sexpr
+    };
 
     if items.is_empty() {
         // HE-compatible: empty SExpr () evaluates to itself, not Nil
@@ -133,19 +140,65 @@ where
         #[cfg(feature = "trace")]
         {
             if let Some(tc) = ctx.trace_collector() {
-                let is_special = matches!(op,
-                    "=" | "!" | "quote" | "unquote" | "if" | "if-reducible" | "error" | "Error"
-                    | "is-error" | "catch" | "eval" | "chain" | "let" | "let*" | ":" | ":<"
-                    | "get-type" | "check-type" | "match" | "match-or" | "superpose" | "amb" | "collapse"
-                    | "map-atom" | "filter-atom" | "foldl-atom" | "add-atom" | "remove-atom"
-                    | "get-atoms" | "new-space" | "new-state" | "get-state" | "change-state!"
-                    | "pragma!" | "println!" | "import!" | "git-import!" | "include" | "mod-space!"
-                    | "print-mods!" | "test" | "unique" | "subtraction" | "intersection" | "union"
-                    | "assertEqual" | "assertEqualToResult" | "is-function" | "type-cast"
-                    | "match-types" | "match-type-or" | "first-from-pair" | "metta"
+                let is_special = matches!(
+                    op,
+                    "=" | "!"
+                        | "quote"
+                        | "unquote"
+                        | "if"
+                        | "if-reducible"
+                        | "error"
+                        | "Error"
+                        | "is-error"
+                        | "catch"
+                        | "eval"
+                        | "chain"
+                        | "let"
+                        | "let*"
+                        | ":"
+                        | ":<"
+                        | "get-type"
+                        | "check-type"
+                        | "match"
+                        | "match-or"
+                        | "superpose"
+                        | "amb"
+                        | "collapse"
+                        | "map-atom"
+                        | "filter-atom"
+                        | "foldl-atom"
+                        | "add-atom"
+                        | "remove-atom"
+                        | "get-atoms"
+                        | "new-space"
+                        | "new-state"
+                        | "get-state"
+                        | "change-state!"
+                        | "pragma!"
+                        | "println!"
+                        | "import!"
+                        | "git-import!"
+                        | "include"
+                        | "mod-space!"
+                        | "print-mods!"
+                        | "test"
+                        | "unique"
+                        | "subtraction"
+                        | "intersection"
+                        | "union"
+                        | "assertEqual"
+                        | "assertEqualToResult"
+                        | "is-function"
+                        | "type-cast"
+                        | "match-types"
+                        | "match-type-or"
+                        | "first-from-pair"
+                        | "metta"
                 );
                 if is_special {
-                    let input_tv = crate::backend::trace::trace_value_generic(&ctx.factory().sexpr(items.clone()));
+                    let input_tv = crate::backend::trace::trace_value_generic(
+                        &ctx.factory().sexpr(items.clone()),
+                    );
                     tc.emit_converted(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
@@ -166,1161 +219,1222 @@ where
         // helpers that user rules may shadow — see
         // `crate::backend::environment::dispatch_overrides`.
         'special_forms: {
-        match op {
-            // Rule definition - native generic implementation (zero-conversion)
-            "=" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "= requires exactly 2 arguments, got {}. Usage: (= pattern body)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+            match op {
+                // Rule definition - native generic implementation (zero-conversion)
+                "=" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "= requires exactly 2 arguments, got {}. Usage: (= pattern body)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+
+                    // Add rule directly - zero-conversion storage
+                    let mut new_env = env.clone();
+                    new_env.add_rule(items[1].clone(), items[2].clone());
+
+                    // Rule definitions return empty list
+                    return GenericEvalStep::Done((smallvec![], new_env));
                 }
 
-                // Add rule directly - zero-conversion storage
-                let mut new_env = env.clone();
-                new_env.add_rule(items[1].clone(), items[2].clone());
-
-                // Rule definitions return empty list
-                return GenericEvalStep::Done((smallvec![], new_env));
-            }
-
-            // Force evaluation operator - defer to trampoline for TCO
-            "!" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "! requires exactly 1 argument, got {}. Usage: (! expr)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                // Force evaluation operator - defer to trampoline for TCO
+                "!" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "! requires exactly 1 argument, got {}. Usage: (! expr)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    // Defer evaluation to trampoline - this IS a tail call (TCO)
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                // Defer evaluation to trampoline - this IS a tail call (TCO)
-                return GenericEvalStep::EvalIfBranch {
-                    branch: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // Quote - wraps argument in Quoted variant (prevents evaluation)
-            "quote" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "quote requires exactly 1 argument, got {}. Usage: (quote expr)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                // Quote - wraps argument in Quoted variant (prevents evaluation)
+                "quote" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "quote requires exactly 1 argument, got {}. Usage: (quote expr)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::Done((
+                        smallvec![ctx.factory().quote(items[1].clone())],
+                        env,
+                    ));
                 }
-                return GenericEvalStep::Done((smallvec![ctx.factory().quote(items[1].clone())], env));
-            }
 
-            // Unquote - unwraps Quoted variant, returns inner value
-            "unquote" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
+                // Unquote - unwraps Quoted variant, returns inner value
+                "unquote" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
                             "unquote requires exactly 1 argument, got {}. Usage: (unquote expr)",
                             items.len() - 1
                         ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    // If argument is Quoted(inner), return inner; otherwise return as-is
+                    if let Some(inner) = items[1].as_quoted() {
+                        return GenericEvalStep::Done((smallvec![inner], env));
+                    }
+                    return GenericEvalStep::Done((smallvec![items[1].clone()], env));
                 }
-                // If argument is Quoted(inner), return inner; otherwise return as-is
-                if let Some(inner) = items[1].as_quoted() {
-                    return GenericEvalStep::Done((smallvec![inner], env));
-                }
-                return GenericEvalStep::Done((smallvec![items[1].clone()], env));
-            }
 
-            // Conditional - defers condition evaluation to trampoline
-            "if" => {
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // Conditional - defers condition evaluation to trampoline
+                "if" => {
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "if requires exactly 3 arguments, got {}. Usage: (if condition then else)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::EvalIfCondition {
+                        condition: items[1].clone(),
+                        then_branch: items[2].clone(),
+                        else_branch: items[3].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::EvalIfCondition {
-                    condition: items[1].clone(),
-                    then_branch: items[2].clone(),
-                    else_branch: items[3].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // if-reducible - evaluates expr, checks if it reduced, branches accordingly
-            "if-reducible" => {
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // if-reducible - evaluates expr, checks if it reduced, branches accordingly
+                "if-reducible" => {
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "if-reducible requires exactly 3 arguments, got {}. Usage: (if-reducible expr then else)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::EvalIfReducible {
+                        expr: items[1].clone(),
+                        then_branch: items[2].clone(),
+                        else_branch: items[3].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::EvalIfReducible {
-                    expr: items[1].clone(),
-                    then_branch: items[2].clone(),
-                    else_branch: items[3].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // Error construction (NO conversion needed)
-            "error" => {
-                if items.len() < 2 {
-                    return GenericEvalStep::Done((smallvec![], env));
-                }
-                // Extract message from atom or string
-                let msg = items[1].as_string()
-                    .or_else(|| items[1].as_atom())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| format!("{:?}", items[1]));
-                let details = if items.len() > 2 {
-                    items[2].clone()
-                } else {
-                    ctx.factory().unit()
-                };
-                return GenericEvalStep::Done((smallvec![ctx.factory().error(&msg, details)], env));
-            }
-
-            // HE-compatible Error form (NO conversion needed)
-            "Error" => {
-                if items.len() < 2 {
-                    return GenericEvalStep::Done((smallvec![], env));
-                }
-                // HE format: (Error details msg)
-                let (details, msg) = if items.len() == 2 {
-                    (items[1].clone(), String::new())
-                } else {
-                    let details = items[1].clone();
-                    let msg = items[2].as_string()
-                        .or_else(|| items[2].as_atom())
+                // Error construction (NO conversion needed)
+                "error" => {
+                    if items.len() < 2 {
+                        return GenericEvalStep::Done((smallvec![], env));
+                    }
+                    // Extract message from atom or string
+                    let msg = items[1]
+                        .as_string()
+                        .or_else(|| items[1].as_atom())
                         .map(|s| s.to_string())
-                        .unwrap_or_else(|| format!("{:?}", items[2]));
-                    (details, msg)
-                };
-                return GenericEvalStep::Done((smallvec![ctx.factory().error(&msg, details)], env));
-            }
+                        .unwrap_or_else(|| format!("{:?}", items[1]));
+                    let details = if items.len() > 2 {
+                        items[2].clone()
+                    } else {
+                        ctx.factory().unit()
+                    };
+                    return GenericEvalStep::Done((
+                        smallvec![ctx.factory().error(&msg, details)],
+                        env,
+                    ));
+                }
 
-            // is-error - defers evaluation to trampoline
-            "is-error" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
+                // HE-compatible Error form (NO conversion needed)
+                "Error" => {
+                    if items.len() < 2 {
+                        return GenericEvalStep::Done((smallvec![], env));
+                    }
+                    // HE format: (Error details msg)
+                    let (details, msg) = if items.len() == 2 {
+                        (items[1].clone(), String::new())
+                    } else {
+                        let details = items[1].clone();
+                        let msg = items[2]
+                            .as_string()
+                            .or_else(|| items[2].as_atom())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("{:?}", items[2]));
+                        (details, msg)
+                    };
+                    return GenericEvalStep::Done((
+                        smallvec![ctx.factory().error(&msg, details)],
+                        env,
+                    ));
+                }
+
+                // is-error - defers evaluation to trampoline
+                "is-error" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
                             "is-error requires exactly 1 argument, got {}. Usage: (is-error expr)",
                             items.len() - 1
                         ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::EvalIsError {
+                        expr: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::EvalIsError {
-                    expr: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // catch - defers evaluation to trampoline
-            "catch" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
+                // catch - defers evaluation to trampoline
+                "catch" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             "catch requires exactly 2 arguments, got {}. Usage: (catch expr default)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                return GenericEvalStep::StartCatch {
-                    expr: items[1].clone(),
-                    default: items[2].clone(),
-                    env,
-                    depth,
-                };
-            }
-
-            // eval - defers evaluation to trampoline
-            "eval" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "eval requires exactly 1 argument, got {}. Usage: (eval expr)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                return GenericEvalStep::EvalEval {
-                    arg: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
-
-            // PeTTa-compatible `reduce` built-in. Desugars to `(eval arg)` —
-            // PeTTa's `reduce/2` Prolog predicate (translator.pl:50) forces
-            // evaluation of an expression to its normal form, which is exactly
-            // what `eval` does in MeTTaTron.
-            "reduce" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "reduce requires exactly 1 argument, got {}. Usage: (reduce expr)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                return GenericEvalStep::EvalEval {
-                    arg: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
-
-            // PeTTa-compatible `progn` built-in. Desugars to nested `let`
-            // bindings on a fresh anonymous variable, which gives the correct
-            // sequential-evaluation semantics:
-            //   (progn a b)         -> (let $_progn_unused a b)
-            //   (progn a b c)       -> (let $_progn_unused a (let $_progn_unused b c))
-            //   (progn a b c d)     -> (let $_progn_unused a (let $_progn_unused b (let $_progn_unused c d)))
-            //
-            // The let semantics evaluate the binding value first (for side
-            // effects), then evaluate the body. The body is the next progn
-            // step or the final expression. This works correctly because:
-            // 1. let pre-evaluates its value_expr (so side-effecting earlier
-            //    args fire correctly)
-            // 2. The body is re-evaluated by the trampoline (so a recursive
-            //    function call as the last arg is fully reduced)
-            //
-            // Mirrors PeTTa's `progn/N` from `<PeTTa>/src/metta.pl:298`.
-            "progn" => {
-                let factory = ctx.factory();
-                if items.len() < 3 {
-                    let err = factory.error(
-                        &format!(
-                            "progn requires at least 2 arguments, got {}. \
-                             Usage: (progn expr1 expr2 [...])",
-                            items.len() - 1
-                        ),
-                        factory.sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-
-                // Build nested let from the right: start with the last arg as
-                // the innermost body, then wrap each preceding arg in a let.
-                // Use a fresh variable name with a leading `_` to signal "unused".
-                let unused_var = factory.atom("$_progn_unused");
-                let last_idx = items.len() - 1;
-                let mut result = items[last_idx].clone();
-                // Process args[1..last_idx] in reverse order (skip head at idx 0).
-                for arg in items[1..last_idx].iter().rev() {
-                    result = factory.sexpr(vec![
-                        factory.atom("let"),
-                        unused_var.clone(),
-                        arg.clone(),
-                        result,
-                    ]);
-                }
-
-                // The 2-arg case (most common): (progn a b) -> (let $_ a b).
-                // Return StartLetBinding directly, skipping a redundant trampoline pass.
-                if items.len() == 3 {
-                    return GenericEvalStep::StartLetBinding {
-                        pattern: unused_var,
-                        value_expr: items[1].clone(),
-                        body: items[2].clone(),
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartCatch {
+                        expr: items[1].clone(),
+                        default: items[2].clone(),
                         env,
                         depth,
                     };
                 }
 
-                // Multi-arg case (3+ args): the constructed nested-let
-                // expression needs full re-evaluation. Use EvalEval to push it
-                // back to the trampoline.
-                return GenericEvalStep::EvalEval {
-                    arg: result,
-                    env,
-                    depth,
-                };
-            }
+                // eval - defers evaluation to trampoline
+                "eval" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "eval requires exactly 1 argument, got {}. Usage: (eval expr)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::EvalEval {
+                        arg: items[1].clone(),
+                        env,
+                        depth,
+                    };
+                }
 
-            // function - defers evaluation to trampoline
-            "function" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
+                // PeTTa-compatible `reduce` built-in. Desugars to `(eval arg)` —
+                // PeTTa's `reduce/2` Prolog predicate (translator.pl:50) forces
+                // evaluation of an expression to its normal form, which is exactly
+                // what `eval` does in MeTTaTron.
+                "reduce" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "reduce requires exactly 1 argument, got {}. Usage: (reduce expr)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::EvalEval {
+                        arg: items[1].clone(),
+                        env,
+                        depth,
+                    };
+                }
+
+                // PeTTa-compatible `progn` built-in. Desugars to nested `let`
+                // bindings on a fresh anonymous variable, which gives the correct
+                // sequential-evaluation semantics:
+                //   (progn a b)         -> (let $_progn_unused a b)
+                //   (progn a b c)       -> (let $_progn_unused a (let $_progn_unused b c))
+                //   (progn a b c d)     -> (let $_progn_unused a (let $_progn_unused b (let $_progn_unused c d)))
+                //
+                // The let semantics evaluate the binding value first (for side
+                // effects), then evaluate the body. The body is the next progn
+                // step or the final expression. This works correctly because:
+                // 1. let pre-evaluates its value_expr (so side-effecting earlier
+                //    args fire correctly)
+                // 2. The body is re-evaluated by the trampoline (so a recursive
+                //    function call as the last arg is fully reduced)
+                //
+                // Mirrors PeTTa's `progn/N` from `<PeTTa>/src/metta.pl:298`.
+                "progn" => {
+                    let factory = ctx.factory();
+                    if items.len() < 3 {
+                        let err = factory.error(
+                            &format!(
+                                "progn requires at least 2 arguments, got {}. \
+                             Usage: (progn expr1 expr2 [...])",
+                                items.len() - 1
+                            ),
+                            factory.sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+
+                    // Build nested let from the right: start with the last arg as
+                    // the innermost body, then wrap each preceding arg in a let.
+                    // Use a fresh variable name with a leading `_` to signal "unused".
+                    let unused_var = factory.atom("$_progn_unused");
+                    let last_idx = items.len() - 1;
+                    let mut result = items[last_idx].clone();
+                    // Process args[1..last_idx] in reverse order (skip head at idx 0).
+                    for arg in items[1..last_idx].iter().rev() {
+                        result = factory.sexpr(vec![
+                            factory.atom("let"),
+                            unused_var.clone(),
+                            arg.clone(),
+                            result,
+                        ]);
+                    }
+
+                    // The 2-arg case (most common): (progn a b) -> (let $_ a b).
+                    // Return StartLetBinding directly, skipping a redundant trampoline pass.
+                    if items.len() == 3 {
+                        return GenericEvalStep::StartLetBinding {
+                            pattern: unused_var,
+                            value_expr: items[1].clone(),
+                            body: items[2].clone(),
+                            env,
+                            depth,
+                        };
+                    }
+
+                    // Multi-arg case (3+ args): the constructed nested-let
+                    // expression needs full re-evaluation. Use EvalEval to push it
+                    // back to the trampoline.
+                    return GenericEvalStep::EvalEval {
+                        arg: result,
+                        env,
+                        depth,
+                    };
+                }
+
+                // function - defers evaluation to trampoline
+                "function" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
                             "function requires exactly 1 argument, got {}. Usage: (function expr)",
                             items.len() - 1
                         ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartFunction {
+                        expr: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartFunction {
-                    expr: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // return - defers evaluation to trampoline
-            "return" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "return requires exactly 1 argument, got {}. Usage: (return value)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                // return - defers evaluation to trampoline
+                "return" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "return requires exactly 1 argument, got {}. Usage: (return value)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::EvalReturn {
+                        value: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::EvalReturn {
-                    value: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // chain - defers evaluation to trampoline
-            "chain" => {
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // chain - defers evaluation to trampoline
+                "chain" => {
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "chain requires exactly 3 arguments, got {}. Usage: (chain expr $var body)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartChain {
+                        expr: items[1].clone(),
+                        var: items[2].clone(),
+                        body: items[3].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartChain {
-                    expr: items[1].clone(),
-                    var: items[2].clone(),
-                    body: items[3].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // match - defers space evaluation to trampoline
-            // Supports: (match space pattern template) - 3 args
-            //       or: (match & self pattern template) - 4 args (legacy, preprocessed to 3)
-            "match" => {
-                if !(items.len() == 4 || items.len() == 5) {
-                    let err = ctx.factory().error(
+                // match - defers space evaluation to trampoline
+                // Supports: (match space pattern template) - 3 args
+                //       or: (match & self pattern template) - 4 args (legacy, preprocessed to 3)
+                "match" => {
+                    if !(items.len() == 4 || items.len() == 5) {
+                        let err = ctx.factory().error(
                         &format!(
                             "match requires 3 or 4 arguments, got {}. Usage: (match space pattern template) or (match & self pattern template)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    // Handle both syntaxes
+                    if items.len() == 4 {
+                        // New syntax: (match space pattern template)
+                        return GenericEvalStep::StartMatch {
+                            space_arg: items[1].clone(),
+                            pattern: items[2].clone(),
+                            template: items[3].clone(),
+                            env,
+                            depth,
+                        };
+                    } else {
+                        // Legacy syntax: (match & self pattern template)
+                        // The & and self should have been preprocessed into &self
+                        // If not, this is an error
+                        let err = ctx.factory().error(
+                            &format!(
+                                "match requires & as first argument (legacy syntax), got: {}",
+                                if let Some(atom) = items[1].as_atom() {
+                                    atom.to_string()
+                                } else {
+                                    "non-atom".to_string()
+                                }
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
                 }
-                // Handle both syntaxes
-                if items.len() == 4 {
-                    // New syntax: (match space pattern template)
-                    return GenericEvalStep::StartMatch {
-                        space_arg: items[1].clone(),
-                        pattern: items[2].clone(),
-                        template: items[3].clone(),
-                        env,
-                        depth,
-                    };
-                } else {
-                    // Legacy syntax: (match & self pattern template)
-                    // The & and self should have been preprocessed into &self
-                    // If not, this is an error
-                    let err = ctx.factory().error(
-                        &format!(
-                            "match requires & as first argument (legacy syntax), got: {}",
-                            if let Some(atom) = items[1].as_atom() { atom.to_string() } else { "non-atom".to_string() }
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-            }
 
-            // match-or - like match but with a default fallback when no match found
-            "match-or" => {
-                if items.len() != 5 {
-                    let err = ctx.factory().error(
+                // match-or - like match but with a default fallback when no match found
+                "match-or" => {
+                    if items.len() != 5 {
+                        let err = ctx.factory().error(
                         &format!(
                             "match-or requires exactly 4 arguments, got {}. Usage: (match-or space pattern default template)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartMatchOr {
+                        space_arg: items[1].clone(),
+                        pattern: items[2].clone(),
+                        default: items[3].clone(),
+                        template: items[4].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartMatchOr {
-                    space_arg: items[1].clone(),
-                    pattern: items[2].clone(),
-                    default: items[3].clone(),
-                    template: items[4].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // case - defers atom evaluation to trampoline
-            "case" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
+                // case - defers atom evaluation to trampoline
+                "case" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             "case requires exactly 2 arguments, got {}. Usage: (case atom ((pattern template) ...))",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::EvalCaseAtom {
+                        atom: items[1].clone(),
+                        cases: items[2].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::EvalCaseAtom {
-                    atom: items[1].clone(),
-                    cases: items[2].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // switch - pattern matches atom WITHOUT evaluation (unlike case)
-            "switch" | "switch-minimal" | "switch-internal" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "{} requires exactly 2 arguments, got {}. Usage: ({} atom cases)",
-                            op,
-                            items.len() - 1,
-                            op
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                // switch - pattern matches atom WITHOUT evaluation (unlike case)
+                "switch" | "switch-minimal" | "switch-internal" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "{} requires exactly 2 arguments, got {}. Usage: ({} atom cases)",
+                                op,
+                                items.len() - 1,
+                                op
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::SwitchAtom {
+                        atom: items[1].clone(),
+                        cases: items[2].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::SwitchAtom {
-                    atom: items[1].clone(),
-                    cases: items[2].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // let - defers value evaluation to trampoline
-            "let" => {
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // let - defers value evaluation to trampoline
+                "let" => {
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "let requires exactly 3 arguments, got {}. Usage: (let pattern value body)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartLetBinding {
+                        pattern: items[1].clone(),
+                        value_expr: items[2].clone(),
+                        body: items[3].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartLetBinding {
-                    pattern: items[1].clone(),
-                    value_expr: items[2].clone(),
-                    body: items[3].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // let* - native generic implementation (zero conversion)
-            // Sequential bindings - desugars to nested let
-            "let*" => {
-                if items.len() < 3 {
-                    let err = ctx.factory().error(
+                // let* - native generic implementation (zero conversion)
+                // Sequential bindings - desugars to nested let
+                "let*" => {
+                    if items.len() < 3 {
+                        let err = ctx.factory().error(
                         "let* requires at least 2 arguments. Usage: (let* ((pat val) ...) body)",
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
 
-                let bindings_expr = &items[1];
-                let body = &items[2];
+                    let bindings_expr = &items[1];
+                    let body = &items[2];
 
-                // Extract bindings list
-                let bindings = match bindings_expr.as_sexpr() {
-                    Some(items) => items,
-                    None if bindings_expr.is_unit() => {
-                        // Empty bindings - evaluate body via trampoline (tail call)
+                    // Extract bindings list
+                    let bindings = match bindings_expr.as_sexpr() {
+                        Some(items) => items,
+                        None if bindings_expr.is_unit() => {
+                            // Empty bindings - evaluate body via trampoline (tail call)
+                            return GenericEvalStep::EvalIfBranch {
+                                branch: body.clone(),
+                                env,
+                                depth,
+                            };
+                        }
+                        None => {
+                            let err = ctx.factory().error(
+                            "let* bindings must be a list. Usage: (let* ((pattern value) ...) body)",
+                            bindings_expr.clone(),
+                        );
+                            return GenericEvalStep::Done((smallvec![err], env));
+                        }
+                    };
+
+                    if bindings.is_empty() {
+                        // No bindings - evaluate body via trampoline (tail call)
                         return GenericEvalStep::EvalIfBranch {
                             branch: body.clone(),
                             env,
                             depth,
                         };
                     }
-                    None => {
-                        let err = ctx.factory().error(
-                            "let* bindings must be a list. Usage: (let* ((pattern value) ...) body)",
-                            bindings_expr.clone(),
-                        );
-                        return GenericEvalStep::Done((smallvec![err], env));
-                    }
-                };
 
-                if bindings.is_empty() {
-                    // No bindings - evaluate body via trampoline (tail call)
+                    // Transform to nested let
+                    // (let* ((a 1) (b 2) (c 3)) body) -> (let a 1 (let b 2 (let c 3 body)))
+                    let mut result_body = body.clone();
+
+                    // Process bindings in reverse order to build nested structure
+                    for binding in bindings.iter().rev() {
+                        if let Some(pair) = binding.as_sexpr() {
+                            if pair.len() == 2 {
+                                let pattern = &pair[0];
+                                let value = &pair[1];
+
+                                result_body = ctx.factory().sexpr(vec![
+                                    ctx.factory().atom("let"),
+                                    pattern.clone(),
+                                    value.clone(),
+                                    result_body,
+                                ]);
+                            } else {
+                                let err = ctx.factory().error(
+                                "let* binding must be (pattern value) pair. Usage: (let* ((pattern value) ...) body)",
+                                binding.clone(),
+                            );
+                                return GenericEvalStep::Done((smallvec![err], env));
+                            }
+                        } else {
+                            let err = ctx.factory().error(
+                            "let* binding must be (pattern value) pair. Usage: (let* ((pattern value) ...) body)",
+                            binding.clone(),
+                        );
+                            return GenericEvalStep::Done((smallvec![err], env));
+                        }
+                    }
+
+                    // Evaluate the nested let structure via trampoline (tail call)
                     return GenericEvalStep::EvalIfBranch {
-                        branch: body.clone(),
+                        branch: result_body,
                         env,
                         depth,
                     };
                 }
 
-                // Transform to nested let
-                // (let* ((a 1) (b 2) (c 3)) body) -> (let a 1 (let b 2 (let c 3 body)))
-                let mut result_body = body.clone();
-
-                // Process bindings in reverse order to build nested structure
-                for binding in bindings.iter().rev() {
-                    if let Some(pair) = binding.as_sexpr() {
-                        if pair.len() == 2 {
-                            let pattern = &pair[0];
-                            let value = &pair[1];
-
-                            result_body = ctx.factory().sexpr(vec![
-                                ctx.factory().atom("let"),
-                                pattern.clone(),
-                                value.clone(),
-                                result_body,
-                            ]);
-                        } else {
-                            let err = ctx.factory().error(
-                                "let* binding must be (pattern value) pair. Usage: (let* ((pattern value) ...) body)",
-                                binding.clone(),
-                            );
-                            return GenericEvalStep::Done((smallvec![err], env));
-                        }
-                    } else {
+                // unify - defers pattern evaluation to trampoline
+                "unify" => {
+                    if items.len() != 5 {
                         let err = ctx.factory().error(
-                            "let* binding must be (pattern value) pair. Usage: (let* ((pattern value) ...) body)",
-                            binding.clone(),
-                        );
-                        return GenericEvalStep::Done((smallvec![err], env));
-                    }
-                }
-
-                // Evaluate the nested let structure via trampoline (tail call)
-                return GenericEvalStep::EvalIfBranch {
-                    branch: result_body,
-                    env,
-                    depth,
-                };
-            }
-
-            // unify - defers pattern evaluation to trampoline
-            "unify" => {
-                if items.len() != 5 {
-                    let err = ctx.factory().error(
                         &format!(
                             "unify requires exactly 4 arguments, got {}. Usage: (unify pattern1 pattern2 success failure)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartUnify {
+                        pattern1: items[1].clone(),
+                        pattern2: items[2].clone(),
+                        success_body: items[3].clone(),
+                        failure_body: items[4].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartUnify {
-                    pattern1: items[1].clone(),
-                    pattern2: items[2].clone(),
-                    success_body: items[3].clone(),
-                    failure_body: items[4].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // sealed - native generic implementation (zero conversion)
-            "sealed" => {
-                let results = eval_sealed_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
+                // sealed - native generic implementation (zero conversion)
+                "sealed" => {
+                    let results = eval_sealed_generic(&items, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
 
-            // atom-subst - native generic implementation (zero conversion)
-            "atom-subst" => {
-                let results = eval_atom_subst_generic(&items, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
+                // atom-subst - native generic implementation (zero conversion)
+                "atom-subst" => {
+                    let results = eval_atom_subst_generic(&items, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
 
-            // Subtype declaration - native generic implementation (zero-conversion)
-            // (:< SubType SuperType) registers a subtype relation used by the type checker.
-            // HE parity: this is a declaration form like (:), not evaluated as a rule.
-            ":<" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
+                // Subtype declaration - native generic implementation (zero-conversion)
+                // (:< SubType SuperType) registers a subtype relation used by the type checker.
+                // HE parity: this is a declaration form like (:), not evaluated as a rule.
+                ":<" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             ":< requires exactly 2 arguments, got {}. Usage: (:< SubType SuperType)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-
-                // Extract sub and super type names
-                let sub_name = match items[1].as_atom() {
-                    Some(atom) => atom.to_string(),
-                    None => {
-                        let err = ctx.factory().error(
-                            ":< requires atom arguments. Usage: (:< SubType SuperType)",
-                            items[1].clone(),
-                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
-                };
-                let super_name = match items[2].as_atom() {
-                    Some(atom) => atom.to_string(),
-                    None => {
-                        let err = ctx.factory().error(
-                            ":< requires atom arguments. Usage: (:< SubType SuperType)",
-                            items[2].clone(),
-                        );
-                        return GenericEvalStep::Done((smallvec![err], env));
-                    }
-                };
 
-                let mut new_env = env.clone();
-                new_env.add_subtype_generic(&sub_name, &super_name);
-
-                // Also add the (:< ...) atom to space so match/get-atoms can see it
-                let atom = ctx.factory().sexpr(items);
-                new_env.add_to_space(&atom);
-
-                // Subtype declarations return empty list (like type assertions)
-                return GenericEvalStep::Done((smallvec![], new_env));
-            }
-
-            // Type assertion - native generic implementation (zero-conversion)
-            ":" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            ": requires exactly 2 arguments, got {}. Usage: (: expr type)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-
-                // Extract name from expression (atom or first element of sexpr)
-                let name = match (items[1].as_atom(), items[1].as_sexpr()) {
-                    (Some(atom), _) => atom.to_string(),
-                    (_, Some(expr_items)) => match expr_items.first().and_then(|f| f.as_atom()) {
+                    // Extract sub and super type names
+                    let sub_name = match items[1].as_atom() {
                         Some(atom) => atom.to_string(),
-                        None => format!("{:?}", items[1]),
-                    },
-                    _ => format!("{:?}", items[1]),
-                };
+                        None => {
+                            let err = ctx.factory().error(
+                                ":< requires atom arguments. Usage: (:< SubType SuperType)",
+                                items[1].clone(),
+                            );
+                            return GenericEvalStep::Done((smallvec![err], env));
+                        }
+                    };
+                    let super_name = match items[2].as_atom() {
+                        Some(atom) => atom.to_string(),
+                        None => {
+                            let err = ctx.factory().error(
+                                ":< requires atom arguments. Usage: (:< SubType SuperType)",
+                                items[2].clone(),
+                            );
+                            return GenericEvalStep::Done((smallvec![err], env));
+                        }
+                    };
 
-                // Add type directly (V is already the correct type)
-                let mut new_env = env.clone();
-                new_env.add_type_generic(&name, items[2].clone());
+                    let mut new_env = env.clone();
+                    new_env.add_subtype_generic(&sub_name, &super_name);
 
-                // Type assertions return empty list
-                return GenericEvalStep::Done((smallvec![], new_env));
-            }
+                    // Also add the (:< ...) atom to space so match/get-atoms can see it
+                    let atom = ctx.factory().sexpr(items);
+                    new_env.add_to_space(&atom);
 
-            // get-type - native generic implementation
-            "get-type" => {
-                let results = eval_get_type_generic(&items, ctx.factory(), &env);
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
+                    // Subtype declarations return empty list (like type assertions)
+                    return GenericEvalStep::Done((smallvec![], new_env));
+                }
 
-            // check-type - native generic implementation
-            "check-type" => {
-                let results = eval_check_type_generic(&items, ctx.factory(), &env);
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
+                // Type assertion - native generic implementation (zero-conversion)
+                ":" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                ": requires exactly 2 arguments, got {}. Usage: (: expr type)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
 
-            // validate-atom - recursive well-typedness checking (Phase 4)
-            "validate-atom" => {
-                let results = crate::backend::eval::types::eval_validate_atom_generic(
-                    &items, ctx.factory(), &env,
-                );
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
+                    // Extract name from expression (atom or first element of sexpr)
+                    let name = match (items[1].as_atom(), items[1].as_sexpr()) {
+                        (Some(atom), _) => atom.to_string(),
+                        (_, Some(expr_items)) => match expr_items.first().and_then(|f| f.as_atom())
+                        {
+                            Some(atom) => atom.to_string(),
+                            None => format!("{:?}", items[1]),
+                        },
+                        _ => format!("{:?}", items[1]),
+                    };
 
-            // get-type-space - query types in a specific space (Phase 5)
-            "get-type-space" => {
-                let results = crate::backend::eval::types::eval_get_type_space_generic(
-                    &items, ctx.factory(), &env,
-                );
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
+                    // Add type directly (V is already the correct type)
+                    let mut new_env = env.clone();
+                    new_env.add_type_generic(&name, items[2].clone());
 
-            // is-function - check if a type is an arrow type (Phase G, HE parity)
-            "is-function" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
+                    // Type assertions return empty list
+                    return GenericEvalStep::Done((smallvec![], new_env));
+                }
+
+                // get-type - native generic implementation
+                "get-type" => {
+                    let results = eval_get_type_generic(&items, ctx.factory(), &env);
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+
+                // check-type - native generic implementation
+                "check-type" => {
+                    let results = eval_check_type_generic(&items, ctx.factory(), &env);
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+
+                // validate-atom - recursive well-typedness checking (Phase 4)
+                "validate-atom" => {
+                    let results = crate::backend::eval::types::eval_validate_atom_generic(
+                        &items,
+                        ctx.factory(),
+                        &env,
+                    );
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+
+                // get-type-space - query types in a specific space (Phase 5)
+                "get-type-space" => {
+                    let results = crate::backend::eval::types::eval_get_type_space_generic(
+                        &items,
+                        ctx.factory(),
+                        &env,
+                    );
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+
+                // is-function - check if a type is an arrow type (Phase G, HE parity)
+                "is-function" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
                         &format!(
                             "is-function requires exactly 1 argument, got {}. Usage: (is-function type)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let typ = &items[1];
+                    let is_fn = if let Some(type_items) = typ.as_sexpr() {
+                        type_items.first().and_then(|v| v.as_atom()) == Some("->")
+                    } else {
+                        false
+                    };
+                    return GenericEvalStep::Done((smallvec![ctx.factory().bool(is_fn)], env));
                 }
-                let typ = &items[1];
-                let is_fn = if let Some(type_items) = typ.as_sexpr() {
-                    type_items.first().and_then(|v| v.as_atom()) == Some("->")
-                } else {
-                    false
-                };
-                return GenericEvalStep::Done((smallvec![ctx.factory().bool(is_fn)], env));
-            }
 
-            // type-cast - validate atom against expected type (Phase H, HE parity)
-            "type-cast" => {
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // type-cast - validate atom against expected type (Phase H, HE parity)
+                "type-cast" => {
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "type-cast requires exactly 3 arguments, got {}. Usage: (type-cast atom type space)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let results = crate::backend::eval::types::eval_type_cast_generic(
+                        &items,
+                        ctx.factory(),
+                        &env,
+                    );
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
                 }
-                let results = crate::backend::eval::types::eval_type_cast_generic(
-                    &items, ctx.factory(), &env,
-                );
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
 
-            // metta - interpreter operation (HE stdlib parity)
-            // (metta atom type space) — evaluates atom with type constraint in space
-            "metta" => {
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // metta - interpreter operation (HE stdlib parity)
+                // (metta atom type space) — evaluates atom with type constraint in space
+                "metta" => {
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "metta requires exactly 3 arguments, got {}. Usage: (metta atom type space)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-
-                let atom = &items[1];
-                let typ = &items[2];
-                // items[3] is space — accepted but we use env's type system (same as type-cast)
-
-                // %Undefined% type constraint → evaluate without type checking
-                if let Some(name) = typ.as_atom() {
-                    if name == "%Undefined%" || name == "Atom" {
-                        // Evaluate the atom; no type constraint to enforce
-                        return GenericEvalStep::EvalEval {
-                            arg: atom.clone(),
-                            env,
-                            depth,
-                        };
+                        return GenericEvalStep::Done((smallvec![err], env));
                     }
-                }
 
-                // Variables pass through unchanged (HE: variables are never evaluated)
-                if atom.as_atom().map_or(false, |s| s.starts_with('$')) {
-                    return GenericEvalStep::Done((smallvec![atom.clone()], env));
-                }
+                    let atom = &items[1];
+                    let typ = &items[2];
+                    // items[3] is space — accepted but we use env's type system (same as type-cast)
 
-                // Check metatype match (Symbol/Variable/Expression/Grounded)
-                if let Some(type_name) = typ.as_atom() {
-                    let meta_match = match type_name {
-                        "Symbol" => atom.as_atom().map_or(false, |s| !s.starts_with('$')),
-                        "Variable" => atom.as_atom().map_or(false, |s| s.starts_with('$')),
-                        "Expression" => atom.as_sexpr().is_some() || atom.is_unit(),
-                        "Grounded" => matches!(
-                            atom.inner_raw(),
-                            MettaValueInner::Bool(_)
-                                | MettaValueInner::Long(_)
-                                | MettaValueInner::Float(_)
-                                | MettaValueInner::String(_)
-                        ),
-                        _ => false,
-                    };
-                    if meta_match {
+                    // %Undefined% type constraint → evaluate without type checking
+                    if let Some(name) = typ.as_atom() {
+                        if name == "%Undefined%" || name == "Atom" {
+                            // Evaluate the atom; no type constraint to enforce
+                            return GenericEvalStep::EvalEval {
+                                arg: atom.clone(),
+                                env,
+                                depth,
+                            };
+                        }
+                    }
+
+                    // Variables pass through unchanged (HE: variables are never evaluated)
+                    if atom.as_atom().map_or(false, |s| s.starts_with('$')) {
                         return GenericEvalStep::Done((smallvec![atom.clone()], env));
                     }
+
+                    // Check metatype match (Symbol/Variable/Expression/Grounded)
+                    if let Some(type_name) = typ.as_atom() {
+                        let meta_match = match type_name {
+                            "Symbol" => atom.as_atom().map_or(false, |s| !s.starts_with('$')),
+                            "Variable" => atom.as_atom().map_or(false, |s| s.starts_with('$')),
+                            "Expression" => atom.as_sexpr().is_some() || atom.is_unit(),
+                            "Grounded" => matches!(
+                                atom.inner_raw(),
+                                MettaValueInner::Bool(_)
+                                    | MettaValueInner::Long(_)
+                                    | MettaValueInner::Float(_)
+                                    | MettaValueInner::String(_)
+                            ),
+                            _ => false,
+                        };
+                        if meta_match {
+                            return GenericEvalStep::Done((smallvec![atom.clone()], env));
+                        }
+                    }
+
+                    // For non-expression atoms (symbols, grounded): type-cast check only
+                    if atom.as_sexpr().is_none() && !atom.is_unit() {
+                        let results = crate::backend::eval::types::eval_type_cast_generic(
+                            &items,
+                            ctx.factory(),
+                            &env,
+                        );
+                        return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                    }
+
+                    // For expressions: evaluate first, then type-cast each result.
+                    // Desugar to: (let $__metta_result (eval atom) (type-cast $__metta_result type space))
+                    let fresh_var = ctx.factory().atom("$__metta_result");
+                    let type_cast_expr = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("type-cast"),
+                        fresh_var.clone(),
+                        typ.clone(),
+                        items[3].clone(),
+                    ]);
+                    return GenericEvalStep::StartLetBinding {
+                        pattern: fresh_var,
+                        value_expr: atom.clone(),
+                        body: type_cast_expr,
+                        env,
+                        depth,
+                    };
                 }
 
-                // For non-expression atoms (symbols, grounded): type-cast check only
-                if atom.as_sexpr().is_none() && !atom.is_unit() {
-                    let results = crate::backend::eval::types::eval_type_cast_generic(
-                        &items, ctx.factory(), &env,
-                    );
-                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-                }
-
-                // For expressions: evaluate first, then type-cast each result.
-                // Desugar to: (let $__metta_result (eval atom) (type-cast $__metta_result type space))
-                let fresh_var = ctx.factory().atom("$__metta_result");
-                let type_cast_expr = ctx.factory().sexpr(vec![
-                    ctx.factory().atom("type-cast"),
-                    fresh_var.clone(),
-                    typ.clone(),
-                    items[3].clone(),
-                ]);
-                return GenericEvalStep::StartLetBinding {
-                    pattern: fresh_var,
-                    value_expr: atom.clone(),
-                    body: type_cast_expr,
-                    env,
-                    depth,
-                };
-            }
-
-            // match-types - structural type matching (HE stdlib parity)
-            "match-types" => {
-                if items.len() != 5 {
-                    let err = ctx.factory().error(
+                // match-types - structural type matching (HE stdlib parity)
+                "match-types" => {
+                    if items.len() != 5 {
+                        let err = ctx.factory().error(
                         &format!(
                             "match-types requires 4 arguments, got {}. Usage: (match-types type1 type2 then else)",
                             items.len() - 1
                         ),
                         ctx.factory().atom("BadArity"),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let type1 = &items[1];
+                    let type2 = &items[2];
+                    let then_branch = &items[3];
+                    let else_branch = &items[4];
+
+                    // %Undefined% and Atom match anything, per HE semantics
+                    let undefined = ctx.factory().atom("%Undefined%");
+                    let atom_type = ctx.factory().atom("Atom");
+
+                    let matched = *type1 == undefined
+                        || *type2 == undefined
+                        || *type1 == atom_type
+                        || *type2 == atom_type
+                        || types_match_generic(type1, type2);
+
+                    let branch = if matched { then_branch } else { else_branch };
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: branch.clone(),
+                        env,
+                        depth,
+                    };
                 }
-                let type1 = &items[1];
-                let type2 = &items[2];
-                let then_branch = &items[3];
-                let else_branch = &items[4];
 
-                // %Undefined% and Atom match anything, per HE semantics
-                let undefined = ctx.factory().atom("%Undefined%");
-                let atom_type = ctx.factory().atom("Atom");
-
-                let matched = *type1 == undefined
-                    || *type2 == undefined
-                    || *type1 == atom_type
-                    || *type2 == atom_type
-                    || types_match_generic(type1, type2);
-
-                let branch = if matched { then_branch } else { else_branch };
-                return GenericEvalStep::EvalIfBranch {
-                    branch: branch.clone(),
-                    env,
-                    depth,
-                };
-            }
-
-            // match-type-or - fold helper for type matching (HE stdlib parity)
-            // (match-type-or $folded $next $type) = (or $folded (match-types $next $type True False))
-            "match-type-or" => {
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // match-type-or - fold helper for type matching (HE stdlib parity)
+                // (match-type-or $folded $next $type) = (or $folded (match-types $next $type True False))
+                "match-type-or" => {
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "match-type-or requires 3 arguments, got {}. Usage: (match-type-or folded next type)",
                             items.len() - 1
                         ),
                         ctx.factory().atom("BadArity"),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let folded = &items[1];
+                    let next = &items[2];
+                    let target_type = &items[3];
+
+                    // Check if next matches type
+                    let undefined = ctx.factory().atom("%Undefined%");
+                    let atom_type = ctx.factory().atom("Atom");
+                    let matched = *next == undefined
+                        || *target_type == undefined
+                        || *next == atom_type
+                        || *target_type == atom_type
+                        || types_match_generic(next, target_type);
+
+                    // or(folded, matched)
+                    let folded_bool = folded
+                        .as_bool()
+                        .unwrap_or_else(|| folded.as_atom() == Some("True"));
+                    let result = folded_bool || matched;
+                    return GenericEvalStep::Done((smallvec![ctx.factory().bool(result)], env));
                 }
-                let folded = &items[1];
-                let next = &items[2];
-                let target_type = &items[3];
 
-                // Check if next matches type
-                let undefined = ctx.factory().atom("%Undefined%");
-                let atom_type = ctx.factory().atom("Atom");
-                let matched = *next == undefined
-                    || *target_type == undefined
-                    || *next == atom_type
-                    || *target_type == atom_type
-                    || types_match_generic(next, target_type);
-
-                // or(folded, matched)
-                let folded_bool = folded.as_bool().unwrap_or_else(|| folded.as_atom() == Some("True"));
-                let result = folded_bool || matched;
-                return GenericEvalStep::Done((smallvec![ctx.factory().bool(result)], env));
-            }
-
-            // first-from-pair - extract first element from a pair (HE stdlib parity)
-            // (first-from-pair ($first $second)) = $first
-            "first-from-pair" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
+                // first-from-pair - extract first element from a pair (HE stdlib parity)
+                // (first-from-pair ($first $second)) = $first
+                "first-from-pair" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
                         &format!(
                             "first-from-pair requires 1 argument, got {}. Usage: (first-from-pair pair)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let pair = &items[1];
+                    if let Some(pair_items) = pair.as_sexpr() {
+                        if pair_items.len() == 2 {
+                            return GenericEvalStep::Done((smallvec![pair_items[0].clone()], env));
+                        }
+                    }
+                    // Not a valid pair — return error per HE
+                    let err = ctx.factory().error(
+                        "incorrect pair format",
+                        ctx.factory()
+                            .sexpr(vec![ctx.factory().atom("first-from-pair"), pair.clone()]),
+                    );
                     return GenericEvalStep::Done((smallvec![err], env));
                 }
-                let pair = &items[1];
-                if let Some(pair_items) = pair.as_sexpr() {
-                    if pair_items.len() == 2 {
-                        return GenericEvalStep::Done((smallvec![pair_items[0].clone()], env));
-                    }
-                }
-                // Not a valid pair — return error per HE
-                let err = ctx.factory().error(
-                    "incorrect pair format",
-                    ctx.factory().sexpr(vec![
-                        ctx.factory().atom("first-from-pair"),
-                        pair.clone(),
-                    ]),
-                );
-                return GenericEvalStep::Done((smallvec![err], env));
-            }
 
-            // map-atom - defers iteration to trampoline.
-            // Overridable: HE defines `map-atom` as a MeTTa rule in
-            // `stdlib.metta`. User rules take precedence when present.
-            "map-atom" => {
-                if env.dispatch_overrides().is_overridden(OverridableOpId::MapAtom) {
-                    break 'special_forms;
-                }
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // map-atom - defers iteration to trampoline.
+                // Overridable: HE defines `map-atom` as a MeTTa rule in
+                // `stdlib.metta`. User rules take precedence when present.
+                "map-atom" => {
+                    if env
+                        .dispatch_overrides()
+                        .is_overridden(OverridableOpId::MapAtom)
+                    {
+                        break 'special_forms;
+                    }
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "map-atom requires exactly 3 arguments, got {}. Usage: (map-atom list $var template)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                // MeTTa HE applicative order: the list argument must be
-                // reduced BEFORE we extract its elements. Without this,
-                // `(map-atom (collapse X) $v T)` would see `(collapse X)`
-                // as a 2-element tuple `(collapse X)` instead of the
-                // evaluated collapse result.
-                if is_reducible_sub_expr(&items[1], &env) {
-                    return GenericEvalStep::EvalGroundedArgs {
-                        items,
-                        grounded_indices: vec![1],
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    // MeTTa HE applicative order: the list argument must be
+                    // reduced BEFORE we extract its elements. Without this,
+                    // `(map-atom (collapse X) $v T)` would see `(collapse X)`
+                    // as a 2-element tuple `(collapse X)` instead of the
+                    // evaluated collapse result.
+                    if is_reducible_sub_expr(&items[1], &env) {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: vec![1],
+                            env,
+                            depth,
+                        };
+                    }
+                    // Extract list elements
+                    let list_arg = &items[1];
+                    let var_arg = &items[2];
+                    let template = items[3].clone();
+
+                    let var_name = match extract_var_name::<C>(
+                        var_arg,
+                        "map-atom",
+                        "second argument",
+                        &env,
+                        ctx,
+                    ) {
+                        Ok(name) => name,
+                        Err(step) => return step,
+                    };
+
+                    let elements = match extract_list_elements::<C>(list_arg, "map-atom", ctx, &env)
+                    {
+                        Ok(elems) => elems,
+                        Err(step) => return step,
+                    };
+
+                    return GenericEvalStep::StartMapAtom {
+                        elements,
+                        var_name,
+                        template,
                         env,
                         depth,
                     };
                 }
-                // Extract list elements
-                let list_arg = &items[1];
-                let var_arg = &items[2];
-                let template = items[3].clone();
 
-                let var_name = match extract_var_name::<C>(var_arg, "map-atom", "second argument", &env, ctx) {
-                    Ok(name) => name,
-                    Err(step) => return step,
-                };
-
-                let elements = match extract_list_elements::<C>(list_arg, "map-atom", ctx, &env) {
-                    Ok(elems) => elems,
-                    Err(step) => return step,
-                };
-
-                return GenericEvalStep::StartMapAtom {
-                    elements,
-                    var_name,
-                    template,
-                    env,
-                    depth,
-                };
-            }
-
-            // filter-atom - defers iteration to trampoline.
-            // Overridable: HE defines `filter-atom` as a MeTTa rule in
-            // `stdlib.metta`. User rules take precedence when present.
-            "filter-atom" => {
-                if env.dispatch_overrides().is_overridden(OverridableOpId::FilterAtom) {
-                    break 'special_forms;
-                }
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // filter-atom - defers iteration to trampoline.
+                // Overridable: HE defines `filter-atom` as a MeTTa rule in
+                // `stdlib.metta`. User rules take precedence when present.
+                "filter-atom" => {
+                    if env
+                        .dispatch_overrides()
+                        .is_overridden(OverridableOpId::FilterAtom)
+                    {
+                        break 'special_forms;
+                    }
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "filter-atom requires exactly 3 arguments, got {}. Usage: (filter-atom list $var predicate)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
 
-                // HE applicative order: reduce the list arg before
-                // extracting elements.
-                if is_reducible_sub_expr(&items[1], &env) {
-                    return GenericEvalStep::EvalGroundedArgs {
-                        items,
-                        grounded_indices: vec![1],
-                        env,
-                        depth,
-                    };
-                }
+                    // HE applicative order: reduce the list arg before
+                    // extracting elements.
+                    if is_reducible_sub_expr(&items[1], &env) {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: vec![1],
+                            env,
+                            depth,
+                        };
+                    }
 
-                let list_arg = &items[1];
-                let var_arg = &items[2];
-                let predicate = items[3].clone();
-
-                let var_name = match extract_var_name::<C>(var_arg, "filter-atom", "second argument", &env, ctx) {
-                    Ok(name) => name,
-                    Err(step) => return step,
-                };
-
-                let elements = match extract_list_elements::<C>(list_arg, "filter-atom", ctx, &env) {
-                    Ok(elems) => elems,
-                    Err(step) => return step,
-                };
-
-                return GenericEvalStep::StartFilterAtom {
-                    elements,
-                    var_name,
-                    predicate,
-                    env,
-                    depth,
-                };
-            }
-
-            // foldl-atom - supports two argument signatures:
-            //
-            //   1. MeTTaTron 5-arg form: `(foldl-atom list init $acc $x op)` — explicit
-            //      accumulator/item variables, defers iteration to the trampoline.
-            //
-            //   2. PeTTa 3-arg form: `(foldl-atom list init f)` — implicit
-            //      accumulator/item, builds a deferred (f (f (f init h0) h1) h2) chain.
-            //      Mirrors PeTTa's `metta.pl:245-247` `'foldl-atom'/4` predicate.
-            //
-            // The arity of the call decides which form is used.
-            //
-            // Overridable: HE defines `foldl-atom` as a MeTTa rule in
-            // `stdlib.metta`. User rules take precedence when present.
-            "foldl-atom" => {
-                if env.dispatch_overrides().is_overridden(OverridableOpId::FoldlAtom) {
-                    break 'special_forms;
-                }
-                // HE applicative order: the list argument must be reduced
-                // before we extract its elements. Applies to both the HE
-                // 5-arg form and the PeTTa 3-arg extension. Without this,
-                // `(foldl-atom (collapse X) init op)` would see the
-                // literal children of `(collapse X)` (i.e. `[collapse, X]`)
-                // instead of the evaluated collapse tuple.
-                if items.len() >= 2 && is_reducible_sub_expr(&items[1], &env) {
-                    return GenericEvalStep::EvalGroundedArgs {
-                        items,
-                        grounded_indices: vec![1],
-                        env,
-                        depth,
-                    };
-                }
-                let arity = items.len() - 1; // exclude head
-                if arity == 5 {
-                    // MeTTaTron 5-arg form: (foldl-atom list init $acc $x op)
                     let list_arg = &items[1];
-                    let init = items[2].clone();
-                    let acc_var = &items[3];
-                    let item_var = &items[4];
-                    let operation = items[5].clone();
+                    let var_arg = &items[2];
+                    let predicate = items[3].clone();
 
-                    let acc_var_name = match extract_var_name::<C>(acc_var, "foldl-atom", "third argument", &env, ctx) {
+                    let var_name = match extract_var_name::<C>(
+                        var_arg,
+                        "filter-atom",
+                        "second argument",
+                        &env,
+                        ctx,
+                    ) {
                         Ok(name) => name,
                         Err(step) => return step,
                     };
 
-                    let item_var_name = match extract_var_name::<C>(item_var, "foldl-atom", "fourth argument", &env, ctx) {
-                        Ok(name) => name,
-                        Err(step) => return step,
-                    };
+                    let elements =
+                        match extract_list_elements::<C>(list_arg, "filter-atom", ctx, &env) {
+                            Ok(elems) => elems,
+                            Err(step) => return step,
+                        };
 
-                    let elements = match extract_list_elements::<C>(list_arg, "foldl-atom", ctx, &env) {
-                        Ok(elems) => elems,
-                        Err(step) => return step,
-                    };
-
-                    return GenericEvalStep::StartFoldlAtom {
+                    return GenericEvalStep::StartFilterAtom {
                         elements,
-                        init,
-                        acc_var_name,
-                        item_var_name,
-                        operation,
+                        var_name,
+                        predicate,
                         env,
                         depth,
                     };
-                } else if arity == 3 {
-                    // PeTTa 3-arg form: (foldl-atom list init f)
-                    //
-                    // Route through the same `StartFoldlAtom` → `ProcessFoldlAtom`
-                    // pipeline as the 5-arg form, using synthesized accumulator
-                    // and item variable names. This ensures per-iteration binding
-                    // propagation: when the function body unifies a variable
-                    // against a rule, subsequent iterations see that binding
-                    // via `acc_bindings`. The previous pre-expansion to a
-                    // nested `(f (f init h0) h1)` chain evaluated each element
-                    // independently, losing shared-variable constraints across
-                    // iterations (e.g. `((father a $b) (father $b c))` needs
-                    // `$b` consistent, but pre-expansion let each premise pick
-                    // a local `$b` — producing spurious derivations for
-                    // PLN implication rules that share variables across the
-                    // antecedent list).
-                    let list_arg = &items[1];
-                    let init = items[2].clone();
-                    let func = items[3].clone();
+                }
 
-                    let elements = match extract_list_elements::<C>(list_arg, "foldl-atom", ctx, &env) {
-                        Ok(elems) => elems,
-                        Err(step) => return step,
-                    };
+                // foldl-atom - supports two argument signatures:
+                //
+                //   1. MeTTaTron 5-arg form: `(foldl-atom list init $acc $x op)` — explicit
+                //      accumulator/item variables, defers iteration to the trampoline.
+                //
+                //   2. PeTTa 3-arg form: `(foldl-atom list init f)` — implicit
+                //      accumulator/item, builds a deferred (f (f (f init h0) h1) h2) chain.
+                //      Mirrors PeTTa's `metta.pl:245-247` `'foldl-atom'/4` predicate.
+                //
+                // The arity of the call decides which form is used.
+                //
+                // Overridable: HE defines `foldl-atom` as a MeTTa rule in
+                // `stdlib.metta`. User rules take precedence when present.
+                "foldl-atom" => {
+                    if env
+                        .dispatch_overrides()
+                        .is_overridden(OverridableOpId::FoldlAtom)
+                    {
+                        break 'special_forms;
+                    }
+                    // HE applicative order: the list argument must be reduced
+                    // before we extract its elements. Applies to both the HE
+                    // 5-arg form and the PeTTa 3-arg extension. Without this,
+                    // `(foldl-atom (collapse X) init op)` would see the
+                    // literal children of `(collapse X)` (i.e. `[collapse, X]`)
+                    // instead of the evaluated collapse tuple.
+                    if items.len() >= 2 && is_reducible_sub_expr(&items[1], &env) {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: vec![1],
+                            env,
+                            depth,
+                        };
+                    }
+                    let arity = items.len() - 1; // exclude head
+                    if arity == 5 {
+                        // MeTTaTron 5-arg form: (foldl-atom list init $acc $x op)
+                        let list_arg = &items[1];
+                        let init = items[2].clone();
+                        let acc_var = &items[3];
+                        let item_var = &items[4];
+                        let operation = items[5].clone();
 
-                    // H15 (2026-05-05): synthesized variable names use
-                    // a per-call freshened epoch via `intern_fresh_name`.
-                    // The `$__fr_<epoch>_*` prefix interlocks with the
-                    // existing propagate_keys filter at eval_loop.rs:7428
-                    // (`!name.starts_with("$__fr_")`), so per-iter accumulator
-                    // names don't leak across nested fold scopes. The earlier
-                    // literal `$__fa_acc` / `$__fa_item` strings caused
-                    // cross-contamination in nested foldl-atom calls.
-                    let epoch = crate::backend::eval::freshening::allocate_epoch();
-                    let acc_var_static =
-                        crate::backend::eval::freshening::intern_fresh_name(epoch, "fa_acc");
-                    let item_var_static =
-                        crate::backend::eval::freshening::intern_fresh_name(epoch, "fa_item");
-                    let acc_var_name = acc_var_static.to_string();
-                    let item_var_name = item_var_static.to_string();
-                    let operation = ctx.factory().sexpr(vec![
-                        func,
-                        ctx.factory().atom(acc_var_static),
-                        ctx.factory().atom(item_var_static),
-                    ]);
+                        let acc_var_name = match extract_var_name::<C>(
+                            acc_var,
+                            "foldl-atom",
+                            "third argument",
+                            &env,
+                            ctx,
+                        ) {
+                            Ok(name) => name,
+                            Err(step) => return step,
+                        };
 
-                    return GenericEvalStep::StartFoldlAtom {
-                        elements,
-                        init,
-                        acc_var_name,
-                        item_var_name,
-                        operation,
-                        env,
-                        depth,
-                    };
-                } else {
-                    let err = ctx.factory().error(
+                        let item_var_name = match extract_var_name::<C>(
+                            item_var,
+                            "foldl-atom",
+                            "fourth argument",
+                            &env,
+                            ctx,
+                        ) {
+                            Ok(name) => name,
+                            Err(step) => return step,
+                        };
+
+                        let elements =
+                            match extract_list_elements::<C>(list_arg, "foldl-atom", ctx, &env) {
+                                Ok(elems) => elems,
+                                Err(step) => return step,
+                            };
+
+                        return GenericEvalStep::StartFoldlAtom {
+                            elements,
+                            init,
+                            acc_var_name,
+                            item_var_name,
+                            operation,
+                            env,
+                            depth,
+                        };
+                    } else if arity == 3 {
+                        // PeTTa 3-arg form: (foldl-atom list init f)
+                        //
+                        // Route through the same `StartFoldlAtom` → `ProcessFoldlAtom`
+                        // pipeline as the 5-arg form, using synthesized accumulator
+                        // and item variable names. This ensures per-iteration binding
+                        // propagation: when the function body unifies a variable
+                        // against a rule, subsequent iterations see that binding
+                        // via `acc_bindings`. The previous pre-expansion to a
+                        // nested `(f (f init h0) h1)` chain evaluated each element
+                        // independently, losing shared-variable constraints across
+                        // iterations (e.g. `((father a $b) (father $b c))` needs
+                        // `$b` consistent, but pre-expansion let each premise pick
+                        // a local `$b` — producing spurious derivations for
+                        // PLN implication rules that share variables across the
+                        // antecedent list).
+                        let list_arg = &items[1];
+                        let init = items[2].clone();
+                        let func = items[3].clone();
+
+                        let elements =
+                            match extract_list_elements::<C>(list_arg, "foldl-atom", ctx, &env) {
+                                Ok(elems) => elems,
+                                Err(step) => return step,
+                            };
+
+                        // H15 (2026-05-05): synthesized variable names use
+                        // a per-call freshened epoch via `intern_fresh_name`.
+                        // The `$__fr_<epoch>_*` prefix interlocks with the
+                        // existing propagate_keys filter at eval_loop.rs:7428
+                        // (`!name.starts_with("$__fr_")`), so per-iter accumulator
+                        // names don't leak across nested fold scopes. The earlier
+                        // literal `$__fa_acc` / `$__fa_item` strings caused
+                        // cross-contamination in nested foldl-atom calls.
+                        let epoch = crate::backend::eval::freshening::allocate_epoch();
+                        let acc_var_static =
+                            crate::backend::eval::freshening::intern_fresh_name(epoch, "fa_acc");
+                        let item_var_static =
+                            crate::backend::eval::freshening::intern_fresh_name(epoch, "fa_item");
+                        let acc_var_name = acc_var_static.to_string();
+                        let item_var_name = item_var_static.to_string();
+                        let operation = ctx.factory().sexpr(vec![
+                            func,
+                            ctx.factory().atom(acc_var_static),
+                            ctx.factory().atom(item_var_static),
+                        ]);
+
+                        return GenericEvalStep::StartFoldlAtom {
+                            elements,
+                            init,
+                            acc_var_name,
+                            item_var_name,
+                            operation,
+                            env,
+                            depth,
+                        };
+                    } else {
+                        let err = ctx.factory().error(
                         &format!(
                             "foldl-atom requires either 3 args (PeTTa form: (foldl-atom list init f)) \
                              or 5 args (MeTTaTron form: (foldl-atom list init $acc $x op)), got {}",
@@ -1328,971 +1442,1014 @@ where
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
                 }
-            }
 
-            // List operations - native generic implementations (zero conversion)
-            //
-            // MeTTa HE semantics: list/tuple operations evaluate their arguments
-            // before operating on them (applicative order). Without this pre-evaluation,
-            // reducible S-expression arguments (like `(collapse ...)`) would be treated
-            // as structural tuples instead of being evaluated first. This is critical
-            // for PLN's BestCandidate which passes `(collapse ...)` to car-atom/cdr-atom.
-            //
-            // Two arms below split this set into:
-            //   - **Arm A**: TRUE HE primitives (`cons-atom`, `decons-atom`,
-            //     `size-atom`, `max-atom`, `min-atom`, `index-atom`). HE
-            //     dispatches these as `Atom::Grounded` or embedded ops, so
-            //     they MUST NOT be overridable by user rules. No gate.
-            //   - **Arm B**: helpers HE leaves at the MeTTa level, or that
-            //     HE doesn't have at all. These ARE overridable: a single
-            //     atomic load + bit test gates the grounded fast path; a
-            //     set bit means "user has rules for this name" and we
-            //     `break 'special_forms` to fall through to rule matching.
-            //
-            // See `crate::backend::environment::dispatch_overrides` for the
-            // partition rationale and the `OverridableOpId` enum.
+                // List operations - native generic implementations (zero conversion)
+                //
+                // MeTTa HE semantics: list/tuple operations evaluate their arguments
+                // before operating on them (applicative order). Without this pre-evaluation,
+                // reducible S-expression arguments (like `(collapse ...)`) would be treated
+                // as structural tuples instead of being evaluated first. This is critical
+                // for PLN's BestCandidate which passes `(collapse ...)` to car-atom/cdr-atom.
+                //
+                // Two arms below split this set into:
+                //   - **Arm A**: TRUE HE primitives (`cons-atom`, `decons-atom`,
+                //     `size-atom`, `max-atom`, `min-atom`, `index-atom`). HE
+                //     dispatches these as `Atom::Grounded` or embedded ops, so
+                //     they MUST NOT be overridable by user rules. No gate.
+                //   - **Arm B**: helpers HE leaves at the MeTTa level, or that
+                //     HE doesn't have at all. These ARE overridable: a single
+                //     atomic load + bit test gates the grounded fast path; a
+                //     set bit means "user has rules for this name" and we
+                //     `break 'special_forms` to fall through to rule matching.
+                //
+                // See `crate::backend::environment::dispatch_overrides` for the
+                // partition rationale and the `OverridableOpId` enum.
 
-            // Arm A: TRUE HE primitives — never overridable.
-            // Uses type-aware pre-eval: meta-typed args (Atom, Variable)
-            // are NOT pre-evaluated, matching HE embedded-op semantics.
-            "cons-atom" | "decons-atom" | "size-atom"
-            | "max-atom" | "min-atom" | "index-atom" => {
-                let reducible_indices = list_op_reducible_arg_indices_typed(op, &items, &env);
-                if !reducible_indices.is_empty() {
-                    return GenericEvalStep::EvalGroundedArgs {
-                        items,
-                        grounded_indices: reducible_indices,
-                        env,
-                        depth,
+                // Arm A: TRUE HE primitives — never overridable.
+                // Uses type-aware pre-eval: meta-typed args (Atom, Variable)
+                // are NOT pre-evaluated, matching HE embedded-op semantics.
+                "cons-atom" | "decons-atom" | "size-atom" | "max-atom" | "min-atom"
+                | "index-atom" => {
+                    let reducible_indices = list_op_reducible_arg_indices_typed(op, &items, &env);
+                    if !reducible_indices.is_empty() {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: reducible_indices,
+                            env,
+                            depth,
+                        };
+                    }
+                    let results = match op {
+                        "cons-atom" => eval_cons_atom_generic(&items, ctx.factory()),
+                        "decons-atom" => eval_decons_atom_generic(&items, ctx.factory()),
+                        "size-atom" => eval_size_atom_generic(&items, ctx.factory()),
+                        "max-atom" => eval_max_atom_generic(&items, ctx.factory()),
+                        "min-atom" => eval_min_atom_generic(&items, ctx.factory()),
+                        "index-atom" => eval_index_atom_generic(&items, ctx.factory()),
+                        _ => unreachable!("Arm A list op dispatch mismatch"),
                     };
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
                 }
-                let results = match op {
-                    "cons-atom"   => eval_cons_atom_generic(&items, ctx.factory()),
-                    "decons-atom" => eval_decons_atom_generic(&items, ctx.factory()),
-                    "size-atom"   => eval_size_atom_generic(&items, ctx.factory()),
-                    "max-atom"    => eval_max_atom_generic(&items, ctx.factory()),
-                    "min-atom"    => eval_min_atom_generic(&items, ctx.factory()),
-                    "index-atom"  => eval_index_atom_generic(&items, ctx.factory()),
-                    _ => unreachable!("Arm A list op dispatch mismatch"),
-                };
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
 
-            // Arm B-structural: car-atom and cdr-atom are structural destructuring ops.
-            // They operate on the SYNTACTIC structure of their argument and must NOT
-            // pre-evaluate user-defined function calls. Doing so causes nondeterminism
-            // (multiple rule matches) that forks the evaluation into branches, each of
-            // which receives a cloned environment from Arc::make_mut. Any add-atom &self
-            // call inside a forked branch writes to a branch-local clone that does NOT
-            // persist to the main environment — silently dropping the added rule.
-            //
-            // The only arguments that SHOULD be pre-evaluated are:
-            //   - Eager special forms (collapse, superpose, eval, …) — explicitly list-producing
-            //   - Grounded ops (+, ==, …) — always return a concrete value
-            //   - Type-declared functions (should_pre_eval_by_type) — explicitly typed
-            //
-            // User-defined functions (identified by the bloom filter) must NOT be
-            // pre-evaluated. This matches HE semantics where car-atom/cdr-atom operate
-            // on the expression structure, not the evaluated value.
-            //
-            // Example: (car-atom (grandfather $a $x)) should return `grandfather`, NOT
-            // evaluate `(grandfather $a $x)` via matching rules.
-            "car-atom" | "cdr-atom" => {
-                let id = overridable_op_id(op).expect("car-atom/cdr-atom are overridable list ops");
-                if env.dispatch_overrides().is_overridden(id) {
-                    break 'special_forms;
-                }
-                let reducible_indices = structural_op_reducible_arg_indices(&items, &env);
-                if !reducible_indices.is_empty() {
-                    return GenericEvalStep::EvalGroundedArgs {
-                        items,
-                        grounded_indices: reducible_indices,
-                        env,
-                        depth,
+                // Arm B-structural: car-atom and cdr-atom are structural destructuring ops.
+                // They operate on the SYNTACTIC structure of their argument and must NOT
+                // pre-evaluate user-defined function calls. Doing so causes nondeterminism
+                // (multiple rule matches) that forks the evaluation into branches, each of
+                // which receives a cloned environment from Arc::make_mut. Any add-atom &self
+                // call inside a forked branch writes to a branch-local clone that does NOT
+                // persist to the main environment — silently dropping the added rule.
+                //
+                // The only arguments that SHOULD be pre-evaluated are:
+                //   - Eager special forms (collapse, superpose, eval, …) — explicitly list-producing
+                //   - Grounded ops (+, ==, …) — always return a concrete value
+                //   - Type-declared functions (should_pre_eval_by_type) — explicitly typed
+                //
+                // User-defined functions (identified by the bloom filter) must NOT be
+                // pre-evaluated. This matches HE semantics where car-atom/cdr-atom operate
+                // on the expression structure, not the evaluated value.
+                //
+                // Example: (car-atom (grandfather $a $x)) should return `grandfather`, NOT
+                // evaluate `(grandfather $a $x)` via matching rules.
+                "car-atom" | "cdr-atom" => {
+                    let id =
+                        overridable_op_id(op).expect("car-atom/cdr-atom are overridable list ops");
+                    if env.dispatch_overrides().is_overridden(id) {
+                        break 'special_forms;
+                    }
+                    let reducible_indices = structural_op_reducible_arg_indices(&items, &env);
+                    if !reducible_indices.is_empty() {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: reducible_indices,
+                            env,
+                            depth,
+                        };
+                    }
+                    let results = match op {
+                        "car-atom" => eval_car_atom_generic(&items, ctx.factory()),
+                        "cdr-atom" => eval_cdr_atom_generic(&items, ctx.factory()),
+                        _ => unreachable!("Arm B-structural op dispatch mismatch"),
                     };
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
                 }
-                let results = match op {
-                    "car-atom" => eval_car_atom_generic(&items, ctx.factory()),
-                    "cdr-atom" => eval_cdr_atom_generic(&items, ctx.factory()),
-                    _ => unreachable!("Arm B-structural op dispatch mismatch"),
-                };
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
 
-            // Arm B: overridable helpers (Class B in HE or not in HE at all).
-            // Single relaxed atomic load + bit test (~1-2 ns) gates the
-            // grounded fast path. When the bit is set, fall through past
-            // the entire special-form match block and let standard rule
-            // matching (Step 2 / Step 3 below) handle the call.
-            "tuple-concat" | "tuple-count" | "without" | "element-of"
-            | "range" | "reverse-atom" | "flatten-atom" | "zip-atom"
-            | "take-atom" | "drop-atom"
-            | "is-member" | "append" | "length" | "exclude-item" | "msort"
-            | "cut" => {
-                let id = overridable_op_id(op).expect("Arm B covers all overridable list ops");
-                if env.dispatch_overrides().is_overridden(id) {
-                    // User rules exist for this name — let rule matching
-                    // handle the call instead of the grounded fast path.
-                    break 'special_forms;
-                }
-                let reducible_indices = list_op_reducible_arg_indices(&items, &env);
-                if !reducible_indices.is_empty() {
-                    return GenericEvalStep::EvalGroundedArgs {
-                        items,
-                        grounded_indices: reducible_indices,
-                        env,
-                        depth,
+                // Arm B: overridable helpers (Class B in HE or not in HE at all).
+                // Single relaxed atomic load + bit test (~1-2 ns) gates the
+                // grounded fast path. When the bit is set, fall through past
+                // the entire special-form match block and let standard rule
+                // matching (Step 2 / Step 3 below) handle the call.
+                "tuple-concat" | "tuple-count" | "without" | "element-of" | "range"
+                | "reverse-atom" | "flatten-atom" | "zip-atom" | "take-atom" | "drop-atom"
+                | "is-member" | "append" | "length" | "exclude-item" | "msort" | "cut" => {
+                    let id = overridable_op_id(op).expect("Arm B covers all overridable list ops");
+                    if env.dispatch_overrides().is_overridden(id) {
+                        // User rules exist for this name — let rule matching
+                        // handle the call instead of the grounded fast path.
+                        break 'special_forms;
+                    }
+                    let reducible_indices = list_op_reducible_arg_indices(&items, &env);
+                    if !reducible_indices.is_empty() {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: reducible_indices,
+                            env,
+                            depth,
+                        };
+                    }
+                    let results = match op {
+                        "tuple-concat" => eval_tuple_concat_generic(&items, ctx.factory()),
+                        "tuple-count" => eval_tuple_count_generic(&items, ctx.factory()),
+                        "without" => eval_without_generic(&items, ctx.factory()),
+                        "element-of" => eval_element_of_generic(&items, ctx.factory()),
+                        "range" => eval_range_generic(&items, ctx.factory()),
+                        "reverse-atom" => eval_reverse_atom_generic(&items, ctx.factory()),
+                        "flatten-atom" => eval_flatten_atom_generic(&items, ctx.factory()),
+                        "zip-atom" => eval_zip_atom_generic(&items, ctx.factory()),
+                        "take-atom" => eval_take_atom_generic(&items, ctx.factory()),
+                        "drop-atom" => eval_drop_atom_generic(&items, ctx.factory()),
+                        "is-member" => eval_is_member_generic(&items, ctx.factory()),
+                        "append" => eval_append_generic(&items, ctx.factory()),
+                        "length" => eval_length_generic(&items, ctx.factory()),
+                        "exclude-item" => eval_exclude_item_generic(&items, ctx.factory()),
+                        "msort" => eval_msort_generic(&items, ctx.factory()),
+                        "cut" => eval_cut_generic(&items, ctx.factory()),
+                        _ => unreachable!("Arm B list op dispatch mismatch: {}", op),
                     };
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
                 }
-                let results = match op {
-                    "tuple-concat"  => eval_tuple_concat_generic(&items, ctx.factory()),
-                    "tuple-count"   => eval_tuple_count_generic(&items, ctx.factory()),
-                    "without"       => eval_without_generic(&items, ctx.factory()),
-                    "element-of"    => eval_element_of_generic(&items, ctx.factory()),
-                    "range"         => eval_range_generic(&items, ctx.factory()),
-                    "reverse-atom"  => eval_reverse_atom_generic(&items, ctx.factory()),
-                    "flatten-atom"  => eval_flatten_atom_generic(&items, ctx.factory()),
-                    "zip-atom"      => eval_zip_atom_generic(&items, ctx.factory()),
-                    "take-atom"     => eval_take_atom_generic(&items, ctx.factory()),
-                    "drop-atom"     => eval_drop_atom_generic(&items, ctx.factory()),
-                    "is-member"     => eval_is_member_generic(&items, ctx.factory()),
-                    "append"        => eval_append_generic(&items, ctx.factory()),
-                    "length"        => eval_length_generic(&items, ctx.factory()),
-                    "exclude-item"  => eval_exclude_item_generic(&items, ctx.factory()),
-                    "msort"         => eval_msort_generic(&items, ctx.factory()),
-                    "cut"           => eval_cut_generic(&items, ctx.factory()),
-                    _ => unreachable!("Arm B list op dispatch mismatch: {}", op),
-                };
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
 
-            // freeze-tuple: construct a tuple from arguments AS-IS (no
-            // evaluation) and mark it as normal form so the trampoline's
-            // fixpoint loop won't reduce it. General-purpose data constructor.
-            // Callers that want args evaluated should use chain/let first.
-            // (freeze-tuple arg1 arg2 ... argN) → (arg1 arg2 ... argN) [frozen]
-            "freeze-tuple" => {
-                if items.len() < 2 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "freeze-tuple requires at least 1 argument, got {}. \
+                // freeze-tuple: construct a tuple from arguments AS-IS (no
+                // evaluation) and mark it as normal form so the trampoline's
+                // fixpoint loop won't reduce it. General-purpose data constructor.
+                // Callers that want args evaluated should use chain/let first.
+                // (freeze-tuple arg1 arg2 ... argN) → (arg1 arg2 ... argN) [frozen]
+                "freeze-tuple" => {
+                    if items.len() < 2 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "freeze-tuple requires at least 1 argument, got {}. \
                              Usage: (freeze-tuple expr1 expr2 ... exprN)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let args: Vec<_> = items[1..]
+                        .iter()
+                        .map(|item| {
+                            if let Some(inner) = item.as_quoted() {
+                                inner
+                            } else {
+                                item.clone()
+                            }
+                        })
+                        .collect();
+                    let tuple = ctx.factory().sexpr(args);
+                    crate::backend::eval::trampoline::dispatch_hints::memoize_normal_form(&tuple);
+                    return GenericEvalStep::Done((smallvec![tuple], env));
                 }
-                let args: Vec<_> = items[1..].iter().map(|item| {
-                    if let Some(inner) = item.as_quoted() { inner } else { item.clone() }
-                }).collect();
-                let tuple = ctx.factory().sexpr(args);
-                crate::backend::eval::trampoline::dispatch_hints::memoize_normal_form(&tuple);
-                return GenericEvalStep::Done((smallvec![tuple], env));
-            }
 
-            // ground-with-bindings: apply serialized bindings to a template.
-            // (ground-with-bindings template (Bindings ($var val) ...)) → grounded template.
-            // Used by the ? macro to apply captured collapse-bind bindings.
-            "ground-with-bindings" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
+                // ground-with-bindings: apply serialized bindings to a template.
+                // (ground-with-bindings template (Bindings ($var val) ...)) → grounded template.
+                // Used by the ? macro to apply captured collapse-bind bindings.
+                "ground-with-bindings" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             "ground-with-bindings requires 2 arguments, got {}. Usage: (ground-with-bindings template (Bindings ...))",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let template = items[1].clone();
+                    let bindings_sexpr = &items[2];
+                    let bindings =
+                        crate::backend::eval::trampoline::eval_loop::decode_bindings_from_sexpr(
+                            bindings_sexpr,
+                            ctx.factory(),
+                        );
+                    // Spec §06.6.3: chain dispatches one kernel step on its expr
+                    // arg. Now that ground-with-bindings is in the kernel-op
+                    // whitelist (dispatch_hints.rs is_embedded_kernel_op), chain
+                    // invokes this handler and binds the substituted template AS
+                    // DATA to $var — no further reduction unless the result's own
+                    // head is itself a kernel op. Quote wrappers here would push
+                    // a (quote ...) atom into $var, breaking PLN's
+                    //     (chain (ground-with-bindings $term $binds) $grounded
+                    //       (... (eval $grounded) ... (freeze-tuple $grounded ...)))
+                    // pattern where $grounded must be the substituted template
+                    // itself, not a quoted wrapper.
+                    if bindings.is_empty() {
+                        return GenericEvalStep::Done((smallvec![template], env));
+                    }
+                    let grounded = crate::backend::eval::trampoline::engine::apply_bindings(
+                        &template,
+                        &bindings,
+                        ctx.factory(),
+                    );
+                    return GenericEvalStep::Done((smallvec![grounded], env));
                 }
-                let template = items[1].clone();
-                let bindings_sexpr = &items[2];
-                let bindings = crate::backend::eval::trampoline::eval_loop::decode_bindings_from_sexpr(
-                    bindings_sexpr,
-                    ctx.factory(),
-                );
-                // Spec §06.6.3: chain dispatches one kernel step on its expr
-                // arg. Now that ground-with-bindings is in the kernel-op
-                // whitelist (dispatch_hints.rs is_embedded_kernel_op), chain
-                // invokes this handler and binds the substituted template AS
-                // DATA to $var — no further reduction unless the result's own
-                // head is itself a kernel op. Quote wrappers here would push
-                // a (quote ...) atom into $var, breaking PLN's
-                //     (chain (ground-with-bindings $term $binds) $grounded
-                //       (... (eval $grounded) ... (freeze-tuple $grounded ...)))
-                // pattern where $grounded must be the substituted template
-                // itself, not a quoted wrapper.
-                if bindings.is_empty() {
-                    return GenericEvalStep::Done((smallvec![template], env));
-                }
-                let grounded = crate::backend::eval::trampoline::engine::apply_bindings(
-                    &template, &bindings, ctx.factory(),
-                );
-                return GenericEvalStep::Done((smallvec![grounded], env));
-            }
 
-            // sort-tuple - defers iteration to trampoline.
-            // Overridable: MeTTaTron-only helper, HE has nothing equivalent.
-            // User rules take precedence when present.
-            "sort-tuple" => {
-                if env.dispatch_overrides().is_overridden(OverridableOpId::SortTuple) {
-                    break 'special_forms;
-                }
-                if items.len() != 5 {
-                    let err = ctx.factory().error(
+                // sort-tuple - defers iteration to trampoline.
+                // Overridable: MeTTaTron-only helper, HE has nothing equivalent.
+                // User rules take precedence when present.
+                "sort-tuple" => {
+                    if env
+                        .dispatch_overrides()
+                        .is_overridden(OverridableOpId::SortTuple)
+                    {
+                        break 'special_forms;
+                    }
+                    if items.len() != 5 {
+                        let err = ctx.factory().error(
                         &format!(
                             "sort-tuple requires exactly 4 arguments, got {}. Usage: (sort-tuple tuple $var1 $var2 comparator)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
 
-                // Applicative order: reduce the tuple arg before extracting elements.
-                if is_reducible_sub_expr(&items[1], &env) {
-                    return GenericEvalStep::EvalGroundedArgs {
-                        items,
-                        grounded_indices: vec![1],
+                    // Applicative order: reduce the tuple arg before extracting elements.
+                    if is_reducible_sub_expr(&items[1], &env) {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: vec![1],
+                            env,
+                            depth,
+                        };
+                    }
+
+                    let list_arg = &items[1];
+                    let var1_arg = &items[2];
+                    let var2_arg = &items[3];
+                    let comparator = items[4].clone();
+
+                    let var1_name = match extract_var_name::<C>(
+                        var1_arg,
+                        "sort-tuple",
+                        "second argument",
+                        &env,
+                        ctx,
+                    ) {
+                        Ok(name) => name,
+                        Err(step) => return step,
+                    };
+
+                    let var2_name = match extract_var_name::<C>(
+                        var2_arg,
+                        "sort-tuple",
+                        "third argument",
+                        &env,
+                        ctx,
+                    ) {
+                        Ok(name) => name,
+                        Err(step) => return step,
+                    };
+
+                    let elements =
+                        match extract_list_elements::<C>(list_arg, "sort-tuple", ctx, &env) {
+                            Ok(elems) => elems,
+                            Err(step) => return step,
+                        };
+
+                    return GenericEvalStep::StartSortTuple {
+                        elements,
+                        var1_name,
+                        var2_name,
+                        comparator,
                         env,
                         depth,
                     };
                 }
 
-                let list_arg = &items[1];
-                let var1_arg = &items[2];
-                let var2_arg = &items[3];
-                let comparator = items[4].clone();
-
-                let var1_name = match extract_var_name::<C>(var1_arg, "sort-tuple", "second argument", &env, ctx) {
-                    Ok(name) => name,
-                    Err(step) => return step,
-                };
-
-                let var2_name = match extract_var_name::<C>(var2_arg, "sort-tuple", "third argument", &env, ctx) {
-                    Ok(name) => name,
-                    Err(step) => return step,
-                };
-
-                let elements = match extract_list_elements::<C>(list_arg, "sort-tuple", ctx, &env) {
-                    Ok(elems) => elems,
-                    Err(step) => return step,
-                };
-
-                return GenericEvalStep::StartSortTuple {
-                    elements,
-                    var1_name,
-                    var2_name,
-                    comparator,
-                    env,
-                    depth,
-                };
-            }
-
-            // best-candidate - defers iteration to trampoline.
-            // Overridable: MeTTaTron-only helper, HE has nothing equivalent.
-            // User rules take precedence when present.
-            "best-candidate" => {
-                if env.dispatch_overrides().is_overridden(OverridableOpId::BestCandidate) {
-                    break 'special_forms;
-                }
-                if items.len() != 4 {
-                    let err = ctx.factory().error(
+                // best-candidate - defers iteration to trampoline.
+                // Overridable: MeTTaTron-only helper, HE has nothing equivalent.
+                // User rules take precedence when present.
+                "best-candidate" => {
+                    if env
+                        .dispatch_overrides()
+                        .is_overridden(OverridableOpId::BestCandidate)
+                    {
+                        break 'special_forms;
+                    }
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
                         &format!(
                             "best-candidate requires exactly 3 arguments, got {}. Usage: (best-candidate tuple $var rank-fn)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
 
-                // Applicative order: reduce the tuple arg before extracting elements.
-                if is_reducible_sub_expr(&items[1], &env) {
-                    return GenericEvalStep::EvalGroundedArgs {
-                        items,
-                        grounded_indices: vec![1],
+                    // Applicative order: reduce the tuple arg before extracting elements.
+                    if is_reducible_sub_expr(&items[1], &env) {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: vec![1],
+                            env,
+                            depth,
+                        };
+                    }
+
+                    let list_arg = &items[1];
+                    let var_arg = &items[2];
+                    let rank_fn = items[3].clone();
+
+                    let var_name = match extract_var_name::<C>(
+                        var_arg,
+                        "best-candidate",
+                        "second argument",
+                        &env,
+                        ctx,
+                    ) {
+                        Ok(name) => name,
+                        Err(step) => return step,
+                    };
+
+                    let elements =
+                        match extract_list_elements::<C>(list_arg, "best-candidate", ctx, &env) {
+                            Ok(elems) => elems,
+                            Err(step) => return step,
+                        };
+
+                    return GenericEvalStep::StartBestCandidate {
+                        elements,
+                        var_name,
+                        rank_fn,
                         env,
                         depth,
                     };
                 }
 
-                let list_arg = &items[1];
-                let var_arg = &items[2];
-                let rank_fn = items[3].clone();
-
-                let var_name = match extract_var_name::<C>(var_arg, "best-candidate", "second argument", &env, ctx) {
-                    Ok(name) => name,
-                    Err(step) => return step,
-                };
-
-                let elements = match extract_list_elements::<C>(list_arg, "best-candidate", ctx, &env) {
-                    Ok(elems) => elems,
-                    Err(step) => return step,
-                };
-
-                return GenericEvalStep::StartBestCandidate {
-                    elements,
-                    var_name,
-                    rank_fn,
-                    env,
-                    depth,
-                };
-            }
-
-            // Space operations - native generic implementation (zero-conversion)
-            "new-space" => {
-                // Get optional name, default to "unnamed"
-                let name = if items.len() <= 1 {
-                    "unnamed".to_string()
-                } else {
-                    match (items[1].as_string(), items[1].as_atom()) {
-                        (Some(s), _) | (_, Some(s)) => s.to_string(),
-                        _ => {
-                            let err = ctx.factory().error(
+                // Space operations - native generic implementation (zero-conversion)
+                "new-space" => {
+                    // Get optional name, default to "unnamed"
+                    let name = if items.len() <= 1 {
+                        "unnamed".to_string()
+                    } else {
+                        match (items[1].as_string(), items[1].as_atom()) {
+                            (Some(s), _) | (_, Some(s)) => s.to_string(),
+                            _ => {
+                                let err = ctx.factory().error(
                                 &format!(
                                     "new-space: optional name must be a string, got {:?}. Usage: (new-space) or (new-space \"name\")",
                                     items[1]
                                 ),
                                 items[1].clone(),
                             );
-                            return GenericEvalStep::Done((smallvec![err], env));
+                                return GenericEvalStep::Done((smallvec![err], env));
+                            }
                         }
-                    }
-                };
+                    };
 
-                // Create named space via GenericEnvironment
-                let mut new_env = env.clone();
-                let space_id = new_env.create_named_space(&name);
-                crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
-                let handle = SpaceHandle::new(space_id, name);
+                    // Create named space via GenericEnvironment
+                    let mut new_env = env.clone();
+                    let space_id = new_env.create_named_space(&name);
+                    crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                    let handle = SpaceHandle::new(space_id, name);
 
-                // Return Space value using factory
-                let space_val = ctx.factory().space(handle);
-                return GenericEvalStep::Done((smallvec![space_val], new_env));
-            }
+                    // Return Space value using factory
+                    let space_val = ctx.factory().space(handle);
+                    return GenericEvalStep::Done((smallvec![space_val], new_env));
+                }
 
-            "add-atom" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
+                "add-atom" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             "add-atom requires exactly 2 arguments, got {}. Usage: (add-atom space atom)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartAddAtom {
+                        space_ref: items[1].clone(),
+                        atom: items[2].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartAddAtom {
-                    space_ref: items[1].clone(),
-                    atom: items[2].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            "remove-atom" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
+                "remove-atom" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             "remove-atom requires exactly 2 arguments, got {}. Usage: (remove-atom space atom)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartRemoveAtom {
+                        space_ref: items[1].clone(),
+                        atom: items[2].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartRemoveAtom {
-                    space_ref: items[1].clone(),
-                    atom: items[2].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            "collapse" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
+                "collapse" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
                             "collapse requires exactly 1 argument, got {}. Usage: (collapse expr)",
                             items.len() - 1
                         ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartCollapse {
+                        expr: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartCollapse {
-                    expr: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            "collapse-bind" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
+                "collapse-bind" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
                         &format!(
                             "collapse-bind requires exactly 1 argument, got {}. Usage: (collapse-bind expr)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                return GenericEvalStep::StartCollapseBind {
-                    expr: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
-
-            // superpose - HE-compatible: post-evaluate each element via StartAmb
-            "superpose" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "superpose requires 1 argument, got {}. Usage: (superpose list)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                let expr = &items[1];
-                // DON'T evaluate the argument - treat it as a data list (HE-compatible)
-                if let Some(elements) = expr.as_sexpr() {
-                    if elements.is_empty() {
-                        // Empty superpose returns empty (no results) - nondeterministic failure
-                        return GenericEvalStep::Done((smallvec![], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
                     }
-                    // Post-evaluate each element via StartAmb (HE-compatible)
-                    return GenericEvalStep::StartAmb {
-                        alternatives: elements.to_vec(),
+                    return GenericEvalStep::StartCollapseBind {
+                        expr: items[1].clone(),
                         env,
                         depth,
                     };
                 }
-                if expr.is_unit() {
-                    // Unit superposes to empty (no results)
-                    return GenericEvalStep::Done((smallvec![], env));
-                }
-                // Single non-tuple arg: evaluate it
-                return GenericEvalStep::StartAmb {
-                    alternatives: vec![expr.clone()],
-                    env,
-                    depth,
-                };
-            }
 
-            // Advanced nondeterminism
-            "amb" => {
-                if items.len() < 2 {
-                    // Empty amb returns empty
-                    return GenericEvalStep::Done((smallvec![], env));
+                // superpose - HE-compatible: post-evaluate each element via StartAmb
+                "superpose" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "superpose requires 1 argument, got {}. Usage: (superpose list)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let expr = &items[1];
+                    // DON'T evaluate the argument - treat it as a data list (HE-compatible)
+                    if let Some(elements) = expr.as_sexpr() {
+                        if elements.is_empty() {
+                            // Empty superpose returns empty (no results) - nondeterministic failure
+                            return GenericEvalStep::Done((smallvec![], env));
+                        }
+                        // Post-evaluate each element via StartAmb (HE-compatible)
+                        return GenericEvalStep::StartAmb {
+                            alternatives: elements.to_vec(),
+                            env,
+                            depth,
+                        };
+                    }
+                    if expr.is_unit() {
+                        // Unit superposes to empty (no results)
+                        return GenericEvalStep::Done((smallvec![], env));
+                    }
+                    // Single non-tuple arg: evaluate it
+                    return GenericEvalStep::StartAmb {
+                        alternatives: vec![expr.clone()],
+                        env,
+                        depth,
+                    };
                 }
-                let alternatives: Vec<MettaValue> = items[1..].iter().cloned().collect();
-                return GenericEvalStep::StartAmb {
-                    alternatives,
-                    env,
-                    depth,
-                };
-            }
 
-            "guard" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
+                // Advanced nondeterminism
+                "amb" => {
+                    if items.len() < 2 {
+                        // Empty amb returns empty
+                        return GenericEvalStep::Done((smallvec![], env));
+                    }
+                    let alternatives: Vec<MettaValue> = items[1..].iter().cloned().collect();
+                    return GenericEvalStep::StartAmb {
+                        alternatives,
+                        env,
+                        depth,
+                    };
+                }
+
+                "guard" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
                             "guard requires exactly 1 argument, got {}. Usage: (guard condition)",
                             items.len() - 1
                         ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartGuard {
+                        condition: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartGuard {
-                    condition: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // commit - native generic implementation (zero conversion)
-            // In tree-walker evaluation, commit is a no-op - returns Unit
-            "commit" => {
-                return GenericEvalStep::Done((smallvec![ctx.factory().unit()], env));
-            }
+                // commit - native generic implementation (zero conversion)
+                // In tree-walker evaluation, commit is a no-op - returns Unit
+                "commit" => {
+                    return GenericEvalStep::Done((smallvec![ctx.factory().unit()], env));
+                }
 
-            // backtrack - native generic implementation (zero conversion)
-            // Force immediate backtracking - returns empty (nondeterministic failure)
-            "backtrack" => {
-                return GenericEvalStep::Done((smallvec![], env));
-            }
+                // backtrack - native generic implementation (zero conversion)
+                // Force immediate backtracking - returns empty (nondeterministic failure)
+                "backtrack" => {
+                    return GenericEvalStep::Done((smallvec![], env));
+                }
 
-            "get-atoms" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
+                "get-atoms" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
                         &format!(
                             "get-atoms requires exactly 1 argument, got {}. Usage: (get-atoms space)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartGetAtoms {
+                        space_ref: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartGetAtoms {
-                    space_ref: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // State operations
-            "new-state" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
+                // State operations
+                "new-state" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
                         &format!(
                             "new-state requires exactly 1 argument, got {}. Usage: (new-state initial-value)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartNewState {
+                        initial_value: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartNewState {
-                    initial_value: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            "get-state" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
+                "get-state" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
                         &format!(
                             "get-state requires exactly 1 argument, got {}. Usage: (get-state state)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartGetState {
+                        state_ref: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartGetState {
-                    state_ref: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            "change-state!" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
+                "change-state!" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             "change-state! requires exactly 2 arguments, got {}. Usage: (change-state! state new-value)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartChangeState {
+                        state_ref: items[1].clone(),
+                        new_value: items[2].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartChangeState {
-                    state_ref: items[1].clone(),
-                    new_value: items[2].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // Memoization operations
-            "new-memo" => {
-                if items.len() < 2 || items.len() > 3 {
-                    let err = ctx.factory().error(
+                // Memoization operations
+                "new-memo" => {
+                    if items.len() < 2 || items.len() > 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             "new-memo requires 1-2 arguments, got {}. Usage: (new-memo name [size])",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let size_arg = if items.len() == 3 {
+                        Some(items[2].clone())
+                    } else {
+                        None
+                    };
+                    return GenericEvalStep::StartNewMemo {
+                        name_arg: items[1].clone(),
+                        size_arg,
+                        env,
+                        depth,
+                    };
                 }
-                let size_arg = if items.len() == 3 {
-                    Some(items[2].clone())
-                } else {
-                    None
-                };
-                return GenericEvalStep::StartNewMemo {
-                    name_arg: items[1].clone(),
-                    size_arg,
-                    env,
-                    depth,
-                };
-            }
 
-            "memo" | "memo-first" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
-                        &format!(
+                "memo" | "memo-first" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
+                            &format!(
                             "{} requires exactly 2 arguments, got {}. Usage: ({} memo-table expr)",
                             op,
                             items.len() - 1,
                             op
                         ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                let first_only = op == "memo-first";
-                return GenericEvalStep::StartMemo {
-                    memo_ref: items[1].clone(),
-                    expr: items[2].clone(),
-                    first_only,
-                    env,
-                    depth,
-                };
-            }
-
-            "clear-memo!" | "memo-stats" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "{} requires exactly 1 argument, got {}. Usage: ({} memo-table)",
-                            op,
-                            items.len() - 1,
-                            op
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                let op_type = if op == "clear-memo!" {
-                    super::MemoOpType::Clear
-                } else {
-                    super::MemoOpType::Stats
-                };
-                return GenericEvalStep::StartMemoOp {
-                    memo_ref: items[1].clone(),
-                    op_type,
-                    env,
-                    depth,
-                };
-            }
-
-            // Token binding
-            "bind!" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "bind! requires exactly 2 arguments, got {}. Usage: (bind! token atom)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                let token = match items[1].as_atom() {
-                    Some(t) => t.to_string(),
-                    None => {
-                        let err = ctx.factory().error(
-                            "bind! requires an atom as first argument",
                             ctx.factory().sexpr(items),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
-                };
-                return GenericEvalStep::StartBind {
-                    token,
-                    atom_expr: items[2].clone(),
-                    env,
-                    depth,
-                };
-            }
+                    let first_only = op == "memo-first";
+                    return GenericEvalStep::StartMemo {
+                        memo_ref: items[1].clone(),
+                        expr: items[2].clone(),
+                        first_only,
+                        env,
+                        depth,
+                    };
+                }
 
-            // I/O operations
-            "println!" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
+                "clear-memo!" | "memo-stats" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "{} requires exactly 1 argument, got {}. Usage: ({} memo-table)",
+                                op,
+                                items.len() - 1,
+                                op
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let op_type = if op == "clear-memo!" {
+                        super::MemoOpType::Clear
+                    } else {
+                        super::MemoOpType::Stats
+                    };
+                    return GenericEvalStep::StartMemoOp {
+                        memo_ref: items[1].clone(),
+                        op_type,
+                        env,
+                        depth,
+                    };
+                }
+
+                // Token binding
+                "bind!" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
+                            &format!(
+                            "bind! requires exactly 2 arguments, got {}. Usage: (bind! token atom)",
+                            items.len() - 1
+                        ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let token = match items[1].as_atom() {
+                        Some(t) => t.to_string(),
+                        None => {
+                            let err = ctx.factory().error(
+                                "bind! requires an atom as first argument",
+                                ctx.factory().sexpr(items),
+                            );
+                            return GenericEvalStep::Done((smallvec![err], env));
+                        }
+                    };
+                    return GenericEvalStep::StartBind {
+                        token,
+                        atom_expr: items[2].clone(),
+                        env,
+                        depth,
+                    };
+                }
+
+                // I/O operations
+                "println!" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
                             "println! requires exactly 1 argument, got {}. Usage: (println! atom)",
                             items.len() - 1
                         ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartPrintln {
+                        atom: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartPrintln {
-                    atom: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            "trace!" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
+                "trace!" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             "trace! requires exactly 2 arguments, got {}. Usage: (trace! message value)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartTrace {
+                        message: items[1].clone(),
+                        value_expr: items[2].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartTrace {
-                    message: items[1].clone(),
-                    value_expr: items[2].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // nop - returns Unit (NO conversion needed)
-            "nop" => {
-                return GenericEvalStep::Done((smallvec![ctx.factory().unit()], env));
-            }
-
-            // String operations
-            "repr" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
-                        &format!(
-                            "repr requires exactly 1 argument, got {}. Usage: (repr atom)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                // nop - returns Unit (NO conversion needed)
+                "nop" => {
+                    return GenericEvalStep::Done((smallvec![ctx.factory().unit()], env));
                 }
-                return GenericEvalStep::StartRepr {
-                    atom: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            "format-args" => {
-                if items.len() != 3 {
-                    let err = ctx.factory().error(
+                // String operations
+                "repr" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "repr requires exactly 1 argument, got {}. Usage: (repr atom)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartRepr {
+                        atom: items[1].clone(),
+                        env,
+                        depth,
+                    };
+                }
+
+                "format-args" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
                         &format!(
                             "format-args requires exactly 2 arguments, got {}. Usage: (format-args format-string args)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartFormatArgs {
+                        format_arg: items[1].clone(),
+                        args_arg: items[2].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartFormatArgs {
-                    format_arg: items[1].clone(),
-                    args_arg: items[2].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // empty - MeTTa HE semantics: zero results (branch annihilation)
-            // In MeTTa HE, (empty) produces zero results, causing Cartesian product
-            // collapse in parent grounded ops. This enables clean branch death when
-            // e.g. `/safe` division guards hit zero divisors, where `/safe` is
-            // defined as `(= (/safe $A $B) (if (> $B 0.0) (/ $A $B) (empty)))`
-            "empty" => {
-                return GenericEvalStep::Done((smallvec![], env));
-            }
+                // empty - MeTTa HE semantics: zero results (branch annihilation)
+                // In MeTTa HE, (empty) produces zero results, causing Cartesian product
+                // collapse in parent grounded ops. This enables clean branch death when
+                // e.g. `/safe` division guards hit zero divisors, where `/safe` is
+                // defined as `(= (/safe $A $B) (if (> $B 0.0) (/ $A $B) (empty)))`
+                "empty" => {
+                    return GenericEvalStep::Done((smallvec![], env));
+                }
 
-            "get-metatype" => {
-                if items.len() != 2 {
-                    let err = ctx.factory().error(
+                "get-metatype" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
                         &format!(
                             "get-metatype requires exactly 1 argument, got {}. Usage: (get-metatype atom)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartGetMetatype {
+                        atom: items[1].clone(),
+                        env,
+                        depth,
+                    };
                 }
-                return GenericEvalStep::StartGetMetatype {
-                    atom: items[1].clone(),
-                    env,
-                    depth,
-                };
-            }
 
-            // Module operations - use generic implementations directly (zero-conversion)
-            // Passes full ctx (not just factory) so import/include can force-eval `!` expressions
-            "include" => {
-                let (results, new_env) = eval_include_generic(items, env, ctx);
-                return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
-            }
-            "import!" => {
-                let (results, new_env) = eval_import_generic(items, env, ctx);
-                return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
-            }
-            "git-import!" => {
-                // PeTTa-compatible: clone a git repo and register its directory
-                // as a library search path. Pure side-effecting form: returns Unit
-                // on success or an error MettaValue on any failure (no panics).
-                let results = crate::backend::eval::git_import::eval_git_import_generic(
-                    &items,
-                    ctx.factory(),
-                );
-                return GenericEvalStep::Done((SmallVec::from_vec(results), env));
-            }
-            "mod-space!" => {
-                let (results, new_env) = eval_mod_space_generic(items, env, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
-            }
-            "print-mods!" => {
-                let (results, new_env) = eval_print_mods_generic(items, env, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
-            }
+                // Module operations - use generic implementations directly (zero-conversion)
+                // Passes full ctx (not just factory) so import/include can force-eval `!` expressions
+                "include" => {
+                    let (results, new_env) = eval_include_generic(items, env, ctx);
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
+                }
+                "import!" => {
+                    let (results, new_env) = eval_import_generic(items, env, ctx);
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
+                }
+                "git-import!" => {
+                    // PeTTa-compatible: clone a git repo and register its directory
+                    // as a library search path. Pure side-effecting form: returns Unit
+                    // on success or an error MettaValue on any failure (no panics).
+                    let results = crate::backend::eval::git_import::eval_git_import_generic(
+                        &items,
+                        ctx.factory(),
+                    );
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+                "mod-space!" => {
+                    let (results, new_env) = eval_mod_space_generic(items, env, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
+                }
+                "print-mods!" => {
+                    let (results, new_env) = eval_print_mods_generic(items, env, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
+                }
 
-            // MORK special forms - use generic implementations directly (zero-conversion)
-            "exec" => {
-                let (results, new_env) = eval_exec_generic(items, env, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
-            }
-            "coalg" => {
-                let (results, new_env) = eval_coalg_generic(items, env, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
-            }
-            "lookup" => {
-                let (results, new_env) = eval_lookup_generic(items, env, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
-            }
-            "rulify" => {
-                let (results, new_env) = eval_rulify_generic(items, env, ctx.factory());
-                return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
-            }
+                // MORK special forms - use generic implementations directly (zero-conversion)
+                "exec" => {
+                    let (results, new_env) = eval_exec_generic(items, env, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
+                }
+                "coalg" => {
+                    let (results, new_env) = eval_coalg_generic(items, env, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
+                }
+                "lookup" => {
+                    let (results, new_env) = eval_lookup_generic(items, env, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
+                }
+                "rulify" => {
+                    let (results, new_env) = eval_rulify_generic(items, env, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
+                }
 
-            // if-equal — alpha-equivalence with lazy branches (MeTTa HE compatible)
-            "if-equal" => {
-                if items.len() != 5 {
-                    let err = ctx.factory().error(
+                // if-equal — alpha-equivalence with lazy branches (MeTTa HE compatible)
+                "if-equal" => {
+                    if items.len() != 5 {
+                        let err = ctx.factory().error(
                         &format!(
                             "if-equal requires exactly 4 arguments, got {}. Usage: (if-equal pred1 pred2 then else)",
                             items.len() - 1
                         ),
                         ctx.factory().sexpr(items),
                     );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-                // Alpha-equivalence comparison (matches MeTTa HE's atoms_are_equivalent)
-                if crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent(
-                    &items[1], &items[2],
-                ) {
-                    return GenericEvalStep::EvalIfBranch {
-                        branch: items[3].clone(),
-                        env,
-                        depth,
-                    };
-                } else {
-                    return GenericEvalStep::EvalIfBranch {
-                        branch: items[4].clone(),
-                        env,
-                        depth,
-                    };
-                }
-            }
-
-            // Set operations — generic multiset semantics
-            //
-            // Like list operations, set operations must evaluate reducible
-            // arguments before operating. E.g., `(unique-atom (collapse ...))`.
-            "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom" => {
-                let reducible_indices = list_op_reducible_arg_indices(&items, &env);
-                if !reducible_indices.is_empty() {
-                    return GenericEvalStep::EvalGroundedArgs {
-                        items,
-                        grounded_indices: reducible_indices,
-                        env,
-                        depth,
-                    };
-                }
-                return crate::backend::eval::set_ops::eval_set_op_generic(
-                    items, env, ctx,
-                );
-            }
-
-            // Alpha equivalence — (=alpha expr1 expr2) → Bool
-            "=alpha" => {
-                return crate::backend::eval::testing_ops::eval_testing_op_generic(
-                    items, env, ctx,
-                );
-            }
-
-            // PeTTa-compatible test — (test actual expected) → Unit | Error
-            // Both args are pre-evaluated (applicative order). Compares with
-            // alpha-equivalence and prints a diagnostic line. Returns Unit on
-            // match, error MettaValue on mismatch (NEVER halts/panics).
-            "test" => {
-                return crate::backend::eval::testing_ops::eval_testing_op_generic(
-                    items, env, ctx,
-                );
-            }
-
-            // Testing/assertion operations — multiset nondeterministic comparison
-            "assertEqual" | "assertAlphaEqual"
-            | "assertEqualMsg" | "assertAlphaEqualMsg"
-            | "assertEqualToResult" | "assertAlphaEqualToResult"
-            | "assertEqualToResultMsg" | "assertAlphaEqualToResultMsg" => {
-                return crate::backend::eval::testing_ops::eval_testing_op_generic(
-                    items, env, ctx,
-                );
-            }
-
-            // Step 1: Try grounded operations with RAW (unevaluated) arguments
-            _ => {
-                // Phase 9.1: Variable-head guard.
-                // Variable-headed S-expressions (e.g. ($f x y)) cannot match any
-                // rule or grounded op. Send directly to tuple path (evaluate
-                // sub-elements independently). This is HE-equivalent behavior
-                // (interpreter.rs:604–611).
-                if op.starts_with('$') {
-                    return GenericEvalStep::EvalSExpr { items, env, depth };
-                }
-
-                // Phase 9.6 + Phase 1 cache: Compute parent op types ONCE.
-                // This result is reused by Phase 9.6 (all-error-types check),
-                // find_typed_arg_indices_generic (Step 2), and
-                // is_declared_value_type (Step 2.5) — avoids 3x redundant
-                // RwLock reads + bloom hash + supertype closure.
-                let op_types = if env.may_have_type(op) {
-                    env.get_types_generic(op)
-                } else {
-                    Vec::new()
-                };
-
-                // Phase 9.6: All-error-types early exit.
-                // If ALL declared types for this operator are error types,
-                // skip rule matching and return an error immediately.
-                if !op_types.is_empty() && op_types.iter().all(|t| {
-                    t.as_sexpr().map_or(false, |type_items|
-                        type_items.first().and_then(|v| v.as_atom()) == Some("Error"))
-                }) {
-                    let err = ctx.factory().error(
-                        &format!("All types for '{}' are errors", op),
-                        ctx.factory().sexpr(items),
-                    );
-                    return GenericEvalStep::Done((smallvec![err], env));
-                }
-
-                // Try generic grounded operation (zero-conversion path)
-                // Uses static dispatch - works with any V: MettaValueTrait
-                if has_grounded_op(op) {
-                    let args: Vec<MettaValue> = items[1..].to_vec();
-                    // Phase 8.8: Pre-validate ground-type args against arrow signature.
-                    // Returns clear type error instead of NoReduce → unreduced expression.
-                    if let Some(type_error) = validate_grounded_arg_types(op, &args, ctx.factory()) {
-                        return GenericEvalStep::Done((smallvec![type_error], env));
+                        return GenericEvalStep::Done((smallvec![err], env));
                     }
-                    // Use GroundedState with native value type - NO conversion needed
-                    let state = GroundedState::new(op.to_string(), args);
-                    return GenericEvalStep::StartGroundedOp { state, env, depth };
+                    // Alpha-equivalence comparison (matches MeTTa HE's atoms_are_equivalent)
+                    if crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent(
+                        &items[1], &items[2],
+                    ) {
+                        return GenericEvalStep::EvalIfBranch {
+                            branch: items[3].clone(),
+                            env,
+                            depth,
+                        };
+                    } else {
+                        return GenericEvalStep::EvalIfBranch {
+                            branch: items[4].clone(),
+                            env,
+                            depth,
+                        };
+                    }
                 }
 
-                // Store cached types for Steps 2 & 2.5 (outside this match arm)
-                cached_parent_op_types = Some(op_types);
+                // Set operations — generic multiset semantics
+                //
+                // Like list operations, set operations must evaluate reducible
+                // arguments before operating. E.g., `(unique-atom (collapse ...))`.
+                "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom"
+                | "intersection-atom" | "subtraction-atom" => {
+                    let reducible_indices = list_op_reducible_arg_indices(&items, &env);
+                    if !reducible_indices.is_empty() {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: reducible_indices,
+                            env,
+                            depth,
+                        };
+                    }
+                    return crate::backend::eval::set_ops::eval_set_op_generic(items, env, ctx);
+                }
+
+                // Alpha equivalence — (=alpha expr1 expr2) → Bool
+                "=alpha" => {
+                    return crate::backend::eval::testing_ops::eval_testing_op_generic(
+                        items, env, ctx,
+                    );
+                }
+
+                // PeTTa-compatible test — (test actual expected) → Unit | Error
+                // Both args are pre-evaluated (applicative order). Compares with
+                // alpha-equivalence and prints a diagnostic line. Returns Unit on
+                // match, error MettaValue on mismatch (NEVER halts/panics).
+                "test" => {
+                    return crate::backend::eval::testing_ops::eval_testing_op_generic(
+                        items, env, ctx,
+                    );
+                }
+
+                // Testing/assertion operations — multiset nondeterministic comparison
+                "assertEqual"
+                | "assertAlphaEqual"
+                | "assertEqualMsg"
+                | "assertAlphaEqualMsg"
+                | "assertEqualToResult"
+                | "assertAlphaEqualToResult"
+                | "assertEqualToResultMsg"
+                | "assertAlphaEqualToResultMsg" => {
+                    return crate::backend::eval::testing_ops::eval_testing_op_generic(
+                        items, env, ctx,
+                    );
+                }
+
+                // Step 1: Try grounded operations with RAW (unevaluated) arguments
+                _ => {
+                    // Phase 9.1: Variable-head guard.
+                    // Variable-headed S-expressions (e.g. ($f x y)) cannot match any
+                    // rule or grounded op. Send directly to tuple path (evaluate
+                    // sub-elements independently). This is HE-equivalent behavior
+                    // (interpreter.rs:604–611).
+                    if op.starts_with('$') {
+                        return GenericEvalStep::EvalSExpr { items, env, depth };
+                    }
+
+                    // Phase 9.6 + Phase 1 cache: Compute parent op types ONCE.
+                    // This result is reused by Phase 9.6 (all-error-types check),
+                    // find_typed_arg_indices_generic (Step 2), and
+                    // is_declared_value_type (Step 2.5) — avoids 3x redundant
+                    // RwLock reads + bloom hash + supertype closure.
+                    let op_types = if env.may_have_type(op) {
+                        env.get_types_generic(op)
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Phase 9.6: All-error-types early exit.
+                    // If ALL declared types for this operator are error types,
+                    // skip rule matching and return an error immediately.
+                    if !op_types.is_empty()
+                        && op_types.iter().all(|t| {
+                            t.as_sexpr().map_or(false, |type_items| {
+                                type_items.first().and_then(|v| v.as_atom()) == Some("Error")
+                            })
+                        })
+                    {
+                        let err = ctx.factory().error(
+                            &format!("All types for '{}' are errors", op),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+
+                    // Try generic grounded operation (zero-conversion path)
+                    // Uses static dispatch - works with any V: MettaValueTrait
+                    if has_grounded_op(op) {
+                        let args: Vec<MettaValue> = items[1..].to_vec();
+                        // Phase 8.8: Pre-validate ground-type args against arrow signature.
+                        // Returns clear type error instead of NoReduce → unreduced expression.
+                        if let Some(type_error) =
+                            validate_grounded_arg_types(op, &args, ctx.factory())
+                        {
+                            return GenericEvalStep::Done((smallvec![type_error], env));
+                        }
+                        // Use GroundedState with native value type - NO conversion needed
+                        let state = GroundedState::new(op.to_string(), args);
+                        return GenericEvalStep::StartGroundedOp { state, env, depth };
+                    }
+
+                    // Store cached types for Steps 2 & 2.5 (outside this match arm)
+                    cached_parent_op_types = Some(op_types);
+                }
             }
-        }
         } // 'special_forms
     }
 
@@ -2320,11 +2477,17 @@ where
                 #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
-                        let operator = items.first().and_then(|v| v.as_atom()).unwrap_or("?").to_string();
+                        let operator = items
+                            .first()
+                            .and_then(|v| v.as_atom())
+                            .unwrap_or("?")
+                            .to_string();
                         tc.emit_converted(
                             trace_format::TraceTier::TreeWalker,
                             depth as u32,
-                            crate::backend::trace::trace_value_generic(&ctx.factory().sexpr(items.clone())),
+                            crate::backend::trace::trace_value_generic(
+                                &ctx.factory().sexpr(items.clone()),
+                            ),
                             vec![],
                             None,
                             trace_format::TraceEventKind::ApplicativePreEval {
@@ -2352,11 +2515,17 @@ where
                 #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
-                        let operator = items.first().and_then(|v| v.as_atom()).unwrap_or("?").to_string();
+                        let operator = items
+                            .first()
+                            .and_then(|v| v.as_atom())
+                            .unwrap_or("?")
+                            .to_string();
                         tc.emit_converted(
                             trace_format::TraceTier::TreeWalker,
                             depth as u32,
-                            crate::backend::trace::trace_value_generic(&ctx.factory().sexpr(items.clone())),
+                            crate::backend::trace::trace_value_generic(
+                                &ctx.factory().sexpr(items.clone()),
+                            ),
                             vec![],
                             None,
                             trace_format::TraceEventKind::ApplicativePreEval {
@@ -2390,7 +2559,11 @@ where
     // Only reached when Step 2 found no args to pre-evaluate.
     // Use original_sexpr if available (avoids redundant factory.sexpr allocation).
     let resolved_sexpr = original_sexpr.unwrap_or_else(|| ctx.factory().sexpr(items.clone()));
-    let all_matches = crate::backend::eval::trampoline::try_match_all_rules(&resolved_sexpr, &env, *ctx.factory());
+    let all_matches = crate::backend::eval::trampoline::try_match_all_rules(
+        &resolved_sexpr,
+        &env,
+        *ctx.factory(),
+    );
 
     if !all_matches.is_empty() {
         // Trace: RuleMatchSet
@@ -2398,11 +2571,13 @@ where
         {
             if let Some(tc) = ctx.trace_collector() {
                 let match_count = all_matches.len() as u32;
-                let matches_tv: Vec<(trace_format::TraceValue, Option<trace_format::TraceSpan>)> = all_matches.iter()
-                    .map(|(rhs, _bindings, _rhs_type)| {
-                        (crate::backend::trace::trace_value_generic(rhs), None)
-                    })
-                    .collect();
+                let matches_tv: Vec<(trace_format::TraceValue, Option<trace_format::TraceSpan>)> =
+                    all_matches
+                        .iter()
+                        .map(|(rhs, _bindings, _rhs_type)| {
+                            (crate::backend::trace::trace_value_generic(rhs), None)
+                        })
+                        .collect();
                 tc.emit_converted(
                     trace_format::TraceTier::TreeWalker,
                     depth as u32,
@@ -2449,22 +2624,26 @@ where
     // dispatch, so all downstream cut handling, trace events, fork
     // accounting and post-processing are inherited from the ground path.
     if resolved_sexpr.has_variables_fast() {
-        let unified_matches = crate::backend::eval::trampoline::engine::enumerate_rules_via_unification(
-            &resolved_sexpr,
-            &env,
-            ctx.factory(),
-        );
+        let unified_matches =
+            crate::backend::eval::trampoline::engine::enumerate_rules_via_unification(
+                &resolved_sexpr,
+                &env,
+                ctx.factory(),
+            );
         if !unified_matches.is_empty() {
             #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
                     let match_count = unified_matches.len() as u32;
-                    let matches_tv: Vec<(trace_format::TraceValue, Option<trace_format::TraceSpan>)> =
-                        unified_matches.iter()
-                            .map(|(rhs, _bindings, _rhs_type)| {
-                                (crate::backend::trace::trace_value_generic(rhs), None)
-                            })
-                            .collect();
+                    let matches_tv: Vec<(
+                        trace_format::TraceValue,
+                        Option<trace_format::TraceSpan>,
+                    )> = unified_matches
+                        .iter()
+                        .map(|(rhs, _bindings, _rhs_type)| {
+                            (crate::backend::trace::trace_value_generic(rhs), None)
+                        })
+                        .collect();
                     tc.emit_converted(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
@@ -2535,10 +2714,7 @@ where
 ///
 /// Returns a vector of 1-based indices into `items` for arguments needing
 /// pre-evaluation. Returns empty if all arguments are already in normal form.
-fn list_op_reducible_arg_indices(
-    items: &[MettaValue],
-    env: &MettaEnvironment,
-) -> Vec<usize> {
+fn list_op_reducible_arg_indices(items: &[MettaValue], env: &MettaEnvironment) -> Vec<usize> {
     let mut indices = Vec::new();
     // Skip index 0 (the operator itself), check all arguments
     for (i, item) in items.iter().enumerate().skip(1) {
@@ -2572,10 +2748,7 @@ fn list_op_reducible_arg_indices(
 /// Arguments that must NOT be pre-evaluated:
 ///   - User-defined function calls (bloom filter) — may produce nondeterminism
 ///
-fn structural_op_reducible_arg_indices(
-    items: &[MettaValue],
-    env: &MettaEnvironment,
-) -> Vec<usize> {
+fn structural_op_reducible_arg_indices(items: &[MettaValue], env: &MettaEnvironment) -> Vec<usize> {
     let mut indices = Vec::new();
     for (i, item) in items.iter().enumerate().skip(1) {
         if is_reducible_structural_arg(item, env) {
@@ -2589,8 +2762,8 @@ fn structural_op_reducible_arg_indices(
 /// `cdr-atom`). Unlike `is_reducible_sub_expr`, this does NOT include the bloom filter
 /// fallback for user-defined function calls.
 fn is_reducible_structural_arg(value: &MettaValue, env: &MettaEnvironment) -> bool {
+    use crate::backend::eval::helpers::{is_eager_special_form, is_grounded_op};
     use crate::backend::eval::step::grounded::should_pre_eval_by_type;
-    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
 
     let sub_items = match value.as_sexpr() {
         Some(s) => s,
@@ -2628,7 +2801,9 @@ fn list_op_reducible_arg_indices_typed(
     items: &[MettaValue],
     env: &MettaEnvironment,
 ) -> Vec<usize> {
-    use crate::backend::builtin_signatures::{get_signature, get_expected_type_at_position, TypeExpr};
+    use crate::backend::builtin_signatures::{
+        get_expected_type_at_position, get_signature, TypeExpr,
+    };
     let sig = get_signature(op);
     let mut indices = Vec::new();
     for (i, item) in items.iter().enumerate().skip(1) {
@@ -2658,8 +2833,8 @@ fn list_op_reducible_arg_indices_typed(
 /// special forms before normal applicative pre-eval, so these arms must
 /// explicitly trigger pre-eval on their list arg.
 fn is_reducible_sub_expr(value: &MettaValue, env: &MettaEnvironment) -> bool {
+    use crate::backend::eval::helpers::{is_eager_special_form, is_grounded_op};
     use crate::backend::eval::step::grounded::should_pre_eval_by_type;
-    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
 
     let sub_items = match value.as_sexpr() {
         Some(s) => s,
@@ -2767,10 +2942,7 @@ where
 }
 
 /// Preprocess space references: combine `& self` into `&self`.
-fn preprocess_space_refs_generic<C: EvalContext>(
-    items: Vec<MettaValue>,
-    ctx: &C,
-) -> Vec<MettaValue>
+fn preprocess_space_refs_generic<C: EvalContext>(items: Vec<MettaValue>, ctx: &C) -> Vec<MettaValue>
 where
     MettaValue: Clone,
 {
@@ -2821,10 +2993,7 @@ mod tests {
         let env = StaticEvalContext::new_env();
         let factory = ctx.factory();
 
-        let items = vec![
-            factory.atom("quote"),
-            factory.atom("foo"),
-        ];
+        let items = vec![factory.atom("quote"), factory.atom("foo")];
 
         match eval_sexpr_step_generic(items, env, 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
@@ -2852,7 +3021,12 @@ mod tests {
         ];
 
         match eval_sexpr_step_generic(items, env, 0, &ctx) {
-            GenericEvalStep::EvalIfCondition { condition, then_branch, else_branch, .. } => {
+            GenericEvalStep::EvalIfCondition {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 assert_eq!(condition.as_bool(), Some(true));
                 assert_eq!(then_branch.as_long(), Some(1));
                 assert_eq!(else_branch.as_long(), Some(2));

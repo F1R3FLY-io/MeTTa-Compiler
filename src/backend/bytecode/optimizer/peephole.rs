@@ -19,6 +19,7 @@
 //! | `PushFalse; Not` | `PushTrue` | Constant fold |
 //! | `Nop` | (remove) | No-ops are unnecessary |
 
+use crate::backend::bytecode::instruction::{fork_inline_targets, patch_fork_inline_targets};
 use crate::backend::bytecode::opcodes::Opcode;
 
 use super::dfa_tables::dfa_scan_pattern;
@@ -135,9 +136,9 @@ impl PeepholeOptimizer {
                     }
 
                     // Short jumps
-                    Opcode::JumpShort => {
-                        if offset + 1 < code.len() {
-                            let jump_offset = code[offset + 1] as i8;
+                Opcode::JumpShort => {
+                    if offset + 1 < code.len() {
+                        let jump_offset = code[offset + 1] as i8;
                             let jump_from = offset + 2;
                             let target = (jump_from as isize + jump_offset as isize) as usize;
 
@@ -196,6 +197,10 @@ impl PeepholeOptimizer {
                             }
                         }
                         offset += 2;
+                    }
+
+                    Opcode::ForkInline => {
+                        offset += instruction_size(&code, offset);
                     }
 
                     _ => {
@@ -272,8 +277,7 @@ impl PeepholeOptimizer {
                             // offset_map[start] was already set correctly at line 252.
                             // Removed bytes (start+1..end) collapse to the same new
                             // position as start (the next instruction after removal).
-                            let collapse_target =
-                                start as isize + offset_map[start];
+                            let collapse_target = start as isize + offset_map[start];
                             for i in (start + 1)..end {
                                 offset_map[i] = collapse_target - i as isize;
                             }
@@ -291,8 +295,7 @@ impl PeepholeOptimizer {
                             // offset_map[start] was already set correctly at line 252.
                             // Removed bytes (start+1..end) collapse to the replacement
                             // instruction's new position.
-                            let collapse_target =
-                                start as isize + offset_map[start];
+                            let collapse_target = start as isize + offset_map[start];
                             for i in (start + 1)..end {
                                 offset_map[i] = collapse_target - i as isize;
                             }
@@ -318,8 +321,7 @@ impl PeepholeOptimizer {
                             // offset_map[start] was already set correctly at line 252.
                             // Removed bytes (start+1..end) collapse to the replacement
                             // start's new position.
-                            let collapse_target =
-                                start as isize + offset_map[start];
+                            let collapse_target = start as isize + offset_map[start];
                             for i in (start + 1)..end {
                                 offset_map[i] = collapse_target - i as isize;
                             }
@@ -339,7 +341,7 @@ impl PeepholeOptimizer {
         offset_map[code.len()] = current_delta;
 
         // Third pass: fix up jump targets
-        self.fixup_jumps(&mut result, &offset_map, code.len());
+        self.fixup_jumps(&mut result, code, &offset_map, code.len());
 
         (result, true)
     }
@@ -362,7 +364,13 @@ impl PeepholeOptimizer {
     }
 
     /// Fix up jump targets after code has been modified
-    fn fixup_jumps(&self, code: &mut [u8], offset_map: &[isize], original_len: usize) {
+    fn fixup_jumps(
+        &self,
+        code: &mut [u8],
+        original_code: &[u8],
+        offset_map: &[isize],
+        original_len: usize,
+    ) {
         let mut offset = 0;
 
         while offset < code.len() {
@@ -436,6 +444,21 @@ impl PeepholeOptimizer {
                     offset += 2;
                 }
 
+                // ForkInline stores absolute branch targets in its operand table.
+                Opcode::ForkInline => {
+                    let old_instr_pos = self.reverse_offset(offset, offset_map, original_len);
+                    let original_targets = fork_inline_targets(original_code, old_instr_pos);
+                    patch_fork_inline_targets(code, offset, &original_targets, |old_target| {
+                        if old_target <= original_len {
+                            let target_delta = offset_map.get(old_target).copied().unwrap_or(0);
+                            Some((old_target as isize + target_delta) as usize)
+                        } else {
+                            None
+                        }
+                    });
+                    offset += instruction_size(code, offset);
+                }
+
                 _ => {
                     offset += instruction_size(code, offset);
                 }
@@ -466,7 +489,6 @@ impl PeepholeOptimizer {
         best
     }
 }
-
 
 /// Optimize bytecode using the peephole optimizer
 ///

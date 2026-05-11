@@ -45,7 +45,6 @@ use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use pathmap::PathMap;
 use tracing::trace;
 
-use crate::backend::hash_utils::IdentityU64BuildHasher;
 use super::bloom::HeadArityBloomFilter;
 use super::mork_encoding::mork_bytes_to_generic_value;
 use super::multiplicity::{add_atom, get_multiplicity, remove_atom, Multiplicity};
@@ -54,6 +53,7 @@ use super::scope::ScopeTracker;
 use crate::backend::eval::bindings::{apply_bindings_generic, pattern_match_generic};
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::grounded::GroundedRegistry;
+use crate::backend::hash_utils::IdentityU64BuildHasher;
 use crate::backend::models::gc_allocator::{try_register_env_roots, RootProvider};
 use crate::backend::models::{
     GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle,
@@ -66,7 +66,6 @@ use crate::backend::wide_mork::encoding::encode_wide_storage;
 // ============================================================================
 // Static Sentinel for Unmodified Environments
 // ============================================================================
-
 
 // ============================================================================
 // Helper Functions for Environment Operations
@@ -404,7 +403,9 @@ where
 
             // Type-agnostic registries (Arc-wrapped for O(1) fork)
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
-            tokenizer: Arc::new(RwLock::new(crate::backend::modules::GenericTokenizer::<V>::new())),
+            tokenizer: Arc::new(RwLock::new(
+                crate::backend::modules::GenericTokenizer::<V>::new(),
+            )),
             grounded_registry: GroundedRegistry::with_standard_ops(),
             pattern_cache: RwLock::new(LruCache::new(
                 NonZeroUsize::new(1000).expect("1000 is non-zero"),
@@ -525,10 +526,16 @@ where
                     ),
                     // Phase 10.5: snapshot generation counters for exclusive mutation
                     inferred_type_generation: AtomicU64::new(
-                        self.shared.atom_space.inferred_type_generation.load(Ordering::Acquire),
+                        self.shared
+                            .atom_space
+                            .inferred_type_generation
+                            .load(Ordering::Acquire),
                     ),
                     fixpoint_generation: AtomicU64::new(
-                        self.shared.atom_space.fixpoint_generation.load(Ordering::Acquire),
+                        self.shared
+                            .atom_space
+                            .fixpoint_generation
+                            .load(Ordering::Acquire),
                     ),
                     shared_mapping: forked_mapping,
                     head_arity_bloom: std::sync::Arc::new(RwLock::new(
@@ -570,9 +577,7 @@ where
             grounded_registry: self.shared.grounded_registry.clone(),
             pattern_cache: RwLock::new(self.shared.pattern_cache.read().clone()),
             type_index: RwLock::new(self.shared.type_index.read().clone()),
-            type_index_dirty: AtomicBool::new(
-                self.shared.type_index_dirty.load(Ordering::Acquire),
-            ),
+            type_index_dirty: AtomicBool::new(self.shared.type_index_dirty.load(Ordering::Acquire)),
             // Deep-clone into new Arcs so this owned env has exclusive copies
             fuzzy_matcher: Arc::new(RwLock::new(self.shared.fuzzy_matcher.read().clone())),
             scope_tracker: Arc::new(RwLock::new(self.shared.scope_tracker.read().clone())),
@@ -580,7 +585,10 @@ where
             rule_index: Arc::new(RwLock::new(self.shared.rule_index.read().clone())),
             // Phase 10.1: deep-clone DashMap into independent copy for exclusive mutation
             inferred_fn_types: DashMap::from_iter(
-                self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
+                self.shared
+                    .inferred_fn_types
+                    .iter()
+                    .map(|e| (e.key().clone(), e.value().clone())),
             ),
             // Share override bits — all env clones see the same atomic state
             // so `note_user_rule_added` is visible to subsequent
@@ -631,16 +639,17 @@ where
                 NonZeroUsize::new(1000).expect("1000 is non-zero"),
             )),
             type_index: RwLock::new(self.shared.type_index.read().clone()),
-            type_index_dirty: AtomicBool::new(
-                self.shared.type_index_dirty.load(Ordering::Acquire),
-            ),
+            type_index_dirty: AtomicBool::new(self.shared.type_index_dirty.load(Ordering::Acquire)),
             // O(1) Arc::clone for all read-only state during evaluation
             fuzzy_matcher: Arc::clone(&self.shared.fuzzy_matcher),
             scope_tracker: Arc::clone(&self.shared.scope_tracker),
             rule_index: Arc::clone(&self.shared.rule_index),
             // Phase 10.1: clone DashMap into independent copy (fork isolation)
             inferred_fn_types: DashMap::from_iter(
-                self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
+                self.shared
+                    .inferred_fn_types
+                    .iter()
+                    .map(|e| (e.key().clone(), e.value().clone())),
             ),
             // Share override bits across the fork — all nondet branches see
             // the same atomic state (rules added by one branch are visible to
@@ -691,7 +700,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
-    
+
                 mork_cache_epoch: self.mork_cache_epoch,
             };
         }
@@ -708,7 +717,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
-    
+
                 mork_cache_epoch: self.mork_cache_epoch,
             };
         }
@@ -722,7 +731,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: self.current_module_path.clone(),
-    
+
                 mork_cache_epoch: self.mork_cache_epoch,
             };
         }
@@ -736,7 +745,7 @@ where
                 owns_data: false,
                 modified: AtomicBool::new(false),
                 current_module_path: other.current_module_path.clone(),
-    
+
                 mork_cache_epoch: other.mork_cache_epoch,
             };
         }
@@ -826,9 +835,15 @@ where
         };
 
         // Take max of ID counters to avoid collisions
-        let max_state_id = self.shared.next_state_id.load(Ordering::Acquire)
+        let max_state_id = self
+            .shared
+            .next_state_id
+            .load(Ordering::Acquire)
             .max(other.shared.next_state_id.load(Ordering::Acquire));
-        let max_space_id = self.shared.next_space_id.load(Ordering::Acquire)
+        let max_space_id = self
+            .shared
+            .next_space_id
+            .load(Ordering::Acquire)
             .max(other.shared.next_space_id.load(Ordering::Acquire));
 
         // Merge fuzzy matchers by cloning self and inserting other's terms
@@ -849,9 +864,13 @@ where
             atom_space: super::atom_space::AtomSpace {
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared_mapping.clone(),
-                head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
+                head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(
+                    10000,
+                ))), // Reset (will be rebuilt)
                 rule_head_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(5000))), // Reset (will be rebuilt)
-                type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(1000))), // Reset (will be rebuilt from type_btm)
+                type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(
+                    1000,
+                ))), // Reset (will be rebuilt from type_btm)
                 // Merge wide_btm using same lattice algebra as btm
                 wide_btm: RwLock::new(merge_pathmaps_max(
                     &self.shared.atom_space.wide_btm.read(),
@@ -873,21 +892,38 @@ where
                 )),
                 // Phase 10.1: merge inferred type bloom via bitwise OR
                 inferred_type_bloom: {
-                    let merged = std::sync::Arc::new(
-                        self.shared.atom_space.inferred_type_bloom.snapshot(),
-                    );
+                    let merged =
+                        std::sync::Arc::new(self.shared.atom_space.inferred_type_bloom.snapshot());
                     merged.merge_from(&other.shared.atom_space.inferred_type_bloom);
                     merged
                 },
                 // Phase 10.5: max(generation) forces fixpoint to see all new types;
                 // min(fixpoint_gen) forces re-fixpoint if either side had unprocessed types.
                 inferred_type_generation: AtomicU64::new(
-                    self.shared.atom_space.inferred_type_generation.load(Ordering::Acquire)
-                        .max(other.shared.atom_space.inferred_type_generation.load(Ordering::Acquire)),
+                    self.shared
+                        .atom_space
+                        .inferred_type_generation
+                        .load(Ordering::Acquire)
+                        .max(
+                            other
+                                .shared
+                                .atom_space
+                                .inferred_type_generation
+                                .load(Ordering::Acquire),
+                        ),
                 ),
                 fixpoint_generation: AtomicU64::new(
-                    self.shared.atom_space.fixpoint_generation.load(Ordering::Acquire)
-                        .min(other.shared.atom_space.fixpoint_generation.load(Ordering::Acquire)),
+                    self.shared
+                        .atom_space
+                        .fixpoint_generation
+                        .load(Ordering::Acquire)
+                        .min(
+                            other
+                                .shared
+                                .atom_space
+                                .fixpoint_generation
+                                .load(Ordering::Acquire),
+                        ),
                 ),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
                 variable_atoms: RwLock::new(Vec::new()),
@@ -934,7 +970,10 @@ where
             // Phase 10.1: merge inferred function types (DashMap union with dedup)
             inferred_fn_types: {
                 let merged: DashMap<String, Vec<V>> = DashMap::from_iter(
-                    self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
+                    self.shared
+                        .inferred_fn_types
+                        .iter()
+                        .map(|e| (e.key().clone(), e.value().clone())),
                 );
                 for entry in other.shared.inferred_fn_types.iter() {
                     let mut vec = merged.entry(entry.key().clone()).or_default();
@@ -984,7 +1023,10 @@ where
             shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
             modified: AtomicBool::new(true),
-            current_module_path: other.current_module_path.clone().or_else(|| self.current_module_path.clone()),
+            current_module_path: other
+                .current_module_path
+                .clone()
+                .or_else(|| self.current_module_path.clone()),
 
             mork_cache_epoch: self.mork_cache_epoch,
         }
@@ -1241,14 +1283,21 @@ where
             atom_space: super::atom_space::AtomSpace {
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared.atom_space.shared_mapping.clone(),
-                head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(10000))), // Reset (will be rebuilt)
+                head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(
+                    10000,
+                ))), // Reset (will be rebuilt)
                 rule_head_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(5000))), // Reset (will be rebuilt)
-                type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(1000))), // Reset (will be rebuilt from type_btm)
+                type_bloom: std::sync::Arc::new(RwLock::new(super::bloom::TypeBloomFilter::new(
+                    1000,
+                ))), // Reset (will be rebuilt from type_btm)
                 // Merge wide_btm from all environments using same lattice algebra as btm
                 wide_btm: RwLock::new({
                     let mut merged_wide = self.shared.atom_space.wide_btm.read().clone();
                     for other_env in others.iter() {
-                        merged_wide = merge_pathmaps_max(&merged_wide, &other_env.shared.atom_space.wide_btm.read());
+                        merged_wide = merge_pathmaps_max(
+                            &merged_wide,
+                            &other_env.shared.atom_space.wide_btm.read(),
+                        );
                     }
                     merged_wide
                 }),
@@ -1256,7 +1305,10 @@ where
                 type_btm: RwLock::new({
                     let mut merged_types = self.shared.atom_space.type_btm.read().clone();
                     for other_env in others.iter() {
-                        merged_types = merge_pathmaps_max(&merged_types, &other_env.shared.atom_space.type_btm.read());
+                        merged_types = merge_pathmaps_max(
+                            &merged_types,
+                            &other_env.shared.atom_space.type_btm.read(),
+                        );
                     }
                     merged_types
                 }),
@@ -1264,7 +1316,10 @@ where
                 subtype_btm: RwLock::new({
                     let mut merged_subs = self.shared.atom_space.subtype_btm.read().clone();
                     for other_env in others.iter() {
-                        merged_subs = merge_pathmaps_max(&merged_subs, &other_env.shared.atom_space.subtype_btm.read());
+                        merged_subs = merge_pathmaps_max(
+                            &merged_subs,
+                            &other_env.shared.atom_space.subtype_btm.read(),
+                        );
                     }
                     merged_subs
                 }),
@@ -1272,15 +1327,17 @@ where
                 inferred_type_btm: RwLock::new({
                     let mut merged_inf = self.shared.atom_space.inferred_type_btm.read().clone();
                     for other_env in others.iter() {
-                        merged_inf = merge_pathmaps_max(&merged_inf, &other_env.shared.atom_space.inferred_type_btm.read());
+                        merged_inf = merge_pathmaps_max(
+                            &merged_inf,
+                            &other_env.shared.atom_space.inferred_type_btm.read(),
+                        );
                     }
                     merged_inf
                 }),
                 // Phase 10.1: merge inferred type bloom filters via bitwise OR
                 inferred_type_bloom: {
-                    let merged_bloom = std::sync::Arc::new(
-                        self.shared.atom_space.inferred_type_bloom.snapshot(),
-                    );
+                    let merged_bloom =
+                        std::sync::Arc::new(self.shared.atom_space.inferred_type_bloom.snapshot());
                     for other_env in others.iter() {
                         merged_bloom.merge_from(&other_env.shared.atom_space.inferred_type_bloom);
                     }
@@ -1288,16 +1345,36 @@ where
                 },
                 // Phase 10.5: max(generation) across all envs; min(fixpoint_gen) forces re-fixpoint
                 inferred_type_generation: AtomicU64::new({
-                    let mut max_gen = self.shared.atom_space.inferred_type_generation.load(Ordering::Acquire);
+                    let mut max_gen = self
+                        .shared
+                        .atom_space
+                        .inferred_type_generation
+                        .load(Ordering::Acquire);
                     for other_env in others.iter() {
-                        max_gen = max_gen.max(other_env.shared.atom_space.inferred_type_generation.load(Ordering::Acquire));
+                        max_gen = max_gen.max(
+                            other_env
+                                .shared
+                                .atom_space
+                                .inferred_type_generation
+                                .load(Ordering::Acquire),
+                        );
                     }
                     max_gen
                 }),
                 fixpoint_generation: AtomicU64::new({
-                    let mut min_gen = self.shared.atom_space.fixpoint_generation.load(Ordering::Acquire);
+                    let mut min_gen = self
+                        .shared
+                        .atom_space
+                        .fixpoint_generation
+                        .load(Ordering::Acquire);
                     for other_env in others.iter() {
-                        min_gen = min_gen.min(other_env.shared.atom_space.fixpoint_generation.load(Ordering::Acquire));
+                        min_gen = min_gen.min(
+                            other_env
+                                .shared
+                                .atom_space
+                                .fixpoint_generation
+                                .load(Ordering::Acquire),
+                        );
                     }
                     min_gen
                 }),
@@ -1348,7 +1425,10 @@ where
             // Phase 10.1: merge inferred function types from all environments
             inferred_fn_types: {
                 let merged: DashMap<String, Vec<V>> = DashMap::from_iter(
-                    self.shared.inferred_fn_types.iter().map(|e| (e.key().clone(), e.value().clone()))
+                    self.shared
+                        .inferred_fn_types
+                        .iter()
+                        .map(|e| (e.key().clone(), e.value().clone())),
                 );
                 for other_env in others {
                     for entry in other_env.shared.inferred_fn_types.iter() {
@@ -1399,7 +1479,10 @@ where
             shared_mapping: self.shared_mapping.clone(),
             owns_data: true,
             modified: AtomicBool::new(true),
-            current_module_path: last_env.current_module_path.clone().or_else(|| self.current_module_path.clone()),
+            current_module_path: last_env
+                .current_module_path
+                .clone()
+                .or_else(|| self.current_module_path.clone()),
 
             mork_cache_epoch: self.mork_cache_epoch,
         }
@@ -1509,8 +1592,7 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
         // Pre-estimate capacity from all sources to eliminate Vec reallocations.
         // Read locks under quiescent GC are uncontended (ACTIVE_EVALUATORS == 0).
         {
-            let estimated =
-                self.named_spaces.read().values().map(|(_, a)| a.len()).sum::<usize>()
+            let estimated = self.named_spaces.read().values().map(|(_, a)| a.len()).sum::<usize>()
                 + self.bindings.read().len()
                 + self.types.read().len()
                 + self.states.read().len()
@@ -1588,9 +1670,9 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
                 // as dyn Any. Its constants: Vec<MettaValue> pool contains slab-allocated
                 // values that must be traced as GC roots.
                 if let Some(ref compiled) = e.compiled_rhs {
-                    if let Some(chunk) = compiled.downcast_ref::<
-                        crate::backend::bytecode::chunk::BytecodeChunk
-                    >() {
+                    if let Some(chunk) =
+                        compiled.downcast_ref::<crate::backend::bytecode::chunk::BytecodeChunk>()
+                    {
                         crate::backend::bytecode::cache::collect_chunk_constants(chunk, roots);
                     }
                 }
@@ -1605,11 +1687,6 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
         }
     }
 }
-
-
-
-
-
 
 // ============================================================================
 // MORK Space Access Methods
@@ -1656,7 +1733,10 @@ where
     /// Register a token with a value in the tokenizer.
     pub fn register_token(&mut self, token: &str, value: V) {
         self.make_owned();
-        self.shared.tokenizer.write().register_token_value(token, value);
+        self.shared
+            .tokenizer
+            .write()
+            .register_token_value(token, value);
         self.shared.fuzzy_matcher.write().insert(token);
         self.mark_modified();
     }
@@ -1707,7 +1787,11 @@ where
             // Insert the full rule expression head/arity so match_space() doesn't reject it.
             if let Some(head) = value.get_head_symbol() {
                 let arity = value.get_arity() as u8;
-                self.shared.atom_space.head_arity_bloom.write().insert(head, arity);
+                self.shared
+                    .atom_space
+                    .head_arity_bloom
+                    .write()
+                    .insert(head, arity);
             }
             return;
         }
@@ -1738,7 +1822,8 @@ where
                         }
                         ":<" => {
                             // Subtype declaration: (:< SubType SuperType)
-                            if let (Some(sub), Some(sup)) = (items[1].as_atom(), items[2].as_atom()) {
+                            if let (Some(sub), Some(sup)) = (items[1].as_atom(), items[2].as_atom())
+                            {
                                 let mut subtypes = self.shared.subtypes.write();
                                 let vec = subtypes.entry(sub.to_string()).or_default();
                                 if !vec.contains(&sup.to_string()) {
@@ -1754,32 +1839,44 @@ where
         }
 
         // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
-            let mut btm = self.shared.atom_space.btm.write();
-            add_atom(&mut btm, mork_bytes);
-            drop(btm);
+        match with_mork_bytes(
+            value,
+            &self.shared_mapping,
+            self.mork_cache_epoch,
+            |mork_bytes| {
+                let mut btm = self.shared.atom_space.btm.write();
+                add_atom(&mut btm, mork_bytes);
+                drop(btm);
 
-            // Incrementally update type/subtype dedicated PathMaps + type bloom filter
-            if is_type_atom {
-                let mut type_btm = self.shared.atom_space.type_btm.write();
-                add_atom(&mut type_btm, mork_bytes);
-                // Insert atom name into type bloom filter for O(1) early rejection
-                if let Some(ref name) = type_atom_name {
-                    self.shared.atom_space.type_bloom.write().insert(name);
+                // Incrementally update type/subtype dedicated PathMaps + type bloom filter
+                if is_type_atom {
+                    let mut type_btm = self.shared.atom_space.type_btm.write();
+                    add_atom(&mut type_btm, mork_bytes);
+                    // Insert atom name into type bloom filter for O(1) early rejection
+                    if let Some(ref name) = type_atom_name {
+                        self.shared.atom_space.type_bloom.write().insert(name);
+                    }
+                } else if is_subtype_atom {
+                    let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
+                    add_atom(&mut subtype_btm, mork_bytes);
                 }
-            } else if is_subtype_atom {
-                let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
-                add_atom(&mut subtype_btm, mork_bytes);
-            }
 
-            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_add(1, Ordering::Relaxed);
 
-            // Use trait method for head symbol extraction
-            if let Some(head) = value.get_head_symbol() {
-                let arity = value.get_arity() as u8;
-                self.shared.atom_space.head_arity_bloom.write().insert(head, arity);
-            }
-        }) {
+                // Use trait method for head symbol extraction
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .insert(head, arity);
+                }
+            },
+        ) {
             Ok(()) => {}
             Err(_) => {
                 // Fallback for large expressions (arity >= 64): Wide MORK encoding
@@ -1790,11 +1887,18 @@ where
                     add_atom(&mut wbtm, &wide_key);
                 }
 
-                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_add(1, Ordering::Relaxed);
 
                 if let Some(head) = value.get_head_symbol() {
                     let arity = value.get_arity() as u8;
-                    self.shared.atom_space.head_arity_bloom.write().insert(head, arity);
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .insert(head, arity);
                 }
             }
         }
@@ -1841,7 +1945,8 @@ where
                         }
                         ":<" => {
                             // Remove subtype declaration: (:< SubType SuperType)
-                            if let (Some(sub), Some(sup)) = (items[1].as_atom(), items[2].as_atom()) {
+                            if let (Some(sub), Some(sup)) = (items[1].as_atom(), items[2].as_atom())
+                            {
                                 let mut subtypes = self.shared.subtypes.write();
                                 if let Some(vec) = subtypes.get_mut(sub) {
                                     vec.retain(|s| s != sup);
@@ -1880,19 +1985,33 @@ where
                     }
                     btm.remove(mork_bytes);
                     drop(btm);
-                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                    self.shared
+                        .atom_space
+                        .total_atoms
+                        .fetch_sub(1, Ordering::Relaxed);
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
                     return;
                 }
 
                 let new_count = remove_atom(&mut btm, mork_bytes);
 
                 if new_count == 0 {
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
                 }
 
                 drop(btm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_sub(1, Ordering::Relaxed);
             }) {
                 Ok(()) => {
                     // Sync RuleIndex: use the captured full De Bruijn bytes to
@@ -1951,16 +2070,26 @@ where
                         remove_atom(&mut wbtm, &wide_key);
                     }
                     drop(wbtm);
-                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                    self.shared
+                        .atom_space
+                        .total_atoms
+                        .fetch_sub(1, Ordering::Relaxed);
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
 
                     // Sync RuleIndex for wide rules via wide De Bruijn bytes.
                     // Same `.is_some()` rule as the narrow path — see comment
                     // above for why we mustn't pattern-match `Some(true)`.
-                    let mut full_wide_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
+                    let mut full_wide_ctx =
+                        crate::backend::wide_mork::encoding::WideConversionContext::new();
                     let mut wide_full_debruijn = Vec::new();
                     crate::backend::wide_mork::encoding::encode_wide_debruijn(
-                        value, &mut full_wide_ctx, &mut wide_full_debruijn,
+                        value,
+                        &mut full_wide_ctx,
+                        &mut wide_full_debruijn,
                     );
                     let mut idx = self.shared.rule_index.write();
                     let synced: bool = idx.remove_rule_by_debruijn(&wide_full_debruijn).is_some();
@@ -1996,51 +2125,74 @@ where
         }
 
         // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
-            let mut btm = self.shared.atom_space.btm.write();
+        match with_mork_bytes(
+            value,
+            &self.shared_mapping,
+            self.mork_cache_epoch,
+            |mork_bytes| {
+                let mut btm = self.shared.atom_space.btm.write();
 
-            let current_count = get_multiplicity(&btm, mork_bytes);
-            if current_count == 0 {
-                if !btm.contains(mork_bytes) {
+                let current_count = get_multiplicity(&btm, mork_bytes);
+                if current_count == 0 {
+                    if !btm.contains(mork_bytes) {
+                        return;
+                    }
+                    btm.remove(mork_bytes);
+                    drop(btm);
+
+                    // Incrementally remove from type/subtype dedicated PathMaps
+                    if is_type_removal {
+                        self.shared.atom_space.type_btm.write().remove(mork_bytes);
+                        self.shared.atom_space.type_bloom.write().note_deletion();
+                    } else if is_subtype_removal {
+                        self.shared
+                            .atom_space
+                            .subtype_btm
+                            .write()
+                            .remove(mork_bytes);
+                    }
+
+                    self.shared
+                        .atom_space
+                        .total_atoms
+                        .fetch_sub(1, Ordering::Relaxed);
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
                     return;
                 }
-                btm.remove(mork_bytes);
-                drop(btm);
 
-                // Incrementally remove from type/subtype dedicated PathMaps
-                if is_type_removal {
-                    self.shared.atom_space.type_btm.write().remove(mork_bytes);
-                    self.shared.atom_space.type_bloom.write().note_deletion();
-                } else if is_subtype_removal {
-                    self.shared.atom_space.subtype_btm.write().remove(mork_bytes);
+                let new_count = remove_atom(&mut btm, mork_bytes);
+
+                if new_count == 0 {
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
                 }
 
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
-                return;
-            }
+                drop(btm);
 
-            let new_count = remove_atom(&mut btm, mork_bytes);
+                // Incrementally update type/subtype dedicated PathMaps
+                if is_type_removal {
+                    let mut type_btm = self.shared.atom_space.type_btm.write();
+                    remove_atom(&mut type_btm, mork_bytes);
+                    drop(type_btm);
+                    self.shared.atom_space.type_bloom.write().note_deletion();
+                } else if is_subtype_removal {
+                    let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
+                    remove_atom(&mut subtype_btm, mork_bytes);
+                }
 
-            if new_count == 0 {
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
-            }
-
-            drop(btm);
-
-            // Incrementally update type/subtype dedicated PathMaps
-            if is_type_removal {
-                let mut type_btm = self.shared.atom_space.type_btm.write();
-                remove_atom(&mut type_btm, mork_bytes);
-                drop(type_btm);
-                self.shared.atom_space.type_bloom.write().note_deletion();
-            } else if is_subtype_removal {
-                let mut subtype_btm = self.shared.atom_space.subtype_btm.write();
-                remove_atom(&mut subtype_btm, mork_bytes);
-            }
-
-            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-        }) {
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_sub(1, Ordering::Relaxed);
+            },
+        ) {
             Ok(()) => {}
             Err(_) => {
                 // Fallback for large expressions (arity >= 64): Wide MORK encoding
@@ -2054,8 +2206,15 @@ where
                     remove_atom(&mut wbtm, &wide_key);
                 }
                 drop(wbtm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_sub(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .head_arity_bloom
+                    .write()
+                    .note_deletion();
             }
         }
 
@@ -2119,11 +2278,18 @@ where
                 add_atom(&mut btm, mork_bytes);
                 drop(btm);
 
-                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_add(1, Ordering::Relaxed);
 
                 if let Some(head) = value.get_head_symbol() {
                     let arity = value.get_arity() as u8;
-                    self.shared.atom_space.head_arity_bloom.write().insert(head, arity);
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .insert(head, arity);
                 }
             }) {
                 Ok(()) => {}
@@ -2135,7 +2301,10 @@ where
                         let mut wbtm = self.shared.atom_space.wide_btm.write();
                         add_atom(&mut wbtm, &wide_key);
                     }
-                    self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+                    self.shared
+                        .atom_space
+                        .total_atoms
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
             self.mark_modified();
@@ -2143,19 +2312,31 @@ where
         }
 
         // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
-            let mut btm = self.shared.atom_space.btm.write();
-            add_atom(&mut btm, mork_bytes);
-            drop(btm);
+        match with_mork_bytes(
+            value,
+            &self.shared_mapping,
+            self.mork_cache_epoch,
+            |mork_bytes| {
+                let mut btm = self.shared.atom_space.btm.write();
+                add_atom(&mut btm, mork_bytes);
+                drop(btm);
 
-            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_add(1, Ordering::Relaxed);
 
-            // Use trait method for head symbol extraction
-            if let Some(head) = value.get_head_symbol() {
-                let arity = value.get_arity() as u8;
-                self.shared.atom_space.head_arity_bloom.write().insert(head, arity);
-            }
-        }) {
+                // Use trait method for head symbol extraction
+                if let Some(head) = value.get_head_symbol() {
+                    let arity = value.get_arity() as u8;
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .insert(head, arity);
+                }
+            },
+        ) {
             Ok(()) => {}
             Err(_) => {
                 // Fallback for large expressions (arity >= 64): Wide MORK encoding
@@ -2165,11 +2346,18 @@ where
                     let mut wbtm = self.shared.atom_space.wide_btm.write();
                     add_atom(&mut wbtm, &wide_key);
                 }
-                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_add(1, Ordering::Relaxed);
 
                 if let Some(head) = value.get_head_symbol() {
                     let arity = value.get_arity() as u8;
-                    self.shared.atom_space.head_arity_bloom.write().insert(head, arity);
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .insert(head, arity);
                 }
             }
         }
@@ -2205,8 +2393,15 @@ where
                     }
                     btm.remove(mork_bytes);
                     drop(btm);
-                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                    self.shared
+                        .atom_space
+                        .total_atoms
+                        .fetch_sub(1, Ordering::Relaxed);
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
                     self.mark_modified();
                     return;
                 }
@@ -2214,11 +2409,18 @@ where
                 let new_count = remove_atom(&mut btm, mork_bytes);
 
                 if new_count == 0 {
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
                 }
 
                 drop(btm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_sub(1, Ordering::Relaxed);
             }) {
                 Ok(()) => {
                     // See `remove_from_space` for the `.is_some()` rationale —
@@ -2265,15 +2467,25 @@ where
                         remove_atom(&mut wbtm, &wide_key);
                     }
                     drop(wbtm);
-                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                    self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                    self.shared
+                        .atom_space
+                        .total_atoms
+                        .fetch_sub(1, Ordering::Relaxed);
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
 
                     // Sync RuleIndex for wide rules via wide De Bruijn bytes.
                     // Same `.is_some()` rule as the narrow path.
-                    let mut full_wide_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
+                    let mut full_wide_ctx =
+                        crate::backend::wide_mork::encoding::WideConversionContext::new();
                     let mut wide_full_debruijn = Vec::new();
                     crate::backend::wide_mork::encoding::encode_wide_debruijn(
-                        value, &mut full_wide_ctx, &mut wide_full_debruijn,
+                        value,
+                        &mut full_wide_ctx,
+                        &mut wide_full_debruijn,
                     );
                     let mut idx = self.shared.rule_index.write();
                     let synced: bool = idx.remove_rule_by_debruijn(&wide_full_debruijn).is_some();
@@ -2307,31 +2519,50 @@ where
         }
 
         // Non-rule: use literal encoding (existing path)
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
-            let mut btm = self.shared.atom_space.btm.write();
+        match with_mork_bytes(
+            value,
+            &self.shared_mapping,
+            self.mork_cache_epoch,
+            |mork_bytes| {
+                let mut btm = self.shared.atom_space.btm.write();
 
-            let current_count = get_multiplicity(&btm, mork_bytes);
-            if current_count == 0 {
-                if !btm.contains(mork_bytes) {
+                let current_count = get_multiplicity(&btm, mork_bytes);
+                if current_count == 0 {
+                    if !btm.contains(mork_bytes) {
+                        return;
+                    }
+                    btm.remove(mork_bytes);
+                    drop(btm);
+                    self.shared
+                        .atom_space
+                        .total_atoms
+                        .fetch_sub(1, Ordering::Relaxed);
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
+                    self.mark_modified();
                     return;
                 }
-                btm.remove(mork_bytes);
+
+                let new_count = remove_atom(&mut btm, mork_bytes);
+
+                if new_count == 0 {
+                    self.shared
+                        .atom_space
+                        .head_arity_bloom
+                        .write()
+                        .note_deletion();
+                }
+
                 drop(btm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
-                self.mark_modified();
-                return;
-            }
-
-            let new_count = remove_atom(&mut btm, mork_bytes);
-
-            if new_count == 0 {
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
-            }
-
-            drop(btm);
-            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-        }) {
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_sub(1, Ordering::Relaxed);
+            },
+        ) {
             Ok(()) => {}
             Err(_) => {
                 // Fallback for large expressions (arity >= 64): Wide MORK encoding
@@ -2345,8 +2576,15 @@ where
                     remove_atom(&mut wbtm, &wide_key);
                 }
                 drop(wbtm);
-                self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-                self.shared.atom_space.head_arity_bloom.write().note_deletion();
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_sub(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .head_arity_bloom
+                    .write()
+                    .note_deletion();
             }
         }
 
@@ -2421,7 +2659,11 @@ where
         // Bloom filter check using trait methods (no conversion)
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
-            let bloom_result = self.shared.atom_space.head_arity_bloom.read()
+            let bloom_result = self
+                .shared
+                .atom_space
+                .head_arity_bloom
+                .read()
                 .may_contain(expected_head, pattern_arity);
             if !bloom_result {
                 return Vec::new();
@@ -2438,11 +2680,9 @@ where
             let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
 
             // Direct MORK bytes → V conversion (no MettaValue intermediate)
-            if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                path_bytes,
-                &space,
-                &self.factory,
-            ) {
+            if let Ok(atom) =
+                mork_bytes_to_generic_value::<V, F, Multiplicity>(path_bytes, &space, &self.factory)
+            {
                 // Direct pattern matching on V (no conversion)
                 if let Some(bindings) = pattern_match_generic(pattern, &atom) {
                     // Direct template instantiation on V (no conversion)
@@ -2463,7 +2703,8 @@ where
                 let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
                 if let Ok(atom) = wide_bytes_to_generic_value::<V, F>(path_bytes, &self.factory) {
                     if let Some(bindings) = pattern_match_generic(pattern, &atom) {
-                        let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
+                        let instantiated =
+                            apply_bindings_generic(template, &bindings, &self.factory);
                         results.push(MultiplicityMatch::new(instantiated, multiplicity));
                     }
                 }
@@ -2487,7 +2728,11 @@ where
         // Bloom filter check using trait methods (no conversion)
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
-            if !self.shared.atom_space.head_arity_bloom.read()
+            if !self
+                .shared
+                .atom_space
+                .head_arity_bloom
+                .read()
                 .may_contain(expected_head, pattern_arity)
             {
                 return false;
@@ -2501,11 +2746,9 @@ where
             let path_bytes = rz.path();
 
             // Direct MORK bytes → V conversion (no MettaValue intermediate)
-            if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                path_bytes,
-                &space,
-                &self.factory,
-            ) {
+            if let Ok(atom) =
+                mork_bytes_to_generic_value::<V, F, Multiplicity>(path_bytes, &space, &self.factory)
+            {
                 // Direct pattern matching on V (no conversion)
                 if pattern_match_generic(pattern, &atom).is_some() {
                     return true;
@@ -2549,11 +2792,9 @@ where
         // Iterate through MORK PathMap
         while rz.to_next_val() {
             let path_bytes = rz.path();
-            if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                path_bytes,
-                &space,
-                &self.factory,
-            ) {
+            if let Ok(atom) =
+                mork_bytes_to_generic_value::<V, F, Multiplicity>(path_bytes, &space, &self.factory)
+            {
                 atoms.push(atom);
             }
         }
@@ -2578,7 +2819,8 @@ where
             let var_atoms = self.shared.atom_space.variable_atoms.read();
             for (atom, _mult) in var_atoms.iter() {
                 let freshened = crate::backend::eval::freshening::freshen_variables_generic(
-                    atom, &self.factory,
+                    atom,
+                    &self.factory,
                 );
                 atoms.push(freshened);
             }
@@ -2611,7 +2853,9 @@ fn contains_atom_recursive<V: MettaValueTrait>(value: &V, target: &str) -> bool 
         return name == target;
     }
     if let Some(items) = value.as_sexpr() {
-        return items.iter().any(|item| contains_atom_recursive(item, target));
+        return items
+            .iter()
+            .any(|item| contains_atom_recursive(item, target));
     }
     false
 }

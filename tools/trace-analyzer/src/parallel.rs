@@ -20,8 +20,11 @@ pub fn run(file: &str, bucket_us: Option<u64>) -> Result<(), String> {
     let reader = TraceReader::open(file)?;
 
     if reader.format_version < 2 {
-        return Err("The 'parallel' subcommand requires format v2 trace files with duration data. \
-                    Re-record the trace with the latest MeTTaTron build.".to_string());
+        return Err(
+            "The 'parallel' subcommand requires format v2 trace files with duration data. \
+                    Re-record the trace with the latest MeTTaTron build."
+                .to_string(),
+        );
     }
 
     let bucket_ns = bucket_us.unwrap_or(100) * 1_000; // default 100us buckets
@@ -54,7 +57,8 @@ pub fn run(file: &str, bucket_us: Option<u64>) -> Result<(), String> {
 
     // Sort: by time, then End before Start to avoid momentary overcounting
     boundaries.sort_by(|a, b| {
-        a.time_ns.cmp(&b.time_ns)
+        a.time_ns
+            .cmp(&b.time_ns)
             .then_with(|| a.is_start.cmp(&b.is_start)) // false (end) < true (start)
     });
 
@@ -93,7 +97,11 @@ pub fn run(file: &str, bucket_us: Option<u64>) -> Result<(), String> {
     };
 
     // Max concurrency
-    let max_concurrency = concurrency_samples.iter().map(|&(_, l)| l).max().unwrap_or(0);
+    let max_concurrency = concurrency_samples
+        .iter()
+        .map(|&(_, l)| l)
+        .max()
+        .unwrap_or(0);
 
     // Collect all distinct concurrency levels for percentile calculation
     let mut level_durations: Vec<(usize, u64)> = Vec::new(); // (level, duration_ns)
@@ -132,8 +140,10 @@ pub fn run(file: &str, bucket_us: Option<u64>) -> Result<(), String> {
     println!("P95 concurrency: {}", p95_level);
     println!("P99 concurrency: {}", p99_level);
     println!("Max concurrency: {}", max_concurrency);
-    println!("Parallelism efficiency: {:.1}% (thread-time / wall-time x CPUs)",
-             parallelism_efficiency * 100.0);
+    println!(
+        "Parallelism efficiency: {:.1}% (thread-time / wall-time x CPUs)",
+        parallelism_efficiency * 100.0
+    );
 
     // Bucket into time slices for histogram
     if range_ns > 0 && bucket_ns > 0 {
@@ -151,7 +161,10 @@ pub fn run(file: &str, bucket_us: Option<u64>) -> Result<(), String> {
         }
 
         println!();
-        println!("--- Concurrency Over Time (max per {:.1}us bucket) ---", actual_bucket_ns as f64 / 1000.0);
+        println!(
+            "--- Concurrency Over Time (max per {:.1}us bucket) ---",
+            actual_bucket_ns as f64 / 1000.0
+        );
         let chart_max = max_concurrency.max(1);
         let chart_width: usize = 60;
         for (i, &level) in bucket_max.iter().enumerate() {

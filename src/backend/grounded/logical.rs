@@ -317,11 +317,7 @@ mod tests {
     use super::*;
     use crate::backend::models::{GcFactory, MettaValue};
 
-    fn run_binary_logical<Op: GroundedOperationTCO<MettaValue>>(
-        op: &Op,
-        a: bool,
-        b: bool,
-    ) -> bool {
+    fn run_binary_logical<Op: GroundedOperationTCO<MettaValue>>(op: &Op, a: bool, b: bool) -> bool {
         let factory = GcFactory::default();
         let mut state = GroundedState::new(
             op.name().to_string(),
@@ -356,8 +352,7 @@ mod tests {
 
     fn run_unary_logical<Op: GroundedOperationTCO<MettaValue>>(op: &Op, a: bool) -> bool {
         let factory = GcFactory::default();
-        let mut state =
-            GroundedState::new(op.name().to_string(), vec![MettaValue::Bool(a)]);
+        let mut state = GroundedState::new(op.name().to_string(), vec![MettaValue::Bool(a)]);
 
         op.execute_step(&mut state, &factory);
         state.set_arg(0, vec![MettaValue::Bool(a)]);

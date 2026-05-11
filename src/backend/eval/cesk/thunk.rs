@@ -161,7 +161,8 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
             // must not be visible regardless of their state. Without this,
             // leftover Suspended/Blackhole thunks from branch N would corrupt
             // branch N+1's evaluation by falsely detecting cycles.
-            if !crate::backend::eval::trampoline::dispatch_hints::is_scope_visible(thunk.scope_gen) {
+            if !crate::backend::eval::trampoline::dispatch_hints::is_scope_visible(thunk.scope_gen)
+            {
                 self.entries.remove(&expr_hash);
                 self.entries.insert(expr_hash, Thunk::new_suspended());
                 return ThunkLookup::Absent;
@@ -179,7 +180,8 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
                 ThunkState::Evaluated => {
                     // Check mutation epoch — stale entries from before a
                     // space mutation must not be returned.
-                    let current_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+                    let current_epoch =
+                        crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
                     if thunk.mutation_epoch != current_epoch {
                         // Stale — evict and treat as new
                         self.entries.remove(&expr_hash);
@@ -189,9 +191,7 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
                     self.total_hits += 1;
                     ThunkLookup::Evaluated(thunk.results.clone())
                 }
-                ThunkState::Error => {
-                    ThunkLookup::Error
-                }
+                ThunkState::Error => ThunkLookup::Error,
             }
         } else {
             self.entries.insert(expr_hash, Thunk::new_suspended());
@@ -207,7 +207,8 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
         if let Some(thunk) = self.entries.get_mut(&expr_hash) {
             thunk.state = ThunkState::Evaluated;
             thunk.results = results;
-            thunk.mutation_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+            thunk.mutation_epoch =
+                crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
             thunk.scope_gen = crate::backend::eval::trampoline::dispatch_hints::cache_generation();
         }
     }
@@ -326,7 +327,7 @@ pub fn clear_thunk_table() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValueFactory};
 
     fn f() -> crate::backend::models::GcFactory {
         global_factory()

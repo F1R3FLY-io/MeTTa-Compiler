@@ -26,9 +26,9 @@
 
 pub(crate) mod atom_space;
 pub(crate) mod bloom;
+pub(crate) mod core;
 pub(crate) mod dispatch_overrides;
 mod fact_storage;
-pub(crate) mod core;
 mod grounded_ops;
 mod module_ops;
 pub(crate) mod mork_encoding;
@@ -36,6 +36,8 @@ pub(crate) mod multiplicity;
 mod mutable_state;
 mod named_spaces;
 mod pattern_matching;
+#[cfg(test)]
+mod proptests;
 pub(crate) mod rule_management;
 mod scope;
 mod scope_ops;
@@ -43,11 +45,12 @@ mod suggestions;
 mod symbol_bindings;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod proptests;
 mod type_system;
 
-pub use core::{GenericEnvironment, GenericEnvironmentShared, MettaEnvironment, MultiplicityMatch as GenericMultiplicityMatch};
+pub use core::{
+    GenericEnvironment, GenericEnvironmentShared, MettaEnvironment,
+    MultiplicityMatch as GenericMultiplicityMatch,
+};
 pub use dispatch_overrides::{
     overridable_op_id, DispatchOverrides, OverridableOpId, NUM_OVERRIDABLE_OPS,
 };

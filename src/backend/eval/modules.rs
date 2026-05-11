@@ -22,7 +22,7 @@ use std::hash::{Hash, Hasher};
 use crate::backend::compile::compile_generic;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
 use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
-use crate::backend::eval::trampoline::{ MettaEnvironment, EvalContext};
+use crate::backend::eval::trampoline::{EvalContext, MettaEnvironment};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 use crate::backend::modules::path::{resolve_library_form_with_importer, resolve_module_path};
 
@@ -61,10 +61,7 @@ where
     } else if let Some(s) = path_arg.as_atom() {
         s.to_string()
     } else {
-        let err = factory.error(
-            "include: expected string or symbol path",
-            path_arg.clone(),
-        );
+        let err = factory.error("include: expected string or symbol path", path_arg.clone());
         return (vec![err], env);
     };
 
@@ -128,9 +125,7 @@ where
     // This ensures that when a nested trampoline (e.g., !(import! ...)) fires a GC
     // safepoint, the remaining expressions in this Vec are visible as roots.
     // SAFETY: `expressions` outlives `_frame_guard` (both are locals in this scope).
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::Include, &expressions)
-    };
+    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::Include, &expressions) };
 
     // Process expressions: extract rules, evaluate force-eval expressions.
     // Iterate by reference so the Vec stays alive for the frame guard.
@@ -231,38 +226,32 @@ where
     //      `<MeTTaTron>/stdlib`, plus runtime additions from `git-import!`).
     //
     // All failure paths return a graceful error MettaValue (never panic).
-    let (resolved_path, path_display): (std::path::PathBuf, String) =
-        if let Some(s) = path_arg.as_string() {
-            let p = resolve_module_path(s, env.current_module_dir());
-            let d = s.to_string();
-            (p, d)
-        } else if let Some(s) = path_arg.as_atom() {
-            let p = resolve_module_path(s, env.current_module_dir());
-            let d = s.to_string();
-            (p, d)
-        } else if let Some(items_ref) = path_arg.as_sexpr() {
-            // PeTTa-compatible (library X) / (library X Y) form.
-            if items_ref.first().and_then(|h| h.as_atom()) == Some("library") {
-                match resolve_library_form_with_importer(items_ref, env.current_module_dir()) {
-                    Some(p) => {
-                        let d = format!("{:?}", path_arg);
-                        (p, d)
-                    }
-                    None => {
-                        let err = factory.error(
+    let (resolved_path, path_display): (std::path::PathBuf, String) = if let Some(s) =
+        path_arg.as_string()
+    {
+        let p = resolve_module_path(s, env.current_module_dir());
+        let d = s.to_string();
+        (p, d)
+    } else if let Some(s) = path_arg.as_atom() {
+        let p = resolve_module_path(s, env.current_module_dir());
+        let d = s.to_string();
+        (p, d)
+    } else if let Some(items_ref) = path_arg.as_sexpr() {
+        // PeTTa-compatible (library X) / (library X Y) form.
+        if items_ref.first().and_then(|h| h.as_atom()) == Some("library") {
+            match resolve_library_form_with_importer(items_ref, env.current_module_dir()) {
+                Some(p) => {
+                    let d = format!("{:?}", path_arg);
+                    (p, d)
+                }
+                None => {
+                    let err = factory.error(
                             "import!: (library ...) form did not resolve to an existing file. \
                              Check METTA_LIBRARY_PATH and that any required `git-import!` has been called.",
                             path_arg.clone(),
                         );
-                        return (vec![err], env);
-                    }
+                    return (vec![err], env);
                 }
-            } else {
-                let err = factory.error(
-                    "import!: expected string, symbol, or (library ...) S-expression for module path",
-                    path_arg.clone(),
-                );
-                return (vec![err], env);
             }
         } else {
             let err = factory.error(
@@ -270,7 +259,14 @@ where
                 path_arg.clone(),
             );
             return (vec![err], env);
-        };
+        }
+    } else {
+        let err = factory.error(
+            "import!: expected string, symbol, or (library ...) S-expression for module path",
+            path_arg.clone(),
+        );
+        return (vec![err], env);
+    };
     let path_str = path_display;
 
     // Cycle detection: hash the resolved path
@@ -330,9 +326,7 @@ where
 
     // Push a frame guard protecting compiled expressions from GC during nested eval.
     // SAFETY: `expressions` outlives `_frame_guard` (both are locals in this scope).
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::Import, &expressions)
-    };
+    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::Import, &expressions) };
 
     // Process expressions: extract rules, type declarations, evaluate force-eval.
     // Iterate by reference so the Vec stays alive for the frame guard.
@@ -411,10 +405,7 @@ where
     };
 
     // Return a space handle representation
-    let result = factory.sexpr(vec![
-        factory.atom("space"),
-        factory.atom(&module_name),
-    ]);
+    let result = factory.sexpr(vec![factory.atom("space"), factory.atom(&module_name)]);
 
     (vec![result], env)
 }
@@ -432,10 +423,7 @@ where
     F: MettaValueFactory<V> + Clone,
 {
     // Return a placeholder - in a full implementation this would list modules
-    let result = factory.sexpr(vec![
-        factory.atom("modules"),
-        factory.atom("none"),
-    ]);
+    let result = factory.sexpr(vec![factory.atom("modules"), factory.atom("none")]);
 
     (vec![result], env)
 }

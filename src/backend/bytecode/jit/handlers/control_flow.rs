@@ -596,15 +596,9 @@ pub fn compile_jump_if_not_bool<'a, 'b>(
     // Check if value is NOT bool: (tag & TAG_MASK) != TAG_BOOL
     // If not bool, jump to target (non-bool handler)
     let tag = codegen.extract_tag(val);
-    let bool_tag = codegen
-        .builder
-        .ins()
-        .iconst(types::I64, TAG_BOOL as i64);
+    let bool_tag = codegen.builder.ins().iconst(types::I64, TAG_BOOL as i64);
     // is_bool = (tag == TAG_BOOL), we want to jump if NOT bool
-    let is_bool_i8 = codegen
-        .builder
-        .ins()
-        .icmp(IntCC::Equal, tag, bool_tag);
+    let is_bool_i8 = codegen.builder.ins().icmp(IntCC::Equal, tag, bool_tag);
     // is_not_bool = !is_bool (for brif: true branch = first arg)
     // brif jumps to first if nonzero, second if zero
     // We want: if is_bool → fallthrough, if not_bool → target

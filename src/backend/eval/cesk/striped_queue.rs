@@ -225,7 +225,8 @@ impl StripedQueue {
                 self.task_count.fetch_sub(1, Ordering::Relaxed);
                 return Some(task);
             }
-            self.notify_cvar.wait_for(&mut { guard }, std::time::Duration::from_millis(1));
+            self.notify_cvar
+                .wait_for(&mut { guard }, std::time::Duration::from_millis(1));
         }
     }
 
@@ -288,8 +289,8 @@ pub fn current_worker_id() -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::AtomicU32;
+    use std::sync::Arc;
 
     fn make_task(priority: u32) -> StripedTask {
         StripedTask {
@@ -391,26 +392,30 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
 
         // Distribute workers to threads
-        let handles: Vec<_> = workers.into_iter().enumerate().map(|(id, worker)| {
-            let q = Arc::clone(&queue);
-            let c = Arc::clone(&counter);
-            std::thread::spawn(move || {
-                // Each worker pushes 10 tasks to its local deque
-                for i in 0..10 {
-                    StripedQueue::push_local(&worker, make_task(i as u32), q.task_count_ref());
-                }
+        let handles: Vec<_> = workers
+            .into_iter()
+            .enumerate()
+            .map(|(id, worker)| {
+                let q = Arc::clone(&queue);
+                let c = Arc::clone(&counter);
+                std::thread::spawn(move || {
+                    // Each worker pushes 10 tasks to its local deque
+                    for i in 0..10 {
+                        StripedQueue::push_local(&worker, make_task(i as u32), q.task_count_ref());
+                    }
 
-                // Then pop all local + steal from others
-                let mut count = 0;
-                while StripedQueue::pop_local(&worker).is_some() {
-                    count += 1;
-                }
-                while q.try_steal(id, &worker).is_some() {
-                    count += 1;
-                }
-                c.fetch_add(count, Ordering::Relaxed);
+                    // Then pop all local + steal from others
+                    let mut count = 0;
+                    while StripedQueue::pop_local(&worker).is_some() {
+                        count += 1;
+                    }
+                    while q.try_steal(id, &worker).is_some() {
+                        count += 1;
+                    }
+                    c.fetch_add(count, Ordering::Relaxed);
+                })
             })
-        }).collect();
+            .collect();
 
         for h in handles {
             h.join().expect("thread panicked");

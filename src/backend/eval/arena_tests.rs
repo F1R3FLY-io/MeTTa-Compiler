@@ -33,13 +33,8 @@ mod tests {
             fn $name() {
                 let results = run_eval($metta_src);
                 let expected_slice: &[&str] = $expected;
-                let expected: Vec<String> =
-                    expected_slice.iter().map(|s| s.to_string()).collect();
-                assert_eq!(
-                    results, expected,
-                    "Eval failed for: {}",
-                    $metta_src
-                );
+                let expected: Vec<String> = expected_slice.iter().map(|s| s.to_string()).collect();
+                assert_eq!(results, expected, "Eval failed for: {}", $metta_src);
             }
         };
     }
@@ -91,13 +86,17 @@ mod tests {
     // =========================================================================
 
     // User-defined function args evaluated before rule matching
-    eval_test!(eval_before_match_nested_call,
+    eval_test!(
+        eval_before_match_nested_call,
         "(= (double $x) (+ $x $x)) !(double (+ 1 2))",
-        &["6"]);
+        &["6"]
+    );
 
-    eval_test!(eval_before_match_data_constructor,
+    eval_test!(
+        eval_before_match_data_constructor,
         "(= (wrap $x) (wrapped $x)) !(wrap (+ 2 3))",
-        &["(wrapped 5)"]);
+        &["(wrapped 5)"]
+    );
 
     // =========================================================================
     // Comparisons
@@ -134,7 +133,11 @@ mod tests {
     eval_test!(if_computed_condition, "!(if (< 1 2) yes no)", &["yes"]);
     eval_test!(if_nested_then, "!(if True (+ 1 2) 0)", &["3"]);
     eval_test!(if_nested_else, "!(if False 0 (+ 1 2))", &["3"]);
-    eval_test!(if_deeply_nested, "!(if True (if True (if True deep outer) outer2) outer3)", &["deep"]);
+    eval_test!(
+        if_deeply_nested,
+        "!(if True (if True (if True deep outer) outer2) outer3)",
+        &["deep"]
+    );
     eval_test!(if_lazy_eval_true, "!(if True 1 (/ 1 0))", &["1"]);
     // Non-boolean conditions return the unreduced (if cond then else) as
     // a residual normal form. Spec §11.2.1's "non-Bool → NotReducible"
@@ -142,9 +145,17 @@ mod tests {
     // no equation, so callers get the equivalent "no further reduction"
     // signal. See eval_loop.rs ProcessIfCondition non-boolean branch.
     eval_test!(if_non_bool_number, "!(if 1 yes no)", &["(if 1 yes no)"]);
-    eval_test!(if_with_atom_condition, "!(if foo then else)", &["(if foo then else)"]);
+    eval_test!(
+        if_with_atom_condition,
+        "!(if foo then else)",
+        &["(if foo then else)"]
+    );
     // MeTTa HE: Unit is NOT boolean — returns unreduced (if () then else)
-    eval_test!(if_unit_condition_unreduced, "!(if () True False)", &["(if () True False)"]);
+    eval_test!(
+        if_unit_condition_unreduced,
+        "!(if () True False)",
+        &["(if () True False)"]
+    );
 
     // =========================================================================
     // Let Bindings
@@ -156,10 +167,26 @@ mod tests {
     eval_test!(let_pattern, "!(let ($a $b) (1 2) (+ $a $b))", &["3"]);
     eval_test!(let_with_computation, "!(let $x (+ 2 3) (* $x 2))", &["10"]);
     eval_test!(let_variable_pattern, "!(let $x 42 $x)", &["42"]);
-    eval_test!(let_deeply_nested, "!(let $x 1 (let $y 2 (let $z 3 (+ $x (+ $y $z)))))", &["6"]);
-    eval_test!(let_star_sequential, "!(let* (($x 1) ($y (+ $x 1))) $y)", &["2"]);
-    eval_test!(let_star_multi, "!(let* (($a 1) ($b 2) ($c (+ $a $b))) $c)", &["3"]);
-    eval_test!(let_star_multiple, "!(let* (($x 1) ($y (+ $x 1)) ($z (+ $y 1))) $z)", &["3"]);
+    eval_test!(
+        let_deeply_nested,
+        "!(let $x 1 (let $y 2 (let $z 3 (+ $x (+ $y $z)))))",
+        &["6"]
+    );
+    eval_test!(
+        let_star_sequential,
+        "!(let* (($x 1) ($y (+ $x 1))) $y)",
+        &["2"]
+    );
+    eval_test!(
+        let_star_multi,
+        "!(let* (($a 1) ($b 2) ($c (+ $a $b))) $c)",
+        &["3"]
+    );
+    eval_test!(
+        let_star_multiple,
+        "!(let* (($x 1) ($y (+ $x 1)) ($z (+ $y 1))) $z)",
+        &["3"]
+    );
 
     // =========================================================================
     // List Operations
@@ -188,10 +215,18 @@ mod tests {
     // quote is self-evaluating — preserves the (quote ...) wrapper (HE semantics)
     eval_test!(quote_preserves, "!(quote (+ 1 2))", &["(quote (+ 1 2))"]);
     eval_test!(eval_quoted, "!(eval (quote (+ 1 2)))", &["3"]);
-    eval_test!(quote_nested, "!(quote (+ (+ 1 2) 3))", &["(quote (+ (+ 1 2) 3))"]);
+    eval_test!(
+        quote_nested,
+        "!(quote (+ (+ 1 2) 3))",
+        &["(quote (+ (+ 1 2) 3))"]
+    );
     eval_test!(eval_force_quoted, "!(eval (quote (* 6 7)))", &["42"]);
     eval_test!(eval_on_value, "!(eval 42)", &["42"]);
-    eval_test!(quote_nested_structure, "!(quote ((+ 1 2) (* 3 4)))", &["(quote ((+ 1 2) (* 3 4)))"]);
+    eval_test!(
+        quote_nested_structure,
+        "!(quote ((+ 1 2) (* 3 4)))",
+        &["(quote ((+ 1 2) (* 3 4)))"]
+    );
     eval_test!(eval_nested_quote, "!(eval (quote (+ 1 (+ 2 3))))", &["6"]);
 
     // unquote: unwraps Quoted variant without evaluating the inner expression
@@ -200,7 +235,11 @@ mod tests {
     eval_test!(unquote_atom, "!(unquote (quote foo))", &["foo"]);
 
     // quote + introspection transparency
-    eval_test!(get_metatype_quoted, "!(get-metatype (quote foo))", &["Expression"]);
+    eval_test!(
+        get_metatype_quoted,
+        "!(get-metatype (quote foo))",
+        &["Expression"]
+    );
 
     // =========================================================================
     // Type System
@@ -224,7 +263,11 @@ mod tests {
     }
 
     // Gap 1: get-metatype correctly classifies all metatypes
-    eval_test!(metatype_variable_dollar, "!(get-metatype $x)", &["Variable"]);
+    eval_test!(
+        metatype_variable_dollar,
+        "!(get-metatype $x)",
+        &["Variable"]
+    );
     eval_test!(metatype_symbol, "!(get-metatype foo)", &["Symbol"]);
     eval_test!(metatype_grounded, "!(get-metatype 42)", &["Grounded"]);
 
@@ -274,13 +317,20 @@ mod tests {
     eval_test!(superpose_single, "!(superpose (1))", &["1"]);
     eval_test!(superpose_empty, "!(superpose ())", &[]);
     eval_test!(collapse_single, "!(collapse (superpose (1)))", &["(1)"]);
-    eval_test!(collapse_single_elem, "!(collapse (superpose (42)))", &["(42)"]);
+    eval_test!(
+        collapse_single_elem,
+        "!(collapse (superpose (42)))",
+        &["(42)"]
+    );
     eval_test!(collapse_empty_super, "!(collapse (superpose ()))", &["()"]);
 
     #[test]
     fn superpose_multiple() {
         let results = run_eval("!(superpose (1 2 3))");
-        assert!(!results.is_empty(), "superpose should return at least one result");
+        assert!(
+            !results.is_empty(),
+            "superpose should return at least one result"
+        );
         assert_eq!(results[0], "1", "First superpose result should be 1");
     }
 
@@ -290,12 +340,20 @@ mod tests {
 
     eval_test!(case_basic_match, "!(case a ((a yes) (b no)))", &["yes"]);
     eval_test!(case_second_match, "!(case b ((a yes) (b no)))", &["no"]);
-    eval_test!(case_default, "!(case c ((a yes) ($x default)))", &["default"]);
+    eval_test!(
+        case_default,
+        "!(case c ((a yes) ($x default)))",
+        &["default"]
+    );
     // MeTTa HE: when no case matches, result is Empty (no results / branch pruned)
     eval_test!(case_no_match, "!(case z ((a 1) (b 2)))", &[] as &[&str]);
     eval_test!(case_wildcard, "!(case z ((a 1) (_ default)))", &["default"]);
     eval_test!(case_multi, "!(case b ((a A) (b B) (c C)))", &["B"]);
-    eval_test!(complex_case, "!(case (+ 1 1) ((1 one) (2 two) (3 three) ($x other)))", &["two"]);
+    eval_test!(
+        complex_case,
+        "!(case (+ 1 1) ((1 one) (2 two) (3 three) ($x other)))",
+        &["two"]
+    );
 
     // =========================================================================
     // Case with nondeterministic scrutinee (demand-driven pruning tests)
@@ -367,7 +425,11 @@ mod tests {
     // Error Handling
     // =========================================================================
 
-    eval_test!(error_create, "!(Error test-msg details)", &["(Error details test-msg)"]);
+    eval_test!(
+        error_create,
+        "!(Error test-msg details)",
+        &["(Error details test-msg)"]
+    );
     eval_test!(is_error_normal, "!(is-error 42)", &["False"]);
     eval_test!(is_error_string, "!(is-error \"hello\")", &["False"]);
     eval_test!(is_error_bool, "!(is-error True)", &["False"]);
@@ -379,7 +441,10 @@ mod tests {
     #[test]
     fn division_by_zero() {
         let results = run_eval("!(/ 1 0)");
-        assert!(!results.is_empty(), "Division by zero should return a result");
+        assert!(
+            !results.is_empty(),
+            "Division by zero should return a result"
+        );
         let first = &results[0];
         assert!(
             first.contains("Error") || first.contains("Division") || first.contains("0"),
@@ -409,8 +474,11 @@ mod tests {
         // debuggability (user-authorized hard-cut).
         let results = run_eval("!(* True 5)");
         assert!(!results.is_empty(), "Type mismatch should return a result");
-        assert!(results[0].contains("Error") && results[0].contains("IncorrectArgument"),
-            "Type mismatch should return (Error _ IncorrectArgument). Got: {}", results[0]);
+        assert!(
+            results[0].contains("Error") && results[0].contains("IncorrectArgument"),
+            "Type mismatch should return (Error _ IncorrectArgument). Got: {}",
+            results[0]
+        );
     }
 
     #[test]
@@ -418,8 +486,11 @@ mod tests {
         // H5 (2026-05-05) hard-cut: see mul_type_mismatch_returns_error.
         let results = run_eval("!(- \"hello\" 2)");
         assert!(!results.is_empty(), "Type mismatch should return a result");
-        assert!(results[0].contains("Error") && results[0].contains("IncorrectArgument"),
-            "Type mismatch should return (Error _ IncorrectArgument). Got: {}", results[0]);
+        assert!(
+            results[0].contains("Error") && results[0].contains("IncorrectArgument"),
+            "Type mismatch should return (Error _ IncorrectArgument). Got: {}",
+            results[0]
+        );
     }
 
     #[test]
@@ -427,8 +498,11 @@ mod tests {
         // H5 (2026-05-05) hard-cut: see mul_type_mismatch_returns_error.
         let results = run_eval("!(/ 10 \"x\")");
         assert!(!results.is_empty(), "Type mismatch should return a result");
-        assert!(results[0].contains("Error") && results[0].contains("IncorrectArgument"),
-            "Type mismatch should return (Error _ IncorrectArgument). Got: {}", results[0]);
+        assert!(
+            results[0].contains("Error") && results[0].contains("IncorrectArgument"),
+            "Type mismatch should return (Error _ IncorrectArgument). Got: {}",
+            results[0]
+        );
     }
 
     #[test]
@@ -436,13 +510,19 @@ mod tests {
         let results = run_eval("!(Error TestError \"test message\")");
         assert!(!results.is_empty(), "Error should return a result");
         assert!(results[0].contains("Error"), "Should return an error");
-        assert!(results[0].contains("TestError"), "Should contain error type");
+        assert!(
+            results[0].contains("TestError"),
+            "Should contain error type"
+        );
     }
 
     #[test]
     fn error_if_then_branch() {
         let results = run_eval("!(if True (/ 1 0) ok)");
-        assert!(!results.is_empty(), "If with error in then should return result");
+        assert!(
+            !results.is_empty(),
+            "If with error in then should return result"
+        );
         assert!(
             results[0].contains("Error") || results[0].contains("Division"),
             "Then branch error should propagate: {}",
@@ -461,31 +541,75 @@ mod tests {
     eval_test!(map_single, "!(map-atom (1) $x (+ $x 10))", &["(11)"]);
     eval_test!(map_double, "!(map-atom (1 2 3) $x (* $x 2))", &["(2 4 6)"]);
     eval_test!(map_identity, "!(map-atom (1 2 3) $x $x)", &["(1 2 3)"]);
-    eval_test!(nested_map, "!(map-atom ((1 2) (3 4)) $lst (car-atom $lst))", &["(1 3)"]);
-    eval_test!(filter_all_pass, "!(filter-atom (1 2 3) $x True)", &["(1 2 3)"]);
+    eval_test!(
+        nested_map,
+        "!(map-atom ((1 2) (3 4)) $lst (car-atom $lst))",
+        &["(1 3)"]
+    );
+    eval_test!(
+        filter_all_pass,
+        "!(filter-atom (1 2 3) $x True)",
+        &["(1 2 3)"]
+    );
     eval_test!(filter_all_fail, "!(filter-atom (1 2 3) $x False)", &["()"]);
-    eval_test!(filter_some_pass, "!(filter-atom (1 2 3 4) $x (< $x 3))", &["(1 2)"]);
-    eval_test!(foldl_sum, "!(foldl-atom (1 2 3 4) 0 $acc $x (+ $acc $x))", &["10"]);
-    eval_test!(foldl_empty, "!(foldl-atom () 42 $acc $x (+ $acc $x))", &["42"]);
-    eval_test!(foldl_product, "!(foldl-atom (1 2 3 4) 1 $acc $x (* $acc $x))", &["24"]);
-    eval_test!(foldl_concat, "!(foldl-atom (a b c) () $acc $x (cons-atom $x $acc))", &["(c b a)"]);
+    eval_test!(
+        filter_some_pass,
+        "!(filter-atom (1 2 3 4) $x (< $x 3))",
+        &["(1 2)"]
+    );
+    eval_test!(
+        foldl_sum,
+        "!(foldl-atom (1 2 3 4) 0 $acc $x (+ $acc $x))",
+        &["10"]
+    );
+    eval_test!(
+        foldl_empty,
+        "!(foldl-atom () 42 $acc $x (+ $acc $x))",
+        &["42"]
+    );
+    eval_test!(
+        foldl_product,
+        "!(foldl-atom (1 2 3 4) 1 $acc $x (* $acc $x))",
+        &["24"]
+    );
+    eval_test!(
+        foldl_concat,
+        "!(foldl-atom (a b c) () $acc $x (cons-atom $x $acc))",
+        &["(c b a)"]
+    );
 
     // =========================================================================
     // Chain Expressions
     // =========================================================================
 
-    eval_test!(chain_basic, "!(chain (superpose (1 2)) $x (+ $x 10))", &["11", "12"]);
+    eval_test!(
+        chain_basic,
+        "!(chain (superpose (1 2)) $x (+ $x 10))",
+        &["11", "12"]
+    );
     eval_test!(chain_single, "!(chain (+ 1 2) $x (* $x 10))", &["30"]);
     eval_test!(chain_identity, "!(chain 42 $x $x)", &["42"]);
     eval_test!(chain_arithmetic, "!(chain (+ 1 2) $x (* $x 10))", &["30"]);
-    eval_test!(chain_superpose, "!(collapse (chain (superpose (1 2 3)) $x (+ $x 100)))", &["(101 102 103)"]);
-    eval_test!(chain_with_let, "!(chain 5 $x (let $y 10 (+ $x $y)))", &["15"]);
+    eval_test!(
+        chain_superpose,
+        "!(collapse (chain (superpose (1 2 3)) $x (+ $x 100)))",
+        &["(101 102 103)"]
+    );
+    eval_test!(
+        chain_with_let,
+        "!(chain 5 $x (let $y 10 (+ $x $y)))",
+        &["15"]
+    );
 
     #[test]
     fn chain_empty() {
         // MeTTa HE: chain over empty result produces zero results (branch annihilation)
         let results = run_eval("!(chain (superpose ()) $x (+ $x 1))");
-        assert!(results.is_empty(), "chain with empty expr should produce zero results, got: {:?}", results);
+        assert!(
+            results.is_empty(),
+            "chain with empty expr should produce zero results, got: {:?}",
+            results
+        );
     }
 
     // =========================================================================
@@ -593,11 +717,19 @@ mod tests {
         assert_eq!(results.len(), 1, "Expected exactly one collapse result");
         // Parse the S-expression result and check elements as a set
         let result = &results[0];
-        assert!(result.starts_with('(') && result.ends_with(')'), "Expected S-expression: {}", result);
+        assert!(
+            result.starts_with('(') && result.ends_with(')'),
+            "Expected S-expression: {}",
+            result
+        );
         let inner = &result[1..result.len() - 1];
         let mut elements: Vec<&str> = inner.split_whitespace().collect();
         elements.sort();
-        assert_eq!(elements, vec!["a", "b", "c"], "Collapse result should contain a, b, c in any order");
+        assert_eq!(
+            elements,
+            vec!["a", "b", "c"],
+            "Collapse result should contain a, b, c in any order"
+        );
     }
 
     // =========================================================================
@@ -634,10 +766,26 @@ mod tests {
     eval_test!(unify_success, "!(unify $x 42 $x fail)", &["42"]);
     eval_test!(unify_failure, "!(unify 1 2 success fail)", &["fail"]);
     eval_test!(unify_pattern, "!(unify ($a $b) (1 2) (+ $a $b) 0)", &["3"]);
-    eval_test!(unify_same_values, "!(unify 42 42 success fail)", &["success"]);
-    eval_test!(unify_different_values, "!(unify 1 2 success fail)", &["fail"]);
-    eval_test!(unify_sexpr_matching, "!(unify (a b c) (a b c) matched not-matched)", &["matched"]);
-    eval_test!(unify_sexpr_not_matching, "!(unify (a b c) (a b d) matched not-matched)", &["not-matched"]);
+    eval_test!(
+        unify_same_values,
+        "!(unify 42 42 success fail)",
+        &["success"]
+    );
+    eval_test!(
+        unify_different_values,
+        "!(unify 1 2 success fail)",
+        &["fail"]
+    );
+    eval_test!(
+        unify_sexpr_matching,
+        "!(unify (a b c) (a b c) matched not-matched)",
+        &["matched"]
+    );
+    eval_test!(
+        unify_sexpr_not_matching,
+        "!(unify (a b c) (a b d) matched not-matched)",
+        &["not-matched"]
+    );
     eval_test!(switch_basic, "!(switch foo ((foo 1) (bar 2)))", &["1"]);
     eval_test!(switch_second, "!(switch bar ((foo 1) (bar 2)))", &["2"]);
     eval_test!(switch_default, "!(switch xyz ((foo 1) ($x 99)))", &["99"]);
@@ -768,11 +916,7 @@ mod tests {
     // Function Application
     // =========================================================================
 
-    eval_test!(
-        lambda_identity,
-        "(= (id $x) $x)\n!(id 42)",
-        &["42"]
-    );
+    eval_test!(lambda_identity, "(= (id $x) $x)\n!(id 42)", &["42"]);
 
     eval_test!(
         hof_apply_twice,
@@ -1186,23 +1330,27 @@ mod tests {
 
     #[test]
     fn test_tiered_data_constructor() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (= (next Z) (S Z))
             (= (next (S $n)) (S (S $n)))
             !(next Z)
             !(next (S Z))
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(S Z)", "(S (S Z))"]);
     }
 
     #[test]
     fn test_tiered_typed_function() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: double (-> Number Number))
             (= (double $x) (+ $x $x))
             !(double (+ 1 2))
             !(double (+ 3 4))
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["6", "14"]);
     }
 
@@ -1211,59 +1359,69 @@ mod tests {
         // Same as test_meta_type_expression_not_preevaluated but through
         // the tiered eval() path. The tuple path evaluates sub-elements,
         // so `(quoted (+ 1 2))` → `(quoted 3)` per MeTTa HE semantics.
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: my-quote (-> Expression Expression))
             (= (my-quote $e) (quoted $e))
             !(my-quote (+ 1 2))
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(quoted 3)"]);
     }
 
     #[test]
     fn test_tiered_nondet_applicative() {
-        let mut results = run_eval_tiered(r#"
+        let mut results = run_eval_tiered(
+            r#"
             (= (f) 1)
             (= (f) 2)
             (= (f) 3)
             (= (g $x) (* $x $x))
             !(g (f))
-        "#);
+        "#,
+        );
         results.sort();
         assert_eq!(results, vec!["1", "4", "9"]);
     }
 
     #[test]
     fn test_tiered_peano_arithmetic() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (= (add Z $n) $n)
             (= (add (S $m) $n) (S (add $m $n)))
             !(add (S Z) (S Z))
             !(add (S (S Z)) (S (S Z)))
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(S (S Z))", "(S (S (S (S Z))))"]);
     }
 
     #[test]
     fn test_tiered_guarded_recursion() {
         // fib with guard to prevent divergence from overlapping rules
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (= (fib $n) (if (== $n 0) 1 (if (== $n 1) 1 (+ (fib (- $n 1)) (fib (- $n 2))))))
             !(fib 0)
             !(fib 1)
             !(fib 5)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["1", "1", "8"]);
     }
 
     #[test]
     fn test_tiered_to_int_conversion() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (= (to-int Z) 0)
             (= (to-int (S $n)) (+ 1 (to-int $n)))
             !(to-int Z)
             !(to-int (S Z))
             !(to-int (S (S (S Z))))
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["0", "1", "3"]);
     }
 
@@ -1272,25 +1430,50 @@ mod tests {
     // =========================================================================
 
     // Reducible expression: (+ 1 2) evaluates to 3 (differs from original)
-    eval_test!(if_reducible_reduces, "!(if-reducible (+ 1 2) True False)", &["True"]);
+    eval_test!(
+        if_reducible_reduces,
+        "!(if-reducible (+ 1 2) True False)",
+        &["True"]
+    );
 
     // Irreducible atom: foo has no rules, evaluates to itself
-    eval_test!(if_reducible_irreducible_atom, "!(if-reducible foo True False)", &["False"]);
+    eval_test!(
+        if_reducible_irreducible_atom,
+        "!(if-reducible foo True False)",
+        &["False"]
+    );
 
     // Irreducible variable: $x has no binding, stays as-is
-    eval_test!(if_reducible_irreducible_var, "!(if-reducible $x True False)", &["False"]);
+    eval_test!(
+        if_reducible_irreducible_var,
+        "!(if-reducible $x True False)",
+        &["False"]
+    );
 
     // Nested reducible: inner reduction makes it reducible
-    eval_test!(if_reducible_nested, "!(if-reducible (+ (* 2 3) 1) reduced not-reduced)", &["reduced"]);
+    eval_test!(
+        if_reducible_nested,
+        "!(if-reducible (+ (* 2 3) 1) reduced not-reduced)",
+        &["reduced"]
+    );
 
     // Then-branch is evaluated (not just returned as data)
-    eval_test!(if_reducible_then_eval, "!(if-reducible (+ 1 1) (+ 10 20) fallback)", &["30"]);
+    eval_test!(
+        if_reducible_then_eval,
+        "!(if-reducible (+ 1 1) (+ 10 20) fallback)",
+        &["30"]
+    );
 
     // Else-branch is evaluated when irreducible
-    eval_test!(if_reducible_else_eval, "!(if-reducible foo (+ 10 20) (+ 3 4))", &["7"]);
+    eval_test!(
+        if_reducible_else_eval,
+        "!(if-reducible foo (+ 10 20) (+ 3 4))",
+        &["7"]
+    );
 
     // User-defined rule makes expression reducible
-    eval_test!(if_reducible_user_rule,
+    eval_test!(
+        if_reducible_user_rule,
         r#"
             (= (double $x) (* $x 2))
             !(if-reducible (double 5) yes no)
@@ -1299,7 +1482,8 @@ mod tests {
     );
 
     // Expression with no matching rule is irreducible
-    eval_test!(if_reducible_no_rule,
+    eval_test!(
+        if_reducible_no_rule,
         r#"
             (= (double $x) (* $x 2))
             !(if-reducible (triple 5) yes no)
@@ -1308,10 +1492,18 @@ mod tests {
     );
 
     // S-expression that is irreducible (no head rule)
-    eval_test!(if_reducible_sexpr_irreducible, "!(if-reducible (unknown-fn 1 2) yes no)", &["no"]);
+    eval_test!(
+        if_reducible_sexpr_irreducible,
+        "!(if-reducible (unknown-fn 1 2) yes no)",
+        &["no"]
+    );
 
     // Boolean result from comparison is reducible
-    eval_test!(if_reducible_comparison, "!(if-reducible (== 1 1) yes no)", &["yes"]);
+    eval_test!(
+        if_reducible_comparison,
+        "!(if-reducible (== 1 1) yes no)",
+        &["yes"]
+    );
 
     // =========================================================================
     // if-reducible arity errors — tree-walker
@@ -1337,7 +1529,8 @@ mod tests {
 
     // Match found in &self space
     // Note: run_eval captures results from ALL expressions; (A B) as a fact returns (A B)
-    eval_test!(match_or_found,
+    eval_test!(
+        match_or_found,
         r#"
             (A B)
             !(match-or &self (A $x) default-val $x)
@@ -1346,7 +1539,8 @@ mod tests {
     );
 
     // No match → default value returned
-    eval_test!(match_or_no_match,
+    eval_test!(
+        match_or_no_match,
         r#"
             (A B)
             !(match-or &self (C $x) default-val $x)
@@ -1355,7 +1549,8 @@ mod tests {
     );
 
     // Default is evaluated (not just returned as data)
-    eval_test!(match_or_default_eval,
+    eval_test!(
+        match_or_default_eval,
         r#"
             (A B)
             !(match-or &self (C $x) (+ 1 2) $x)
@@ -1364,7 +1559,8 @@ mod tests {
     );
 
     // Multiple matches: all returned (match-or is nondeterministic when matches exist)
-    eval_test_unordered!(match_or_multiple_matches,
+    eval_test_unordered!(
+        match_or_multiple_matches,
         r#"
             (color red)
             (color blue)
@@ -1374,7 +1570,8 @@ mod tests {
     );
 
     // Match with complex template
-    eval_test!(match_or_complex_template,
+    eval_test!(
+        match_or_complex_template,
         r#"
             (pair 3 4)
             !(match-or &self (pair $a $b) 0 (+ $a $b))
@@ -1383,7 +1580,8 @@ mod tests {
     );
 
     // Named space (owned) — bind! and add-atom each return ()
-    eval_test!(match_or_named_space,
+    eval_test!(
+        match_or_named_space,
         r#"
             !(bind! &kb (new-space))
             !(add-atom &kb (fact 42))
@@ -1393,7 +1591,8 @@ mod tests {
     );
 
     // Named space with no match → default
-    eval_test!(match_or_named_space_default,
+    eval_test!(
+        match_or_named_space_default,
         r#"
             !(bind! &kb (new-space))
             !(add-atom &kb (fact 42))
@@ -1438,19 +1637,23 @@ mod tests {
 
     #[test]
     fn test_tiered_if_reducible_user_rule() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (= (double $x) (* $x 2))
             !(if-reducible (double 5) yes no)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["yes"]);
     }
 
     #[test]
     fn test_tiered_if_reducible_no_rule() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (= (double $x) (* $x 2))
             !(if-reducible (triple 5) yes no)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["no"]);
     }
 
@@ -1472,61 +1675,73 @@ mod tests {
 
     #[test]
     fn test_tiered_match_or_found() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (A B)
             !(match-or &self (A $x) default-val $x)
-        "#);
+        "#,
+        );
         // (A B) is a fact, returned as data; match-or finds it and returns B
         assert_eq!(results, vec!["(A B)", "B"]);
     }
 
     #[test]
     fn test_tiered_match_or_no_match() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (A B)
             !(match-or &self (C $x) default-val $x)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(A B)", "default-val"]);
     }
 
     #[test]
     fn test_tiered_match_or_default_eval() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (A B)
             !(match-or &self (C $x) (+ 1 2) $x)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(A B)", "3"]);
     }
 
     #[test]
     fn test_tiered_match_or_multiple() {
-        let mut results = run_eval_tiered(r#"
+        let mut results = run_eval_tiered(
+            r#"
             (color red)
             (color blue)
             !(match-or &self (color $x) no-color $x)
-        "#);
+        "#,
+        );
         results.sort();
         assert_eq!(results, vec!["(color blue)", "(color red)", "blue", "red"]);
     }
 
     #[test]
     fn test_tiered_match_or_named_space() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(bind! &kb (new-space))
             !(add-atom &kb (fact 42))
             !(match-or &kb (fact $x) unknown $x)
-        "#);
+        "#,
+        );
         // bind! and add-atom each return ()
         assert_eq!(results, vec!["()", "()", "42"]);
     }
 
     #[test]
     fn test_tiered_match_or_named_space_default() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(bind! &kb (new-space))
             !(add-atom &kb (fact 42))
             !(match-or &kb (other $x) not-found $x)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["()", "()", "not-found"]);
     }
 
@@ -1534,7 +1749,8 @@ mod tests {
     // if-reducible + match-or combined usage
     // =========================================================================
 
-    eval_test!(if_reducible_with_match_or,
+    eval_test!(
+        if_reducible_with_match_or,
         r#"
             (color red)
             !(if-reducible (+ 1 2) (match-or &self (color $x) none $x) fallback)
@@ -1542,7 +1758,8 @@ mod tests {
         &["(color red)", "red"]
     );
 
-    eval_test!(match_or_with_if_reducible_default,
+    eval_test!(
+        match_or_with_if_reducible_default,
         r#"
             (A B)
             !(match-or &self (missing $x) (if-reducible (+ 1 1) computed-default raw-default) $x)
@@ -1557,7 +1774,8 @@ mod tests {
     // --- Sub-phase 8.1: rhs_type wiring ---
 
     // Arithmetic rules produce Number-typed RHS
-    eval_test!(phase8_rhs_type_arithmetic,
+    eval_test!(
+        phase8_rhs_type_arithmetic,
         r#"
             (= (f $x) (+ $x 1))
             !(f 5)
@@ -1566,7 +1784,8 @@ mod tests {
     );
 
     // Comparison rules produce Bool-typed RHS
-    eval_test!(phase8_rhs_type_comparison,
+    eval_test!(
+        phase8_rhs_type_comparison,
         r#"
             (= (h $x) (< $x 0))
             !(h 5)
@@ -1575,7 +1794,8 @@ mod tests {
     );
 
     // Variable-only RHS — type depends on binding
-    eval_test!(phase8_rhs_type_variable,
+    eval_test!(
+        phase8_rhs_type_variable,
         r#"
             (= (g $x) $x)
             !(g 42)
@@ -1584,7 +1804,8 @@ mod tests {
     );
 
     // Unknown function in RHS → %Undefined% filtered out (rhs_type = None)
-    eval_test!(phase8_rhs_type_undefined,
+    eval_test!(
+        phase8_rhs_type_undefined,
         r#"
             (= (k $x) (unknown $x))
             !(k hello)
@@ -1595,7 +1816,8 @@ mod tests {
     // --- Sub-phase 8.3: Function vs tuple dispatch ---
 
     // Value type (no arrow type) → tuple path directly, no rule matching
-    eval_test!(phase8_value_type_skips_rules,
+    eval_test!(
+        phase8_value_type_skips_rules,
         r#"
             (: Red Color)
             !(Red 1 2)
@@ -1604,7 +1826,8 @@ mod tests {
     );
 
     // Arrow type → still does rule matching
-    eval_test!(phase8_arrow_type_does_not_skip,
+    eval_test!(
+        phase8_arrow_type_does_not_skip,
         r#"
             (: f (-> Number Number))
             (= (f $x) (+ $x 10))
@@ -1614,7 +1837,8 @@ mod tests {
     );
 
     // Untyped operator → still does rule matching (no shortcut)
-    eval_test!(phase8_no_type_does_not_skip,
+    eval_test!(
+        phase8_no_type_does_not_skip,
         r#"
             (= (foo $x) (+ $x 1))
             !(foo 1)
@@ -1625,7 +1849,8 @@ mod tests {
     // --- Sub-phase 8.4: match type-aware space pre-filtering ---
 
     // Type-based match filtering: only atoms with matching type returned
-    eval_test!(phase8_match_type_filter_basic,
+    eval_test!(
+        phase8_match_type_filter_basic,
         r#"
             (: a Number)
             (: b String)
@@ -1635,7 +1860,8 @@ mod tests {
     );
 
     // Multiple atoms of same type — all returned
-    eval_test_unordered!(phase8_match_type_filter_multi,
+    eval_test_unordered!(
+        phase8_match_type_filter_multi,
         r#"
             (: x Number)
             (: y Number)
@@ -1646,7 +1872,8 @@ mod tests {
     );
 
     // No atoms of matching type → empty result
-    eval_test!(phase8_match_type_filter_empty,
+    eval_test!(
+        phase8_match_type_filter_empty,
         r#"
             (: a Number)
             !(match &self (: $x Bool) $x)
@@ -1658,7 +1885,8 @@ mod tests {
 
     // Typed let binding with matching type — value 42 matches (: $x Number) structurally
     // Note: (: $x Number) as a let-pattern does structural matching, not type checking
-    eval_test!(phase8_let_typed_match,
+    eval_test!(
+        phase8_let_typed_match,
         r#"
             !(let $x 42 (+ $x 1))
         "#,
@@ -1666,7 +1894,8 @@ mod tests {
     );
 
     // Typed let binding — untyped fallback unchanged
-    eval_test!(phase8_let_untyped_unchanged,
+    eval_test!(
+        phase8_let_untyped_unchanged,
         r#"
             !(let $x 42 $x)
         "#,
@@ -1676,7 +1905,8 @@ mod tests {
     // --- Sub-phase 8.6: case type-driven pattern skipping ---
 
     // String pattern should be skipped for numeric scrutinee
-    eval_test!(phase8_case_type_skip_string,
+    eval_test!(
+        phase8_case_type_skip_string,
         r#"
             !(case 42 (("hello" string-match) ($x (+ $x 1))))
         "#,
@@ -1684,7 +1914,8 @@ mod tests {
     );
 
     // Variable pattern should NOT be skipped
-    eval_test!(phase8_case_type_no_false_skip,
+    eval_test!(
+        phase8_case_type_no_false_skip,
         r#"
             !(case 42 (($x (+ $x 1))))
         "#,
@@ -1694,7 +1925,8 @@ mod tests {
     // --- Sub-phase 8.8: Grounded arg type pre-validation ---
 
     // Valid args pass through normally
-    eval_test!(phase8_grounded_valid_args,
+    eval_test!(
+        phase8_grounded_valid_args,
         r#"
             !(+ 1 2)
         "#,
@@ -1702,7 +1934,8 @@ mod tests {
     );
 
     // S-expr args are NOT pre-validated (need evaluation first)
-    eval_test!(phase8_grounded_sexpr_not_validated,
+    eval_test!(
+        phase8_grounded_sexpr_not_validated,
         r#"
             (= (f) 1)
             !(+ (f) 2)
@@ -1713,7 +1946,8 @@ mod tests {
     // --- Sub-phase 8.7: Branch pruning by return type ---
 
     // Rules with unknown rhs_type (None) are NOT pruned (conservative)
-    eval_test!(phase8_branch_prune_conservative,
+    eval_test!(
+        phase8_branch_prune_conservative,
         r#"
             (= (g $x) (unknown-fn $x))
             !(g hello)
@@ -1722,7 +1956,8 @@ mod tests {
     );
 
     // Expected type Bool from if-condition: rules still fire correctly
-    eval_test!(phase8_expected_type_bool_if,
+    eval_test!(
+        phase8_expected_type_bool_if,
         r#"
             (= (pred $x) (< $x 10))
             !(if (pred 5) yes no)
@@ -1731,7 +1966,8 @@ mod tests {
     );
 
     // Expected type Number for arithmetic: basic functionality preserved
-    eval_test!(phase8_expected_type_number_arithmetic,
+    eval_test!(
+        phase8_expected_type_number_arithmetic,
         r#"
             (= (double $x) (+ $x $x))
             !(+ (double 3) 1)
@@ -1747,10 +1983,12 @@ mod tests {
     /// get-type (f 5) should return Number via inferred type index
     #[test]
     fn test_inferred_type_arithmetic_rule() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (f $x) (+ $x 1))
             !(get-type (f 5))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
             "Expected Number in results, got: {:?}",
@@ -1762,10 +2000,12 @@ mod tests {
     /// get-type (h 5) should return Bool via inferred type index
     #[test]
     fn test_inferred_type_comparison_rule() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (h $x) (< $x 0))
             !(get-type (h 5))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Bool"),
             "Expected Bool in results, got: {:?}",
@@ -1778,11 +2018,13 @@ mod tests {
     /// g's rhs is (f $x) — (f $x) is an S-expr whose head "f" has inferred type Number
     #[test]
     fn test_inferred_type_chained() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (f $x) (+ $x 1))
             (= (g $x) (f $x))
             !(get-type (g 5))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
             "Expected Number in results for chained inferred types, got: {:?}",
@@ -1797,11 +2039,13 @@ mod tests {
     /// (: id (-> $t $t)), id 42 → get-type should resolve $t to Number
     #[test]
     fn test_type_var_substitution_identity() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: id (-> $t $t))
             (= (id $x) $x)
             !(get-type (id 42))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
             "Expected Number for (id 42) via type var substitution, got: {:?}",
@@ -1812,9 +2056,11 @@ mod tests {
     /// (: == (-> $a $a Bool)) already works, regression test
     #[test]
     fn test_type_var_substitution_equality() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (== 1 2))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Bool"),
             "Expected Bool for (== 1 2), got: {:?}",
@@ -1825,11 +2071,13 @@ mod tests {
     /// (: wrap (-> $t (List $t))), wrap 42 → (List Number)
     #[test]
     fn test_type_var_substitution_nested() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: wrap (-> $t (List $t)))
             (= (wrap $x) (list $x))
             !(get-type (wrap 42))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "(List Number)"),
             "Expected (List Number) for (wrap 42) via type var substitution, got: {:?}",
@@ -1840,11 +2088,13 @@ mod tests {
     /// Unbound variable arg → can't substitute, return raw type variable
     #[test]
     fn test_type_var_no_binding() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: id (-> $t $t))
             (= (id $x) $x)
             !(get-type (id $x))
-        "#);
+        "#,
+        );
         // With unbound $x, arg type is %Undefined% → no constraint on $t
         // Should return $t as-is (or %Undefined% via type variable match)
         assert!(
@@ -1860,12 +2110,14 @@ mod tests {
     /// Chain: f→Number, g calls f, h calls g → h returns Number
     #[test]
     fn test_recursive_inference_chain() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (f $x) (+ $x 1))
             (= (g $x) (f $x))
             (= (h $x) (g $x))
             !(get-type (h 5))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
             "Expected Number for 3-level chain (h→g→f→Number), got: {:?}",
@@ -1877,11 +2129,13 @@ mod tests {
     /// (f (+ 1 2)) → arg is Number → only first arrow matches → Bool
     #[test]
     fn test_recursive_inference_prunes_mismatch() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: f (-> Number Bool))
             (: f (-> String Number))
             !(get-type (f (+ 1 2)))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Bool"),
             "Expected Bool for (f (+ 1 2)) with Number→Bool arrow, got: {:?}",
@@ -1897,10 +2151,12 @@ mod tests {
     /// Without explicit type declaration, get-type should still find Number args
     #[test]
     fn test_infer_arrow_double() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (double $x) (+ $x $x))
             !(get-type (double 5))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
             "Expected Number for (double 5) via inferred arrow type, got: {:?}",
@@ -1911,10 +2167,12 @@ mod tests {
     /// (= (is-pos $x) (> $x 0)) → inferred arrow (-> Number Bool)
     #[test]
     fn test_infer_arrow_is_positive() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (is-pos $x) (> $x 0))
             !(get-type (is-pos 5))
-        "#);
+        "#,
+        );
         // rhs_type from (> $x 0) is Bool, so the inferred return type should be Bool
         assert!(
             results.iter().any(|r| r == "Bool"),
@@ -1927,10 +2185,12 @@ mod tests {
     /// Should fall back to rhs_type (also %Undefined% for variable RHS)
     #[test]
     fn test_infer_arrow_identity() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (id $x) $x)
             !(get-type (id 42))
-        "#);
+        "#,
+        );
         // id has no constraints and variable RHS → %Undefined% rhs_type → falls through
         // The result should be at least something (possibly %Undefined%)
         assert!(
@@ -1946,10 +2206,12 @@ mod tests {
     /// (from `+` or `-` branches), so we should see Number in the results.
     #[test]
     fn test_infer_arrow_multi_constraint() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (f $x) (if (> $x 0) (+ $x 1) (- 0 $x)))
             !(get-type (f 5))
-        "#);
+        "#,
+        );
         // The inferred type includes Number (from rhs_type) and possibly $t (from
         // if's polymorphic return). Check that Number is among the results.
         let has_number = results.iter().any(|r| r == "Number");
@@ -1964,11 +2226,13 @@ mod tests {
     /// Two rules for same head with different rhs_types → both types returned
     #[test]
     fn test_inferred_type_nondeterministic() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (poly 0) True)
             (= (poly $x) (+ $x 1))
             !(get-type (poly 0))
-        "#);
+        "#,
+        );
         // Should have at least Bool (from True) and Number (from (+ $x 1))
         let has_bool = results.iter().any(|r| r == "Bool");
         let has_number = results.iter().any(|r| r == "Number");
@@ -1986,11 +2250,13 @@ mod tests {
     /// Simple call chain: g calls f. Fixpoint should propagate f's return type to g.
     #[test]
     fn test_fixpoint_simple_chain() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (f $x) (+ $x 1))
             (= (g $x) (f $x))
             !(get-type (g 5))
-        "#);
+        "#,
+        );
         let has_number = results.iter().any(|r| r == "Number");
         assert!(
             has_number,
@@ -2005,11 +2271,13 @@ mod tests {
     /// converges to this type variable — the important thing is it doesn't diverge.
     #[test]
     fn test_fixpoint_mutual_recursion() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (f $x) (if (== $x 0) 1 (g (- $x 1))))
             (= (g $x) (f (+ $x 1)))
             !(get-type (f 5))
-        "#);
+        "#,
+        );
         let has_number = results.iter().any(|r| r == "Number");
         let has_type_var = results.iter().any(|r| r.starts_with('$'));
         assert!(
@@ -2024,13 +2292,15 @@ mod tests {
     /// Verifies that the fixpoint terminates within bounded iterations.
     #[test]
     fn test_fixpoint_max_iterations() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (= (d $x) (+ $x 1))
             (= (c $x) (d $x))
             (= (b $x) (c $x))
             (= (a $x) (b $x))
             !(get-type (a 5))
-        "#);
+        "#,
+        );
         // The chain a→b→c→d→(+ $x 1) should ultimately resolve to Number.
         // This also verifies the fixpoint doesn't hang on long chains.
         let has_number = results.iter().any(|r| r == "Number");
@@ -2048,57 +2318,76 @@ mod tests {
     /// (: a Dog), (:< Dog Animal) → get-type a should include both Dog and Animal
     #[test]
     fn test_get_type_includes_supertypes() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: a Dog)
             (:< Dog Animal)
             !(get-type a)
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Dog"),
-            "Expected Dog in results, got: {:?}", results
+            "Expected Dog in results, got: {:?}",
+            results
         );
         assert!(
             results.iter().any(|r| r == "Animal"),
-            "Expected Animal (supertype) in results, got: {:?}", results
+            "Expected Animal (supertype) in results, got: {:?}",
+            results
         );
     }
 
     /// (:< Dog Animal), (:< Animal LivingThing) → transitive supertype closure
     #[test]
     fn test_get_type_includes_transitive_supertypes() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: a Dog)
             (:< Dog Animal)
             (:< Animal LivingThing)
             !(get-type a)
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Dog"),
-            "Expected Dog, got: {:?}", results
+            "Expected Dog, got: {:?}",
+            results
         );
         assert!(
             results.iter().any(|r| r == "Animal"),
-            "Expected Animal, got: {:?}", results
+            "Expected Animal, got: {:?}",
+            results
         );
         assert!(
             results.iter().any(|r| r == "LivingThing"),
-            "Expected LivingThing (transitive), got: {:?}", results
+            "Expected LivingThing (transitive), got: {:?}",
+            results
         );
     }
 
     /// Same type declared directly and via supertype → no duplicates
     #[test]
     fn test_get_type_no_duplicate_supertypes() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: a Dog)
             (: a Animal)
             (:< Dog Animal)
             !(get-type a)
-        "#);
+        "#,
+        );
         let dog_count = results.iter().filter(|r| r.as_str() == "Dog").count();
         let animal_count = results.iter().filter(|r| r.as_str() == "Animal").count();
-        assert_eq!(dog_count, 1, "Dog should appear exactly once, got: {:?}", results);
-        assert_eq!(animal_count, 1, "Animal should appear exactly once, got: {:?}", results);
+        assert_eq!(
+            dog_count, 1,
+            "Dog should appear exactly once, got: {:?}",
+            results
+        );
+        assert_eq!(
+            animal_count, 1,
+            "Animal should appear exactly once, got: {:?}",
+            results
+        );
     }
 
     // =========================================================================
@@ -2108,78 +2397,94 @@ mod tests {
     /// (: a A), (: b B) → get-type (a b) = (A B)
     #[test]
     fn test_tuple_type_simple() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: a A)
             (: b B)
             !(get-type (a b))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "(A B)"),
-            "Expected (A B) tuple type, got: {:?}", results
+            "Expected (A B) tuple type, got: {:?}",
+            results
         );
     }
 
     /// Nondeterministic types → Cartesian product
     #[test]
     fn test_tuple_type_cartesian() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: a A)
             (: a AA)
             (: b B)
             !(get-type (a b))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "(A B)"),
-            "Expected (A B) in results, got: {:?}", results
+            "Expected (A B) in results, got: {:?}",
+            results
         );
         assert!(
             results.iter().any(|r| r == "(AA B)"),
-            "Expected (AA B) in results, got: {:?}", results
+            "Expected (AA B) in results, got: {:?}",
+            results
         );
     }
 
     /// Nested tuple type
     #[test]
     fn test_tuple_type_nested() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: a A)
             (: b B)
             (: c C)
             !(get-type (a b c))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "(A B C)"),
-            "Expected (A B C) tuple type, got: {:?}", results
+            "Expected (A B C) tuple type, got: {:?}",
+            results
         );
     }
 
     /// Element with no type → falls back to Expression
     #[test]
     fn test_tuple_type_untyped_element_falls_back() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: a A)
             !(get-type (a untyped_thing))
-        "#);
+        "#,
+        );
         // untyped_thing has no type, so tuple construction can't proceed
         // Falls back to Expression
         assert!(
             results.iter().any(|r| r == "Expression"),
-            "Expected Expression fallback, got: {:?}", results
+            "Expected Expression fallback, got: {:?}",
+            results
         );
     }
 
     /// Data constructor with typed literals → tuple type includes literal types
     #[test]
     fn test_tuple_type_with_literals() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: stv DataCtor)
             !(get-type (stv 0.5 0.8))
-        "#);
+        "#,
+        );
         // stv has type DataCtor (not an arrow), 0.5 and 0.8 are Number
         // Tuple type should be (DataCtor Number Number)
         assert!(
             results.iter().any(|r| r == "(DataCtor Number Number)"),
-            "Expected (DataCtor Number Number) tuple type, got: {:?}", results
+            "Expected (DataCtor Number Number) tuple type, got: {:?}",
+            results
         );
     }
 
@@ -2190,81 +2495,101 @@ mod tests {
     /// (chain (+ 1 2) $x (+ $x 1)) → Number (body type)
     #[test]
     fn test_infer_type_chain_traces_body() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (chain (+ 1 2) $x (+ $x 1)))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
-            "Expected Number for chain body type, got: {:?}", results
+            "Expected Number for chain body type, got: {:?}",
+            results
         );
     }
 
     /// (function (chain (+ 1 2) $x (return (+ $x 1)))) → Number
     #[test]
     fn test_infer_type_function_return() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (function (chain (+ 1 2) $x (return (+ $x 1)))))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
-            "Expected Number for function return type, got: {:?}", results
+            "Expected Number for function return type, got: {:?}",
+            results
         );
     }
 
     /// (superpose (42 "hello")) → {Number, String}
     #[test]
     fn test_infer_type_superpose_union() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (superpose (42 "hello")))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
-            "Expected Number in superpose type union, got: {:?}", results
+            "Expected Number in superpose type union, got: {:?}",
+            results
         );
         assert!(
             results.iter().any(|r| r == "String"),
-            "Expected String in superpose type union, got: {:?}", results
+            "Expected String in superpose type union, got: {:?}",
+            results
         );
     }
 
     /// (superpose (1 2 3)) → Number (deduplicated)
     #[test]
     fn test_infer_type_superpose_dedup() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (superpose (1 2 3)))
-        "#);
+        "#,
+        );
         let number_count = results.iter().filter(|r| r.as_str() == "Number").count();
         assert_eq!(
             number_count, 1,
-            "Expected exactly one Number (deduplicated), got: {:?}", results
+            "Expected exactly one Number (deduplicated), got: {:?}",
+            results
         );
     }
 
     /// (match &self ($x) (+ $x 1)) → Number (template type)
     #[test]
     fn test_infer_type_match_template() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (match &self ($x) (+ $x 1)))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
-            "Expected Number for match template type, got: {:?}", results
+            "Expected Number for match template type, got: {:?}",
+            results
         );
     }
 
     /// (unify $a $b 42 "hello") → {Number, String}
     #[test]
     fn test_infer_type_unify_branches() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (unify $a $b 42 "hello"))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
-            "Expected Number in unify branch types, got: {:?}", results
+            "Expected Number in unify branch types, got: {:?}",
+            results
         );
         assert!(
             results.iter().any(|r| r == "String"),
-            "Expected String in unify branch types, got: {:?}", results
+            "Expected String in unify branch types, got: {:?}",
+            results
         );
     }
 
@@ -2274,12 +2599,15 @@ mod tests {
     fn test_infer_type_nested_chain_function() {
         // (function (chain (+ 1 2) $r (return (+ $r 1)))) — return arg is
         // (+ $r 1) which has type Number from the builtin signature.
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (function (chain (+ 1 2) $r (return (+ $r 1)))))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
-            "Expected Number for nested chain→function→return, got: {:?}", results
+            "Expected Number for nested chain→function→return, got: {:?}",
+            results
         );
     }
 
@@ -2290,31 +2618,37 @@ mod tests {
     /// Two arrows with same type variable name shouldn't cross-contaminate
     #[test]
     fn test_type_variable_freshening_no_cross_contamination() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: f (-> $t $t))
             (: g (-> $t Bool))
             (= (f $x) $x)
             (= (g $x) True)
             !(get-type (f (g 42)))
-        "#);
+        "#,
+        );
         // g returns Bool, so f(Bool) should return Bool (via $t=Bool)
         assert!(
             results.iter().any(|r| r == "Bool"),
-            "Expected Bool for (f (g 42)), got: {:?}", results
+            "Expected Bool for (f (g 42)), got: {:?}",
+            results
         );
     }
 
     /// Within a single arrow, type variables should still be consistently bound
     #[test]
     fn test_freshening_preserves_intra_arrow_binding() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: id (-> $t $t))
             (= (id $x) $x)
             !(get-type (id 42))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
-            "Expected Number for (id 42) via intra-arrow binding, got: {:?}", results
+            "Expected Number for (id 42) via intra-arrow binding, got: {:?}",
+            results
         );
     }
 
@@ -2325,46 +2659,55 @@ mod tests {
     /// Meta-type Atom in parameter position should accept any argument type
     #[test]
     fn test_meta_type_atom_matches_anything() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: f (-> Atom Bool))
             (= (f $x) True)
             !(check-type (f 42) Bool)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["True"]);
     }
 
     /// Meta-type Symbol should accept symbol arguments
     #[test]
     fn test_meta_type_symbol_match() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: f (-> Symbol Bool))
             (= (f $x) True)
             !(check-type (f foo) Bool)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["True"]);
     }
 
     /// Meta-type Expression should accept S-expression arguments
     #[test]
     fn test_meta_type_expression_match() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: f (-> Expression Bool))
             (= (f $x) True)
             !(check-type (f (a b)) Bool)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["True"]);
     }
 
     /// get-type with meta-type Atom parameter should not be filtered out
     #[test]
     fn test_get_type_with_atom_param_not_filtered() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: myop (-> Atom Number))
             !(get-type (myop anything))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
-            "Expected Number for (myop anything) with Atom param, got: {:?}", results
+            "Expected Number for (myop anything) with Atom param, got: {:?}",
+            results
         );
     }
 
@@ -2375,43 +2718,53 @@ mod tests {
     /// get-type should return empty for arg type mismatch (HE parity)
     #[test]
     fn test_get_type_arg_mismatch_returns_empty() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (+ 5 "hello"))
-        "#);
+        "#,
+        );
         // HE returns empty (no results) for type mismatch
         assert!(
             results.is_empty() || results.iter().all(|r| r == "%Undefined%"),
-            "Expected empty or %Undefined% for (+ 5 \"hello\"), got: {:?}", results
+            "Expected empty or %Undefined% for (+ 5 \"hello\"), got: {:?}",
+            results
         );
     }
 
     /// get-type should filter to matching arrows only
     #[test]
     fn test_get_type_partial_match_filters() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             (: f (-> Number Bool))
             (: f (-> String Number))
             !(get-type (f 5))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Bool"),
-            "Expected Bool for (f 5) with Number arg, got: {:?}", results
+            "Expected Bool for (f 5) with Number arg, got: {:?}",
+            results
         );
         assert!(
             !results.iter().any(|r| r == "Number"),
-            "Should NOT return Number for (f 5) since 5 is not String, got: {:?}", results
+            "Should NOT return Number for (f 5) since 5 is not String, got: {:?}",
+            results
         );
     }
 
     /// get-type with correct args should still work
     #[test]
     fn test_get_type_correct_args_unchanged() {
-        let results = run_eval(r#"
+        let results = run_eval(
+            r#"
             !(get-type (+ 1 2))
-        "#);
+        "#,
+        );
         assert!(
             results.iter().any(|r| r == "Number"),
-            "Expected Number for (+ 1 2), got: {:?}", results
+            "Expected Number for (+ 1 2), got: {:?}",
+            results
         );
     }
 
@@ -2422,36 +2775,44 @@ mod tests {
     /// is-function should return True for arrow types
     #[test]
     fn test_is_function_arrow_true() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(is-function (-> A B))
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["True"]);
     }
 
     /// is-function should return False for non-arrow atoms
     #[test]
     fn test_is_function_atom_false() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(is-function Number)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["False"]);
     }
 
     /// is-function should handle nested arrows
     #[test]
     fn test_is_function_nested_arrow() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(is-function (-> (-> A B) C))
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["True"]);
     }
 
     /// is-function should return False for empty expression
     #[test]
     fn test_is_function_empty_expr() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(is-function ())
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["False"]);
     }
 
@@ -2462,95 +2823,115 @@ mod tests {
     /// type-cast should return atom when type matches
     #[test]
     fn test_type_cast_match_returns_atom() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: a A)
             !(type-cast a A &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["a"]);
     }
 
     /// type-cast should return (Error atom BadType) when type doesn't match
     #[test]
     fn test_type_cast_mismatch_returns_error() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: a A)
             !(type-cast a B &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(Error a BadType)"]);
     }
 
     /// type-cast with %Undefined% expected type should accept anything
     #[test]
     fn test_type_cast_undefined_matches() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: a A)
             !(type-cast a %Undefined% &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["a"]);
     }
 
     /// type-cast with untyped atom should accept (untyped = %Undefined%)
     #[test]
     fn test_type_cast_untyped_matches() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(type-cast a B &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["a"]);
     }
 
     /// type-cast with grounded type
     #[test]
     fn test_type_cast_grounded() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(type-cast 42 Number &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["42"]);
     }
 
     /// type-cast with meta-type Atom
     #[test]
     fn test_type_cast_meta_atom() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: a A)
             !(type-cast a Atom &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["a"]);
     }
 
     /// type-cast with meta-type Symbol
     #[test]
     fn test_type_cast_meta_symbol() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: a A)
             !(type-cast a Symbol &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["a"]);
     }
 
     /// type-cast with meta-type Grounded
     #[test]
     fn test_type_cast_meta_grounded() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(type-cast 42 Grounded &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["42"]);
     }
 
     /// type-cast with meta-type Expression
     #[test]
     fn test_type_cast_meta_expression() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(type-cast (a b) Expression &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(a b)"]);
     }
 
     /// type-cast with meta-type Variable
     #[test]
     fn test_type_cast_meta_variable() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(type-cast $v Variable &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["$v"]);
     }
 
@@ -2561,9 +2942,9 @@ mod tests {
     /// Arrow covariant return: (-> Number Dog) should match (-> Number Animal) if Dog <: Animal
     #[test]
     fn test_arrow_covariant_return() {
+        use crate::backend::environment::MettaEnvironment;
         use crate::backend::eval::types::types_match_with_subtypes;
         use crate::backend::models::GcFactory;
-        use crate::backend::environment::MettaEnvironment;
         use crate::backend::models::MettaValueFactory;
 
         let factory = GcFactory::default();
@@ -2572,10 +2953,14 @@ mod tests {
 
         // (-> Number Dog) vs (-> Number Animal)
         let actual = factory.sexpr(vec![
-            factory.atom("->"), factory.atom("Number"), factory.atom("Dog"),
+            factory.atom("->"),
+            factory.atom("Number"),
+            factory.atom("Dog"),
         ]);
         let expected = factory.sexpr(vec![
-            factory.atom("->"), factory.atom("Number"), factory.atom("Animal"),
+            factory.atom("->"),
+            factory.atom("Number"),
+            factory.atom("Animal"),
         ]);
         assert!(
             types_match_with_subtypes(&actual, &expected, &env),
@@ -2586,9 +2971,9 @@ mod tests {
     /// Arrow contravariant param: (-> Animal Bool) should match (-> Dog Bool) if Dog <: Animal
     #[test]
     fn test_arrow_contravariant_param() {
+        use crate::backend::environment::MettaEnvironment;
         use crate::backend::eval::types::types_match_with_subtypes;
         use crate::backend::models::GcFactory;
-        use crate::backend::environment::MettaEnvironment;
         use crate::backend::models::MettaValueFactory;
 
         let factory = GcFactory::default();
@@ -2598,10 +2983,14 @@ mod tests {
         // (-> Animal Bool) vs (-> Dog Bool)
         // Contravariant: expected param Dog <: actual param Animal => match
         let actual = factory.sexpr(vec![
-            factory.atom("->"), factory.atom("Animal"), factory.atom("Bool"),
+            factory.atom("->"),
+            factory.atom("Animal"),
+            factory.atom("Bool"),
         ]);
         let expected = factory.sexpr(vec![
-            factory.atom("->"), factory.atom("Dog"), factory.atom("Bool"),
+            factory.atom("->"),
+            factory.atom("Dog"),
+            factory.atom("Bool"),
         ]);
         assert!(
             types_match_with_subtypes(&actual, &expected, &env),
@@ -2613,9 +3002,9 @@ mod tests {
     /// with covariant params (would be unsound)
     #[test]
     fn test_arrow_invariant_mismatch() {
+        use crate::backend::environment::MettaEnvironment;
         use crate::backend::eval::types::types_match_with_subtypes;
         use crate::backend::models::GcFactory;
-        use crate::backend::environment::MettaEnvironment;
         use crate::backend::models::MettaValueFactory;
 
         let factory = GcFactory::default();
@@ -2625,10 +3014,14 @@ mod tests {
         // (-> Dog Bool) vs (-> Animal Bool)
         // WRONG to accept with covariant params: Animal is NOT <: Dog
         let actual = factory.sexpr(vec![
-            factory.atom("->"), factory.atom("Dog"), factory.atom("Bool"),
+            factory.atom("->"),
+            factory.atom("Dog"),
+            factory.atom("Bool"),
         ]);
         let expected = factory.sexpr(vec![
-            factory.atom("->"), factory.atom("Animal"), factory.atom("Bool"),
+            factory.atom("->"),
+            factory.atom("Animal"),
+            factory.atom("Bool"),
         ]);
         assert!(
             !types_match_with_subtypes(&actual, &expected, &env),
@@ -2643,52 +3036,66 @@ mod tests {
     /// (:< Dog Animal) should register subtype so type-cast succeeds
     #[test]
     fn test_subtype_decl_type_cast() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: rex Dog)
             (:< Dog Animal)
             !(type-cast rex Animal &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["rex"]);
     }
 
     /// (:< ...) should return empty list (like : declarations)
     #[test]
     fn test_subtype_decl_returns_empty() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(:< Dog Animal)
-        "#);
-        assert!(results.is_empty(), "Subtype declaration should return empty, got: {:?}", results);
+        "#,
+        );
+        assert!(
+            results.is_empty(),
+            "Subtype declaration should return empty, got: {:?}",
+            results
+        );
     }
 
     /// Transitive subtype: Dog <: Animal, Animal <: LivingThing
     #[test]
     fn test_subtype_decl_transitive() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: rex Dog)
             (:< Dog Animal)
             (:< Animal LivingThing)
             !(type-cast rex LivingThing &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["rex"]);
     }
 
     /// (:< ...) should fail for non-subtype type-cast
     #[test]
     fn test_subtype_decl_mismatch() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: rex Dog)
             (:< Dog Animal)
             !(type-cast rex Plant &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(Error rex BadType)"]);
     }
 
     /// (:< ...) should reject non-atom arguments
     #[test]
     fn test_subtype_decl_bad_args() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(:< (a b) Animal)
-        "#);
+        "#,
+        );
         assert_eq!(results.len(), 1);
         assert!(results[0].contains("Error"), "Should error on non-atom arg");
     }
@@ -2700,36 +3107,44 @@ mod tests {
     /// match-type-or with False folded, matching type → True
     #[test]
     fn test_match_type_or_match() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(match-type-or False Number Number)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["True"]);
     }
 
     /// match-type-or with True folded, non-matching type → True (or semantics)
     #[test]
     fn test_match_type_or_folded_true() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(match-type-or True Number String)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["True"]);
     }
 
     /// match-type-or with False folded, non-matching type → False
     #[test]
     fn test_match_type_or_no_match() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(match-type-or False Number String)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["False"]);
     }
 
     /// match-type-or with %Undefined% → always True
     #[test]
     fn test_match_type_or_undefined() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(match-type-or False %Undefined% String)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["True"]);
     }
 
@@ -2740,87 +3155,105 @@ mod tests {
     /// metta with %Undefined% type → evaluates expression normally
     #[test]
     fn test_metta_undefined_type_evaluates() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (= (double $x) (* 2 $x))
             !(metta (double 5) %Undefined% &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["10"]);
     }
 
     /// metta with Atom type → evaluates expression normally
     #[test]
     fn test_metta_atom_type_evaluates() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (= (double $x) (* 2 $x))
             !(metta (double 5) Atom &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["10"]);
     }
 
     /// metta with Variable → passes through unchanged
     #[test]
     fn test_metta_variable_passthrough() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(metta $x Number &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["$x"]);
     }
 
     /// metta with Symbol and matching meta-type → passes through
     #[test]
     fn test_metta_symbol_metatype() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(metta foo Symbol &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["foo"]);
     }
 
     /// metta with Expression and Expression meta-type → passes through
     #[test]
     fn test_metta_expression_metatype() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(metta (a b) Expression &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(a b)"]);
     }
 
     /// metta with Grounded and Grounded meta-type → passes through
     #[test]
     fn test_metta_grounded_metatype() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(metta 42 Grounded &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["42"]);
     }
 
     /// metta with typed symbol → type-cast check
     #[test]
     fn test_metta_symbol_typed_match() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: foo Foo)
             !(metta foo Foo &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["foo"]);
     }
 
     /// metta with typed symbol mismatch → error
     #[test]
     fn test_metta_symbol_typed_mismatch() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: foo Foo)
             !(metta foo Bar &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["(Error foo BadType)"]);
     }
 
     /// metta evaluates expression and type-checks result
     #[test]
     fn test_metta_eval_and_typecheck() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             (: inc (-> Number Number))
             (= (inc $n) (+ $n 1))
             !(metta (inc 5) Number &self)
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["6"]);
     }
 
@@ -2831,48 +3264,70 @@ mod tests {
     /// first-from-pair extracts first element from a pair
     #[test]
     fn test_first_from_pair_basic() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(first-from-pair (hello world))
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["hello"]);
     }
 
     /// first-from-pair with numeric pair
     #[test]
     fn test_first_from_pair_numeric() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(first-from-pair (42 99))
-        "#);
+        "#,
+        );
         assert_eq!(results, vec!["42"]);
     }
 
     /// first-from-pair with non-pair → error
     #[test]
     fn test_first_from_pair_not_pair_single() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(first-from-pair (only))
-        "#);
+        "#,
+        );
         assert_eq!(results.len(), 1);
-        assert!(results[0].contains("Error"), "Should error on non-pair: {:?}", results);
+        assert!(
+            results[0].contains("Error"),
+            "Should error on non-pair: {:?}",
+            results
+        );
     }
 
     /// first-from-pair with non-pair (triple) → error
     #[test]
     fn test_first_from_pair_not_pair_triple() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(first-from-pair (a b c))
-        "#);
+        "#,
+        );
         assert_eq!(results.len(), 1);
-        assert!(results[0].contains("Error"), "Should error on triple: {:?}", results);
+        assert!(
+            results[0].contains("Error"),
+            "Should error on triple: {:?}",
+            results
+        );
     }
 
     /// first-from-pair with non-expression → error
     #[test]
     fn test_first_from_pair_non_expr() {
-        let results = run_eval_tiered(r#"
+        let results = run_eval_tiered(
+            r#"
             !(first-from-pair hello)
-        "#);
+        "#,
+        );
         assert_eq!(results.len(), 1);
-        assert!(results[0].contains("Error"), "Should error on atom: {:?}", results);
+        assert!(
+            results[0].contains("Error"),
+            "Should error on atom: {:?}",
+            results
+        );
     }
 }

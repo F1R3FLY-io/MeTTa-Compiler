@@ -10,9 +10,7 @@ use std::collections::{HashMap, VecDeque};
 
 use trace_format::TraceEvent;
 
-use crate::function_map::{
-    classify_trace_event, TraceCategory, ALL_CATEGORIES,
-};
+use crate::function_map::{classify_trace_event, TraceCategory, ALL_CATEGORIES};
 use crate::gdb_parser::{parse_gdb_backtrace, GdbBacktrace};
 use crate::reader::TraceReader;
 use crate::util::{extract_operator_name, format_duration_ns};
@@ -157,8 +155,12 @@ fn investigation_hint(category: TraceCategory) -> &'static str {
 /// Adjacent categories for broadened matching when exact match yields no results.
 fn adjacent_categories(cat: TraceCategory) -> Vec<TraceCategory> {
     match cat {
-        TraceCategory::Allocation => vec![TraceCategory::GarbageCollection, TraceCategory::EvalCore],
-        TraceCategory::GarbageCollection => vec![TraceCategory::Allocation, TraceCategory::EvalCore],
+        TraceCategory::Allocation => {
+            vec![TraceCategory::GarbageCollection, TraceCategory::EvalCore]
+        }
+        TraceCategory::GarbageCollection => {
+            vec![TraceCategory::Allocation, TraceCategory::EvalCore]
+        }
         TraceCategory::EvalCore => vec![
             TraceCategory::RuleMatching,
             TraceCategory::PatternBinding,
@@ -677,7 +679,10 @@ fn print_json(
         let frames = &bt.threads[idx].frames;
         for (i, frame) in frames.iter().enumerate() {
             let comma = if i + 1 < frames.len() { "," } else { "" };
-            print!("    {{\"frame\": {}, \"function\": {:?}", frame.frame_num, frame.function_name);
+            print!(
+                "    {{\"frame\": {}, \"function\": {:?}",
+                frame.frame_num, frame.function_name
+            );
             if let Some((ref file, line)) = frame.source_location {
                 print!(", \"file\": {:?}, \"line\": {}", file, line);
             }
@@ -786,7 +791,10 @@ mod tests {
     #[test]
     fn test_ring_buffer_under_capacity() {
         let mut rb = TailRingBuffer::new(10);
-        rb.push(make_test_event(42, trace_format::TraceValue::Atom("test".to_string())));
+        rb.push(make_test_event(
+            42,
+            trace_format::TraceValue::Atom("test".to_string()),
+        ));
         assert_eq!(rb.total_count, 1);
         assert_eq!(rb.events.len(), 1);
         assert_eq!(rb.events[0].timestamp_ns, 42);

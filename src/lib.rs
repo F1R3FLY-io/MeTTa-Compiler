@@ -85,20 +85,27 @@ pub use tree_sitter_parser::TreeSitterMettaParser;
 
 pub use backend::{
     // Compilation (MeTTa source → MettaState with MettaValue expressions)
-    compile, compile_with_path,
-    // Evaluation
-    eval, new_env,
-    // Core types
-    SessionContext, MettaEnvironment, EvalResult,
-    MettaValue, MettaValueInner,
-    // Allocator utilities
-    global_factory, global_allocator, GcFactory,
-    // Data model types (used by bytecode VM, JIT, and tiered cache internals)
-    models::MettaState,
-    // Thread pool initialization (eager startup from main)
-    init_thread_pools,
+    compile,
+    compile_with_path,
     // Signal-triggered diagnostic dump (SIGTERM/SIGUSR1)
     diagnostics::install_signal_handlers,
+    // Evaluation
+    eval,
+    global_allocator,
+    // Allocator utilities
+    global_factory,
+    // Thread pool initialization (eager startup from main)
+    init_thread_pools,
+    // Data model types (used by bytecode VM, JIT, and tiered cache internals)
+    models::MettaState,
+    new_env,
+    EvalResult,
+    GcFactory,
+    MettaEnvironment,
+    MettaValue,
+    MettaValueInner,
+    // Core types
+    SessionContext,
 };
 
 // State evaluation API — temporarily disabled (models crate unavailable)
@@ -124,17 +131,17 @@ pub use repl::{MettaHelper, PatternHistory, QueryHighlighter, ReplStateMachine, 
 
 // Evaluation trace system (zero-cost when disabled)
 #[cfg(feature = "trace")]
-pub use backend::trace;
-#[cfg(feature = "trace")]
 pub use backend::eval_with_trace;
+#[cfg(feature = "trace")]
+pub use backend::trace;
 
 #[cfg(test)]
 mod tests {
-    use smallvec::SmallVec;
     use crate::backend::compile::compile;
     use crate::backend::eval::eval;
     use crate::backend::eval::trampoline::new_env;
     use crate::backend::models::{MettaValue, MettaValueInner};
+    use smallvec::SmallVec;
 
     /// Helper to check if results contain a Long value
     fn results_contain_long(results: &[MettaValue], n: i64) -> bool {
@@ -494,13 +501,15 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(
             matches!(results[0].inner(), MettaValueInner::Quoted(_)),
-            "Expected Quoted variant, got: {:?}", results[0]
+            "Expected Quoted variant, got: {:?}",
+            results[0]
         );
         // The inner value should be the unevaluated S-expression (+ 1 2)
         let inner = results[0].as_quoted().expect("Expected Quoted");
         assert!(
             matches!(inner.inner(), MettaValueInner::SExpr(_)),
-            "Expected inner SExpr, got: {:?}", inner
+            "Expected inner SExpr, got: {:?}",
+            inner
         );
     }
 
@@ -684,14 +693,16 @@ mod tests {
         let (results, _env) = eval(expr, new_env(), &state);
 
         // Arena evaluator may return multiple results; check that at least one is Bool(false)
+        assert!(!results.is_empty(), "Expected at least one result");
         assert!(
-            !results.is_empty(),
-            "Expected at least one result"
-        );
-        assert!(
-            results.iter().any(|r| matches!(r.inner(), MettaValueInner::Bool(false))),
+            results
+                .iter()
+                .any(|r| matches!(r.inner(), MettaValueInner::Bool(false))),
             "Expected Bool(false) in results, got {:?}",
-            results.iter().map(|r| format!("{:?}", r.inner())).collect::<Vec<_>>()
+            results
+                .iter()
+                .map(|r| format!("{:?}", r.inner()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1229,7 +1240,10 @@ mod tests {
         let src = "(a (b (c d)))";
         let state = compile(src).expect("compile failed");
 
-        let first = {let s = state.source(); s[0]};
+        let first = {
+            let s = state.source();
+            s[0]
+        };
         if let MettaValueInner::SExpr(outer) = first.inner() {
             assert!(matches!(outer[0].inner(), MettaValueInner::Atom("a")));
 
@@ -1784,7 +1798,9 @@ mod tests {
 
         // map-atom should return (1 2 3) — state incremented each iteration
         assert_eq!(last_result.len(), 1, "map-atom should return one result");
-        let items = last_result[0].as_sexpr().expect("result should be S-expression");
+        let items = last_result[0]
+            .as_sexpr()
+            .expect("result should be S-expression");
         assert_eq!(items.len(), 3, "should have 3 elements");
         assert!(matches!(items[0].inner(), MettaValueInner::Long(1)));
         assert!(matches!(items[1].inner(), MettaValueInner::Long(2)));

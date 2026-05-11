@@ -7,6 +7,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use crate::backend::bytecode::instruction::{fork_inline_targets, patch_fork_inline_targets};
 use crate::backend::bytecode::opcodes::Opcode;
 
 use super::helpers::instruction_size;
@@ -81,10 +82,18 @@ impl DeadCodeEliminator {
                 continue;
             };
 
-            let instr_size = 1 + opcode.immediate_size();
+            let instr_size = instruction_size(code, offset);
             let next_ip = offset + instr_size;
 
             match opcode {
+                Opcode::ForkInline => {
+                    for target in fork_inline_targets(code, offset) {
+                        if target < code.len() {
+                            starts.insert(target);
+                        }
+                    }
+                }
+
                 // Unconditional jumps - target is block start, next IP may also be (dead)
                 Opcode::Jump => {
                     if let Some(target) = self.get_jump_target_i16(code, offset) {
@@ -190,7 +199,7 @@ impl DeadCodeEliminator {
                 continue;
             };
 
-            let instr_size = 1 + opcode.immediate_size();
+            let instr_size = instruction_size(code, offset);
             let next_ip = offset + instr_size;
 
             // Check if next IP is a block start (not counting current block)
@@ -202,6 +211,7 @@ impl DeadCodeEliminator {
             if matches!(
                 opcode,
                 Opcode::Jump
+                    | Opcode::ForkInline
                     | Opcode::JumpShort
                     | Opcode::Return
                     | Opcode::ReturnMulti
@@ -228,12 +238,15 @@ impl DeadCodeEliminator {
                 continue;
             };
 
-            let instr_size = 1 + opcode.immediate_size();
+            let instr_size = instruction_size(code, offset);
             let next_ip = offset + instr_size;
 
             // Check if this is the last instruction in the block
             if next_ip >= end {
                 match opcode {
+                    Opcode::ForkInline => {
+                        successors.extend(fork_inline_targets(code, offset));
+                    }
                     Opcode::Jump => {
                         if let Some(target) = self.get_jump_target_i16(code, offset) {
                             successors.push(target);
@@ -335,6 +348,7 @@ impl DeadCodeEliminator {
 
         // Build new code, skipping unreachable regions
         let mut result = Vec::with_capacity(code.len());
+        let mut instruction_offset_map: Vec<(usize, usize)> = Vec::new();
         let mut old_offset = 0;
         let mut region_idx = 0;
 
@@ -348,18 +362,32 @@ impl DeadCodeEliminator {
 
             // Copy instruction
             let size = instruction_size(&code, old_offset);
+            instruction_offset_map.push((result.len(), old_offset));
             result.extend_from_slice(&code[old_offset..old_offset + size]);
             old_offset += size;
         }
 
         // Fix up jump targets
-        self.fixup_jumps_dce(&mut result, &offset_map, code.len());
+        self.fixup_jumps_dce(
+            &mut result,
+            &code,
+            &offset_map,
+            &instruction_offset_map,
+            code.len(),
+        );
 
         result
     }
 
     /// Fix up jump targets after dead code removal
-    fn fixup_jumps_dce(&self, code: &mut [u8], offset_map: &[isize], original_len: usize) {
+    fn fixup_jumps_dce(
+        &self,
+        code: &mut [u8],
+        original_code: &[u8],
+        offset_map: &[isize],
+        instruction_offset_map: &[(usize, usize)],
+        original_len: usize,
+    ) {
         let mut offset = 0;
 
         while offset < code.len() {
@@ -382,7 +410,7 @@ impl DeadCodeEliminator {
 
                         // Find original position of this instruction
                         let old_instr_pos =
-                            self.reverse_offset_dce(offset, offset_map, original_len);
+                            self.old_offset_for_new(offset, instruction_offset_map);
                         let old_jump_from = old_instr_pos + 3;
                         let old_target =
                             (old_jump_from as isize + old_jump_offset as isize) as usize;
@@ -409,7 +437,7 @@ impl DeadCodeEliminator {
                         let old_jump_offset = code[offset + 1] as i8;
 
                         let old_instr_pos =
-                            self.reverse_offset_dce(offset, offset_map, original_len);
+                            self.old_offset_for_new(offset, instruction_offset_map);
                         let old_jump_from = old_instr_pos + 2;
                         let old_target =
                             (old_jump_from as isize + old_jump_offset as isize) as usize;
@@ -427,6 +455,20 @@ impl DeadCodeEliminator {
                     offset += 2;
                 }
 
+                Opcode::ForkInline => {
+                    let old_instr_pos = self.old_offset_for_new(offset, instruction_offset_map);
+                    let original_targets = fork_inline_targets(original_code, old_instr_pos);
+                    patch_fork_inline_targets(code, offset, &original_targets, |old_target| {
+                        if old_target <= original_len {
+                            let target_delta = offset_map.get(old_target).copied().unwrap_or(0);
+                            Some((old_target as isize + target_delta) as usize)
+                        } else {
+                            None
+                        }
+                    });
+                    offset += instruction_size(code, offset);
+                }
+
                 _ => {
                     offset += instruction_size(code, offset);
                 }
@@ -434,25 +476,15 @@ impl DeadCodeEliminator {
         }
     }
 
-    /// Reverse lookup for DCE offset map.
-    ///
-    /// Returns the FIRST matching old position. In DCE, dead regions are always
-    /// at higher old_pos values than the live instructions that map to the same
-    /// new position (because DCE removes unreachable blocks, which follow the
-    /// live entry block). So first-match gives the live instruction's position.
-    fn reverse_offset_dce(
+    fn old_offset_for_new(
         &self,
         new_offset: usize,
-        offset_map: &[isize],
-        original_len: usize,
+        instruction_offset_map: &[(usize, usize)],
     ) -> usize {
-        for old_pos in 0..=original_len {
-            let delta = offset_map.get(old_pos).copied().unwrap_or(0);
-            if (old_pos as isize + delta) as usize == new_offset {
-                return old_pos;
-            }
-        }
-        new_offset
+        instruction_offset_map
+            .iter()
+            .find_map(|(new, old)| (*new == new_offset).then_some(*old))
+            .unwrap_or(new_offset)
     }
 
     /// Get jump target for 2-byte signed offset jump

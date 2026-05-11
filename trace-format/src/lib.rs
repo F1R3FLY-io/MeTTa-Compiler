@@ -570,7 +570,6 @@ pub enum TraceEventKind {
     },
 
     // ---- Binding & Memoization Diagnostics ----
-
     /// Per-binding event in let/let* showing the pattern match result.
     LetBindingStep {
         /// The pattern being matched (e.g., `$x`, `($a $b)`).
@@ -660,7 +659,6 @@ pub enum TraceEventKind {
     },
 
     // ---- Rule Lookup Diagnostics (v4) ----
-
     /// Emitted at the start of rule matching. Shows the full lookup pipeline
     /// from index to final matches, making it immediately visible when a rule
     /// was expected in the candidate set but wasn't found.
@@ -858,8 +856,6 @@ pub enum TraceEventKind {
 
     /// Emitted by `apply_bindings_generic` when a `$`-prefixed atom in
     /// the template has no matching key in the supplied bindings set.
-    /// Throttled to bound trace volume — see `LOOKUP_FAIL_LIMIT` in
-    /// `src/backend/eval/bindings.rs`.
     VariableLookupFailed {
         /// `"apply_bindings/rhs"` | `"apply_bindings/wb-template"` |
         /// `"apply_bindings/foldl-step"` | other call-site strings.

@@ -334,7 +334,6 @@ mod tests {
 
     #[test]
     fn test_completion_basic() {
-
         let helper = MettaHelper::new().unwrap();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
@@ -347,7 +346,6 @@ mod tests {
 
     #[test]
     fn test_completion_operators() {
-
         let helper = MettaHelper::new().unwrap();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
@@ -360,7 +358,6 @@ mod tests {
 
     #[test]
     fn test_hint_from_history() {
-
         let mut helper = MettaHelper::new().unwrap();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
@@ -376,7 +373,6 @@ mod tests {
 
     #[test]
     fn test_hint_no_match() {
-
         let mut helper = MettaHelper::new().unwrap();
         let history = DefaultHistory::new();
         let ctx = Context::new(&history);
@@ -405,8 +401,6 @@ mod tests {
 
     #[test]
     fn test_update_from_environment() {
-
-
         let mut helper = MettaHelper::new().unwrap();
         let mut env = new_env();
 
@@ -439,8 +433,6 @@ mod tests {
 
     #[test]
     fn test_completion_with_user_defined() {
-
-
         let mut helper = MettaHelper::new().unwrap();
         let mut env = new_env();
         let history = DefaultHistory::new();
@@ -469,8 +461,6 @@ mod tests {
 
     #[test]
     fn test_constant_completion() {
-
-
         let mut helper = MettaHelper::new().unwrap();
         let mut env = new_env();
         let history = DefaultHistory::new();

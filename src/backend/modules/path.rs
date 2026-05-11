@@ -12,8 +12,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
-use crate::backend::models::MettaValue;
 use crate::backend::models::metta_value_trait::MettaValueTrait;
+use crate::backend::models::MettaValue;
 
 /// Cached value of the `METTA_MODULE_PATH` environment variable.
 /// Uses `OnceLock` so the syscall happens at most once per process.
@@ -201,7 +201,8 @@ pub fn resolve_library_form_with_importer(
             } else {
                 format!("{}.metta", name)
             };
-            bases.iter()
+            bases
+                .iter()
                 .map(|base| base.join(&filename))
                 .find(|p| p.exists())
         }
@@ -228,7 +229,8 @@ pub fn resolve_library_form_with_importer(
                 return Some(p);
             }
             // Second pass: <base>/../X/Y.metta (PeTTa sibling-repo shape)
-            bases.iter()
+            bases
+                .iter()
                 .map(|base| {
                     let parent = base.parent().unwrap_or(base);
                     parent.join(x).join(&filename)

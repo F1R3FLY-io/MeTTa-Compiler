@@ -73,8 +73,8 @@ pub use expr::{compile_expr_op, ExprHandlerContext};
 
 pub use control_flow::{
     compile_halt, compile_jump, compile_jump_if_error, compile_jump_if_false,
-    compile_jump_if_false_short, compile_jump_if_not_bool, compile_jump_if_unit,
-    compile_jump_if_true, compile_jump_if_true_short, compile_jump_short, compile_jump_table,
+    compile_jump_if_false_short, compile_jump_if_not_bool, compile_jump_if_true,
+    compile_jump_if_true_short, compile_jump_if_unit, compile_jump_short, compile_jump_table,
     compile_return,
 };
 

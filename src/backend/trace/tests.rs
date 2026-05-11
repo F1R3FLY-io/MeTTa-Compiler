@@ -249,10 +249,10 @@ fn test_end_to_end_trace_file() {
     let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
     for expr in source_exprs {
         let (results, new_env) = eval_trampoline_with_trace(expr, env, &state, &collector);
-        env = new_env;
+        env = (*new_env).clone();
         // Should produce [3]
         assert_eq!(results.len(), 1, "expected 1 result");
-        assert_eq!(results[0].as_long(), Some(3), "expected 3");
+        assert_eq!(results[0].0.as_long(), Some(3), "expected 3");
     }
 
     // Finalize
@@ -263,7 +263,10 @@ fn test_end_to_end_trace_file() {
     let mut file = std::fs::File::open(&trace_path).expect("should open trace file");
     let mut magic = [0u8; 8];
     file.read_exact(&mut magic).expect("should read magic");
-    assert_eq!(magic, TRACE_MAGIC, "trace file should start with magic bytes");
+    assert_eq!(
+        magic, TRACE_MAGIC,
+        "trace file should start with magic bytes"
+    );
 
     // Clean up
     let _ = std::fs::remove_file(&trace_path);
@@ -273,7 +276,7 @@ fn test_end_to_end_trace_file() {
 fn test_thread_local_trace_sink() {
     // Verify the thread-local trace collector set/clear/access pattern.
     use super::thread_local_sink::{
-        set_thread_trace_collector, clear_thread_trace_collector, with_thread_trace_collector,
+        clear_thread_trace_collector, set_thread_trace_collector, with_thread_trace_collector,
     };
 
     let dir = std::env::temp_dir();
@@ -292,8 +295,11 @@ fn test_thread_local_trace_sink() {
     // Now the closure should fire
     let result = with_thread_trace_collector(|tc| {
         tc.emit_converted(
-            TraceTier::TreeWalker, 0,
-            TraceValue::Unit, vec![], None,
+            TraceTier::TreeWalker,
+            0,
+            TraceValue::Unit,
+            vec![],
+            None,
             TraceEventKind::EvalStart,
         );
         true
@@ -333,9 +339,9 @@ fn test_e2e_eval_events_have_duration_and_span() {
     let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
     for expr in source_exprs {
         let (results, new_env) = eval_trampoline_with_trace(expr, env, &state, &collector);
-        env = new_env;
+        env = (*new_env).clone();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].as_long(), Some(3));
+        assert_eq!(results[0].0.as_long(), Some(3));
     }
 
     let count = collector.finalize().expect("finalize should succeed");
@@ -404,10 +410,7 @@ fn test_e2e_eval_events_have_duration_and_span() {
             eval_start_spans.contains(span),
             "EvalEnd span_id {span} should match an EvalStart"
         );
-        assert!(
-            dur.is_some(),
-            "EvalEnd should have duration_ns"
-        );
+        assert!(dur.is_some(), "EvalEnd should have duration_ns");
         assert!(
             dur.expect("checked above") > 0,
             "EvalEnd duration_ns should be > 0"

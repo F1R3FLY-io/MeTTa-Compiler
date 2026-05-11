@@ -10,6 +10,18 @@
 //! - `EqualOp` - Equality (==)
 //! - `NotEqualOp` - Not equal (!=)
 //!
+//! ## NaN ordering (BUG-T0-004, spec §14.2.2)
+//!
+//! NaN ordering inherits IEEE 754 semantics via `f64::partial_cmp`:
+//! - `(< NaN x)`, `(> NaN x)`, `(<= NaN x)`, `(>= NaN x)` all return `False`
+//!   for any `x` (including NaN itself).
+//! - `(== NaN NaN)` returns `False` (handled by `numeric_equal_generic` at
+//!   `src/backend/models/metta_value.rs:1871-1885` via H4 hard-cut).
+//!
+//! Programs that need to detect NaN use the `isnan-math` grounded op from
+//! `src/backend/grounded/math.rs` (matches HE's `isnan-math` in
+//! `hyperon-experimental/lib/src/metta/runner/stdlib/math.rs`).
+//!
 //! ## Zero-Conversion Design
 //!
 //! These operations use `MettaValueTrait` methods (e.g., `as_long()`, `as_float()`)
@@ -24,7 +36,9 @@ use crate::backend::models::{numeric_equal_generic, MettaValueFactory, MettaValu
 /// TCO Less than operation: (< a b)
 pub struct LessOp;
 
-impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V> for LessOp {
+impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V>
+    for LessOp
+{
     fn name(&self) -> &str {
         "<"
     }
@@ -41,7 +55,9 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperati
 /// TCO Less than or equal operation: (<= a b)
 pub struct LessEqOp;
 
-impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V> for LessEqOp {
+impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V>
+    for LessEqOp
+{
     fn name(&self) -> &str {
         "<="
     }
@@ -58,7 +74,9 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperati
 /// TCO Greater than operation: (> a b)
 pub struct GreaterOp;
 
-impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V> for GreaterOp {
+impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V>
+    for GreaterOp
+{
     fn name(&self) -> &str {
         ">"
     }
@@ -75,7 +93,9 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperati
 /// TCO Greater than or equal operation: (>= a b)
 pub struct GreaterEqOp;
 
-impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V> for GreaterEqOp {
+impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> GroundedOperationTCO<V>
+    for GreaterEqOp
+{
     fn name(&self) -> &str {
         ">="
     }
@@ -204,9 +224,10 @@ where
                             }
                             // H5 (2026-05-05): spec §13.3 line 124-125 — non-Number arg
                             // returns IncorrectArgument (HE's `def_binary_number_op`).
-                            return GroundedWork::Error(ExecError::IncorrectArgument(
-                                format!("{} requires Number arguments", op_name),
-                            ));
+                            return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                                "{} requires Number arguments",
+                                op_name
+                            )));
                         }
                     }
                 }
@@ -272,7 +293,11 @@ where
                         continue;
                     }
                     let is_equal = numeric_equal_generic(a, b);
-                    let result = if return_true_on_equal { is_equal } else { !is_equal };
+                    let result = if return_true_on_equal {
+                        is_equal
+                    } else {
+                        !is_equal
+                    };
                     results.push((factory.bool(result), None));
                 }
             }
@@ -287,13 +312,12 @@ mod tests {
     use super::*;
     use crate::backend::models::{GcFactory, MettaValue};
 
-    fn run_comparison<Op: GroundedOperationTCO<MettaValue>>(
-        op: &Op,
-        a: i64,
-        b: i64,
-    ) -> bool {
+    fn run_comparison<Op: GroundedOperationTCO<MettaValue>>(op: &Op, a: i64, b: i64) -> bool {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new(op.name().to_string(), vec![MettaValue::Long(a), MettaValue::Long(b)]);
+        let mut state = GroundedState::new(
+            op.name().to_string(),
+            vec![MettaValue::Long(a), MettaValue::Long(b)],
+        );
 
         op.execute_step(&mut state, &factory);
         state.set_arg(0, vec![MettaValue::Long(a)]);
@@ -305,9 +329,7 @@ mod tests {
 
         let work = op.execute_step(&mut state, &factory);
         match work {
-            GroundedWork::Done(results) => {
-                results[0].0.as_bool().expect("should be bool")
-            }
+            GroundedWork::Done(results) => results[0].0.as_bool().expect("should be bool"),
             _ => panic!("Expected Done"),
         }
     }
@@ -360,10 +382,7 @@ mod tests {
         b: MettaValue,
     ) -> bool {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new(
-            op.name().to_string(),
-            vec![a.clone(), b.clone()],
-        );
+        let mut state = GroundedState::new(op.name().to_string(), vec![a.clone(), b.clone()]);
 
         op.execute_step(&mut state, &factory);
         state.set_arg(0, vec![a]);
@@ -375,9 +394,7 @@ mod tests {
 
         let work = op.execute_step(&mut state, &factory);
         match work {
-            GroundedWork::Done(results) => {
-                results[0].0.as_bool().expect("should be bool")
-            }
+            GroundedWork::Done(results) => results[0].0.as_bool().expect("should be bool"),
             _ => panic!("Expected Done"),
         }
     }
@@ -469,11 +486,7 @@ mod tests {
         a: &str,
         b: &str,
     ) -> bool {
-        run_comparison_values(
-            op,
-            MettaValue::String(a),
-            MettaValue::String(b),
-        )
+        run_comparison_values(op, MettaValue::String(a), MettaValue::String(b))
     }
 
     #[test]

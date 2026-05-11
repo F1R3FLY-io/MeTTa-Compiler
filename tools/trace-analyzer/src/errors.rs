@@ -22,7 +22,12 @@ pub fn run(file: &str) -> Result<(), String> {
                 println!("  details: {}", format_value(details));
                 println!();
             }
-            TraceEventKind::GroundedOpError { op_name, error_kind, message, args } => {
+            TraceEventKind::GroundedOpError {
+                op_name,
+                error_kind,
+                message,
+                args,
+            } => {
                 error_count += 1;
                 println!(
                     "[#{} T{} D{} {:?}] GROUNDED OP ERROR",
@@ -35,7 +40,11 @@ pub fn run(file: &str) -> Result<(), String> {
                 println!("  args: [{}]", args_str.join(", "));
                 println!();
             }
-            TraceEventKind::ErrorCaught { error, handler, default_used } => {
+            TraceEventKind::ErrorCaught {
+                error,
+                handler,
+                default_used,
+            } => {
                 error_count += 1;
                 println!(
                     "[#{} T{} D{} {:?}] ERROR CAUGHT",
@@ -69,7 +78,13 @@ pub fn run(file: &str) -> Result<(), String> {
 fn format_value(v: &TraceValue) -> String {
     match v {
         TraceValue::Atom(s) => s.clone(),
-        TraceValue::Bool(b) => if *b { "True".to_string() } else { "False".to_string() },
+        TraceValue::Bool(b) => {
+            if *b {
+                "True".to_string()
+            } else {
+                "False".to_string()
+            }
+        }
         TraceValue::Long(n) => n.to_string(),
         TraceValue::Float(f) => f.to_string(),
         TraceValue::String(s) => format!("\"{}\"", s),

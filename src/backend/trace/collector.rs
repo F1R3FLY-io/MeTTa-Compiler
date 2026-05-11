@@ -1,7 +1,7 @@
 //! Thread-safe trace event collector with batched I/O.
 //!
 //! Each thread accumulates events in a thread-local buffer. When the
-//! buffer reaches `batch_size()` events, or when `finalize()` is called,
+//! buffer reaches `TRACE_BATCH_SIZE` events, or when `finalize()` is called,
 //! the batch is serialized via rkyv and written to the shared output
 //! file under a mutex.
 
@@ -12,28 +12,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use trace_format::{
-    TraceEvent, TraceEventKind, TraceHeader, TraceSpan, TraceTier, TraceValue,
-};
+use trace_format::{TraceEvent, TraceEventKind, TraceHeader, TraceSpan, TraceTier, TraceValue};
 
 use super::convert::{trace_value, FileTable};
 use super::format;
 use crate::backend::models::metta_value::MettaValue;
 
-/// Number of events to buffer per-thread before flushing.
-/// Smaller values give faster crash recovery (events reach disk sooner)
-/// at the cost of more frequent I/O. Configurable via METTA_TRACE_BATCH_SIZE
-/// env var (default: 64). Use 1 for maximum crash recovery at the cost of I/O.
-fn batch_size() -> usize {
-    static SIZE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *SIZE.get_or_init(|| {
-        std::env::var("METTA_TRACE_BATCH_SIZE")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(64)
-            .max(1)
-    })
-}
+/// Number of events to buffer per thread before flushing.
+const TRACE_BATCH_SIZE: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Thread-local state
@@ -48,7 +34,7 @@ struct ThreadBuffer {
 impl ThreadBuffer {
     fn new(thread_id: u32) -> Self {
         Self {
-            events: Vec::with_capacity(batch_size()),
+            events: Vec::with_capacity(TRACE_BATCH_SIZE),
             seq: 0,
             thread_id,
         }
@@ -90,13 +76,6 @@ pub struct TraceCollector {
     next_thread_id: AtomicU64,
     /// Monotonic span correlation ID generator.
     span_id_counter: AtomicU64,
-    /// Maximum events to collect. `None` = unlimited.
-    /// Set via `METTA_TRACE_MAX_EVENTS` env var.
-    max_events: Option<u64>,
-    /// Fast lock-free check: set to `true` when event budget is exhausted.
-    /// Checked at the top of `emit_converted()` to skip further collection
-    /// without acquiring the mutex.
-    budget_exhausted: std::sync::atomic::AtomicBool,
 }
 
 impl TraceCollector {
@@ -125,17 +104,11 @@ impl TraceCollector {
         // Record the byte position right after the header — this is where
         // the first footer will be written (overwritten as events arrive).
         use std::io::Seek;
-        let footer_start_pos = writer.stream_position()
-            .unwrap_or(0);
+        let footer_start_pos = writer.stream_position().unwrap_or(0);
 
         // Write an initial footer so the file is valid even with 0 events.
         format::write_footer(&mut writer, 0, &[])?;
         writer.flush()?;
-
-        // Read event budget from env var
-        let max_events = std::env::var("METTA_TRACE_MAX_EVENTS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok());
 
         let collector = Arc::new(Self {
             shared: Mutex::new(SharedState {
@@ -148,8 +121,6 @@ impl TraceCollector {
             global_seq: AtomicU64::new(0),
             next_thread_id: AtomicU64::new(0),
             span_id_counter: AtomicU64::new(1), // Start at 1 so 0 is never a valid span ID
-            max_events,
-            budget_exhausted: std::sync::atomic::AtomicBool::new(false),
         });
 
         Ok(collector)
@@ -187,11 +158,6 @@ impl TraceCollector {
         expr_span: Option<TraceSpan>,
         kind: TraceEventKind,
     ) {
-        // Fast-path budget check — single atomic load, no lock.
-        if self.budget_exhausted.load(Ordering::Relaxed) {
-            return;
-        }
-
         let timestamp_ns = self.start.elapsed().as_nanos() as u64;
 
         THREAD_BUF.with(|buf_cell| {
@@ -220,11 +186,9 @@ impl TraceCollector {
 
             buf.events.push(event);
 
-            if buf.events.len() >= batch_size() {
-                let batch = std::mem::replace(
-                    &mut buf.events,
-                    Vec::with_capacity(batch_size()),
-                );
+            if buf.events.len() >= TRACE_BATCH_SIZE {
+                let batch =
+                    std::mem::replace(&mut buf.events, Vec::with_capacity(TRACE_BATCH_SIZE));
                 // Drop the RefCell borrow before locking the mutex.
                 drop(buf_opt);
                 self.flush_batch(batch);
@@ -294,11 +258,9 @@ impl TraceCollector {
 
             buf.events.push(event);
 
-            if buf.events.len() >= batch_size() {
-                let batch = std::mem::replace(
-                    &mut buf.events,
-                    Vec::with_capacity(batch_size()),
-                );
+            if buf.events.len() >= TRACE_BATCH_SIZE {
+                let batch =
+                    std::mem::replace(&mut buf.events, Vec::with_capacity(TRACE_BATCH_SIZE));
                 drop(buf_opt);
                 self.flush_batch(batch);
             }
@@ -307,7 +269,10 @@ impl TraceCollector {
 
     /// Intern a file path and return its `u16` ID (for span conversion).
     pub fn intern_file(&self, path: &str) -> u16 {
-        let mut shared = self.shared.lock().expect("TraceCollector shared lock poisoned");
+        let mut shared = self
+            .shared
+            .lock()
+            .expect("TraceCollector shared lock poisoned");
         shared.file_table.intern(path)
     }
 
@@ -334,7 +299,10 @@ impl TraceCollector {
             Ok(c) => c,
             Err(arc) => {
                 // Other threads may still hold references. Flush and return count.
-                let shared = arc.shared.lock().expect("TraceCollector shared lock poisoned");
+                let shared = arc
+                    .shared
+                    .lock()
+                    .expect("TraceCollector shared lock poisoned");
                 return Ok(shared.event_count);
             }
         };
@@ -357,7 +325,10 @@ impl TraceCollector {
     fn flush_batch(&self, batch: Vec<TraceEvent>) {
         use std::io::Seek;
 
-        let mut shared = self.shared.lock().expect("TraceCollector shared lock poisoned");
+        let mut shared = self
+            .shared
+            .lock()
+            .expect("TraceCollector shared lock poisoned");
 
         // Seek back to overwrite the previous footer so this batch's events
         // start where the old footer was. This means the file always ends
@@ -379,7 +350,10 @@ impl TraceCollector {
         }
 
         // Record where the new footer starts
-        shared.footer_start_pos = shared.writer.stream_position().unwrap_or(shared.footer_start_pos);
+        shared.footer_start_pos = shared
+            .writer
+            .stream_position()
+            .unwrap_or(shared.footer_start_pos);
 
         // Write footer (will be overwritten on next flush).
         // Clone file table paths to avoid borrowing shared immutably while
@@ -395,13 +369,6 @@ impl TraceCollector {
         if let Err(e) = shared.writer.flush() {
             eprintln!("[trace] Failed to flush writer: {e}");
         }
-
-        // Check event budget
-        if let Some(max) = self.max_events {
-            if event_count >= max {
-                self.budget_exhausted.store(true, Ordering::Relaxed);
-            }
-        }
     }
 }
 
@@ -414,11 +381,8 @@ mod tests {
     fn test_span_id_uniqueness() {
         let dir = std::env::temp_dir();
         let path = dir.join("test_span_ids.mtrace");
-        let tc = TraceCollector::new(
-            path.to_str().expect("valid temp path"),
-            "test.metta",
-        )
-        .expect("create collector");
+        let tc = TraceCollector::new(path.to_str().expect("valid temp path"), "test.metta")
+            .expect("create collector");
 
         let mut ids = HashSet::new();
         for _ in 0..1000 {
@@ -439,11 +403,8 @@ mod tests {
     fn test_elapsed_ns_monotonic() {
         let dir = std::env::temp_dir();
         let path = dir.join("test_elapsed_ns.mtrace");
-        let tc = TraceCollector::new(
-            path.to_str().expect("valid temp path"),
-            "test.metta",
-        )
-        .expect("create collector");
+        let tc = TraceCollector::new(path.to_str().expect("valid temp path"), "test.metta")
+            .expect("create collector");
 
         let t1 = tc.elapsed_ns();
         // Spin briefly to ensure elapsed advances
@@ -466,8 +427,7 @@ mod tests {
         let path_str = path.to_str().expect("valid temp path").to_string();
 
         {
-            let tc = TraceCollector::new(&path_str, "test.metta")
-                .expect("create collector");
+            let tc = TraceCollector::new(&path_str, "test.metta").expect("create collector");
 
             let start = tc.elapsed_ns();
             let span = tc.next_span_id();
@@ -512,18 +472,21 @@ mod tests {
         // Skip the 8-byte magic + header length-prefix + header
         let mut pos = 8;
         // Read header length (4 bytes LE)
-        let header_len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let header_len =
+            u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         pos += 4 + header_len;
 
         // Read first event
-        let ev1_len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let ev1_len =
+            u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         pos += 4;
         let ev1: TraceEvent =
             trace_format::deserialize(&data[pos..pos + ev1_len]).expect("deserialize event 1");
         pos += ev1_len;
 
         // Read second event
-        let ev2_len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let ev2_len =
+            u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         pos += 4;
         let ev2: TraceEvent =
             trace_format::deserialize(&data[pos..pos + ev2_len]).expect("deserialize event 2");

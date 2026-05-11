@@ -222,7 +222,12 @@ impl ArgTypeFeedback {
             self.secondary_count += 1;
             // Promote secondary to primary if it overtakes
             if self.secondary_count > self.primary_count {
-                std::mem::swap(&mut self.primary_type, self.secondary_type.as_mut().expect("secondary_type is Some"));
+                std::mem::swap(
+                    &mut self.primary_type,
+                    self.secondary_type
+                        .as_mut()
+                        .expect("secondary_type is Some"),
+                );
                 std::mem::swap(&mut self.primary_count, &mut self.secondary_count);
             }
         } else if self.secondary_type.is_none() || self.secondary_count == 0 {
@@ -329,8 +334,14 @@ mod tests {
     fn test_type_tag_classification() {
         use crate::backend::models::MettaValueInner;
         assert_eq!(TypeTag::from_inner(&MettaValueInner::Unit), TypeTag::Unit);
-        assert_eq!(TypeTag::from_inner(&MettaValueInner::Bool(true)), TypeTag::Bool);
-        assert_eq!(TypeTag::from_inner(&MettaValueInner::Long(42)), TypeTag::Long);
+        assert_eq!(
+            TypeTag::from_inner(&MettaValueInner::Bool(true)),
+            TypeTag::Bool
+        );
+        assert_eq!(
+            TypeTag::from_inner(&MettaValueInner::Long(42)),
+            TypeTag::Long
+        );
     }
 
     #[test]

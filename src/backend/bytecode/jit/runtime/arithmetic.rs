@@ -125,7 +125,15 @@ pub unsafe extern "C" fn jit_runtime_sqrt(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Float(x.sqrt()),
         ValueView::Long(x) => MettaValue::Float((x as f64).sqrt()),
-        _ => MettaValue::Float(f64::NAN), // Type error - return NaN
+        _ => {
+            // BUG-T0-T1-012 (spec K.3.x): signal type error to hybrid executor
+            // and return Error atom rather than a silent NaN sentinel (which
+            // is indistinguishable from genuine IEEE-754 NaN).
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            factory.error("JIT type error", factory.atom("BadType"))
+        }
     };
 
     metta_to_jit(&result).to_bits()
@@ -144,16 +152,18 @@ pub unsafe extern "C" fn jit_runtime_log(base: u64, val: u64) -> u64 {
 
     let result = match (base_mv.view(), val_mv.view()) {
         (ValueView::Float(b), ValueView::Float(v)) => MettaValue::Float(v.log(b)),
-        (ValueView::Long(b), ValueView::Float(v)) => {
-            MettaValue::Float(v.log(b as f64))
+        (ValueView::Long(b), ValueView::Float(v)) => MettaValue::Float(v.log(b as f64)),
+        (ValueView::Float(b), ValueView::Long(v)) => MettaValue::Float((v as f64).log(b)),
+        (ValueView::Long(b), ValueView::Long(v)) => MettaValue::Float((v as f64).log(b as f64)),
+        _ => {
+            // BUG-T0-T1-012 (spec K.3.x): signal type error to hybrid executor
+            // and return Error atom rather than a silent NaN sentinel (which
+            // is indistinguishable from genuine IEEE-754 NaN).
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            factory.error("JIT type error", factory.atom("BadType"))
         }
-        (ValueView::Float(b), ValueView::Long(v)) => {
-            MettaValue::Float((v as f64).log(b))
-        }
-        (ValueView::Long(b), ValueView::Long(v)) => {
-            MettaValue::Float((v as f64).log(b as f64))
-        }
-        _ => MettaValue::Float(f64::NAN), // Type error - return NaN
     };
 
     metta_to_jit(&result).to_bits()
@@ -171,7 +181,7 @@ pub unsafe extern "C" fn jit_runtime_trunc(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Long(x.trunc() as i64),
         ValueView::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                   // Type error
+        _ => MettaValue::Long(0),                  // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -189,7 +199,7 @@ pub unsafe extern "C" fn jit_runtime_ceil(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Long(x.ceil() as i64),
         ValueView::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                   // Type error
+        _ => MettaValue::Long(0),                  // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -207,7 +217,7 @@ pub unsafe extern "C" fn jit_runtime_floor_math(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Long(x.floor() as i64),
         ValueView::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                   // Type error
+        _ => MettaValue::Long(0),                  // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -225,7 +235,7 @@ pub unsafe extern "C" fn jit_runtime_round(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Long(x.round() as i64),
         ValueView::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                   // Type error
+        _ => MettaValue::Long(0),                  // Type error
     };
 
     metta_to_jit(&result).to_bits()
@@ -247,7 +257,13 @@ pub unsafe extern "C" fn jit_runtime_sin(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Float(x.sin()),
         ValueView::Long(x) => MettaValue::Float((x as f64).sin()),
-        _ => MettaValue::Float(f64::NAN), // Type error
+        _ => {
+            // BUG-T0-T1-012: in-tier Error atom (not silent NaN sentinel).
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            factory.error("JIT type error", factory.atom("BadType"))
+        }
     };
 
     metta_to_jit(&result).to_bits()
@@ -265,7 +281,13 @@ pub unsafe extern "C" fn jit_runtime_cos(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Float(x.cos()),
         ValueView::Long(x) => MettaValue::Float((x as f64).cos()),
-        _ => MettaValue::Float(f64::NAN), // Type error
+        _ => {
+            // BUG-T0-T1-012: in-tier Error atom (not silent NaN sentinel).
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            factory.error("JIT type error", factory.atom("BadType"))
+        }
     };
 
     metta_to_jit(&result).to_bits()
@@ -283,7 +305,13 @@ pub unsafe extern "C" fn jit_runtime_tan(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Float(x.tan()),
         ValueView::Long(x) => MettaValue::Float((x as f64).tan()),
-        _ => MettaValue::Float(f64::NAN), // Type error
+        _ => {
+            // BUG-T0-T1-012: in-tier Error atom (not silent NaN sentinel).
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            factory.error("JIT type error", factory.atom("BadType"))
+        }
     };
 
     metta_to_jit(&result).to_bits()
@@ -301,7 +329,13 @@ pub unsafe extern "C" fn jit_runtime_asin(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Float(x.asin()),
         ValueView::Long(x) => MettaValue::Float((x as f64).asin()),
-        _ => MettaValue::Float(f64::NAN), // Type error
+        _ => {
+            // BUG-T0-T1-012: in-tier Error atom (not silent NaN sentinel).
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            factory.error("JIT type error", factory.atom("BadType"))
+        }
     };
 
     metta_to_jit(&result).to_bits()
@@ -319,7 +353,13 @@ pub unsafe extern "C" fn jit_runtime_acos(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Float(x.acos()),
         ValueView::Long(x) => MettaValue::Float((x as f64).acos()),
-        _ => MettaValue::Float(f64::NAN), // Type error
+        _ => {
+            // BUG-T0-T1-012: in-tier Error atom (not silent NaN sentinel).
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            factory.error("JIT type error", factory.atom("BadType"))
+        }
     };
 
     metta_to_jit(&result).to_bits()
@@ -337,7 +377,13 @@ pub unsafe extern "C" fn jit_runtime_atan(val: u64) -> u64 {
     let result = match mv.view() {
         ValueView::Float(x) => MettaValue::Float(x.atan()),
         ValueView::Long(x) => MettaValue::Float((x as f64).atan()),
-        _ => MettaValue::Float(f64::NAN), // Type error
+        _ => {
+            // BUG-T0-T1-012: in-tier Error atom (not silent NaN sentinel).
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            factory.error("JIT type error", factory.atom("BadType"))
+        }
     };
 
     metta_to_jit(&result).to_bits()
@@ -590,7 +636,10 @@ pub unsafe extern "C" fn jit_runtime_numeric_abs(a: u64) -> u64 {
     }
 }
 
-/// Helper for comparison operations with type promotion
+/// Helper for comparison operations with type promotion and string lex ordering.
+///
+/// BUG T0-T2-005 (plan T2/T3.B): String comparison via `str::cmp`-based ordering,
+/// matching `grounded/comparison.rs:200-208` (T0) and `op_comparison` (T1).
 #[inline]
 unsafe fn numeric_cmp(
     a: u64,
@@ -608,6 +657,18 @@ unsafe fn numeric_cmp(
         (ValueView::Float(x), ValueView::Float(y)) => float_cmp(x, y),
         (ValueView::Long(x), ValueView::Float(y)) => float_cmp(x as f64, y),
         (ValueView::Float(x), ValueView::Long(y)) => float_cmp(x, y as f64),
+        // BUG T0-T2-005: String lex order via float_cmp-equivalent applied to
+        // ord values. Map String::cmp to a `f64` proxy so the existing float
+        // combinator semantics hold (Less = -1.0, Equal = 0.0, Greater = 1.0
+        // vs 0.0). Cross-tier matches T1's `String::cmp` arm.
+        (ValueView::String(x), ValueView::String(y)) => {
+            let proxy = match x.cmp(y) {
+                std::cmp::Ordering::Less => -1.0f64,
+                std::cmp::Ordering::Equal => 0.0,
+                std::cmp::Ordering::Greater => 1.0,
+            };
+            float_cmp(proxy, 0.0)
+        }
         _ => {
             signal_jit_type_error();
             false

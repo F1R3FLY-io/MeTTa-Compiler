@@ -193,7 +193,9 @@ where
         {
             let old_types = env.get_inferred_fn_types(head);
             if !old_types.contains(&arrow)
-                && !crate::backend::environment::rule_management::type_contains_freshened_var(&arrow)
+                && !crate::backend::environment::rule_management::type_contains_freshened_var(
+                    &arrow,
+                )
             {
                 env.register_inferred_type(head, &arrow);
                 changed = true;
@@ -263,10 +265,7 @@ where
 ///
 /// Returns SCCs in reverse topological order (leaves last — the natural
 /// output order of Tarjan's). The caller reverses for processing order.
-fn tarjan_scc(
-    nodes: &[String],
-    edges: &HashMap<String, Vec<String>>,
-) -> Vec<Vec<String>> {
+fn tarjan_scc(nodes: &[String], edges: &HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
     let mut state = TarjanState {
         index_counter: 0,
         stack: Vec::new(),
@@ -294,11 +293,7 @@ struct TarjanState {
     sccs: Vec<Vec<String>>,
 }
 
-fn strongconnect(
-    v: &str,
-    edges: &HashMap<String, Vec<String>>,
-    state: &mut TarjanState,
-) {
+fn strongconnect(v: &str, edges: &HashMap<String, Vec<String>>, state: &mut TarjanState) {
     let v_index = state.index_counter;
     state.index_counter += 1;
     state.indices.insert(v.to_string(), v_index);
@@ -378,11 +373,7 @@ mod tests {
     #[test]
     fn test_tarjan_scc_mixed() {
         // A → B → C, B → A (A,B cycle; C is leaf)
-        let nodes = vec![
-            "A".to_string(),
-            "B".to_string(),
-            "C".to_string(),
-        ];
+        let nodes = vec!["A".to_string(), "B".to_string(), "C".to_string()];
         let mut edges = HashMap::new();
         edges.insert("A".to_string(), vec!["B".to_string()]);
         edges.insert("B".to_string(), vec!["A".to_string(), "C".to_string()]);
@@ -424,7 +415,10 @@ mod tests {
 
         // Same state again → same hash
         let h5 = snapshot_scc_state(&scc, &env);
-        assert_eq!(h4, h5, "same state must produce same hash after type registration");
+        assert_eq!(
+            h4, h5,
+            "same state must produce same hash after type registration"
+        );
 
         // Registering a type for the other function changes hash again
         env.register_inferred_type("beta", &factory.atom("Bool"));

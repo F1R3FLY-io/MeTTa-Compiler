@@ -103,10 +103,7 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &MettaEnviro
         TypeExpr::Var(_) => true,
 
         // Concrete types - check structural compatibility
-        TypeExpr::Number => matches!(
-            actual.view(),
-            ValueView::Long(_) | ValueView::Float(_)
-        ),
+        TypeExpr::Number => matches!(actual.view(), ValueView::Long(_) | ValueView::Float(_)),
 
         TypeExpr::Bool => {
             matches!(actual.view(), ValueView::Bool(_))
@@ -147,10 +144,7 @@ pub fn type_matches(actual: &MettaValue, expected: &TypeExpr, _env: &MettaEnviro
         TypeExpr::List(_) => matches!(actual.view(), ValueView::SExpr(_) | ValueView::Unit),
 
         // Arrow type - callable things (atoms/s-expressions)
-        TypeExpr::Arrow(_, _) => matches!(
-            actual.view(),
-            ValueView::Atom(_) | ValueView::SExpr(_)
-        ),
+        TypeExpr::Arrow(_, _) => matches!(actual.view(), ValueView::Atom(_) | ValueView::SExpr(_)),
 
         // IO type - transparent at runtime (IO X matches what X matches)
         TypeExpr::IO(inner) => type_matches(actual, inner, _env),

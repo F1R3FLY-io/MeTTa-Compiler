@@ -190,13 +190,11 @@ pub fn minimize(dfa: &Dfa) -> Dfa {
     let min_start = state_to_partition[dfa.start];
 
     // Step 4: BFS reorder so start = 0
-    let reordered = bfs_reorder(
-        Dfa {
-            states: min_states,
-            start: min_start,
-            num_classes,
-        },
-    );
+    let reordered = bfs_reorder(Dfa {
+        states: min_states,
+        start: min_start,
+        num_classes,
+    });
 
     reordered
 }
@@ -295,16 +293,10 @@ mod tests {
         assert_eq!(min_dfa.start, 0);
 
         // Should preserve all accepting states' pattern IDs
-        let orig_accepts: std::collections::HashSet<u16> = dfa
-            .states
-            .iter()
-            .filter_map(|s| s.accept)
-            .collect();
-        let min_accepts: std::collections::HashSet<u16> = min_dfa
-            .states
-            .iter()
-            .filter_map(|s| s.accept)
-            .collect();
+        let orig_accepts: std::collections::HashSet<u16> =
+            dfa.states.iter().filter_map(|s| s.accept).collect();
+        let min_accepts: std::collections::HashSet<u16> =
+            min_dfa.states.iter().filter_map(|s| s.accept).collect();
         assert_eq!(
             orig_accepts, min_accepts,
             "Minimization should preserve all accept pattern IDs"

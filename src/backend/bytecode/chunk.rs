@@ -6,6 +6,7 @@
 use smallvec::SmallVec;
 use std::sync::Arc;
 
+use super::instruction::{fork_inline_targets, instruction_size};
 use super::opcodes::Opcode;
 use super::optimizer::PeepholeOptimizer;
 use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory, MettaValueTrait};
@@ -139,6 +140,7 @@ where
                 if matches!(
                     opcode,
                     Opcode::Fork
+                        | Opcode::ForkInline
                         | Opcode::Yield
                         | Opcode::Collect
                         | Opcode::CollectN
@@ -146,6 +148,7 @@ where
                         | Opcode::EndNondet
                         | Opcode::Cut
                         | Opcode::Fail
+                        | Opcode::EvalSuperpose
                         | Opcode::Amb
                         | Opcode::Guard
                         | Opcode::Backtrack
@@ -153,7 +156,7 @@ where
                 ) {
                     return true;
                 }
-                offset += 1 + opcode.immediate_size();
+                offset += instruction_size(code, offset);
             } else {
                 offset += 1;
             }
@@ -368,7 +371,7 @@ where
             );
         };
 
-        // Fork has variable-length encoding, handle it specially
+        // Fork has variable-length encoding, handle it specially.
         if opcode == Opcode::Fork {
             let count = self.read_u16(offset + 1).unwrap_or(0) as usize;
             let mut const_indices = Vec::with_capacity(count);
@@ -389,6 +392,23 @@ where
             let next_offset = offset + 3 + count * 2;
             return (
                 format!("fork count={} [{}]", count, const_indices.join(", ")),
+                next_offset,
+            );
+        }
+        if opcode == Opcode::ForkInline {
+            let count = self.read_u16(offset + 1).unwrap_or(0) as usize;
+            let targets = fork_inline_targets(&self.code, offset)
+                .into_iter()
+                .map(|target| format!("{:04x}", target))
+                .collect::<Vec<_>>();
+            let missing = count.saturating_sub(targets.len());
+            let targets = targets
+                .into_iter()
+                .chain(std::iter::repeat("????".to_string()).take(missing))
+                .collect::<Vec<_>>();
+            let next_offset = offset + instruction_size(&self.code, offset);
+            return (
+                format!("fork_inline count={} [{}]", count, targets.join(", ")),
                 next_offset,
             );
         }
@@ -777,6 +797,16 @@ where
         self.code[label.offset] = offset as u8;
     }
 
+    /// Patch a big-endian u16 operand at an exact byte offset.
+    ///
+    /// Used by variable-width opcodes whose operand tables are not relative
+    /// jumps, such as inline nondeterministic branch targets.
+    pub fn patch_u16_at(&mut self, offset: usize, value: u16) {
+        let bytes = value.to_be_bytes();
+        self.code[offset] = bytes[0];
+        self.code[offset + 1] = bytes[1];
+    }
+
     /// Emit a backward jump to a known target
     pub fn emit_loop(&mut self, target: usize) {
         self.emit_line_info();
@@ -849,6 +879,7 @@ where
         if matches!(
             opcode,
             Opcode::Fork
+                | Opcode::ForkInline
                 | Opcode::Yield
                 | Opcode::Collect
                 | Opcode::CollectN
@@ -856,6 +887,7 @@ where
                 | Opcode::EndNondet
                 | Opcode::Cut
                 | Opcode::Fail
+                | Opcode::EvalSuperpose
                 | Opcode::Amb
                 | Opcode::Guard
                 | Opcode::Backtrack
@@ -1027,6 +1059,19 @@ mod tests {
         assert!(
             chunk.has_nondeterminism(),
             "Yield should be detected as nondeterminism"
+        );
+    }
+
+    #[test]
+    fn test_nondeterminism_detection_eval_superpose() {
+        let mut builder = ChunkBuilder::new("test_eval_superpose");
+        builder.emit(Opcode::PushUnit);
+        builder.emit(Opcode::EvalSuperpose);
+        builder.emit(Opcode::Return);
+        let chunk = builder.build();
+        assert!(
+            chunk.has_nondeterminism(),
+            "EvalSuperpose should be detected as nondeterminism"
         );
     }
 

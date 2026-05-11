@@ -22,16 +22,16 @@ use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 // Character classification lookup table
 // ============================================================================
 
-const CLS_OTHER: u8 = 0;     // Regular atom character
-const CLS_SPACE: u8 = 1;     // Whitespace
-const CLS_OPEN: u8 = 2;      // (
-const CLS_CLOSE: u8 = 3;     // )
-const CLS_QUOTE: u8 = 4;     // "
-const CLS_SEMI: u8 = 5;      // ;
-const CLS_OPEN_SQ: u8 = 6;   // [
-const CLS_CLOSE_SQ: u8 = 7;  // ]
-const CLS_OPEN_BR: u8 = 8;   // {
-const CLS_CLOSE_BR: u8 = 9;  // }
+const CLS_OTHER: u8 = 0; // Regular atom character
+const CLS_SPACE: u8 = 1; // Whitespace
+const CLS_OPEN: u8 = 2; // (
+const CLS_CLOSE: u8 = 3; // )
+const CLS_QUOTE: u8 = 4; // "
+const CLS_SEMI: u8 = 5; // ;
+const CLS_OPEN_SQ: u8 = 6; // [
+const CLS_CLOSE_SQ: u8 = 7; // ]
+const CLS_OPEN_BR: u8 = 8; // {
+const CLS_CLOSE_BR: u8 = 9; // }
 
 /// Lookup table for byte classification. 256 entries, one per byte value.
 static CHAR_CLASS: [u8; 256] = {
@@ -104,10 +104,7 @@ impl<'src> MettaParser<'src> {
     }
 
     /// Parse a single expression.
-    fn parse_expr<E: ParseEmitter>(
-        &mut self,
-        emitter: &mut E,
-    ) -> Result<E::Output, SyntaxError> {
+    fn parse_expr<E: ParseEmitter>(&mut self, emitter: &mut E) -> Result<E::Output, SyntaxError> {
         self.skip_whitespace_and_comments();
 
         if self.pos >= self.src.len() {
@@ -119,18 +116,9 @@ impl<'src> MettaParser<'src> {
             CLS_OPEN => self.parse_list(emitter, b'(', b')'),
             CLS_OPEN_SQ => self.parse_list(emitter, b'[', b']'),
             CLS_OPEN_BR => self.parse_list(emitter, b'{', b'}'),
-            CLS_CLOSE => Err(self.error(
-                SyntaxErrorKind::ExtraClosingDelimiter(')'),
-                ")",
-            )),
-            CLS_CLOSE_SQ => Err(self.error(
-                SyntaxErrorKind::ExtraClosingDelimiter(']'),
-                "]",
-            )),
-            CLS_CLOSE_BR => Err(self.error(
-                SyntaxErrorKind::ExtraClosingDelimiter('}'),
-                "}",
-            )),
+            CLS_CLOSE => Err(self.error(SyntaxErrorKind::ExtraClosingDelimiter(')'), ")")),
+            CLS_CLOSE_SQ => Err(self.error(SyntaxErrorKind::ExtraClosingDelimiter(']'), "]")),
+            CLS_CLOSE_BR => Err(self.error(SyntaxErrorKind::ExtraClosingDelimiter('}'), "}")),
             CLS_QUOTE => self.parse_string(emitter),
             _ => {
                 // Check for prefix operators
@@ -244,8 +232,11 @@ impl<'src> MettaParser<'src> {
         }
 
         let next_class = CHAR_CLASS[self.src[self.pos] as usize];
-        if next_class == CLS_SPACE || next_class == CLS_SEMI
-            || next_class == CLS_CLOSE || next_class == CLS_CLOSE_SQ || next_class == CLS_CLOSE_BR
+        if next_class == CLS_SPACE
+            || next_class == CLS_SEMI
+            || next_class == CLS_CLOSE
+            || next_class == CLS_CLOSE_SQ
+            || next_class == CLS_CLOSE_BR
         {
             let span = Span::new(
                 Position::new(start_line, start_col, start_byte),
@@ -266,10 +257,7 @@ impl<'src> MettaParser<'src> {
     }
 
     /// Parse a string literal: `"..."`
-    fn parse_string<E: ParseEmitter>(
-        &mut self,
-        emitter: &mut E,
-    ) -> Result<E::Output, SyntaxError> {
+    fn parse_string<E: ParseEmitter>(&mut self, emitter: &mut E) -> Result<E::Output, SyntaxError> {
         let start_line = self.line;
         let start_col = self.col;
         let start_byte = self.pos;
@@ -386,9 +374,8 @@ impl<'src> MettaParser<'src> {
 
         // SAFETY: MeTTa source is expected to be valid UTF-8; atom bytes are
         // all non-delimiter characters from the source.
-        let text = std::str::from_utf8(atom_bytes).map_err(|_| {
-            self.error(SyntaxErrorKind::Generic, "invalid UTF-8 in atom")
-        })?;
+        let text = std::str::from_utf8(atom_bytes)
+            .map_err(|_| self.error(SyntaxErrorKind::Generic, "invalid UTF-8 in atom"))?;
 
         // Check for boolean literals
         match text {
@@ -420,9 +407,7 @@ impl<'src> MettaParser<'src> {
         // source buffer; passing through `from_utf8_unchecked` is a zero-cost
         // cast we use elsewhere in this file for the same reason.
         let s = unsafe { std::str::from_utf8_unchecked(bytes) };
-        use crate::backend::literal_classifier::{
-            classify_and_parse, ClassifiedLiteral,
-        };
+        use crate::backend::literal_classifier::{classify_and_parse, ClassifiedLiteral};
         match classify_and_parse(s) {
             ClassifiedLiteral::Long(n) => Some(Ok(emitter.emit_integer(n, span))),
             ClassifiedLiteral::Float(f) => Some(Ok(emitter.emit_float(f, span))),
@@ -899,7 +884,10 @@ mod tests {
         let result = parse_to_ir("(+ 1 2");
         assert!(result.is_err());
         let error = result.unwrap_err();
-        assert!(matches!(error.kind, SyntaxErrorKind::UnclosedDelimiter('(')));
+        assert!(matches!(
+            error.kind,
+            SyntaxErrorKind::UnclosedDelimiter('(')
+        ));
     }
 
     #[test]
@@ -926,7 +914,10 @@ mod tests {
         let result = parse_to_ir("[1 2 3");
         assert!(result.is_err());
         let error = result.unwrap_err();
-        assert!(matches!(error.kind, SyntaxErrorKind::UnclosedDelimiter('[')));
+        assert!(matches!(
+            error.kind,
+            SyntaxErrorKind::UnclosedDelimiter('[')
+        ));
     }
 
     #[test]
@@ -945,7 +936,10 @@ mod tests {
         let result = parse_to_ir("{a b c");
         assert!(result.is_err());
         let error = result.unwrap_err();
-        assert!(matches!(error.kind, SyntaxErrorKind::UnclosedDelimiter('{')));
+        assert!(matches!(
+            error.kind,
+            SyntaxErrorKind::UnclosedDelimiter('{')
+        ));
     }
 
     #[test]
@@ -998,20 +992,22 @@ mod tests {
     #[test]
     fn test_bare_prefix_operators() {
         // Bare `!` at end of input should be an atom
-        assert_eq!(parse("(!)"), vec![
-            MettaExpr::List(
+        assert_eq!(
+            parse("(!)"),
+            vec![MettaExpr::List(
                 vec![MettaExpr::Atom("!".to_string(), None)],
                 None,
-            )
-        ]);
+            )]
+        );
 
         // Bare `?` in list should be an atom
-        assert_eq!(parse("(?)"), vec![
-            MettaExpr::List(
+        assert_eq!(
+            parse("(?)"),
+            vec![MettaExpr::List(
                 vec![MettaExpr::Atom("?".to_string(), None)],
                 None,
-            )
-        ]);
+            )]
+        );
     }
 
     #[test]
@@ -1111,24 +1107,33 @@ mod tests {
 
             if let MettaExpr::Atom(text, Some(atom_span)) = &items[0] {
                 assert_eq!(text, "ö");
-                assert_eq!(atom_span.start.column, 1,
-                    "ö atom should start at character column 1");
-                assert_eq!(atom_span.start.byte_offset, 1,
-                    "ö atom should start at byte offset 1");
-                assert_eq!(atom_span.end.column, 2,
-                    "ö atom should end at character column 2 (one character wide)");
-                assert_eq!(atom_span.end.byte_offset, 3,
-                    "ö atom should end at byte offset 3 (two bytes wide)");
+                assert_eq!(
+                    atom_span.start.column, 1,
+                    "ö atom should start at character column 1"
+                );
+                assert_eq!(
+                    atom_span.start.byte_offset, 1,
+                    "ö atom should start at byte offset 1"
+                );
+                assert_eq!(
+                    atom_span.end.column, 2,
+                    "ö atom should end at character column 2 (one character wide)"
+                );
+                assert_eq!(
+                    atom_span.end.byte_offset, 3,
+                    "ö atom should end at byte offset 3 (two bytes wide)"
+                );
             } else {
                 panic!("expected Atom('ö') with span");
             }
 
             if let MettaExpr::Atom(text, Some(x_span)) = &items[1] {
                 assert_eq!(text, "x");
-                assert_eq!(x_span.start.column, 3,
-                    "x should be at character column 3, not byte-counted column 4");
-                assert_eq!(x_span.start.byte_offset, 4,
-                    "x should be at byte offset 4");
+                assert_eq!(
+                    x_span.start.column, 3,
+                    "x should be at character column 3, not byte-counted column 4"
+                );
+                assert_eq!(x_span.start.byte_offset, 4, "x should be at byte offset 4");
             } else {
                 panic!("expected Atom('x') with span");
             }
@@ -1390,11 +1395,19 @@ mod tests {
             let mut parser = MettaParser::new(src);
             let mut emitter = IrEmitter::new();
             let result = parser.parse_all(&mut emitter);
-            assert!(result.is_ok(), "Custom parser failed on mmverify-utils.metta: {:?}", result.err());
+            assert!(
+                result.is_ok(),
+                "Custom parser failed on mmverify-utils.metta: {:?}",
+                result.err()
+            );
             // Also verify tree-sitter can parse it
             let mut ts = TreeSitterMettaParser::new().expect("ts init");
             let ts_result = ts.parse(src);
-            assert!(ts_result.is_ok(), "Tree-sitter failed on mmverify-utils.metta: {:?}", ts_result.err());
+            assert!(
+                ts_result.is_ok(),
+                "Tree-sitter failed on mmverify-utils.metta: {:?}",
+                ts_result.err()
+            );
         }
 
         // ------------------------------------------------------------------
@@ -1413,12 +1426,20 @@ mod tests {
             };
             // Both should report UnclosedDelimiter
             assert!(
-                matches!(ts_err.kind, crate::tree_sitter_parser::SyntaxErrorKind::UnclosedDelimiter('(')),
-                "Tree-sitter error: {:?}", ts_err.kind
+                matches!(
+                    ts_err.kind,
+                    crate::tree_sitter_parser::SyntaxErrorKind::UnclosedDelimiter('(')
+                ),
+                "Tree-sitter error: {:?}",
+                ts_err.kind
             );
             assert!(
-                matches!(custom_err.kind, crate::tree_sitter_parser::SyntaxErrorKind::UnclosedDelimiter('(')),
-                "Custom error: {:?}", custom_err.kind
+                matches!(
+                    custom_err.kind,
+                    crate::tree_sitter_parser::SyntaxErrorKind::UnclosedDelimiter('(')
+                ),
+                "Custom error: {:?}",
+                custom_err.kind
             );
         }
 
@@ -1433,12 +1454,20 @@ mod tests {
                 parser.parse_all(&mut emitter).unwrap_err()
             };
             assert!(
-                matches!(ts_err.kind, crate::tree_sitter_parser::SyntaxErrorKind::ExtraClosingDelimiter(')')),
-                "Tree-sitter error: {:?}", ts_err.kind
+                matches!(
+                    ts_err.kind,
+                    crate::tree_sitter_parser::SyntaxErrorKind::ExtraClosingDelimiter(')')
+                ),
+                "Tree-sitter error: {:?}",
+                ts_err.kind
             );
             assert!(
-                matches!(custom_err.kind, crate::tree_sitter_parser::SyntaxErrorKind::ExtraClosingDelimiter(')')),
-                "Custom error: {:?}", custom_err.kind
+                matches!(
+                    custom_err.kind,
+                    crate::tree_sitter_parser::SyntaxErrorKind::ExtraClosingDelimiter(')')
+                ),
+                "Custom error: {:?}",
+                custom_err.kind
             );
         }
 
@@ -1453,12 +1482,20 @@ mod tests {
                 parser.parse_all(&mut emitter).unwrap_err()
             };
             assert!(
-                matches!(ts_err.kind, crate::tree_sitter_parser::SyntaxErrorKind::UnclosedString),
-                "Tree-sitter error: {:?}", ts_err.kind
+                matches!(
+                    ts_err.kind,
+                    crate::tree_sitter_parser::SyntaxErrorKind::UnclosedString
+                ),
+                "Tree-sitter error: {:?}",
+                ts_err.kind
             );
             assert!(
-                matches!(custom_err.kind, crate::tree_sitter_parser::SyntaxErrorKind::UnclosedString),
-                "Custom error: {:?}", custom_err.kind
+                matches!(
+                    custom_err.kind,
+                    crate::tree_sitter_parser::SyntaxErrorKind::UnclosedString
+                ),
+                "Custom error: {:?}",
+                custom_err.kind
             );
         }
     }

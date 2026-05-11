@@ -94,7 +94,10 @@ fn create_mixed_fact_dataset(
 }
 
 /// Create mixed rule dataset with specified duplicate ratio
-fn create_mixed_rule_dataset(total: usize, duplicate_ratio: f64) -> (Vec<(MettaValue, MettaValue)>, Vec<(MettaValue, MettaValue)>) {
+fn create_mixed_rule_dataset(
+    total: usize,
+    duplicate_ratio: f64,
+) -> (Vec<(MettaValue, MettaValue)>, Vec<(MettaValue, MettaValue)>) {
     let num_duplicates = (total as f64 * duplicate_ratio) as usize;
     let _num_new = total - num_duplicates;
 

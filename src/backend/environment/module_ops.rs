@@ -46,27 +46,17 @@ where
         } else {
             LoadOptions::permissive()
         };
-        self.shared
-            .module_registry
-            .write()
-            .set_options(options);
+        self.shared.module_registry.write().set_options(options);
     }
 
     /// Get the number of loaded modules
     pub fn module_count(&self) -> usize {
-        self.shared
-            .module_registry
-            .read()
-            .module_count()
+        self.shared.module_registry.read().module_count()
     }
 
     /// Check if strict mode is enabled
     pub fn is_strict_mode(&self) -> bool {
-        self.shared
-            .module_registry
-            .read()
-            .options()
-            .strict_mode
+        self.shared.module_registry.read().options().strict_mode
     }
 
     /// Check if a module is currently being loaded (cycle detection).
@@ -74,10 +64,7 @@ where
     /// Used by `eval_import_generic` and `eval_include_generic` to detect
     /// circular imports and return unit silently instead of infinite recursion.
     pub fn is_module_loading(&self, content_hash: u64) -> bool {
-        self.shared
-            .module_registry
-            .read()
-            .is_loading(content_hash)
+        self.shared.module_registry.read().is_loading(content_hash)
     }
 
     /// Mark a module as being loaded (start of import/include).
@@ -104,10 +91,7 @@ where
 impl MettaEnvironment {
     /// Check if a module is cached by path
     pub fn get_module_by_path(&self, path: &std::path::Path) -> Option<ModId> {
-        self.shared
-            .module_registry
-            .read()
-            .get_by_path(path)
+        self.shared.module_registry.read().get_by_path(path)
     }
 
     /// Check if a module is cached by content hash
@@ -126,10 +110,12 @@ impl MettaEnvironment {
         content_hash: u64,
         resource_dir: Option<PathBuf>,
     ) -> ModId {
-        self.shared
-            .module_registry
-            .write()
-            .register(mod_path, file_path, content_hash, resource_dir)
+        self.shared.module_registry.write().register(
+            mod_path,
+            file_path,
+            content_hash,
+            resource_dir,
+        )
     }
 
     /// Add a path alias for an existing module

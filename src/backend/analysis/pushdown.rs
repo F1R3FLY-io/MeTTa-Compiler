@@ -146,11 +146,14 @@ pub fn run_pushdown_analysis(
                         recursive_exprs.insert(hash);
                         // Check if there's a base case (a rule whose RHS doesn't recurse)
                         let has_base = candidates.iter().any(|r| !contains_head_call(&r.rhs, head));
-                        convergence.insert(hash, if has_base {
-                            ConvergenceClass::Convergent
-                        } else {
-                            ConvergenceClass::Divergent
-                        });
+                        convergence.insert(
+                            hash,
+                            if has_base {
+                                ConvergenceClass::Convergent
+                            } else {
+                                ConvergenceClass::Divergent
+                            },
+                        );
                     }
                 }
             }

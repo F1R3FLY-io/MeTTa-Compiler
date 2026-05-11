@@ -143,6 +143,8 @@ fn main() {
     if unregistered_count == 0 && frame_chain_count == 0 && field_not_collected_count == 0 {
         eprintln!("\nAll detected persistent MettaValue storage locations have GC root coverage.");
         eprintln!("All Vec locals across eval_trampoline_generic calls are frame-chain guarded.");
-        eprintln!("All MettaValue-bearing fields in RootProvider types are covered by collect_roots().");
+        eprintln!(
+            "All MettaValue-bearing fields in RootProvider types are covered by collect_roots()."
+        );
     }
 }

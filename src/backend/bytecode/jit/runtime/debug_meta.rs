@@ -8,7 +8,7 @@
 
 use super::helpers::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue, TAG_ATOM, TAG_BOOL, TAG_PTR, TAG_LONG, TAG_UNIT, TAG_VAR,
+    JitContext, JitValue, TAG_ATOM, TAG_BOOL, TAG_LONG, TAG_PTR, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{MettaValue, ValueView};
 use tracing::{debug, trace};
@@ -94,10 +94,18 @@ pub unsafe extern "C" fn jit_runtime_get_metatype(
                 // Quoted is transparent to get-metatype: returns "Expression"
                 ValueView::Quoted(_) => "Expression",
                 ValueView::String(_) => "Grounded",
-                ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_)
-                | ValueView::Unit | ValueView::Empty | ValueView::Atom(_)
-                | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
-                | ValueView::Space(_) | ValueView::State(_) | ValueView::Memo(_) => "Expression",
+                ValueView::Float(_)
+                | ValueView::Bool(_)
+                | ValueView::Long(_)
+                | ValueView::Unit
+                | ValueView::Empty
+                | ValueView::Atom(_)
+                | ValueView::Error(_, _)
+                | ValueView::Type(_)
+                | ValueView::Conjunction(_)
+                | ValueView::Space(_)
+                | ValueView::State(_)
+                | ValueView::Memo(_) => "Expression",
             }
         }
         t if t == TAG_ATOM => "Symbol",

@@ -237,6 +237,27 @@ where
 
 /// max-atom: Get the maximum numeric value in an expression
 /// Example: (max-atom (1 5 3 2)) -> 5
+/// Accumulator for max-atom / min-atom that tracks numeric type promotion.
+///
+/// BUG-T0-014 (spec §13.4): max-atom and min-atom previously accepted only
+/// Long elements, rejecting Float and mixed Long/Float inputs. The fix uses
+/// an enum accumulator that promotes to Float on first Float encounter,
+/// matching the Long↔Float promotion semantics of arithmetic ops.
+#[derive(Clone, Copy)]
+enum NumAcc {
+    Long(i64),
+    Float(f64),
+}
+
+impl NumAcc {
+    fn to_float(self) -> f64 {
+        match self {
+            Self::Long(n) => n as f64,
+            Self::Float(f) => f,
+        }
+    }
+}
+
 pub fn eval_max_atom_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -256,34 +277,39 @@ where
 
     if let Some(elements) = expr.as_sexpr() {
         if elements.is_empty() {
-            return vec![factory.error(
-                "max-atom expects a non-empty expression",
-                expr.clone(),
-            )];
+            return vec![factory.error("max-atom expects a non-empty expression", expr.clone())];
         }
 
-        let mut max_val: Option<i64> = None;
+        // BUG-T0-014: accept Float and mixed Long/Float inputs.
+        // Output is Long when all elements were Long; Float as soon as any
+        // Float element is seen (cross-type promotion semantics).
+        let mut acc: Option<NumAcc> = None;
         for elem in elements {
-            if let Some(n) = elem.as_long() {
-                max_val = Some(max_val.map_or(n, |m| m.max(n)));
-            } else {
-                return vec![factory.error(
-                    "max-atom expects all elements to be numbers",
-                    elem.clone(),
-                )];
-            }
+            let next = match (elem.as_long(), elem.as_float()) {
+                (Some(n), _) => NumAcc::Long(n),
+                (_, Some(f)) => NumAcc::Float(f),
+                _ => {
+                    return vec![factory
+                        .error("max-atom expects all elements to be numbers", elem.clone())]
+                }
+            };
+            acc = Some(match (acc, next) {
+                (None, n) => n,
+                (Some(NumAcc::Long(a)), NumAcc::Long(b)) => NumAcc::Long(a.max(b)),
+                (Some(a), b) => NumAcc::Float(a.to_float().max(b.to_float())),
+            });
         }
 
-        if let Some(max) = max_val {
-            return vec![factory.long(max)];
+        if let Some(result) = acc {
+            return match result {
+                NumAcc::Long(n) => vec![factory.long(n)],
+                NumAcc::Float(f) => vec![factory.float(f)],
+            };
         }
     }
 
     if expr.is_unit() {
-        return vec![factory.error(
-            "max-atom expects a non-empty expression",
-            expr.clone(),
-        )];
+        return vec![factory.error("max-atom expects a non-empty expression", expr.clone())];
     }
 
     vec![factory.error(
@@ -313,34 +339,37 @@ where
 
     if let Some(elements) = expr.as_sexpr() {
         if elements.is_empty() {
-            return vec![factory.error(
-                "min-atom expects a non-empty expression",
-                expr.clone(),
-            )];
+            return vec![factory.error("min-atom expects a non-empty expression", expr.clone())];
         }
 
-        let mut min_val: Option<i64> = None;
+        // BUG-T0-014: mirror max-atom's Float-promotion semantics.
+        let mut acc: Option<NumAcc> = None;
         for elem in elements {
-            if let Some(n) = elem.as_long() {
-                min_val = Some(min_val.map_or(n, |m| m.min(n)));
-            } else {
-                return vec![factory.error(
-                    "min-atom expects all elements to be numbers",
-                    elem.clone(),
-                )];
-            }
+            let next = match (elem.as_long(), elem.as_float()) {
+                (Some(n), _) => NumAcc::Long(n),
+                (_, Some(f)) => NumAcc::Float(f),
+                _ => {
+                    return vec![factory
+                        .error("min-atom expects all elements to be numbers", elem.clone())]
+                }
+            };
+            acc = Some(match (acc, next) {
+                (None, n) => n,
+                (Some(NumAcc::Long(a)), NumAcc::Long(b)) => NumAcc::Long(a.min(b)),
+                (Some(a), b) => NumAcc::Float(a.to_float().min(b.to_float())),
+            });
         }
 
-        if let Some(min) = min_val {
-            return vec![factory.long(min)];
+        if let Some(result) = acc {
+            return match result {
+                NumAcc::Long(n) => vec![factory.long(n)],
+                NumAcc::Float(f) => vec![factory.float(f)],
+            };
         }
     }
 
     if expr.is_unit() {
-        return vec![factory.error(
-            "min-atom expects a non-empty expression",
-            expr.clone(),
-        )];
+        return vec![factory.error("min-atom expects a non-empty expression", expr.clone())];
     }
 
     vec![factory.error(
@@ -372,16 +401,10 @@ where
     let index = match index_val.as_long() {
         Some(i) if i >= 0 => i as usize,
         Some(_) => {
-            return vec![factory.error(
-                "index-atom: index must be non-negative",
-                index_val.clone(),
-            )];
+            return vec![factory.error("index-atom: index must be non-negative", index_val.clone())];
         }
         None => {
-            return vec![factory.error(
-                "index-atom: index must be an integer",
-                index_val.clone(),
-            )];
+            return vec![factory.error("index-atom: index must be an integer", index_val.clone())];
         }
     };
 
@@ -580,21 +603,11 @@ where
 
     let start = match items[1].as_long() {
         Some(v) => v,
-        None => {
-            return vec![factory.error(
-                "range: start must be Long",
-                items[1].clone(),
-            )]
-        }
+        None => return vec![factory.error("range: start must be Long", items[1].clone())],
     };
     let end = match items[2].as_long() {
         Some(v) => v,
-        None => {
-            return vec![factory.error(
-                "range: end must be Long",
-                items[2].clone(),
-            )]
-        }
+        None => return vec![factory.error("range: end must be Long", items[2].clone())],
     };
 
     if start >= end {
@@ -637,10 +650,7 @@ where
         return vec![factory.sexpr(vec![])];
     }
 
-    vec![factory.error(
-        "reverse-atom: argument must be an expression",
-        expr.clone(),
-    )]
+    vec![factory.error("reverse-atom: argument must be an expression", expr.clone())]
 }
 
 /// flatten-atom: Flatten one level of nesting
@@ -677,10 +687,7 @@ where
         return vec![factory.sexpr(vec![])];
     }
 
-    vec![factory.error(
-        "flatten-atom: argument must be an expression",
-        expr.clone(),
-    )]
+    vec![factory.error("flatten-atom: argument must be an expression", expr.clone())]
 }
 
 /// zip-atom: Pair-wise zip of two tuples
@@ -758,17 +765,9 @@ where
     let n = match items[2].as_long() {
         Some(v) if v >= 0 => v as usize,
         Some(_) => {
-            return vec![factory.error(
-                "take-atom: n must be non-negative",
-                items[2].clone(),
-            )]
+            return vec![factory.error("take-atom: n must be non-negative", items[2].clone())]
         }
-        None => {
-            return vec![factory.error(
-                "take-atom: n must be Long",
-                items[2].clone(),
-            )]
-        }
+        None => return vec![factory.error("take-atom: n must be Long", items[2].clone())],
     };
 
     let take_count = n.min(elems.len());
@@ -806,17 +805,9 @@ where
     let n = match items[2].as_long() {
         Some(v) if v >= 0 => v as usize,
         Some(_) => {
-            return vec![factory.error(
-                "drop-atom: n must be non-negative",
-                items[2].clone(),
-            )]
+            return vec![factory.error("drop-atom: n must be non-negative", items[2].clone())]
         }
-        None => {
-            return vec![factory.error(
-                "drop-atom: n must be Long",
-                items[2].clone(),
-            )]
-        }
+        None => return vec![factory.error("drop-atom: n must be Long", items[2].clone())],
     };
 
     let drop_count = n.min(elems.len());
@@ -908,10 +899,7 @@ where
     } else if let Some(elems) = a.as_sexpr() {
         elems.iter().cloned().collect()
     } else {
-        return vec![factory.error(
-            "append: first argument must be an expression",
-            a.clone(),
-        )];
+        return vec![factory.error("append: first argument must be an expression", a.clone())];
     };
 
     let b_elems: Vec<V> = if b.is_unit() {
@@ -919,10 +907,7 @@ where
     } else if let Some(elems) = b.as_sexpr() {
         elems.iter().cloned().collect()
     } else {
-        return vec![factory.error(
-            "append: second argument must be an expression",
-            b.clone(),
-        )];
+        return vec![factory.error("append: second argument must be an expression", b.clone())];
     };
 
     let mut combined = Vec::with_capacity(a_elems.len() + b_elems.len());
@@ -961,10 +946,7 @@ where
         return vec![factory.long(elements.len() as i64)];
     }
 
-    vec![factory.error(
-        "length: argument must be an expression",
-        expr.clone(),
-    )]
+    vec![factory.error("length: argument must be an expression", expr.clone())]
 }
 
 /// exclude-item: PeTTa-compatible — like MeTTaTron's `without` but with
@@ -1025,10 +1007,7 @@ where
     } else if let Some(elems) = tuple.as_sexpr() {
         elems.iter().cloned().collect()
     } else {
-        return vec![factory.error(
-            "msort: argument must be an expression",
-            tuple.clone(),
-        )];
+        return vec![factory.error("msort: argument must be an expression", tuple.clone())];
     };
     // Sort by numeric value (Long or Float). Non-numeric items error out.
     let mut keyed: Vec<(f64, V)> = Vec::with_capacity(elements.len());
@@ -1038,10 +1017,7 @@ where
         } else if let Some(f) = e.as_float() {
             f
         } else {
-            return vec![factory.error(
-                "msort: all elements must be numeric (Long or Float)",
-                e,
-            )];
+            return vec![factory.error("msort: all elements must be numeric (Long or Float)", e)];
         };
         keyed.push((key, e));
     }

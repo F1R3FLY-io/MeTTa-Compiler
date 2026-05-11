@@ -4,8 +4,8 @@ use std::sync::Arc;
 fn main() {
     use mettatron::backend::bytecode::vm::BytecodeVM;
     use mettatron::backend::bytecode::{ChunkBuilder, Opcode};
-    use mettatron::backend::models::GcFactory;
     use mettatron::backend::environment::GenericEnvironment;
+    use mettatron::backend::models::GcFactory;
 
     let ops = 10;
     let mut builder = ChunkBuilder::new("state_mixed");

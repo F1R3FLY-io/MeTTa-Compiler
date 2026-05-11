@@ -16,7 +16,7 @@
 //! All references within MettaValue are `'static`, tied to the global slab allocator.
 //! Values live for the program duration and are reclaimed by the GC when no longer reachable.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -71,7 +71,9 @@ impl TieredHashCache {
         let idx = (key >> 4) & HASH_L1_MASK;
         // Safety: idx is always < HASH_L1_SIZE due to mask
         let (k, v) = unsafe { *self.l1.get_unchecked(idx) };
-        if k == key { return Some(v); }
+        if k == key {
+            return Some(v);
+        }
         self.l2.get(&key).copied()
     }
 
@@ -79,7 +81,9 @@ impl TieredHashCache {
     fn insert(&mut self, key: usize, hash: u64) {
         let idx = (key >> 4) & HASH_L1_MASK;
         // Safety: idx is always < HASH_L1_SIZE due to mask
-        unsafe { *self.l1.get_unchecked_mut(idx) = (key, hash); }
+        unsafe {
+            *self.l1.get_unchecked_mut(idx) = (key, hash);
+        }
         self.l2.insert(key, hash);
     }
 
@@ -102,6 +106,13 @@ thread_local! {
     /// ABA issues when freed slots are reused.
     static VALUE_HASH_CACHE: RefCell<TieredHashCache> =
         RefCell::new(TieredHashCache::new());
+
+    /// GC sweep epoch observed by this thread's value hash cache.
+    ///
+    /// The cache is keyed by slab pointers. Work-pool threads can miss another
+    /// thread's safepoint, so they must lazily clear stale pointer entries after
+    /// any GC sweep that may have freed and reused slab slots.
+    static VALUE_HASH_CACHE_EPOCH: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Clear the thread-local hash value cache.
@@ -110,6 +121,19 @@ thread_local! {
 /// stale cached hashes from being returned for new values at recycled addresses.
 pub fn clear_value_hash_cache() {
     VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());
+    let current_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
+    VALUE_HASH_CACHE_EPOCH.with(|epoch| epoch.set(current_epoch));
+}
+
+#[inline]
+fn ensure_value_hash_cache_epoch_current() {
+    let current_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
+    VALUE_HASH_CACHE_EPOCH.with(|epoch| {
+        if epoch.get() != current_epoch {
+            VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());
+            epoch.set(current_epoch);
+        }
+    });
 }
 
 /// Recursive helper: compute hash for a `MettaValue`, using `cache` for memoization.
@@ -138,7 +162,9 @@ fn hash_value_cached_inner(value: &MettaValue, cache: &mut TieredHashCache) -> u
             }
             NB_TAG_LONG => {
                 let n = value.inline_long_value();
-                let x = (n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+                let x = (n as u64)
+                    .wrapping_add(LONG_SEED)
+                    .wrapping_mul(GOLDEN_RATIO);
                 x ^ (x >> 32)
             }
             NB_TAG_EMPTY => 9u64.wrapping_mul(GOLDEN_RATIO),
@@ -150,10 +176,16 @@ fn hash_value_cached_inner(value: &MettaValue, cache: &mut TieredHashCache) -> u
     match value.inner_ref() {
         MettaValueInner::Unit => return UNIT_HASH,
         MettaValueInner::Bool(b) => {
-            return if *b { BOOL_SEED.wrapping_mul(GOLDEN_RATIO) } else { BOOL_SEED };
+            return if *b {
+                BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
+            } else {
+                BOOL_SEED
+            };
         }
         MettaValueInner::Long(n) => {
-            let x = (*n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+            let x = (*n as u64)
+                .wrapping_add(LONG_SEED)
+                .wrapping_mul(GOLDEN_RATIO);
             return x ^ (x >> 32);
         }
         MettaValueInner::Float(f) => {
@@ -230,18 +262,41 @@ fn hash_value_cached_inner(value: &MettaValue, cache: &mut TieredHashCache) -> u
 fn hash_value_for_trait_inner<H: Hasher>(inner: &MettaValueInner, hasher: &mut H) {
     match inner {
         MettaValueInner::Unit => 0u8.hash(hasher),
-        MettaValueInner::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
-        MettaValueInner::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }
-        MettaValueInner::Float(f) => { 4u8.hash(hasher); f.to_bits().hash(hasher); }
-        MettaValueInner::String(s) => { 5u8.hash(hasher); s.hash(hasher); }
-        MettaValueInner::Atom(s) => { 6u8.hash(hasher); s.hash(hasher); }
-        MettaValueInner::SExpr(_) => { 7u8.hash(hasher); } // children not traversed here
+        MettaValueInner::Bool(b) => {
+            2u8.hash(hasher);
+            b.hash(hasher);
+        }
+        MettaValueInner::Long(n) => {
+            3u8.hash(hasher);
+            n.hash(hasher);
+        }
+        MettaValueInner::Float(f) => {
+            4u8.hash(hasher);
+            f.to_bits().hash(hasher);
+        }
+        MettaValueInner::String(s) => {
+            5u8.hash(hasher);
+            s.hash(hasher);
+        }
+        MettaValueInner::Atom(s) => {
+            6u8.hash(hasher);
+            s.hash(hasher);
+        }
+        MettaValueInner::SExpr(_) => {
+            7u8.hash(hasher);
+        } // children not traversed here
         MettaValueInner::Error(..) => 8u8.hash(hasher),
         MettaValueInner::Empty => 9u8.hash(hasher),
         MettaValueInner::Quoted(_) => 10u8.hash(hasher),
         MettaValueInner::Spanned(_, _) => 11u8.hash(hasher),
-        MettaValueInner::Space(handle) => { 12u8.hash(hasher); handle.id.hash(hasher); }
-        MettaValueInner::State(id) => { 13u8.hash(hasher); id.hash(hasher); }
+        MettaValueInner::Space(handle) => {
+            12u8.hash(hasher);
+            handle.id.hash(hasher);
+        }
+        MettaValueInner::State(id) => {
+            13u8.hash(hasher);
+            id.hash(hasher);
+        }
         _ => 14u8.hash(hasher), // Type, Conjunction, Memo
     }
 }
@@ -475,6 +530,14 @@ static INLINE_EMPTY_INNER: MettaValueInner = MettaValueInner::Empty;
 static INLINE_TRUE_INNER: MettaValueInner = MettaValueInner::Bool(true);
 static INLINE_FALSE_INNER: MettaValueInner = MettaValueInner::Bool(false);
 
+#[inline]
+pub(crate) fn is_inline_singleton_inner_ptr(ptr: *const MettaValueInner) -> bool {
+    std::ptr::eq(ptr, &INLINE_UNIT_INNER)
+        || std::ptr::eq(ptr, &INLINE_EMPTY_INNER)
+        || std::ptr::eq(ptr, &INLINE_TRUE_INNER)
+        || std::ptr::eq(ptr, &INLINE_FALSE_INNER)
+}
+
 impl MettaValue {
     // ======================================================================
     // NaN-boxing inline discriminant and construction
@@ -499,7 +562,9 @@ impl MettaValue {
     /// Create an inline Bool value (no slab allocation).
     #[inline(always)]
     pub(crate) fn inline_bool(b: bool) -> Self {
-        Self { tagged: (NB_TAG_BOOL | (b as u64)) as usize }
+        Self {
+            tagged: (NB_TAG_BOOL | (b as u64)) as usize,
+        }
     }
 
     /// Create an inline Long value if it fits in 48 bits, otherwise None.
@@ -507,7 +572,9 @@ impl MettaValue {
     #[inline(always)]
     pub(crate) fn try_inline_long(n: i64) -> Option<Self> {
         if n >= NB_LONG_MIN && n <= NB_LONG_MAX {
-            Some(Self { tagged: (NB_TAG_LONG | (n as u64 & NB_PAYLOAD_MASK)) as usize })
+            Some(Self {
+                tagged: (NB_TAG_LONG | (n as u64 & NB_PAYLOAD_MASK)) as usize,
+            })
         } else {
             None
         }
@@ -516,13 +583,17 @@ impl MettaValue {
     /// Create an inline Unit value (no slab allocation).
     #[inline(always)]
     pub(crate) fn inline_unit() -> Self {
-        Self { tagged: NB_TAG_UNIT as usize }
+        Self {
+            tagged: NB_TAG_UNIT as usize,
+        }
     }
 
     /// Create an inline Empty value (no slab allocation).
     #[inline(always)]
     pub(crate) fn inline_empty() -> Self {
-        Self { tagged: NB_TAG_EMPTY as usize }
+        Self {
+            tagged: NB_TAG_EMPTY as usize,
+        }
     }
 
     /// Extract the i64 value from an inline Long.
@@ -581,7 +652,11 @@ impl MettaValue {
             }
             _ => {
                 // Unknown inline tag — should not happen
-                debug_assert!(false, "unknown inline tag: 0x{:04x}", self.inline_tag() >> 48);
+                debug_assert!(
+                    false,
+                    "unknown inline tag: 0x{:04x}",
+                    self.inline_tag() >> 48
+                );
                 &INLINE_UNIT_INNER
             }
         }
@@ -700,7 +775,9 @@ impl MettaValue {
     /// Returns `None` for bare values without span annotations.
     #[inline]
     pub fn span(&self) -> Option<&'static Span> {
-        if self.is_inline() { return None; } // Inline values are never Spanned
+        if self.is_inline() {
+            return None;
+        } // Inline values are never Spanned
         match self.inner_ref() {
             MettaValueInner::Spanned(_, span) => Some(span),
             _ => None,
@@ -735,7 +812,9 @@ impl MettaValue {
     /// Inline NaN-boxed values are returned as-is (never Spanned).
     #[inline]
     pub fn strip_spans(&self) -> MettaValue {
-        if self.is_inline() { return *self; }
+        if self.is_inline() {
+            return *self;
+        }
         MettaValue::from_inner(self.inner())
     }
 
@@ -745,7 +824,9 @@ impl MettaValue {
     /// Inline NaN-boxed values are never Spanned.
     #[inline]
     pub fn peel_span(&self) -> (MettaValue, Option<&'static Span>) {
-        if self.is_inline() { return (*self, None); }
+        if self.is_inline() {
+            return (*self, None);
+        }
         match self.inner_ref() {
             MettaValueInner::Spanned(v, span) => (*v, Some(span)),
             _ => (*self, None),
@@ -768,7 +849,9 @@ impl MettaValue {
     /// For inline NaN-boxed values, returns null (no slab slot to mark).
     #[inline]
     pub fn inner_ptr(&self) -> *const MettaValueInner {
-        if self.is_inline() { return std::ptr::null(); }
+        if self.is_inline() {
+            return std::ptr::null();
+        }
         (self.tagged & PTR_MASK) as *const MettaValueInner
     }
 
@@ -779,7 +862,9 @@ impl MettaValue {
     /// Check if this is an Atom variant (transparent through Spanned)
     #[inline]
     pub fn is_atom(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::Atom(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_atom(),
@@ -790,7 +875,9 @@ impl MettaValue {
     /// Check if this is a Bool variant (transparent through Spanned)
     #[inline]
     pub fn is_bool(&self) -> bool {
-        if self.is_inline() { return self.inline_tag() == NB_TAG_BOOL; }
+        if self.is_inline() {
+            return self.inline_tag() == NB_TAG_BOOL;
+        }
         match self.inner_ref() {
             MettaValueInner::Bool(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_bool(),
@@ -801,7 +888,9 @@ impl MettaValue {
     /// Check if this is a Long variant (transparent through Spanned)
     #[inline]
     pub fn is_long(&self) -> bool {
-        if self.is_inline() { return self.inline_tag() == NB_TAG_LONG; }
+        if self.is_inline() {
+            return self.inline_tag() == NB_TAG_LONG;
+        }
         match self.inner_ref() {
             MettaValueInner::Long(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_long(),
@@ -812,7 +901,9 @@ impl MettaValue {
     /// Check if this is a Float variant (transparent through Spanned)
     #[inline]
     pub fn is_float(&self) -> bool {
-        if self.is_inline() { return false; } // Floats are always slab-allocated
+        if self.is_inline() {
+            return false;
+        } // Floats are always slab-allocated
         match self.inner_ref() {
             MettaValueInner::Float(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_float(),
@@ -823,7 +914,9 @@ impl MettaValue {
     /// Check if this is a String variant (transparent through Spanned)
     #[inline]
     pub fn is_string(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::String(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_string(),
@@ -834,7 +927,9 @@ impl MettaValue {
     /// Check if this is an SExpr variant (transparent through Spanned)
     #[inline]
     pub fn is_sexpr(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::SExpr(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_sexpr(),
@@ -845,7 +940,9 @@ impl MettaValue {
     /// Check if this is an Error variant (transparent through Spanned)
     #[inline]
     pub fn is_error(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::Error(_, _) => true,
             MettaValueInner::Spanned(v, _) => v.is_error(),
@@ -856,7 +953,9 @@ impl MettaValue {
     /// Check if this is a Type variant (transparent through Spanned)
     #[inline]
     pub fn is_type(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::Type(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_type(),
@@ -867,7 +966,9 @@ impl MettaValue {
     /// Check if this is a Conjunction variant (transparent through Spanned)
     #[inline]
     pub fn is_conjunction(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::Conjunction(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_conjunction(),
@@ -878,7 +979,9 @@ impl MettaValue {
     /// Check if this is a Space variant (transparent through Spanned)
     #[inline]
     pub fn is_space(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::Space(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_space(),
@@ -889,7 +992,9 @@ impl MettaValue {
     /// Check if this is a State variant (transparent through Spanned)
     #[inline]
     pub fn is_state(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::State(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_state(),
@@ -900,7 +1005,9 @@ impl MettaValue {
     /// Check if this is a Unit variant (transparent through Spanned)
     #[inline]
     pub fn is_unit(&self) -> bool {
-        if self.is_inline() { return self.inline_tag() == NB_TAG_UNIT; }
+        if self.is_inline() {
+            return self.inline_tag() == NB_TAG_UNIT;
+        }
         match self.inner_ref() {
             MettaValueInner::Unit => true,
             MettaValueInner::Spanned(v, _) => v.is_unit(),
@@ -911,7 +1018,9 @@ impl MettaValue {
     /// Check if this is a Memo variant (transparent through Spanned)
     #[inline]
     pub fn is_memo(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::Memo(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_memo(),
@@ -922,7 +1031,9 @@ impl MettaValue {
     /// Check if this is a Quoted variant (transparent through Spanned)
     #[inline]
     pub fn is_quoted(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         match self.inner_ref() {
             MettaValueInner::Quoted(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_quoted(),
@@ -933,7 +1044,9 @@ impl MettaValue {
     /// Check if this is an Empty variant (transparent through Spanned)
     #[inline]
     pub fn is_empty(&self) -> bool {
-        if self.is_inline() { return self.inline_tag() == NB_TAG_EMPTY; }
+        if self.is_inline() {
+            return self.inline_tag() == NB_TAG_EMPTY;
+        }
         match self.inner_ref() {
             MettaValueInner::Empty => true,
             MettaValueInner::Spanned(v, _) => v.is_empty(),
@@ -944,7 +1057,9 @@ impl MettaValue {
     /// Check if this value is a variable (Atom starting with $) (transparent through Spanned)
     #[inline]
     pub fn is_variable(&self) -> bool {
-        if self.is_inline() { return false; } // Inline types are never variables
+        if self.is_inline() {
+            return false;
+        } // Inline types are never variables
         match self.inner_ref() {
             MettaValueInner::Atom(s) if s.starts_with('$') => true,
             MettaValueInner::Spanned(v, _) => v.is_variable(),
@@ -955,7 +1070,9 @@ impl MettaValue {
     /// Check if this value is a Spanned variant
     #[inline]
     pub fn is_spanned(&self) -> bool {
-        if self.is_inline() { return false; }
+        if self.is_inline() {
+            return false;
+        }
         matches!(self.inner_ref(), MettaValueInner::Spanned(_, _))
     }
 
@@ -966,7 +1083,9 @@ impl MettaValue {
     /// Try to extract as atom string (transparent through Spanned)
     #[inline]
     pub fn as_atom(&self) -> Option<&'static str> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Atom(s) => Some(s),
             MettaValueInner::Spanned(v, _) => v.as_atom(),
@@ -1011,7 +1130,9 @@ impl MettaValue {
     /// Try to extract as f64 (transparent through Spanned)
     #[inline]
     pub fn as_float(&self) -> Option<f64> {
-        if self.is_inline() { return None; } // Floats are always slab-allocated
+        if self.is_inline() {
+            return None;
+        } // Floats are always slab-allocated
         match self.inner_ref() {
             MettaValueInner::Float(f) => Some(*f),
             MettaValueInner::Spanned(v, _) => v.as_float(),
@@ -1022,7 +1143,9 @@ impl MettaValue {
     /// Try to extract as string (transparent through Spanned)
     #[inline]
     pub fn as_string(&self) -> Option<&'static str> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::String(s) => Some(s),
             MettaValueInner::Spanned(v, _) => v.as_string(),
@@ -1033,7 +1156,9 @@ impl MettaValue {
     /// Try to extract as sexpr items (transparent through Spanned)
     #[inline]
     pub fn as_sexpr(&self) -> Option<&[MettaValue]> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::SExpr(items) => Some(items),
             MettaValueInner::Spanned(v, _) => v.as_sexpr(),
@@ -1044,7 +1169,9 @@ impl MettaValue {
     /// Try to extract as error (message, details) (transparent through Spanned)
     #[inline]
     pub fn as_error(&self) -> Option<(&'static str, MettaValue)> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Error(msg, details) => Some((msg, *details)),
             MettaValueInner::Spanned(v, _) => v.as_error(),
@@ -1055,7 +1182,9 @@ impl MettaValue {
     /// Try to extract as type inner value (transparent through Spanned)
     #[inline]
     pub fn as_type(&self) -> Option<MettaValue> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Type(inner) => Some(*inner),
             MettaValueInner::Spanned(v, _) => v.as_type(),
@@ -1066,7 +1195,9 @@ impl MettaValue {
     /// Try to extract as conjunction goals (transparent through Spanned)
     #[inline]
     pub fn as_conjunction(&self) -> Option<&[MettaValue]> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Conjunction(goals) => Some(goals),
             MettaValueInner::Spanned(v, _) => v.as_conjunction(),
@@ -1077,7 +1208,9 @@ impl MettaValue {
     /// Try to extract as space handle (transparent through Spanned)
     #[inline]
     pub fn as_space(&self) -> Option<&SpaceHandle> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Space(handle) => Some(handle),
             MettaValueInner::Spanned(v, _) => v.as_space(),
@@ -1088,7 +1221,9 @@ impl MettaValue {
     /// Try to extract as state id (transparent through Spanned)
     #[inline]
     pub fn as_state(&self) -> Option<u64> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::State(id) => Some(*id),
             MettaValueInner::Spanned(v, _) => v.as_state(),
@@ -1099,7 +1234,9 @@ impl MettaValue {
     /// Try to extract as memo handle (transparent through Spanned)
     #[inline]
     pub fn as_memo(&self) -> Option<&MemoHandle> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Memo(handle) => Some(handle),
             MettaValueInner::Spanned(v, _) => v.as_memo(),
@@ -1110,7 +1247,9 @@ impl MettaValue {
     /// Try to extract the inner value of a Quoted variant (owned copy) (transparent through Spanned)
     #[inline]
     pub fn as_quoted(&self) -> Option<MettaValue> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Quoted(inner) => Some(*inner),
             MettaValueInner::Spanned(v, _) => v.as_quoted(),
@@ -1121,7 +1260,9 @@ impl MettaValue {
     /// Try to extract a reference to the inner value of a Quoted variant (transparent through Spanned)
     #[inline]
     pub fn as_quoted_ref(&self) -> Option<&MettaValue> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Quoted(inner) => Some(inner),
             MettaValueInner::Spanned(v, _) => v.as_quoted_ref(),
@@ -1663,7 +1804,9 @@ impl PartialEq for MettaValueInner {
         let a = strip_spanned(self);
         let b = strip_spanned(other);
         // If both point to the same non-Spanned inner, they're equal
-        if std::ptr::eq(a, b) { return true; }
+        if std::ptr::eq(a, b) {
+            return true;
+        }
         match (a, b) {
             (MettaValueInner::Atom(a), MettaValueInner::Atom(b)) => a == b,
             (MettaValueInner::Bool(a), MettaValueInner::Bool(b)) => a == b,
@@ -1672,7 +1815,9 @@ impl PartialEq for MettaValueInner {
             (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
             (MettaValueInner::SExpr(a), MettaValueInner::SExpr(b)) => a == b,
             (MettaValueInner::Unit, MettaValueInner::Unit) => true,
-            (MettaValueInner::Error(ma, da), MettaValueInner::Error(mb, db)) => ma == mb && da == db,
+            (MettaValueInner::Error(ma, da), MettaValueInner::Error(mb, db)) => {
+                ma == mb && da == db
+            }
             (MettaValueInner::Type(a), MettaValueInner::Type(b)) => a == b,
             (MettaValueInner::Conjunction(a), MettaValueInner::Conjunction(b)) => a == b,
             (MettaValueInner::Space(a), MettaValueInner::Space(b)) => a.id == b.id,
@@ -1731,11 +1876,11 @@ pub fn numeric_equal_generic<V: MettaValueTrait + PartialEq>(a: &V, b: &V) -> bo
     // to `MettaValue::PartialEq::eq` (line 1650-1676) — which uses exact
     // child compare via derived `Vec<MettaValue>::PartialEq`.
     match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
-        (Some(x), _, Some(y), _) => x == y,             // Long, Long
-        (_, Some(x), _, Some(y)) => x == y,             // Float, Float — exact
-        (Some(x), _, _, Some(y)) => (x as f64) == y,    // Long → Float exact
-        (_, Some(x), Some(y), _) => x == (y as f64),    // Float ↔ Long exact
-        _ => a == b,                                     // Structural via PartialEq
+        (Some(x), _, Some(y), _) => x == y,          // Long, Long
+        (_, Some(x), _, Some(y)) => x == y,          // Float, Float — exact
+        (Some(x), _, _, Some(y)) => (x as f64) == y, // Long → Float exact
+        (_, Some(x), Some(y), _) => x == (y as f64), // Float ↔ Long exact
+        _ => a == b,                                 // Structural via PartialEq
     }
 }
 
@@ -1802,50 +1947,80 @@ impl MettaValueTrait for MettaValue {
     }
 
     #[inline]
-    fn is_float(&self) -> bool { MettaValue::is_float(self) }
+    fn is_float(&self) -> bool {
+        MettaValue::is_float(self)
+    }
 
     #[inline]
-    fn is_string(&self) -> bool { MettaValue::is_string(self) }
+    fn is_string(&self) -> bool {
+        MettaValue::is_string(self)
+    }
 
     #[inline]
-    fn is_sexpr(&self) -> bool { MettaValue::is_sexpr(self) }
+    fn is_sexpr(&self) -> bool {
+        MettaValue::is_sexpr(self)
+    }
 
     #[inline]
-    fn is_error(&self) -> bool { MettaValue::is_error(self) }
+    fn is_error(&self) -> bool {
+        MettaValue::is_error(self)
+    }
 
     #[inline]
-    fn is_type(&self) -> bool { MettaValue::is_type(self) }
+    fn is_type(&self) -> bool {
+        MettaValue::is_type(self)
+    }
 
     #[inline]
-    fn is_conjunction(&self) -> bool { MettaValue::is_conjunction(self) }
+    fn is_conjunction(&self) -> bool {
+        MettaValue::is_conjunction(self)
+    }
 
     #[inline]
-    fn is_space(&self) -> bool { MettaValue::is_space(self) }
+    fn is_space(&self) -> bool {
+        MettaValue::is_space(self)
+    }
 
     #[inline]
-    fn is_state(&self) -> bool { MettaValue::is_state(self) }
+    fn is_state(&self) -> bool {
+        MettaValue::is_state(self)
+    }
 
     #[inline]
-    fn is_unit(&self) -> bool { MettaValue::is_unit(self) }
+    fn is_unit(&self) -> bool {
+        MettaValue::is_unit(self)
+    }
 
     #[inline]
-    fn is_memo(&self) -> bool { MettaValue::is_memo(self) }
+    fn is_memo(&self) -> bool {
+        MettaValue::is_memo(self)
+    }
 
     #[inline]
-    fn is_quoted(&self) -> bool { MettaValue::is_quoted(self) }
+    fn is_quoted(&self) -> bool {
+        MettaValue::is_quoted(self)
+    }
 
     #[inline]
-    fn is_empty(&self) -> bool { MettaValue::is_empty(self) }
+    fn is_empty(&self) -> bool {
+        MettaValue::is_empty(self)
+    }
 
     #[inline]
-    fn is_spanned(&self) -> bool { MettaValue::is_spanned(self) }
+    fn is_spanned(&self) -> bool {
+        MettaValue::is_spanned(self)
+    }
 
     #[inline]
-    fn span(&self) -> Option<&'static crate::ir::Span> { MettaValue::span(self) }
+    fn span(&self) -> Option<&'static crate::ir::Span> {
+        MettaValue::span(self)
+    }
 
     #[inline]
     fn strip_one_span(&self) -> Self {
-        if self.is_inline() { return *self; }
+        if self.is_inline() {
+            return *self;
+        }
         match self.inner_ref() {
             MettaValueInner::Spanned(v, _) => *v,
             _ => *self,
@@ -1853,7 +2028,9 @@ impl MettaValueTrait for MettaValue {
     }
 
     #[inline]
-    fn is_variable(&self) -> bool { MettaValue::is_variable(self) }
+    fn is_variable(&self) -> bool {
+        MettaValue::is_variable(self)
+    }
 
     #[inline]
     fn is_ground_type(&self) -> bool {
@@ -1862,35 +2039,49 @@ impl MettaValueTrait for MettaValue {
         }
         match self.inner_ref() {
             MettaValueInner::Bool(_)
-                | MettaValueInner::Long(_)
-                | MettaValueInner::Float(_)
-                | MettaValueInner::String(_) => true,
+            | MettaValueInner::Long(_)
+            | MettaValueInner::Float(_)
+            | MettaValueInner::String(_) => true,
             MettaValueInner::Spanned(v, _) => v.is_ground_type(),
             _ => false,
         }
     }
 
     #[inline]
-    fn as_atom(&self) -> Option<&'static str> { MettaValue::as_atom(self) }
+    fn as_atom(&self) -> Option<&'static str> {
+        MettaValue::as_atom(self)
+    }
 
     #[inline]
-    fn as_bool(&self) -> Option<bool> { MettaValue::as_bool(self) }
+    fn as_bool(&self) -> Option<bool> {
+        MettaValue::as_bool(self)
+    }
 
     #[inline]
-    fn as_long(&self) -> Option<i64> { MettaValue::as_long(self) }
+    fn as_long(&self) -> Option<i64> {
+        MettaValue::as_long(self)
+    }
 
     #[inline]
-    fn as_float(&self) -> Option<f64> { MettaValue::as_float(self) }
+    fn as_float(&self) -> Option<f64> {
+        MettaValue::as_float(self)
+    }
 
     #[inline]
-    fn as_string(&self) -> Option<&str> { MettaValue::as_string(self) }
+    fn as_string(&self) -> Option<&str> {
+        MettaValue::as_string(self)
+    }
 
     #[inline]
-    fn as_sexpr(&self) -> Option<&[Self]> { MettaValue::as_sexpr(self) }
+    fn as_sexpr(&self) -> Option<&[Self]> {
+        MettaValue::as_sexpr(self)
+    }
 
     #[inline]
     fn as_error(&self) -> Option<(&str, &Self)> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Error(msg, details) => Some((msg, details)),
             MettaValueInner::Spanned(v, _) => <MettaValue as MettaValueTrait>::as_error(v),
@@ -1900,7 +2091,9 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_type(&self) -> Option<&Self> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Type(inner) => Some(inner),
             MettaValueInner::Spanned(v, _) => <MettaValue as MettaValueTrait>::as_type(v),
@@ -1910,7 +2103,9 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_conjunction(&self) -> Option<&[Self]> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Conjunction(goals) => Some(goals),
             MettaValueInner::Spanned(v, _) => v.as_conjunction(),
@@ -1920,7 +2115,9 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_space(&self) -> Option<&SpaceHandle> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Space(handle) => Some(handle),
             MettaValueInner::Spanned(v, _) => v.as_space(),
@@ -1930,7 +2127,9 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_state(&self) -> Option<u64> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::State(id) => Some(*id),
             MettaValueInner::Spanned(v, _) => v.as_state(),
@@ -1940,7 +2139,9 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_memo(&self) -> Option<&MemoHandle> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Memo(handle) => Some(handle),
             MettaValueInner::Spanned(v, _) => v.as_memo(),
@@ -1950,7 +2151,9 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_quoted(&self) -> Option<Self> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Quoted(inner) => Some(*inner),
             MettaValueInner::Spanned(v, _) => v.as_quoted(),
@@ -1960,7 +2163,9 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     fn as_quoted_ref(&self) -> Option<&Self> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         match self.inner_ref() {
             MettaValueInner::Quoted(inner) => Some(inner),
             MettaValueInner::Spanned(v, _) => v.as_quoted_ref(),
@@ -2030,7 +2235,9 @@ impl MettaValueTrait for MettaValue {
     }
 
     fn get_head_symbol(&self) -> Option<&str> {
-        if self.is_inline() { return None; }
+        if self.is_inline() {
+            return None;
+        }
         // Helper to check if an atom is a space reference (not a variable)
         fn is_space_ref(s: &str) -> bool {
             s == "&" || s == "&self" || s == "&kb" || s == "&stack"
@@ -2065,7 +2272,9 @@ impl MettaValueTrait for MettaValue {
     }
 
     fn get_arity(&self) -> usize {
-        if self.is_inline() { return 0; }
+        if self.is_inline() {
+            return 0;
+        }
         match self.inner_ref() {
             MettaValueInner::SExpr(items) if !items.is_empty() => items.len() - 1, // Exclude head
             MettaValueInner::Spanned(v, _) => v.get_arity(),
@@ -2100,13 +2309,16 @@ impl MettaValueTrait for MettaValue {
                 }
                 NB_TAG_LONG => {
                     let n = self.inline_long_value();
-                    let x = (n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+                    let x = (n as u64)
+                        .wrapping_add(LONG_SEED)
+                        .wrapping_mul(GOLDEN_RATIO);
                     x ^ (x >> 32)
                 }
                 NB_TAG_EMPTY => 9u64.wrapping_mul(GOLDEN_RATIO),
                 _ => UNIT_HASH,
             };
         }
+        ensure_value_hash_cache_epoch_current();
         VALUE_HASH_CACHE.with(|cache_cell| {
             let mut cache = cache_cell.borrow_mut();
             hash_value_cached_inner(self, &mut cache)
@@ -2136,7 +2348,12 @@ impl MettaValueTrait for MettaValue {
                     if val.is_inline() {
                         result_stack.push(match val.inline_tag() {
                             NB_TAG_LONG => val.inline_long_value().to_string(),
-                            NB_TAG_BOOL => if (val.tagged as u64 & 1) != 0 { "True" } else { "False" }.to_string(),
+                            NB_TAG_BOOL => if (val.tagged as u64 & 1) != 0 {
+                                "True"
+                            } else {
+                                "False"
+                            }
+                            .to_string(),
                             NB_TAG_UNIT => "()".to_string(),
                             NB_TAG_EMPTY => "Empty".to_string(),
                             _ => "()".to_string(),
@@ -2144,80 +2361,80 @@ impl MettaValueTrait for MettaValue {
                         continue;
                     }
                     match val.inner_ref() {
-                    MettaValueInner::Long(n) => result_stack.push(n.to_string()),
-                    MettaValueInner::Float(f) => result_stack.push(float_canonical(*f)),
-                    MettaValueInner::Bool(b) => {
-                        result_stack.push(if *b { "True" } else { "False" }.to_string());
-                    }
-                    MettaValueInner::String(s) => result_stack.push(format!("\"{}\"", s)),
-                    MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
-                    MettaValueInner::Unit => result_stack.push("()".to_string()),
-                    MettaValueInner::Empty => result_stack.push("Empty".to_string()),
-                    MettaValueInner::Space(handle) => {
-                        result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
-                    }
-                    MettaValueInner::State(id) => {
-                        result_stack.push(format!("(State {})", id));
-                    }
-                    MettaValueInner::Memo(handle) => {
-                        result_stack.push(format!("(Memo {} \"{}\")", handle.id, handle.name));
-                    }
-                    MettaValueInner::Error(msg, _) => {
-                        result_stack.push(format!("(error \"{}\")", msg));
-                    }
-                    MettaValueInner::Type(t) => {
-                        work_stack.push(ReprWork::Join {
-                            count: 1,
-                            prefix: "(: ",
-                            suffix: ")",
-                            separator: "",
-                        });
-                        work_stack.push(ReprWork::Process(t));
-                    }
-                    MettaValueInner::Quoted(inner) => {
-                        work_stack.push(ReprWork::Join {
-                            count: 1,
-                            prefix: "(quote ",
-                            suffix: ")",
-                            separator: "",
-                        });
-                        work_stack.push(ReprWork::Process(inner));
-                    }
-                    MettaValueInner::SExpr(items) => {
-                        if items.is_empty() {
-                            result_stack.push("()".to_string());
-                        } else {
+                        MettaValueInner::Long(n) => result_stack.push(n.to_string()),
+                        MettaValueInner::Float(f) => result_stack.push(float_canonical(*f)),
+                        MettaValueInner::Bool(b) => {
+                            result_stack.push(if *b { "True" } else { "False" }.to_string());
+                        }
+                        MettaValueInner::String(s) => result_stack.push(format!("\"{}\"", s)),
+                        MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
+                        MettaValueInner::Unit => result_stack.push("()".to_string()),
+                        MettaValueInner::Empty => result_stack.push("Empty".to_string()),
+                        MettaValueInner::Space(handle) => {
+                            result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
+                        }
+                        MettaValueInner::State(id) => {
+                            result_stack.push(format!("(State {})", id));
+                        }
+                        MettaValueInner::Memo(handle) => {
+                            result_stack.push(format!("(Memo {} \"{}\")", handle.id, handle.name));
+                        }
+                        MettaValueInner::Error(msg, _) => {
+                            result_stack.push(format!("(error \"{}\")", msg));
+                        }
+                        MettaValueInner::Type(t) => {
                             work_stack.push(ReprWork::Join {
-                                count: items.len(),
-                                prefix: "(",
+                                count: 1,
+                                prefix: "(: ",
                                 suffix: ")",
-                                separator: " ",
+                                separator: "",
                             });
-                            for item in items.iter().rev() {
-                                work_stack.push(ReprWork::Process(item));
+                            work_stack.push(ReprWork::Process(t));
+                        }
+                        MettaValueInner::Quoted(inner) => {
+                            work_stack.push(ReprWork::Join {
+                                count: 1,
+                                prefix: "(quote ",
+                                suffix: ")",
+                                separator: "",
+                            });
+                            work_stack.push(ReprWork::Process(inner));
+                        }
+                        MettaValueInner::SExpr(items) => {
+                            if items.is_empty() {
+                                result_stack.push("()".to_string());
+                            } else {
+                                work_stack.push(ReprWork::Join {
+                                    count: items.len(),
+                                    prefix: "(",
+                                    suffix: ")",
+                                    separator: " ",
+                                });
+                                for item in items.iter().rev() {
+                                    work_stack.push(ReprWork::Process(item));
+                                }
                             }
                         }
-                    }
-                    MettaValueInner::Conjunction(goals) => {
-                        if goals.is_empty() {
-                            result_stack.push("(,)".to_string());
-                        } else {
-                            work_stack.push(ReprWork::Join {
-                                count: goals.len(),
-                                prefix: "(, ",
-                                suffix: ")",
-                                separator: " ",
-                            });
-                            for goal in goals.iter().rev() {
-                                work_stack.push(ReprWork::Process(goal));
+                        MettaValueInner::Conjunction(goals) => {
+                            if goals.is_empty() {
+                                result_stack.push("(,)".to_string());
+                            } else {
+                                work_stack.push(ReprWork::Join {
+                                    count: goals.len(),
+                                    prefix: "(, ",
+                                    suffix: ")",
+                                    separator: " ",
+                                });
+                                for goal in goals.iter().rev() {
+                                    work_stack.push(ReprWork::Process(goal));
+                                }
                             }
                         }
+                        MettaValueInner::Spanned(v, _) => {
+                            work_stack.push(ReprWork::Process(v));
+                        }
                     }
-                    MettaValueInner::Spanned(v, _) => {
-                        work_stack.push(ReprWork::Process(v));
-                    }
-                    }
-                },
+                }
                 ReprWork::Join {
                     count,
                     prefix,
@@ -2258,7 +2475,12 @@ impl MettaValueTrait for MettaValue {
                     if val.is_inline() {
                         result_stack.push(match val.inline_tag() {
                             NB_TAG_LONG => val.inline_long_value().to_string(),
-                            NB_TAG_BOOL => if (val.tagged as u64 & 1) != 0 { "True" } else { "False" }.to_string(),
+                            NB_TAG_BOOL => if (val.tagged as u64 & 1) != 0 {
+                                "True"
+                            } else {
+                                "False"
+                            }
+                            .to_string(),
                             NB_TAG_UNIT => "()".to_string(),
                             NB_TAG_EMPTY => "Empty".to_string(),
                             _ => "()".to_string(),
@@ -2266,81 +2488,81 @@ impl MettaValueTrait for MettaValue {
                         continue;
                     }
                     match val.inner_ref() {
-                    MettaValueInner::Long(n) => result_stack.push(n.to_string()),
-                    MettaValueInner::Float(f) => result_stack.push(float_canonical(*f)),
-                    MettaValueInner::Bool(b) => {
-                        result_stack.push(if *b { "True" } else { "False" }.to_string());
-                    }
-                    // Key difference: strings printed without quotes for display
-                    MettaValueInner::String(s) => result_stack.push(s.to_string()),
-                    MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
-                    MettaValueInner::Unit => result_stack.push("()".to_string()),
-                    MettaValueInner::Empty => result_stack.push("Empty".to_string()),
-                    MettaValueInner::Space(handle) => {
-                        result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
-                    }
-                    MettaValueInner::State(id) => {
-                        result_stack.push(format!("(State {})", id));
-                    }
-                    MettaValueInner::Memo(handle) => {
-                        result_stack.push(format!("(Memo {} \"{}\")", handle.id, handle.name));
-                    }
-                    MettaValueInner::Error(msg, _) => {
-                        result_stack.push(format!("(Error \"{}\")", msg));
-                    }
-                    MettaValueInner::Type(t) => {
-                        work_stack.push(ReprWork::Join {
-                            count: 1,
-                            prefix: "(: ",
-                            suffix: ")",
-                            separator: "",
-                        });
-                        work_stack.push(ReprWork::Process(t));
-                    }
-                    MettaValueInner::Quoted(inner) => {
-                        work_stack.push(ReprWork::Join {
-                            count: 1,
-                            prefix: "(quote ",
-                            suffix: ")",
-                            separator: "",
-                        });
-                        work_stack.push(ReprWork::Process(inner));
-                    }
-                    MettaValueInner::SExpr(items) => {
-                        if items.is_empty() {
-                            result_stack.push("()".to_string());
-                        } else {
+                        MettaValueInner::Long(n) => result_stack.push(n.to_string()),
+                        MettaValueInner::Float(f) => result_stack.push(float_canonical(*f)),
+                        MettaValueInner::Bool(b) => {
+                            result_stack.push(if *b { "True" } else { "False" }.to_string());
+                        }
+                        // Key difference: strings printed without quotes for display
+                        MettaValueInner::String(s) => result_stack.push(s.to_string()),
+                        MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
+                        MettaValueInner::Unit => result_stack.push("()".to_string()),
+                        MettaValueInner::Empty => result_stack.push("Empty".to_string()),
+                        MettaValueInner::Space(handle) => {
+                            result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
+                        }
+                        MettaValueInner::State(id) => {
+                            result_stack.push(format!("(State {})", id));
+                        }
+                        MettaValueInner::Memo(handle) => {
+                            result_stack.push(format!("(Memo {} \"{}\")", handle.id, handle.name));
+                        }
+                        MettaValueInner::Error(msg, _) => {
+                            result_stack.push(format!("(Error \"{}\")", msg));
+                        }
+                        MettaValueInner::Type(t) => {
                             work_stack.push(ReprWork::Join {
-                                count: items.len(),
-                                prefix: "(",
+                                count: 1,
+                                prefix: "(: ",
                                 suffix: ")",
-                                separator: " ",
+                                separator: "",
                             });
-                            for item in items.iter().rev() {
-                                work_stack.push(ReprWork::Process(item));
+                            work_stack.push(ReprWork::Process(t));
+                        }
+                        MettaValueInner::Quoted(inner) => {
+                            work_stack.push(ReprWork::Join {
+                                count: 1,
+                                prefix: "(quote ",
+                                suffix: ")",
+                                separator: "",
+                            });
+                            work_stack.push(ReprWork::Process(inner));
+                        }
+                        MettaValueInner::SExpr(items) => {
+                            if items.is_empty() {
+                                result_stack.push("()".to_string());
+                            } else {
+                                work_stack.push(ReprWork::Join {
+                                    count: items.len(),
+                                    prefix: "(",
+                                    suffix: ")",
+                                    separator: " ",
+                                });
+                                for item in items.iter().rev() {
+                                    work_stack.push(ReprWork::Process(item));
+                                }
                             }
                         }
-                    }
-                    MettaValueInner::Conjunction(goals) => {
-                        if goals.is_empty() {
-                            result_stack.push("(,)".to_string());
-                        } else {
-                            work_stack.push(ReprWork::Join {
-                                count: goals.len(),
-                                prefix: "(, ",
-                                suffix: ")",
-                                separator: " ",
-                            });
-                            for goal in goals.iter().rev() {
-                                work_stack.push(ReprWork::Process(goal));
+                        MettaValueInner::Conjunction(goals) => {
+                            if goals.is_empty() {
+                                result_stack.push("(,)".to_string());
+                            } else {
+                                work_stack.push(ReprWork::Join {
+                                    count: goals.len(),
+                                    prefix: "(, ",
+                                    suffix: ")",
+                                    separator: " ",
+                                });
+                                for goal in goals.iter().rev() {
+                                    work_stack.push(ReprWork::Process(goal));
+                                }
                             }
                         }
+                        MettaValueInner::Spanned(v, _) => {
+                            work_stack.push(ReprWork::Process(v));
+                        }
                     }
-                    MettaValueInner::Spanned(v, _) => {
-                        work_stack.push(ReprWork::Process(v));
-                    }
-                    }
-                },
+                }
                 ReprWork::Join {
                     count,
                     prefix,
@@ -2520,12 +2742,11 @@ fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::gc_allocator::global_factory;
     use super::super::metta_value_trait::MettaValueFactory;
+    use super::*;
 
     // ========================================================================
     // Basic Constructor and Accessor Tests
@@ -2558,11 +2779,7 @@ mod tests {
     #[test]
     fn test_arena_sexpr() {
         let factory = global_factory();
-        let items = vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ];
+        let items = vec![factory.atom("+"), factory.long(1), factory.long(2)];
         let v = factory.sexpr(items);
         assert!(v.is_sexpr());
         let items = v.as_sexpr().expect("should be sexpr");
@@ -2583,11 +2800,7 @@ mod tests {
     #[test]
     fn test_display() {
         let factory = global_factory();
-        let v = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ]);
+        let v = factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]);
         assert_eq!(format!("{}", v), "(+ 1 2)");
     }
 
@@ -2664,10 +2877,7 @@ mod tests {
     #[test]
     fn test_arena_conjunction() {
         let factory = global_factory();
-        let goals = vec![
-            factory.atom("goal1"),
-            factory.atom("goal2"),
-        ];
+        let goals = vec![factory.atom("goal1"), factory.atom("goal2")];
         let v = factory.conjunction(goals);
         assert!(v.is_conjunction());
         let conj = v.as_conjunction().expect("should be conjunction");
@@ -2808,18 +3018,9 @@ mod tests {
     #[test]
     fn test_eq_sexpr_sexpr() {
         let factory = global_factory();
-        let v1 = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-        ]);
-        let v2 = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-        ]);
-        let v3 = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(2),
-        ]);
+        let v1 = factory.sexpr(vec![factory.atom("+"), factory.long(1)]);
+        let v2 = factory.sexpr(vec![factory.atom("+"), factory.long(1)]);
+        let v3 = factory.sexpr(vec![factory.atom("+"), factory.long(2)]);
         assert_eq!(v1, v2);
         assert_ne!(v1, v3);
     }
@@ -2847,12 +3048,8 @@ mod tests {
     #[test]
     fn test_eq_conjunction_conjunction() {
         let factory = global_factory();
-        let v1 = factory.conjunction(vec![
-            factory.atom("a"),
-        ]);
-        let v2 = factory.conjunction(vec![
-            factory.atom("a"),
-        ]);
+        let v1 = factory.conjunction(vec![factory.atom("a")]);
+        let v2 = factory.conjunction(vec![factory.atom("a")]);
         assert_eq!(v1, v2);
     }
 
@@ -3098,10 +3295,7 @@ mod tests {
     #[test]
     fn test_display_conjunction() {
         let factory = global_factory();
-        let v = factory.conjunction(vec![
-            factory.atom("a"),
-            factory.atom("b"),
-        ]);
+        let v = factory.conjunction(vec![factory.atom("a"), factory.atom("b")]);
         assert_eq!(format!("{}", v), "(, a b)");
     }
 
@@ -3191,11 +3385,7 @@ mod tests {
     #[test]
     fn test_serialize_roundtrip_sexpr() {
         let factory = global_factory();
-        let original = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ]);
+        let original = factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]);
         let bytes = original.serialize();
         let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
         assert_eq!(original, decoded);
@@ -3204,16 +3394,8 @@ mod tests {
     #[test]
     fn test_serialize_roundtrip_nested_sexpr() {
         let factory = global_factory();
-        let inner = factory.sexpr(vec![
-            factory.atom("*"),
-            factory.long(2),
-            factory.long(3),
-        ]);
-        let original = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-            inner,
-        ]);
+        let inner = factory.sexpr(vec![factory.atom("*"), factory.long(2), factory.long(3)]);
+        let original = factory.sexpr(vec![factory.atom("+"), factory.long(1), inner]);
         let bytes = original.serialize();
         let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
         assert_eq!(original, decoded);
@@ -3242,10 +3424,7 @@ mod tests {
     #[test]
     fn test_serialize_roundtrip_conjunction() {
         let factory = global_factory();
-        let original = factory.conjunction(vec![
-            factory.atom("a"),
-            factory.atom("b"),
-        ]);
+        let original = factory.conjunction(vec![factory.atom("a"), factory.atom("b")]);
         let bytes = original.serialize();
         let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
         assert_eq!(original, decoded);
@@ -3308,20 +3487,14 @@ mod tests {
     #[test]
     fn test_get_head_symbol_sexpr() {
         let factory = global_factory();
-        let v = factory.sexpr(vec![
-            factory.atom("foo"),
-            factory.long(1),
-        ]);
+        let v = factory.sexpr(vec![factory.atom("foo"), factory.long(1)]);
         assert_eq!(v.get_head_symbol(), Some("foo"));
     }
 
     #[test]
     fn test_get_head_symbol_variable_head() {
         let factory = global_factory();
-        let v = factory.sexpr(vec![
-            factory.atom("$x"),
-            factory.long(1),
-        ]);
+        let v = factory.sexpr(vec![factory.atom("$x"), factory.long(1)]);
         // Variable as head returns None
         assert_eq!(v.get_head_symbol(), None);
     }
@@ -3336,11 +3509,7 @@ mod tests {
     #[test]
     fn test_get_arity_sexpr() {
         let factory = global_factory();
-        let v = factory.sexpr(vec![
-            factory.atom("foo"),
-            factory.long(1),
-            factory.long(2),
-        ]);
+        let v = factory.sexpr(vec![factory.atom("foo"), factory.long(1), factory.long(2)]);
         // Arity is len - 1 (excluding head)
         assert_eq!(v.get_arity(), 2);
     }
@@ -3355,11 +3524,7 @@ mod tests {
     #[test]
     fn test_friendly_repr() {
         let factory = global_factory();
-        let v = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ]);
+        let v = factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]);
         assert_eq!(v.friendly_repr(), "(+ 1 2)");
     }
 
@@ -3399,11 +3564,7 @@ mod tests {
     fn test_factory_sexpr_from_vec() {
         let factory = global_factory();
 
-        let items = vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ];
+        let items = vec![factory.atom("+"), factory.long(1), factory.long(2)];
         let sexpr = factory.sexpr(items);
         assert!(sexpr.is_sexpr());
         assert_eq!(sexpr.as_sexpr().map(|s| s.len()), Some(3));
@@ -3413,11 +3574,7 @@ mod tests {
     fn test_factory_sexpr_from_slice() {
         let factory = global_factory();
 
-        let items = [
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ];
+        let items = [factory.atom("+"), factory.long(1), factory.long(2)];
         let sexpr = factory.sexpr_from_slice(&items);
         assert!(sexpr.is_sexpr());
         assert_eq!(sexpr.as_sexpr().map(|s| s.len()), Some(3));
@@ -3467,7 +3624,7 @@ mod tests {
         let factory = global_factory();
         let v = factory.long(42);
         let v_copy = v; // Copy, same pointer
-        // Both should be equal via pointer comparison fast path
+                        // Both should be equal via pointer comparison fast path
         assert_eq!(v, v_copy);
     }
 
@@ -3490,8 +3647,14 @@ mod tests {
         let a = MettaValue::Float(2.0);
         let b = MettaValue::Float(2.0);
         let c = MettaValue::Float(3.0);
-        assert!(numeric_equal(&a, &b), "Float(2.0) == Float(2.0) should be true");
-        assert!(!numeric_equal(&a, &c), "Float(2.0) == Float(3.0) should be false");
+        assert!(
+            numeric_equal(&a, &b),
+            "Float(2.0) == Float(2.0) should be true"
+        );
+        assert!(
+            !numeric_equal(&a, &c),
+            "Float(2.0) == Float(3.0) should be false"
+        );
     }
 
     #[test]
@@ -3500,8 +3663,14 @@ mod tests {
         let a = MettaValue::Long(2);
         let b = MettaValue::Float(2.0);
         let c = MettaValue::Float(2.5);
-        assert!(numeric_equal(&a, &b), "Long(2) == Float(2.0) should be true (MeTTa HE cross-type fix)");
-        assert!(!numeric_equal(&a, &c), "Long(2) == Float(2.5) should be false");
+        assert!(
+            numeric_equal(&a, &b),
+            "Long(2) == Float(2.0) should be true (MeTTa HE cross-type fix)"
+        );
+        assert!(
+            !numeric_equal(&a, &c),
+            "Long(2) == Float(2.5) should be false"
+        );
     }
 
     #[test]
@@ -3510,10 +3679,18 @@ mod tests {
         let a = MettaValue::Float(2.0);
         let b = MettaValue::Long(2);
         let c = MettaValue::Long(3);
-        assert!(numeric_equal(&a, &b), "Float(2.0) == Long(2) should be true (symmetric)");
-        assert!(!numeric_equal(&MettaValue::Float(2.5), &MettaValue::Long(2)),
-            "Float(2.5) == Long(2) should be false");
-        assert!(!numeric_equal(&a, &c), "Float(2.0) == Long(3) should be false");
+        assert!(
+            numeric_equal(&a, &b),
+            "Float(2.0) == Long(2) should be true (symmetric)"
+        );
+        assert!(
+            !numeric_equal(&MettaValue::Float(2.5), &MettaValue::Long(2)),
+            "Float(2.5) == Long(2) should be false"
+        );
+        assert!(
+            !numeric_equal(&a, &c),
+            "Float(2.0) == Long(3) should be false"
+        );
     }
 
     #[test]
@@ -3525,9 +3702,18 @@ mod tests {
         let t1 = MettaValue::Bool(true);
         let t2 = MettaValue::Bool(true);
 
-        assert!(numeric_equal(&foo1, &foo2), "Atom(\"foo\") == Atom(\"foo\") should be true (structural)");
-        assert!(!numeric_equal(&foo1, &bar), "Atom(\"foo\") == Atom(\"bar\") should be false (structural)");
-        assert!(numeric_equal(&t1, &t2), "Bool(true) == Bool(true) should be true (structural)");
+        assert!(
+            numeric_equal(&foo1, &foo2),
+            "Atom(\"foo\") == Atom(\"foo\") should be true (structural)"
+        );
+        assert!(
+            !numeric_equal(&foo1, &bar),
+            "Atom(\"foo\") == Atom(\"bar\") should be false (structural)"
+        );
+        assert!(
+            numeric_equal(&t1, &t2),
+            "Bool(true) == Bool(true) should be true (structural)"
+        );
     }
 
     #[test]
@@ -3537,8 +3723,14 @@ mod tests {
         let one_long = MettaValue::Long(1);
         let t = MettaValue::Bool(true);
 
-        assert!(!numeric_equal(&foo, &one_long), "Atom(\"foo\") == Long(1) should be false");
-        assert!(!numeric_equal(&t, &one_long), "Bool(true) == Long(1) should be false");
+        assert!(
+            !numeric_equal(&foo, &one_long),
+            "Atom(\"foo\") == Long(1) should be false"
+        );
+        assert!(
+            !numeric_equal(&t, &one_long),
+            "Bool(true) == Long(1) should be false"
+        );
     }
 
     #[test]
@@ -3547,10 +3739,14 @@ mod tests {
         let b = MettaValue::Float(2.0);
         let c = MettaValue::Long(3);
 
-        assert!(!numeric_not_equal(&a, &b),
-            "numeric_not_equal(Long(2), Float(2.0)) should be false (they are equal)");
-        assert!(numeric_not_equal(&a, &c),
-            "numeric_not_equal(Long(2), Long(3)) should be true (they are not equal)");
+        assert!(
+            !numeric_not_equal(&a, &b),
+            "numeric_not_equal(Long(2), Float(2.0)) should be false (they are equal)"
+        );
+        assert!(
+            numeric_not_equal(&a, &c),
+            "numeric_not_equal(Long(2), Long(3)) should be true (they are not equal)"
+        );
     }
 
     #[test]
@@ -3558,8 +3754,10 @@ mod tests {
         // IEEE 754: NaN != NaN
         let nan1 = MettaValue::Float(f64::NAN);
         let nan2 = MettaValue::Float(f64::NAN);
-        assert!(!numeric_equal(&nan1, &nan2),
-            "Float(NaN) == Float(NaN) should be false per IEEE 754");
+        assert!(
+            !numeric_equal(&nan1, &nan2),
+            "Float(NaN) == Float(NaN) should be false per IEEE 754"
+        );
     }
 
     #[test]
@@ -3569,10 +3767,14 @@ mod tests {
         let neg_zero = MettaValue::Float(-0.0);
         let long_zero = MettaValue::Long(0);
 
-        assert!(numeric_equal(&pos_zero, &neg_zero),
-            "Float(0.0) == Float(-0.0) should be true per IEEE 754");
-        assert!(numeric_equal(&long_zero, &pos_zero),
-            "Long(0) == Float(0.0) should be true");
+        assert!(
+            numeric_equal(&pos_zero, &neg_zero),
+            "Float(0.0) == Float(-0.0) should be true per IEEE 754"
+        );
+        assert!(
+            numeric_equal(&long_zero, &pos_zero),
+            "Long(0) == Float(0.0) should be true"
+        );
     }
 
     #[test]
@@ -3582,10 +3784,14 @@ mod tests {
         let b = MettaValue::Float(2.0);
         let c = MettaValue::Long(3);
 
-        assert!(numeric_equal_generic(&a, &b),
-            "numeric_equal_generic: Long(2) == Float(2.0) should be true");
-        assert!(!numeric_equal_generic(&a, &c),
-            "numeric_equal_generic: Long(2) == Long(3) should be false");
+        assert!(
+            numeric_equal_generic(&a, &b),
+            "numeric_equal_generic: Long(2) == Float(2.0) should be true"
+        );
+        assert!(
+            !numeric_equal_generic(&a, &c),
+            "numeric_equal_generic: Long(2) == Long(3) should be false"
+        );
     }
 
     // ================================================================
@@ -3594,17 +3800,33 @@ mod tests {
 
     #[test]
     fn test_spanned_equality_transparent() {
-        use crate::ir::{Position, Span};
         use crate::backend::models::global_factory;
+        use crate::ir::{Position, Span};
 
         let factory = global_factory();
         let span1 = Span {
-            start: Position { row: 0, column: 0, byte_offset: 0 },
-            end: Position { row: 0, column: 2, byte_offset: 2 },
+            start: Position {
+                row: 0,
+                column: 0,
+                byte_offset: 0,
+            },
+            end: Position {
+                row: 0,
+                column: 2,
+                byte_offset: 2,
+            },
         };
         let span2 = Span {
-            start: Position { row: 5, column: 3, byte_offset: 50 },
-            end: Position { row: 5, column: 5, byte_offset: 52 },
+            start: Position {
+                row: 5,
+                column: 3,
+                byte_offset: 50,
+            },
+            end: Position {
+                row: 5,
+                column: 5,
+                byte_offset: 52,
+            },
         };
 
         let bare = factory.long(42);
@@ -3615,20 +3837,31 @@ mod tests {
         assert_eq!(bare, spanned1, "Spanned should equal bare value");
         assert_eq!(spanned1, bare, "bare value should equal Spanned");
         // Spanned(v, s1) == Spanned(v, s2) (different spans)
-        assert_eq!(spanned1, spanned2, "different spans should not affect equality");
+        assert_eq!(
+            spanned1, spanned2,
+            "different spans should not affect equality"
+        );
     }
 
     #[test]
     fn test_spanned_hash_transparent() {
+        use crate::backend::models::global_factory;
         use crate::ir::{Position, Span};
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        use crate::backend::models::global_factory;
 
         let factory = global_factory();
         let span = Span {
-            start: Position { row: 1, column: 0, byte_offset: 10 },
-            end: Position { row: 1, column: 5, byte_offset: 15 },
+            start: Position {
+                row: 1,
+                column: 0,
+                byte_offset: 10,
+            },
+            end: Position {
+                row: 1,
+                column: 5,
+                byte_offset: 15,
+            },
         };
 
         let bare = factory.long(42);
@@ -3645,37 +3878,59 @@ mod tests {
             h.finish()
         };
 
-        assert_eq!(hash_bare, hash_spanned, "Spanned and bare should hash identically");
+        assert_eq!(
+            hash_bare, hash_spanned,
+            "Spanned and bare should hash identically"
+        );
     }
 
     #[test]
     fn test_spanned_display_transparent() {
-        use crate::ir::{Position, Span};
         use crate::backend::models::global_factory;
+        use crate::ir::{Position, Span};
 
         let factory = global_factory();
         let span = Span {
-            start: Position { row: 0, column: 0, byte_offset: 0 },
-            end: Position { row: 0, column: 5, byte_offset: 5 },
+            start: Position {
+                row: 0,
+                column: 0,
+                byte_offset: 0,
+            },
+            end: Position {
+                row: 0,
+                column: 5,
+                byte_offset: 5,
+            },
         };
 
         let bare = factory.atom("hello");
         let spanned = factory.spanned(factory.atom("hello"), span);
 
-        assert_eq!(format!("{}", bare), format!("{}", spanned),
-            "Spanned should display identically to bare value");
+        assert_eq!(
+            format!("{}", bare),
+            format!("{}", spanned),
+            "Spanned should display identically to bare value"
+        );
         assert_eq!(format!("{}", spanned), "hello");
     }
 
     #[test]
     fn test_spanned_serialize_transparent() {
-        use crate::ir::{Position, Span};
         use crate::backend::models::{global_factory, MettaValueTrait};
+        use crate::ir::{Position, Span};
 
         let factory = global_factory();
         let span = Span {
-            start: Position { row: 0, column: 0, byte_offset: 0 },
-            end: Position { row: 0, column: 2, byte_offset: 2 },
+            start: Position {
+                row: 0,
+                column: 0,
+                byte_offset: 0,
+            },
+            end: Position {
+                row: 0,
+                column: 2,
+                byte_offset: 2,
+            },
         };
 
         let bare = factory.long(42);
@@ -3684,36 +3939,43 @@ mod tests {
         let bare_bytes = bare.serialize();
         let spanned_bytes = spanned.serialize();
 
-        assert_eq!(bare_bytes, spanned_bytes,
-            "Spanned and bare should serialize identically (span stripped)");
+        assert_eq!(
+            bare_bytes, spanned_bytes,
+            "Spanned and bare should serialize identically (span stripped)"
+        );
     }
 
     #[test]
     fn test_spanned_sexpr_serialize_transparent() {
-        use crate::ir::{Position, Span};
         use crate::backend::models::{global_factory, MettaValueTrait};
+        use crate::ir::{Position, Span};
 
         let factory = global_factory();
         let span = Span {
-            start: Position { row: 0, column: 0, byte_offset: 0 },
-            end: Position { row: 0, column: 7, byte_offset: 7 },
+            start: Position {
+                row: 0,
+                column: 0,
+                byte_offset: 0,
+            },
+            end: Position {
+                row: 0,
+                column: 7,
+                byte_offset: 7,
+            },
         };
 
-        let bare = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ]);
-        let spanned = factory.spanned(factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ]), span);
+        let bare = factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]);
+        let spanned = factory.spanned(
+            factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]),
+            span,
+        );
 
         let bare_bytes = bare.serialize();
         let spanned_bytes = spanned.serialize();
 
-        assert_eq!(bare_bytes, spanned_bytes,
-            "Spanned S-expression should serialize identically to bare");
+        assert_eq!(
+            bare_bytes, spanned_bytes,
+            "Spanned S-expression should serialize identically to bare"
+        );
     }
 }

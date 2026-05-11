@@ -25,12 +25,12 @@
 
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "track-stats")]
+use mettatron::backend::bytecode::TieredCacheStats;
 use mettatron::backend::bytecode::{
     can_compile, can_compile_with_env, global_tiered_cache, ExecutionTier, TierStatusKind,
     BYTECODE_THRESHOLD,
 };
-#[cfg(feature = "track-stats")]
-use mettatron::backend::bytecode::TieredCacheStats;
 use mettatron::{compile, eval, new_env, MettaValue};
 
 // =============================================================================
@@ -80,12 +80,8 @@ fn stat_deltas(before: &TieredCacheStats, after: &TieredCacheStats) -> TieredCac
         bytecode_executions: after
             .bytecode_executions
             .saturating_sub(before.bytecode_executions),
-        jit1_executions: after
-            .jit1_executions
-            .saturating_sub(before.jit1_executions),
-        jit2_executions: after
-            .jit2_executions
-            .saturating_sub(before.jit2_executions),
+        jit1_executions: after.jit1_executions.saturating_sub(before.jit1_executions),
+        jit2_executions: after.jit2_executions.saturating_sub(before.jit2_executions),
         jit1_failures_nondeterminism: after
             .jit1_failures_nondeterminism
             .saturating_sub(before.jit1_failures_nondeterminism),
@@ -186,10 +182,7 @@ fn test_path_a_tiered_cache_bytecode_progression() {
     let expr = state.source()[0];
 
     // Step 1: Verify gate predicates
-    assert!(
-        can_compile(&expr),
-        "bare (+ 1 2) should pass can_compile"
-    );
+    assert!(can_compile(&expr), "bare (+ 1 2) should pass can_compile");
     assert!(
         can_compile_with_env(&expr),
         "bare (+ 1 2) should pass can_compile_with_env"
@@ -213,7 +206,8 @@ fn test_path_a_tiered_cache_bytecode_progression() {
     assert!(
         comp_state.count() >= BYTECODE_THRESHOLD,
         "Expected execution count >= {}, got {}",
-        BYTECODE_THRESHOLD, comp_state.count()
+        BYTECODE_THRESHOLD,
+        comp_state.count()
     );
 
     // Step 4: Wait for background bytecode compilation to complete
@@ -249,7 +243,11 @@ fn test_path_a_tiered_cache_bytecode_progression() {
 
     // Step 7: Second eval — now Path A fires (tiered cache Ready)
     let (results2, _env) = eval(expr, env, &state);
-    assert_eq!(results2.len(), 1, "Expected exactly one result on second eval");
+    assert_eq!(
+        results2.len(),
+        1,
+        "Expected exactly one result on second eval"
+    );
     assert_eq!(
         format!("{}", results2[0]),
         "3",
@@ -263,7 +261,8 @@ fn test_path_a_tiered_cache_bytecode_progression() {
     assert!(
         comp_state.count() >= BYTECODE_THRESHOLD + 1,
         "Expected execution count >= {} after extra eval, got {}",
-        BYTECODE_THRESHOLD + 1, comp_state.count()
+        BYTECODE_THRESHOLD + 1,
+        comp_state.count()
     );
 
     // Step 9: Both evals used bytecode (first via B, second via A)
@@ -274,7 +273,8 @@ fn test_path_a_tiered_cache_bytecode_progression() {
         assert!(
             deltas.bytecode_executions >= (BYTECODE_THRESHOLD + 1) as u64,
             "Expected at least {} bytecode executions, got {}",
-            BYTECODE_THRESHOLD + 1, deltas.bytecode_executions
+            BYTECODE_THRESHOLD + 1,
+            deltas.bytecode_executions
         );
     }
 }
@@ -516,11 +516,7 @@ fn test_background_compilation_lifecycle() {
     // Step 2: Eval once → result 42
     let (results, _env) = eval(expr, env, &state);
     assert_eq!(results.len(), 1, "Expected exactly one result");
-    assert_eq!(
-        format!("{}", results[0]),
-        "42",
-        "Expected 42 from (* 7 6)"
-    );
+    assert_eq!(format!("{}", results[0]), "42", "Expected 42 from (* 7 6)");
 
     // Step 3: Pump record_execution() to cross BYTECODE_THRESHOLD (=5).
     // The single eval above used per-slot atomic counters (flushed by cron every 200ms),
@@ -546,9 +542,7 @@ fn test_background_compilation_lifecycle() {
     assert!(
         wait_for_bytecode_ready(&expr, Duration::from_secs(5)),
         "Bytecode compilation did not complete within 5s; status: {:?}",
-        cache
-            .get_state(&expr)
-            .map(|s| s.bytecode_status())
+        cache.get_state(&expr).map(|s| s.bytecode_status())
     );
 
     // Step 6: Re-fetch state and verify bytecode is Ready
@@ -635,9 +629,7 @@ fn test_superpose_nondeterminism_via_bytecode() {
     assert!(
         wait_for_bytecode_ready(&expr, Duration::from_secs(5)),
         "Bytecode compilation did not complete within 5s; status: {:?}",
-        cache
-            .get_state(&expr)
-            .map(|s| s.bytecode_status())
+        cache.get_state(&expr).map(|s| s.bytecode_status())
     );
 
     // Second eval — Path A (tiered cache Ready)
@@ -706,10 +698,7 @@ fn test_jit_stage1_tier_promotion() {
     let mut env = new_env();
     let expr = state.source()[0];
 
-    assert!(
-        can_compile(&expr),
-        "bare (+ 1 2) should pass can_compile"
-    );
+    assert!(can_compile(&expr), "bare (+ 1 2) should pass can_compile");
 
     // Execute 250 times (well above JIT1_THRESHOLD=200) to trigger JIT1 compilation
     for i in 0..250 {
@@ -748,7 +737,12 @@ fn test_jit_stage1_tier_promotion() {
     }
 
     // Wait for JIT1 compilation to complete
-    let jit1_ready = wait_for_tier_ready(&expr, TierStatusKind::Ready, TierKind::Jit1, Duration::from_secs(10));
+    let jit1_ready = wait_for_tier_ready(
+        &expr,
+        TierStatusKind::Ready,
+        TierKind::Jit1,
+        Duration::from_secs(10),
+    );
 
     if jit1_ready {
         // JIT1 compiled successfully — verify tier promotion
@@ -761,7 +755,11 @@ fn test_jit_stage1_tier_promotion() {
 
         // Verify result is still correct via JIT1 path
         let (results, _env) = eval(expr, env, &state);
-        assert_eq!(results.len(), 1, "JIT1 eval should produce exactly one result");
+        assert_eq!(
+            results.len(),
+            1,
+            "JIT1 eval should produce exactly one result"
+        );
         assert_eq!(
             format!("{}", results[0]),
             "3",
@@ -801,10 +799,7 @@ fn test_jit_stage2_tier_promotion() {
     let mut env = new_env();
     let expr = state.source()[0];
 
-    assert!(
-        can_compile(&expr),
-        "bare (+ 3 4) should pass can_compile"
-    );
+    assert!(can_compile(&expr), "bare (+ 3 4) should pass can_compile");
 
     // Execute 2100 times (well above JIT2_THRESHOLD=2000)
     for i in 0..2100 {
@@ -843,7 +838,12 @@ fn test_jit_stage2_tier_promotion() {
     }
 
     // Wait for JIT2 compilation to complete
-    let jit2_ready = wait_for_tier_ready(&expr, TierStatusKind::Ready, TierKind::Jit2, Duration::from_secs(10));
+    let jit2_ready = wait_for_tier_ready(
+        &expr,
+        TierStatusKind::Ready,
+        TierKind::Jit2,
+        Duration::from_secs(10),
+    );
 
     if jit2_ready {
         // JIT2 compiled successfully — verify tier promotion
@@ -857,7 +857,11 @@ fn test_jit_stage2_tier_promotion() {
 
         // Verify result is still correct via JIT2 path
         let (results, _env) = eval(expr, env, &state);
-        assert_eq!(results.len(), 1, "JIT2 eval should produce exactly one result");
+        assert_eq!(
+            results.len(),
+            1,
+            "JIT2 eval should produce exactly one result"
+        );
         assert_eq!(
             format!("{}", results[0]),
             "7",

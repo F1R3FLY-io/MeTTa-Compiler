@@ -5,9 +5,7 @@
 //! - collect_n - Collect up to N nondeterministic results
 
 use super::helpers::value_to_jit_generic;
-use crate::backend::bytecode::jit::types::{
-    JitContext, JIT_SIGNAL_FAIL, JIT_SIGNAL_YIELD,
-};
+use crate::backend::bytecode::jit::types::{JitContext, JIT_SIGNAL_FAIL, JIT_SIGNAL_YIELD};
 use crate::backend::models::MettaValue;
 
 // =============================================================================

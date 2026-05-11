@@ -111,7 +111,8 @@ impl EnvironmentSnapshot {
 
     /// Get candidate rules for a given head and arity.
     pub fn get_candidates(&self, head: &'static str, arity: usize) -> &[AbstractRule] {
-        self.rules.get(&(head, arity))
+        self.rules
+            .get(&(head, arity))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -134,7 +135,11 @@ pub fn abstract_step(
     let mut store_changed = false;
 
     match &state.control {
-        AbstractControl::Eval { expr_hash, env: _, depth } => {
+        AbstractControl::Eval {
+            expr_hash,
+            env: _,
+            depth,
+        } => {
             // The expression hash identifies what's being evaluated.
             // In the abstract domain, we track which rules could fire
             // and what types could result.
@@ -153,7 +158,10 @@ pub fn abstract_step(
                 AbstractKont::Done => {
                     // Terminal — no successors
                 }
-                AbstractKont::RuleMatch { candidate_rule_indices, env: match_env } => {
+                AbstractKont::RuleMatch {
+                    candidate_rule_indices,
+                    env: match_env,
+                } => {
                     // Each candidate rule's RHS becomes a successor Eval state
                     for &idx in candidate_rule_indices {
                         // Find the rule in the snapshot
@@ -181,7 +189,11 @@ pub fn abstract_step(
                         }
                     }
                 }
-                AbstractKont::IfBranch { then_hash, else_hash, env: branch_env } => {
+                AbstractKont::IfBranch {
+                    then_hash,
+                    else_hash,
+                    env: branch_env,
+                } => {
                     // Fork into both branches (conservative)
                     successors.push(AbstractState {
                         control: AbstractControl::Eval {
@@ -200,7 +212,10 @@ pub fn abstract_step(
                         kont: AbstractKont::Done,
                     });
                 }
-                AbstractKont::LetBind { body_hash, env: let_env } => {
+                AbstractKont::LetBind {
+                    body_hash,
+                    env: let_env,
+                } => {
                     successors.push(AbstractState {
                         control: AbstractControl::Eval {
                             expr_hash: *body_hash,
@@ -221,9 +236,7 @@ pub fn abstract_step(
             // Look up candidates for this head+arity
             let candidates = env_snapshot.get_candidates(head, *arity as usize);
             if !candidates.is_empty() {
-                let indices: SmallVec<[u32; 8]> = candidates.iter()
-                    .map(|r| r.rule_index)
-                    .collect();
+                let indices: SmallVec<[u32; 8]> = candidates.iter().map(|r| r.rule_index).collect();
                 // Create a RuleMatch state for each candidate
                 successors.push(AbstractState {
                     control: AbstractControl::Eval {

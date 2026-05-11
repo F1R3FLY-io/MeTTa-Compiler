@@ -73,8 +73,6 @@ impl<T> BindingsInit for T {
     }
 
     fn declare_bindings_funcs<M: Module>(module: &mut M) -> JitResult<BindingFuncIds> {
-
-
         // load_binding: fn(ctx, var_hash, ip) -> value
         let mut load_sig = module.make_signature();
         load_sig.params.push(AbiParam::new(types::I64)); // ctx

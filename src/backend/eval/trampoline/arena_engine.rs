@@ -15,25 +15,21 @@
 //! 2. `eval_trampoline()` evaluates `MettaValue` using `SessionContext`
 //! 3. Results are `Vec<MettaValue>` — no conversion needed
 
-use crate::backend::models::{MettaState, MettaValue, GcFactory, global_factory};
+use crate::backend::models::{global_factory, GcFactory, MettaState, MettaValue};
 
 #[cfg(feature = "trace")]
 use std::sync::Arc;
 
 use super::context::MettaEnvironment;
-use super::types::EvalResult;
 use super::session_context::SessionContext;
+use super::types::EvalResult;
 
 /// Zero-conversion arena evaluation using the global slab allocator.
 ///
 /// Evaluates `MettaValue` using the unified trampoline engine with
 /// `SessionContext` for GC-backed allocation.
 #[inline]
-pub fn eval_trampoline(
-    value: MettaValue,
-    env: MettaEnvironment,
-    state: &MettaState,
-) -> EvalResult {
+pub fn eval_trampoline(value: MettaValue, env: MettaEnvironment, state: &MettaState) -> EvalResult {
     let ctx = SessionContext::new(state);
     super::eval_loop::eval_trampoline(value, env, &ctx)
 }
@@ -47,8 +43,7 @@ pub fn eval_trampoline_with_trace(
     state: &MettaState,
     collector: &Arc<crate::backend::trace::TraceCollector>,
 ) -> EvalResult {
-    let ctx = SessionContext::new(state)
-        .with_trace_collector(Arc::clone(collector));
+    let ctx = SessionContext::new(state).with_trace_collector(Arc::clone(collector));
     super::eval_loop::eval_trampoline(value, env, &ctx)
 }
 
@@ -128,11 +123,7 @@ mod tests {
         let env = new_env();
 
         // Create (+ 1 2)
-        let value = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ]);
+        let value = factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]);
 
         let (results, _env) = eval_trampoline(value, env, &state);
         assert_eq!(results.len(), 1);
@@ -146,14 +137,21 @@ mod tests {
 
     #[test]
     fn test_eval_trampoline_span_preserved_on_ground_type() {
-
         let state = MettaState::new();
         let factory = global_factory();
         let env = new_env();
 
         let span = Span {
-            start: Position { row: 0, column: 0, byte_offset: 0 },
-            end: Position { row: 0, column: 2, byte_offset: 2 },
+            start: Position {
+                row: 0,
+                column: 0,
+                byte_offset: 0,
+            },
+            end: Position {
+                row: 0,
+                column: 2,
+                byte_offset: 2,
+            },
         };
         let value = factory.spanned(factory.long(42), span);
 
@@ -169,21 +167,24 @@ mod tests {
 
     #[test]
     fn test_eval_trampoline_span_on_arithmetic() {
-
         let state = MettaState::new();
         let factory = global_factory();
         let env = new_env();
 
         // Spanned (+ 1 2) — the outer expression has a span
         let span = Span {
-            start: Position { row: 0, column: 0, byte_offset: 0 },
-            end: Position { row: 0, column: 7, byte_offset: 7 },
+            start: Position {
+                row: 0,
+                column: 0,
+                byte_offset: 0,
+            },
+            end: Position {
+                row: 0,
+                column: 7,
+                byte_offset: 7,
+            },
         };
-        let sexpr = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ]);
+        let sexpr = factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]);
         let value = factory.spanned(sexpr, span);
 
         let (results, _) = eval_trampoline(value, env, &state);
@@ -199,20 +200,24 @@ mod tests {
 
     #[test]
     fn test_eval_trampoline_span_on_quote() {
-
         let state = MettaState::new();
         let factory = global_factory();
         let env = new_env();
 
         // Spanned (quote hello) — returns Done directly from eval_sexpr_step
         let span = Span {
-            start: Position { row: 0, column: 0, byte_offset: 0 },
-            end: Position { row: 0, column: 13, byte_offset: 13 },
+            start: Position {
+                row: 0,
+                column: 0,
+                byte_offset: 0,
+            },
+            end: Position {
+                row: 0,
+                column: 13,
+                byte_offset: 13,
+            },
         };
-        let sexpr = factory.sexpr(vec![
-            factory.atom("quote"),
-            factory.atom("hello"),
-        ]);
+        let sexpr = factory.sexpr(vec![factory.atom("quote"), factory.atom("hello")]);
         let value = factory.spanned(sexpr, span);
 
         let (results, _) = eval_trampoline(value, env, &state);
@@ -226,15 +231,22 @@ mod tests {
 
     #[test]
     fn test_eval_trampoline_span_on_if_true_branch() {
-
         let state = MettaState::new();
         let factory = global_factory();
         let env = new_env();
 
         // (if True 42 0) — the then-branch 42 has its own span
         let then_span = Span {
-            start: Position { row: 0, column: 9, byte_offset: 9 },
-            end: Position { row: 0, column: 11, byte_offset: 11 },
+            start: Position {
+                row: 0,
+                column: 9,
+                byte_offset: 9,
+            },
+            end: Position {
+                row: 0,
+                column: 11,
+                byte_offset: 11,
+            },
         };
         let sexpr = factory.sexpr(vec![
             factory.atom("if"),
@@ -278,23 +290,35 @@ mod tests {
     fn test_add_atom_rule_becomes_reducible() {
         // Bug A+B fix: add-atom should not evaluate its atom arg AND should
         // update the rule table so the rule becomes usable for reduction.
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(add-atom &self (= (foo) 42))
             !(foo)
-        "#);
+        "#,
+        );
         // add-atom returns Unit
-        assert!(results[0].is_unit(), "add-atom should return Unit, got: {:?}", results[0]);
+        assert!(
+            results[0].is_unit(),
+            "add-atom should return Unit, got: {:?}",
+            results[0]
+        );
         // foo should now reduce to 42
-        assert_eq!(results[1].as_long(), Some(42), "foo should reduce to 42 via add-atom rule");
+        assert_eq!(
+            results[1].as_long(),
+            Some(42),
+            "foo should reduce to 42 via add-atom rule"
+        );
     }
 
     #[test]
     fn test_add_atom_rule_with_variables() {
         // Rules with variables should also work
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(add-atom &self (= (double $x) (* 2 $x)))
             !(double 5)
-        "#);
+        "#,
+        );
         assert!(results[0].is_unit(), "add-atom should return Unit");
         assert_eq!(results[1].as_long(), Some(10), "double 5 should be 10");
     }
@@ -302,10 +326,15 @@ mod tests {
     #[test]
     fn test_add_atom_non_rule() {
         // Non-rule atoms should be added to space without error
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(add-atom &self (parent Alice Bob))
-        "#);
-        assert!(results[0].is_unit(), "add-atom should return Unit for non-rule atoms");
+        "#,
+        );
+        assert!(
+            results[0].is_unit(),
+            "add-atom should return Unit for non-rule atoms"
+        );
     }
 
     #[test]
@@ -313,10 +342,16 @@ mod tests {
         // Verify add-atom does NOT evaluate its atom argument.
         // If it did evaluate (= (foo) 42), the = special form handler would
         // add the rule as a side effect but return empty, causing an error.
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(add-atom &self (= (bar) 99))
-        "#);
-        assert!(results[0].is_unit(), "add-atom should NOT evaluate its atom arg (no error), got: {:?}", results[0]);
+        "#,
+        );
+        assert!(
+            results[0].is_unit(),
+            "add-atom should NOT evaluate its atom arg (no error), got: {:?}",
+            results[0]
+        );
     }
 
     #[test]
@@ -325,71 +360,99 @@ mod tests {
         // multiplicity expansion (a rule with multiplicity 2 returns 2 results).
 
         // Step 1: Add rule, verify it works
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(add-atom &self (= (baz) 77))
             !(baz)
-        "#);
+        "#,
+        );
         assert!(results[0].is_unit(), "add-atom should return Unit");
         assert_eq!(results[1].as_long(), Some(77), "baz should reduce to 77");
 
         // Step 2: Add same rule again (multiplicity 2), then remove once — should still work
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(add-atom &self (= (baz2) 88))
             !(add-atom &self (= (baz2) 88))
             !(remove-atom &self (= (baz2) 88))
             !(baz2)
-        "#);
+        "#,
+        );
         assert!(results[0].is_unit(), "first add-atom should return Unit");
         assert!(results[1].is_unit(), "second add-atom should return Unit");
         assert!(results[2].is_unit(), "remove-atom should return Unit");
         // After removing one copy, the rule still works (multiplicity was 2, now 1)
-        assert_eq!(results[3].as_long(), Some(88),
-                   "baz2 should still reduce to 88 after removing one of two copies");
+        assert_eq!(
+            results[3].as_long(),
+            Some(88),
+            "baz2 should still reduce to 88 after removing one of two copies"
+        );
 
         // Step 3: Remove the last copy — rule should stop working
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(add-atom &self (= (baz3) 99))
             !(remove-atom &self (= (baz3) 99))
             !(baz3)
-        "#);
+        "#,
+        );
         assert!(results[0].is_unit(), "add-atom should return Unit");
         assert!(results[1].is_unit(), "remove-atom should return Unit");
         // After removing the only copy, baz3 should be unreduced
         let last = &results[2];
-        assert!(last.as_atom().is_some() || last.as_sexpr().is_some(),
-                "baz3 should be unreduced after rule removed, got: {:?}", last);
+        assert!(
+            last.as_atom().is_some() || last.as_sexpr().is_some(),
+            "baz3 should be unreduced after rule removed, got: {:?}",
+            last
+        );
     }
 
     #[test]
     fn test_remove_atom_non_existent() {
         // Removing a non-existent atom should return Unit (no error)
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(remove-atom &self (= (nonexistent) 0))
-        "#);
-        assert!(results[0].is_unit(), "remove-atom for non-existent should return Unit");
+        "#,
+        );
+        assert!(
+            results[0].is_unit(),
+            "remove-atom for non-existent should return Unit"
+        );
     }
 
     #[test]
     fn test_add_atom_type_assertion() {
         // add-atom with type assertion should register in the type system
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(add-atom &self (: myvar Int))
             !(get-type myvar)
-        "#);
+        "#,
+        );
         assert!(results[0].is_unit(), "add-atom should return Unit");
         // get-type should return Int
-        assert_eq!(results[1].as_atom(), Some("Int"), "get-type myvar should return Int");
+        assert_eq!(
+            results[1].as_atom(),
+            Some("Int"),
+            "get-type myvar should return Int"
+        );
     }
 
     #[test]
     fn test_add_atom_then_match() {
         // Rules added via add-atom should be queryable via match &self
-        let results = eval_metta(r#"
+        let results = eval_metta(
+            r#"
             !(add-atom &self (parent Alice Bob))
             !(match &self (parent $x Bob) $x)
-        "#);
+        "#,
+        );
         assert!(results[0].is_unit(), "add-atom should return Unit");
-        assert_eq!(results[1].as_atom(), Some("Alice"),
-                   "match should find atom added via add-atom");
+        assert_eq!(
+            results[1].as_atom(),
+            Some("Alice"),
+            "match should find atom added via add-atom"
+        );
     }
 }

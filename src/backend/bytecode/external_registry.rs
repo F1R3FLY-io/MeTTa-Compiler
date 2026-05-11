@@ -35,9 +35,11 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, global_factory};
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
+use crate::backend::models::{
+    global_factory, GcFactory, MettaValue, MettaValueFactory, MettaValueTrait,
+};
 
 /// Error type for external function calls
 #[derive(Debug, Clone)]
@@ -104,9 +106,8 @@ where
 }
 
 /// Generic type alias for external function signature
-pub type GenericExternalFn<V, F> = Arc<
-    dyn Fn(&[V], &GenericExternalContext<V, F>) -> GenericExternalResult<V> + Send + Sync,
->;
+pub type GenericExternalFn<V, F> =
+    Arc<dyn Fn(&[V], &GenericExternalContext<V, F>) -> GenericExternalResult<V> + Send + Sync>;
 
 /// Generic registry entry for an external function
 struct GenericExternalRegistryEntry<V, F>
@@ -173,7 +174,10 @@ where
     /// If a function with this name already exists, it will be replaced.
     pub fn register<Func>(&mut self, name: &str, func: Func)
     where
-        Func: Fn(&[V], &GenericExternalContext<V, F>) -> GenericExternalResult<V> + Send + Sync + 'static,
+        Func: Fn(&[V], &GenericExternalContext<V, F>) -> GenericExternalResult<V>
+            + Send
+            + Sync
+            + 'static,
     {
         self.functions.insert(
             name.to_string(),
@@ -196,7 +200,12 @@ where
     }
 
     /// Call an external function by name
-    pub fn call(&self, name: &str, args: &[V], ctx: &GenericExternalContext<V, F>) -> GenericExternalResult<V> {
+    pub fn call(
+        &self,
+        name: &str,
+        args: &[V],
+        ctx: &GenericExternalContext<V, F>,
+    ) -> GenericExternalResult<V> {
         let entry = self
             .functions
             .get(name)

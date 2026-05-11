@@ -39,7 +39,8 @@ fn test_dollar_underscore_wildcard() {
     env.add_to_space(&fact3.source()[0]);
 
     // Match with $_ wildcard (should match anything and bind, but value is ignored)
-    let query_state = compile("(match &self (generation $_ $p $a) (ancestor $p $a))").expect("compile failed");
+    let query_state =
+        compile("(match &self (generation $_ $p $a) (ancestor $p $a))").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
@@ -59,7 +60,8 @@ fn test_multiple_wildcards() {
     env.add_to_space(&fact2.source()[0]);
 
     // Match with multiple wildcards
-    let query_state = compile("(match &self (record _ $name _ $code) (item $name $code))").expect("compile failed");
+    let query_state = compile("(match &self (record _ $name _ $code) (item $name $code))")
+        .expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
@@ -79,7 +81,8 @@ fn test_wildcard_in_nested_pattern() {
     env.add_to_space(&fact2.source()[0]);
 
     // Match with wildcard in nested position
-    let query_state = compile("(match &self (data (info _ $x) result) $x)").expect("compile failed");
+    let query_state =
+        compile("(match &self (data (info _ $x) result) $x)").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];

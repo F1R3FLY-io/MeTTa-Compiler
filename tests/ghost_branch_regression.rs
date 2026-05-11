@@ -16,8 +16,8 @@
 //! Adding or modifying tests here requires running the full lib suite +
 //! PLN Direct.metta to confirm no regressions elsewhere.
 
-use mettatron::{compile, eval, new_env};
 use mettatron::backend::models::MettaValueTrait;
+use mettatron::{compile, eval, new_env};
 
 /// Helper: compile + evaluate a MeTTa source string, threading the environment
 /// across top-level expressions (so rules added by `(= ...)` are visible to
@@ -34,7 +34,10 @@ fn eval_last(source: &str) -> Vec<String> {
         let (results, env_after) = eval(expr, env, &state);
         env = env_after;
         if idx == expr_count - 1 {
-            last = results.iter().map(|r| format!("{}", r.friendly_repr())).collect();
+            last = results
+                .iter()
+                .map(|r| format!("{}", r.friendly_repr()))
+                .collect();
         }
     }
     last
@@ -64,7 +67,11 @@ fn conjunction_binding_conflict_drops_not_ghost() {
         !(collapse-bind (, (father $a $b) (father $b c)))
     "#;
     let results = eval_last(source);
-    assert_eq!(results.len(), 1, "expected exactly one tuple from collapse-bind");
+    assert_eq!(
+        results.len(),
+        1,
+        "expected exactly one tuple from collapse-bind"
+    );
     let s = &results[0];
 
     // Must contain the correct non-ghost binding.
@@ -108,7 +115,10 @@ fn three_way_conjunction_drops_conflict_combos() {
     // Only $x=a should survive (since (p b 2) doesn't exist, the (p $x 2) child
     // forces $x=a). The $y can be 1 or 2.
     // Must have at least one alternative (the valid $x=a one).
-    assert!(!results.is_empty(), "expected at least one valid alternative");
+    assert!(
+        !results.is_empty(),
+        "expected at least one valid alternative"
+    );
     let joined = results.join(" ");
     assert!(
         joined.contains("($x a)"),
@@ -167,7 +177,11 @@ fn function_with_no_matching_rules_returns_empty_at_depth() {
     // (collapse (f c)) at depth > 0: (f c) doesn't match → empty → collapse
     // of empty list is `()`.
     assert_eq!(results.len(), 1, "expected single collapse-result tuple");
-    assert_eq!(results[0], "()", "expected empty collapse of (f c); got: {}", results[0]);
+    assert_eq!(
+        results[0], "()",
+        "expected empty collapse of (f c); got: {}",
+        results[0]
+    );
 }
 
 /// Data constructor (head has NEVER had rules) must be preserved as data,
@@ -253,7 +267,10 @@ fn cross_top_level_query_isolation_is_stable() {
             let expr = *expr;
             let (results, env_after) = eval(expr, env, &state);
             env = env_after;
-            let mut strs: Vec<String> = results.iter().map(|r| format!("{}", r.friendly_repr())).collect();
+            let mut strs: Vec<String> = results
+                .iter()
+                .map(|r| format!("{}", r.friendly_repr()))
+                .collect();
             strs.sort();
             run_results.push(strs);
         }
@@ -366,8 +383,11 @@ fn map_atom_preserves_outer_carrying() {
     // Expected: (11 12 13).
     assert_eq!(results.len(), 1);
     let s = &results[0];
-    assert!(s.contains("11") && s.contains("12") && s.contains("13"),
-        "map-atom lost outer binding: {}", s);
+    assert!(
+        s.contains("11") && s.contains("12") && s.contains("13"),
+        "map-atom lost outer binding: {}",
+        s
+    );
 }
 
 /// Task #66: parallel_collapse_eval returns BoundValue so collapse-bind's
@@ -401,13 +421,15 @@ fn parallel_collapse_bind_preserves_bindings() {
     assert_eq!(results.len(), 1);
     let s = &results[0];
     // All 16 bindings $x=a..p must be present.
-    for c in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h',
-              'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p'] {
+    for c in [
+        'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
+    ] {
         let binding = format!("($x {})", c);
         assert!(
             s.contains(&binding),
             "parallel collapse-bind lost binding {}: {}",
-            binding, s
+            binding,
+            s
         );
     }
 }
@@ -449,7 +471,11 @@ fn outer_let_binding_flows_into_case_body() {
     "#;
     let results = eval_last(source);
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], "(got 42)", "outer let $x=42 didn't flow into case body: {:?}", results);
+    assert_eq!(
+        results[0], "(got 42)",
+        "outer let $x=42 didn't flow into case body: {:?}",
+        results
+    );
 }
 
 /// Pattern variable captures scrutinee value, body references pattern var.

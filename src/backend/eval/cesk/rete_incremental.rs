@@ -87,16 +87,15 @@ impl IncrementalIndex {
     pub fn record_dependency(&mut self, dep: SubgoalDependency) {
         let hash = dep.subgoal_hash;
         for &(head, arity) in &dep.consulted_groups {
-            self.group_deps.entry((head, arity))
+            self.group_deps
+                .entry((head, arity))
                 .or_default()
                 .insert(hash);
         }
         // Build reverse dependency index: for each transitive dep X,
         // record that `hash` depends on X (so invalidating X invalidates hash).
         for &trans in &dep.transitive_deps {
-            self.reverse_deps.entry(trans)
-                .or_default()
-                .insert(hash);
+            self.reverse_deps.entry(trans).or_default().insert(hash);
         }
         self.dep_records.insert(hash, dep);
     }
@@ -109,13 +108,15 @@ impl IncrementalIndex {
         // Find directly affected subgoals
         let affected_key = match mutation {
             SpaceMutation::AddRule { head, arity, .. }
-            | SpaceMutation::RemoveRule { head, arity, .. } => {
-                Some((*head, *arity))
+            | SpaceMutation::RemoveRule { head, arity, .. } => Some((*head, *arity)),
+            SpaceMutation::AddFact {
+                head: Some(head),
+                arity,
             }
-            SpaceMutation::AddFact { head: Some(head), arity }
-            | SpaceMutation::RemoveFact { head: Some(head), arity } => {
-                Some((*head, *arity))
-            }
+            | SpaceMutation::RemoveFact {
+                head: Some(head),
+                arity,
+            } => Some((*head, *arity)),
             _ => None,
         };
 
@@ -245,7 +246,11 @@ mod tests {
         });
 
         // Add rule to (f, 2) → only subgoal 100 invalidated
-        let mutation = SpaceMutation::AddRule { head: "f", arity: 2, rule_index: 5 };
+        let mutation = SpaceMutation::AddRule {
+            head: "f",
+            arity: 2,
+            rule_index: 5,
+        };
         let invalidated = index.compute_invalidation_set(&mutation);
         assert!(invalidated.contains(&100));
         assert!(!invalidated.contains(&200));
@@ -272,7 +277,11 @@ mod tests {
         });
 
         // Mutating (f, 2) invalidates 100, which transitively invalidates 200
-        let mutation = SpaceMutation::AddRule { head: "f", arity: 2, rule_index: 5 };
+        let mutation = SpaceMutation::AddRule {
+            head: "f",
+            arity: 2,
+            rule_index: 5,
+        };
         let invalidated = index.compute_invalidation_set(&mutation);
         assert!(invalidated.contains(&100));
         assert!(invalidated.contains(&200));
@@ -289,7 +298,11 @@ mod tests {
         });
 
         // Unrelated mutation
-        let mutation = SpaceMutation::AddRule { head: "h", arity: 1, rule_index: 10 };
+        let mutation = SpaceMutation::AddRule {
+            head: "h",
+            arity: 1,
+            rule_index: 10,
+        };
         let invalidated = index.compute_invalidation_set(&mutation);
         assert!(invalidated.is_empty());
     }

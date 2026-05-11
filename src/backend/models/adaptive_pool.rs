@@ -209,7 +209,10 @@ impl HillClimber {
     /// Returns `ScaleDecision` with action and count. The count uses geometric
     /// stepping: doubles on consecutive improvements, resets to 1 on reversal.
     pub fn step(&mut self, objective: f64) -> ScaleDecision {
-        let hold = ScaleDecision { action: ScaleAction::Hold, count: 0 };
+        let hold = ScaleDecision {
+            action: ScaleAction::Hold,
+            count: 0,
+        };
 
         // First call: initialize baseline and hold
         if !self.initialized {
@@ -261,21 +264,36 @@ impl HillClimber {
         if self.direction > 0 {
             let new = (self.current_active + self.step_size).min(self.max_threads);
             if new == self.current_active {
-                return ScaleDecision { action: ScaleAction::Hold, count: 0 }; // At ceiling
+                return ScaleDecision {
+                    action: ScaleAction::Hold,
+                    count: 0,
+                }; // At ceiling
             }
             let count = new - self.current_active;
             self.current_active = new;
             self.cooldown_remaining = self.cooldown_period;
-            ScaleDecision { action: ScaleAction::Unpark, count }
+            ScaleDecision {
+                action: ScaleAction::Unpark,
+                count,
+            }
         } else {
-            let new = self.current_active.saturating_sub(self.step_size).max(self.min_threads);
+            let new = self
+                .current_active
+                .saturating_sub(self.step_size)
+                .max(self.min_threads);
             if new == self.current_active {
-                return ScaleDecision { action: ScaleAction::Hold, count: 0 }; // At floor
+                return ScaleDecision {
+                    action: ScaleAction::Hold,
+                    count: 0,
+                }; // At floor
             }
             let count = self.current_active - new;
             self.current_active = new;
             self.cooldown_remaining = self.cooldown_period;
-            ScaleDecision { action: ScaleAction::Park, count }
+            ScaleDecision {
+                action: ScaleAction::Park,
+                count,
+            }
         }
     }
 
@@ -492,7 +510,11 @@ mod tests {
     fn test_hill_climber_first_step_holds() {
         let mut climber = HillClimber::new(3, 0.05, 1, 8, 4);
         let decision = climber.step(10.0);
-        assert_eq!(decision.action, ScaleAction::Hold, "First step should always hold");
+        assert_eq!(
+            decision.action,
+            ScaleAction::Hold,
+            "First step should always hold"
+        );
         assert_eq!(decision.count, 0);
     }
 
@@ -562,9 +584,21 @@ mod tests {
         assert_eq!(decision.action, ScaleAction::Unpark);
 
         // Next 3 steps should hold (cooldown = 3)
-        assert_eq!(climber.step(4.0).action, ScaleAction::Hold, "Cooldown tick 1");
-        assert_eq!(climber.step(3.0).action, ScaleAction::Hold, "Cooldown tick 2");
-        assert_eq!(climber.step(2.0).action, ScaleAction::Hold, "Cooldown tick 3");
+        assert_eq!(
+            climber.step(4.0).action,
+            ScaleAction::Hold,
+            "Cooldown tick 1"
+        );
+        assert_eq!(
+            climber.step(3.0).action,
+            ScaleAction::Hold,
+            "Cooldown tick 2"
+        );
+        assert_eq!(
+            climber.step(2.0).action,
+            ScaleAction::Hold,
+            "Cooldown tick 3"
+        );
 
         // Cooldown expired — prev_objective is frozen at 5.0 (Fix 3).
         // improvement = 5.0 - 1.0 = 4.0 > 0.05 → Unpark

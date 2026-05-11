@@ -52,10 +52,10 @@ pub fn run(
     let mut flow_order: Vec<u64> = Vec::new();
 
     // Per-(cont_kind, site) drop counter for the summary table.
-    let mut drop_summary: HashMap<(String, String), (u64, HashMap<String, u64>)> =
-        HashMap::new();
+    let mut drop_summary: HashMap<(String, String), (u64, HashMap<String, u64>)> = HashMap::new();
 
-    let cont_whitelist = cont_filter.map(|v| v.into_iter().collect::<std::collections::HashSet<_>>());
+    let cont_whitelist =
+        cont_filter.map(|v| v.into_iter().collect::<std::collections::HashSet<_>>());
     let var_whitelist = var_filter.map(|v| v.into_iter().collect::<std::collections::HashSet<_>>());
 
     for event in reader.events() {
@@ -73,9 +73,10 @@ pub fn run(
                     }
                 }
                 if let Some(ref vw) = var_whitelist {
-                    let touches = inputs.iter().any(|bv| {
-                        bv.bindings.iter().any(|(k, _)| vw.contains(k))
-                    }) || tracked_vars.iter().any(|k| vw.contains(k));
+                    let touches = inputs
+                        .iter()
+                        .any(|bv| bv.bindings.iter().any(|(k, _)| vw.contains(k)))
+                        || tracked_vars.iter().any(|k| vw.contains(k));
                     if !touches {
                         continue;
                     }
@@ -97,13 +98,18 @@ pub fn run(
                 );
             }
             TraceEventKind::ContinuationEmit {
-                flow_id, site, outputs, ..
+                flow_id,
+                site,
+                outputs,
+                ..
             } => {
                 if let Some(f) = flows.get_mut(flow_id) {
                     f.emits.push((site.clone(), outputs.clone()));
                 }
             }
-            TraceEventKind::ContinuationExitNoResume { flow_id, exit_kind, .. } => {
+            TraceEventKind::ContinuationExitNoResume {
+                flow_id, exit_kind, ..
+            } => {
                 if let Some(f) = flows.get_mut(flow_id) {
                     f.exit = Some(exit_kind.clone());
                 }
@@ -163,10 +169,7 @@ pub fn run(
             } else {
                 format!(" tracked={:?}", f.tracked_vars)
             };
-            println!(
-                "flow#{} {} depth={}{}",
-                id, f.cont_kind, f.cont_depth, tv,
-            );
+            println!("flow#{} {} depth={}{}", id, f.cont_kind, f.cont_depth, tv,);
             println!("  ENTER inputs={}", format_bvs(&f.inputs));
             for (site, keys, sample) in &f.drops {
                 let sample_str: Vec<String> = sample
@@ -200,10 +203,7 @@ pub fn run(
                 break;
             }
         }
-        println!(
-            "flow#{} {} depth={}",
-            id, f.cont_kind, f.cont_depth
-        );
+        println!("flow#{} {} depth={}", id, f.cont_kind, f.cont_depth);
         println!("  ENTER inputs={}", format_bvs(&f.inputs));
         for (site, outputs) in &f.emits {
             println!("  EMIT  site={} outputs={}", site, format_bvs(outputs));
@@ -253,9 +253,7 @@ fn format_bvs(bvs: &[BoundValueSnapshot]) -> String {
     format!("[{}]", parts.join(", "))
 }
 
-fn print_summary(
-    drop_summary: &HashMap<(String, String), (u64, HashMap<String, u64>)>,
-) {
+fn print_summary(drop_summary: &HashMap<(String, String), (u64, HashMap<String, u64>)>) {
     if drop_summary.is_empty() {
         println!("Drop summary: no BindingsDropped events.");
         return;

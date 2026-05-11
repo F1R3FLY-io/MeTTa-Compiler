@@ -431,10 +431,20 @@ pub unsafe extern "C" fn jit_runtime_match_arity(
 
     let matches = match val.view() {
         ValueView::SExpr(items) => items.len() == expected_arity as usize,
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
-        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => false,
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => false,
     };
 
     if matches {
@@ -481,10 +491,20 @@ pub unsafe extern "C" fn jit_runtime_match_head(
 
     let matches = match val.view() {
         ValueView::SExpr(items) if !items.is_empty() => &items[0] == expected_head,
-        ValueView::SExpr(_) | ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_)
-        | ValueView::Unit | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_)
-        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
-        | ValueView::Space(_) | ValueView::State(_) | ValueView::Memo(_)
+        ValueView::SExpr(_)
+        | ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
         | ValueView::Quoted(_) => false,
     };
 
@@ -590,63 +610,143 @@ pub unsafe extern "C" fn jit_runtime_unify_bind(
 // Pattern Matching Helper Functions
 // =============================================================================
 
-/// Pattern match implementation (without binding)
+/// Pattern match implementation (without binding).
+///
+/// BUG T0-T2-009 (plan T2/T3.C): in-tier iterative work-stack matcher matching
+/// T0's breadth. Supports `&y`/`'z` sigil variables, Float bit-equality, Long↔Float
+/// promotion, Conjunction structural compare, Error message+details, Empty/Unit
+/// equivalence. Stack-safe — no recursion.
 pub(crate) fn pattern_matches_impl(pattern: &MettaValue, value: &MettaValue) -> bool {
-    match (pattern.view(), value.view()) {
-        // Wildcard matches anything (check BEFORE variable — both `_` and `$_`).
-        (ValueView::Atom(s), _) if s == "_" || s == "$_" => true,
-        // Variable matches anything (Atom starting with $)
-        (ValueView::Atom(s), _) if s.starts_with('$') => true,
-        // Exact match for atoms
-        (ValueView::Atom(a), ValueView::Atom(b)) => a == b,
-        // Exact match for literals
-        (ValueView::Long(a), ValueView::Long(b)) => a == b,
-        (ValueView::Bool(a), ValueView::Bool(b)) => a == b,
-        (ValueView::String(a), ValueView::String(b)) => a == b,
-        (ValueView::Unit, ValueView::Unit) => true,
-        // S-expression matching
-        (ValueView::SExpr(ps), ValueView::SExpr(vs)) => {
-            ps.len() == vs.len()
-                && ps
-                    .iter()
-                    .zip(vs.iter())
-                    .all(|(p, v)| pattern_matches_impl(p, v))
+    let mut work: smallvec::SmallVec<[(MettaValue, MettaValue); 8]> = smallvec::SmallVec::new();
+    work.push((*pattern, *value));
+
+    while let Some((p, v)) = work.pop() {
+        match (p.view(), v.view()) {
+            // Wildcard
+            (ValueView::Atom(s), _) if s == "_" || s == "$_" => continue,
+            // Variables: $-, &-, '-prefixed (excluding bare & and space refs)
+            (ValueView::Atom(s), _)
+                if (s.starts_with('$') || s.starts_with('&') || s.starts_with('\''))
+                    && s != "&"
+                    && s != "&self"
+                    && s != "&kb"
+                    && s != "&stack"
+                    && s != "$_" =>
+            {
+                continue;
+            }
+            (ValueView::Atom(a), ValueView::Atom(b)) if a == b => continue,
+            (ValueView::Long(a), ValueView::Long(b)) if a == b => continue,
+            (ValueView::Float(a), ValueView::Float(b)) if a == b => continue,
+            (ValueView::Long(a), ValueView::Float(b)) if (a as f64) == b => continue,
+            (ValueView::Float(a), ValueView::Long(b)) if a == (b as f64) => continue,
+            (ValueView::Bool(a), ValueView::Bool(b)) if a == b => continue,
+            (ValueView::String(a), ValueView::String(b)) if a == b => continue,
+            (ValueView::Unit, ValueView::Unit) => continue,
+            (ValueView::Empty, ValueView::Empty) => continue,
+            // Empty/Unit equivalences (matching T0's pattern.rs:108-130).
+            (ValueView::Unit, ValueView::Empty) | (ValueView::Empty, ValueView::Unit) => continue,
+            (ValueView::SExpr(ps), ValueView::SExpr(vs)) => {
+                if ps.len() != vs.len() {
+                    return false;
+                }
+                for (pp, vv) in ps.iter().zip(vs.iter()).rev() {
+                    work.push((*pp, *vv));
+                }
+            }
+            (ValueView::Conjunction(pg), ValueView::Conjunction(vg)) => {
+                if pg.len() != vg.len() {
+                    return false;
+                }
+                for (pp, vv) in pg.iter().zip(vg.iter()).rev() {
+                    work.push((*pp, *vv));
+                }
+            }
+            (ValueView::Error(pmsg, pdet), ValueView::Error(vmsg, vdet)) => {
+                if pmsg != vmsg {
+                    return false;
+                }
+                work.push((pdet, vdet));
+            }
+            _ => return false,
         }
-        _ => false,
     }
+    true
 }
 
-/// Pattern match with binding implementation
+/// Pattern match with binding implementation.
+///
+/// BUG T0-T2-009 (plan T2/T3.C): in-tier iterative work-stack matcher with
+/// binding accumulation. Supports `&y`/`'z` sigil variables, Float bit-equality,
+/// Long↔Float promotion, Conjunction, Error, Empty/Unit equivalence,
+/// repeated-var unification consistency (BUG-T0-006 via push-existing pattern).
+/// Stack-safe — no recursion.
 fn pattern_match_bind_impl(
     pattern: &MettaValue,
     value: &MettaValue,
     bindings: &mut Vec<(String, MettaValue)>,
 ) -> bool {
-    match (pattern.view(), value.view()) {
-        // Wildcard matches without binding (check BEFORE variable arm — both `_` and `$_`).
-        (ValueView::Atom(s), _) if s == "_" || s == "$_" => true,
-        // Variable binds to value (Atom starting with $)
-        (ValueView::Atom(name), _) if name.starts_with('$') => {
-            bindings.push((name.to_string(), value.clone()));
-            true
+    let mut work: smallvec::SmallVec<[(MettaValue, MettaValue); 8]> = smallvec::SmallVec::new();
+    work.push((*pattern, *value));
+
+    while let Some((p, v)) = work.pop() {
+        match (p.view(), v.view()) {
+            (ValueView::Atom(s), _) if s == "_" || s == "$_" => continue,
+            (ValueView::Atom(name), _)
+                if (name.starts_with('$')
+                    || name.starts_with('&')
+                    || name.starts_with('\''))
+                    && name != "&"
+                    && name != "&self"
+                    && name != "&kb"
+                    && name != "&stack"
+                    && name != "$_" =>
+            {
+                // BUG-T0-006 repeated-var: if name already bound, unify
+                // existing value with current via push to work stack.
+                if let Some((_, existing)) = bindings.iter().find(|(n, _)| n == name) {
+                    let existing_clone = *existing;
+                    work.push((existing_clone, v));
+                } else {
+                    bindings.push((name.to_string(), v));
+                }
+            }
+            (ValueView::Atom(a), ValueView::Atom(b)) if a == b => continue,
+            (ValueView::Long(a), ValueView::Long(b)) if a == b => continue,
+            (ValueView::Float(a), ValueView::Float(b)) if a == b => continue,
+            (ValueView::Long(a), ValueView::Float(b)) if (a as f64) == b => continue,
+            (ValueView::Float(a), ValueView::Long(b)) if a == (b as f64) => continue,
+            (ValueView::Bool(a), ValueView::Bool(b)) if a == b => continue,
+            (ValueView::String(a), ValueView::String(b)) if a == b => continue,
+            (ValueView::Unit, ValueView::Unit) => continue,
+            (ValueView::Empty, ValueView::Empty) => continue,
+            (ValueView::Unit, ValueView::Empty) | (ValueView::Empty, ValueView::Unit) => continue,
+            (ValueView::SExpr(ps), ValueView::SExpr(vs)) => {
+                if ps.len() != vs.len() {
+                    return false;
+                }
+                for (pp, vv) in ps.iter().zip(vs.iter()).rev() {
+                    work.push((*pp, *vv));
+                }
+            }
+            (ValueView::Conjunction(pg), ValueView::Conjunction(vg)) => {
+                if pg.len() != vg.len() {
+                    return false;
+                }
+                for (pp, vv) in pg.iter().zip(vg.iter()).rev() {
+                    work.push((*pp, *vv));
+                }
+            }
+            (ValueView::Error(pmsg, pdet), ValueView::Error(vmsg, vdet)) => {
+                if pmsg != vmsg {
+                    return false;
+                }
+                work.push((pdet, vdet));
+            }
+            _ => return false,
         }
-        // Exact match for atoms
-        (ValueView::Atom(a), ValueView::Atom(b)) => a == b,
-        // Exact match for literals
-        (ValueView::Long(a), ValueView::Long(b)) => a == b,
-        (ValueView::Bool(a), ValueView::Bool(b)) => a == b,
-        (ValueView::String(a), ValueView::String(b)) => a == b,
-        (ValueView::Unit, ValueView::Unit) => true,
-        // S-expression matching
-        (ValueView::SExpr(ps), ValueView::SExpr(vs)) => {
-            ps.len() == vs.len()
-                && ps
-                    .iter()
-                    .zip(vs.iter())
-                    .all(|(p, v)| pattern_match_bind_impl(p, v, bindings))
-        }
-        _ => false,
     }
+    true
 }
 
 /// Unification implementation (bidirectional) using shared Martelli-Montanari core.
@@ -705,7 +805,8 @@ pub unsafe extern "C" fn jit_runtime_unify_deep(
                 for (name, val) in result_bindings.iter() {
                     if let Some(idx) = lookup_var_index_cached(ctx, name, constants) {
                         let jit_val = metta_to_jit(&val);
-                        let store_result = jit_runtime_store_binding(ctx, idx as u64, jit_val.to_bits(), 0);
+                        let store_result =
+                            jit_runtime_store_binding(ctx, idx as u64, jit_val.to_bits(), 0);
                         if store_result != 0 {
                             return TAG_BOOL; // binding failed
                         }
@@ -753,7 +854,8 @@ pub unsafe extern "C" fn jit_runtime_unify4(
     let val1_metta = JitValue::from_raw(val1).to_metta();
     let pattern2_metta = JitValue::from_raw(pattern2).to_metta();
 
-    match crate::backend::eval::bindings::bidirectional_unify_generic(&val1_metta, &pattern2_metta) {
+    match crate::backend::eval::bindings::bidirectional_unify_generic(&val1_metta, &pattern2_metta)
+    {
         Some(result_bindings) => {
             // Install bindings in current frame using the same approach as jit_runtime_unify_bind.
             if ctx_ref.binding_frames_count > 0 && !ctx_ref.binding_frames.is_null() {
@@ -793,7 +895,11 @@ pub unsafe extern "C" fn jit_runtime_u_check_sexpr(
 ) -> u64 {
     let val = JitValue::from_raw(value).to_metta();
     let is_sexpr = val.as_sexpr().is_some() || val.is_unit();
-    if is_sexpr { TAG_BOOL | 1 } else { TAG_BOOL }
+    if is_sexpr {
+        TAG_BOOL | 1
+    } else {
+        TAG_BOOL
+    }
 }
 
 /// Runtime: check if S-expr has expected arity.
@@ -819,7 +925,11 @@ pub unsafe extern "C" fn jit_runtime_u_check_arity(
     } else {
         false
     };
-    if matches { TAG_BOOL | 1 } else { TAG_BOOL }
+    if matches {
+        TAG_BOOL | 1
+    } else {
+        TAG_BOOL
+    }
 }
 
 /// Runtime: get child at index from S-expression.

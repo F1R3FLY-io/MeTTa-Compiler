@@ -150,8 +150,11 @@ fn with_work_pool_trace(f: impl FnOnce(&crate::backend::trace::TraceCollector)) 
 /// collector for the duration of parallel branch evaluation.
 #[cfg(feature = "trace")]
 #[inline]
-pub fn get_work_pool_trace_collector() -> Option<std::sync::Arc<crate::backend::trace::TraceCollector>> {
-    WORK_POOL_TRACE_COLLECTOR.get().and_then(|weak| weak.upgrade())
+pub fn get_work_pool_trace_collector(
+) -> Option<std::sync::Arc<crate::backend::trace::TraceCollector>> {
+    WORK_POOL_TRACE_COLLECTOR
+        .get()
+        .and_then(|weak| weak.upgrade())
 }
 
 /// Map a `TaskTypeId` to a human-readable task kind string for trace events.
@@ -493,9 +496,7 @@ impl WorkPool {
         let handle = thread::Builder::new()
             .name(format!("work-pool-{}", id))
             .spawn(move || {
-                work_pool_worker_loop(
-                    id, queue, runtime_tracker, shutdown, park, cpu_state,
-                )
+                work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park, cpu_state)
             })
             .expect("failed to spawn work pool worker thread");
         *self.workers[id].lock() = Some(handle);
@@ -854,7 +855,10 @@ impl WorkPool {
             if let Some(old_handle) = guard.take() {
                 match old_handle.join() {
                     Ok(()) => {
-                        tracing::warn!(worker_id = id, "WorkPool: worker exited unexpectedly -- respawning");
+                        tracing::warn!(
+                            worker_id = id,
+                            "WorkPool: worker exited unexpectedly -- respawning"
+                        );
                     }
                     Err(payload) => {
                         tracing::error!(
@@ -877,9 +881,7 @@ impl WorkPool {
             let new_handle = thread::Builder::new()
                 .name(format!("work-pool-{}", id))
                 .spawn(move || {
-                    work_pool_worker_loop(
-                        id, queue, runtime_tracker, shutdown, park, cpu_state,
-                    );
+                    work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park, cpu_state);
                 })
                 .expect("failed to respawn work pool worker thread");
 
@@ -1033,10 +1035,7 @@ impl WorkPool {
             }
         }
         if drained > 0 {
-            trace!(
-                drained,
-                "WorkPool: signaled overflow workers to drain"
-            );
+            trace!(drained, "WorkPool: signaled overflow workers to drain");
         }
     }
 
@@ -1534,7 +1533,8 @@ fn read_rss_bytes(page_size: usize) -> Option<usize> {
         use std::mem;
         let mut info: libc::mach_task_basic_info_data_t = unsafe { mem::zeroed() };
         let mut count = (mem::size_of::<libc::mach_task_basic_info_data_t>()
-            / mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+            / mem::size_of::<libc::natural_t>())
+            as libc::mach_msg_type_number_t;
         let kr = unsafe {
             libc::task_info(
                 libc::mach_task_self(),
@@ -1614,7 +1614,11 @@ fn get_rss_limit() -> usize {
 #[cfg(target_os = "linux")]
 fn get_page_size() -> usize {
     let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if ps > 0 { ps as usize } else { 4096 }
+    if ps > 0 {
+        ps as usize
+    } else {
+        4096
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1781,9 +1785,7 @@ impl WorkMonitorState {
                                 trace_format::TraceValue::Unit,
                                 vec![],
                                 None,
-                                trace_format::TraceEventKind::WorkPoolWorkerUnblocked {
-                                    worker_id,
-                                },
+                                trace_format::TraceEventKind::WorkPoolWorkerUnblocked { worker_id },
                             );
                         });
                     }
@@ -1877,9 +1879,7 @@ impl WorkMonitorState {
                             trace_format::TraceValue::Unit,
                             vec![],
                             None,
-                            trace_format::TraceEventKind::WorkPoolWorkerUnblocked {
-                                worker_id,
-                            },
+                            trace_format::TraceEventKind::WorkPoolWorkerUnblocked { worker_id },
                         );
                     });
                 }
@@ -2139,10 +2139,7 @@ fn work_scaling_monitor_tick(pool: &WorkPool, state: &mut WorkMonitorState) {
                 comp_any_action = true;
             }
             pool.drain_all_overflow();
-            trace!(
-                overflow,
-                "WorkPool: draining all overflow (queue empty)"
-            );
+            trace!(overflow, "WorkPool: draining all overflow (queue empty)");
         }
     } else if total_unblocked < target {
         let deficit = target - total_unblocked;
@@ -2385,7 +2382,9 @@ pub fn start_work_scaling_monitor() {
         // Wait for scheduler to be ready before scheduling tasks.
         // Use recv_timeout to avoid blocking forever if the monitor thread panics during startup.
         if ready_rx.recv_timeout(Duration::from_secs(5)).is_err() {
-            tracing::warn!("Work scaling monitor did not signal ready within 5s — continuing without scaling");
+            tracing::warn!(
+                "Work scaling monitor did not signal ready within 5s — continuing without scaling"
+            );
         }
 
         handle.schedule_recurring(
@@ -2648,10 +2647,14 @@ mod tests {
         work_scaling_monitor_tick(&pool, &mut state);
 
         // EMAs should NOT be initialized (idle tick skips EMA updates)
-        assert!(!state.ema_throughput.is_initialized(),
-            "Idle tick should skip EMA updates to preserve signal");
-        assert!(!state.ema_queue_depth.is_initialized(),
-            "Idle tick should skip EMA updates to preserve signal");
+        assert!(
+            !state.ema_throughput.is_initialized(),
+            "Idle tick should skip EMA updates to preserve signal"
+        );
+        assert!(
+            !state.ema_queue_depth.is_initialized(),
+            "Idle tick should skip EMA updates to preserve signal"
+        );
     }
 
     #[test]
@@ -2750,7 +2753,10 @@ mod tests {
     fn test_rss_limit_disabled_when_zero() {
         let page_size = get_page_size();
         let pressure = rss_pressure(page_size, 0);
-        assert_eq!(pressure, 0.0, "RSS pressure should be 0.0 when limit is 0 (disabled)");
+        assert_eq!(
+            pressure, 0.0,
+            "RSS pressure should be 0.0 when limit is 0 (disabled)"
+        );
     }
 
     #[test]
@@ -2760,37 +2766,49 @@ mod tests {
         let tp = 100.0;
         let qd = 0.0;
 
-        let obj_no_pressure = -THROUGHPUT_WEIGHT * tp + QUEUE_DEPTH_WEIGHT * qd
-            + MEMORY_PRESSURE_WEIGHT * 0.0 + RSS_PRESSURE_WEIGHT * 0.0;
+        let obj_no_pressure = -THROUGHPUT_WEIGHT * tp
+            + QUEUE_DEPTH_WEIGHT * qd
+            + MEMORY_PRESSURE_WEIGHT * 0.0
+            + RSS_PRESSURE_WEIGHT * 0.0;
 
-        let obj_slab_pressure = -THROUGHPUT_WEIGHT * tp + QUEUE_DEPTH_WEIGHT * qd
-            + MEMORY_PRESSURE_WEIGHT * 1.0 + RSS_PRESSURE_WEIGHT * 0.0;
+        let obj_slab_pressure = -THROUGHPUT_WEIGHT * tp
+            + QUEUE_DEPTH_WEIGHT * qd
+            + MEMORY_PRESSURE_WEIGHT * 1.0
+            + RSS_PRESSURE_WEIGHT * 0.0;
 
-        let obj_rss_pressure = -THROUGHPUT_WEIGHT * tp + QUEUE_DEPTH_WEIGHT * qd
-            + MEMORY_PRESSURE_WEIGHT * 0.0 + RSS_PRESSURE_WEIGHT * 1.0;
+        let obj_rss_pressure = -THROUGHPUT_WEIGHT * tp
+            + QUEUE_DEPTH_WEIGHT * qd
+            + MEMORY_PRESSURE_WEIGHT * 0.0
+            + RSS_PRESSURE_WEIGHT * 1.0;
 
-        let obj_both_pressure = -THROUGHPUT_WEIGHT * tp + QUEUE_DEPTH_WEIGHT * qd
-            + MEMORY_PRESSURE_WEIGHT * 2.0 + RSS_PRESSURE_WEIGHT * 2.0;
+        let obj_both_pressure = -THROUGHPUT_WEIGHT * tp
+            + QUEUE_DEPTH_WEIGHT * qd
+            + MEMORY_PRESSURE_WEIGHT * 2.0
+            + RSS_PRESSURE_WEIGHT * 2.0;
 
         assert!(
             obj_slab_pressure > obj_no_pressure,
             "Slab pressure should increase objective: {} > {}",
-            obj_slab_pressure, obj_no_pressure
+            obj_slab_pressure,
+            obj_no_pressure
         );
         assert!(
             obj_rss_pressure > obj_no_pressure,
             "RSS pressure should increase objective: {} > {}",
-            obj_rss_pressure, obj_no_pressure
+            obj_rss_pressure,
+            obj_no_pressure
         );
         assert!(
             obj_rss_pressure > obj_slab_pressure,
             "RSS pressure should dominate slab pressure: {} > {}",
-            obj_rss_pressure, obj_slab_pressure
+            obj_rss_pressure,
+            obj_slab_pressure
         );
         assert!(
             obj_both_pressure > obj_rss_pressure,
             "Combined pressure should be worst: {} > {}",
-            obj_both_pressure, obj_rss_pressure
+            obj_both_pressure,
+            obj_rss_pressure
         );
     }
 
@@ -2802,8 +2820,10 @@ mod tests {
 
         assert!(!state.ema_slab_pressure.is_initialized());
         assert!(!state.ema_rss_pressure.is_initialized());
-        assert!(state.rss_limit > 0 || cfg!(not(target_os = "linux")),
-            "RSS limit should be auto-detected on Linux");
+        assert!(
+            state.rss_limit > 0 || cfg!(not(target_os = "linux")),
+            "RSS limit should be auto-detected on Linux"
+        );
         assert!(state.page_size > 0, "Page size should be positive");
     }
 
@@ -2816,16 +2836,32 @@ mod tests {
         // ratio=1.25 → pressure=3.0
 
         // We can't easily mock read_rss_bytes, so test the formula directly
-        let ramp = |ratio: f64| -> f64 {
-            ((ratio - 0.5) * 4.0).clamp(0.0, 3.0)
-        };
+        let ramp = |ratio: f64| -> f64 { ((ratio - 0.5) * 4.0).clamp(0.0, 3.0) };
 
-        assert!((ramp(0.25) - 0.0).abs() < f64::EPSILON, "Below 50%: no pressure");
-        assert!((ramp(0.5) - 0.0).abs() < f64::EPSILON, "At 50%: no pressure");
-        assert!((ramp(0.75) - 1.0).abs() < f64::EPSILON, "At 75%: moderate pressure");
-        assert!((ramp(1.0) - 2.0).abs() < f64::EPSILON, "At 100%: high pressure");
-        assert!((ramp(1.25) - 3.0).abs() < f64::EPSILON, "At 125%: capped at 3.0");
-        assert!((ramp(2.0) - 3.0).abs() < f64::EPSILON, "At 200%: still capped at 3.0");
+        assert!(
+            (ramp(0.25) - 0.0).abs() < f64::EPSILON,
+            "Below 50%: no pressure"
+        );
+        assert!(
+            (ramp(0.5) - 0.0).abs() < f64::EPSILON,
+            "At 50%: no pressure"
+        );
+        assert!(
+            (ramp(0.75) - 1.0).abs() < f64::EPSILON,
+            "At 75%: moderate pressure"
+        );
+        assert!(
+            (ramp(1.0) - 2.0).abs() < f64::EPSILON,
+            "At 100%: high pressure"
+        );
+        assert!(
+            (ramp(1.25) - 3.0).abs() < f64::EPSILON,
+            "At 125%: capped at 3.0"
+        );
+        assert!(
+            (ramp(2.0) - 3.0).abs() < f64::EPSILON,
+            "At 200%: still capped at 3.0"
+        );
     }
 
     /// Verify that tasks queued before workers exist are drained once
@@ -2850,7 +2886,11 @@ mod tests {
             );
         }
 
-        assert_eq!(pool.queue_len(), num_tasks as usize, "Tasks should be queued");
+        assert_eq!(
+            pool.queue_len(),
+            num_tasks as usize,
+            "Tasks should be queued"
+        );
         assert_eq!(counter.load(Ordering::Relaxed), 0, "No tasks executed yet");
 
         // Now spawn workers — they should drain all queued tasks
@@ -2967,15 +3007,18 @@ mod tests {
         // At least one worker should have non-zero wall_nanos (from publish_initial
         // at startup or from publish after task execution)
         let cpu_states = pool.worker_cpu_states();
-        let any_published = cpu_states.iter().any(|s| {
-            s.wall_nanos.load(Ordering::Relaxed) > 0
-        });
-        assert!(any_published, "At least one worker should have published CPU state");
+        let any_published = cpu_states
+            .iter()
+            .any(|s| s.wall_nanos.load(Ordering::Relaxed) > 0);
+        assert!(
+            any_published,
+            "At least one worker should have published CPU state"
+        );
 
         // At least one worker should have task_count > 0
-        let any_tasks = cpu_states.iter().any(|s| {
-            s.task_count.load(Ordering::Relaxed) > 0
-        });
+        let any_tasks = cpu_states
+            .iter()
+            .any(|s| s.task_count.load(Ordering::Relaxed) > 0);
         assert!(any_tasks, "At least one worker should have task_count > 0");
     }
 
@@ -3060,9 +3103,9 @@ mod tests {
         {
             let cpu_states = pool.worker_cpu_states();
             for _ in 0..200 {
-                let all_published = cpu_states.iter().all(|s| {
-                    s.wall_nanos.load(Ordering::Relaxed) > 0
-                });
+                let all_published = cpu_states
+                    .iter()
+                    .all(|s| s.wall_nanos.load(Ordering::Relaxed) > 0);
                 if all_published {
                     break;
                 }
@@ -3115,7 +3158,9 @@ mod tests {
             active_after > 2 || overflow_after > 0,
             "Compensatory logic should have unparked workers or spawned overflow: \
              active={}, overflow={}, blocked={}, expected active > 2 or overflow > 0",
-            active_after, overflow_after, state.blocked_worker_count
+            active_after,
+            overflow_after,
+            state.blocked_worker_count
         );
 
         // Release the blocker so all tasks can complete
@@ -3178,7 +3223,9 @@ mod tests {
             oc > 0,
             "Overflow workers should have been spawned when all core workers are blocked: \
              overflow_count={}, blocked_count={}, active={}",
-            oc, state.blocked_worker_count, pool.active_workers()
+            oc,
+            state.blocked_worker_count,
+            pool.active_workers()
         );
 
         // Release the blocker so all tasks can complete
@@ -3243,7 +3290,8 @@ mod tests {
 
         // No overflow should have been spawned
         assert_eq!(
-            pool.overflow_count(), 0,
+            pool.overflow_count(),
+            0,
             "No overflow should be spawned when queue is empty"
         );
     }
@@ -3265,7 +3313,9 @@ mod tests {
         for _ in 0..5 {
             let c = Arc::clone(&counter);
             pool.spawn_eval(
-                move || { c.fetch_add(1, Ordering::Relaxed); },
+                move || {
+                    c.fetch_add(1, Ordering::Relaxed);
+                },
                 TaskTypeId::Generic,
                 priority_levels::NORMAL,
             );
@@ -3282,7 +3332,8 @@ mod tests {
         work_scaling_monitor_tick(&pool, &mut state);
 
         assert_eq!(
-            pool.overflow_count(), 0,
+            pool.overflow_count(),
+            0,
             "No overflow should be spawned during emergency memory pressure"
         );
 

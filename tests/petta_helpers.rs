@@ -315,14 +315,16 @@ fn modus_ponens_repeated_var_bidirectional_unify() {
     // Modus Ponens rule with two occurrences of $A:
     //   (= (|- ($A $T1) ((Implication $A $B) $T2))
     //      ($B (mp $T1 $T2)))
-    let r = run_one(r#"
+    let r = run_one(
+        r#"
         (= (|- ($A $T1) ((Implication $A $B) $T2))
            ($B (mp $T1 $T2)))
         !(|- ((Inheritance Anna (IntSet smokes)) (stv 1 0.9))
              ((Implication (Inheritance $1 (IntSet smokes))
                            (Inheritance $1 (IntSet cancerous)))
               (stv 0.6 0.9)))
-    "#);
+    "#,
+    );
     // The free variable $1 in the implication must be unified with Anna
     // from the first occurrence of $A, then transitively substituted
     // through the RHS template.
@@ -335,14 +337,16 @@ fn modus_ponens_repeated_var_bidirectional_unify() {
 #[test]
 fn modus_ponens_concrete_first_arg() {
     // The same rule applied to a concrete first argument should also work.
-    let r = run_one(r#"
+    let r = run_one(
+        r#"
         (= (|- ($A $T1) ((Implication $A $B) $T2))
            ($B (mp $T1 $T2)))
         !(|- ((Inheritance Anna (IntSet smokes)) (stv 1 0.9))
              ((Implication (Inheritance Anna (IntSet smokes))
                            (Inheritance Anna (IntSet cancerous)))
               (stv 0.6 0.9)))
-    "#);
+    "#,
+    );
     assert_eq!(
         r,
         vec!["((Inheritance Anna (IntSet cancerous)) (mp (stv 1 0.9) (stv 0.6 0.9)))"]

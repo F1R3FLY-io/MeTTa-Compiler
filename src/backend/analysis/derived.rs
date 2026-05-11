@@ -80,9 +80,12 @@ pub fn derive_analysis(result: &AnalysisResult) -> DerivedAnalysis {
     let type_specializations = detect_type_specialization(result);
     let ground_expressions = detect_groundness(result);
 
-    let memo_candidates: HashSet<u64> = pure_expressions.iter()
+    let memo_candidates: HashSet<u64> = pure_expressions
+        .iter()
         .filter(|hash| {
-            result.expr_facts.get(hash)
+            result
+                .expr_facts
+                .get(hash)
                 .and_then(|f| f.is_deterministic)
                 .unwrap_or(false)
         })
@@ -172,7 +175,9 @@ fn detect_determinism(result: &AnalysisResult) -> HashMap<(&'static str, usize),
 
 /// Detect pure expressions.
 fn detect_purity(result: &AnalysisResult) -> HashSet<u64> {
-    result.expr_facts.iter()
+    result
+        .expr_facts
+        .iter()
         .filter(|(_, fact)| fact.is_pure == Some(true))
         .map(|(hash, _)| *hash)
         .collect()
@@ -180,7 +185,9 @@ fn detect_purity(result: &AnalysisResult) -> HashSet<u64> {
 
 /// Detect type specialization opportunities.
 fn detect_type_specialization(result: &AnalysisResult) -> HashMap<u64, AbstractType> {
-    result.expr_facts.iter()
+    result
+        .expr_facts
+        .iter()
         .filter(|(_, fact)| fact.result_types.len() == 1)
         .filter_map(|(hash, fact)| {
             let t = fact.result_types.iter().next()?;
@@ -191,7 +198,9 @@ fn detect_type_specialization(result: &AnalysisResult) -> HashMap<u64, AbstractT
 
 /// Detect ground expressions.
 fn detect_groundness(result: &AnalysisResult) -> HashSet<u64> {
-    result.expr_facts.iter()
+    result
+        .expr_facts
+        .iter()
         .filter(|(_, fact)| fact.is_ground == Some(true))
         .map(|(hash, _)| *hash)
         .collect()
@@ -225,11 +234,11 @@ pub fn build_dispatch_hints(analysis: &DerivedAnalysis) -> HashMap<u64, Dispatch
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::collections::HashSet;
-    use super::super::fixpoint::ExprFact;
     use super::super::abstract_domain::AbstractStore;
     use super::super::abstract_transition::AbstractState;
+    use super::super::fixpoint::ExprFact;
+    use super::*;
+    use std::collections::HashSet;
 
     fn make_result(facts: Vec<(u64, ExprFact)>) -> AnalysisResult {
         AnalysisResult {
@@ -245,9 +254,27 @@ mod tests {
     #[test]
     fn test_detect_purity() {
         let result = make_result(vec![
-            (1, ExprFact { is_pure: Some(true), ..Default::default() }),
-            (2, ExprFact { is_pure: Some(false), ..Default::default() }),
-            (3, ExprFact { is_pure: None, ..Default::default() }),
+            (
+                1,
+                ExprFact {
+                    is_pure: Some(true),
+                    ..Default::default()
+                },
+            ),
+            (
+                2,
+                ExprFact {
+                    is_pure: Some(false),
+                    ..Default::default()
+                },
+            ),
+            (
+                3,
+                ExprFact {
+                    is_pure: None,
+                    ..Default::default()
+                },
+            ),
         ]);
         let pure = detect_purity(&result);
         assert!(pure.contains(&1));
@@ -304,7 +331,10 @@ mod tests {
         assert!(derived.pure_expressions.contains(&42));
         assert!(derived.memo_candidates.contains(&42));
         assert!(derived.parallel_candidates.contains(&42));
-        assert_eq!(derived.type_specializations.get(&42), Some(&AbstractType::Long));
+        assert_eq!(
+            derived.type_specializations.get(&42),
+            Some(&AbstractType::Long)
+        );
     }
 
     #[test]

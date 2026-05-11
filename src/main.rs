@@ -11,9 +11,12 @@ use rustyline::highlight::Highlighter;
 use rustyline::history::DefaultHistory;
 use rustyline::Editor;
 
-use mettatron::backend::*;
-use mettatron::backend::models::ValueView;
+use mettatron::backend::eval::tier_forced::{
+    eval_with_tier, FallbackPolicy, TierEvalOutcome, TierSelection,
+};
 use mettatron::backend::models::metta_value::float_canonical;
+use mettatron::backend::models::ValueView;
+use mettatron::backend::*;
 use mettatron::repl::{MettaHelper, QueryHighlighter};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,10 +37,17 @@ fn print_usage() {
     eprintln!("    --strict-mode           Disable transitive imports (explicit deps only)");
     eprintln!("    --no-gc                 Disable garbage collection");
     #[cfg(feature = "track-stats")]
-    eprintln!("    --gc-stats              Print GC statistics to stderr on exit
+    eprintln!(
+        "    --gc-stats              Print GC statistics to stderr on exit
     --tier-stats            Print tiered compilation stats to stderr on exit
-    --pool-stats            Print thread pool statistics to stderr on exit");
+    --pool-stats            Print thread pool statistics to stderr on exit"
+    );
     eprintln!("    --startup-timing        Print per-phase startup timing to stderr");
+    eprintln!(
+        "    --tier <T>              Force evaluation tier (T = 0|1|2|3|treewalker|bytecode|jit1|jit2|auto)
+    --on-tier-unavailable <P>  Policy when tier is not applicable: silent-demote|strict (default: silent-demote)
+    --cross-tier-check         Run input on all applicable tiers and diff results"
+    );
     #[cfg(feature = "trace")]
     eprintln!("    --trace <FILE>          Write binary evaluation trace to FILE");
     eprintln!();
@@ -71,6 +81,12 @@ struct Options {
     startup_timing: bool,
     #[cfg(feature = "trace")]
     trace_output: Option<String>,
+    /// Forced evaluation tier (default: Auto = current dispatch behavior).
+    tier: TierSelection,
+    /// Policy when the requested tier is not applicable for an input.
+    on_tier_unavailable: FallbackPolicy,
+    /// Run input on all applicable tiers and diff results.
+    cross_tier_check: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -91,6 +107,9 @@ fn parse_args() -> Result<Options, String> {
     let mut startup_timing = false;
     #[cfg(feature = "trace")]
     let mut trace_output: Option<String> = None;
+    let mut tier = TierSelection::Auto;
+    let mut on_tier_unavailable = FallbackPolicy::SilentDemote;
+    let mut cross_tier_check = false;
     let mut i = 1;
 
     while i < args.len() {
@@ -140,6 +159,32 @@ fn parse_args() -> Result<Options, String> {
             "--startup-timing" => {
                 startup_timing = true;
             }
+            "--tier" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("Missing tier specifier after --tier".to_string());
+                }
+                tier = TierSelection::from_cli(&args[i])?;
+            }
+            "--on-tier-unavailable" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("Missing policy after --on-tier-unavailable".to_string());
+                }
+                on_tier_unavailable = match args[i].as_str() {
+                    "silent-demote" | "demote" | "fallback" => FallbackPolicy::SilentDemote,
+                    "strict" | "error" | "strict-no-fallback" => FallbackPolicy::StrictNoFallback,
+                    other => {
+                        return Err(format!(
+                            "unknown --on-tier-unavailable policy '{}'; expected: silent-demote|strict",
+                            other
+                        ));
+                    }
+                };
+            }
+            "--cross-tier-check" => {
+                cross_tier_check = true;
+            }
             #[cfg(feature = "trace")]
             "--trace" => {
                 i += 1;
@@ -177,6 +222,9 @@ fn parse_args() -> Result<Options, String> {
         startup_timing,
         #[cfg(feature = "trace")]
         trace_output,
+        tier,
+        on_tier_unavailable,
+        cross_tier_check,
     })
 }
 
@@ -217,7 +265,13 @@ fn write_output(output: Option<&str>, content: &str) -> Result<(), String> {
 /// Format an MettaValue result for display.
 fn format_result(value: &MettaValue) -> String {
     match value.view() {
-        ValueView::Bool(b) => if b { "True".to_string() } else { "False".to_string() },
+        ValueView::Bool(b) => {
+            if b {
+                "True".to_string()
+            } else {
+                "False".to_string()
+            }
+        }
         ValueView::Long(n) => n.to_string(),
         ValueView::Float(f) => float_canonical(f),
         ValueView::Unit => "()".to_string(),
@@ -249,6 +303,138 @@ fn format_results(results: &[MettaValue]) -> String {
     }
     let formatted: Vec<String> = results.iter().map(format_result).collect();
     format!("[{}]", formatted.join(", "))
+}
+
+/// Convert a `TierEvalOutcome` into the `(results, env)` tuple produced by
+/// the auto-dispatch `eval()`. Exits with code 4 if the requested tier was
+/// not applicable and the user requested strict mode (`--on-tier-unavailable strict`).
+fn outcome_to_results(
+    outcome: TierEvalOutcome,
+    requested: TierSelection,
+) -> (
+    smallvec::SmallVec<[MettaValue; 2]>,
+    mettatron::backend::eval::MettaEnvironment,
+) {
+    match outcome {
+        TierEvalOutcome::Ok { results, env, .. } => (results.into_iter().collect(), env),
+        TierEvalOutcome::Demoted { results, env, .. } => (results.into_iter().collect(), env),
+        TierEvalOutcome::NotApplicable { reason } => {
+            eprintln!(
+                "Error: tier {} is not applicable for this input: {:?}",
+                requested.label(),
+                reason
+            );
+            process::exit(4);
+        }
+    }
+}
+
+/// Canonicalize a result list for cross-tier comparison.
+///
+/// Per spec §20.1.2 reduction-set semantics, observation comparison is
+/// **multiset** — sort lexicographically before diffing so iteration-order
+/// differences between tiers don't surface as false positives. Floats use
+/// `float_canonical` for bit-equal comparison (per spec §14.2.2 / H4).
+fn canonicalize_results(results: &[MettaValue]) -> Vec<String> {
+    let mut s: Vec<String> = results
+        .iter()
+        .filter(|v| !v.is_empty())
+        .map(format_result)
+        .collect();
+    s.sort();
+    s
+}
+
+/// Run a single expression through every applicable evaluation tier and
+/// report divergences. Returns `(formatted_output, mismatch_detected)`.
+///
+/// For each expression:
+///   1. Evaluate on T0 (always applicable) — produces the canonical
+///      observation.
+///   2. For each of T1 / T2 / T3, if `tier_applicable` returns Ok, evaluate
+///      and compare the canonicalized multiset against T0's.
+///   3. Print per-tier PASS / MISMATCH and (on mismatch) the diff.
+///
+/// Returns `true` (in the second tuple field) if any cross-tier mismatch
+/// was observed. Caller exits with code 3 when this is true.
+fn run_cross_tier_check(
+    expr: MettaValue,
+    env: mettatron::backend::eval::MettaEnvironment,
+    state: &mettatron::backend::models::MettaState,
+) -> (
+    smallvec::SmallVec<[MettaValue; 2]>,
+    mettatron::backend::eval::MettaEnvironment,
+    bool,
+) {
+    use mettatron::backend::eval::tier_forced::{tier_applicable, FallbackPolicy};
+
+    // 1. T0 — canonical observation.
+    let t0_outcome = eval_with_tier(
+        expr,
+        env.clone(),
+        state,
+        TierSelection::Treewalker,
+        FallbackPolicy::SilentDemote,
+    );
+    let (t0_results, t0_env) = match t0_outcome {
+        TierEvalOutcome::Ok { results, env, .. } | TierEvalOutcome::Demoted { results, env, .. } => {
+            (results, env)
+        }
+        TierEvalOutcome::NotApplicable { reason } => {
+            eprintln!("Internal error: T0 should always be applicable; got {:?}", reason);
+            process::exit(5);
+        }
+    };
+    let t0_canonical = canonicalize_results(&t0_results);
+
+    // 2. Higher tiers — only compare when applicable.
+    let mut mismatch = false;
+    for tier in [
+        TierSelection::Bytecode,
+        TierSelection::JitStage1,
+        TierSelection::JitStage2,
+    ] {
+        match tier_applicable(&expr, &env, tier) {
+            Ok(()) => {
+                let outcome = eval_with_tier(
+                    expr,
+                    env.clone(),
+                    state,
+                    tier,
+                    FallbackPolicy::SilentDemote,
+                );
+                match outcome {
+                    TierEvalOutcome::Ok { results, .. }
+                    | TierEvalOutcome::Demoted { results, .. } => {
+                        let tier_canonical = canonicalize_results(&results);
+                        if tier_canonical != t0_canonical {
+                            mismatch = true;
+                            eprintln!(
+                                "[cross-tier] MISMATCH on {}:\n  T0:        {:?}\n  {}: {:?}",
+                                tier.label(),
+                                t0_canonical,
+                                tier.label(),
+                                tier_canonical
+                            );
+                        }
+                    }
+                    TierEvalOutcome::NotApplicable { reason } => {
+                        eprintln!(
+                            "[cross-tier] {} skipped: {:?}",
+                            tier.label(),
+                            reason
+                        );
+                    }
+                }
+            }
+            Err(reason) => {
+                // Tier carves itself out — not a divergence.
+                eprintln!("[cross-tier] {} not applicable: {:?}", tier.label(), reason);
+            }
+        }
+    }
+
+    (t0_results.into_iter().collect(), t0_env, mismatch)
 }
 
 /// Collects per-phase wall-clock timings during startup.
@@ -291,13 +477,20 @@ impl StartupTimings {
         }
         eprintln!("{}", "\u{2500}".repeat(50));
         if let Some(&(_, total)) = self.phases.last() {
-            eprintln!("Total wall time:         {:>10.3} ms", total.as_secs_f64() * 1000.0);
+            eprintln!(
+                "Total wall time:         {:>10.3} ms",
+                total.as_secs_f64() * 1000.0
+            );
         }
         eprintln!();
     }
 }
 
-fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> Result<String, String> {
+fn eval_metta(
+    input: &str,
+    options: &Options,
+    timings: &mut StartupTimings,
+) -> Result<String, String> {
     if options.show_sexpr {
         // Parse with Tree-Sitter and show S-expressions
         let mut parser = mettatron::TreeSitterMettaParser::new()
@@ -341,8 +534,7 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
     }
 
     // Compile to MettaState (acquires storage arena from pool)
-    let state = compile_with_path(input, file_path)
-        .map_err(|e| e.to_string())?;
+    let state = compile_with_path(input, file_path).map_err(|e| e.to_string())?;
     timings.mark("compile");
 
     // Create trace collector if --trace was specified (trace feature only).
@@ -368,6 +560,10 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
     // a background thread when the guard drops (after results are formatted).
     let mut output = String::new();
     let mut first_eval_marked = false;
+    // BUG-T0-009 / cross-tier-check: tracks whether any per-expression
+    // cross-tier divergence was detected. The caller exits with code 3 if
+    // so. Initialized to false; only `run_cross_tier_check` may set it.
+    let mut cross_tier_mismatch_detected = false;
     for expr in source_exprs {
         // Only output results for S-expressions, not atoms or ground types
         let should_output = expr.is_sexpr();
@@ -379,16 +575,50 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
         let gc_hold = GcHoldGuard::enter();
 
         // Use trace-aware eval when a trace collector is active.
+        // Tier-forced execution goes through eval_with_tier; Auto delegates to eval().
+        // --cross-tier-check runs through all applicable tiers and reports divergences.
         #[cfg(feature = "trace")]
         let (results, new_env) = {
             if let Some(ref collector) = trace_collector {
                 mettatron::eval_with_trace(expr, env, &state, collector)
-            } else {
+            } else if options.cross_tier_check {
+                let (results, env, mismatch) = run_cross_tier_check(expr, env, &state);
+                if mismatch {
+                    cross_tier_mismatch_detected = true;
+                }
+                (results, env)
+            } else if matches!(options.tier, TierSelection::Auto) {
                 eval(expr, env, &state)
+            } else {
+                let outcome = eval_with_tier(
+                    expr,
+                    env,
+                    &state,
+                    options.tier,
+                    options.on_tier_unavailable,
+                );
+                outcome_to_results(outcome, options.tier)
             }
         };
         #[cfg(not(feature = "trace"))]
-        let (results, new_env) = eval(expr, env, &state);
+        let (results, new_env) = if options.cross_tier_check {
+            let (results, env, mismatch) = run_cross_tier_check(expr, env, &state);
+            if mismatch {
+                cross_tier_mismatch_detected = true;
+            }
+            (results, env)
+        } else if matches!(options.tier, TierSelection::Auto) {
+            eval(expr, env, &state)
+        } else {
+            let outcome = eval_with_tier(
+                expr,
+                env,
+                &state,
+                options.tier,
+                options.on_tier_unavailable,
+            );
+            outcome_to_results(outcome, options.tier)
+        };
 
         env = new_env;
 
@@ -398,10 +628,8 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
         }
 
         // Format results WHILE guard is alive — values are not yet released.
-        let filtered_results: Vec<MettaValue> = results
-            .into_iter()
-            .filter(|v| !v.is_empty())
-            .collect();
+        let filtered_results: Vec<MettaValue> =
+            results.into_iter().filter(|v| !v.is_empty()).collect();
 
         // Root results against GC between eval() and format_results().
         //
@@ -443,6 +671,17 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
     }
     timings.mark("all_evals");
 
+    // --cross-tier-check: exit with code 3 on any cross-tier divergence.
+    // Print output first (so the user sees BOTH the program's normal output
+    // and the divergence diagnostics on stderr).
+    if cross_tier_mismatch_detected {
+        if !output.is_empty() {
+            print!("{}", output);
+        }
+        eprintln!("[cross-tier] FAIL: one or more expressions diverged across tiers");
+        process::exit(3);
+    }
+
     // ── I-16: AAM static analysis pipeline (opt-in) ──
     // Run after all rules are loaded and top-level expressions evaluated.
     // Enabled via METTATRON_AAM_ANALYSIS=1 environment variable.
@@ -454,38 +693,57 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
 
         let analysis_config = mettatron::backend::analysis::AnalysisConfig::default();
         let analysis_result = mettatron::backend::analysis::fixpoint::run_analysis(
-            &source_exprs_snapshot, &env, &analysis_config,
+            &source_exprs_snapshot,
+            &env,
+            &analysis_config,
         );
         let derived = mettatron::backend::analysis::derived::derive_analysis(&analysis_result);
 
         // Report analysis results to stderr
-        eprintln!("[analysis] AAM converged in {} iterations ({} ms)",
-            analysis_result.iterations, analysis_result.analysis_time_ms);
-        eprintln!("[analysis] Dead rules: {}, Deterministic dispatches: {}, Pure exprs: {}",
-            derived.dead_rules.len(), derived.deterministic_dispatch.len(), derived.pure_expressions.len());
+        eprintln!(
+            "[analysis] AAM converged in {} iterations ({} ms)",
+            analysis_result.iterations, analysis_result.analysis_time_ms
+        );
+        eprintln!(
+            "[analysis] Dead rules: {}, Deterministic dispatches: {}, Pure exprs: {}",
+            derived.dead_rules.len(),
+            derived.deterministic_dispatch.len(),
+            derived.pure_expressions.len()
+        );
 
         // I-16: Run post-pass analyses
         let env_snapshot = mettatron::backend::analysis::fixpoint::snapshot_environment(&env);
 
         let pushdown_config = mettatron::backend::analysis::pushdown::PushdownConfig::default();
         let pushdown_result = mettatron::backend::analysis::pushdown::run_pushdown_analysis(
-            &source_exprs_snapshot, &env_snapshot, &pushdown_config,
+            &source_exprs_snapshot,
+            &env_snapshot,
+            &pushdown_config,
         );
-        eprintln!("[analysis] Pushdown: {} states, {} recursive exprs, converged={}",
-            pushdown_result.states.len(), pushdown_result.recursive_exprs.len(), pushdown_result.converged);
+        eprintln!(
+            "[analysis] Pushdown: {} states, {} recursive exprs, converged={}",
+            pushdown_result.states.len(),
+            pushdown_result.recursive_exprs.len(),
+            pushdown_result.converged
+        );
 
         let module_reach = mettatron::backend::analysis::module_dce::ModuleReachability::compute(
             std::collections::HashMap::new(), // Module→rule mapping not yet wired
             &derived.dead_rules,
         );
-        eprintln!("[analysis] Module reachability: {} live, {} dead",
-            module_reach.live_modules.len(), module_reach.dead_modules.len());
-
-        let race_result = mettatron::backend::analysis::race_detection::detect_races(
-            &analysis_result, &derived,
+        eprintln!(
+            "[analysis] Module reachability: {} live, {} dead",
+            module_reach.live_modules.len(),
+            module_reach.dead_modules.len()
         );
-        eprintln!("[analysis] Race detection: {} potential races, {} safe parallel exprs",
-            race_result.potential_races.len(), race_result.safe_parallel.len());
+
+        let race_result =
+            mettatron::backend::analysis::race_detection::detect_races(&analysis_result, &derived);
+        eprintln!(
+            "[analysis] Race detection: {} potential races, {} safe parallel exprs",
+            race_result.potential_races.len(),
+            race_result.safe_parallel.len()
+        );
 
         // I-12: Install rule filter from analysis for subsequent evaluations.
         // The CompressedRuleFilter is used by match_rules_native to skip dead rules.
@@ -497,15 +755,18 @@ fn eval_metta(input: &str, options: &Options, timings: &mut StartupTimings) -> R
         // Build and install the WFST/WPDS scheduler automaton from analysis results.
         // This provides automata-based scheduling with expression-aware priority,
         // context-dependent weight refinement, and wavefront parallelism.
-        let scheduler_automaton = mettatron::backend::scheduler::aam_builder::build_scheduler_automaton(
-            &derived,
-            Some(mettatron::backend::models::work_pool::global_eval_pool().runtime_tracker()),
-        );
+        let scheduler_automaton =
+            mettatron::backend::scheduler::aam_builder::build_scheduler_automaton(
+                &derived,
+                Some(mettatron::backend::models::work_pool::global_eval_pool().runtime_tracker()),
+            );
         let scheduler_hints_count = derived.scheduler_hints.len();
         match mettatron::backend::scheduler::install_scheduler(scheduler_automaton) {
             Ok(()) => {
-                eprintln!("[analysis] WFST scheduler automaton installed ({} expression hints)",
-                    scheduler_hints_count);
+                eprintln!(
+                    "[analysis] WFST scheduler automaton installed ({} expression hints)",
+                    scheduler_hints_count
+                );
             }
             Err(_) => {
                 eprintln!("[analysis] WFST scheduler automaton already installed (using existing)");
@@ -563,9 +824,7 @@ fn highlight_output(text: &str, highlighter: Option<&QueryHighlighter>) -> Strin
         return text.to_string();
     }
     match highlighter {
-        Some(h) => {
-            h.highlight(text, text.len()).to_string()
-        }
+        Some(h) => h.highlight(text, text.len()).to_string(),
         None => text.to_string(),
     }
 }
@@ -633,10 +892,8 @@ fn run_repl(options: &Options) {
                             env = updated_env;
 
                             // Format results WHILE guard is alive — values not yet released.
-                            let filtered_results: Vec<MettaValue> = results
-                                .into_iter()
-                                .filter(|v| !v.is_empty())
-                                .collect();
+                            let filtered_results: Vec<MettaValue> =
+                                results.into_iter().filter(|v| !v.is_empty()).collect();
 
                             // Root results against GC between eval() and formatting.
                             // See the comment in eval_metta() for the full race description:
@@ -714,6 +971,7 @@ fn main() {
     // Also auto-installed by global_allocator(), but explicit call ensures
     // coverage even if main() fails before first allocation.
     mettatron::backend::diagnostics::install_signal_handlers();
+    mettatron::backend::interrupt::install_signal_handler();
     timings.mark("signal_handlers");
 
     // Eagerly initialize thread pools — workers spawn asynchronously in background.
@@ -776,6 +1034,7 @@ fn main() {
     };
     timings.mark("file_read");
 
+    mettatron::backend::interrupt::reset();
     let output = match eval_metta(&input_content, &options, &mut timings) {
         Ok(output) => output,
         Err(e) => {
@@ -783,6 +1042,10 @@ fn main() {
             process::exit(1);
         }
     };
+
+    if mettatron::backend::interrupt::is_interrupted() {
+        process::exit(130);
+    }
 
     if let Err(e) = write_output(options.output.as_deref(), &output) {
         eprintln!("Error: {}", e);

@@ -20,7 +20,7 @@ use smallvec::SmallVec;
 
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{
-    GenericBindings, GcFactory, MettaValue, MettaValueFactory, MettaValueTrait,
+    GcFactory, GenericBindings, MettaValue, MettaValueFactory, MettaValueTrait,
 };
 
 use super::dispatch_hints::{match_result_get, match_result_put};
@@ -28,7 +28,7 @@ use super::dispatch_hints::{match_result_get, match_result_put};
 /// Concrete type aliases.
 pub type Environment = GenericEnvironment<MettaValue, GcFactory>;
 pub type Bindings = GenericBindings<MettaValue>;
-pub use super::types::{WorkItem, Continuation, EvalResult};
+pub use super::types::{Continuation, EvalResult, WorkItem};
 
 // ============================================================================
 // Binding Application (Copy-optimized)
@@ -89,7 +89,11 @@ pub fn apply_bindings(value: &MettaValue, bindings: &Bindings, factory: &GcFacto
 /// value's children. If every child is unchanged, the original value is
 /// reused verbatim — no allocation, matching the previous recursive
 /// implementation's hot path.
-fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
+fn apply_bindings_inner(
+    value: &MettaValue,
+    bindings: &Bindings,
+    factory: &GcFactory,
+) -> MettaValue {
     use crate::ir::Span;
 
     /// Work-stack item describing a pending operation.
@@ -102,7 +106,10 @@ fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFac
         /// After processing `count` goals, build a new Conjunction.
         BuildConjunction { count: usize, original: MettaValue },
         /// After processing 1 details value, build a new Error.
-        BuildError { msg: &'static str, original: MettaValue },
+        BuildError {
+            msg: &'static str,
+            original: MettaValue,
+        },
         /// After processing 1 inner value, re-wrap with the saved Span.
         BuildSpanned { span: Span, original: MettaValue },
     }
@@ -121,7 +128,10 @@ fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFac
                 if v.span().is_some() {
                     let (inner, span_opt) = v.peel_span();
                     if let Some(span) = span_opt {
-                        work_stack.push(Work::BuildSpanned { span: *span, original: v });
+                        work_stack.push(Work::BuildSpanned {
+                            span: *span,
+                            original: v,
+                        });
                         work_stack.push(Work::Process(inner));
                         continue;
                     }
@@ -214,10 +224,11 @@ fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFac
                 // Identity-equality lazy-allocation check: if every new child
                 // is the same MettaValue as the corresponding original child,
                 // reuse the original verbatim (no allocation).
-                let items = original.as_sexpr().expect("BuildSExpr original must be sexpr");
+                let items = original
+                    .as_sexpr()
+                    .expect("BuildSExpr original must be sexpr");
                 debug_assert_eq!(items.len(), count);
-                let changed = (0..count)
-                    .any(|i| !result_stack[start + i].identity_eq(&items[i]));
+                let changed = (0..count).any(|i| !result_stack[start + i].identity_eq(&items[i]));
                 if !changed {
                     result_stack.truncate(start);
                     result_stack.push(original);
@@ -233,8 +244,7 @@ fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFac
                     .as_conjunction()
                     .expect("BuildConjunction original must be conjunction");
                 debug_assert_eq!(goals.len(), count);
-                let changed = (0..count)
-                    .any(|i| !result_stack[start + i].identity_eq(&goals[i]));
+                let changed = (0..count).any(|i| !result_stack[start + i].identity_eq(&goals[i]));
                 if !changed {
                     result_stack.truncate(start);
                     result_stack.push(original);
@@ -246,8 +256,9 @@ fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFac
             }
             Work::BuildError { msg, original } => {
                 let new_details = result_stack.pop().expect("BuildError needs details");
-                let (_orig_msg, orig_details) =
-                    original.as_error().expect("BuildError original must be error");
+                let (_orig_msg, orig_details) = original
+                    .as_error()
+                    .expect("BuildError original must be error");
                 if new_details.identity_eq(&orig_details) {
                     result_stack.push(original);
                 } else {
@@ -270,7 +281,11 @@ fn apply_bindings_inner(value: &MettaValue, bindings: &Bindings, factory: &GcFac
         }
     }
 
-    debug_assert_eq!(result_stack.len(), 1, "result stack should have exactly 1 value");
+    debug_assert_eq!(
+        result_stack.len(),
+        1,
+        "result stack should have exactly 1 value"
+    );
     result_stack
         .pop()
         .expect("apply_bindings_inner: result stack empty")
@@ -416,36 +431,20 @@ pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Binding
 
     // Handle ground types - must match exactly (use direct equality, not epsilon)
     if let (Some(p), Some(v)) = (pattern.as_bool(), value.as_bool()) {
-        return if p == v {
-            Some(Bindings::new())
-        } else {
-            None
-        };
+        return if p == v { Some(Bindings::new()) } else { None };
     }
 
     if let (Some(p), Some(v)) = (pattern.as_long(), value.as_long()) {
-        return if p == v {
-            Some(Bindings::new())
-        } else {
-            None
-        };
+        return if p == v { Some(Bindings::new()) } else { None };
     }
 
     // Float comparison uses direct equality (matching heap behavior)
     if let (Some(p), Some(v)) = (pattern.as_float(), value.as_float()) {
-        return if p == v {
-            Some(Bindings::new())
-        } else {
-            None
-        };
+        return if p == v { Some(Bindings::new()) } else { None };
     }
 
     if let (Some(p), Some(v)) = (pattern.as_string(), value.as_string()) {
-        return if p == v {
-            Some(Bindings::new())
-        } else {
-            None
-        };
+        return if p == v { Some(Bindings::new()) } else { None };
     }
 
     // Unit pattern matches Unit and empty S-expr
@@ -526,7 +525,11 @@ pub fn try_match_all_rules_with_outer(
     // Phase E: For single-candidate all-structural operators, skip hash computation
     // and match_result_cache entirely. The cache rarely hits for these (different args
     // each call), so the hash overhead (~700ns) exceeds any cache benefit.
-    if let Some(head) = expr.as_sexpr().and_then(|items| items.first()).and_then(|h| h.as_atom()) {
+    if let Some(head) = expr
+        .as_sexpr()
+        .and_then(|items| items.first())
+        .and_then(|h| h.as_atom())
+    {
         if let Some(cache_entry) = operator_cache_get(head, expr_arity) {
             if cache_entry.all_structural && cache_entry.candidate_count == 1 {
                 // Fast path: skip hash, skip match_result_cache, go straight to structural match.
@@ -539,7 +542,11 @@ pub fn try_match_all_rules_with_outer(
                 // pass be a no-op — preserving the per-match freshened
                 // names (essential for branch isolation) without double-
                 // substituting against original-keyed bindings.
-                let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v, outer_carrying);
+                let results = env.match_rules_native(
+                    expr,
+                    |v: &MettaValue, _: &Bindings, _: &GcFactory| *v,
+                    outer_carrying,
+                );
                 return results
                     .into_iter()
                     .map(|r| (r.instantiated_rhs, Bindings::new(), r.rhs_type))
@@ -562,7 +569,11 @@ pub fn try_match_all_rules_with_outer(
 
     // Use native byte-level matching via RuleIndex + extract_data.
     // match_rules_native also populates the operator cache for Phase E.
-    let results = env.match_rules_native(expr, |v: &MettaValue, _: &Bindings, _: &GcFactory| *v, outer_carrying);
+    let results = env.match_rules_native(
+        expr,
+        |v: &MettaValue, _: &Bindings, _: &GcFactory| *v,
+        outer_carrying,
+    );
     let result_vec: Vec<(MettaValue, Bindings, Option<MettaValue>)> = results
         .into_iter()
         .map(|r| (r.instantiated_rhs, Bindings::new(), r.rhs_type))
@@ -578,7 +589,35 @@ pub fn try_match_all_rules_with_outer(
     result_vec
 }
 
+/// Detailed result from bidirectional rule unification.
+#[derive(Debug, Clone)]
+pub struct UnificationRuleMatch {
+    /// RHS with match bindings already applied.
+    pub instantiated_rhs: MettaValue,
+    /// Caller-visible bindings that may escape as branch provenance.
+    pub exported_bindings: Bindings,
+    /// Rule-local bindings keyed by original rule variable names for compiled RHS frames.
+    pub original_bindings: Bindings,
+    /// Per-dispatch scope used while instantiating this RHS.
+    pub rule_scope: crate::backend::models::generic_bindings::ScopeId,
+    /// Cached RHS type from the matching rule entry.
+    pub rhs_type: Option<MettaValue>,
+}
+
 /// Enumerate rule matches via bidirectional unification.
+pub fn enumerate_rules_via_unification(
+    query: &MettaValue,
+    env: &Environment,
+    factory: &GcFactory,
+) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
+    enumerate_rules_via_unification_detailed(query, env, factory)
+        .into_iter()
+        .map(|m| (m.instantiated_rhs, m.exported_bindings, m.rhs_type))
+        .collect()
+}
+
+/// Enumerate rule matches via bidirectional unification, preserving VM/JIT
+/// frame bindings separately from caller-visible branch bindings.
 ///
 /// This is the HE-conformant fallback used when `try_match_all_rules` returns
 /// no matches AND the query expression contains free variables. It iterates
@@ -594,20 +633,22 @@ pub fn try_match_all_rules_with_outer(
 /// the query variable `$b` should bind to `b` and the rule's RHS should be
 /// produced as a result. This function provides exactly that semantic.
 ///
-/// The returned bindings include both rule LHS variables AND query
-/// variables. The caller's eval pipeline applies the bindings to the
-/// instantiated RHS in the same way as `try_match_all_rules` results.
+/// The returned `exported_bindings` include only caller/query variables.
+/// Internal rule-frame bindings are retained separately in `original_bindings`
+/// for compiled RHS execution.
 ///
 /// Returns an empty vec when no rules match, never `None`. Caller decides
 /// whether the result is meaningful (empty → fall through to data
 /// constructor / tuple path).
-pub fn enumerate_rules_via_unification(
+pub fn enumerate_rules_via_unification_detailed(
     query: &MettaValue,
     env: &Environment,
     factory: &GcFactory,
-) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
+) -> Vec<UnificationRuleMatch> {
     use crate::backend::environment::rule_management::get_first_arg_head;
-    use crate::backend::eval::bindings::bidirectional_unify_generic;
+    use crate::backend::eval::bindings::{
+        bidirectional_unify_generic, export_query_bindings_generic,
+    };
     use crate::backend::eval::cesk::continuation_compression::is_rule_live;
 
     let head = match query.get_head_symbol() {
@@ -620,8 +661,7 @@ pub fn enumerate_rules_via_unification(
     let rule_index = env.shared.rule_index.read();
     let candidates = rule_index.get_candidates_filtered(head, arity, first_arg_head, query);
 
-    let mut out: Vec<(MettaValue, Bindings, Option<MettaValue>)> =
-        Vec::with_capacity(candidates.len());
+    let mut out: Vec<UnificationRuleMatch> = Vec::with_capacity(candidates.len());
 
     for entry in candidates.iter() {
         if !is_rule_live(entry.global_rule_index) {
@@ -636,9 +676,7 @@ pub fn enumerate_rules_via_unification(
         // per epoch, so we can identify rule-side keys on the resulting
         // bindings by prefix-match and retag them to `dispatch_scope`.
         // Query-side keys (no prefix) stay at ROOT_SCOPE.
-        use crate::backend::eval::freshening::{
-            allocate_epoch, freshen_variables_with_epoch,
-        };
+        use crate::backend::eval::freshening::{allocate_epoch, freshen_variables_with_epoch};
         use crate::backend::models::generic_bindings::{allocate_scope_id, ROOT_SCOPE};
         let epoch = allocate_epoch();
         let lhs_freshened = freshen_variables_with_epoch(&entry.lhs, epoch, factory);
@@ -672,8 +710,7 @@ pub fn enumerate_rules_via_unification(
             // concrete `(Cons head tail)` cell.
             use crate::backend::eval::bindings::value_contains_var_with_prefix;
             let has_partial_binding = bindings.iter_full().any(|(_, name, val)| {
-                !name.starts_with(&prefix)
-                    && value_contains_var_with_prefix(val, &prefix)
+                !name.starts_with(&prefix) && value_contains_var_with_prefix(val, &prefix)
             });
             if has_partial_binding {
                 continue;
@@ -689,9 +726,27 @@ pub fn enumerate_rules_via_unification(
                 scoped_bindings.insert_scoped(target, name, val.clone());
             }
 
+            let mut original_bindings = Bindings::new();
+            for (s, name, val) in scoped_bindings.iter_full() {
+                if let Some(bare) = name.strip_prefix(&prefix) {
+                    original_bindings.insert_or_replace(format!("${bare}"), val.clone());
+                } else if s == ROOT_SCOPE {
+                    original_bindings.insert_or_replace(name, val.clone());
+                }
+            }
+
+            let Some(exported_bindings) = export_query_bindings_generic(
+                &scoped_bindings,
+                query,
+                &prefix,
+                &[dispatch_scope, ROOT_SCOPE],
+                factory,
+            ) else {
+                continue;
+            };
+
             let instantiated = if entry.rhs_has_variables {
-                let rhs_freshened =
-                    freshen_variables_with_epoch(&entry.rhs, epoch, factory);
+                let rhs_freshened = freshen_variables_with_epoch(&entry.rhs, epoch, factory);
                 // Phase 1: outer_carrying empty here — `enumerate_rules_via_unification`
                 // takes no outer-bindings parameter. Caller-side variable
                 // resolution flows in via `scoped_bindings` (ROOT_SCOPE
@@ -708,7 +763,13 @@ pub fn enumerate_rules_via_unification(
             } else {
                 entry.rhs.clone()
             };
-            out.push((instantiated, scoped_bindings, entry.rhs_type.clone()));
+            out.push(UnificationRuleMatch {
+                instantiated_rhs: instantiated,
+                exported_bindings,
+                original_bindings,
+                rule_scope: dispatch_scope,
+                rhs_type: entry.rhs_type.clone(),
+            });
         }
     }
 
@@ -794,7 +855,9 @@ pub fn try_match_rules_with_bindings(
                     || var_name.starts_with('\'')
                 {
                     // Variable — resolve through bindings and extract head
-                    outer_bindings.get(var_name).and_then(|v| get_first_arg_head(v))
+                    outer_bindings
+                        .get(var_name)
+                        .and_then(|v| get_first_arg_head(v))
                 } else {
                     // Concrete atom used as first arg — its "head" for index purposes
                     // is itself (if it's an S-expr) or None (if it's a plain atom arg)
@@ -814,8 +877,9 @@ pub fn try_match_rules_with_bindings(
     // get_candidates_filtered applies disc tree to group entries only,
     // always including wildcard rules (which are not in any group's disc tree).
     let rule_index = env.shared.rule_index.read();
-    let candidates: SmallVec<[&crate::backend::environment::rule_management::RuleEntry<MettaValue>; 16]> =
-        rule_index.get_candidates_filtered(resolved_head, arity, first_arg_head, template);
+    let candidates: SmallVec<
+        [&crate::backend::environment::rule_management::RuleEntry<MettaValue>; 16],
+    > = rule_index.get_candidates_filtered(resolved_head, arity, first_arg_head, template);
 
     if candidates.is_empty() {
         return Some(Vec::new()); // No candidates — self-evaluating
@@ -823,7 +887,10 @@ pub fn try_match_rules_with_bindings(
 
     // ALL candidates must have a compiled matcher (structural or enhanced)
     // for the binding-aware path. If any lacks both, bail to materialization.
-    if !candidates.iter().all(|e| e.structural_matcher.is_some() || e.enhanced_matcher.is_some()) {
+    if !candidates
+        .iter()
+        .all(|e| e.structural_matcher.is_some() || e.enhanced_matcher.is_some())
+    {
         return None;
     }
 
@@ -837,8 +904,7 @@ pub fn try_match_rules_with_bindings(
     // `RuleMatchAttempt` event so the analyzer can answer "why did rule R
     // not match at this call site?".
     #[cfg(feature = "trace")]
-    let trace_match_attempts =
-        crate::backend::trace::rule_match::should_trace_match(resolved_head);
+    let trace_match_attempts = crate::backend::trace::rule_match::should_trace_match(resolved_head);
 
     for (rule_idx, entry) in candidates.iter().enumerate() {
         let _rule_idx_u32 = rule_idx as u32;
@@ -858,8 +924,11 @@ pub fn try_match_rules_with_bindings(
         if trace_match_attempts {
             let outcome = if let Some(ref b) = match_result {
                 trace_format::RuleMatchOutcome::Success {
-                    bindings: b.iter()
-                        .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                    bindings: b
+                        .iter()
+                        .map(|(k, v)| {
+                            (k.to_string(), crate::backend::trace::trace_value_generic(v))
+                        })
                         .collect(),
                 }
             } else {
@@ -943,14 +1012,13 @@ pub fn try_match_rules_with_bindings(
             // empty inner — no same-key conflict between distinct invocations.
             // Option D: HE-style stored-side rename then scope tag.
             use crate::backend::eval::freshening::{
-                allocate_epoch, freshen_bindings_keys_with_epoch,
-                freshen_variables_with_epoch, intern_fresh_name,
+                allocate_epoch, freshen_bindings_keys_with_epoch, freshen_variables_with_epoch,
+                intern_fresh_name,
             };
-            use crate::backend::models::generic_bindings::{
-                allocate_scope_id, ROOT_SCOPE,
-            };
+            use crate::backend::models::generic_bindings::{allocate_scope_id, ROOT_SCOPE};
             let body_local_epoch = allocate_epoch();
             let dispatch_scope = allocate_scope_id();
+            let prefix = format!("$__fr_{}_", body_local_epoch);
             let match_bindings = freshen_bindings_keys_with_epoch(
                 match_bindings,
                 body_local_epoch,
@@ -967,27 +1035,34 @@ pub fn try_match_rules_with_bindings(
                 ROOT_SCOPE,
                 dispatch_scope,
             );
-            let (out_rhs, out_bindings) = if entry.rhs_has_variables {
-                let rhs_freshened = freshen_variables_with_epoch(
-                    &entry.rhs,
-                    body_local_epoch,
-                    factory,
-                );
+            let Some(out_bindings) = crate::backend::eval::bindings::export_query_bindings_generic(
+                &scoped_bindings,
+                template,
+                &prefix,
+                &[dispatch_scope, ROOT_SCOPE],
+                factory,
+            ) else {
+                continue;
+            };
+            let out_rhs = if entry.rhs_has_variables {
+                let rhs_freshened =
+                    freshen_variables_with_epoch(&entry.rhs, body_local_epoch, factory);
                 // Phase 1 (Bug 1): caller-side variables in captured values
                 // (e.g. `$C`'s value `(uncle $a $b)`) must resolve through
                 // outer_bindings BEFORE the body-local rename freshens them
                 // and produces a wildcard-LHS rule on add-atom.
-                let instantiated_rhs = crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
-                    &rhs_freshened,
-                    &scoped_bindings,
-                    &[dispatch_scope, ROOT_SCOPE],
-                    dispatch_scope,
-                    outer_bindings,
-                    factory,
-                );
-                (instantiated_rhs, Bindings::new())
+                let instantiated_rhs =
+                    crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
+                        &rhs_freshened,
+                        &scoped_bindings,
+                        &[dispatch_scope, ROOT_SCOPE],
+                        dispatch_scope,
+                        outer_bindings,
+                        factory,
+                    );
+                instantiated_rhs
             } else {
-                (entry.rhs, scoped_bindings)
+                entry.rhs
             };
 
             let multiplicity = entry.multiplicity.max(1);
@@ -1008,9 +1083,7 @@ pub fn try_match_rules_with_bindings(
 // Phase F: Tight Deterministic Eval Loop
 // ============================================================================
 
-use super::dispatch_hints::{
-    operator_cache_get, is_normal_form_bounded, is_reducible_head,
-};
+use super::dispatch_hints::{is_normal_form_bounded, is_reducible_head, operator_cache_get};
 
 /// Try to evaluate a deterministic chain of user-defined rule applications
 /// without going through the full trampoline push/pop cycle.
@@ -1040,11 +1113,17 @@ pub fn try_deterministic_chain(
     const MAX_CHAIN_LENGTH: usize = 512;
 
     let items = expr.as_sexpr()?;
-    if items.is_empty() { return None; }
+    if items.is_empty() {
+        return None;
+    }
 
     let head = items[0].as_atom()?;
-    if head.starts_with('$') { return None; } // Variable head
-    if is_reducible_head(head) { return None; } // Special form / grounded op
+    if head.starts_with('$') {
+        return None;
+    } // Variable head
+    if is_reducible_head(head) {
+        return None;
+    } // Special form / grounded op
 
     let arity = items.len() - 1;
     let cache_entry = operator_cache_get(head, arity)?;
@@ -1067,8 +1146,12 @@ pub fn try_deterministic_chain(
             None => return Some(current), // Non-atom head -> done
         };
 
-        if next_head.starts_with('$') { return Some(current); }
-        if is_reducible_head(next_head) { return None; } // Need trampoline for special forms
+        if next_head.starts_with('$') {
+            return Some(current);
+        }
+        if is_reducible_head(next_head) {
+            return None;
+        } // Need trampoline for special forms
 
         let next_arity = next_items.len() - 1;
         let next_cache = match operator_cache_get(next_head, next_arity) {
@@ -1107,7 +1190,9 @@ fn try_deterministic_step(
 
     let entry = candidates.next()?;
     // Verify it's actually a single candidate (no wildcard extras, etc.)
-    if candidates.next().is_some() { return None; }
+    if candidates.next().is_some() {
+        return None;
+    }
 
     let matcher = entry.structural_matcher.as_ref()?;
     let bindings = matcher.try_match(expr)?;
@@ -1142,7 +1227,10 @@ fn try_deterministic_step(
 pub enum DeferredChainResult {
     /// Chain terminated with a deferred (template, bindings) pair.
     /// Push EvalWithBindings to continue evaluation.
-    Deferred { template: MettaValue, bindings: Bindings },
+    Deferred {
+        template: MettaValue,
+        bindings: Bindings,
+    },
     /// Chain terminated with a concrete value needing further evaluation.
     /// Push Eval to continue.
     Concrete(MettaValue),
@@ -1178,7 +1266,9 @@ pub fn try_deferred_deterministic_chain(
 
     // Template must be an S-expr with a resolvable head
     let items = template.as_sexpr()?;
-    if items.is_empty() { return None; }
+    if items.is_empty() {
+        return None;
+    }
 
     // Resolve head through bindings if it's a variable
     let head_item = &items[0];
@@ -1193,8 +1283,12 @@ pub fn try_deferred_deterministic_chain(
     };
 
     // Head must not be a special form or grounded op
-    if head.starts_with('$') { return None; }
-    if is_reducible_head(head) { return None; }
+    if head.starts_with('$') {
+        return None;
+    }
+    if is_reducible_head(head) {
+        return None;
+    }
 
     let arity = items.len() - 1;
     let cache_entry = operator_cache_get(head, arity)?;
@@ -1215,7 +1309,9 @@ pub fn try_deferred_deterministic_chain(
         for _ in 1..MAX_CHAIN_LENGTH {
             // Check if current template is an S-expr with a chainable head
             let next_items = current_template.as_sexpr()?;
-            if next_items.is_empty() { break; }
+            if next_items.is_empty() {
+                break;
+            }
 
             // Resolve head through current bindings
             let next_head_item = &next_items[0];
@@ -1232,8 +1328,12 @@ pub fn try_deferred_deterministic_chain(
                 break;
             };
 
-            if next_head.starts_with('$') { break; }
-            if is_reducible_head(next_head) { break; }
+            if next_head.starts_with('$') {
+                break;
+            }
+            if is_reducible_head(next_head) {
+                break;
+            }
 
             let next_arity = next_items.len() - 1;
             let next_cache = match operator_cache_get(next_head, next_arity) {
@@ -1298,7 +1398,9 @@ fn try_deterministic_match(
     let mut candidates = rule_index.get_candidates(head, arity, first_arg_head);
 
     let entry = candidates.next()?;
-    if candidates.next().is_some() { return None; }
+    if candidates.next().is_some() {
+        return None;
+    }
 
     let matcher = entry.structural_matcher.as_ref()?;
     let bindings = matcher.try_match(expr)?;
@@ -1368,7 +1470,7 @@ pub enum SwitchResult {
 /// detect when SG1/deferred-chain fast paths must be bypassed in favor
 /// of the materialization path (Step 2 pre-evaluation).
 pub fn binding_value_needs_eval(value: &MettaValue) -> bool {
-    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
+    use crate::backend::eval::helpers::{is_eager_special_form, is_grounded_op};
     if let Some(items) = value.as_sexpr() {
         if let Some(first) = items.first() {
             if let Some(head) = first.as_atom() {
@@ -1401,26 +1503,57 @@ pub fn binding_value_needs_eval(value: &MettaValue) -> bool {
 /// Only checks user-defined function templates — special forms (if, let,
 /// chain, case, etc.) evaluate their arguments through their own handlers.
 pub fn template_has_grounded_arg_heads(template: &MettaValue) -> bool {
-    use crate::backend::eval::helpers::{is_grounded_op, is_eager_special_form};
+    use crate::backend::eval::helpers::{is_eager_special_form, is_grounded_op};
 
     if let Some(items) = template.as_sexpr() {
         // Check if the head is a user-defined function (not a special form)
         if let Some(first) = items.first() {
             if let Some(head) = first.as_atom() {
                 // Skip special forms — they handle their own argument evaluation
-                if matches!(head,
-                    "if" | "let" | "let*" | "chain" | "case" | "switch"
-                    | "unify" | "match" | "match-or"
-                    | "superpose" | "collapse" | "collapse-bind" | "ground-with-bindings" | "freeze-tuple"
-                    | "map-atom" | "filter-atom" | "foldl-atom"
-                    | "add-atom" | "remove-atom" | "get-atoms"
-                    | "new-state" | "get-state" | "change-state!"
-                    | "println!" | "trace!" | "nop"
-                    | "quote" | "unquote" | "eval"
-                    | "!" | "sealed" | "atom-subst"
-                    | "new-space" | "bind!" | "import!" | "git-import!" | "include"
-                    | "error" | "is-error" | "catch"
-                    | "=" | ":" | ":<"
+                if matches!(
+                    head,
+                    "if" | "let"
+                        | "let*"
+                        | "chain"
+                        | "case"
+                        | "switch"
+                        | "unify"
+                        | "match"
+                        | "match-or"
+                        | "superpose"
+                        | "collapse"
+                        | "collapse-bind"
+                        | "ground-with-bindings"
+                        | "freeze-tuple"
+                        | "map-atom"
+                        | "filter-atom"
+                        | "foldl-atom"
+                        | "add-atom"
+                        | "remove-atom"
+                        | "get-atoms"
+                        | "new-state"
+                        | "get-state"
+                        | "change-state!"
+                        | "println!"
+                        | "trace!"
+                        | "nop"
+                        | "quote"
+                        | "unquote"
+                        | "eval"
+                        | "!"
+                        | "sealed"
+                        | "atom-subst"
+                        | "new-space"
+                        | "bind!"
+                        | "import!"
+                        | "git-import!"
+                        | "include"
+                        | "error"
+                        | "is-error"
+                        | "catch"
+                        | "="
+                        | ":"
+                        | ":<"
                 ) {
                     return false;
                 }
@@ -1514,7 +1647,11 @@ pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -
 /// `bindings.rs`, which uses an explicit work stack instead of
 /// recursion. Used by environment matching and space operations.
 #[inline]
-pub fn apply_bindings_iterative(template: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
+pub fn apply_bindings_iterative(
+    template: &MettaValue,
+    bindings: &Bindings,
+    factory: &GcFactory,
+) -> MettaValue {
     crate::backend::eval::bindings::apply_bindings_generic(template, bindings, factory)
 }
 

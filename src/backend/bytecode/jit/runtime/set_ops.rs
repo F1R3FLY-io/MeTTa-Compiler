@@ -65,7 +65,7 @@ pub unsafe extern "C" fn jit_runtime_unique_atom(
     let items = match metta_list.view() {
         ValueView::SExpr(items) => items,
         ValueView::Unit => return list, // Unit is already deduplicated
-        _ => return list, // Not a list, return as-is
+        _ => return list,               // Not a list, return as-is
     };
 
     // O(n²) alpha-equivalence dedup (matches MeTTa HE).
@@ -177,11 +177,7 @@ pub unsafe extern "C" fn jit_runtime_struct_unique_atom(
 /// # Safety
 /// - ctx must be a valid pointer to a JitContext
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_msort(
-    _ctx: *mut JitContext,
-    tuple: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_msort(_ctx: *mut JitContext, tuple: u64, _ip: u64) -> u64 {
     let jit_tuple = JitValue::from_raw(tuple);
     let metta_tuple = jit_tuple.to_metta();
 
@@ -190,10 +186,7 @@ pub unsafe extern "C" fn jit_runtime_msort(
         ValueView::Unit => Vec::new(),
         _ => {
             // Non-list, non-Unit input — return an error sentinel.
-            let err = MettaValue::Error(
-                "msort: argument must be an expression",
-                metta_tuple,
-            );
+            let err = MettaValue::Error("msort: argument must be an expression", metta_tuple);
             return metta_to_jit(&err).to_bits();
         }
     };
@@ -205,10 +198,7 @@ pub unsafe extern "C" fn jit_runtime_msort(
         } else if let Some(f) = e.as_float() {
             f
         } else {
-            let err = MettaValue::Error(
-                "msort: all elements must be numeric (Long or Float)",
-                e,
-            );
+            let err = MettaValue::Error("msort: all elements must be numeric (Long or Float)", e);
             return metta_to_jit(&err).to_bits();
         };
         keyed.push((key, e));

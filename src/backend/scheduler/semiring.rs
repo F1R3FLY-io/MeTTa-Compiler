@@ -371,8 +371,7 @@ impl<S1: Semiring + Eq + Hash + fmt::Display, S2: Semiring + Eq + Hash + fmt::Di
     }
 
     fn approx_eq(&self, other: &Self, epsilon: f64) -> bool {
-        self.left.approx_eq(&other.left, epsilon)
-            && self.right.approx_eq(&other.right, epsilon)
+        self.left.approx_eq(&other.left, epsilon) && self.right.approx_eq(&other.right, epsilon)
     }
 }
 
@@ -436,10 +435,8 @@ impl<S1: DetectableZero, S2: DetectableZero> DetectableZero for ProductWeight<S1
 {
 }
 
-impl<S1: IdempotentSemiring, S2: IdempotentSemiring> IdempotentSemiring
-    for ProductWeight<S1, S2>
-where
-    ProductWeight<S1, S2>: Semiring,
+impl<S1: IdempotentSemiring, S2: IdempotentSemiring> IdempotentSemiring for ProductWeight<S1, S2> where
+    ProductWeight<S1, S2>: Semiring
 {
 }
 

@@ -34,7 +34,9 @@ impl std::str::FromStr for Severity {
         match s.to_lowercase().as_str() {
             "info" => Ok(Severity::Info),
             "warning" | "warn" => Ok(Severity::Warning),
-            other => Err(format!("unknown severity: {other:?} (expected \"info\" or \"warning\")")),
+            other => Err(format!(
+                "unknown severity: {other:?} (expected \"info\" or \"warning\")"
+            )),
         }
     }
 }
@@ -50,7 +52,12 @@ pub struct Finding {
 
 impl Finding {
     fn new(severity: Severity, lint_id: &'static str, message: String) -> Self {
-        Self { severity, lint_id, message, time_range: None }
+        Self {
+            severity,
+            lint_id,
+            message,
+            time_range: None,
+        }
     }
 
     fn with_time(mut self, start_ns: u64, end_ns: Option<u64>) -> Self {
@@ -169,7 +176,11 @@ impl BranchImbalanceAcc {
     }
 
     fn record_fork(&mut self, timestamp_ns: u64, thread_id: u32, branch_count: u32) {
-        self.forks.push(ForkRecord { timestamp_ns, thread_id, branch_count });
+        self.forks.push(ForkRecord {
+            timestamp_ns,
+            thread_id,
+            branch_count,
+        });
     }
 
     fn record_branch_start(
@@ -180,8 +191,12 @@ impl BranchImbalanceAcc {
         span_id: u64,
     ) {
         if span_id != 0 {
-            self.branch_starts
-                .push(BranchStartRecord { timestamp_ns, thread_id, branch_index, span_id });
+            self.branch_starts.push(BranchStartRecord {
+                timestamp_ns,
+                thread_id,
+                branch_index,
+                span_id,
+            });
         }
     }
 
@@ -219,7 +234,10 @@ impl BranchImbalanceAcc {
         // Build per-thread fork lists sorted by timestamp for binary search
         let mut forks_by_thread: HashMap<u32, Vec<&ForkRecord>> = HashMap::new();
         for fork in &self.forks {
-            forks_by_thread.entry(fork.thread_id).or_default().push(fork);
+            forks_by_thread
+                .entry(fork.thread_id)
+                .or_default()
+                .push(fork);
         }
         for forks in forks_by_thread.values_mut() {
             forks.sort_by_key(|f| f.timestamp_ns);
@@ -236,8 +254,14 @@ impl BranchImbalanceAcc {
                 if let Some(bs) = starts_by_span.get(&span) {
                     if let Some(forks) = forks_by_thread.get(&bs.thread_id) {
                         let idx = forks.partition_point(|f| f.timestamp_ns <= bs.timestamp_ns);
-                        if idx > 0 { Some(forks[idx - 1]) } else { None }
-                    } else { None }
+                        if idx > 0 {
+                            Some(forks[idx - 1])
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 } else {
                     // span_id present but no matching BranchStart — drop this
                     // event (it's an orphan, likely from an emission bug).
@@ -246,13 +270,19 @@ impl BranchImbalanceAcc {
             } else if let Some(forks) = forks_by_thread.get(&be.thread_id) {
                 // Fallback: timestamp-partition heuristic
                 let idx = forks.partition_point(|f| f.timestamp_ns <= be.timestamp_ns);
-                if idx > 0 { Some(forks[idx - 1]) } else { None }
+                if idx > 0 {
+                    Some(forks[idx - 1])
+                } else {
+                    None
+                }
             } else {
                 None
             };
             if let Some(fork) = anchor_ts {
                 let key = (fork.thread_id, fork.timestamp_ns);
-                let entry = fork_groups.entry(key).or_insert_with(|| (fork.branch_count, Vec::new()));
+                let entry = fork_groups
+                    .entry(key)
+                    .or_insert_with(|| (fork.branch_count, Vec::new()));
                 entry.1.push(be);
             }
         }
@@ -264,7 +294,8 @@ impl BranchImbalanceAcc {
             }
 
             // Collect durations — skip branches without duration
-            let durations: Vec<(u32, u64)> = branches.iter()
+            let durations: Vec<(u32, u64)> = branches
+                .iter()
                 .filter_map(|b| b.duration_ns.map(|d| (b.branch_index, d)))
                 .collect();
 
@@ -316,7 +347,9 @@ struct GcStormAcc {
 
 impl GcStormAcc {
     fn new() -> Self {
-        Self { safepoints: Vec::new() }
+        Self {
+            safepoints: Vec::new(),
+        }
     }
 
     fn record(&mut self, timestamp_ns: u64, duration_ns: u64) {
@@ -339,7 +372,9 @@ impl GcStormAcc {
         let mut i = 1;
 
         while i < self.safepoints.len() {
-            let gap = self.safepoints[i].0.saturating_sub(self.safepoints[i - 1].0);
+            let gap = self.safepoints[i]
+                .0
+                .saturating_sub(self.safepoints[i - 1].0);
             if gap >= STORM_GAP_NS {
                 // End of run
                 let run_len = i - run_start;
@@ -364,7 +399,11 @@ impl GcStormAcc {
         let end_ts = run.last().expect("run must be non-empty").0;
         let span_ns = end_ts.saturating_sub(start_ts);
         let count = run.len();
-        let avg_gap_ns = if count > 1 { span_ns / (count as u64 - 1) } else { 0 };
+        let avg_gap_ns = if count > 1 {
+            span_ns / (count as u64 - 1)
+        } else {
+            0
+        };
 
         let msg = format!(
             "{} GC safepoints in {} (avg {} apart), sustained allocation pressure",
@@ -373,8 +412,7 @@ impl GcStormAcc {
             format_ms(avg_gap_ns),
         );
         findings.push(
-            Finding::new(Severity::Warning, "gc-storm", msg)
-                .with_time(start_ts, Some(end_ts)),
+            Finding::new(Severity::Warning, "gc-storm", msg).with_time(start_ts, Some(end_ts)),
         );
     }
 }
@@ -407,7 +445,10 @@ struct TierThrashAcc {
 
 impl TierThrashAcc {
     fn new() -> Self {
-        Self { histories: HashMap::new(), last_dispatch: HashMap::new() }
+        Self {
+            histories: HashMap::new(),
+            last_dispatch: HashMap::new(),
+        }
     }
 
     fn record_dispatch(
@@ -419,10 +460,13 @@ impl TierThrashAcc {
         execution_count: u32,
     ) {
         self.last_dispatch.insert(thread_id, expression_hash);
-        let history = self.histories.entry(expression_hash).or_insert_with(|| TierHistory {
-            dispatches: Vec::new(),
-            bailouts: Vec::new(),
-        });
+        let history = self
+            .histories
+            .entry(expression_hash)
+            .or_insert_with(|| TierHistory {
+                dispatches: Vec::new(),
+                bailouts: Vec::new(),
+            });
         history.dispatches.push(TierHistoryEntry {
             timestamp_ns,
             tier: selected_tier,
@@ -432,11 +476,17 @@ impl TierThrashAcc {
 
     fn record_bailout(&mut self, thread_id: u32, timestamp_ns: u64, reason: String) {
         if let Some(&expr_hash) = self.last_dispatch.get(&thread_id) {
-            let history = self.histories.entry(expr_hash).or_insert_with(|| TierHistory {
-                dispatches: Vec::new(),
-                bailouts: Vec::new(),
+            let history = self
+                .histories
+                .entry(expr_hash)
+                .or_insert_with(|| TierHistory {
+                    dispatches: Vec::new(),
+                    bailouts: Vec::new(),
+                });
+            history.bailouts.push(BailoutEntry {
+                timestamp_ns,
+                reason,
             });
-            history.bailouts.push(BailoutEntry { timestamp_ns, reason });
         }
     }
 
@@ -455,7 +505,8 @@ impl TierThrashAcc {
 
             // Interleave dispatches and bailouts by timestamp
             while dispatch_iter.peek().is_some() || bailout_idx < history.bailouts.len() {
-                let take_dispatch = match (dispatch_iter.peek(), history.bailouts.get(bailout_idx)) {
+                let take_dispatch = match (dispatch_iter.peek(), history.bailouts.get(bailout_idx))
+                {
                     (Some(d), Some(b)) => d.timestamp_ns <= b.timestamp_ns,
                     (Some(_), None) => true,
                     (None, Some(_)) => false,
@@ -472,7 +523,9 @@ impl TierThrashAcc {
                 }
             }
 
-            let first_ts = history.dispatches.first()
+            let first_ts = history
+                .dispatches
+                .first()
                 .map(|d| d.timestamp_ns)
                 .unwrap_or(0);
 
@@ -483,8 +536,7 @@ impl TierThrashAcc {
                 tier_seq.join("→"),
             );
             findings.push(
-                Finding::new(Severity::Warning, "tier-thrash", msg)
-                    .with_time(first_ts, None),
+                Finding::new(Severity::Warning, "tier-thrash", msg).with_time(first_ts, None),
             );
         }
 
@@ -509,11 +561,19 @@ struct WorkpoolSaturationAcc {
 
 impl WorkpoolSaturationAcc {
     fn new() -> Self {
-        Self { snapshots: Vec::new(), drop_count: 0, starvation_count: 0 }
+        Self {
+            snapshots: Vec::new(),
+            drop_count: 0,
+            starvation_count: 0,
+        }
     }
 
     fn record_snapshot(&mut self, timestamp_ns: u64, queue_depth: u32, active_workers: u32) {
-        self.snapshots.push(WorkpoolSnapshot { timestamp_ns, queue_depth, active_workers });
+        self.snapshots.push(WorkpoolSnapshot {
+            timestamp_ns,
+            queue_depth,
+            active_workers,
+        });
     }
 
     fn record_drop(&mut self) {
@@ -613,7 +673,10 @@ struct SequentialFanOutAcc {
 
 impl SequentialFanOutAcc {
     fn new() -> Self {
-        Self { active_forks: Vec::new(), workpool_seqs: Vec::new() }
+        Self {
+            active_forks: Vec::new(),
+            workpool_seqs: Vec::new(),
+        }
     }
 
     fn record_fork(&mut self, timestamp_ns: u64, thread_id: u32, branch_count: u32) {
@@ -670,7 +733,9 @@ impl SequentialFanOutAcc {
 
             // Check if any workpool activity falls within the fork's seq range
             // on ANY thread (parallel work could be on a different thread)
-            let has_parallel = self.workpool_seqs.iter()
+            let has_parallel = self
+                .workpool_seqs
+                .iter()
                 .any(|(_, s)| *s >= first_seq && *s <= last_seq);
 
             if !has_parallel {
@@ -723,7 +788,9 @@ impl GcPauseOutlierAcc {
         let p95 = self.pauses[p95_idx].1;
 
         // Find outliers above P95
-        let outliers: Vec<(u64, u64)> = self.pauses.iter()
+        let outliers: Vec<(u64, u64)> = self
+            .pauses
+            .iter()
             .filter(|(_, d)| *d > p95)
             .copied()
             .collect();
@@ -736,7 +803,11 @@ impl GcPauseOutlierAcc {
         let mut sorted_outliers = outliers;
         sorted_outliers.sort_by(|a, b| b.1.cmp(&a.1));
 
-        let severity = if p95 > 1_000_000 { Severity::Warning } else { Severity::Info };
+        let severity = if p95 > 1_000_000 {
+            Severity::Warning
+        } else {
+            Severity::Info
+        };
 
         let worst = sorted_outliers[0];
         let report_count = sorted_outliers.len().min(5);
@@ -809,8 +880,7 @@ impl EvalDepthExplosionAcc {
             format_ms(first_ts),
         );
         findings.push(
-            Finding::new(Severity::Warning, "eval-depth-explosion", msg)
-                .with_time(first_ts, None),
+            Finding::new(Severity::Warning, "eval-depth-explosion", msg).with_time(first_ts, None),
         );
 
         findings
@@ -832,23 +902,31 @@ struct CompilationLatencyAcc {
 
 impl CompilationLatencyAcc {
     fn new() -> Self {
-        Self { compilations: HashMap::new() }
+        Self {
+            compilations: HashMap::new(),
+        }
     }
 
     fn record_bytecode(&mut self, expression_hash: u64, timestamp_ns: u64, duration_ns: u64) {
-        self.compilations.entry(expression_hash).or_default().push(CompilationRecord {
-            timestamp_ns,
-            duration_ns,
-            kind: "bytecode",
-        });
+        self.compilations
+            .entry(expression_hash)
+            .or_default()
+            .push(CompilationRecord {
+                timestamp_ns,
+                duration_ns,
+                kind: "bytecode",
+            });
     }
 
     fn record_jit(&mut self, expression_hash: u64, timestamp_ns: u64, duration_ns: u64) {
-        self.compilations.entry(expression_hash).or_default().push(CompilationRecord {
-            timestamp_ns,
-            duration_ns,
-            kind: "jit",
-        });
+        self.compilations
+            .entry(expression_hash)
+            .or_default()
+            .push(CompilationRecord {
+                timestamp_ns,
+                duration_ns,
+                kind: "jit",
+            });
     }
 
     fn finalize(self) -> Vec<Finding> {
@@ -888,7 +966,11 @@ impl CompilationLatencyAcc {
                         format_ms(record.duration_ns),
                     );
                     // Only Info if it was a single compilation, Warning if repeated
-                    let severity = if records.len() >= 2 { Severity::Warning } else { Severity::Info };
+                    let severity = if records.len() >= 2 {
+                        Severity::Warning
+                    } else {
+                        Severity::Info
+                    };
                     findings.push(
                         Finding::new(severity, "compilation-latency", msg)
                             .with_time(record.timestamp_ns, None),
@@ -910,7 +992,9 @@ struct WorkpoolOscillationAcc {
 
 impl WorkpoolOscillationAcc {
     fn new() -> Self {
-        Self { actions: Vec::new() }
+        Self {
+            actions: Vec::new(),
+        }
     }
 
     fn record(&mut self, timestamp_ns: u64, action: &str) {
@@ -982,9 +1066,13 @@ impl WorkpoolFloorPinnedAcc {
         term_rss_pressure: f64,
     ) {
         let dominant = Self::dominant_term(
-            term_throughput, term_queue_depth, term_slab_pressure, term_rss_pressure,
+            term_throughput,
+            term_queue_depth,
+            term_slab_pressure,
+            term_rss_pressure,
         );
-        self.ticks.push((timestamp_ns, active_workers_after, min_workers, dominant));
+        self.ticks
+            .push((timestamp_ns, active_workers_after, min_workers, dominant));
     }
 
     fn dominant_term(tp: f64, qd: f64, slab: f64, rss: f64) -> String {
@@ -996,7 +1084,8 @@ impl WorkpoolFloorPinnedAcc {
             ("slab_pressure", slab),
             ("rss_pressure", rss),
         ];
-        terms.iter()
+        terms
+            .iter()
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(name, _)| name.to_string())
             .unwrap_or_else(|| "unknown".to_string())
@@ -1043,7 +1132,8 @@ impl WorkpoolFloorPinnedAcc {
         for (_, _, _, dominant) in run {
             *term_counts.entry(dominant.clone()).or_insert(0) += 1;
         }
-        let top_term = term_counts.iter()
+        let top_term = term_counts
+            .iter()
             .max_by_key(|(_, count)| *count)
             .map(|(name, count)| format!("{} ({}×)", name, count))
             .unwrap_or_else(|| "unknown".to_string());
@@ -1071,15 +1161,26 @@ struct WorkpoolEmergencyStormAcc {
 
 impl WorkpoolEmergencyStormAcc {
     fn new() -> Self {
-        Self { emergency_ticks: Vec::new() }
+        Self {
+            emergency_ticks: Vec::new(),
+        }
     }
 
-    fn record(&mut self, timestamp_ns: u64, emergency: bool, bp_level: u32, slab_pressure: f64, rss_pressure: f64) {
+    fn record(
+        &mut self,
+        timestamp_ns: u64,
+        emergency: bool,
+        bp_level: u32,
+        slab_pressure: f64,
+        rss_pressure: f64,
+    ) {
         if emergency {
-            self.emergency_ticks.push((timestamp_ns, bp_level, slab_pressure, rss_pressure));
+            self.emergency_ticks
+                .push((timestamp_ns, bp_level, slab_pressure, rss_pressure));
         } else {
             // Non-emergency breaks the streak — add a sentinel
-            self.emergency_ticks.push((timestamp_ns, u32::MAX, 0.0, 0.0));
+            self.emergency_ticks
+                .push((timestamp_ns, u32::MAX, 0.0, 0.0));
         }
     }
 
@@ -1118,7 +1219,10 @@ impl WorkpoolEmergencyStormAcc {
     }
 
     fn emit_storm(run: &[(u64, u32, f64, f64)], findings: &mut Vec<Finding>) {
-        let actual: Vec<_> = run.iter().filter(|&&(_, bp, _, _)| bp != u32::MAX).collect();
+        let actual: Vec<_> = run
+            .iter()
+            .filter(|&&(_, bp, _, _)| bp != u32::MAX)
+            .collect();
         if actual.is_empty() {
             return;
         }
@@ -1126,8 +1230,14 @@ impl WorkpoolEmergencyStormAcc {
         let end_ts = actual.last().expect("actual must be non-empty").0;
         let duration_ns = end_ts.saturating_sub(start_ts);
         let max_bp: u32 = actual.iter().map(|&&(_, bp, _, _)| bp).max().unwrap_or(0);
-        let max_slab: f64 = actual.iter().map(|&&(_, _, s, _)| s).fold(0.0_f64, f64::max);
-        let max_rss: f64 = actual.iter().map(|&&(_, _, _, r)| r).fold(0.0_f64, f64::max);
+        let max_slab: f64 = actual
+            .iter()
+            .map(|&&(_, _, s, _)| s)
+            .fold(0.0_f64, f64::max);
+        let max_rss: f64 = actual
+            .iter()
+            .map(|&&(_, _, _, r)| r)
+            .fold(0.0_f64, f64::max);
 
         let msg = format!(
             "Emergency override storm: {} consecutive ticks over {}, max bp_level={}, slab={:.3}, rss={:.3}",
@@ -1153,7 +1263,9 @@ struct WorkpoolPressureDominanceAcc {
 
 impl WorkpoolPressureDominanceAcc {
     fn new() -> Self {
-        Self { violations: Vec::new() }
+        Self {
+            violations: Vec::new(),
+        }
     }
 
     fn record(
@@ -1219,7 +1331,8 @@ impl WorkpoolConvergenceAcc {
     }
 
     fn record(&mut self, timestamp_ns: u64, action: &str, objective: f64) {
-        self.ticks.push((timestamp_ns, action.to_string(), objective));
+        self.ticks
+            .push((timestamp_ns, action.to_string(), objective));
     }
 
     fn finalize(self) -> Vec<Finding> {
@@ -1273,31 +1386,35 @@ struct RepeatedEvalAcc {
 
 impl RepeatedEvalAcc {
     fn new(threshold: u32) -> Self {
-        Self { seen: HashMap::new(), threshold }
+        Self {
+            seen: HashMap::new(),
+            threshold,
+        }
     }
 
     fn record(&mut self, input_hash: u64, head_symbol: &str, timestamp_ns: u64) {
-        self.seen.entry(input_hash)
+        self.seen
+            .entry(input_hash)
             .and_modify(|(count, _, _)| *count += 1)
             .or_insert((1, head_symbol.to_string(), timestamp_ns));
     }
 
     fn finalize(self) -> Vec<Finding> {
         let mut findings = Vec::new();
-        let mut entries: Vec<_> = self.seen.into_iter()
+        let mut entries: Vec<_> = self
+            .seen
+            .into_iter()
             .filter(|(_, (count, _, _))| *count > self.threshold)
             .collect();
-        entries.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        entries.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
 
         for (hash, (count, head, first_ts)) in entries.into_iter().take(20) {
             let msg = format!(
                 "Expression `{}` (hash {:#x}) evaluated {} times (threshold: {})",
                 head, hash, count, self.threshold,
             );
-            findings.push(
-                Finding::new(Severity::Info, "repeated-eval", msg)
-                    .with_time(first_ts, None),
-            );
+            findings
+                .push(Finding::new(Severity::Info, "repeated-eval", msg).with_time(first_ts, None));
         }
         findings
     }
@@ -1314,12 +1431,24 @@ struct EmptyBranchRatioAcc {
 
 impl EmptyBranchRatioAcc {
     fn new() -> Self {
-        Self { forks: HashMap::new(), current_fork: HashMap::new() }
+        Self {
+            forks: HashMap::new(),
+            current_fork: HashMap::new(),
+        }
     }
 
-    fn record_fork(&mut self, thread_id: u32, timestamp_ns: u64, branch_count: u32, input_hash: u64, head: &str) {
-        self.current_fork.insert(thread_id, (input_hash, head.to_string()));
-        self.forks.entry(input_hash)
+    fn record_fork(
+        &mut self,
+        thread_id: u32,
+        timestamp_ns: u64,
+        branch_count: u32,
+        input_hash: u64,
+        head: &str,
+    ) {
+        self.current_fork
+            .insert(thread_id, (input_hash, head.to_string()));
+        self.forks
+            .entry(input_hash)
             .or_insert((0, 0, timestamp_ns, head.to_string()))
             .0 += branch_count;
     }
@@ -1337,16 +1466,21 @@ impl EmptyBranchRatioAcc {
     fn finalize(self) -> Vec<Finding> {
         let mut findings = Vec::new();
         for (hash, (total, empty, ts, head)) in &self.forks {
-            if *total < 4 { continue; } // need enough branches to be meaningful
+            if *total < 4 {
+                continue;
+            } // need enough branches to be meaningful
             let ratio = *empty as f64 / *total as f64;
             if ratio > 0.5 {
                 let msg = format!(
                     "Fork point `{}` (hash {:#x}): {}/{} branches empty ({:.0}% waste)",
-                    head, hash, empty, total, ratio * 100.0,
+                    head,
+                    hash,
+                    empty,
+                    total,
+                    ratio * 100.0,
                 );
                 findings.push(
-                    Finding::new(Severity::Warning, "empty-branch-ratio", msg)
-                        .with_time(*ts, None),
+                    Finding::new(Severity::Warning, "empty-branch-ratio", msg).with_time(*ts, None),
                 );
             }
         }
@@ -1364,12 +1498,16 @@ struct RuleMatchExplosionAcc {
 
 impl RuleMatchExplosionAcc {
     fn new(threshold: u32) -> Self {
-        Self { threshold, explosions: Vec::new() }
+        Self {
+            threshold,
+            explosions: Vec::new(),
+        }
     }
 
     fn record(&mut self, timestamp_ns: u64, match_count: u32, head: &str) {
         if match_count > self.threshold {
-            self.explosions.push((timestamp_ns, head.to_string(), match_count));
+            self.explosions
+                .push((timestamp_ns, head.to_string(), match_count));
         }
     }
 
@@ -1386,7 +1524,7 @@ impl RuleMatchExplosionAcc {
         }
 
         let mut entries: Vec<_> = by_head.into_iter().collect();
-        entries.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        entries.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
 
         for (head, (count, max_matches, first_ts)) in entries.into_iter().take(20) {
             let msg = format!(
@@ -1416,7 +1554,8 @@ impl TypeInferenceMissAcc {
 
     fn record(&mut self, timestamp_ns: u64, expression: &str, source: &str) {
         if source.contains("fallback-undefined") {
-            self.misses.push((timestamp_ns, expression.to_string(), source.to_string()));
+            self.misses
+                .push((timestamp_ns, expression.to_string(), source.to_string()));
         }
     }
 
@@ -1435,7 +1574,8 @@ impl TypeInferenceMissAcc {
 
         let msg = format!(
             "{} type inference fallbacks to %Undefined% ({} distinct expressions)",
-            count, by_expr.len(),
+            count,
+            by_expr.len(),
         );
         findings.push(Finding::new(Severity::Info, "type-inference-miss", msg));
 
@@ -1479,7 +1619,8 @@ impl ForkDepthExplosionAcc {
         let depth = self.thread_depth.entry(thread_id).or_insert(0);
         *depth += 1;
         if *depth > self.threshold {
-            self.violations.push((timestamp_ns, thread_id, *depth, head.to_string()));
+            self.violations
+                .push((timestamp_ns, thread_id, *depth, head.to_string()));
         }
     }
 
@@ -1495,10 +1636,17 @@ impl ForkDepthExplosionAcc {
             return findings;
         }
 
-        let max_depth = self.violations.iter().map(|(_, _, d, _)| *d).max().unwrap_or(0);
+        let max_depth = self
+            .violations
+            .iter()
+            .map(|(_, _, d, _)| *d)
+            .max()
+            .unwrap_or(0);
         let msg = format!(
             "{} fork nesting violations (max depth: {}, threshold: {})",
-            self.violations.len(), max_depth, self.threshold,
+            self.violations.len(),
+            max_depth,
+            self.threshold,
         );
         findings.push(
             Finding::new(Severity::Warning, "fork-depth-explosion", msg)
@@ -1574,7 +1722,9 @@ struct GcAllocationHotspotAcc {
 
 impl GcAllocationHotspotAcc {
     fn new() -> Self {
-        Self { by_depth: HashMap::new() }
+        Self {
+            by_depth: HashMap::new(),
+        }
     }
 
     fn record(&mut self, depth: u32, allocation_delta_bytes: u64) {
@@ -1594,10 +1744,14 @@ impl GcAllocationHotspotAcc {
 
         // Find depth with highest allocation
         let mut sorted: Vec<_> = self.by_depth.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        sorted.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
 
         if let Some(&(depth, (count, bytes))) = sorted.first() {
-            let pct = if total_bytes > 0 { bytes as f64 / total_bytes as f64 * 100.0 } else { 0.0 };
+            let pct = if total_bytes > 0 {
+                bytes as f64 / total_bytes as f64 * 100.0
+            } else {
+                0.0
+            };
             if pct > 50.0 {
                 let msg = format!(
                     "GC hotspot at depth {}: {} safepoints, {} bytes ({:.0}% of total {})",
@@ -1621,12 +1775,26 @@ struct TierPromotionOpportunityAcc {
 
 impl TierPromotionOpportunityAcc {
     fn new(threshold: u32) -> Self {
-        Self { threshold, dispatches: HashMap::new() }
+        Self {
+            threshold,
+            dispatches: HashMap::new(),
+        }
     }
 
-    fn record(&mut self, expression_hash: u64, execution_count: u32, tier: TraceTier, head: &str, timestamp_ns: u64) {
-        let entry = self.dispatches.entry(expression_hash)
-            .or_insert((0, TraceTier::TreeWalker, head.to_string(), timestamp_ns));
+    fn record(
+        &mut self,
+        expression_hash: u64,
+        execution_count: u32,
+        tier: TraceTier,
+        head: &str,
+        timestamp_ns: u64,
+    ) {
+        let entry = self.dispatches.entry(expression_hash).or_insert((
+            0,
+            TraceTier::TreeWalker,
+            head.to_string(),
+            timestamp_ns,
+        ));
         if execution_count > entry.0 {
             entry.0 = execution_count;
         }
@@ -1639,13 +1807,15 @@ impl TierPromotionOpportunityAcc {
     fn finalize(self) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        let mut stuck: Vec<_> = self.dispatches.into_iter()
+        let mut stuck: Vec<_> = self
+            .dispatches
+            .into_iter()
             .filter(|(_, (count, tier, _, _))| {
                 *count > self.threshold && *tier == TraceTier::TreeWalker
             })
             .collect();
 
-        stuck.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        stuck.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
 
         for (hash, (count, _, head, first_ts)) in stuck.into_iter().take(20) {
             let msg = format!(
@@ -1692,48 +1862,65 @@ struct LintPass {
 impl LintPass {
     fn new(config: &LintConfig) -> Self {
         Self {
-            branch_imbalance: config.is_enabled("branch-imbalance")
+            branch_imbalance: config
+                .is_enabled("branch-imbalance")
                 .then(BranchImbalanceAcc::new),
-            gc_storm: config.is_enabled("gc-storm")
-                .then(GcStormAcc::new),
-            tier_thrash: config.is_enabled("tier-thrash")
-                .then(TierThrashAcc::new),
-            workpool_saturation: config.is_enabled("workpool-saturation")
+            gc_storm: config.is_enabled("gc-storm").then(GcStormAcc::new),
+            tier_thrash: config.is_enabled("tier-thrash").then(TierThrashAcc::new),
+            workpool_saturation: config
+                .is_enabled("workpool-saturation")
                 .then(WorkpoolSaturationAcc::new),
-            sequential_fan_out: config.is_enabled("sequential-fan-out")
+            sequential_fan_out: config
+                .is_enabled("sequential-fan-out")
                 .then(SequentialFanOutAcc::new),
-            gc_pause_outlier: config.is_enabled("gc-pause-outlier")
+            gc_pause_outlier: config
+                .is_enabled("gc-pause-outlier")
                 .then(GcPauseOutlierAcc::new),
-            eval_depth_explosion: config.is_enabled("eval-depth-explosion")
+            eval_depth_explosion: config
+                .is_enabled("eval-depth-explosion")
                 .then(|| EvalDepthExplosionAcc::new(config.depth_threshold)),
-            compilation_latency: config.is_enabled("compilation-latency")
+            compilation_latency: config
+                .is_enabled("compilation-latency")
                 .then(CompilationLatencyAcc::new),
-            workpool_oscillation: config.is_enabled("workpool-oscillation")
+            workpool_oscillation: config
+                .is_enabled("workpool-oscillation")
                 .then(WorkpoolOscillationAcc::new),
-            workpool_floor_pinned: config.is_enabled("workpool-floor-pinned")
+            workpool_floor_pinned: config
+                .is_enabled("workpool-floor-pinned")
                 .then(WorkpoolFloorPinnedAcc::new),
-            workpool_emergency_storm: config.is_enabled("workpool-emergency-storm")
+            workpool_emergency_storm: config
+                .is_enabled("workpool-emergency-storm")
                 .then(WorkpoolEmergencyStormAcc::new),
-            workpool_pressure_dominance: config.is_enabled("workpool-pressure-dominance")
+            workpool_pressure_dominance: config
+                .is_enabled("workpool-pressure-dominance")
                 .then(WorkpoolPressureDominanceAcc::new),
-            workpool_convergence: config.is_enabled("workpool-convergence")
+            workpool_convergence: config
+                .is_enabled("workpool-convergence")
                 .then(WorkpoolConvergenceAcc::new),
             // Phase A6 lints
-            repeated_eval: config.is_enabled("repeated-eval")
+            repeated_eval: config
+                .is_enabled("repeated-eval")
                 .then(|| RepeatedEvalAcc::new(config.repeated_eval_threshold)),
-            empty_branch_ratio: config.is_enabled("empty-branch-ratio")
+            empty_branch_ratio: config
+                .is_enabled("empty-branch-ratio")
                 .then(EmptyBranchRatioAcc::new),
-            rule_match_explosion: config.is_enabled("rule-match-explosion")
+            rule_match_explosion: config
+                .is_enabled("rule-match-explosion")
                 .then(|| RuleMatchExplosionAcc::new(config.rule_match_threshold)),
-            type_inference_miss: config.is_enabled("type-inference-miss")
+            type_inference_miss: config
+                .is_enabled("type-inference-miss")
                 .then(TypeInferenceMissAcc::new),
-            fork_depth_explosion: config.is_enabled("fork-depth-explosion")
+            fork_depth_explosion: config
+                .is_enabled("fork-depth-explosion")
                 .then(|| ForkDepthExplosionAcc::new(config.fork_depth_threshold)),
-            speculative_waste: config.is_enabled("speculative-waste")
+            speculative_waste: config
+                .is_enabled("speculative-waste")
                 .then(SpeculativeWasteAcc::new),
-            gc_allocation_hotspot: config.is_enabled("gc-allocation-hotspot")
+            gc_allocation_hotspot: config
+                .is_enabled("gc-allocation-hotspot")
                 .then(GcAllocationHotspotAcc::new),
-            tier_promotion_opportunity: config.is_enabled("tier-promotion-opportunity")
+            tier_promotion_opportunity: config
+                .is_enabled("tier-promotion-opportunity")
                 .then(|| TierPromotionOpportunityAcc::new(config.tier_promotion_threshold)),
         }
     }
@@ -1759,8 +1946,7 @@ impl LintPass {
         if let Some(acc) = &mut self.repeated_eval {
             if dur > 0 {
                 match &event.kind {
-                    TraceEventKind::RuleApplication { .. }
-                    | TraceEventKind::GroundedOp { .. } => {
+                    TraceEventKind::RuleApplication { .. } | TraceEventKind::GroundedOp { .. } => {
                         let input_hash = crate::util::hash_trace_value(&event.input);
                         let head = crate::util::extract_operator_name(&event.input, &event.kind);
                         acc.record(input_hash, &head, ts);
@@ -1804,7 +1990,10 @@ impl LintPass {
                 }
             }
 
-            TraceEventKind::BranchEnd { branch_index, result_count } => {
+            TraceEventKind::BranchEnd {
+                branch_index,
+                result_count,
+            } => {
                 if let Some(acc) = &mut self.branch_imbalance {
                     acc.record_branch_end(ts, tid, event.duration_ns, *branch_index, event.span_id);
                 }
@@ -1826,7 +2015,10 @@ impl LintPass {
             }
 
             // ── GC events ──
-            TraceEventKind::GcSafepoint { allocation_delta_bytes, .. } => {
+            TraceEventKind::GcSafepoint {
+                allocation_delta_bytes,
+                ..
+            } => {
                 if let Some(acc) = &mut self.gc_storm {
                     acc.record(ts, dur);
                 }
@@ -1851,7 +2043,9 @@ impl LintPass {
             }
 
             // ── Type inference events ──
-            TraceEventKind::TypeInference { expression, source, .. } => {
+            TraceEventKind::TypeInference {
+                expression, source, ..
+            } => {
                 // Q. type-inference-miss
                 if let Some(acc) = &mut self.type_inference_miss {
                     let expr_display = format!("{}", expression);
@@ -1860,14 +2054,30 @@ impl LintPass {
             }
 
             // ── Tier transition events ──
-            TraceEventKind::TierDispatch { expression_hash, selected_tier, execution_count } => {
+            TraceEventKind::TierDispatch {
+                expression_hash,
+                selected_tier,
+                execution_count,
+            } => {
                 if let Some(acc) = &mut self.tier_thrash {
-                    acc.record_dispatch(tid, ts, *expression_hash, *selected_tier, *execution_count);
+                    acc.record_dispatch(
+                        tid,
+                        ts,
+                        *expression_hash,
+                        *selected_tier,
+                        *execution_count,
+                    );
                 }
                 // U. tier-promotion-opportunity
                 if let Some(acc) = &mut self.tier_promotion_opportunity {
                     let head = crate::util::extract_operator_name(&event.input, &event.kind);
-                    acc.record(*expression_hash, *execution_count, *selected_tier, &head, ts);
+                    acc.record(
+                        *expression_hash,
+                        *execution_count,
+                        *selected_tier,
+                        &head,
+                        ts,
+                    );
                 }
             }
 
@@ -1884,20 +2094,28 @@ impl LintPass {
             }
 
             // ── Compilation events ──
-            TraceEventKind::BytecodeCompilation { expression_hash, .. } => {
+            TraceEventKind::BytecodeCompilation {
+                expression_hash, ..
+            } => {
                 if let Some(acc) = &mut self.compilation_latency {
                     acc.record_bytecode(*expression_hash, ts, dur);
                 }
             }
 
-            TraceEventKind::JitCompilation { expression_hash, .. } => {
+            TraceEventKind::JitCompilation {
+                expression_hash, ..
+            } => {
                 if let Some(acc) = &mut self.compilation_latency {
                     acc.record_jit(*expression_hash, ts, dur);
                 }
             }
 
             // ── WorkPool events ──
-            TraceEventKind::WorkPoolTaskEnqueued { queue_depth, active_workers, .. } => {
+            TraceEventKind::WorkPoolTaskEnqueued {
+                queue_depth,
+                active_workers,
+                ..
+            } => {
                 if let Some(acc) = &mut self.workpool_saturation {
                     acc.record_snapshot(ts, *queue_depth, *active_workers);
                 }
@@ -1912,7 +2130,11 @@ impl LintPass {
                 }
             }
 
-            TraceEventKind::WorkPoolTaskCompleted { queue_depth, active_workers, .. } => {
+            TraceEventKind::WorkPoolTaskCompleted {
+                queue_depth,
+                active_workers,
+                ..
+            } => {
                 if let Some(acc) = &mut self.workpool_saturation {
                     acc.record_snapshot(ts, *queue_depth, *active_workers);
                 }
@@ -1929,10 +2151,19 @@ impl LintPass {
 
             // ── WorkPool scale events (new diagnostic lints) ──
             TraceEventKind::WorkPoolScaleEvent {
-                action, active_workers_after, min_workers, emergency,
-                queue_depth, objective,
-                term_throughput, term_queue_depth, term_slab_pressure, term_rss_pressure,
-                bp_level, ema_slab_pressure, ema_rss_pressure,
+                action,
+                active_workers_after,
+                min_workers,
+                emergency,
+                queue_depth,
+                objective,
+                term_throughput,
+                term_queue_depth,
+                term_slab_pressure,
+                term_rss_pressure,
+                bp_level,
+                ema_slab_pressure,
+                ema_rss_pressure,
                 ..
             } => {
                 if let Some(acc) = &mut self.workpool_oscillation {
@@ -1940,17 +2171,33 @@ impl LintPass {
                 }
                 if let Some(acc) = &mut self.workpool_floor_pinned {
                     acc.record(
-                        ts, *active_workers_after, *min_workers,
-                        *term_throughput, *term_queue_depth, *term_slab_pressure, *term_rss_pressure,
+                        ts,
+                        *active_workers_after,
+                        *min_workers,
+                        *term_throughput,
+                        *term_queue_depth,
+                        *term_slab_pressure,
+                        *term_rss_pressure,
                     );
                 }
                 if let Some(acc) = &mut self.workpool_emergency_storm {
-                    acc.record(ts, *emergency, *bp_level, *ema_slab_pressure, *ema_rss_pressure);
+                    acc.record(
+                        ts,
+                        *emergency,
+                        *bp_level,
+                        *ema_slab_pressure,
+                        *ema_rss_pressure,
+                    );
                 }
                 if let Some(acc) = &mut self.workpool_pressure_dominance {
                     acc.record(
-                        ts, action, *queue_depth,
-                        *term_throughput, *term_queue_depth, *term_slab_pressure, *term_rss_pressure,
+                        ts,
+                        action,
+                        *queue_depth,
+                        *term_throughput,
+                        *term_queue_depth,
+                        *term_slab_pressure,
+                        *term_rss_pressure,
                     );
                 }
                 if let Some(acc) = &mut self.workpool_convergence {
@@ -2048,7 +2295,8 @@ impl LintPass {
 // ── Output ──────────────────────────────────────────────────────────────────
 
 fn print_findings(reader: &TraceReader, config: &LintConfig, findings: &[Finding]) {
-    let enabled_lints: Vec<&str> = LINT_IDS.iter()
+    let enabled_lints: Vec<&str> = LINT_IDS
+        .iter()
         .filter(|id| config.is_enabled(id))
         .copied()
         .collect();
@@ -2064,7 +2312,10 @@ fn print_findings(reader: &TraceReader, config: &LintConfig, findings: &[Finding
         println!("No findings.");
     } else {
         for finding in findings {
-            print!("[{}] {}: {}", finding.severity, finding.lint_id, finding.message);
+            print!(
+                "[{}] {}: {}",
+                finding.severity, finding.lint_id, finding.message
+            );
             println!();
 
             if let Some((start, end)) = finding.time_range {
@@ -2080,14 +2331,24 @@ fn print_findings(reader: &TraceReader, config: &LintConfig, findings: &[Finding
     }
 
     // Summary
-    let warning_count = findings.iter().filter(|f| f.severity == Severity::Warning).count();
-    let info_count = findings.iter().filter(|f| f.severity == Severity::Info).count();
+    let warning_count = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Warning)
+        .count();
+    let info_count = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Info)
+        .count();
 
     println!("--- Summary ---");
 
     let mut parts = Vec::new();
     if warning_count > 0 {
-        parts.push(format!("{} warning{}", warning_count, if warning_count == 1 { "" } else { "s" }));
+        parts.push(format!(
+            "{} warning{}",
+            warning_count,
+            if warning_count == 1 { "" } else { "s" }
+        ));
     }
     if info_count > 0 {
         parts.push(format!("{} info", info_count));
@@ -2095,19 +2356,26 @@ fn print_findings(reader: &TraceReader, config: &LintConfig, findings: &[Finding
 
     let total = findings.len();
     if total > 0 {
-        println!("  {} ({} finding{})", parts.join(", "), total, if total == 1 { "" } else { "s" });
+        println!(
+            "  {} ({} finding{})",
+            parts.join(", "),
+            total,
+            if total == 1 { "" } else { "s" }
+        );
     } else {
         println!("  0 findings");
     }
 
     // Report clean lints
-    let lint_ids_with_findings: Vec<&str> = findings.iter()
+    let lint_ids_with_findings: Vec<&str> = findings
+        .iter()
         .map(|f| f.lint_id)
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
 
-    let clean_lints: Vec<&str> = enabled_lints.iter()
+    let clean_lints: Vec<&str> = enabled_lints
+        .iter()
         .filter(|id| !lint_ids_with_findings.contains(*id))
         .copied()
         .collect();
@@ -2128,15 +2396,16 @@ pub fn run(
     let reader = TraceReader::open(file)?;
 
     if reader.format_version < 2 {
-        return Err("Lint analysis requires trace format v2 (duration_ns/span_id fields). \
-                    Re-record with a current mettatron build.".to_string());
+        return Err(
+            "Lint analysis requires trace format v2 (duration_ns/span_id fields). \
+                    Re-record with a current mettatron build."
+                .to_string(),
+        );
     }
 
     let config = LintConfig {
         min_severity: severity.parse()?,
-        enabled_lints: lint_ids.map(|s| {
-            s.split(',').map(|id| id.trim().to_string()).collect()
-        }),
+        enabled_lints: lint_ids.map(|s| s.split(',').map(|id| id.trim().to_string()).collect()),
         depth_threshold,
         repeated_eval_threshold: 3,
         rule_match_threshold: 10,

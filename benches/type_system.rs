@@ -24,9 +24,8 @@ use mettatron::backend::eval::trampoline::{get_static_factory, new_env};
 use mettatron::backend::eval::{
     apply_type_bindings, find_grounded_arg_indices_generic, find_typed_arg_indices_generic,
     freshen_type_variables, get_ground_type, infer_types_generic, is_arrow_type,
-    is_declared_value_type, is_meta_type, is_pattern_type_compatible,
-    match_types_with_bindings, run_type_fixpoint, types_match_generic,
-    types_match_with_subtypes,
+    is_declared_value_type, is_meta_type, is_pattern_type_compatible, match_types_with_bindings,
+    run_type_fixpoint, types_match_generic, types_match_with_subtypes,
 };
 use mettatron::backend::models::MettaState;
 use mettatron::backend::{get_signature, is_builtin, MettaValue, MettaValueFactory};
@@ -48,10 +47,7 @@ fn make_arrow(f: &impl MettaValueFactory<MettaValue>, params: &[&str], ret: &str
 }
 
 /// Set up a linear subtype chain: T0 <: T1 <: ... <: TN in the given environment
-fn setup_subtype_chain(
-    env: &mut mettatron::backend::environment::MettaEnvironment,
-    depth: usize,
-) {
+fn setup_subtype_chain(env: &mut mettatron::backend::environment::MettaEnvironment, depth: usize) {
     for i in 0..depth {
         let sub = format!("T{}", i);
         let sup = format!("T{}", i + 1);
@@ -183,12 +179,7 @@ fn bench_type_inference(c: &mut Criterion) {
     // infer_control_flow_if: (if cond then else) branch union
     group.bench_function("infer_control_flow_if", |b| {
         let env = new_env();
-        let expr = f.sexpr(vec![
-            f.atom("if"),
-            f.bool(true),
-            f.long(1),
-            f.long(2),
-        ]);
+        let expr = f.sexpr(vec![f.atom("if"), f.bool(true), f.long(1), f.long(2)]);
         b.iter(|| black_box(infer_types_generic(&expr, &f, &env)));
     });
 
@@ -216,12 +207,7 @@ fn bench_type_inference(c: &mut Criterion) {
     // infer_control_flow_let: (let $x expr body) tracing
     group.bench_function("infer_control_flow_let", |b| {
         let env = new_env();
-        let expr = f.sexpr(vec![
-            f.atom("let"),
-            f.atom("$x"),
-            f.long(42),
-            f.atom("$x"),
-        ]);
+        let expr = f.sexpr(vec![f.atom("let"), f.atom("$x"), f.long(42), f.atom("$x")]);
         b.iter(|| black_box(infer_types_generic(&expr, &f, &env)));
     });
 
@@ -468,15 +454,19 @@ fn bench_type_allocation(c: &mut Criterion) {
 
     // freshen_nested: (-> (List $t) (Map $t $u))
     for depth in [1, 2, 3, 5] {
-        group.bench_with_input(BenchmarkId::new("freshen_nested", depth), &depth, |b, &depth| {
-            // Build a nested type like (List (List (... $t)))
-            let mut inner = f.atom("$t");
-            for _ in 0..depth {
-                inner = f.sexpr(vec![f.atom("List"), inner]);
-            }
-            let typ = f.sexpr(vec![f.atom("->"), inner.clone(), inner]);
-            b.iter(|| black_box(freshen_type_variables(&typ, 0, &f)));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("freshen_nested", depth),
+            &depth,
+            |b, &depth| {
+                // Build a nested type like (List (List (... $t)))
+                let mut inner = f.atom("$t");
+                for _ in 0..depth {
+                    inner = f.sexpr(vec![f.atom("List"), inner]);
+                }
+                let typ = f.sexpr(vec![f.atom("->"), inner.clone(), inner]);
+                b.iter(|| black_box(freshen_type_variables(&typ, 0, &f)));
+            },
+        );
     }
 
     // apply_single: Substitute $t → Number
@@ -504,33 +494,41 @@ fn bench_type_allocation(c: &mut Criterion) {
 
     // apply_deep: Deeply nested type substitution
     for depth in [1, 3, 5, 10] {
-        group.bench_with_input(BenchmarkId::new("apply_deep", depth), &depth, |b, &depth| {
-            let mut inner = f.atom("$t");
-            for _ in 0..depth {
-                inner = f.sexpr(vec![f.atom("Wrapper"), inner]);
-            }
-            let mut bindings = HashMap::new();
-            bindings.insert("$t".to_string(), f.atom("Number"));
-            b.iter(|| black_box(apply_type_bindings(&inner, &bindings, &f)));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("apply_deep", depth),
+            &depth,
+            |b, &depth| {
+                let mut inner = f.atom("$t");
+                for _ in 0..depth {
+                    inner = f.sexpr(vec![f.atom("Wrapper"), inner]);
+                }
+                let mut bindings = HashMap::new();
+                bindings.insert("$t".to_string(), f.atom("Number"));
+                b.iter(|| black_box(apply_type_bindings(&inner, &bindings, &f)));
+            },
+        );
     }
 
     // apply_noop: All concrete, no substitution needed
     for arity in [2, 5, 10] {
-        group.bench_with_input(BenchmarkId::new("apply_noop", arity), &arity, |b, &arity| {
-            let typ = make_arrow(
-                &f,
-                &(0..arity)
-                    .map(|i| format!("T{}", i))
-                    .collect::<Vec<_>>()
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>(),
-                "Result",
-            );
-            let bindings = HashMap::new();
-            b.iter(|| black_box(apply_type_bindings(&typ, &bindings, &f)));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("apply_noop", arity),
+            &arity,
+            |b, &arity| {
+                let typ = make_arrow(
+                    &f,
+                    &(0..arity)
+                        .map(|i| format!("T{}", i))
+                        .collect::<Vec<_>>()
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>(),
+                    "Result",
+                );
+                let bindings = HashMap::new();
+                b.iter(|| black_box(apply_type_bindings(&typ, &bindings, &f)));
+            },
+        );
     }
 
     group.finish();
@@ -578,17 +576,13 @@ fn bench_subtype_hierarchy(c: &mut Criterion) {
 
     // supertypes_wide: N direct supertypes from one type
     for n in [1, 5, 10, 50] {
-        group.bench_with_input(
-            BenchmarkId::new("supertypes_wide", n),
-            &n,
-            |b, &n| {
-                let mut env = new_env();
-                for i in 0..n {
-                    env.add_subtype_generic("Base", &format!("Super{}", i));
-                }
-                b.iter(|| black_box(env.get_all_supertypes("Base")));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("supertypes_wide", n), &n, |b, &n| {
+            let mut env = new_env();
+            for i in 0..n {
+                env.add_subtype_generic("Base", &format!("Super{}", i));
+            }
+            b.iter(|| black_box(env.get_all_supertypes("Base")));
+        });
     }
 
     // supertypes_empty: No supertypes (immediate return)
@@ -647,19 +641,15 @@ fn bench_env_type_ops(c: &mut Criterion) {
 
     // get_types_bloom_hit: Bloom pass → HashMap hit
     for n in [10, 100, 1000, 10000] {
-        group.bench_with_input(
-            BenchmarkId::new("get_types_bloom_hit", n),
-            &n,
-            |b, &n| {
-                let mut env = new_env();
-                for i in 0..n {
-                    env.add_type_generic(&format!("atom{}", i), f.atom(&format!("Type{}", i)));
-                }
-                // Query an atom that exists (bloom + hashmap hit)
-                let query = format!("atom{}", n / 2);
-                b.iter(|| black_box(env.get_types_generic(black_box(&query))));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("get_types_bloom_hit", n), &n, |b, &n| {
+            let mut env = new_env();
+            for i in 0..n {
+                env.add_type_generic(&format!("atom{}", i), f.atom(&format!("Type{}", i)));
+            }
+            // Query an atom that exists (bloom + hashmap hit)
+            let query = format!("atom{}", n / 2);
+            b.iter(|| black_box(env.get_types_generic(black_box(&query))));
+        });
     }
 
     // get_types_bloom_reject: Bloom rejects (no type exists)
@@ -695,57 +685,42 @@ fn bench_env_type_ops(c: &mut Criterion) {
 
     // add_type_throughput: Sequential add_type_generic (uses iter_batched for CoW)
     for n in [10, 100, 1000] {
-        group.bench_with_input(
-            BenchmarkId::new("add_type_throughput", n),
-            &n,
-            |b, &n| {
-                b.iter_batched(
-                    || new_env(),
-                    |mut env| {
-                        for i in 0..n {
-                            env.add_type_generic(
-                                &format!("atom{}", i),
-                                f.atom(&format!("Type{}", i)),
-                            );
-                        }
-                        black_box(env);
-                    },
-                    BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("add_type_throughput", n), &n, |b, &n| {
+            b.iter_batched(
+                || new_env(),
+                |mut env| {
+                    for i in 0..n {
+                        env.add_type_generic(&format!("atom{}", i), f.atom(&format!("Type{}", i)));
+                    }
+                    black_box(env);
+                },
+                BatchSize::SmallInput,
+            );
+        });
     }
 
     // inferred_bloom_check: has_inferred_type
     for n in [10, 100, 1000] {
-        group.bench_with_input(
-            BenchmarkId::new("inferred_bloom_check", n),
-            &n,
-            |b, &n| {
-                let env = new_env();
-                for i in 0..n {
-                    env.register_inferred_type(&format!("fn{}", i), &f.atom("Number"));
-                }
-                let query = format!("fn{}", n / 2);
-                b.iter(|| black_box(env.has_inferred_type(black_box(&query))));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("inferred_bloom_check", n), &n, |b, &n| {
+            let env = new_env();
+            for i in 0..n {
+                env.register_inferred_type(&format!("fn{}", i), &f.atom("Number"));
+            }
+            let query = format!("fn{}", n / 2);
+            b.iter(|| black_box(env.has_inferred_type(black_box(&query))));
+        });
     }
 
     // inferred_dashmap_get: get_inferred_fn_types DashMap
     for n in [10, 100, 1000] {
-        group.bench_with_input(
-            BenchmarkId::new("inferred_dashmap_get", n),
-            &n,
-            |b, &n| {
-                let env = new_env();
-                for i in 0..n {
-                    env.register_inferred_type(&format!("fn{}", i), &f.atom("Number"));
-                }
-                let query = format!("fn{}", n / 2);
-                b.iter(|| black_box(env.get_inferred_fn_types(black_box(&query))));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("inferred_dashmap_get", n), &n, |b, &n| {
+            let env = new_env();
+            for i in 0..n {
+                env.register_inferred_type(&format!("fn{}", i), &f.atom("Number"));
+            }
+            let query = format!("fn{}", n / 2);
+            b.iter(|| black_box(env.get_inferred_fn_types(black_box(&query))));
+        });
     }
 
     group.finish();
@@ -778,7 +753,11 @@ fn bench_applicative_pre_eval(c: &mut Criterion) {
                     items.push(f.atom(&format!("arg{}", i)));
                 }
                 b.iter(|| {
-                    black_box(find_typed_arg_indices_generic(black_box(&items), &env, None))
+                    black_box(find_typed_arg_indices_generic(
+                        black_box(&items),
+                        &env,
+                        None,
+                    ))
                 });
             },
         );
@@ -799,7 +778,11 @@ fn bench_applicative_pre_eval(c: &mut Criterion) {
                     items.push(f.sexpr(vec![f.atom("f"), f.long(i as i64)]));
                 }
                 b.iter(|| {
-                    black_box(find_typed_arg_indices_generic(black_box(&items), &env, None))
+                    black_box(find_typed_arg_indices_generic(
+                        black_box(&items),
+                        &env,
+                        None,
+                    ))
                 });
             },
         );
@@ -809,7 +792,13 @@ fn bench_applicative_pre_eval(c: &mut Criterion) {
     group.bench_function("typed_indices_no_arrow", |b| {
         let env = new_env();
         let items = vec![f.atom("unknown"), f.long(1), f.long(2)];
-        b.iter(|| black_box(find_typed_arg_indices_generic(black_box(&items), &env, None)));
+        b.iter(|| {
+            black_box(find_typed_arg_indices_generic(
+                black_box(&items),
+                &env,
+                None,
+            ))
+        });
     });
 
     // grounded_indices_bloom_hit: Bloom says "maybe rules"
@@ -831,9 +820,7 @@ fn bench_applicative_pre_eval(c: &mut Criterion) {
                 for i in 0..arity {
                     items.push(f.sexpr(vec![f.atom("inner"), f.long(i as i64)]));
                 }
-                b.iter(|| {
-                    black_box(find_grounded_arg_indices_generic(black_box(&items), &env))
-                });
+                b.iter(|| black_box(find_grounded_arg_indices_generic(black_box(&items), &env)));
             },
         );
     }
@@ -887,27 +874,19 @@ fn bench_type_special_forms(c: &mut Criterion) {
 
     // get_type_multi_typed: N type decls + get-type
     for n in [1, 5, 10] {
-        group.bench_with_input(
-            BenchmarkId::new("get_type_multi_typed", n),
-            &n,
-            |b, &n| {
-                let mut src = String::new();
-                for i in 0..n {
-                    src.push_str(&format!("(: x Type{})\n", i));
-                }
-                src.push_str("!(get-type x)");
-                b.iter(|| black_box(run_program(&src)));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("get_type_multi_typed", n), &n, |b, &n| {
+            let mut src = String::new();
+            for i in 0..n {
+                src.push_str(&format!("(: x Type{})\n", i));
+            }
+            src.push_str("!(get-type x)");
+            b.iter(|| black_box(run_program(&src)));
+        });
     }
 
     // get_type_arrow_app
     group.bench_function("get_type_arrow_app", |b| {
-        b.iter(|| {
-            black_box(run_program(
-                "(: f (-> Number Bool))\n!(get-type (f 1))",
-            ))
-        });
+        b.iter(|| black_box(run_program("(: f (-> Number Bool))\n!(get-type (f 1))")));
     });
 
     // check_type_match
@@ -930,10 +909,7 @@ fn bench_type_special_forms(c: &mut Criterion) {
                 for i in 0..depth {
                     src.push_str(&format!("(:< T{} T{})\n", i, i + 1));
                 }
-                src.push_str(&format!(
-                    "(: x T0)\n!(check-type x T{})",
-                    depth
-                ));
+                src.push_str(&format!("(: x T0)\n!(check-type x T{})", depth));
                 b.iter(|| black_box(run_program(&src)));
             },
         );
@@ -941,29 +917,17 @@ fn bench_type_special_forms(c: &mut Criterion) {
 
     // type_cast_pass
     group.bench_function("type_cast_pass", |b| {
-        b.iter(|| {
-            black_box(run_program(
-                "(: x Number)\n!(type-cast x Number &self)",
-            ))
-        });
+        b.iter(|| black_box(run_program("(: x Number)\n!(type-cast x Number &self)")));
     });
 
     // type_cast_fail
     group.bench_function("type_cast_fail", |b| {
-        b.iter(|| {
-            black_box(run_program(
-                "(: x Number)\n!(type-cast x String &self)",
-            ))
-        });
+        b.iter(|| black_box(run_program("(: x Number)\n!(type-cast x String &self)")));
     });
 
     // type_cast_meta
     group.bench_function("type_cast_meta", |b| {
-        b.iter(|| {
-            black_box(run_program(
-                "(: x Number)\n!(type-cast x Atom &self)",
-            ))
-        });
+        b.iter(|| black_box(run_program("(: x Number)\n!(type-cast x Atom &self)")));
     });
 
     // is_function_true
@@ -1014,10 +978,7 @@ fn bench_type_fixpoint(c: &mut Criterion) {
                     || {
                         let mut src = String::new();
                         for i in 0..n {
-                            src.push_str(&format!(
-                                "(= (f{} $x) (+ $x {}))\n",
-                                i, i
-                            ));
+                            src.push_str(&format!("(= (f{} $x) (+ $x {}))\n", i, i));
                         }
                         let state = compile(&src).expect("Failed to compile");
                         let env_state = new_env();
@@ -1046,8 +1007,7 @@ fn bench_type_fixpoint(c: &mut Criterion) {
                 "#;
                 let state = compile(src).expect("Failed to compile");
                 let env_state = new_env();
-                let result =
-                    run_state(MettaState::from_env(env_state), &state).expect("eval");
+                let result = run_state(MettaState::from_env(env_state), &state).expect("eval");
                 result.environment
             },
             |env| {

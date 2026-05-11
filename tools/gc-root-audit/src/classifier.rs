@@ -421,7 +421,10 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
         // Extract the generic type name from the alias target
         // (the first PascalCase identifier that isn't MettaValue/MettaValueInner)
         for ref_name in extract_referenced_type_names(&alias.target) {
-            if ref_name != "MettaValue" && ref_name != "MettaValueInner" && ref_name != "MettaValueTrait" {
+            if ref_name != "MettaValue"
+                && ref_name != "MettaValueInner"
+                && ref_name != "MettaValueTrait"
+            {
                 types_reaching_metta_value_as_data.insert(ref_name);
             }
         }
@@ -452,7 +455,10 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
             }
             for ref_ty in referenced_types {
                 // Skip bare MettaValue/MettaValueInner — they propagate to everything
-                if ref_ty == "MettaValue" || ref_ty == "MettaValueInner" || ref_ty == "MettaValueTrait" {
+                if ref_ty == "MettaValue"
+                    || ref_ty == "MettaValueInner"
+                    || ref_ty == "MettaValueTrait"
+                {
                     continue;
                 }
                 if types_reaching_metta_value_as_data.contains(ref_ty) {
@@ -488,8 +494,9 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
             .any(|name| types_reaching_metta_value.contains(name));
 
         // Opaque-only: reaches MettaValue but only through non-data-exposing types
-        let transitively_contains_opaque_only =
-            !static_decl.contains_metta_value && !transitively_contains_data && transitively_contains_any;
+        let transitively_contains_opaque_only = !static_decl.contains_metta_value
+            && !transitively_contains_data
+            && transitively_contains_any;
 
         if !static_decl.contains_metta_value && !transitively_contains_data {
             if transitively_contains_opaque_only {
@@ -658,8 +665,7 @@ pub fn classify(scan: &ScanResult) -> Vec<ClassifiedLocation> {
 
             // Check if the field directly uses concrete "MettaValue" (not via generic).
             // Non-static structs holding concrete MettaValue are transient work items.
-            let uses_concrete_metta_value =
-                type_references_concrete_metta_value(&field.ty);
+            let uses_concrete_metta_value = type_references_concrete_metta_value(&field.ty);
 
             // PhantomData is zero-sized (compile-time only) — no GC concern.
             let is_phantom = field.ty.contains("PhantomData");
@@ -1087,10 +1093,7 @@ mod tests {
     #[test]
     fn test_extract_type_args_multiple() {
         let args = extract_type_args("HashMap < String , V >", "HashMap");
-        assert_eq!(
-            args,
-            Some(vec!["String".to_string(), "V".to_string()])
-        );
+        assert_eq!(args, Some(vec!["String".to_string(), "V".to_string()]));
     }
 
     #[test]
@@ -1107,13 +1110,7 @@ mod tests {
 
     #[test]
     fn test_extract_type_args_deeply_nested() {
-        let args = extract_type_args(
-            "VecDeque < (V , GenericBindings < V >) >",
-            "VecDeque",
-        );
-        assert_eq!(
-            args,
-            Some(vec!["(V , GenericBindings < V >)".to_string()])
-        );
+        let args = extract_type_args("VecDeque < (V , GenericBindings < V >) >", "VecDeque");
+        assert_eq!(args, Some(vec!["(V , GenericBindings < V >)".to_string()]));
     }
 }

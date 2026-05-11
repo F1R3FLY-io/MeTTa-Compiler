@@ -54,8 +54,8 @@ pub fn wide_extract_data(
     template: &[u8],
     data: &[u8],
 ) -> Result<Vec<WideBinding>, WideExtractFailure> {
-    let mut t_off = 0usize;   // template offset
-    let mut d_off = 0usize;   // data offset
+    let mut t_off = 0usize; // template offset
+    let mut d_off = 0usize; // data offset
     let mut bindings: Vec<WideBinding> = Vec::new();
 
     // Stack for tracking compound expression descent.
@@ -87,8 +87,8 @@ pub fn wide_extract_data(
             return Err(WideExtractFailure::Mismatch);
         }
 
-        let t_tag = WideTag::from_byte(template[t_off])
-            .map_err(|_| WideExtractFailure::MalformedInput)?;
+        let t_tag =
+            WideTag::from_byte(template[t_off]).map_err(|_| WideExtractFailure::MalformedInput)?;
 
         match t_tag {
             WideTag::NewVar => {
@@ -117,8 +117,8 @@ pub fn wide_extract_data(
             WideTag::VarRef => {
                 // Template references a previously bound variable — verify match
                 t_off += 1;
-                let (var_idx, consumed) = decode_leb128(&template[t_off..])
-                    .ok_or(WideExtractFailure::MalformedInput)?;
+                let (var_idx, consumed) =
+                    decode_leb128(&template[t_off..]).ok_or(WideExtractFailure::MalformedInput)?;
                 t_off += consumed;
 
                 if var_idx as usize >= bindings.len() {
@@ -149,8 +149,8 @@ pub fn wide_extract_data(
             WideTag::SymbolSize => {
                 // Template has a concrete symbol — data must have the same symbol
                 t_off += 1;
-                let (t_size, t_consumed) = decode_leb128(&template[t_off..])
-                    .ok_or(WideExtractFailure::MalformedInput)?;
+                let (t_size, t_consumed) =
+                    decode_leb128(&template[t_off..]).ok_or(WideExtractFailure::MalformedInput)?;
                 t_off += t_consumed;
                 let t_sym_bytes = &template[t_off..t_off + t_size as usize];
                 t_off += t_size as usize;
@@ -188,8 +188,8 @@ pub fn wide_extract_data(
             WideTag::Arity => {
                 // Template has a compound expression — data must have matching arity
                 t_off += 1;
-                let (t_arity, t_consumed) = decode_leb128(&template[t_off..])
-                    .ok_or(WideExtractFailure::MalformedInput)?;
+                let (t_arity, t_consumed) =
+                    decode_leb128(&template[t_off..]).ok_or(WideExtractFailure::MalformedInput)?;
                 t_off += t_consumed;
 
                 let d_tag = WideTag::from_byte(data[d_off])

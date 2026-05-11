@@ -61,8 +61,6 @@ impl<T> DebugInit for T {
     }
 
     fn declare_debug_funcs<M: Module>(module: &mut M) -> JitResult<DebugFuncIds> {
-
-
         // trace: fn(ctx, msg_idx, value, ip) -> void
         let mut trace_sig = module.make_signature();
         trace_sig.params.push(AbiParam::new(types::I64)); // ctx

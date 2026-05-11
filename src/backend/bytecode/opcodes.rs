@@ -33,7 +33,6 @@ pub enum Opcode {
 
     // === Compiled Unification Opcodes (0x08-0x0F) ===
     // Emitted by the compiler for known patterns. Subject on TOS.
-
     /// Check TOS is S-expression; jump to fail_offset on failure.
     /// Operands: fail_offset: i16
     /// Stack: [subj] -> [subj] (peek)
@@ -142,7 +141,6 @@ pub enum Opcode {
 
     // === Native Special-Form Opcodes (0x28-0x2F) ===
     // Phase A–E of tier-native propagation: eliminate trampoline delegation.
-
     /// 4-arg `unify` special form (Phase A).
     /// Stack: [val1, pattern2] -> [success_body | failure_body (instantiated)]
     /// Operands: success_offset: i16, failure_offset: i16, done_offset: i16
@@ -550,6 +548,9 @@ pub enum Opcode {
     ValidateAtom = 0xED,
     /// Get type of atom in a specific space
     GetTypeSpace = 0xEE,
+    /// Create choice point with inline bytecode branch offsets.
+    /// Operand: <count: u16> <absolute_ip: u16>...
+    ForkInline = 0xEF,
 
     // === Nondeterminism (0xF0-0xF7) ===
     /// Create choice point with alternatives
@@ -816,6 +817,7 @@ impl Opcode {
             | Self::FilterAtom
             | Self::FoldlAtom
             | Self::Fork
+            | Self::ForkInline
             | Self::Collect
             | Self::CollapseBegin
             | Self::CaseBarrierBegin
@@ -835,10 +837,7 @@ impl Opcode {
             | Self::CallCached
             | Self::UCheckArity => 3,
 
-            Self::UCheckAtom
-            | Self::UBindVar
-            | Self::UCheckLong
-            | Self::UCheckValue => 4,
+            Self::UCheckAtom | Self::UBindVar | Self::UCheckLong | Self::UCheckValue => 4,
         }
     }
 
@@ -1052,6 +1051,7 @@ impl Opcode {
             Self::GetMetaType => "get_metatype",
             Self::ValidateAtom => "validate_atom",
             Self::GetTypeSpace => "get_type_space",
+            Self::ForkInline => "fork_inline",
             Self::Fork => "fork",
             Self::Fail => "fail",
             Self::Cut => "cut",
@@ -1365,6 +1365,7 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xEC] = Some(Opcode::GetMetaType);
     table[0xED] = Some(Opcode::ValidateAtom);
     table[0xEE] = Some(Opcode::GetTypeSpace);
+    table[0xEF] = Some(Opcode::ForkInline);
 
     // Nondeterminism
     table[0xF0] = Some(Opcode::Fork);
@@ -1447,9 +1448,9 @@ mod tests {
     fn test_invalid_opcode() {
         // Test that gaps in the opcode space return None
         assert!(Opcode::from_byte(0x10).is_none()); // Gap between compiled unification and value creation
-        // 0x26 = Msort, 0x27 = StructUniqueAtom, 0x28-0x2C = native special-form
-        // opcodes (Unify4, MatchExternal, MatchExternalOr, CollapseBindBegin,
-        // CollapseBindEnd). 0x2D-0x2F are still free.
+                                                    // 0x26 = Msort, 0x27 = StructUniqueAtom, 0x28-0x2C = native special-form
+                                                    // opcodes (Unify4, MatchExternal, MatchExternalOr, CollapseBindBegin,
+                                                    // CollapseBindEnd). 0x2D-0x2F are still free.
         assert!(Opcode::from_byte(0x2D).is_none());
         assert!(Opcode::from_byte(0x2E).is_none());
         assert!(Opcode::from_byte(0x2F).is_none());

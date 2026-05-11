@@ -25,9 +25,8 @@ use super::work_pool::WorkPool;
 
 // Re-export generic types that external code depends on
 pub use super::task_scheduler::{
-    CronHandle, CronState, CronStateMachine, CronEvent,
-    TaskMetadata, ScheduledTask, UnixTimestampMs, now_ms,
-    spawn_cron_with_interval,
+    now_ms, spawn_cron_with_interval, CronEvent, CronHandle, CronState, CronStateMachine,
+    ScheduledTask, TaskMetadata, UnixTimestampMs,
 };
 
 // ============================================================================
@@ -140,7 +139,11 @@ impl MonitorState {
     /// Create a new MonitorState from the global GC pool.
     fn new() -> Self {
         let pool = global_gc_pool();
-        Self::with_params(pool.min_workers(), pool.max_workers(), pool.active_workers())
+        Self::with_params(
+            pool.min_workers(),
+            pool.max_workers(),
+            pool.active_workers(),
+        )
     }
 }
 
@@ -176,8 +179,8 @@ pub fn spawn_gc_cron(
     alloc_count: Arc<AtomicU64>,
     gc_threshold: Arc<AtomicUsize>,
 ) -> GcCronSingleton {
-    use std::sync::atomic::AtomicBool;
     use super::task_scheduler::spawn_cron_with_pool;
+    use std::sync::atomic::AtomicBool;
 
     let cron_pool = cron_work_pool();
 
@@ -208,10 +211,21 @@ pub fn spawn_gc_cron(
 
     // Initial delay matches the interval so the first poll has a meaningful
     // baseline (prev_alloc_count / prev_poll_time are set at construction).
-    handle.schedule_recurring(MONITOR_INTERVAL_MS, MONITOR_INTERVAL_MS, "memory-monitor", move || {
-        execute_memory_monitor(&committed_clone, &alloc_clone, &threshold_clone, &mut monitor, gc_pool);
-        true // always reschedule
-    });
+    handle.schedule_recurring(
+        MONITOR_INTERVAL_MS,
+        MONITOR_INTERVAL_MS,
+        "memory-monitor",
+        move || {
+            execute_memory_monitor(
+                &committed_clone,
+                &alloc_clone,
+                &threshold_clone,
+                &mut monitor,
+                gc_pool,
+            );
+            true // always reschedule
+        },
+    );
 
     // Schedule counter sync (recurring, 200ms)
     //
@@ -337,8 +351,12 @@ fn execute_memory_monitor(
         let decision = monitor.gc_climber.step(smoothed);
 
         match decision.action {
-            ScaleAction::Unpark => { gc_pool.unpark_n(decision.count); }
-            ScaleAction::Park => { gc_pool.park_n(decision.count); }
+            ScaleAction::Unpark => {
+                gc_pool.unpark_n(decision.count);
+            }
+            ScaleAction::Park => {
+                gc_pool.park_n(decision.count);
+            }
             ScaleAction::Hold => {}
         }
     }
@@ -349,15 +367,11 @@ fn execute_memory_monitor(
     // Check for and respawn dead GC workers
     let respawned = gc_pool.check_and_respawn_workers();
     if respawned > 0 {
-        tracing::warn!(
-            respawned,
-            "GC memory monitor: respawned dead GC workers"
-        );
+        tracing::warn!(respawned, "GC memory monitor: respawned dead GC workers");
     }
 
     result
 }
-
 
 // ============================================================================
 // Counter Sync Infrastructure
@@ -386,7 +400,7 @@ pub(crate) static COUNTER_FLUSH_LOCK: parking_lot::Mutex<()> = parking_lot::Mute
 fn execute_counter_sync() {
     use crate::backend::bytecode::tiered_cache::global_tiered_cache;
     use crate::backend::models::gc_allocator::{global_allocator, is_gc_in_progress};
-    use crate::backend::models::{MettaValue, MettaValueTrait, MettaValueInner};
+    use crate::backend::models::{MettaValue, MettaValueInner, MettaValueTrait};
 
     // Skip if GC is in progress — process_gc_response Phase 3 may be
     // freeing slots concurrently. The GC-triggered flush handles
@@ -426,11 +440,17 @@ fn execute_counter_sync() {
             if cached_hash != 0 {
                 // Fast path: reuse cached hash — DashMap lookup by u64, no recursive xxh3
                 if let Some(state) = cache.entries.get(&cached_hash) {
-                    state.execution_count.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+                    state
+                        .execution_count
+                        .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
                     #[cfg(feature = "track-stats")]
-                    cache.total_executions.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+                    cache
+                        .total_executions
+                        .fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
                     page.exec_count_fetch_sub(slot_idx, count);
-                    let new_count = state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
+                    let new_count = state
+                        .execution_count
+                        .load(std::sync::atomic::Ordering::Relaxed);
                     cache.maybe_trigger_jit1(&state, new_count);
                     cache.maybe_trigger_jit2(&state, new_count);
                     continue;
@@ -454,11 +474,17 @@ fn execute_counter_sync() {
             let value = unsafe { MettaValue::from_inner_ptr(ptr) };
             let state = cache.get_or_create_state(&value);
             page.set_compilation_hash(slot_idx, state.expr_hash);
-            state.execution_count.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+            state
+                .execution_count
+                .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
             #[cfg(feature = "track-stats")]
-            cache.total_executions.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+            cache
+                .total_executions
+                .fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
             page.exec_count_fetch_sub(slot_idx, count);
-            let new_count = state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
+            let new_count = state
+                .execution_count
+                .load(std::sync::atomic::Ordering::Relaxed);
             cache.maybe_trigger_bytecode(&value, &state, new_count);
             cache.maybe_trigger_jit1(&state, new_count);
             cache.maybe_trigger_jit2(&state, new_count);
@@ -472,12 +498,12 @@ fn execute_counter_sync() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::gc_allocator::is_gc_requested;
     use super::super::gc_pool::AdaptiveGcPool;
+    use super::*;
     use std::sync::atomic::Ordering;
-    use std::time::Duration;
     use std::thread;
+    use std::time::Duration;
 
     // ========================================================================
     // GC-specific integration tests
@@ -559,7 +585,8 @@ mod tests {
         alloc_count.store(50_000, Ordering::Relaxed);
 
         // Second poll: rate = 50k / 0.1s = 500k/s > threshold
-        let triggered = execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+        let triggered =
+            execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
         assert!(triggered, "should request GC at 500k allocs/s");
         pool.shutdown();
@@ -582,12 +609,10 @@ mod tests {
         alloc_count.store(100, Ordering::Relaxed); // 100 / 0.1s = 1000/s < 100k threshold
 
         // Second poll — assert on return value instead of global flag (race-free)
-        let triggered = execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+        let triggered =
+            execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
-        assert!(
-            !triggered,
-            "should NOT request GC at 1000 allocs/s"
-        );
+        assert!(!triggered, "should NOT request GC at 1000 allocs/s");
         pool.shutdown();
     }
 
@@ -601,7 +626,8 @@ mod tests {
         let pool = AdaptiveGcPool::with_workers(1, 2);
 
         // First poll: committed (8 MB) >= gc_threshold (4 MB) should trigger
-        let triggered = execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+        let triggered =
+            execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
         assert!(
             triggered,
@@ -620,7 +646,8 @@ mod tests {
         let pool = AdaptiveGcPool::with_workers(1, 2);
 
         // committed (2 MB) < gc_threshold (4 MB) should NOT trigger
-        let triggered = execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+        let triggered =
+            execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
 
         assert!(
             !triggered,
@@ -662,14 +689,16 @@ mod tests {
         let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let d = Arc::clone(&done);
 
-        singleton.handle.schedule_once(0, "thread-name-probe", move || {
-            *tn.lock() = std::thread::current()
-                .name()
-                .unwrap_or("unknown")
-                .to_string();
-            d.store(true, Ordering::Release);
-            true
-        });
+        singleton
+            .handle
+            .schedule_once(0, "thread-name-probe", move || {
+                *tn.lock() = std::thread::current()
+                    .name()
+                    .unwrap_or("unknown")
+                    .to_string();
+                d.store(true, Ordering::Release);
+                true
+            });
 
         // Wait for probe task to execute
         let deadline = Instant::now() + Duration::from_secs(2);

@@ -12,7 +12,9 @@ use std::sync::OnceLock;
 use super::equiv_classes::compute_equiv_classes;
 use super::minimize::minimize;
 use super::nfa::build_nfa;
-use super::pattern_defs::{all_pattern_defs, is_numeric_producer, PatternAction, PatternDef, PostCondition, StatKind};
+use super::pattern_defs::{
+    all_pattern_defs, is_numeric_producer, PatternAction, PatternDef, PostCondition, StatKind,
+};
 use super::subset::{subset_construction, DEAD};
 use super::types::{OptimizationStats, PeepholeAction};
 
@@ -43,7 +45,11 @@ fn build_dfa_tables() -> DfaTables {
     let dfa = subset_construction(&nfa, &classes);
     let min_dfa = minimize(&dfa);
 
-    let transition: Vec<Vec<u16>> = min_dfa.states.iter().map(|s| s.transitions.clone()).collect();
+    let transition: Vec<Vec<u16>> = min_dfa
+        .states
+        .iter()
+        .map(|s| s.transitions.clone())
+        .collect();
     let accept: Vec<Option<u16>> = min_dfa.states.iter().map(|s| s.accept).collect();
 
     DfaTables {
@@ -201,12 +207,7 @@ fn build_action(
 ///
 /// For `ReplaceBytesWithCapture`, the template has zero placeholders for opcodes
 /// that depend on the pattern. This function fills them in.
-fn fill_template_opcodes(
-    result: &mut [u8],
-    pattern: &PatternDef,
-    _code: &[u8],
-    _offset: usize,
-) {
+fn fill_template_opcodes(result: &mut [u8], pattern: &PatternDef, _code: &[u8], _offset: usize) {
     match pattern.stat {
         StatKind::ComparisonBranchFused => {
             // Template: [InvCmp, JumpIfXxx, hi, lo]
@@ -263,13 +264,21 @@ fn invert_comparison(cmp: u8) -> u8 {
     let eq = Opcode::Eq.to_byte();
     let ne = Opcode::Ne.to_byte();
 
-    if cmp == lt { ge }
-    else if cmp == le { gt }
-    else if cmp == gt { le }
-    else if cmp == ge { lt }
-    else if cmp == eq { ne }
-    else if cmp == ne { eq }
-    else { cmp }
+    if cmp == lt {
+        ge
+    } else if cmp == le {
+        gt
+    } else if cmp == gt {
+        le
+    } else if cmp == ge {
+        lt
+    } else if cmp == eq {
+        ne
+    } else if cmp == ne {
+        eq
+    } else {
+        cmp
+    }
 }
 
 /// Invert a conditional jump opcode (JumpIfTrue ↔ JumpIfFalse).
@@ -277,9 +286,13 @@ fn invert_jump(jump: u8) -> u8 {
     let jt = Opcode::JumpIfTrue.to_byte();
     let jf = Opcode::JumpIfFalse.to_byte();
 
-    if jump == jt { jf }
-    else if jump == jf { jt }
-    else { jump }
+    if jump == jt {
+        jf
+    } else if jump == jf {
+        jt
+    } else {
+        jump
+    }
 }
 
 /// Increment the appropriate stat counter.
@@ -303,7 +316,9 @@ fn increment_stat(stats: &mut OptimizationStats, stat: StatKind) {
         StatKind::BranchInverted | StatKind::ComparisonBranchFused => {
             stats.comparison_folded += 1;
         }
-        StatKind::OverDupFolded | StatKind::PopFused | StatKind::BuildDeconstructFolded
+        StatKind::OverDupFolded
+        | StatKind::PopFused
+        | StatKind::BuildDeconstructFolded
         | StatKind::StoreLoadFolded => {
             stats.idempotent_removed += 1;
         }
@@ -318,7 +333,10 @@ mod tests {
     #[test]
     fn test_dfa_tables_build() {
         let tables = get_tables();
-        assert!(tables.transition.len() > 0, "DFA should have at least one state");
+        assert!(
+            tables.transition.len() > 0,
+            "DFA should have at least one state"
+        );
         assert!(!tables.patterns.is_empty());
         assert_eq!(tables.byte_to_class.len(), 256);
     }
@@ -328,7 +346,10 @@ mod tests {
         let code = vec![Opcode::Nop.to_byte(), Opcode::Return.to_byte()];
         let mut stats = OptimizationStats::new();
         let action = dfa_scan_pattern(&code, 0, None, &mut stats);
-        assert!(matches!(action, PeepholeAction::Remove { start: 0, end: 1 }));
+        assert!(matches!(
+            action,
+            PeepholeAction::Remove { start: 0, end: 1 }
+        ));
         assert_eq!(stats.nops_removed, 1);
     }
 
@@ -341,7 +362,10 @@ mod tests {
         ];
         let mut stats = OptimizationStats::new();
         let action = dfa_scan_pattern(&code, 0, None, &mut stats);
-        assert!(matches!(action, PeepholeAction::Remove { start: 0, end: 2 }));
+        assert!(matches!(
+            action,
+            PeepholeAction::Remove { start: 0, end: 2 }
+        ));
         assert_eq!(stats.swap_swap_removed, 1);
     }
 
@@ -368,11 +392,7 @@ mod tests {
     #[test]
     fn test_dfa_numeric_guard() {
         // Without numeric producer guard, PushLongSmall 0; Add should NOT be removed
-        let code = vec![
-            Opcode::PushLongSmall.to_byte(),
-            0,
-            Opcode::Add.to_byte(),
-        ];
+        let code = vec![Opcode::PushLongSmall.to_byte(), 0, Opcode::Add.to_byte()];
         let mut stats = OptimizationStats::new();
         let action = dfa_scan_pattern(&code, 0, None, &mut stats);
         // Should not match identity pattern (no numeric producer)
@@ -385,8 +405,7 @@ mod tests {
 
         // With numeric producer guard, should be removed
         let mut stats2 = OptimizationStats::new();
-        let action2 =
-            dfa_scan_pattern(&code, 0, Some(Opcode::PushLongSmall), &mut stats2);
+        let action2 = dfa_scan_pattern(&code, 0, Some(Opcode::PushLongSmall), &mut stats2);
         assert!(
             matches!(action2, PeepholeAction::Remove { .. }),
             "Should optimize with numeric producer guard"
@@ -495,10 +514,7 @@ mod tests {
                 assert_eq!(bytes[2], 0x00);
                 assert_eq!(bytes[3], 0x05);
             }
-            _ => panic!(
-                "Expected 5-byte comparison+branch fusion, got {:?}",
-                action
-            ),
+            _ => panic!("Expected 5-byte comparison+branch fusion, got {:?}", action),
         }
     }
 

@@ -121,9 +121,14 @@ fn test_include_idempotent() {
         "Expected at least one result after second include"
     );
     assert!(
-        results.iter().all(|r| matches!(r.inner(), MettaValueInner::Long(5))),
+        results
+            .iter()
+            .all(|r| matches!(r.inner(), MettaValueInner::Long(5))),
         "All results should be Long(5), got {:?}",
-        results.iter().map(|r| format!("{:?}", r.inner())).collect::<Vec<_>>()
+        results
+            .iter()
+            .map(|r| format!("{:?}", r.inner()))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -840,7 +845,8 @@ fn test_path_resolution_directory_module() {
     // Should resolve to fixtures/dirmod/dirmod.metta
     let expected = fixtures.join("dirmod").join("dirmod.metta");
     assert_eq!(
-        resolved, expected,
+        resolved,
+        expected,
         "Expected directory module resolution to {}, got {}",
         expected.display(),
         resolved.display()
@@ -887,7 +893,8 @@ fn test_path_resolution_metta_module_path() {
     // Should find test_module.metta in the METTA_MODULE_PATH
     let expected = fixtures.join("test_module.metta");
     assert_eq!(
-        resolved, expected,
+        resolved,
+        expected,
         "Expected METTA_MODULE_PATH resolution to {}, got {}",
         expected.display(),
         resolved.display()

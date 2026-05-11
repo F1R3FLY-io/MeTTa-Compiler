@@ -59,8 +59,11 @@ impl RuleMatchFilter {
             None | Some("") => (None, false),
             Some("*") => (Some(HashSet::new()), true),
             Some(list) => {
-                let set: HashSet<String> =
-                    list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let set: HashSet<String> = list
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 if set.is_empty() {
                     (None, false)
                 } else {
@@ -71,7 +74,11 @@ impl RuleMatchFilter {
         let emit_successes = std::env::var("METTA_TRACE_RULE_MATCH_SUCCESS")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        Self { heads, all_heads, emit_successes }
+        Self {
+            heads,
+            all_heads,
+            emit_successes,
+        }
     }
 
     /// Returns `true` if the filter is completely disabled (no events
@@ -117,7 +124,7 @@ pub enum LiveOutcome<'v, V> {
     Success {
         /// Pairs of (variable name, bound value reference). Empty when
         /// `emit_successes` is false (the matchers can skip the conversion).
-        bindings: Vec<(&'static str, &'v V)>,
+        bindings: Vec<(String, &'v V)>,
     },
     StructuralCheckFailed {
         check_index: u32,
@@ -128,15 +135,15 @@ pub enum LiveOutcome<'v, V> {
     },
     PathNavigateFailed {
         path: Vec<u16>,
-        var: Option<&'static str>,
+        var: Option<String>,
     },
     EqualCheckFailed {
-        var: &'static str,
+        var: String,
         first_value: V,
         second_value: V,
     },
     BidirectionalUnifyFailed {
-        var: &'static str,
+        var: String,
         bound: V,
         candidate: V,
         reason: &'static str,
@@ -164,27 +171,26 @@ pub enum DetailedFailure<V> {
         /// For arity checks, the expected arity (number of children).
         expected_arity: Option<usize>,
         /// For atom/str checks, the expected literal name.
-        expected_atom: Option<&'static str>,
+        expected_atom: Option<String>,
         /// The value that was actually present at `path`.
         actual: Option<V>,
     },
     PathNavigateFailed {
         path: Vec<u16>,
-        var: Option<&'static str>,
+        var: Option<String>,
     },
     EqualCheckFailed {
-        var: &'static str,
+        var: String,
         first_value: V,
         second_value: V,
     },
     BidirectionalUnifyFailed {
-        var: &'static str,
+        var: String,
         bound: V,
         candidate: V,
         reason: &'static str,
     },
 }
-
 
 impl<'v, V> LiveOutcome<'v, V>
 where
@@ -197,37 +203,49 @@ where
             LiveOutcome::Success { bindings } => RuleMatchOutcome::Success {
                 bindings: bindings
                     .into_iter()
-                    .map(|(name, val)| (name.to_string(), trace_value_generic(val)))
+                    .map(|(name, val)| (name, trace_value_generic(val)))
                     .collect(),
             },
-            LiveOutcome::StructuralCheckFailed { check_index, check_kind, path, expected, actual } => {
-                RuleMatchOutcome::StructuralCheckFailed {
-                    check_index,
-                    check_kind: check_kind.to_string(),
-                    path,
-                    expected: trace_value_generic(&expected),
-                    actual: actual.as_ref().map(trace_value_generic).unwrap_or(TraceValue::Empty),
-                }
-            }
+            LiveOutcome::StructuralCheckFailed {
+                check_index,
+                check_kind,
+                path,
+                expected,
+                actual,
+            } => RuleMatchOutcome::StructuralCheckFailed {
+                check_index,
+                check_kind: check_kind.to_string(),
+                path,
+                expected: trace_value_generic(&expected),
+                actual: actual
+                    .as_ref()
+                    .map(trace_value_generic)
+                    .unwrap_or(TraceValue::Empty),
+            },
             LiveOutcome::PathNavigateFailed { path, var } => RuleMatchOutcome::PathNavigateFailed {
                 path,
-                var: var.map(|s| s.to_string()),
+                var,
             },
-            LiveOutcome::EqualCheckFailed { var, first_value, second_value } => {
-                RuleMatchOutcome::EqualCheckFailed {
-                    var: var.to_string(),
-                    first_value: trace_value_generic(&first_value),
-                    second_value: trace_value_generic(&second_value),
-                }
-            }
-            LiveOutcome::BidirectionalUnifyFailed { var, bound, candidate, reason } => {
-                RuleMatchOutcome::BidirectionalUnifyFailed {
-                    var: var.to_string(),
-                    bound: trace_value_generic(&bound),
-                    candidate: trace_value_generic(&candidate),
-                    reason: reason.to_string(),
-                }
-            }
+            LiveOutcome::EqualCheckFailed {
+                var,
+                first_value,
+                second_value,
+            } => RuleMatchOutcome::EqualCheckFailed {
+                var,
+                first_value: trace_value_generic(&first_value),
+                second_value: trace_value_generic(&second_value),
+            },
+            LiveOutcome::BidirectionalUnifyFailed {
+                var,
+                bound,
+                candidate,
+                reason,
+            } => RuleMatchOutcome::BidirectionalUnifyFailed {
+                var,
+                bound: trace_value_generic(&bound),
+                candidate: trace_value_generic(&candidate),
+                reason: reason.to_string(),
+            },
             LiveOutcome::MorkExtractFailed { note } => RuleMatchOutcome::MorkExtractFailed {
                 note: note.to_string(),
             },
@@ -281,7 +299,14 @@ pub fn emit_match_attempt<V>(
 
     let input = trace_value_generic(call_expr);
     crate::backend::trace::with_trace_collector_ref(|tc| {
-        tc.emit_converted(TraceTier::TreeWalker, depth, input.clone(), Vec::new(), expr_span, kind.clone());
+        tc.emit_converted(
+            TraceTier::TreeWalker,
+            depth,
+            input.clone(),
+            Vec::new(),
+            expr_span,
+            kind.clone(),
+        );
     });
 }
 
@@ -309,8 +334,11 @@ fn rule_lookup_filter() -> &'static RuleMatchFilter {
             None | Some("") => (None, false),
             Some("*") => (Some(HashSet::new()), true),
             Some(list) => {
-                let set: HashSet<String> =
-                    list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let set: HashSet<String> = list
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 if set.is_empty() {
                     (None, false)
                 } else {
@@ -318,7 +346,11 @@ fn rule_lookup_filter() -> &'static RuleMatchFilter {
                 }
             }
         };
-        RuleMatchFilter { heads, all_heads, emit_successes: true }
+        RuleMatchFilter {
+            heads,
+            all_heads,
+            emit_successes: true,
+        }
     })
 }
 
@@ -356,10 +388,15 @@ where
 {
     match detail {
         DetailedFailure::StructuralCheckFailed {
-            check_index, check_kind, path, expected_arity, expected_atom, actual,
+            check_index,
+            check_kind,
+            path,
+            expected_arity,
+            expected_atom,
+            actual,
         } => {
             let expected = if let Some(name) = expected_atom {
-                TraceValue::Atom(name.to_string())
+                TraceValue::Atom(name)
             } else if let Some(arity) = expected_arity {
                 TraceValue::Atom(format!("<arity {}>", arity))
             } else {
@@ -370,30 +407,36 @@ where
                 check_kind: check_kind.to_string(),
                 path,
                 expected,
-                actual: actual.as_ref().map(trace_value_generic).unwrap_or(TraceValue::Empty),
+                actual: actual
+                    .as_ref()
+                    .map(trace_value_generic)
+                    .unwrap_or(TraceValue::Empty),
             }
         }
-        DetailedFailure::PathNavigateFailed { path, var } => {
-            RuleMatchOutcome::PathNavigateFailed {
-                path,
-                var: var.map(|s| s.to_string()),
-            }
-        }
-        DetailedFailure::EqualCheckFailed { var, first_value, second_value } => {
-            RuleMatchOutcome::EqualCheckFailed {
-                var: var.to_string(),
-                first_value: trace_value_generic(&first_value),
-                second_value: trace_value_generic(&second_value),
-            }
-        }
-        DetailedFailure::BidirectionalUnifyFailed { var, bound, candidate, reason } => {
-            RuleMatchOutcome::BidirectionalUnifyFailed {
-                var: var.to_string(),
-                bound: trace_value_generic(&bound),
-                candidate: trace_value_generic(&candidate),
-                reason: reason.to_string(),
-            }
-        }
+        DetailedFailure::PathNavigateFailed { path, var } => RuleMatchOutcome::PathNavigateFailed {
+            path,
+            var,
+        },
+        DetailedFailure::EqualCheckFailed {
+            var,
+            first_value,
+            second_value,
+        } => RuleMatchOutcome::EqualCheckFailed {
+            var,
+            first_value: trace_value_generic(&first_value),
+            second_value: trace_value_generic(&second_value),
+        },
+        DetailedFailure::BidirectionalUnifyFailed {
+            var,
+            bound,
+            candidate,
+            reason,
+        } => RuleMatchOutcome::BidirectionalUnifyFailed {
+            var,
+            bound: trace_value_generic(&bound),
+            candidate: trace_value_generic(&candidate),
+            reason: reason.to_string(),
+        },
     }
 }
 
@@ -439,7 +482,14 @@ pub fn emit_outcome<V>(
 
     let input = trace_value_generic(call_expr);
     crate::backend::trace::with_trace_collector_ref(|tc| {
-        tc.emit_converted(TraceTier::TreeWalker, depth, input.clone(), Vec::new(), expr_span, kind.clone());
+        tc.emit_converted(
+            TraceTier::TreeWalker,
+            depth,
+            input.clone(),
+            Vec::new(),
+            expr_span,
+            kind.clone(),
+        );
     });
 }
 

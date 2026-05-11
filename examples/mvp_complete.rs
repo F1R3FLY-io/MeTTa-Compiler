@@ -92,7 +92,8 @@ fn test_control_flow() {
     }
 
     // Test that unused branch is not evaluated
-    let state2 = compile("!(if True 1 (error \"should not evaluate\" unused))").expect("compile failed");
+    let state2 =
+        compile("!(if True 1 (error \"should not evaluate\" unused))").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state2.source()[0];
@@ -200,10 +201,9 @@ fn test_error_termination() {
     let env = new_env();
 
     // Define safe-div rule
-    let rule = compile(
-        "(= (safe-div $x $y) (if (== $y 0) (error \"division by zero\" $y) (/ $x $y)))",
-    )
-    .expect("compile failed");
+    let rule =
+        compile("(= (safe-div $x $y) (if (== $y 0) (error \"division by zero\" $y) (/ $x $y)))")
+            .expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let rule_expr = rule.source()[0];

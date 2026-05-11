@@ -87,12 +87,10 @@ impl DeserState {
 /// This prevents variable capture bugs when rules from different scopes share
 /// the same De Bruijn index but represent different logical variables.
 static VARNAME_BASES: [&str; 64] = [
-    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l",
-    "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x",
-    "y", "z", "a1", "b1", "c1", "d1", "e1", "f1", "g1", "h1",
-    "i1", "j1", "k1", "l1", "m1", "n1", "o1", "p1", "q1", "r1",
-    "s1", "t1", "u1", "v1", "w1", "x1", "y1", "z1", "a2", "b2",
-    "c2", "d2", "e2", "f2", "g2", "h2", "i2", "j2", "k2", "l2",
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
+    "t", "u", "v", "w", "x", "y", "z", "a1", "b1", "c1", "d1", "e1", "f1", "g1", "h1", "i1", "j1",
+    "k1", "l1", "m1", "n1", "o1", "p1", "q1", "r1", "s1", "t1", "u1", "v1", "w1", "x1", "y1", "z1",
+    "a2", "b2", "c2", "d2", "e2", "f2", "g2", "h2", "i2", "j2", "k2", "l2",
 ];
 
 /// Global epoch counter for unique variable name generation.
@@ -123,7 +121,6 @@ impl super::MettaEnvironment {
         let factory = global_factory();
         super::mork_encoding::mork_expr_to_generic_value(expr, space, &factory)
     }
-
 }
 
 /// Convert MORK Expr to generic value V using factory.
@@ -248,7 +245,10 @@ where
     // SmallVec<[V; 4]> avoids heap allocation for S-expressions with ≤4 children
     // (the overwhelmingly common case: head + 1-3 args).
     enum StackFrame<V> {
-        Arity { remaining: u8, items: SmallVec<[V; 4]> },
+        Arity {
+            remaining: u8,
+            items: SmallVec<[V; 4]>,
+        },
     }
 
     let mut stack: Vec<StackFrame<V>> = Vec::new();
@@ -301,15 +301,17 @@ where
                     } else {
                         return Err(format!(
                             "Variable reference {} out of range (only {} vars defined)",
-                            i,
-                            newvar_count
+                            i, newvar_count
                         ));
                     }
                 }
                 Tag::SymbolSize(size) => {
                     let end = offset + size as usize;
                     if end > bytes.len() {
-                        return Err(format!("Symbol size {} exceeds available bytes at offset {}", size, offset));
+                        return Err(format!(
+                            "Symbol size {} exceeds available bytes at offset {}",
+                            size, offset
+                        ));
                     }
                     let symbol_bytes = &bytes[offset..end];
                     offset = end;
@@ -363,8 +365,9 @@ where
                         ClassifiedLiteral::BoolTrue => factory.bool(true),
                         ClassifiedLiteral::BoolFalse => factory.bool(false),
                         ClassifiedLiteral::String(inner) => factory.string(inner),
-                        ClassifiedLiteral::LongOverflow
-                        | ClassifiedLiteral::Atom => factory.atom(symbol_str),
+                        ClassifiedLiteral::LongOverflow | ClassifiedLiteral::Atom => {
+                            factory.atom(symbol_str)
+                        }
                     }
                 }
                 Tag::Arity(arity) => {

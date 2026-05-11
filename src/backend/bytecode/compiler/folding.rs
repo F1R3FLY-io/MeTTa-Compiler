@@ -10,10 +10,9 @@ use crate::backend::models::{MettaValue, ValueView};
 pub fn try_eval_constant(expr: &MettaValue) -> Option<MettaValue> {
     match expr.view() {
         // Base cases: these are already constants
-        ValueView::Long(_)
-        | ValueView::Float(_)
-        | ValueView::Bool(_)
-        | ValueView::Unit => Some(expr.clone()),
+        ValueView::Long(_) | ValueView::Float(_) | ValueView::Bool(_) | ValueView::Unit => {
+            Some(expr.clone())
+        }
 
         ValueView::String(_) => Some(expr.clone()),
 
@@ -252,9 +251,7 @@ pub fn try_fold_boolean_values(op: &str, args: &[MettaValue]) -> Option<MettaVal
             }
             // Only fold when both args are booleans to preserve type error semantics
             match (args[0].view(), args[1].view()) {
-                (ValueView::Bool(a), ValueView::Bool(b)) => {
-                    Some(MettaValue::Bool(a && b))
-                }
+                (ValueView::Bool(a), ValueView::Bool(b)) => Some(MettaValue::Bool(a && b)),
                 _ => None,
             }
         }
@@ -264,9 +261,7 @@ pub fn try_fold_boolean_values(op: &str, args: &[MettaValue]) -> Option<MettaVal
             }
             // Only fold when both args are booleans to preserve type error semantics
             match (args[0].view(), args[1].view()) {
-                (ValueView::Bool(a), ValueView::Bool(b)) => {
-                    Some(MettaValue::Bool(a || b))
-                }
+                (ValueView::Bool(a), ValueView::Bool(b)) => Some(MettaValue::Bool(a || b)),
                 _ => None,
             }
         }
@@ -284,13 +279,10 @@ pub fn try_fold_boolean_values(op: &str, args: &[MettaValue]) -> Option<MettaVal
                 return None;
             }
             match (args[0].view(), args[1].view()) {
-                (ValueView::Bool(a), ValueView::Bool(b)) => {
-                    Some(MettaValue::Bool(a ^ b))
-                }
+                (ValueView::Bool(a), ValueView::Bool(b)) => Some(MettaValue::Bool(a ^ b)),
                 _ => None,
             }
         }
         _ => None,
     }
 }
-

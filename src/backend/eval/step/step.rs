@@ -13,7 +13,7 @@
 use smallvec::smallvec;
 use tracing::trace;
 
-use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
+use crate::backend::eval::trampoline::{EvalContext, MettaEnvironment};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 use super::sexpr::eval_sexpr_step_with_original;
@@ -104,11 +104,17 @@ where
     }
 
     // Ground types evaluate to themselves
-    if matches!(value.inner_raw(),
-        MettaValueInner::Bool(_) | MettaValueInner::Long(_) | MettaValueInner::Float(_)
-        | MettaValueInner::String(_) | MettaValueInner::Space(_) | MettaValueInner::State(_)
-        | MettaValueInner::Unit | MettaValueInner::Memo(_))
-    {
+    if matches!(
+        value.inner_raw(),
+        MettaValueInner::Bool(_)
+            | MettaValueInner::Long(_)
+            | MettaValueInner::Float(_)
+            | MettaValueInner::String(_)
+            | MettaValueInner::Space(_)
+            | MettaValueInner::State(_)
+            | MettaValueInner::Unit
+            | MettaValueInner::Memo(_)
+    ) {
         return GenericEvalStep::Done((smallvec![value], env));
     }
 
@@ -239,21 +245,17 @@ mod tests {
         let factory = ctx.factory();
 
         // S-expression should dispatch to eval_sexpr_step_generic
-        let value = factory.sexpr(vec![
-            factory.atom("+"),
-            factory.long(1),
-            factory.long(2),
-        ]);
+        let value = factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]);
         let result = eval_step_generic(value, env, 0, &ctx);
         // Should return some step that's not Done (needs more work)
         // The exact step type depends on whether + is a grounded op
         match result {
-            GenericEvalStep::Done(_) => {}                  // Could be immediate if grounded
-            GenericEvalStep::StartGroundedOp { .. } => {}   // TCO grounded op
-            GenericEvalStep::EvalGroundedArgs { .. } => {}  // Needs arg eval
+            GenericEvalStep::Done(_) => {} // Could be immediate if grounded
+            GenericEvalStep::StartGroundedOp { .. } => {} // TCO grounded op
+            GenericEvalStep::EvalGroundedArgs { .. } => {} // Needs arg eval
             GenericEvalStep::EvalRuleMatchesLazy { .. } => {} // Rule matching
-            GenericEvalStep::EvalSExpr { .. } => {}         // Needs sub-eval
-            _ => {} // Other step types are valid too
+            GenericEvalStep::EvalSExpr { .. } => {} // Needs sub-eval
+            _ => {}                        // Other step types are valid too
         }
     }
 
@@ -301,8 +303,16 @@ mod tests {
         let factory = ctx.factory();
 
         let span = Span {
-            start: Position { row: 1, column: 5, byte_offset: 5 },
-            end: Position { row: 1, column: 7, byte_offset: 7 },
+            start: Position {
+                row: 1,
+                column: 5,
+                byte_offset: 5,
+            },
+            end: Position {
+                row: 1,
+                column: 7,
+                byte_offset: 7,
+            },
         };
         let value = factory.spanned(factory.long(42), span);
 
@@ -330,8 +340,16 @@ mod tests {
         let factory = ctx.factory();
 
         let span = Span {
-            start: Position { row: 0, column: 0, byte_offset: 0 },
-            end: Position { row: 0, column: 3, byte_offset: 3 },
+            start: Position {
+                row: 0,
+                column: 0,
+                byte_offset: 0,
+            },
+            end: Position {
+                row: 0,
+                column: 3,
+                byte_offset: 3,
+            },
         };
         let value = factory.spanned(factory.atom("foo"), span);
 
@@ -357,8 +375,16 @@ mod tests {
         let factory = ctx.factory();
 
         let span = Span {
-            start: Position { row: 2, column: 0, byte_offset: 20 },
-            end: Position { row: 2, column: 10, byte_offset: 30 },
+            start: Position {
+                row: 2,
+                column: 0,
+                byte_offset: 20,
+            },
+            end: Position {
+                row: 2,
+                column: 10,
+                byte_offset: 30,
+            },
         };
         let error = factory.error("test error", factory.atom("TestError"));
         let spanned_error = factory.spanned(error, span);
@@ -404,13 +430,18 @@ mod tests {
 
         // (quote foo) should return Done with Quoted(foo)
         let span = Span {
-            start: Position { row: 0, column: 0, byte_offset: 0 },
-            end: Position { row: 0, column: 11, byte_offset: 11 },
+            start: Position {
+                row: 0,
+                column: 0,
+                byte_offset: 0,
+            },
+            end: Position {
+                row: 0,
+                column: 11,
+                byte_offset: 11,
+            },
         };
-        let sexpr = factory.sexpr(vec![
-            factory.atom("quote"),
-            factory.atom("foo"),
-        ]);
+        let sexpr = factory.sexpr(vec![factory.atom("quote"), factory.atom("foo")]);
         let spanned_sexpr = factory.spanned(sexpr, span);
 
         match eval_step_generic(spanned_sexpr, env, 0, &ctx) {

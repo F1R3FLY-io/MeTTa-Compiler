@@ -59,7 +59,10 @@ pub fn compile_eval_if<'a, 'b>(codegen: &mut CodegenContext<'a, 'b>) -> JitResul
         .icmp(IntCC::Equal, condition, tag_bool_false);
 
     // is_unit = (condition == TAG_UNIT)
-    let is_unit = codegen.builder.ins().icmp(IntCC::Equal, condition, tag_unit);
+    let is_unit = codegen
+        .builder
+        .ins()
+        .icmp(IntCC::Equal, condition, tag_unit);
 
     // is_falsy = is_false || is_unit
     let is_falsy = codegen.builder.ins().bor(is_false, is_unit);

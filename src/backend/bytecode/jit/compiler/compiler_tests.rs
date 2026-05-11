@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use super::*;
 
-use crate::backend::bytecode::jit::runtime::{jit_runtime_collect_native, jit_runtime_yield_native};
+use crate::backend::bytecode::jit::runtime::{
+    jit_runtime_collect_native, jit_runtime_yield_native,
+};
 use crate::backend::bytecode::jit::{
     JitBailoutReason, JitBindingFrame, JitChoicePoint, JitContext, JitValue, JIT_SIGNAL_YIELD,
 };
@@ -84,7 +86,6 @@ fn test_compile_simple_addition() {
 
 #[test]
 fn test_jit_execute_addition() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: 10 + 20 = 30
@@ -121,7 +122,6 @@ fn test_jit_execute_addition() {
 
 #[test]
 fn test_jit_execute_arithmetic_chain() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: ((10 + 20) * 3) - 5 = 85
@@ -156,7 +156,6 @@ fn test_jit_execute_arithmetic_chain() {
 
 #[test]
 fn test_jit_execute_boolean_logic() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: (True or False) and (not False) = True
@@ -191,7 +190,6 @@ fn test_jit_execute_boolean_logic() {
 
 #[test]
 fn test_jit_execute_comparison() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: 5 < 10 = True
@@ -223,7 +221,6 @@ fn test_jit_execute_comparison() {
 
 #[test]
 fn test_jit_execute_division() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: 100 / 4 = 25
@@ -255,7 +252,6 @@ fn test_jit_execute_division() {
 
 #[test]
 fn test_jit_execute_modulo() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: 17 % 5 = 2
@@ -307,7 +303,6 @@ fn test_can_compile_pow() {
 
 #[test]
 fn test_jit_execute_pow() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: 2^10 = 1024
@@ -344,7 +339,6 @@ fn test_jit_execute_pow() {
 
 #[test]
 fn test_jit_execute_pow_zero_exponent() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: 5^0 = 1
@@ -380,7 +374,6 @@ fn test_jit_execute_pow_zero_exponent() {
 
 #[test]
 fn test_can_compile_push_constant() {
-
     // Test that PushConstant is now compilable (Stage 2)
     let mut builder = ChunkBuilder::new("test_const_compilable");
     let idx = builder.add_constant(MettaValue::Long(1_000_000));
@@ -396,7 +389,6 @@ fn test_can_compile_push_constant() {
 
 #[test]
 fn test_jit_execute_push_constant() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: load constant 1_000_000
@@ -429,7 +421,6 @@ fn test_jit_execute_push_constant() {
 
 #[test]
 fn test_jit_execute_push_constant_arithmetic() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: 1_000_000 + 500_000 = 1_500_000
@@ -475,7 +466,6 @@ fn exec_jit(
     code_ptr: *const (),
     constants: &[crate::backend::MettaValue],
 ) -> crate::backend::bytecode::jit::JitValue {
-
     let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx =
         unsafe { JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len()) };
@@ -490,7 +480,6 @@ fn exec_jit(
 
 #[test]
 fn test_jit_integration_simple_arithmetic() {
-
     // Build MeTTa expression: (+ 10 20) = 30
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("+".to_string()),
@@ -515,7 +504,6 @@ fn test_jit_integration_simple_arithmetic() {
 
 #[test]
 fn test_jit_integration_nested_arithmetic() {
-
     // Build MeTTa expression: (+ (- 100 50) (* 5 3)) = 50 + 15 = 65
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("+".to_string()),
@@ -547,7 +535,6 @@ fn test_jit_integration_nested_arithmetic() {
 
 #[test]
 fn test_jit_integration_comparison_chain() {
-
     // Build MeTTa expression: (< (+ 5 5) 20) = True
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("<".to_string()),
@@ -575,7 +562,6 @@ fn test_jit_integration_comparison_chain() {
 
 #[test]
 fn test_jit_integration_pow() {
-
     // Build MeTTa expression: (pow 2 8) = 256
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("pow".to_string()),
@@ -603,7 +589,6 @@ fn test_jit_integration_pow() {
 
 #[test]
 fn test_jit_vm_equivalence_arithmetic() {
-
     // Test various arithmetic expressions
     let test_cases = vec![
         (vec!["+", "10", "20"], 30i64),
@@ -667,7 +652,6 @@ fn test_jit_vm_equivalence_arithmetic() {
 
 #[test]
 fn test_jit_vm_equivalence_comparisons() {
-
     // Test comparison operators
     let test_cases = vec![
         ("<", 5, 10, true),
@@ -859,7 +843,10 @@ fn test_jit_execute_special_values() {
 
         let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
         let result = exec_jit(code_ptr, chunk.constants());
-        assert!(result.is_unit(), "PushNil should produce Unit after Nil/Unit merge");
+        assert!(
+            result.is_unit(),
+            "PushNil should produce Unit after Nil/Unit merge"
+        );
     }
 
     // Test Unit
@@ -979,7 +966,6 @@ fn test_jit_execute_pow_chain() {
 
 #[test]
 fn test_jit_execute_deep_expression() {
-
     // Build a deeply nested expression: ((((1 + 2) + 3) + 4) + 5) = 15
     fn build_nested_add(depth: usize) -> MettaValue {
         let mut expr = MettaValue::Long(1);
@@ -1010,7 +996,6 @@ fn test_jit_execute_deep_expression() {
 
 #[test]
 fn test_jit_execute_large_constant_arithmetic() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode with large constants: 1_000_000 * 1000 = 1_000_000_000
@@ -1107,6 +1092,42 @@ fn test_can_compile_yield_with_bailout() {
     assert!(
         !JitCompiler::can_compile_stage1(&chunk),
         "Yield chunks should not be JIT compilable (Phase 9 optimization)"
+    );
+}
+
+#[test]
+fn test_can_compile_eval_superpose_routes_to_bytecode() {
+    let mut builder = ChunkBuilder::new("test_eval_superpose");
+    builder.emit(Opcode::PushUnit);
+    builder.emit(Opcode::EvalSuperpose);
+    builder.emit(Opcode::Return);
+    let chunk = builder.build();
+
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "EvalSuperpose chunks should route to bytecode VM for full nondeterminism"
+    );
+}
+
+#[test]
+fn test_can_compile_fork_inline_routes_to_bytecode() {
+    let mut builder = ChunkBuilder::new("test_fork_inline");
+    builder.emit_u16(Opcode::ForkInline, 2);
+    builder.emit_raw(&7u16.to_be_bytes());
+    builder.emit_raw(&11u16.to_be_bytes());
+    builder.emit_byte(Opcode::PushLongSmall, 1);
+    builder.emit(Opcode::Return);
+    builder.emit_byte(Opcode::PushLongSmall, 2);
+    builder.emit(Opcode::Return);
+    let chunk = builder.build();
+
+    assert!(
+        !JitCompiler::can_compile_stage1(&chunk),
+        "ForkInline chunks should route to bytecode VM for full nondeterminism"
+    );
+    assert!(
+        !JitCompiler::can_compile_stage1_bytecode(chunk.code()),
+        "raw ForkInline bytecode should not be JIT compilable even without chunk metadata"
     );
 }
 
@@ -3125,7 +3146,6 @@ fn test_jit_can_compile_push_empty() {
 
 #[test]
 fn test_jit_can_compile_push_atom() {
-
     let mut builder = ChunkBuilder::new("push_atom");
     let idx = builder.add_constant(MettaValue::Atom("foo".to_string()));
     builder.emit_u16(Opcode::PushAtom, idx);
@@ -3140,7 +3160,6 @@ fn test_jit_can_compile_push_atom() {
 
 #[test]
 fn test_jit_can_compile_push_string() {
-
     let mut builder = ChunkBuilder::new("push_string");
     let idx = builder.add_constant(MettaValue::String("hello".to_string()));
     builder.emit_u16(Opcode::PushString, idx);
@@ -3155,7 +3174,6 @@ fn test_jit_can_compile_push_string() {
 
 #[test]
 fn test_jit_can_compile_push_variable() {
-
     let mut builder = ChunkBuilder::new("push_variable");
     let idx = builder.add_constant(MettaValue::Atom("$x".to_string()));
     builder.emit_u16(Opcode::PushVariable, idx);
@@ -3170,7 +3188,6 @@ fn test_jit_can_compile_push_variable() {
 
 #[test]
 fn test_jit_execute_push_empty() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("e2e_push_empty");
@@ -3204,7 +3221,6 @@ fn test_jit_execute_push_empty() {
 
 #[test]
 fn test_jit_execute_push_atom() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("e2e_push_atom");
@@ -3238,7 +3254,6 @@ fn test_jit_execute_push_atom() {
 
 #[test]
 fn test_jit_execute_push_string() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("e2e_push_string");
@@ -3272,7 +3287,6 @@ fn test_jit_execute_push_string() {
 
 #[test]
 fn test_jit_execute_push_variable() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("e2e_push_variable");
@@ -3352,7 +3366,6 @@ fn test_jit_can_compile_get_arity() {
 
 #[test]
 fn test_jit_execute_get_arity_empty() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk that pushes an empty S-expr and gets its arity (should be 0)
@@ -3388,7 +3401,6 @@ fn test_jit_execute_get_arity_empty() {
 
 #[test]
 fn test_jit_execute_get_arity_nonempty() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk with a 3-element S-expr in constant pool
@@ -3430,7 +3442,6 @@ fn test_jit_execute_get_arity_nonempty() {
 
 #[test]
 fn test_jit_execute_get_head() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk with a 3-element S-expr where head is Long(42)
@@ -3472,7 +3483,6 @@ fn test_jit_execute_get_head() {
 
 #[test]
 fn test_jit_execute_get_tail() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk with a 3-element S-expr, then get tail
@@ -3515,7 +3525,6 @@ fn test_jit_execute_get_tail() {
 
 #[test]
 fn test_jit_execute_get_tail_get_head() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: get head of tail of (1 2 3) = 2
@@ -3558,7 +3567,6 @@ fn test_jit_execute_get_tail_get_head() {
 
 #[test]
 fn test_jit_can_compile_get_element() {
-
     let mut builder = ChunkBuilder::new("get_element");
     let sexpr = MettaValue::SExpr(vec![
         MettaValue::Long(10),
@@ -3579,7 +3587,6 @@ fn test_jit_can_compile_get_element() {
 
 #[test]
 fn test_jit_execute_get_element_first() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: get element at index 0 of (10 20 30) = 10
@@ -3621,7 +3628,6 @@ fn test_jit_execute_get_element_first() {
 
 #[test]
 fn test_jit_execute_get_element_middle() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: get element at index 1 of (10 20 30) = 20
@@ -3663,7 +3669,6 @@ fn test_jit_execute_get_element_middle() {
 
 #[test]
 fn test_jit_execute_get_element_last() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: get element at index 2 of (10 20 30) = 30
@@ -3705,7 +3710,6 @@ fn test_jit_execute_get_element_last() {
 
 #[test]
 fn test_jit_execute_get_element_combined() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: (get-element 1) + (get-element 2) of (10 20 30) = 20 + 30 = 50
@@ -3755,7 +3759,6 @@ fn test_jit_execute_get_element_combined() {
 
 #[test]
 fn test_jit_execute_get_type_long() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: GetType(42) should return "Number" atom
@@ -3783,14 +3786,15 @@ fn test_jit_execute_get_type_long() {
     let result = JitValue::from_raw(result_bits as u64);
     let metta_val = unsafe { result.to_metta() };
     match metta_val.inner() {
-        MettaValueInner::Atom(s) => assert_eq!(*s, "Number", "GetType(Long) should return 'Number'"),
+        MettaValueInner::Atom(s) => {
+            assert_eq!(*s, "Number", "GetType(Long) should return 'Number'")
+        }
         other => panic!("Expected Atom('Number'), got: {:?}", other),
     }
 }
 
 #[test]
 fn test_jit_execute_get_type_bool() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: GetType(True) should return "Bool" atom
@@ -3825,7 +3829,6 @@ fn test_jit_execute_get_type_bool() {
 
 #[test]
 fn test_jit_execute_get_type_sexpr() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: GetType((1 2 3)) should return "Expression" atom
@@ -3860,7 +3863,10 @@ fn test_jit_execute_get_type_sexpr() {
     let metta_val = unsafe { result.to_metta() };
     match metta_val.inner() {
         MettaValueInner::Atom(s) => {
-            assert_eq!(*s, "Expression", "GetType(SExpr) should return 'Expression'")
+            assert_eq!(
+                *s, "Expression",
+                "GetType(SExpr) should return 'Expression'"
+            )
         }
         other => panic!("Expected Atom('Expression'), got: {:?}", other),
     }
@@ -3868,7 +3874,6 @@ fn test_jit_execute_get_type_sexpr() {
 
 #[test]
 fn test_jit_execute_check_type_match() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: CheckType(42, "Number") should return True
@@ -3907,7 +3912,6 @@ fn test_jit_execute_check_type_match() {
 
 #[test]
 fn test_jit_execute_check_type_mismatch() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: CheckType(42, "Bool") should return False
@@ -3946,7 +3950,6 @@ fn test_jit_execute_check_type_mismatch() {
 
 #[test]
 fn test_jit_execute_is_type_match() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: IsType(True, "Bool") should return True
@@ -3985,7 +3988,6 @@ fn test_jit_execute_is_type_match() {
 
 #[test]
 fn test_jit_execute_check_type_variable_matches_any() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: CheckType(42, $T) should return True (type variables match anything)
@@ -4029,7 +4031,6 @@ fn test_jit_execute_check_type_variable_matches_any() {
 
 #[test]
 fn test_jit_execute_assert_type_match() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: AssertType(42, "Number") should return 42 (value stays on stack)
@@ -4071,7 +4072,6 @@ fn test_jit_execute_assert_type_match() {
 
 #[test]
 fn test_jit_execute_assert_type_mismatch() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: AssertType(42, "Bool") should signal bailout (type mismatch)
@@ -4102,7 +4102,6 @@ fn test_jit_execute_assert_type_mismatch() {
 
 #[test]
 fn test_jit_execute_assert_type_variable_matches_any() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: AssertType(42, $T) should return 42 (type variables match anything)
@@ -4197,7 +4196,6 @@ fn test_jit_can_compile_cons_atom() {
 
 #[test]
 fn test_jit_execute_make_sexpr_empty() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: MakeSExpr(0) -> ()
@@ -4223,12 +4221,15 @@ fn test_jit_execute_make_sexpr_empty() {
     let metta = unsafe { result.to_metta() };
 
     // SExpr(vec![]) normalizes to Unit after Nil/Unit merge
-    assert!(metta.is_unit(), "Expected Unit (empty S-expression), got: {:?}", metta);
+    assert!(
+        metta.is_unit(),
+        "Expected Unit (empty S-expression), got: {:?}",
+        metta
+    );
 }
 
 #[test]
 fn test_jit_execute_make_sexpr_single() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: Push 42, MakeSExpr(1) -> (42)
@@ -4268,7 +4269,6 @@ fn test_jit_execute_make_sexpr_single() {
 
 #[test]
 fn test_jit_execute_make_sexpr_multiple() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: Push 10, 20, 30, MakeSExpr(3) -> (10 20 30)
@@ -4312,7 +4312,6 @@ fn test_jit_execute_make_sexpr_multiple() {
 
 #[test]
 fn test_jit_execute_cons_atom_to_nil() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: Push 1, PushNil, ConsAtom -> (1)
@@ -4353,7 +4352,6 @@ fn test_jit_execute_cons_atom_to_nil() {
 
 #[test]
 fn test_jit_execute_cons_atom_to_sexpr() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: Create (2 3), then cons 1 to get (1 2 3)
@@ -4401,7 +4399,6 @@ fn test_jit_execute_cons_atom_to_sexpr() {
 
 #[test]
 fn test_jit_execute_make_sexpr_nested() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create chunk: ((1 2) (3 4))
@@ -4475,7 +4472,6 @@ fn test_jit_execute_make_sexpr_nested() {
 
 #[test]
 fn test_jit_can_compile_push_uri() {
-
     // Test that PushUri is compilable
     let mut builder = ChunkBuilder::new("push_uri");
     let idx = builder.add_constant(MettaValue::Atom("test-uri".to_string()));
@@ -4522,7 +4518,6 @@ fn test_jit_can_compile_make_quote() {
 
 #[test]
 fn test_jit_execute_push_uri() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("push_uri");
@@ -4555,7 +4550,6 @@ fn test_jit_execute_push_uri() {
 
 #[test]
 fn test_jit_execute_make_list_empty() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("make_list_empty");
@@ -4589,7 +4583,6 @@ fn test_jit_execute_make_list_empty() {
 
 #[test]
 fn test_jit_execute_make_list_single() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("make_list_single");
@@ -4632,7 +4625,6 @@ fn test_jit_execute_make_list_single() {
 
 #[test]
 fn test_jit_execute_make_list_multiple() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("make_list_multiple");
@@ -4679,7 +4671,6 @@ fn test_jit_execute_make_list_multiple() {
 
 #[test]
 fn test_jit_execute_make_quote() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     let mut builder = ChunkBuilder::new("make_quote");
@@ -4706,19 +4697,16 @@ fn test_jit_execute_make_quote() {
 
     // Should be Quoted(42)
     match metta.inner() {
-        MettaValueInner::Quoted(inner) => {
-            match inner.inner() {
-                MettaValueInner::Long(v) => assert_eq!(*v, 42),
-                _ => panic!("Expected Quoted(Long(42)), got: Quoted({:?})", inner),
-            }
-        }
+        MettaValueInner::Quoted(inner) => match inner.inner() {
+            MettaValueInner::Long(v) => assert_eq!(*v, 42),
+            _ => panic!("Expected Quoted(Long(42)), got: Quoted({:?})", inner),
+        },
         _ => panic!("Expected Quoted, got: {:?}", metta),
     }
 }
 
 #[test]
 fn test_jit_execute_make_quote_nested() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create (quote (1 2))
@@ -4748,20 +4736,18 @@ fn test_jit_execute_make_quote_nested() {
 
     // Should be Quoted((1 2))
     match metta.inner() {
-        MettaValueInner::Quoted(inner) => {
-            match inner.inner() {
-                MettaValueInner::SExpr(elems) => {
-                    assert_eq!(elems.len(), 2);
-                    match (elems[0].inner(), elems[1].inner()) {
-                        (MettaValueInner::Long(a), MettaValueInner::Long(b)) => {
-                            assert_eq!((*a, *b), (1, 2));
-                        }
-                        _ => panic!("Expected (1 2), got: {:?}", elems),
+        MettaValueInner::Quoted(inner) => match inner.inner() {
+            MettaValueInner::SExpr(elems) => {
+                assert_eq!(elems.len(), 2);
+                match (elems[0].inner(), elems[1].inner()) {
+                    (MettaValueInner::Long(a), MettaValueInner::Long(b)) => {
+                        assert_eq!((*a, *b), (1, 2));
                     }
+                    _ => panic!("Expected (1 2), got: {:?}", elems),
                 }
-                _ => panic!("Expected Quoted(SExpr), got: Quoted({:?})", inner),
             }
-        }
+            _ => panic!("Expected Quoted(SExpr), got: Quoted({:?})", inner),
+        },
         _ => panic!("Expected Quoted, got: {:?}", metta),
     }
 }
@@ -4772,7 +4758,6 @@ fn test_jit_execute_make_quote_nested() {
 
 #[test]
 fn test_jit_can_compile_call() {
-
     // Test that Call opcode is compilable
     let mut builder = ChunkBuilder::new("call_test");
     let head_idx = builder.add_constant(MettaValue::Atom("my-func".to_string()));
@@ -4790,7 +4775,6 @@ fn test_jit_can_compile_call() {
 
 #[test]
 fn test_jit_can_compile_tail_call() {
-
     // Test that TailCall opcode is compilable
     let mut builder = ChunkBuilder::new("tail_call_test");
     let head_idx = builder.add_constant(MettaValue::Atom("my-func".to_string()));
@@ -4807,7 +4791,6 @@ fn test_jit_can_compile_tail_call() {
 
 #[test]
 fn test_jit_execute_call_with_bailout() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create: (my-func 1 2)
@@ -4844,7 +4827,6 @@ fn test_jit_execute_call_with_bailout() {
 
 #[test]
 fn test_jit_execute_call_no_args() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create: (my-func) with no args
@@ -4875,7 +4857,6 @@ fn test_jit_execute_call_no_args() {
 
 #[test]
 fn test_jit_execute_tail_call_with_bailout() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create: (my-func 1) as tail call
@@ -4907,7 +4888,6 @@ fn test_jit_execute_tail_call_with_bailout() {
 
 #[test]
 fn test_jit_call_builds_correct_expression() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create: (add 5 3)
@@ -5249,7 +5229,6 @@ fn test_can_compile_binding_opcodes() {
 
 #[test]
 fn test_jit_binding_frame_operations() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: Push frame, store 42, load it, return
@@ -5299,7 +5278,6 @@ fn test_jit_binding_frame_operations() {
 
 #[test]
 fn test_jit_has_binding() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: Push frame, check binding (should be false), store, check again (should be true)
@@ -5349,7 +5327,6 @@ fn test_jit_has_binding() {
 
 #[test]
 fn test_jit_clear_bindings() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Build bytecode: Store binding, clear, check (should be false)
@@ -5446,7 +5423,6 @@ fn test_can_compile_pattern_matching_opcodes() {
 
 #[test]
 fn test_jit_pattern_match_simple() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Test: Match 42 against 42 should return True
@@ -5484,7 +5460,6 @@ fn test_jit_pattern_match_simple() {
 
 #[test]
 fn test_jit_pattern_match_mismatch() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Test: Match 42 against 99 should return False
@@ -5522,7 +5497,6 @@ fn test_jit_pattern_match_mismatch() {
 
 #[test]
 fn test_jit_unify_simple() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Test: Unify 42 with 42 should return True
@@ -5560,7 +5534,6 @@ fn test_jit_unify_simple() {
 
 #[test]
 fn test_jit_match_arity() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create an S-expression with 3 elements: (a b c)
@@ -5607,7 +5580,6 @@ fn test_jit_match_arity() {
 
 #[test]
 fn test_jit_match_head() {
-
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
 
     // Create an S-expression: (foo bar baz)
@@ -6355,7 +6327,11 @@ fn test_jit_execute_jump_if_false_unit_extracts_zero() {
     assert!(result.is_long(), "Expected Long result");
     // JIT extract_bool gives 0 for Unit (low bit of TAG_UNIT is 0), so jumps to else.
     // This is fine — in real code, JumpIfNotBool intercepts non-booleans first.
-    assert_eq!(result.as_long(), 99, "JIT extract_bool(Unit) = 0 → takes else branch");
+    assert_eq!(
+        result.as_long(),
+        99,
+        "JIT extract_bool(Unit) = 0 → takes else branch"
+    );
 }
 
 /// Test JIT: nested if with comparison in condition.
@@ -6382,36 +6358,36 @@ fn test_jit_execute_nested_if() {
     let mut builder = ChunkBuilder::new("jit_nested_if");
 
     // Outer condition
-    builder.emit_byte(Opcode::PushLongSmall, 10);   // 0-1
-    builder.emit_byte(Opcode::PushLongSmall, 20);   // 2-3
-    builder.emit(Opcode::Lt);                        // 4
+    builder.emit_byte(Opcode::PushLongSmall, 10); // 0-1
+    builder.emit_byte(Opcode::PushLongSmall, 20); // 2-3
+    builder.emit(Opcode::Lt); // 4
 
     let outer_else = builder.emit_jump(Opcode::JumpIfFalse); // 5-7
 
     // Outer then = inner if
-    builder.emit_byte(Opcode::PushLongSmall, 5);    // 8-9
-    builder.emit_byte(Opcode::PushLongSmall, 3);    // 10-11
-    builder.emit(Opcode::Gt);                        // 12
+    builder.emit_byte(Opcode::PushLongSmall, 5); // 8-9
+    builder.emit_byte(Opcode::PushLongSmall, 3); // 10-11
+    builder.emit(Opcode::Gt); // 12
 
     let inner_else = builder.emit_jump(Opcode::JumpIfFalse); // 13-15
 
     // Inner then
-    builder.emit_byte(Opcode::PushLongSmall, 1);    // 16-17
+    builder.emit_byte(Opcode::PushLongSmall, 1); // 16-17
     let inner_end = builder.emit_jump(Opcode::Jump); // 18-20
 
     // Inner else
     builder.patch_jump(inner_else);
-    builder.emit_byte(Opcode::PushLongSmall, 2);    // 21-22
+    builder.emit_byte(Opcode::PushLongSmall, 2); // 21-22
 
     builder.patch_jump(inner_end);
     let outer_end = builder.emit_jump(Opcode::Jump); // 23-25
 
     // Outer else
     builder.patch_jump(outer_else);
-    builder.emit_byte(Opcode::PushLongSmall, 3);    // 26-27
+    builder.emit_byte(Opcode::PushLongSmall, 3); // 26-27
 
     builder.patch_jump(outer_end);
-    builder.emit(Opcode::Return);                    // 28
+    builder.emit(Opcode::Return); // 28
 
     let chunk = builder.build();
     assert!(JitCompiler::can_compile_stage1(&chunk));

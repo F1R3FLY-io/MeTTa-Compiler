@@ -257,8 +257,10 @@ fn print_text(
     }
 
     // Divergence alerts
-    let divergent: Vec<&CategoryComparison> =
-        comparisons.iter().filter(|c| c.divergence.abs() > 15.0).collect();
+    let divergent: Vec<&CategoryComparison> = comparisons
+        .iter()
+        .filter(|c| c.divergence.abs() > 15.0)
+        .collect();
     if !divergent.is_empty() {
         println!();
         println!("--- Divergence Alerts (|delta| > 15%) ---");

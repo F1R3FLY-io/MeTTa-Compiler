@@ -101,8 +101,6 @@ impl<T> SExprInit for T {
     }
 
     fn declare_sexpr_funcs<M: Module>(module: &mut M) -> JitResult<SExprFuncIds> {
-
-
         // push_empty: fn() -> empty_sexpr (no parameters)
         let mut push_empty_sig = module.make_signature();
         push_empty_sig.returns.push(AbiParam::new(types::I64)); // empty_sexpr

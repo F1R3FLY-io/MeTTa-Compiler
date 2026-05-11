@@ -49,8 +49,7 @@ fn bench_rule_matching(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let state =
-                        compile(&full_program).expect("Failed to compile program");
+                    let state = compile(&full_program).expect("Failed to compile program");
                     let mut env = new_env();
 
                     let source_exprs: Vec<_> = state.source().iter().copied().collect();
@@ -256,8 +255,7 @@ fn bench_large_rule_sets(c: &mut Criterion) {
             rule_count,
             |b, _| {
                 b.iter(|| {
-                    let state =
-                        compile(&full_program).expect("Failed to compile program");
+                    let state = compile(&full_program).expect("Failed to compile program");
                     let mut env = new_env();
 
                     let source_exprs: Vec<_> = state.source().iter().copied().collect();

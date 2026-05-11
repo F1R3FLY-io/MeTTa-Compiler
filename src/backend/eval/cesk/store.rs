@@ -216,7 +216,9 @@ pub trait Store<V: MettaValueTrait>: Debug + Send + Sync {
 // SlabStore — Production Store wrapping GcFactory
 // ============================================================================
 
-use crate::backend::models::{GcFactory, MettaValue, global_factory, alloc_count_snapshot, committed_bytes_snapshot};
+use crate::backend::models::{
+    alloc_count_snapshot, committed_bytes_snapshot, global_factory, GcFactory, MettaValue,
+};
 
 /// Production Store implementation wrapping the global `GcFactory`.
 ///

@@ -4,16 +4,16 @@
 //! that work with any value type implementing `MettaValueTrait`. This enables
 //! zero-conversion evaluation for both heap and arena allocation modes.
 
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::grounded::{execute_grounded_op, has_grounded_op, GroundedState, GroundedWork};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
+use super::super::trampoline::try_match_all_rules;
 use crate::backend::eval::bindings::compose_outer_inner_generic;
 use crate::backend::eval::trampoline::types::{bv_with, BoundValue};
-use crate::backend::models::{MettaValue, GcFactory};
-use super::super::trampoline::try_match_all_rules;
+use crate::backend::models::{GcFactory, MettaValue};
 // NOTE: pattern_specificity_generic was removed — MeTTa HE has no specificity filter.
 use super::super::helpers::needs_special_form_redispatch;
 
@@ -25,7 +25,10 @@ use super::super::helpers::needs_special_form_redispatch;
 ///
 /// Parameterized over value type V and factory type F.
 /// Uses GenericEnvironment<V, F> as the environment type.
-pub enum GenericProcessedSExpr<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static, F: MettaValueFactory<V> + Clone = crate::backend::models::GcFactory> {
+pub enum GenericProcessedSExpr<
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone = crate::backend::models::GcFactory,
+> {
     /// Evaluation complete - return results
     Done((SmallVec<[V; 2]>, GenericEnvironment<V, F>)),
 
@@ -140,10 +143,7 @@ pub fn cartesian_product_lazy_generic<V: MettaValueTrait + Clone>(
     }
 
     // Check if this is the single-combination fast path
-    let total_combinations: usize = eval_results
-        .iter()
-        .map(|v| v.len())
-        .product();
+    let total_combinations: usize = eval_results.iter().map(|v| v.len()).product();
 
     if total_combinations == 1 {
         // Fast path: single combination
@@ -236,7 +236,8 @@ pub fn process_single_combination_generic(
                 if let Some(work) = execute_grounded_op(op, &mut state, factory) {
                     match work {
                         GroundedWork::Done(results) => {
-                            let values: SmallVec<[MettaValue; 2]> = results.into_iter().map(|(v, _)| v).collect();
+                            let values: SmallVec<[MettaValue; 2]> =
+                                results.into_iter().map(|(v, _)| v).collect();
                             return GenericProcessedSExpr::Done((values, unified_env));
                         }
                         GroundedWork::EvalArg { .. } => {
@@ -244,7 +245,8 @@ pub fn process_single_combination_generic(
                             // as args are already evaluated. Return as-is for now.
                         }
                         GroundedWork::Error(e) => {
-                            let err = factory.error(&format!("{:?}", e), factory.atom("GroundedError"));
+                            let err =
+                                factory.error(&format!("{:?}", e), factory.atom("GroundedError"));
                             return GenericProcessedSExpr::Done((smallvec![err], unified_env));
                         }
                     }
@@ -271,7 +273,8 @@ pub fn process_single_combination_generic(
         // Rules match with evaluated arguments - evaluate the rule RHS
         // Strip rhs_type from 3-tuples → 2-tuples
         return GenericProcessedSExpr::EvalRuleMatches {
-            matches: all_matches_with_types.into_iter()
+            matches: all_matches_with_types
+                .into_iter()
                 .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                 .collect(),
             env: unified_env,
@@ -598,18 +601,17 @@ pub fn process_collected_sexpr_bound_generic(
     let total_combinations: usize = eval_results_bound.iter().map(|v| v.len()).product();
     if total_combinations == 1 {
         // Collect the single combo's values and compose its bindings.
-        let combo_values: Vec<MettaValue> = eval_results_bound
-            .iter()
-            .map(|v| v[0].0)
-            .collect();
-        let combo_b_refs: Vec<&GenericBindings<MettaValue>> = eval_results_bound
-            .iter()
-            .map(|v| &v[0].1)
-            .collect();
+        let combo_values: Vec<MettaValue> = eval_results_bound.iter().map(|v| v[0].0).collect();
+        let combo_b_refs: Vec<&GenericBindings<MettaValue>> =
+            eval_results_bound.iter().map(|v| &v[0].1).collect();
         match compose_combo_bindings(&combo_b_refs, &outer_carrying, factory) {
             Some(combo_bindings) => {
                 return process_single_combination_bound_generic(
-                    combo_values, combo_bindings, unified_env, depth, factory,
+                    combo_values,
+                    combo_bindings,
+                    unified_env,
+                    depth,
+                    factory,
                 );
             }
             None => {
@@ -663,10 +665,8 @@ pub fn process_single_combination_bound_generic(
                             // through to the rule-match / data path below.
                         }
                         GroundedWork::Error(e) => {
-                            let err = factory.error(
-                                &format!("{:?}", e),
-                                factory.atom("GroundedError"),
-                            );
+                            let err =
+                                factory.error(&format!("{:?}", e), factory.atom("GroundedError"));
                             return GenericProcessedSExprBound::Done((
                                 smallvec![bv_with(err, combo_bindings)],
                                 unified_env,
@@ -758,10 +758,8 @@ mod tests {
 
     #[test]
     fn test_cartesian_product_single() {
-        let inputs: Vec<Vec<MettaValue>> = vec![
-            vec![MettaValue::Long(1)],
-            vec![MettaValue::Long(2)],
-        ];
+        let inputs: Vec<Vec<MettaValue>> =
+            vec![vec![MettaValue::Long(1)], vec![MettaValue::Long(2)]];
         match cartesian_product_lazy_generic(inputs) {
             GenericCartesianProductResult::Single(combo) => {
                 assert_eq!(combo.len(), 2);

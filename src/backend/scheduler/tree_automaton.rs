@@ -141,12 +141,7 @@ impl<W: Semiring> TreeTransition<W> {
     }
 
     /// Create an n-ary transition: `f(q₁, ..., qₙ) → q [w]`.
-    pub fn nary(
-        symbol: impl Into<String>,
-        children: Vec<usize>,
-        target: usize,
-        weight: W,
-    ) -> Self {
+    pub fn nary(symbol: impl Into<String>, children: Vec<usize>, target: usize, weight: W) -> Self {
         TreeTransition {
             symbol: symbol.into(),
             child_states: children,
@@ -238,11 +233,7 @@ impl<W: Semiring> TreeAutomaton<W> {
     }
 
     /// Add a labeled state and return its ID.
-    pub fn add_labeled_state(
-        &mut self,
-        label: impl Into<String>,
-        is_final: bool,
-    ) -> usize {
+    pub fn add_labeled_state(&mut self, label: impl Into<String>, is_final: bool) -> usize {
         let id = self.states.len();
         let state = TreeState::labeled(id, label, is_final);
         if is_final {
@@ -391,9 +382,7 @@ pub fn best_final_state<W: Semiring + Ord>(
     automaton
         .final_states
         .iter()
-        .filter_map(|&state_id| {
-            state_map.get(&state_id).map(|w| (state_id, *w))
-        })
+        .filter_map(|&state_id| state_map.get(&state_id).map(|w| (state_id, *w)))
         .min_by(|(_, w1), (_, w2)| w1.cmp(w2))
 }
 
@@ -403,8 +392,8 @@ pub fn best_final_state<W: Semiring + Ord>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::semiring::TropicalWeight;
+    use super::*;
 
     fn build_arithmetic_automaton() -> TreeAutomaton<TropicalWeight> {
         let mut wta = TreeAutomaton::new();
@@ -414,19 +403,67 @@ mod tests {
         let q_arith = wta.add_labeled_state("GroundArith", true);
 
         // Leaf transitions: literals → GroundCheap
-        wta.add_transition(TreeTransition::leaf("Atom", q_cheap, TropicalWeight::new(1.0)));
-        wta.add_transition(TreeTransition::leaf("Long", q_cheap, TropicalWeight::new(1.0)));
-        wta.add_transition(TreeTransition::leaf("Bool", q_cheap, TropicalWeight::new(1.0)));
+        wta.add_transition(TreeTransition::leaf(
+            "Atom",
+            q_cheap,
+            TropicalWeight::new(1.0),
+        ));
+        wta.add_transition(TreeTransition::leaf(
+            "Long",
+            q_cheap,
+            TropicalWeight::new(1.0),
+        ));
+        wta.add_transition(TreeTransition::leaf(
+            "Bool",
+            q_cheap,
+            TropicalWeight::new(1.0),
+        ));
 
         // Arithmetic: +(GroundCheap, GroundCheap) → GroundArith
-        wta.add_transition(TreeTransition::binary("+", q_cheap, q_cheap, q_arith, TropicalWeight::new(2.0)));
-        wta.add_transition(TreeTransition::binary("-", q_cheap, q_cheap, q_arith, TropicalWeight::new(2.0)));
-        wta.add_transition(TreeTransition::binary("*", q_cheap, q_cheap, q_arith, TropicalWeight::new(2.0)));
+        wta.add_transition(TreeTransition::binary(
+            "+",
+            q_cheap,
+            q_cheap,
+            q_arith,
+            TropicalWeight::new(2.0),
+        ));
+        wta.add_transition(TreeTransition::binary(
+            "-",
+            q_cheap,
+            q_cheap,
+            q_arith,
+            TropicalWeight::new(2.0),
+        ));
+        wta.add_transition(TreeTransition::binary(
+            "*",
+            q_cheap,
+            q_cheap,
+            q_arith,
+            TropicalWeight::new(2.0),
+        ));
 
         // Nested arithmetic: +(GroundArith, GroundCheap) → GroundArith
-        wta.add_transition(TreeTransition::binary("+", q_arith, q_cheap, q_arith, TropicalWeight::new(2.0)));
-        wta.add_transition(TreeTransition::binary("+", q_cheap, q_arith, q_arith, TropicalWeight::new(2.0)));
-        wta.add_transition(TreeTransition::binary("+", q_arith, q_arith, q_arith, TropicalWeight::new(2.0)));
+        wta.add_transition(TreeTransition::binary(
+            "+",
+            q_arith,
+            q_cheap,
+            q_arith,
+            TropicalWeight::new(2.0),
+        ));
+        wta.add_transition(TreeTransition::binary(
+            "+",
+            q_cheap,
+            q_arith,
+            q_arith,
+            TropicalWeight::new(2.0),
+        ));
+        wta.add_transition(TreeTransition::binary(
+            "+",
+            q_arith,
+            q_arith,
+            q_arith,
+            TropicalWeight::new(2.0),
+        ));
 
         wta.build_index();
         wta
@@ -451,7 +488,7 @@ mod tests {
         // Classify +(Long, Long)
         let result = bottom_up_evaluate(&wta, "+", &[left, right]);
         assert!(result.contains_key(&1)); // state 1 = GroundArith
-        // weight = 2.0 (transition) + 1.0 (left) + 1.0 (right) = 4.0
+                                          // weight = 2.0 (transition) + 1.0 (left) + 1.0 (right) = 4.0
         assert_eq!(result[&1], TropicalWeight::new(4.0));
     }
 

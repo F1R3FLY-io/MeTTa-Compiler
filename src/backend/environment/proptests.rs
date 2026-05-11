@@ -56,7 +56,10 @@ fn arb_simple_value() -> impl Strategy<Value = MettaValue> {
 
 /// Generate a simple S-expression with given arity
 fn arb_sexpr(arity: usize) -> impl Strategy<Value = MettaValue> {
-    (arb_atom(), prop::collection::vec(arb_simple_value(), arity..=arity))
+    (
+        arb_atom(),
+        prop::collection::vec(arb_simple_value(), arity..=arity),
+    )
         .prop_map(|(head, mut args)| {
             args.insert(0, head);
             MettaValue::SExpr(args)
@@ -65,7 +68,10 @@ fn arb_sexpr(arity: usize) -> impl Strategy<Value = MettaValue> {
 
 /// Generate a rule LHS (pattern)
 fn arb_rule_lhs() -> impl Strategy<Value = MettaValue> {
-    (arb_symbol_name(), prop::collection::vec(prop_oneof![arb_variable(), arb_simple_value()], 1..=3))
+    (
+        arb_symbol_name(),
+        prop::collection::vec(prop_oneof![arb_variable(), arb_simple_value()], 1..=3),
+    )
         .prop_map(|(head, mut args)| {
             args.insert(0, MettaValue::Atom(head));
             MettaValue::SExpr(args)
@@ -74,21 +80,20 @@ fn arb_rule_lhs() -> impl Strategy<Value = MettaValue> {
 
 /// Generate a rule RHS (body)
 fn arb_rule_rhs() -> impl Strategy<Value = MettaValue> {
-    prop_oneof![
-        arb_simple_value(),
-        arb_sexpr(2),
-    ]
+    prop_oneof![arb_simple_value(), arb_sexpr(2),]
 }
 
 /// Generate a complete rule as (lhs, rhs) tuple
 fn arb_rule() -> impl Strategy<Value = (MettaValue, MettaValue)> {
-    (arb_rule_lhs(), arb_rule_rhs())
-        .prop_map(|(lhs, rhs)| (lhs, rhs))
+    (arb_rule_lhs(), arb_rule_rhs()).prop_map(|(lhs, rhs)| (lhs, rhs))
 }
 
 /// Generate a fact (simple S-expression data)
 fn arb_fact() -> impl Strategy<Value = MettaValue> {
-    (arb_symbol_name(), prop::collection::vec(arb_simple_value(), 1..=3))
+    (
+        arb_symbol_name(),
+        prop::collection::vec(arb_simple_value(), 1..=3),
+    )
         .prop_map(|(head, mut args)| {
             args.insert(0, MettaValue::Atom(head));
             MettaValue::SExpr(args)
@@ -746,7 +751,10 @@ mod regression_tests {
         let matching = env.get_matching_rules_for_expr(&lhs);
         eprintln!("matching = {:?}", matching);
         eprintln!("rule_count = {}", env.rule_count());
-        assert!(!matching.is_empty(), "Should find at least one matching rule for (s3as83 \"imeq0q29\") -> false");
+        assert!(
+            !matching.is_empty(),
+            "Should find at least one matching rule for (s3as83 \"imeq0q29\") -> false"
+        );
     }
 
     /// Test that symbol cache invalidation works across multiple environments.
@@ -774,7 +782,10 @@ mod regression_tests {
             ]);
             env.add_rule(lhs.clone(), MettaValue::Bool(false));
             let matching = env.get_matching_rules_for_expr(&lhs);
-            assert!(!matching.is_empty(), "Env2: should find rule for (foo bar) with different SM");
+            assert!(
+                !matching.is_empty(),
+                "Env2: should find rule for (foo bar) with different SM"
+            );
         }
 
         // Env 3: with String children (the actual proptest failure pattern)
@@ -786,7 +797,10 @@ mod regression_tests {
             ]);
             env.add_rule(lhs.clone(), MettaValue::Bool(false));
             let matching = env.get_matching_rules_for_expr(&lhs);
-            assert!(!matching.is_empty(), "Env3: should find rule with String child");
+            assert!(
+                !matching.is_empty(),
+                "Env3: should find rule with String child"
+            );
         }
 
         // Run 20 iterations to ensure no cross-contamination.
@@ -808,7 +822,8 @@ mod regression_tests {
             let empty_outer = crate::backend::GenericBindings::<MettaValue>::new();
             let matching = env.match_rules_native(
                 &lhs,
-                |v: &MettaValue, _: &crate::backend::GenericBindings<MettaValue>,
+                |v: &MettaValue,
+                 _: &crate::backend::GenericBindings<MettaValue>,
                  _: &crate::backend::models::GcFactory| v.clone(),
                 &empty_outer,
             );

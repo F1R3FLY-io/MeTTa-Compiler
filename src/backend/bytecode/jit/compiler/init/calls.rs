@@ -67,8 +67,6 @@ impl<T> CallsInit for T {
     }
 
     fn declare_calls_funcs<M: Module>(module: &mut M) -> JitResult<CallFuncIds> {
-
-
         // call: fn(ctx, head_idx, args_ptr, arity, ip) -> result
         let mut call_sig = module.make_signature();
         call_sig.params.push(AbiParam::new(types::I64)); // ctx

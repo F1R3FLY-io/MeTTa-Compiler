@@ -68,7 +68,8 @@ impl MettaEnvironment {
             // parking_lot::RwLock - no .expect()
             let bloom_result = self
                 .shared
-                .atom_space.head_arity_bloom
+                .atom_space
+                .head_arity_bloom
                 .read()
                 .may_contain(expected_head, pattern_arity);
             if !bloom_result {
@@ -79,52 +80,64 @@ impl MettaEnvironment {
         let space = self.create_space();
 
         // Convert pattern to MORK query bytes and run query_multi in callback
-        let query_result = with_mork_query_bytes(pattern, &self.shared_mapping, self.mork_cache_epoch, |pattern_bytes, ctx| {
-            let pattern_expr = Expr {
-                ptr: pattern_bytes.as_ptr().cast_mut(),
-            };
+        let query_result = with_mork_query_bytes(
+            pattern,
+            &self.shared_mapping,
+            self.mork_cache_epoch,
+            |pattern_bytes, ctx| {
+                let pattern_expr = Expr {
+                    ptr: pattern_bytes.as_ptr().cast_mut(),
+                };
 
-            // Collect matches using MORK's native query_multi
-            let mut results: Vec<MultiplicityMatch<MettaValue>> = Vec::new();
+                // Collect matches using MORK's native query_multi
+                let mut results: Vec<MultiplicityMatch<MettaValue>> = Vec::new();
 
-            mork::space::Space::query_multi(&space.btm, pattern_expr, |result, matched_expr| {
-                if let Err(mork_bindings) = result {
-                    // Convert MORK bindings to our format
-                    if let Ok(bindings) = mork_bindings_to_metta(&mork_bindings, ctx, &space) {
-                        // Apply bindings to template
-                        let instantiated = apply_bindings(template, &bindings).into_owned();
+                mork::space::Space::query_multi(
+                    &space.btm,
+                    pattern_expr,
+                    |result, matched_expr| {
+                        if let Err(mork_bindings) = result {
+                            // Convert MORK bindings to our format
+                            if let Ok(bindings) =
+                                mork_bindings_to_metta(&mork_bindings, ctx, &space)
+                            {
+                                // Apply bindings to template
+                                let instantiated = apply_bindings(template, &bindings).into_owned();
 
-                        // Extract multiplicity from the matched expression's PathMap path.
-                        // matched_expr.span() returns *const [u8] — the serialized MORK bytes
-                        // that form the exact PathMap key for this entry. We look up the
-                        // multiplicity in the same PathMap that query_multi is traversing.
-                        // SAFETY: matched_expr.ptr points to valid MORK bytes within PathMap
-                        // memory. The span() traversal is bounded by the expression's length.
+                                // Extract multiplicity from the matched expression's PathMap path.
+                                // matched_expr.span() returns *const [u8] — the serialized MORK bytes
+                                // that form the exact PathMap key for this entry. We look up the
+                                // multiplicity in the same PathMap that query_multi is traversing.
+                                // SAFETY: matched_expr.ptr points to valid MORK bytes within PathMap
+                                // memory. The span() traversal is bounded by the expression's length.
 
-                        // Validate matched_expr starts with a valid MORK tag before calling
-                        // span() — span() uses ExprZipper::new() which calls byte_item()
-                        // and panics on reserved bytes (0x40-0x7F).
-                        let first_byte = unsafe { *matched_expr.ptr };
-                        if let Err(reserved) = maybe_byte_item(first_byte) {
-                            tracing::warn!(
-                                target: "mettatron::match_space_query_multi",
-                                "Matched expr has reserved first byte 0x{:02x}, skipping",
-                                reserved
-                            );
-                            return true; // Continue searching
+                                // Validate matched_expr starts with a valid MORK tag before calling
+                                // span() — span() uses ExprZipper::new() which calls byte_item()
+                                // and panics on reserved bytes (0x40-0x7F).
+                                let first_byte = unsafe { *matched_expr.ptr };
+                                if let Err(reserved) = maybe_byte_item(first_byte) {
+                                    tracing::warn!(
+                                        target: "mettatron::match_space_query_multi",
+                                        "Matched expr has reserved first byte 0x{:02x}, skipping",
+                                        reserved
+                                    );
+                                    return true; // Continue searching
+                                }
+
+                                let mork_bytes = unsafe { &*matched_expr.span() };
+                                let multiplicity =
+                                    get_multiplicity(&space.btm, mork_bytes).max(1) as usize;
+
+                                results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                            }
                         }
+                        true // Continue searching for ALL matches
+                    },
+                );
 
-                        let mork_bytes = unsafe { &*matched_expr.span() };
-                        let multiplicity = get_multiplicity(&space.btm, mork_bytes).max(1) as usize;
-
-                        results.push(MultiplicityMatch::new(instantiated, multiplicity));
-                    }
-                }
-                true // Continue searching for ALL matches
-            });
-
-            results
-        });
+                results
+            },
+        );
 
         let mut results = match query_result {
             Ok(r) => r,
@@ -139,8 +152,7 @@ impl MettaEnvironment {
         // MettaValue reconstruction for non-matches.
         {
             // Encode pattern to Wide MORK De Bruijn bytes (once)
-            let mut pattern_ctx =
-                crate::backend::wide_mork::encoding::WideConversionContext::new();
+            let mut pattern_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
             let mut pattern_debruijn = Vec::new();
             crate::backend::wide_mork::encoding::encode_wide_debruijn(
                 pattern,
@@ -205,7 +217,8 @@ impl MettaEnvironment {
             // parking_lot::RwLock - no .expect()
             if !self
                 .shared
-                .atom_space.head_arity_bloom
+                .atom_space
+                .head_arity_bloom
                 .read()
                 .may_contain(expected_head, pattern_arity)
             {
@@ -257,8 +270,7 @@ impl MettaEnvironment {
         // 2. Check wide expression PathMap (arity >= 64, Wide MORK encoding)
         // Uses byte-level pre-filter via wide_extract_data() for early rejection.
         {
-            let mut pattern_ctx =
-                crate::backend::wide_mork::encoding::WideConversionContext::new();
+            let mut pattern_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
             let mut pattern_debruijn = Vec::new();
             crate::backend::wide_mork::encoding::encode_wide_debruijn(
                 pattern,

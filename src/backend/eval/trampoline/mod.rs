@@ -33,38 +33,31 @@
 
 mod arena_engine;
 mod context;
-pub(crate) mod eval_loop;
-pub(crate) mod types;
-pub mod engine;
 pub(crate) mod dispatch_hints;
+pub mod engine;
+pub(crate) mod eval_loop;
 pub mod session_context;
+pub(crate) mod types;
 pub mod unification;
 
 // Primary entry points
-pub use arena_engine::{
-    eval_trampoline, get_static_factory,
-    is_arena_mode_available, new_env,
-};
+pub use arena_engine::{eval_trampoline, get_static_factory, is_arena_mode_available, new_env};
 
 #[cfg(feature = "trace")]
 pub use arena_engine::eval_trampoline_with_trace;
 
 // Re-export evaluation context types
 #[allow(unused_imports)]
-pub use context::{
-    MettaEnvironment, EvalContext, StaticEvalContext,
-};
+pub use context::{EvalContext, MettaEnvironment, StaticEvalContext};
 
 // Re-export trampoline types
 #[allow(unused_imports)]
-pub use types::{
-    Continuation, EvalResult, WorkItem,
-};
+pub use types::{Continuation, EvalResult, WorkItem};
 
 // Re-export engine functions
 pub use engine::{
-    apply_bindings, pattern_match,
-    try_match_all_rules, try_match_all_rules_with_outer, try_deterministic_chain,
+    apply_bindings, pattern_match, try_deterministic_chain, try_match_all_rules,
+    try_match_all_rules_with_outer,
 };
 
 // Internal: eval_loop::eval_trampoline(value, env, &ctx) is used by

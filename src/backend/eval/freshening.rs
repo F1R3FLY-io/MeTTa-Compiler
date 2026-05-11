@@ -352,10 +352,7 @@ where
                 if let Some(name) = val.as_atom() {
                     // `$_` is a wildcard, not a variable — pass through
                     // unchanged. See `bindings::is_wildcard_atom`.
-                    if name.starts_with('$')
-                        && name != "$_"
-                        && only.iter().any(|n| *n == name)
-                    {
+                    if name.starts_with('$') && name != "$_" && only.iter().any(|n| *n == name) {
                         let bare = &name[1..];
                         let fresh = intern_fresh_name(epoch, bare);
                         result_stack.push(factory.atom(fresh));
@@ -445,7 +442,8 @@ where
                         } else {
                             // Rename $varname → $__fr_{epoch}_{varname_without_dollar}
                             let bare_name = &name[1..]; // strip leading '$'
-                            result_stack.push(factory.atom(&format!("$__fr_{}_{}", epoch, bare_name)));
+                            result_stack
+                                .push(factory.atom(&format!("$__fr_{}_{}", epoch, bare_name)));
                         }
                     } else {
                         // Non-variable atom: pass through unchanged
@@ -490,7 +488,9 @@ where
         }
     }
 
-    result_stack.pop().expect("Result stack should not be empty after freshening")
+    result_stack
+        .pop()
+        .expect("Result stack should not be empty after freshening")
 }
 
 #[cfg(test)]
@@ -531,7 +531,11 @@ mod tests {
         let f = factory();
         let val = f.atom("&self");
         let result = freshen_with_epoch(&val, 99, &f);
-        assert_eq!(result.as_atom(), Some("&self"), "&self should not be freshened");
+        assert_eq!(
+            result.as_atom(),
+            Some("&self"),
+            "&self should not be freshened"
+        );
     }
 
     #[test]
@@ -539,7 +543,11 @@ mod tests {
         let f = factory();
         let val = f.atom("_");
         let result = freshen_with_epoch(&val, 99, &f);
-        assert_eq!(result.as_atom(), Some("_"), "Wildcards should not be freshened");
+        assert_eq!(
+            result.as_atom(),
+            Some("_"),
+            "Wildcards should not be freshened"
+        );
     }
 
     #[test]

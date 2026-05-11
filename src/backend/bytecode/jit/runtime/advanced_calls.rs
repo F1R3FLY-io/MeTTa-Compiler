@@ -10,7 +10,7 @@ use crate::backend::bytecode::external_registry::{ExternalContext, ExternalRegis
 use crate::backend::bytecode::jit::types::{JitContext, JitValue};
 use crate::backend::bytecode::mork_bridge::MorkBridge;
 use crate::backend::bytecode::vm::BytecodeVM;
-use crate::backend::models::{MettaValue, global_factory};
+use crate::backend::models::{global_factory, MettaValue};
 use std::sync::Arc;
 use tracing::warn;
 

@@ -30,9 +30,7 @@ impl CompressedRuleFilter {
     /// Create from derived analysis results.
     pub fn from_analysis(analysis: &DerivedAnalysis, total_rules: u32) -> Self {
         let dead = &analysis.dead_rules;
-        let live: HashSet<u32> = (0..total_rules)
-            .filter(|idx| !dead.contains(idx))
-            .collect();
+        let live: HashSet<u32> = (0..total_rules).filter(|idx| !dead.contains(idx)).collect();
 
         Self {
             live_rules: live,
@@ -119,9 +117,7 @@ pub fn install_rule_filter(filter: CompressedRuleFilter) {
 /// Returns true if no filter is installed (default: all rules live).
 #[inline]
 pub fn is_rule_live(rule_index: u32) -> bool {
-    THREAD_RULE_FILTER.with(|cell| {
-        cell.borrow().is_live(rule_index)
-    })
+    THREAD_RULE_FILTER.with(|cell| cell.borrow().is_live(rule_index))
 }
 
 // ============================================================================
@@ -140,10 +136,7 @@ pub enum DispatchStrategy {
 }
 
 /// Determine dispatch strategy for an expression hash.
-pub fn dispatch_strategy_for(
-    _expr_hash: u64,
-    _analysis: &DerivedAnalysis,
-) -> DispatchStrategy {
+pub fn dispatch_strategy_for(_expr_hash: u64, _analysis: &DerivedAnalysis) -> DispatchStrategy {
     // Check if all rules for this expression are dead
     // (would need expression-to-rule mapping, which Phase 4.5 provides)
     // For now, return Normal — full integration requires the mapping.
@@ -208,7 +201,10 @@ mod tests {
     #[test]
     fn test_dispatch_strategy() {
         let analysis = make_analysis(vec![]);
-        assert_eq!(dispatch_strategy_for(42, &analysis), DispatchStrategy::Normal);
+        assert_eq!(
+            dispatch_strategy_for(42, &analysis),
+            DispatchStrategy::Normal
+        );
     }
 
     /// Rules added after the AAM snapshot (global_rule_index >= total_rules) must always
@@ -228,8 +224,8 @@ mod tests {
         assert!(filter.is_live(0));
         assert!(filter.is_live(9));
         // Rules at or beyond total_rules (dynamically added) must always be live.
-        assert!(filter.is_live(10));  // == total_rules
-        assert!(filter.is_live(11));  // one beyond
+        assert!(filter.is_live(10)); // == total_rules
+        assert!(filter.is_live(11)); // one beyond
         assert!(filter.is_live(999)); // far beyond
     }
 }

@@ -232,12 +232,7 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
     for entry in WalkDir::new(source_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "rs")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|ext| ext == "rs").unwrap_or(false))
     {
         let path = entry.path();
         let content = match std::fs::read_to_string(path) {
@@ -299,12 +294,7 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
     for entry in WalkDir::new(source_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "rs")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|ext| ext == "rs").unwrap_or(false))
     {
         let path = entry.path();
         let content = match std::fs::read_to_string(path) {
@@ -366,12 +356,7 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
     for entry in WalkDir::new(source_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "rs")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|ext| ext == "rs").unwrap_or(false))
     {
         let path = entry.path();
         let content = match std::fs::read_to_string(path) {
@@ -399,12 +384,7 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
     for entry in WalkDir::new(source_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "rs")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|ext| ext == "rs").unwrap_or(false))
     {
         let path = entry.path();
         let content = match std::fs::read_to_string(path) {
@@ -433,12 +413,7 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
     for entry in WalkDir::new(source_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "rs")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|ext| ext == "rs").unwrap_or(false))
     {
         let path = entry.path();
         let content = match std::fs::read_to_string(path) {
@@ -462,7 +437,8 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
     // bounds from function/impl-block generics and propagate them to types
     // instantiated within those scopes. This catches types like
     // SubstituteWorkGeneric<V> where V is bounded at the function level.
-    let type_def_names: HashSet<String> = result.type_defs.iter().map(|td| td.name.clone()).collect();
+    let type_def_names: HashSet<String> =
+        result.type_defs.iter().map(|td| td.name.clone()).collect();
     let type_def_params: HashMap<String, Vec<String>> = result
         .type_defs
         .iter()
@@ -473,12 +449,7 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
     for entry in WalkDir::new(source_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext == "rs")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|ext| ext == "rs").unwrap_or(false))
     {
         let path = entry.path();
         let content = match std::fs::read_to_string(path) {
@@ -523,12 +494,7 @@ pub fn scan_directory(source_dir: &Path, include_tests: bool) -> ScanResult {
         for entry in WalkDir::new(source_dir)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map(|ext| ext == "rs")
-                    .unwrap_or(false)
-            })
+            .filter(|e| e.path().extension().map(|ext| ext == "rs").unwrap_or(false))
         {
             let path = entry.path();
             let content = match std::fs::read_to_string(path) {
@@ -758,9 +724,7 @@ impl<'a> VerifiedRegistrationVisitor<'a> {
 
 /// Check if a type string references MettaValue or MettaValueInner
 fn type_references_metta_value(ty: &str) -> bool {
-    ty.contains("MettaValue")
-        || ty.contains("MettaValueInner")
-        || ty.contains("MettaValueTrait")
+    ty.contains("MettaValue") || ty.contains("MettaValueInner") || ty.contains("MettaValueTrait")
 }
 
 /// Check if a type string references MettaValue/MettaValueInner ONLY through
@@ -777,7 +741,10 @@ fn type_references_metta_value_only_via_raw_ptr(ty: &str) -> bool {
             let abs_start = search_from + pos;
             let abs_end = abs_start + keyword.len();
             // Skip if overlapping with already-found longer match
-            if !positions.iter().any(|&(s, e)| abs_start >= s && abs_start < e) {
+            if !positions
+                .iter()
+                .any(|&(s, e)| abs_start >= s && abs_start < e)
+            {
                 positions.push((abs_start, abs_end));
             }
             search_from = abs_start + 1;
@@ -825,18 +792,8 @@ fn type_references_generic_value(ty: &str, generic_params: &[String]) -> bool {
 /// Extract the outermost container type
 fn extract_container(ty: &str) -> Option<String> {
     let containers = [
-        "Arc",
-        "Vec",
-        "DashMap",
-        "HashMap",
-        "BTreeMap",
-        "LruCache",
-        "Mutex",
-        "RwLock",
-        "OnceLock",
-        "LazyLock",
-        "Option",
-        "Box",
+        "Arc", "Vec", "DashMap", "HashMap", "BTreeMap", "LruCache", "Mutex", "RwLock", "OnceLock",
+        "LazyLock", "Option", "Box",
     ];
     for c in &containers {
         if ty.starts_with(c) || ty.contains(&format!("{} <", c)) || ty.contains(&format!("{}<", c))
@@ -898,11 +855,7 @@ pub fn extract_referenced_type_names(ty: &str) -> HashSet<String> {
             continue;
         }
         // Keep PascalCase identifiers (start with uppercase)
-        if t.chars()
-            .next()
-            .map(|c| c.is_uppercase())
-            .unwrap_or(false)
-        {
+        if t.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
             result.insert(t.to_string());
         }
     }
@@ -973,8 +926,7 @@ impl<'a, 'ast> Visit<'ast> for WrapperFnVisitor<'a> {
         let body_str = node.block.to_token_stream().to_string();
         for name in self.static_names {
             // syn tokenizes `&GLOBAL_FOO` as `& GLOBAL_FOO`
-            if body_str.contains(&format!("& {}", name))
-                || body_str.contains(&format!("&{}", name))
+            if body_str.contains(&format!("& {}", name)) || body_str.contains(&format!("&{}", name))
             {
                 self.found.insert(fn_name.clone(), name.clone());
                 break;
@@ -1104,11 +1056,7 @@ impl<'a> FunctionScopeBoundVisitor<'a> {
     /// Process an impl block: extract bounds from the struct's type definition
     /// (via self_ty), merge with impl-level and method-level generics, then
     /// scan method bodies AND method signatures.
-    fn process_impl_methods(
-        &mut self,
-        node: &syn::ItemImpl,
-        metta_params: &HashSet<String>,
-    ) {
+    fn process_impl_methods(&mut self, node: &syn::ItemImpl, metta_params: &HashSet<String>) {
         for item in &node.items {
             if let syn::ImplItem::Fn(method) = item {
                 let body_str = method.block.to_token_stream().to_string();
@@ -1604,7 +1552,8 @@ impl<'a, 'ast> Visit<'ast> for MettaValueVisitor<'a> {
             ty: ty_str.clone(),
             kind,
             contains_metta_value: contains,
-            only_raw_ptr_reference: contains && type_references_metta_value_only_via_raw_ptr(&ty_str),
+            only_raw_ptr_reference: contains
+                && type_references_metta_value_only_via_raw_ptr(&ty_str),
         });
 
         syn::visit::visit_item_static(self, node);
@@ -1676,7 +1625,13 @@ impl<'a, 'ast> Visit<'ast> for MettaValueVisitor<'a> {
 
                 self.result.statics.push(StaticDecl {
                     file: self.file_path.clone(),
-                    line: span_line(node.path.segments.first().map(|s| s.ident.span()).unwrap_or_else(Span::call_site)),
+                    line: span_line(
+                        node.path
+                            .segments
+                            .first()
+                            .map(|s| s.ident.span())
+                            .unwrap_or_else(Span::call_site),
+                    ),
                     name,
                     ty: tokens.clone(),
                     kind: StaticKind::ThreadLocal,
@@ -2081,9 +2036,7 @@ impl<'ast> Visit<'ast> for FnBodyWalker {
         // syn parses `let name: Type = init;` as Pat::Type { pat: Pat::Ident, ty: Type }
         // and `let name = init;` as Pat::Ident { ident: name }.
         let (var_name, explicit_ty) = match &node.pat {
-            syn::Pat::Ident(pat_ident) => {
-                (Some(pat_ident.ident.to_string()), None)
-            }
+            syn::Pat::Ident(pat_ident) => (Some(pat_ident.ident.to_string()), None),
             syn::Pat::Type(pat_type) => {
                 if let syn::Pat::Ident(inner_ident) = &*pat_type.pat {
                     let ty_str = pat_type.ty.to_token_stream().to_string();
@@ -2279,9 +2232,8 @@ mod tests {
 
     #[test]
     fn test_extract_referenced_type_names_deeply_nested() {
-        let refs = extract_referenced_type_names(
-            "LazyLock<RwLock<LruCache<u64, Arc<BytecodeChunk>>>>",
-        );
+        let refs =
+            extract_referenced_type_names("LazyLock<RwLock<LruCache<u64, Arc<BytecodeChunk>>>>");
         assert!(refs.contains("BytecodeChunk"));
         assert!(!refs.contains("LazyLock"));
         assert!(!refs.contains("RwLock"));
@@ -2291,8 +2243,7 @@ mod tests {
 
     #[test]
     fn test_extract_referenced_type_names_multiple_types() {
-        let refs =
-            extract_referenced_type_names("DashMap<u64, Arc<ExprCompilationState>>");
+        let refs = extract_referenced_type_names("DashMap<u64, Arc<ExprCompilationState>>");
         assert!(refs.contains("ExprCompilationState"));
         assert!(!refs.contains("DashMap"));
     }
@@ -2423,7 +2374,10 @@ mod tests {
             found: &mut wrapper_map,
         };
         wrapper_visitor.visit_file(&file);
-        assert_eq!(wrapper_map.get("global_foo"), Some(&"GLOBAL_FOO".to_string()));
+        assert_eq!(
+            wrapper_map.get("global_foo"),
+            Some(&"GLOBAL_FOO".to_string())
+        );
 
         // Then, run RootProviderImplVisitor with the wrapper map
         let mut rp_found: HashMap<String, HashSet<String>> = HashMap::new();
@@ -2435,7 +2389,9 @@ mod tests {
         rp_visitor.visit_file(&file);
 
         assert!(
-            rp_found.get("FooRoots").map_or(false, |s| s.contains("GLOBAL_FOO")),
+            rp_found
+                .get("FooRoots")
+                .map_or(false, |s| s.contains("GLOBAL_FOO")),
             "FooRoots should cover GLOBAL_FOO via wrapper function resolution"
         );
     }
@@ -2537,7 +2493,11 @@ mod tests {
         };
         visitor.visit_file(&file);
 
-        assert_eq!(findings.len(), 1, "should detect Vec<V> as potentially dangerous");
+        assert_eq!(
+            findings.len(),
+            1,
+            "should detect Vec<V> as potentially dangerous"
+        );
         assert_eq!(findings[0].vec_local, "items");
     }
 
@@ -2669,7 +2629,11 @@ mod tests {
         };
         visitor.visit_file(&file);
 
-        assert_eq!(findings.len(), 1, "should detect unguarded Vec in impl method");
+        assert_eq!(
+            findings.len(),
+            1,
+            "should detect unguarded Vec in impl method"
+        );
         assert_eq!(findings[0].function_name, "eval_with_vec");
     }
 

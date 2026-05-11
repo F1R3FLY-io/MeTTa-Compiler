@@ -447,14 +447,10 @@ impl CronStateMachine {
     fn transition(&mut self, event: CronEvent) {
         self.state = match (self.state, event) {
             // === Termination (highest priority, from any state) ===
-            (_, CronEvent::TerminationRequested) => {
-                CronState::Terminated
-            }
+            (_, CronEvent::TerminationRequested) => CronState::Terminated,
 
             // === CheckEvents transitions ===
-            (CronState::CheckEvents, CronEvent::TaskReceived) => {
-                CronState::DrainChannel
-            }
+            (CronState::CheckEvents, CronEvent::TaskReceived) => CronState::DrainChannel,
             (CronState::CheckEvents, CronEvent::TaskDue) => {
                 self.execute_one_task();
                 CronState::CheckEvents // Re-check after execution
@@ -478,9 +474,7 @@ impl CronStateMachine {
                 CronState::CheckEvents
             }
             (CronState::DrainChannel, CronEvent::NoEvents) => CronState::Sleeping,
-            (CronState::DrainChannel, CronEvent::ChannelDisconnected) => {
-                CronState::CheckEvents
-            }
+            (CronState::DrainChannel, CronEvent::ChannelDisconnected) => CronState::CheckEvents,
 
             // === Sleeping transitions ===
             (CronState::Sleeping, CronEvent::TimerExpired) => CronState::CheckEvents,
@@ -780,13 +774,7 @@ impl CronHandle {
 /// - `CronHandle` for submitting tasks (clone-able, thread-safe, lock-free)
 /// - `JoinHandle` for the cron thread
 /// - `Receiver<()>` that signals when the scheduler is ready
-pub fn spawn_cron(
-    terminating: Arc<AtomicBool>,
-) -> (
-    CronHandle,
-    JoinHandle<()>,
-    Receiver<()>,
-) {
+pub fn spawn_cron(terminating: Arc<AtomicBool>) -> (CronHandle, JoinHandle<()>, Receiver<()>) {
     spawn_cron_with_interval(terminating, CronStateMachine::DEFAULT_POLL_INTERVAL_MS)
 }
 
@@ -805,11 +793,7 @@ pub fn spawn_cron(
 pub fn spawn_cron_with_interval(
     terminating: Arc<AtomicBool>,
     poll_interval_ms: u64,
-) -> (
-    CronHandle,
-    JoinHandle<()>,
-    Receiver<()>,
-) {
+) -> (CronHandle, JoinHandle<()>, Receiver<()>) {
     spawn_cron_with_interval_and_name(terminating, poll_interval_ms, "mettatron-task-scheduler")
 }
 
@@ -823,11 +807,7 @@ pub fn spawn_cron_with_interval_and_name(
     terminating: Arc<AtomicBool>,
     poll_interval_ms: u64,
     thread_name: &str,
-) -> (
-    CronHandle,
-    JoinHandle<()>,
-    Receiver<()>,
-) {
+) -> (CronHandle, JoinHandle<()>, Receiver<()>) {
     spawn_cron_with_interval_name_and_pool(terminating, poll_interval_ms, thread_name, None)
 }
 
@@ -845,11 +825,7 @@ pub fn spawn_cron_with_pool(
     poll_interval_ms: u64,
     thread_name: &str,
     worker_pool: Arc<WorkPool>,
-) -> (
-    CronHandle,
-    JoinHandle<()>,
-    Receiver<()>,
-) {
+) -> (CronHandle, JoinHandle<()>, Receiver<()>) {
     spawn_cron_with_interval_name_and_pool(
         terminating,
         poll_interval_ms,
@@ -864,11 +840,7 @@ fn spawn_cron_with_interval_name_and_pool(
     poll_interval_ms: u64,
     thread_name: &str,
     worker_pool: Option<Arc<WorkPool>>,
-) -> (
-    CronHandle,
-    JoinHandle<()>,
-    Receiver<()>,
-) {
+) -> (CronHandle, JoinHandle<()>, Receiver<()>) {
     // Lock-free unbounded MPSC channel for tasks
     let (task_tx, task_rx) = unbounded::<ScheduledTask>();
 
@@ -1028,17 +1000,13 @@ mod tests {
                 let c = Arc::clone(&counter);
                 thread::spawn(move || {
                     for _ in 0..100 {
-                        h.schedule_after(
-                            0,
-                            TaskMetadata::OneShot,
-                            {
-                                let c = Arc::clone(&c);
-                                move || {
-                                    c.fetch_add(1, Ordering::Relaxed);
-                                    true
-                                }
-                            },
-                        );
+                        h.schedule_after(0, TaskMetadata::OneShot, {
+                            let c = Arc::clone(&c);
+                            move || {
+                                c.fetch_add(1, Ordering::Relaxed);
+                                true
+                            }
+                        });
                     }
                 })
             })
@@ -1062,8 +1030,7 @@ mod tests {
     #[test]
     fn test_recurring_task() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
+        let (handle, thread, _ready) = spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         let counter = Arc::new(StdAtomicU64::new(0));
         let c = Arc::clone(&counter);
@@ -1092,8 +1059,7 @@ mod tests {
     #[test]
     fn test_recurring_task_stops_on_false() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
+        let (handle, thread, _ready) = spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         let counter = Arc::new(StdAtomicU64::new(0));
         let c = Arc::clone(&counter);
@@ -1118,8 +1084,7 @@ mod tests {
     #[test]
     fn test_one_shot_task() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
+        let (handle, thread, _ready) = spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         let counter = Arc::new(StdAtomicU64::new(0));
         let c = Arc::clone(&counter);
@@ -1144,8 +1109,7 @@ mod tests {
     #[test]
     fn test_panic_safety() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, ready_rx) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
+        let (handle, thread, ready_rx) = spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         // Wait for scheduler to be ready (prevents race condition where tasks are
         // scheduled before the cron thread has entered its event loop)
@@ -1188,8 +1152,7 @@ mod tests {
     #[test]
     fn test_channel_disconnect_empty_queue() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
+        let (handle, thread, _ready) = spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         // Don't schedule any tasks, just drop the handle
         drop(handle);
@@ -1202,8 +1165,7 @@ mod tests {
     #[test]
     fn test_channel_disconnect_with_tasks() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) =
-            spawn_cron_with_interval(Arc::clone(&terminating), 10);
+        let (handle, thread, _ready) = spawn_cron_with_interval(Arc::clone(&terminating), 10);
 
         let counter = Arc::new(StdAtomicU64::new(0));
         let c = Arc::clone(&counter);
@@ -1388,11 +1350,8 @@ mod tests {
     #[test]
     fn test_custom_thread_name() {
         let terminating = Arc::new(AtomicBool::new(false));
-        let (handle, thread, _ready) = spawn_cron_with_interval_and_name(
-            Arc::clone(&terminating),
-            10,
-            "my-custom-scheduler",
-        );
+        let (handle, thread, _ready) =
+            spawn_cron_with_interval_and_name(Arc::clone(&terminating), 10, "my-custom-scheduler");
 
         handle.request_shutdown();
         thread.join().expect("Cron thread panicked");
@@ -1424,10 +1383,7 @@ mod tests {
         let d = Arc::clone(&done);
 
         handle.schedule_once(0, "thread-name-check", move || {
-            *tn.lock() = thread::current()
-                .name()
-                .unwrap_or("unknown")
-                .to_string();
+            *tn.lock() = thread::current().name().unwrap_or("unknown").to_string();
             d.store(true, AtomicOrdering::Release);
             true
         });
@@ -1531,11 +1487,7 @@ mod tests {
             "Expected at most 4 non-overlapping executions, got {} (overlap likely)",
             count
         );
-        assert!(
-            count >= 1,
-            "Expected at least 1 execution, got {}",
-            count
-        );
+        assert!(count >= 1, "Expected at least 1 execution, got {}", count);
     }
 
     /// Test that the cron thread is not blocked by worker pool tasks.

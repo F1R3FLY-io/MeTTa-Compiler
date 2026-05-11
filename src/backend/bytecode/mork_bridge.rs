@@ -232,7 +232,6 @@ impl MorkBridge {
         expr: &MettaValue,
         env: &MettaEnvironment,
     ) -> Vec<(MettaValue, MettaValue, Bindings)> {
-
         // Pass a no-op closure instead of apply_bindings_generic because we only use
         // rhs_template + bindings — the instantiated_rhs field is discarded. This avoids
         // a redundant recursive S-expression traversal + allocation per matching rule.
@@ -249,9 +248,10 @@ impl MorkBridge {
         results
             .into_iter()
             .map(|r| {
-                // Convert GenericBindings<MettaValue> → Bindings (SmartBindings)
+                // VM/JIT compiled RHS bytecode references original rule variable
+                // names, so install the pre-freshen rule-local binding frame.
                 let mut bindings = Bindings::new();
-                for (name, value) in r.bindings.iter() {
+                for (name, value) in r.original_bindings.iter() {
                     bindings.insert(name, value.clone());
                 }
                 // lhs = rhs_template (for CompiledRule.lhs debugging field)
@@ -425,5 +425,4 @@ mod tests {
         assert_eq!(stats2.cache_misses, 1);
         assert_eq!(stats2.cache_hits, 1);
     }
-
 }

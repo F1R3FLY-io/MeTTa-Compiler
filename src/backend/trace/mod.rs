@@ -24,12 +24,15 @@ mod tests;
 
 pub use collector::TraceCollector;
 pub use convert::{trace_bindings, trace_span, trace_value, trace_value_generic};
-pub use format::{write_event, write_header, write_footer};
+pub use format::{write_event, write_footer, write_header};
 pub use rule_match::{emit_match_attempt, rule_match_filter, LiveOutcome, RuleMatchFilter};
-pub use thread_local_sink::{set_thread_trace_collector, clear_thread_trace_collector, with_thread_trace_collector, set_thread_trace_collector_ref, with_trace_collector_ref};
+pub use thread_local_sink::{
+    clear_thread_trace_collector, set_thread_trace_collector, set_thread_trace_collector_ref,
+    with_thread_trace_collector, with_trace_collector_ref,
+};
 
 // Re-export shared format types for convenience.
 pub use trace_format::{
     RuleMatchOutcome, TraceEvent, TraceEventKind, TraceHeader, TraceSpan, TraceTier, TraceValue,
-    TRACE_MAGIC, TRACE_FORMAT_VERSION,
+    TRACE_FORMAT_VERSION, TRACE_MAGIC,
 };

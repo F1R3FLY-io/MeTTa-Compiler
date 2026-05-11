@@ -316,7 +316,10 @@ fn detect_crash_thread(threads: &[GdbThread]) -> Option<usize> {
     for (i, thread) in threads.iter().enumerate() {
         if let Some(top) = thread.frames.first() {
             let leaf = crate::function_map::extract_leaf_name(&top.function_name);
-            if SIGNAL_FUNCTIONS.iter().any(|&s| leaf == s || top.function_name.contains(s)) {
+            if SIGNAL_FUNCTIONS
+                .iter()
+                .any(|&s| leaf == s || top.function_name.contains(s))
+            {
                 return Some(i);
             }
         }
@@ -373,8 +376,7 @@ mod tests {
 
     #[test]
     fn test_parse_frame_with_library() {
-        let line =
-            "#0  0x00007f4c8a1b2c3d in __GI___nanosleep () from /usr/lib/libc.so.6";
+        let line = "#0  0x00007f4c8a1b2c3d in __GI___nanosleep () from /usr/lib/libc.so.6";
         let frame = try_parse_frame(line).expect("should parse frame");
         assert_eq!(frame.frame_num, 0);
         assert!(frame.function_name.contains("nanosleep"));

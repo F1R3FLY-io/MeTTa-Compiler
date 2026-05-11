@@ -186,10 +186,7 @@ mod tests {
 
     #[test]
     fn test_find_error() {
-        let values = vec![
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ];
+        let values = vec![MettaValue::Long(1), MettaValue::Long(2)];
         assert!(find_error(&values).is_none());
 
         let values_with_error = vec![

@@ -480,10 +480,7 @@ mod parse_tests {
             classify_and_parse("\"hello\""),
             ClassifiedLiteral::String("hello")
         );
-        assert_eq!(
-            classify_and_parse("\"\""),
-            ClassifiedLiteral::String("")
-        );
+        assert_eq!(classify_and_parse("\"\""), ClassifiedLiteral::String(""));
     }
 
     #[test]
@@ -500,13 +497,36 @@ mod parse_tests {
         // Invariant from the doc table: kinds must agree (modulo
         // LongOverflow → SymbolKind::Long).
         let cases = [
-            "", "0", "42", "-1", "-42", "i64::MAX", "9223372036854775807",
-            "-9223372036854775808", "99999999999999999999",
-            "1.5", "-3.14", "1e10", "1.5E-3", "-1.5e+3",
-            "true", "false", "True", "FALSE",
-            "\"hi\"", "\"\"", "\"unterminated",
-            "hello", "-", "1.", ".5", "1.2.3",
-            "$x", "&self", "_", "Inheritance",
+            "",
+            "0",
+            "42",
+            "-1",
+            "-42",
+            "i64::MAX",
+            "9223372036854775807",
+            "-9223372036854775808",
+            "99999999999999999999",
+            "1.5",
+            "-3.14",
+            "1e10",
+            "1.5E-3",
+            "-1.5e+3",
+            "true",
+            "false",
+            "True",
+            "FALSE",
+            "\"hi\"",
+            "\"\"",
+            "\"unterminated",
+            "hello",
+            "-",
+            "1.",
+            ".5",
+            "1.2.3",
+            "$x",
+            "&self",
+            "_",
+            "Inheritance",
         ];
         for s in &cases {
             let kind = classify_symbol(s);
@@ -530,12 +550,7 @@ mod tests {
 
     macro_rules! kind_eq {
         ($input:expr, $expected:expr) => {
-            assert_eq!(
-                classify_symbol($input),
-                $expected,
-                "input: {:?}",
-                $input
-            );
+            assert_eq!(classify_symbol($input), $expected, "input: {:?}", $input);
         };
     }
 
@@ -548,8 +563,8 @@ mod tests {
         kind_eq!("-1", SymbolKind::Long);
         kind_eq!("-42", SymbolKind::Long);
         kind_eq!("-9223372036854775808", SymbolKind::Long); // i64::MIN
-        // Note: classifier says Long; the parser-side fallback handles
-        // i64::MAX+1 by reclassifying as Atom (overflow safety belt).
+                                                            // Note: classifier says Long; the parser-side fallback handles
+                                                            // i64::MAX+1 by reclassifying as Atom (overflow safety belt).
         kind_eq!("99999999999999999999", SymbolKind::Long);
     }
 
@@ -581,10 +596,10 @@ mod tests {
 
     #[test]
     fn bool_keyword_lookalikes_are_atoms() {
-        kind_eq!("True", SymbolKind::Atom);   // case-sensitive
+        kind_eq!("True", SymbolKind::Atom); // case-sensitive
         kind_eq!("FALSE", SymbolKind::Atom);
-        kind_eq!("trues", SymbolKind::Atom);  // longer → not bool
-        kind_eq!("tru", SymbolKind::Atom);    // shorter → not bool
+        kind_eq!("trues", SymbolKind::Atom); // longer → not bool
+        kind_eq!("tru", SymbolKind::Atom); // shorter → not bool
         kind_eq!("falsey", SymbolKind::Atom);
         kind_eq!("fals", SymbolKind::Atom);
     }
@@ -621,11 +636,11 @@ mod tests {
     fn malformed_numbers_are_atoms() {
         kind_eq!("", SymbolKind::Atom);
         kind_eq!("-", SymbolKind::Atom);
-        kind_eq!("1.", SymbolKind::Atom);    // dot with no fraction
-        kind_eq!(".5", SymbolKind::Atom);    // no leading digit
+        kind_eq!("1.", SymbolKind::Atom); // dot with no fraction
+        kind_eq!(".5", SymbolKind::Atom); // no leading digit
         kind_eq!("1.2.3", SymbolKind::Atom); // double dot
-        kind_eq!("1e", SymbolKind::Atom);    // exponent with no digits
-        kind_eq!("1e+", SymbolKind::Atom);   // exponent with sign but no digits
+        kind_eq!("1e", SymbolKind::Atom); // exponent with no digits
+        kind_eq!("1e+", SymbolKind::Atom); // exponent with sign but no digits
         kind_eq!("1.5.7e3", SymbolKind::Atom);
         kind_eq!("1.5e3.0", SymbolKind::Atom); // exponent with fractional part
         kind_eq!("0x2A", SymbolKind::Atom); // hex unsupported

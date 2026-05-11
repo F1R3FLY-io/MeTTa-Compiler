@@ -64,70 +64,96 @@ where
     let result = match expr.inner_raw() {
         MettaValueInner::Bool(_) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-bool"; }
+            {
+                _trace_source = "literal-bool";
+            }
             vec![factory.atom("Bool")]
         }
         MettaValueInner::Long(_) | MettaValueInner::Float(_) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-number"; }
+            {
+                _trace_source = "literal-number";
+            }
             vec![factory.atom("Number")]
         }
         MettaValueInner::String(_) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-string"; }
+            {
+                _trace_source = "literal-string";
+            }
             vec![factory.atom("String")]
         }
         MettaValueInner::Unit => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-unit"; }
+            {
+                _trace_source = "literal-unit";
+            }
             vec![factory.atom("Expression")]
         }
         MettaValueInner::Type(_) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-type"; }
+            {
+                _trace_source = "literal-type";
+            }
             vec![factory.atom("Type")]
         }
         MettaValueInner::Error(..) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-error"; }
+            {
+                _trace_source = "literal-error";
+            }
             vec![factory.atom("Error")]
         }
         MettaValueInner::Space(_) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-space"; }
+            {
+                _trace_source = "literal-space";
+            }
             vec![factory.atom("Space")]
         }
         MettaValueInner::State(_) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-state"; }
+            {
+                _trace_source = "literal-state";
+            }
             vec![factory.atom("State")]
         }
         MettaValueInner::Memo(_) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-memo"; }
+            {
+                _trace_source = "literal-memo";
+            }
             vec![factory.atom("Memo")]
         }
         MettaValueInner::Empty => {
             #[cfg(feature = "trace")]
-            { _trace_source = "literal-empty"; }
+            {
+                _trace_source = "literal-empty";
+            }
             vec![factory.atom("Empty")]
         }
         MettaValueInner::Atom(name) => {
             // Check if it's a variable (starts with $, &, or ')
             if name.starts_with('$') || name.starts_with('&') || name.starts_with('\'') {
                 #[cfg(feature = "trace")]
-                { _trace_source = "variable"; }
+                {
+                    _trace_source = "variable";
+                }
                 vec![factory.type_value(factory.atom(name))]
             } else {
                 // Look up ALL types in environment (nondeterministic)
                 let types = env.get_types_generic(name);
                 if types.is_empty() {
                     #[cfg(feature = "trace")]
-                    { _trace_source = "fallback-undefined"; }
+                    {
+                        _trace_source = "fallback-undefined";
+                    }
                     vec![factory.atom("%Undefined%")]
                 } else {
                     #[cfg(feature = "trace")]
-                    { _trace_source = "env-atom-types"; }
+                    {
+                        _trace_source = "env-atom-types";
+                    }
                     types
                 }
             }
@@ -136,7 +162,9 @@ where
             let items = expr.as_sexpr().expect("matched SExpr");
             if items.is_empty() {
                 #[cfg(feature = "trace")]
-                { _trace_source = "sexpr-empty"; }
+                {
+                    _trace_source = "sexpr-empty";
+                }
                 vec![factory.atom("Expression")]
             } else if let Some(op) = items.first().and_then(|v| v.as_atom()) {
                 // Phase 10.6: Control-flow tracing first (let, let*, if, if-reducible, case)
@@ -144,7 +172,9 @@ where
                     infer_types_control_flow(op, items, factory, env, seen)
                 {
                     #[cfg(feature = "trace")]
-                    { _trace_source = source; }
+                    {
+                        _trace_source = source;
+                    }
                     let _ = source;
                     types
                 }
@@ -165,19 +195,29 @@ where
                                     if matches!(param_type_expr, TypeExpr::Undefined) {
                                         continue;
                                     }
-                                    let arg_type = infer_type_generic(&actual_args[i], factory, env);
+                                    let arg_type =
+                                        infer_type_generic(&actual_args[i], factory, env);
                                     // Skip validation for unconstrained types:
                                     // - %Undefined% (untyped atom)
                                     // - $x (variable atom)
                                     // - Type($x) (type variable wrapper)
                                     let is_unconstrained = match arg_type.inner_raw() {
-                                        MettaValueInner::Atom(n) => *n == "%Undefined%" || n.starts_with('$'),
-                                        MettaValueInner::Type(inner) => inner.as_atom().map_or(false, |n| n.starts_with('$')),
+                                        MettaValueInner::Atom(n) => {
+                                            *n == "%Undefined%" || n.starts_with('$')
+                                        }
+                                        MettaValueInner::Type(inner) => {
+                                            inner.as_atom().map_or(false, |n| n.starts_with('$'))
+                                        }
                                         _ => false,
                                     };
                                     if !is_unconstrained {
-                                        let param_type_val = type_expr_to_generic(param_type_expr, factory);
-                                        if !match_types_with_bindings(&param_type_val, &arg_type, &mut bindings) {
+                                        let param_type_val =
+                                            type_expr_to_generic(param_type_expr, factory);
+                                        if !match_types_with_bindings(
+                                            &param_type_val,
+                                            &arg_type,
+                                            &mut bindings,
+                                        ) {
                                             all_match = false;
                                             break;
                                         }
@@ -188,11 +228,15 @@ where
                                 // Phase E: Arg types don't match builtin signature — return empty
                                 // (HE parity: get-type (+ 5 "4") returns empty, not Number)
                                 #[cfg(feature = "trace")]
-                                { _trace_source = "builtin-arg-mismatch"; }
+                                {
+                                    _trace_source = "builtin-arg-mismatch";
+                                }
                                 vec![]
                             } else {
                                 #[cfg(feature = "trace")]
-                                { _trace_source = "builtin-signature"; }
+                                {
+                                    _trace_source = "builtin-signature";
+                                }
                                 let resolved = if !bindings.is_empty() {
                                     let ret_val = type_expr_to_generic(ret_type, factory);
                                     apply_type_bindings(&ret_val, &bindings, factory)
@@ -203,26 +247,34 @@ where
                             }
                         } else {
                             #[cfg(feature = "trace")]
-                            { _trace_source = "builtin-signature"; }
+                            {
+                                _trace_source = "builtin-signature";
+                            }
                             vec![type_expr_to_generic(ret_type, factory)]
                         }
                     } else {
                         // Builtin signature exists but no return type — fall through
                         let (types, source) = infer_types_sexpr_body(op, items, factory, env);
                         #[cfg(feature = "trace")]
-                        { _trace_source = source; }
+                        {
+                            _trace_source = source;
+                        }
                         let _ = source;
                         types
                     }
                 } else if op == "->" {
                     // Special case for arrow type constructor
                     #[cfg(feature = "trace")]
-                    { _trace_source = "arrow-constructor"; }
+                    {
+                        _trace_source = "arrow-constructor";
+                    }
                     vec![factory.atom("Type")]
                 } else {
                     let (types, source) = infer_types_sexpr_body(op, items, factory, env);
                     #[cfg(feature = "trace")]
-                    { _trace_source = source; }
+                    {
+                        _trace_source = source;
+                    }
                     let _ = source;
                     types
                 }
@@ -230,14 +282,18 @@ where
                 // Phase 10.6: Non-atom head (e.g., ((Inheritance $B $A) (Truth_inversion $TV)))
                 // These are data tuples — type is Expression
                 #[cfg(feature = "trace")]
-                { _trace_source = "non-atom-head-expression"; }
+                {
+                    _trace_source = "non-atom-head-expression";
+                }
                 vec![factory.atom("Expression")]
             }
         }
         MettaValueInner::Conjunction(_) => {
             let goals = expr.as_conjunction().expect("matched Conjunction");
             #[cfg(feature = "trace")]
-            { _trace_source = "conjunction"; }
+            {
+                _trace_source = "conjunction";
+            }
             if goals.is_empty() {
                 vec![factory.atom("Expression")]
             } else if let Some(last) = goals.last() {
@@ -248,12 +304,16 @@ where
         }
         MettaValueInner::Quoted(_) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "quoted"; }
+            {
+                _trace_source = "quoted";
+            }
             vec![factory.atom("Expression")]
         }
         MettaValueInner::Spanned(..) => {
             #[cfg(feature = "trace")]
-            { _trace_source = "spanned-strip"; }
+            {
+                _trace_source = "spanned-strip";
+            }
             let stripped = expr.strip_one_span();
             infer_types_generic_inner(&stripped, factory, env, seen)
         }
@@ -328,7 +388,8 @@ where
                             let arg_type = infer_type_generic(&actual_args[i], factory, env);
                             // Skip matching if arg type is %Undefined% (can't constrain)
                             if arg_type.as_atom() != Some("%Undefined%") {
-                                if !match_types_with_bindings(param_type, &arg_type, &mut bindings) {
+                                if !match_types_with_bindings(param_type, &arg_type, &mut bindings)
+                                {
                                     all_match = false;
                                     break;
                                 }
@@ -368,8 +429,7 @@ where
     // the tuple-type construction path below. Otherwise (has rules),
     // return the value types as-is (it's a function with a value type).
     let has_value_types_only = !has_arrow && !op_types.is_empty();
-    let is_data_constructor = has_value_types_only
-        && !env.may_have_rules_for(op, items.len() - 1);
+    let is_data_constructor = has_value_types_only && !env.may_have_rules_for(op, items.len() - 1);
 
     // Include non-arrow types as value types (unless this is a data
     // constructor, which uses the tuple-type path instead).
@@ -419,13 +479,10 @@ where
                     let mut all_match = true;
                     for (i, param_type) in param_types.iter().enumerate() {
                         if i < actual_args.len() {
-                            let arg_type = infer_type_generic(
-                                &actual_args[i], factory, env,
-                            );
+                            let arg_type = infer_type_generic(&actual_args[i], factory, env);
                             if arg_type.as_atom() != Some("%Undefined%") {
-                                if !match_types_with_bindings(
-                                    param_type, &arg_type, &mut bindings,
-                                ) {
+                                if !match_types_with_bindings(param_type, &arg_type, &mut bindings)
+                                {
                                     all_match = false;
                                     break;
                                 }
@@ -474,12 +531,14 @@ where
         // For data constructors, construct structural tuple types from element
         // types. E.g., (a b) where (: a A) and (: b B) → tuple type (A B).
         // With nondeterministic types, produces the Cartesian product.
-        let element_type_sets: Vec<Vec<V>> = items.iter()
+        let element_type_sets: Vec<Vec<V>> = items
+            .iter()
             .map(|item| {
                 let types = infer_types_generic(item, factory, env);
                 // Filter out %Undefined% — elements with no type don't
                 // contribute to tuple construction
-                types.into_iter()
+                types
+                    .into_iter()
                     .filter(|t| t.as_atom() != Some("%Undefined%"))
                     .collect()
             })
@@ -501,7 +560,8 @@ where
                 tuple_types = new_tuples;
             }
 
-            let result: Vec<V> = tuple_types.into_iter()
+            let result: Vec<V> = tuple_types
+                .into_iter()
                 .map(|elements| factory.sexpr(elements))
                 .collect();
 
@@ -593,14 +653,19 @@ where
                         if let Some(pair_items) = pair.as_sexpr() {
                             if pair_items.len() == 2 {
                                 let val_types = infer_types_with_cycle_check(
-                                    &pair_items[1], factory, env, seen,
+                                    &pair_items[1],
+                                    factory,
+                                    env,
+                                    seen,
                                 );
                                 return val_types.iter().any(|t| t.is_monadic_type());
                             }
                         }
                         false
                     })
-                } else { false };
+                } else {
+                    false
+                };
                 if has_monadic {
                     let wrapped = wrap_types_in_io(&filtered, factory);
                     Some((wrapped, "control-flow-let*"))
@@ -645,7 +710,10 @@ where
             } else {
                 let scrutinee_types = infer_types_with_cycle_check(&items[1], factory, env, seen);
                 if scrutinee_types.iter().any(|t| t.is_monadic_type()) {
-                    Some((wrap_types_in_io(&combined, factory), "control-flow-if-reducible"))
+                    Some((
+                        wrap_types_in_io(&combined, factory),
+                        "control-flow-if-reducible",
+                    ))
                 } else {
                     Some((combined, "control-flow-if-reducible"))
                 }
@@ -660,8 +728,7 @@ where
                     if let Some(branch_items) = branch.as_sexpr() {
                         if branch_items.len() == 2 {
                             let body = &branch_items[1];
-                            let body_types =
-                                infer_types_with_cycle_check(body, factory, env, seen);
+                            let body_types = infer_types_with_cycle_check(body, factory, env, seen);
                             let filtered = filter_undefined(&body_types);
                             combined = union_types(&combined, &filtered);
                         }
@@ -670,7 +737,8 @@ where
                 if combined.is_empty() {
                     None
                 } else {
-                    let scrutinee_types = infer_types_with_cycle_check(&items[1], factory, env, seen);
+                    let scrutinee_types =
+                        infer_types_with_cycle_check(&items[1], factory, env, seen);
                     if scrutinee_types.iter().any(|t| t.is_monadic_type()) {
                         Some((wrap_types_in_io(&combined, factory), "control-flow-case"))
                     } else {
@@ -794,13 +862,9 @@ where
 
     match op {
         // (return expr) → infer type of expr
-        "return" if items.len() == 2 => {
-            infer_types_with_cycle_check(&items[1], factory, env, seen)
-        }
+        "return" if items.len() == 2 => infer_types_with_cycle_check(&items[1], factory, env, seen),
         // (chain expr $var body) → recurse into body
-        "chain" if items.len() == 4 => {
-            collect_return_types(&items[3], factory, env, seen)
-        }
+        "chain" if items.len() == 4 => collect_return_types(&items[3], factory, env, seen),
         // (if cond then else) → recurse into both branches
         "if" if items.len() == 4 => {
             let then_types = collect_return_types(&items[2], factory, env, seen);
@@ -808,13 +872,9 @@ where
             union_types(&then_types, &else_types)
         }
         // (let $var expr body) → recurse into body
-        "let" if items.len() == 4 => {
-            collect_return_types(&items[3], factory, env, seen)
-        }
+        "let" if items.len() == 4 => collect_return_types(&items[3], factory, env, seen),
         // (let* (bindings...) body) → recurse into body
-        "let*" if items.len() == 3 => {
-            collect_return_types(&items[2], factory, env, seen)
-        }
+        "let*" if items.len() == 3 => collect_return_types(&items[2], factory, env, seen),
         // (case expr ((pat1 body1) ...)) → recurse into each branch body
         "case" if items.len() == 3 => {
             if let Some(branches) = items[2].as_sexpr() {
@@ -972,7 +1032,10 @@ pub fn types_match_generic<V: MettaValueTrait + 'static>(actual: &V, expected: &
 ///
 /// The `reason` string identifies which matching rule decided the outcome,
 /// for eval-trace instrumentation.
-fn types_match_generic_inner<V: MettaValueTrait + 'static>(actual: &V, expected: &V) -> (bool, &'static str) {
+fn types_match_generic_inner<V: MettaValueTrait + 'static>(
+    actual: &V,
+    expected: &V,
+) -> (bool, &'static str) {
     // %Undefined% matches anything (HE parity)
     if let Some(name) = expected.as_atom() {
         if name == "%Undefined%" {
@@ -1016,7 +1079,14 @@ fn types_match_generic_inner<V: MettaValueTrait + 'static>(actual: &V, expected:
             if actual.is_type() {
                 if let Some(actual_inner) = actual.as_type() {
                     let (r, _) = types_match_generic_inner(actual_inner, inner);
-                    return (r, if r { "type-wrapper-structural" } else { "type-wrapper-mismatch" });
+                    return (
+                        r,
+                        if r {
+                            "type-wrapper-structural"
+                        } else {
+                            "type-wrapper-mismatch"
+                        },
+                    );
                 }
             }
         }
@@ -1139,7 +1209,10 @@ where
 /// checking its semantic type. This matches HE behavior where stdlib
 /// operations like `match`, `let`, `case`, etc. use `Atom` parameters.
 pub fn is_meta_type(name: &str) -> bool {
-    matches!(name, "Atom" | "Symbol" | "Variable" | "Expression" | "Grounded")
+    matches!(
+        name,
+        "Atom" | "Symbol" | "Variable" | "Expression" | "Grounded"
+    )
 }
 
 /// Check if a type is an IO monad type: `(IO X)`.
@@ -1169,13 +1242,16 @@ where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
 {
-    types.iter().map(|t| {
-        if t.is_monadic_type() {
-            t.clone()
-        } else {
-            factory.sexpr(vec![factory.atom("IO"), t.clone()])
-        }
-    }).collect()
+    types
+        .iter()
+        .map(|t| {
+            if t.is_monadic_type() {
+                t.clone()
+            } else {
+                factory.sexpr(vec![factory.atom("IO"), t.clone()])
+            }
+        })
+        .collect()
 }
 
 /// Check if a type is an arrow type returning IO: `(-> ... (IO X))`.
@@ -1390,11 +1466,7 @@ where
 /// - `(List $t)` → `(List Number)`
 /// - `(-> $t $u)` → `(-> Number Bool)`
 /// - Unbound variables remain as-is
-pub fn apply_type_bindings<V, F>(
-    typ: &V,
-    bindings: &HashMap<String, V>,
-    factory: &F,
-) -> V
+pub fn apply_type_bindings<V, F>(typ: &V, bindings: &HashMap<String, V>, factory: &F) -> V
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
@@ -1457,7 +1529,8 @@ where
         return typ.clone();
     }
     if let Some(items) = typ.as_sexpr() {
-        let freshened: Vec<V> = items.iter()
+        let freshened: Vec<V> = items
+            .iter()
             .map(|item| freshen_type_variables(item, index, factory))
             .collect();
         return factory.sexpr(freshened);
@@ -1500,9 +1573,7 @@ where
     }
     let params: Vec<&str> = lhs_items[1..]
         .iter()
-        .filter_map(|v| {
-            v.as_atom().filter(|name| name.starts_with('$'))
-        })
+        .filter_map(|v| v.as_atom().filter(|name| name.starts_with('$')))
         .collect();
 
     if params.is_empty() {
@@ -1563,8 +1634,7 @@ fn collect_param_constraints<V, F>(
     constraints: &mut HashMap<String, V>,
     factory: &F,
     env: &GenericEnvironment<V, F>,
-)
-where
+) where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
@@ -1622,7 +1692,9 @@ where
                         // This arg is a parameter variable — constrain it
                         let type_name = param_type.as_atom();
                         if type_name != Some("%Undefined%") && type_name != Some("->") {
-                            constraints.entry(arg_name.to_string()).or_insert_with(|| param_type.clone());
+                            constraints
+                                .entry(arg_name.to_string())
+                                .or_insert_with(|| param_type.clone());
                         }
                     }
                 }
@@ -1641,7 +1713,11 @@ where
 ///
 /// For atoms with multiple type declarations, returns each type as a separate
 /// result. For untyped atoms, returns `%Undefined%`.
-pub fn eval_get_type_generic<V, F>(items: &[V], factory: &F, env: &GenericEnvironment<V, F>) -> Vec<V>
+pub fn eval_get_type_generic<V, F>(
+    items: &[V],
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+) -> Vec<V>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
@@ -1665,7 +1741,11 @@ where
 ///
 /// Returns True if ANY inferred type matches the expected type.
 /// %Undefined% matches any type (universal match per HE semantics).
-pub fn eval_check_type_generic<V, F>(items: &[V], factory: &F, env: &GenericEnvironment<V, F>) -> Vec<V>
+pub fn eval_check_type_generic<V, F>(
+    items: &[V],
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+) -> Vec<V>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
@@ -1685,7 +1765,9 @@ where
 
     // Infer ALL types, check if ANY matches expected (with subtype awareness)
     let actual_types = infer_types_generic(expr, factory, env);
-    let matches = actual_types.iter().any(|actual| types_match_with_subtypes(actual, expected, env));
+    let matches = actual_types
+        .iter()
+        .any(|actual| types_match_with_subtypes(actual, expected, env));
 
     vec![factory.bool(matches)]
 }
@@ -1714,13 +1796,7 @@ fn is_type_error<V: MettaValueTrait>(v: &V) -> bool {
 
 /// Construct a type error atom: `(Error expr (BadArgType idx expected actual))`
 #[allow(dead_code)]
-pub fn make_type_error<V, F>(
-    factory: &F,
-    expr: &V,
-    arg_idx: usize,
-    expected: &V,
-    actual: &V,
-) -> V
+pub fn make_type_error<V, F>(factory: &F, expr: &V, arg_idx: usize, expected: &V, actual: &V) -> V
 where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
@@ -1731,11 +1807,7 @@ where
         expected.clone(),
         actual.clone(),
     ]);
-    factory.sexpr(vec![
-        factory.atom("Error"),
-        expr.clone(),
-        detail,
-    ])
+    factory.sexpr(vec![factory.atom("Error"), expr.clone(), detail])
 }
 
 /// Evaluate `(validate-atom expr)` — recursive well-typedness checking.
@@ -1924,7 +1996,9 @@ where
     let actual_types = infer_types_generic(atom, factory, env);
 
     // Untyped atoms (%Undefined%) match anything (HE parity)
-    let all_undefined = actual_types.iter().all(|t| t.as_atom() == Some("%Undefined%"));
+    let all_undefined = actual_types
+        .iter()
+        .all(|t| t.as_atom() == Some("%Undefined%"));
     if all_undefined {
         return vec![atom.clone()];
     }
@@ -2105,10 +2179,7 @@ mod tests {
         env.add_type_generic("f", arrow);
 
         // !(get-type (f x)) → B (return type of arrow)
-        let expr = factory.sexpr(vec![
-            factory.atom("f"),
-            factory.atom("x"),
-        ]);
+        let expr = factory.sexpr(vec![factory.atom("f"), factory.atom("x")]);
         let types = infer_types_generic(&expr, &factory, &env);
         assert_eq!(types.len(), 1);
         assert_eq!(types[0].as_atom(), Some("B"));
@@ -2134,10 +2205,7 @@ mod tests {
         env.add_type_generic("f", arrow2);
 
         // !(get-type (f x)) → both B and D
-        let expr = factory.sexpr(vec![
-            factory.atom("f"),
-            factory.atom("x"),
-        ]);
+        let expr = factory.sexpr(vec![factory.atom("f"), factory.atom("x")]);
         let types = infer_types_generic(&expr, &factory, &env);
         assert_eq!(types.len(), 2);
         assert!(types.iter().any(|t| t.as_atom() == Some("B")));
@@ -2199,7 +2267,11 @@ mod tests {
         ];
         let result = eval_check_type_generic(&items, &factory, &env);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].as_bool(), Some(true), "%Undefined% should match any type");
+        assert_eq!(
+            result[0].as_bool(),
+            Some(true),
+            "%Undefined% should match any type"
+        );
     }
 
     #[test]
@@ -2491,13 +2563,7 @@ mod tests {
         let factory = GcFactory::default();
 
         let expr = factory.sexpr(vec![factory.atom("f"), factory.atom("b")]);
-        let error = make_type_error(
-            &factory,
-            &expr,
-            0,
-            &factory.atom("A"),
-            &factory.atom("B"),
-        );
+        let error = make_type_error(&factory, &expr, 0, &factory.atom("A"), &factory.atom("B"));
 
         // Verify structure: (Error (f b) (BadArgType 0 A B))
         let items = error.as_sexpr().expect("should be S-expr");
@@ -2602,10 +2668,7 @@ mod tests {
     fn test_extract_type_constraint_wrong_length() {
         let factory = GcFactory::default();
         // (: $x) — only 2 elements
-        let pattern = factory.sexpr(vec![
-            factory.atom(":"),
-            factory.atom("$x"),
-        ]);
+        let pattern = factory.sexpr(vec![factory.atom(":"), factory.atom("$x")]);
         let constraint = extract_type_constraint(&pattern);
         assert!(constraint.is_none());
     }
@@ -2637,7 +2700,10 @@ mod tests {
 
     #[test]
     fn test_get_ground_type_string() {
-        assert_eq!(get_ground_type(&MettaValue::String("hi".to_string())), Some("String"));
+        assert_eq!(
+            get_ground_type(&MettaValue::String("hi".to_string())),
+            Some("String")
+        );
     }
 
     #[test]
@@ -2660,7 +2726,10 @@ mod tests {
         // Bool literal compatible with Bool
         assert!(is_pattern_type_compatible(&MettaValue::Bool(true), "Bool"));
         // String literal compatible with String
-        assert!(is_pattern_type_compatible(&MettaValue::String("hi".to_string()), "String"));
+        assert!(is_pattern_type_compatible(
+            &MettaValue::String("hi".to_string()),
+            "String"
+        ));
     }
 
     #[test]
@@ -2668,9 +2737,15 @@ mod tests {
         // Number literal NOT compatible with Bool
         assert!(!is_pattern_type_compatible(&MettaValue::Long(42), "Bool"));
         // Bool literal NOT compatible with Number
-        assert!(!is_pattern_type_compatible(&MettaValue::Bool(true), "Number"));
+        assert!(!is_pattern_type_compatible(
+            &MettaValue::Bool(true),
+            "Number"
+        ));
         // String literal NOT compatible with Number
-        assert!(!is_pattern_type_compatible(&MettaValue::String("hi".to_string()), "Number"));
+        assert!(!is_pattern_type_compatible(
+            &MettaValue::String("hi".to_string()),
+            "Number"
+        ));
     }
 
     #[test]
@@ -2736,11 +2811,7 @@ mod tests {
             factory.atom("let"),
             factory.atom("$x"),
             factory.long(42),
-            factory.sexpr(vec![
-                factory.atom("+"),
-                factory.atom("$x"),
-                factory.long(1),
-            ]),
+            factory.sexpr(vec![factory.atom("+"), factory.atom("$x"), factory.long(1)]),
         ]);
         let types = infer_types_generic(&expr, &factory, &env);
         assert!(
@@ -2813,7 +2884,11 @@ mod tests {
             factory.long(99),
         ]);
         let types = infer_types_generic(&expr, &factory, &env);
-        assert_eq!(types.len(), 1, "both branches Number should deduplicate to 1");
+        assert_eq!(
+            types.len(),
+            1,
+            "both branches Number should deduplicate to 1"
+        );
         assert_eq!(types[0].as_atom(), Some("Number"));
     }
 
@@ -2827,11 +2902,7 @@ mod tests {
             factory.sexpr(vec![factory.atom("$a"), factory.long(42)]),
             factory.sexpr(vec![factory.atom("$b"), factory.string("hello")]),
         ]);
-        let expr = factory.sexpr(vec![
-            factory.atom("case"),
-            factory.atom("$x"),
-            branches,
-        ]);
+        let expr = factory.sexpr(vec![factory.atom("case"), factory.atom("$x"), branches]);
         let types = infer_types_generic(&expr, &factory, &env);
         assert!(
             types.iter().any(|t| t.as_atom() == Some("Number")),
@@ -2878,10 +2949,7 @@ mod tests {
                 factory.atom("$B"),
                 factory.atom("$A"),
             ]),
-            factory.sexpr(vec![
-                factory.atom("Truth_inversion"),
-                factory.atom("$TV"),
-            ]),
+            factory.sexpr(vec![factory.atom("Truth_inversion"), factory.atom("$TV")]),
         ]);
         let types = infer_types_generic(&expr, &factory, &env);
         assert_eq!(types.len(), 1);
@@ -2904,11 +2972,7 @@ mod tests {
             factory.long(1),
             factory.sexpr(vec![
                 factory.atom("if"),
-                factory.sexpr(vec![
-                    factory.atom(">"),
-                    factory.atom("$x"),
-                    factory.long(0),
-                ]),
+                factory.sexpr(vec![factory.atom(">"), factory.atom("$x"), factory.long(0)]),
                 factory.long(42),
                 factory.long(99),
             ]),

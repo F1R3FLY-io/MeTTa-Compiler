@@ -41,9 +41,9 @@ pub use constants::{
     TAG_BOOL,
     TAG_EMPTY,
     TAG_ERROR,
-    TAG_PTR,
     TAG_LONG,
     TAG_MASK,
+    TAG_PTR,
     TAG_UNIT,
     TAG_VAR,
     VAR_INDEX_CACHE_SIZE,
@@ -56,9 +56,7 @@ pub use binding::{JitBindingEntry, JitBindingFrame};
 pub use closure::JitClosure;
 
 // Re-export context and type registry
-pub use context::{
-    FunctionTypeInfo, JitContext, TypeClassification, TypeSignatureRegistry,
-};
+pub use context::{FunctionTypeInfo, JitContext, TypeClassification, TypeSignatureRegistry};
 
 // Re-export error types
 pub use error::{JitError, JitResult};

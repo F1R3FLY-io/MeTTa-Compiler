@@ -304,10 +304,7 @@ fn parse_function_and_location(s: &str) -> (String, Option<String>) {
         if after_addr.ends_with(')') {
             let func = after_addr[..paren_start].trim();
             let loc = &after_addr[paren_start + 2..paren_end - 1];
-            return (
-                extract_leaf_name(func).to_string(),
-                Some(loc.to_string()),
-            );
+            return (extract_leaf_name(func).to_string(), Some(loc.to_string()));
         }
     }
 
@@ -504,7 +501,10 @@ heap_tree=empty
         let profile = parse_massif_output(&path).expect("parse should succeed");
         fs::remove_file(&path).ok();
 
-        assert_eq!(profile.command, "./target/release/mettatron examples/simple.metta");
+        assert_eq!(
+            profile.command,
+            "./target/release/mettatron examples/simple.metta"
+        );
         assert_eq!(profile.time_unit, "i");
         assert_eq!(profile.snapshots.len(), 4);
 
@@ -593,7 +593,8 @@ heap_tree=empty
         assert_eq!(name, "exchange_malloc");
         assert!(loc.is_none());
 
-        let (name, _loc) = parse_function_and_location("in 5 places, all below massif's threshold (1.00%)");
+        let (name, _loc) =
+            parse_function_and_location("in 5 places, all below massif's threshold (1.00%)");
         assert_eq!(name, "(below threshold)");
 
         let (name, _loc) = parse_function_and_location("");

@@ -161,12 +161,9 @@ pub fn all_pattern_defs() -> Vec<PatternDef> {
 
     // Leak the byte arrays so they have 'static lifetime.
     // This function is called once during DFA construction; the leak is intentional.
-    let leak = |v: Vec<ByteMatch>| -> &'static [ByteMatch] {
-        Box::leak(v.into_boxed_slice())
-    };
-    let leak_pc = |v: Vec<PostCondition>| -> &'static [PostCondition] {
-        Box::leak(v.into_boxed_slice())
-    };
+    let leak = |v: Vec<ByteMatch>| -> &'static [ByteMatch] { Box::leak(v.into_boxed_slice()) };
+    let leak_pc =
+        |v: Vec<PostCondition>| -> &'static [PostCondition] { Box::leak(v.into_boxed_slice()) };
 
     let no_post: &'static [PostCondition] = leak_pc(vec![]);
     let numeric_guard: &'static [PostCondition] =
@@ -449,14 +446,22 @@ pub fn all_pattern_defs() -> Vec<PatternDef> {
         PatternDef {
             bytes: leak(vec![exact(push_long_small), exact(0), exact(mul)]),
             postconditions: numeric_guard,
-            action: PatternAction::ReplaceBytes(&[0x01 /* Pop */, 0x14 /* PushLongSmall */, 0]),
+            action: PatternAction::ReplaceBytes(&[
+                0x01, /* Pop */
+                0x14, /* PushLongSmall */
+                0,
+            ]),
             stat: StatKind::MulZeroFolded,
         },
         // PushLongSmall 0; Pow → Pop; PushLongSmall 1 (x ^ 0 = 1)
         PatternDef {
             bytes: leak(vec![exact(push_long_small), exact(0), exact(pow)]),
             postconditions: numeric_guard,
-            action: PatternAction::ReplaceBytes(&[0x01 /* Pop */, 0x14 /* PushLongSmall */, 1]),
+            action: PatternAction::ReplaceBytes(&[
+                0x01, /* Pop */
+                0x14, /* PushLongSmall */
+                1,
+            ]),
             stat: StatKind::PowFolded,
         },
         // PushLongSmall 1; Pow → remove (x ^ 1 = x)

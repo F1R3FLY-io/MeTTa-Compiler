@@ -105,10 +105,7 @@ fn normalize_rust_name(name: &str) -> String {
 /// Extract the leaf function name from a qualified path.
 /// e.g., `mettatron::backend::eval::trampoline::eval_trampoline_generic` → `eval_trampoline_generic`
 pub fn extract_leaf_name(qualified: &str) -> &str {
-    qualified
-        .rsplit("::")
-        .next()
-        .unwrap_or(qualified)
+    qualified.rsplit("::").next().unwrap_or(qualified)
 }
 
 /// Classify a (demangled) Rust function name into a TraceCategory.
@@ -122,41 +119,58 @@ pub fn classify_rust_function(name: &str) -> TraceCategory {
     // Most-specific matches first
 
     // GC
-    if norm.contains("gc_") || norm.contains("safepoint") || norm.contains("collect_roots")
-        || norm.contains("mark_sweep") || norm.contains("GcThread")
-        || leaf.starts_with("gc_") || norm.contains("quiescent")
+    if norm.contains("gc_")
+        || norm.contains("safepoint")
+        || norm.contains("collect_roots")
+        || norm.contains("mark_sweep")
+        || norm.contains("GcThread")
+        || leaf.starts_with("gc_")
+        || norm.contains("quiescent")
     {
         return TraceCategory::GarbageCollection;
     }
 
     // Allocation
-    if norm.contains("alloc_value") || norm.contains("alloc_str") || norm.contains("alloc_slice")
-        || norm.contains("bump_alloc") || norm.contains("SlabAllocator")
-        || norm.contains("slab_alloc") || leaf == "allocate"
+    if norm.contains("alloc_value")
+        || norm.contains("alloc_str")
+        || norm.contains("alloc_slice")
+        || norm.contains("bump_alloc")
+        || norm.contains("SlabAllocator")
+        || norm.contains("slab_alloc")
+        || leaf == "allocate"
     {
         return TraceCategory::Allocation;
     }
 
     // JIT
-    if norm.contains("jit") || norm.contains("native_fn") || norm.contains("JitCompiler")
-        || norm.contains("compile_jit") || norm.contains("jit_to_value")
+    if norm.contains("jit")
+        || norm.contains("native_fn")
+        || norm.contains("JitCompiler")
+        || norm.contains("compile_jit")
+        || norm.contains("jit_to_value")
         || norm.contains("value_to_jit")
     {
         return TraceCategory::JitCompilation;
     }
 
     // Bytecode VM
-    if norm.contains("bytecode") || norm.contains("execute_generic")
-        || norm.contains("BytecodeVM") || norm.contains("compile_bytecode")
+    if norm.contains("bytecode")
+        || norm.contains("execute_generic")
+        || norm.contains("BytecodeVM")
+        || norm.contains("compile_bytecode")
         || norm.contains("vm_execute")
     {
         return TraceCategory::BytecodeVM;
     }
 
     // MORK
-    if norm.contains("mork") || norm.contains("coalg") || norm.contains("rulify")
-        || norm.contains("pathmap") || norm.contains("PathMap")
-        || norm.contains("SharedMapping") || norm.contains("trie_query")
+    if norm.contains("mork")
+        || norm.contains("coalg")
+        || norm.contains("rulify")
+        || norm.contains("pathmap")
+        || norm.contains("PathMap")
+        || norm.contains("SharedMapping")
+        || norm.contains("trie_query")
     {
         return TraceCategory::MorkOps;
     }
@@ -167,86 +181,122 @@ pub fn classify_rust_function(name: &str) -> TraceCategory {
     }
 
     // Space ops
-    if norm.contains("match_space") || norm.contains("collapse_space")
-        || norm.contains("add_atom") || norm.contains("remove_atom")
-        || norm.contains("get_atoms") || norm.contains("SpaceHandle")
+    if norm.contains("match_space")
+        || norm.contains("collapse_space")
+        || norm.contains("add_atom")
+        || norm.contains("remove_atom")
+        || norm.contains("get_atoms")
+        || norm.contains("SpaceHandle")
     {
         return TraceCategory::SpaceOps;
     }
 
     // Set ops
-    if norm.contains("eval_union") || norm.contains("eval_intersection")
-        || norm.contains("eval_subtraction") || norm.contains("eval_unique")
-        || (leaf.starts_with("eval_") && (leaf.contains("union") || leaf.contains("intersection")
-            || leaf.contains("subtraction") || leaf.contains("unique")))
+    if norm.contains("eval_union")
+        || norm.contains("eval_intersection")
+        || norm.contains("eval_subtraction")
+        || norm.contains("eval_unique")
+        || (leaf.starts_with("eval_")
+            && (leaf.contains("union")
+                || leaf.contains("intersection")
+                || leaf.contains("subtraction")
+                || leaf.contains("unique")))
     {
         return TraceCategory::SetOps;
     }
 
     // List ops
-    if norm.contains("eval_car") || norm.contains("eval_cdr") || norm.contains("eval_cons")
-        || norm.contains("eval_decons") || norm.contains("eval_size")
-        || norm.contains("list_ops") || norm.contains("eval_tuple")
+    if norm.contains("eval_car")
+        || norm.contains("eval_cdr")
+        || norm.contains("eval_cons")
+        || norm.contains("eval_decons")
+        || norm.contains("eval_size")
+        || norm.contains("list_ops")
+        || norm.contains("eval_tuple")
     {
         return TraceCategory::ListOps;
     }
 
     // Control flow
-    if norm.contains("eval_if") || norm.contains("eval_let") || norm.contains("eval_chain")
-        || norm.contains("eval_case") || norm.contains("eval_switch")
-        || norm.contains("control_flow") || norm.contains("ProcessIf")
-        || norm.contains("ProcessLet") || norm.contains("ProcessChain")
+    if norm.contains("eval_if")
+        || norm.contains("eval_let")
+        || norm.contains("eval_chain")
+        || norm.contains("eval_case")
+        || norm.contains("eval_switch")
+        || norm.contains("control_flow")
+        || norm.contains("ProcessIf")
+        || norm.contains("ProcessLet")
+        || norm.contains("ProcessChain")
     {
         return TraceCategory::ControlFlow;
     }
 
     // Nondeterminism
-    if norm.contains("nondeterministic") || norm.contains("NondeterministicFork")
-        || norm.contains("BranchStart") || norm.contains("BranchEnd")
-        || norm.contains("superpose") || norm.contains("dispatch_rule_matches")
+    if norm.contains("nondeterministic")
+        || norm.contains("NondeterministicFork")
+        || norm.contains("BranchStart")
+        || norm.contains("BranchEnd")
+        || norm.contains("superpose")
+        || norm.contains("dispatch_rule_matches")
         || norm.contains("parallel_branch")
     {
         return TraceCategory::Nondeterminism;
     }
 
     // Type system
-    if norm.contains("type_") || norm.contains("infer_type") || norm.contains("check_type")
-        || norm.contains("get_type") || norm.contains("TypeSignature")
-        || norm.contains("BranchPrune") || norm.contains("TypeBloomFilter")
+    if norm.contains("type_")
+        || norm.contains("infer_type")
+        || norm.contains("check_type")
+        || norm.contains("get_type")
+        || norm.contains("TypeSignature")
+        || norm.contains("BranchPrune")
+        || norm.contains("TypeBloomFilter")
         || norm.contains("TypeRegistry")
     {
         return TraceCategory::TypeSystem;
     }
 
     // Grounded ops
-    if norm.contains("eval_grounded") || norm.contains("find_grounded")
-        || norm.contains("is_grounded_op") || norm.contains("grounded_registry")
+    if norm.contains("eval_grounded")
+        || norm.contains("find_grounded")
+        || norm.contains("is_grounded_op")
+        || norm.contains("grounded_registry")
     {
         return TraceCategory::GroundedOps;
     }
 
     // Pattern binding
-    if norm.contains("pattern_match") || norm.contains("apply_bindings")
-        || norm.contains("unify") || norm.contains("sealed_")
-        || norm.contains("try_bind") || norm.contains("bindings")
+    if norm.contains("pattern_match")
+        || norm.contains("apply_bindings")
+        || norm.contains("unify")
+        || norm.contains("sealed_")
+        || norm.contains("try_bind")
+        || norm.contains("bindings")
         || norm.contains("substitut")
     {
         return TraceCategory::PatternBinding;
     }
 
     // Rule matching
-    if norm.contains("match_rules") || norm.contains("try_match_all")
-        || norm.contains("RuleIndex") || norm.contains("rule_match")
-        || norm.contains("rule_index") || norm.contains("match_all_rules")
+    if norm.contains("match_rules")
+        || norm.contains("try_match_all")
+        || norm.contains("RuleIndex")
+        || norm.contains("rule_match")
+        || norm.contains("rule_index")
+        || norm.contains("match_all_rules")
     {
         return TraceCategory::RuleMatching;
     }
 
     // Eval core (broad — must be last among eval-related categories)
-    if norm.contains("eval_trampoline") || norm.contains("eval_sexpr_step")
-        || norm.contains("eval_inner") || norm.contains("trampoline")
-        || norm.contains("EvalGuard") || norm.contains("step_dispatch")
-        || leaf == "eval" || leaf.starts_with("eval_") && !leaf.contains("_grounded")
+    if norm.contains("eval_trampoline")
+        || norm.contains("eval_sexpr_step")
+        || norm.contains("eval_inner")
+        || norm.contains("trampoline")
+        || norm.contains("EvalGuard")
+        || norm.contains("step_dispatch")
+        || leaf == "eval"
+        || leaf.starts_with("eval_") && !leaf.contains("_grounded")
     {
         return TraceCategory::EvalCore;
     }
@@ -322,8 +372,9 @@ pub fn classify_trace_event(kind: &TraceEventKind) -> TraceCategory {
         | TraceEventKind::ErrorPropagated { .. }
         | TraceEventKind::GroundedOpError { .. } => TraceCategory::EvalCore,
 
-        TraceEventKind::RuleLookup { .. }
-        | TraceEventKind::RuleIndexInsert { .. } => TraceCategory::RuleMatching,
+        TraceEventKind::RuleLookup { .. } | TraceEventKind::RuleIndexInsert { .. } => {
+            TraceCategory::RuleMatching
+        }
 
         TraceEventKind::SelfEvaluating { .. } => TraceCategory::EvalCore,
 
@@ -384,7 +435,10 @@ mod tests {
             "HashMap::insert"
         );
         // Short hex suffix should NOT be stripped
-        assert_eq!(normalize_rust_name("eval_inner::habcd"), "eval_inner::habcd");
+        assert_eq!(
+            normalize_rust_name("eval_inner::habcd"),
+            "eval_inner::habcd"
+        );
     }
 
     #[test]
@@ -561,7 +615,10 @@ mod tests {
             root_count: 10,
             allocation_delta_bytes: 1024,
         };
-        assert_eq!(classify_trace_event(&kind), TraceCategory::GarbageCollection);
+        assert_eq!(
+            classify_trace_event(&kind),
+            TraceCategory::GarbageCollection
+        );
     }
 
     #[test]

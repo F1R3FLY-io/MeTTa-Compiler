@@ -313,14 +313,8 @@ mod tests {
         assert!(!atoms_are_alpha_equivalent(&f.long(42), &f.long(43)));
         assert!(atoms_are_alpha_equivalent(&f.bool(true), &f.bool(true)));
         assert!(!atoms_are_alpha_equivalent(&f.bool(true), &f.bool(false)));
-        assert!(atoms_are_alpha_equivalent(
-            &f.float(3.14),
-            &f.float(3.14)
-        ));
-        assert!(atoms_are_alpha_equivalent(
-            &f.string("hi"),
-            &f.string("hi")
-        ));
+        assert!(atoms_are_alpha_equivalent(&f.float(3.14), &f.float(3.14)));
+        assert!(atoms_are_alpha_equivalent(&f.string("hi"), &f.string("hi")));
         assert!(!atoms_are_alpha_equivalent(
             &f.string("hi"),
             &f.string("bye")

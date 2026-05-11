@@ -20,7 +20,8 @@ use crate::backend::models::{Bindings, MettaValue, MettaValueInner};
 /// runtime hash+probe on the hot evaluation path.
 #[inline(always)]
 pub fn needs_special_form_redispatch(op: &str) -> bool {
-    matches!(op,
+    matches!(
+        op,
         // Higher-order list operations (iterate over elements)
         "map-atom" | "filter-atom" | "foldl-atom"
         // Higher-order tuple operations (iterate via trampoline)
@@ -65,7 +66,8 @@ pub fn needs_special_form_redispatch(op: &str) -> bool {
 /// (like map-atom) are evaluated before being passed to user-defined rules.
 #[inline(always)]
 pub fn is_eager_special_form(op: &str) -> bool {
-    matches!(op,
+    matches!(
+        op,
         // Higher-order list operations (produce list values)
         "map-atom" | "filter-atom" | "foldl-atom"
         // Higher-order tuple operations (produce values)
@@ -92,7 +94,8 @@ pub fn is_eager_special_form(op: &str) -> bool {
 /// Check if an atom name is a grounded operation that should be eagerly evaluated.
 #[inline(always)]
 pub fn is_grounded_op(name: &str) -> bool {
-    matches!(name,
+    matches!(
+        name,
         // Basic arithmetic. Plan 1 audit (2026-05-06): `mod` is the bytecode-
         // compiler synonym for `%` (`bytecode/compiler/core.rs:391`); `negate`
         // is the JIT synonym for unary `-` (`bytecode/jit/runtime/call_support.rs:128`).
@@ -144,7 +147,6 @@ pub fn is_grounded_op(name: &str) -> bool {
         | "intersection-atom" | "subtraction-atom"
     )
 }
-
 
 /// Apply variable bindings to a value
 ///
@@ -400,7 +402,10 @@ mod tests {
 
         // Result should be Spanned(Long(42), template_span)
         assert!(result.is_spanned(), "result should be Spanned");
-        assert_eq!(result.span().expect("should have span").start.byte_offset, 5);
+        assert_eq!(
+            result.span().expect("should have span").start.byte_offset,
+            5
+        );
         assert_eq!(result.span().expect("should have span").end.byte_offset, 7);
         assert!(result.is_long(), "inner should be Long");
         assert_eq!(result.as_long(), Some(42));
@@ -427,7 +432,10 @@ mod tests {
 
         // Outer span should be preserved
         assert!(result.is_spanned());
-        assert_eq!(result.span().expect("should have span").start.byte_offset, 0);
+        assert_eq!(
+            result.span().expect("should have span").start.byte_offset,
+            0
+        );
         assert_eq!(result.span().expect("should have span").end.byte_offset, 10);
 
         // Inner should be SExpr with substituted value

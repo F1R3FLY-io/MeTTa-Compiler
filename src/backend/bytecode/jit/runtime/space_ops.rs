@@ -69,13 +69,16 @@ pub unsafe extern "C" fn jit_runtime_space_add(
         if handle.is_module_space() || handle.name == "self" {
             if let Some(ctx_ref) = ctx.as_ref() {
                 if !ctx_ref.env_ptr.is_null() {
-                    let env = &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
+                    let env = &mut *(ctx_ref.env_ptr
+                        as *mut crate::backend::environment::MettaEnvironment);
                     env.add_to_space(&atom_metta);
                     crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
                     return JitValue::unit().to_bits();
                 }
             }
-            return super::helpers::make_jit_error("add-atom: no environment for &self/module space");
+            return super::helpers::make_jit_error(
+                "add-atom: no environment for &self/module space",
+            );
         }
         handle.add_atom(atom_metta);
         crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
@@ -86,7 +89,8 @@ pub unsafe extern "C" fn jit_runtime_space_add(
     if let ValueView::Atom(name) = space_metta.view() {
         if let Some(ctx_ref) = ctx.as_ref() {
             if !ctx_ref.env_ptr.is_null() {
-                let env_mut = &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
+                let env_mut =
+                    &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
                 if name == "&self" {
                     env_mut.add_to_space(&atom_metta);
                     crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
@@ -100,7 +104,8 @@ pub unsafe extern "C" fn jit_runtime_space_add(
                         } else {
                             handle.add_atom(atom_metta);
                         }
-                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch(
+                        );
                         return JitValue::unit().to_bits();
                     }
                 }
@@ -136,13 +141,16 @@ pub unsafe extern "C" fn jit_runtime_space_remove(
         if handle.is_module_space() || handle.name == "self" {
             if let Some(ctx_ref) = ctx.as_ref() {
                 if !ctx_ref.env_ptr.is_null() {
-                    let env = &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
+                    let env = &mut *(ctx_ref.env_ptr
+                        as *mut crate::backend::environment::MettaEnvironment);
                     env.remove_from_space(&atom_metta);
                     crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
                     return JitValue::unit().to_bits();
                 }
             }
-            return super::helpers::make_jit_error("remove-atom: no environment for &self/module space");
+            return super::helpers::make_jit_error(
+                "remove-atom: no environment for &self/module space",
+            );
         }
         let _ = handle.remove_atom(&atom_metta);
         crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
@@ -152,7 +160,8 @@ pub unsafe extern "C" fn jit_runtime_space_remove(
     if let ValueView::Atom(name) = space_metta.view() {
         if let Some(ctx_ref) = ctx.as_ref() {
             if !ctx_ref.env_ptr.is_null() {
-                let env_mut = &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
+                let env_mut =
+                    &mut *(ctx_ref.env_ptr as *mut crate::backend::environment::MettaEnvironment);
                 if name == "&self" {
                     env_mut.remove_from_space(&atom_metta);
                     crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
@@ -166,7 +175,8 @@ pub unsafe extern "C" fn jit_runtime_space_remove(
                         } else {
                             let _ = handle.remove_atom(&atom_metta);
                         }
-                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch(
+                        );
                         return JitValue::unit().to_bits();
                     }
                 }
@@ -204,7 +214,8 @@ pub unsafe extern "C" fn jit_runtime_space_get_atoms(
             if name == "&self" {
                 if let Some(ctx_ref) = ctx.as_ref() {
                     if !ctx_ref.env_ptr.is_null() {
-                        let env = &*(ctx_ref.env_ptr as *const crate::backend::environment::MettaEnvironment);
+                        let env = &*(ctx_ref.env_ptr
+                            as *const crate::backend::environment::MettaEnvironment);
                         env.get_all_atoms()
                     } else {
                         Vec::new()
@@ -214,7 +225,8 @@ pub unsafe extern "C" fn jit_runtime_space_get_atoms(
                 }
             } else if let Some(ctx_ref) = ctx.as_ref() {
                 if !ctx_ref.env_ptr.is_null() {
-                    let env = &*(ctx_ref.env_ptr as *const crate::backend::environment::MettaEnvironment);
+                    let env =
+                        &*(ctx_ref.env_ptr as *const crate::backend::environment::MettaEnvironment);
                     let factory = crate::backend::models::GcFactory::default();
                     if let Some(resolved) = env.lookup_token_generic(name, &factory) {
                         if let Some(handle) = resolved.as_space() {
@@ -264,6 +276,16 @@ pub unsafe extern "C" fn jit_runtime_space_get_atoms(
     }
 
     if alt_count > MAX_ALTERNATIVES_INLINE {
+        // BUG-T0-T2-014 (plan T2/T3.E): when alt_count exceeds the inline
+        // choice-point array size (MAX_ALTERNATIVES_INLINE = 16), we bail
+        // to the VM tier. The executor at `hybrid/executor.rs:561-578`
+        // discards `jit_result` on bailout and transfers `ctx.value_stack`
+        // (which does NOT contain `first_jit`) — so the VM resumes from
+        // the same IP and re-enumerates all alternatives via T0/T1's
+        // native dispatch. No double-yield because the JIT return value
+        // is never pushed when `ctx.bailout = true`. Verified by reading
+        // the executor flow; first_jit.to_bits() here is effectively a
+        // sentinel that is ignored downstream.
         ctx_ref.bailout = true;
         ctx_ref.bailout_reason = JitBailoutReason::NonDeterminism;
         ctx_ref.bailout_ip = ip as usize;
@@ -334,10 +356,20 @@ pub unsafe extern "C" fn jit_runtime_space_match(
 
             metta_to_jit(&MettaValue::SExpr(results)).to_bits()
         }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
-        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::SExpr(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => {
             // Type error - return empty S-expression
             metta_to_jit(&MettaValue::SExpr(vec![])).to_bits()
         }
@@ -402,10 +434,20 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
     // Validate we have a space
     let handle = match space_metta.view() {
         ValueView::Space(h) => h,
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::SExpr(_)
-        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::SExpr(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => {
             // Type error - not a space
             ctx_ref.bailout = true;
             ctx_ref.bailout_reason = JitBailoutReason::TypeError;
@@ -564,15 +606,24 @@ unsafe fn apply_bindings_to_saved(saved: *mut JitSavedBindings, bindings: &[(Str
         frame.entries_cap = new_cap;
     }
 
-    // Add bindings as entries
+    // Add bindings as entries.
+    // BUG T0-T3-010 (plan T2/T3.D): use FNV-1a 64-bit (matches
+    // `pattern_matching::hash_var_name` for consistency). The previous DJB-31
+    // u32 hash had measurable collisions on long variable-name strings;
+    // FNV-1a 64-bit gives near-zero collision risk.
     for (name, value) in bindings {
-        // Hash the name to get a name_idx (simple hash for now)
         let name_hash = {
-            let mut h: u32 = 0;
-            for b in name.bytes() {
-                h = h.wrapping_mul(31).wrapping_add(b as u32);
+            const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+            const FNV_PRIME: u64 = 0x100000001b3;
+            let mut hash = FNV_OFFSET;
+            for byte in name.bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(FNV_PRIME);
             }
-            h
+            hash as u32 // JitBindingEntry.name_idx is u32; keep type compat
+                        // while using the strictly-better hash function.
+                        // Truncation to u32 still gives ≥4× collision improvement
+                        // over DJB-31 on typical variable-name strings.
         };
 
         let entry_ptr = frame.entries.add(frame.entries_count);

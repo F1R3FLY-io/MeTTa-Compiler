@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, MutexGuard};
 
+use super::gc_allocator::{register_root_provider, GcFactory, RootProvider};
 use super::MettaValue;
-use super::gc_allocator::{GcFactory, RootProvider, register_root_provider};
 use crate::backend::environment::MettaEnvironment;
 
 // ============================================================================
@@ -330,11 +330,7 @@ impl From<MettaValue> for MettaState {
     /// Create a compiled state containing an error s-expression.
     /// Used when parsing fails to allow error handling at the evaluation level.
     fn from(error_sexpr: MettaValue) -> Self {
-        Self::from_parts(
-            vec![error_sexpr],
-            MettaEnvironment::default(),
-            Vec::new(),
-        )
+        Self::from_parts(vec![error_sexpr], MettaEnvironment::default(), Vec::new())
     }
 }
 
@@ -394,14 +390,8 @@ mod tests {
     #[test]
     fn test_to_json_with_environment() {
         let mut env = MettaEnvironment::default();
-        env.add_rule(
-            MettaValue::Atom("x".to_string()),
-            MettaValue::Long(1),
-        );
-        env.add_rule(
-            MettaValue::Atom("y".to_string()),
-            MettaValue::Long(2),
-        );
+        env.add_rule(MettaValue::Atom("x".to_string()), MettaValue::Long(1));
+        env.add_rule(MettaValue::Atom("y".to_string()), MettaValue::Long(2));
 
         let state = MettaState::new_accumulated(env, Vec::new());
         let json = state.to_json_string();
@@ -478,9 +468,7 @@ mod tests {
 
     #[test]
     fn test_clone_creates_independent_roots() {
-        let state = MettaState::new_compiled(vec![
-            MettaValue::Atom("test".to_string()),
-        ]);
+        let state = MettaState::new_compiled(vec![MettaValue::Atom("test".to_string())]);
 
         let cloned = state.clone();
 
@@ -503,10 +491,8 @@ mod tests {
 
     #[test]
     fn test_clear_output() {
-        let state = MettaState::new_accumulated(
-            MettaEnvironment::default(),
-            vec![MettaValue::Long(1)],
-        );
+        let state =
+            MettaState::new_accumulated(MettaEnvironment::default(), vec![MettaValue::Long(1)]);
         assert_eq!(state.output().len(), 1);
         state.clear_output();
         assert_eq!(state.output().len(), 0);
@@ -516,7 +502,9 @@ mod tests {
     fn test_interior_mutability() {
         // source_mut() and output_mut() should work without &mut self
         let state = MettaState::new_empty();
-        state.source_mut().push(MettaValue::Atom("test".to_string()));
+        state
+            .source_mut()
+            .push(MettaValue::Atom("test".to_string()));
         state.output_mut().push(MettaValue::Long(42));
         assert_eq!(state.source().len(), 1);
         assert_eq!(state.output().len(), 1);

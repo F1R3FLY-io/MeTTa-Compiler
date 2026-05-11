@@ -31,8 +31,7 @@ use sysinfo::{Pid, System};
 
 // Include mmverify sources
 const MMVERIFY_UTILS: &str = include_str!("../examples/mmverify/mmverify-utils.metta");
-const VERIFY_DEMO0_BODY: &str =
-    include_str!("../benches/mmverify_samples/verify_demo0_body.metta");
+const VERIFY_DEMO0_BODY: &str = include_str!("../benches/mmverify_samples/verify_demo0_body.metta");
 
 const TOTAL_DURATION: Duration = Duration::from_secs(60);
 const WARMUP_DURATION: Duration = Duration::from_secs(5);
@@ -186,9 +185,15 @@ fn format_bytes(bytes: u64) -> String {
 
 fn main() {
     println!("=== mmverify Memory Leak Stress Test ===");
-    println!("Duration: {}s (warmup: {}s)", TOTAL_DURATION.as_secs(), WARMUP_DURATION.as_secs());
-    println!("Leak thresholds: growth > 1 MB/s, R² > {}, final > {}× baseline",
-        R_SQUARED_THRESHOLD, BASELINE_MULTIPLIER);
+    println!(
+        "Duration: {}s (warmup: {}s)",
+        TOTAL_DURATION.as_secs(),
+        WARMUP_DURATION.as_secs()
+    );
+    println!(
+        "Leak thresholds: growth > 1 MB/s, R² > {}, final > {}× baseline",
+        R_SQUARED_THRESHOLD, BASELINE_MULTIPLIER
+    );
     println!();
 
     // Configure evaluator
@@ -275,7 +280,10 @@ fn main() {
                             "  Growth rate: {:.2} MB/s (threshold: 1.00 MB/s)",
                             analysis.slope_bytes_per_sec / 1_048_576.0
                         );
-                        eprintln!("  R²: {:.4} (threshold: {:.1})", analysis.r_squared, R_SQUARED_THRESHOLD);
+                        eprintln!(
+                            "  R²: {:.4} (threshold: {:.1})",
+                            analysis.r_squared, R_SQUARED_THRESHOLD
+                        );
                         eprintln!(
                             "  Current RSS: {} (baseline: {}, ratio: {:.2}×)",
                             format_bytes(analysis.current_bytes),
@@ -287,7 +295,10 @@ fn main() {
                     }
                 }
             } else {
-                eprintln!("WARNING: Could not read process info for pid {}", pid.as_u32());
+                eprintln!(
+                    "WARNING: Could not read process info for pid {}",
+                    pid.as_u32()
+                );
             }
 
             thread::sleep(POLL_INTERVAL);
@@ -340,7 +351,10 @@ fn main() {
     let locked = samples.lock().expect("samples lock poisoned");
 
     if locked.len() < 2 {
-        eprintln!("ERROR: Insufficient memory samples collected ({})", locked.len());
+        eprintln!(
+            "ERROR: Insufficient memory samples collected ({})",
+            locked.len()
+        );
         process::exit(2);
     }
 
@@ -356,7 +370,10 @@ fn main() {
     println!("  Final RSS:     {}", format_bytes(analysis.current_bytes));
     println!("  Peak RSS:      {}", format_bytes(peak_rss));
     println!("  Min RSS:       {}", format_bytes(min_rss));
-    println!("  Growth rate:   {:.2} KB/s", analysis.slope_bytes_per_sec / 1024.0);
+    println!(
+        "  Growth rate:   {:.2} KB/s",
+        analysis.slope_bytes_per_sec / 1024.0
+    );
     println!("  R²:            {:.4}", analysis.r_squared);
     println!(
         "  Final/Base:    {:.2}×",

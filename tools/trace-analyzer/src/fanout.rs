@@ -93,10 +93,7 @@ pub fn run(file: &str, top_n: usize) -> Result<(), String> {
 
                 let head = extract_operator_name(&event.input, &event.kind);
                 let fork_idx = forks.len();
-                fork_by_head
-                    .entry(head.clone())
-                    .or_default()
-                    .push(fork_idx);
+                fork_by_head.entry(head.clone()).or_default().push(fork_idx);
 
                 forks.push(ForkRecord {
                     timestamp_ns: event.timestamp_ns,
@@ -169,7 +166,10 @@ pub fn run(file: &str, top_n: usize) -> Result<(), String> {
     println!("  Total forks: {total_forks}");
     println!("  Total branches: {total_branches}");
     println!("  Empty branches: {empty_branches} ({empty_branch_pct:.1}%)");
-    println!("  Wasted time (empty branches): {}", format_duration_ns(wasted_time_ns));
+    println!(
+        "  Wasted time (empty branches): {}",
+        format_duration_ns(wasted_time_ns)
+    );
     if total_wall_ns > 0 {
         println!(
             "  Wasted time as % of wall: {:.1}%",
@@ -211,10 +211,7 @@ pub fn run(file: &str, top_n: usize) -> Result<(), String> {
     let mut head_stats: Vec<_> = fork_by_head
         .iter()
         .map(|(head, indices)| {
-            let total_branch_count: u32 = indices
-                .iter()
-                .map(|&i| forks[i].branch_count)
-                .sum();
+            let total_branch_count: u32 = indices.iter().map(|&i| forks[i].branch_count).sum();
             let max_branches = indices
                 .iter()
                 .map(|&i| forks[i].branch_count)

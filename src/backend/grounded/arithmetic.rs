@@ -95,7 +95,9 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AddOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::IncorrectArgument("+ requires Number arguments".to_string()))
+                                return GroundedWork::Error(ExecError::IncorrectArgument(
+                                    "+ requires Number arguments".to_string(),
+                                ));
                             }
                         }
                     }
@@ -160,7 +162,9 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SubOp {
                         (_, Some(x)) => results.push((factory.float(-x), None)),
                         _ => {
                             // MeTTa HE: Empty sentinel → skip (branch annihilation)
-                            if a.is_empty() { continue; }
+                            if a.is_empty() {
+                                continue;
+                            }
                             return GroundedWork::Error(ExecError::NoReduce);
                         }
                     }
@@ -209,7 +213,9 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SubOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::IncorrectArgument("- requires Number arguments".to_string()))
+                                return GroundedWork::Error(ExecError::IncorrectArgument(
+                                    "- requires Number arguments".to_string(),
+                                ));
                             }
                         }
                     }
@@ -289,7 +295,9 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for MulOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::IncorrectArgument("* requires Number arguments".to_string()))
+                                return GroundedWork::Error(ExecError::IncorrectArgument(
+                                    "* requires Number arguments".to_string(),
+                                ));
                             }
                         }
                     }
@@ -380,7 +388,9 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for DivOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::IncorrectArgument("/ requires Number arguments".to_string()))
+                                return GroundedWork::Error(ExecError::IncorrectArgument(
+                                    "/ requires Number arguments".to_string(),
+                                ));
                             }
                         }
                     }
@@ -470,7 +480,9 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for ModOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::IncorrectArgument("% requires Number arguments".to_string()))
+                                return GroundedWork::Error(ExecError::IncorrectArgument(
+                                    "% requires Number arguments".to_string(),
+                                ));
                             }
                         }
                     }
@@ -553,7 +565,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for MinOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::NoReduce)
+                                return GroundedWork::Error(ExecError::NoReduce);
                             }
                         }
                     }
@@ -636,7 +648,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for MaxOp {
                                 if a.is_empty() || b.is_empty() {
                                     continue;
                                 }
-                                return GroundedWork::Error(ExecError::NoReduce)
+                                return GroundedWork::Error(ExecError::NoReduce);
                             }
                         }
                     }
@@ -791,8 +803,12 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for ClampOp {
                     for min_v in min_results {
                         for max_v in max_results {
                             let v = val.as_float().or_else(|| val.as_long().map(|l| l as f64));
-                            let mn = min_v.as_float().or_else(|| min_v.as_long().map(|l| l as f64));
-                            let mx = max_v.as_float().or_else(|| max_v.as_long().map(|l| l as f64));
+                            let mn = min_v
+                                .as_float()
+                                .or_else(|| min_v.as_long().map(|l| l as f64));
+                            let mx = max_v
+                                .as_float()
+                                .or_else(|| max_v.as_long().map(|l| l as f64));
 
                             match (v, mn, mx) {
                                 (Some(v), Some(mn), Some(mx)) => {
@@ -886,7 +902,10 @@ mod tests {
     #[test]
     fn test_sub_op_generic() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("-".to_string(), vec![MettaValue::Long(10), MettaValue::Long(3)]);
+        let mut state = GroundedState::new(
+            "-".to_string(),
+            vec![MettaValue::Long(10), MettaValue::Long(3)],
+        );
 
         let op = SubOp;
 
@@ -982,7 +1001,10 @@ mod tests {
         let op = SubOp;
 
         let work = op.execute_step(&mut state, &factory);
-        assert!(matches!(work, GroundedWork::Error(ExecError::IncorrectArgument(_))));
+        assert!(matches!(
+            work,
+            GroundedWork::Error(ExecError::IncorrectArgument(_))
+        ));
     }
 
     #[test]
@@ -990,18 +1012,28 @@ mod tests {
         let factory = GcFactory::default();
         let mut state = GroundedState::new(
             "-".to_string(),
-            vec![MettaValue::Long(1), MettaValue::Long(2), MettaValue::Long(3)],
+            vec![
+                MettaValue::Long(1),
+                MettaValue::Long(2),
+                MettaValue::Long(3),
+            ],
         );
         let op = SubOp;
 
         let work = op.execute_step(&mut state, &factory);
-        assert!(matches!(work, GroundedWork::Error(ExecError::IncorrectArgument(_))));
+        assert!(matches!(
+            work,
+            GroundedWork::Error(ExecError::IncorrectArgument(_))
+        ));
     }
 
     #[test]
     fn test_mul_op_generic() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("*".to_string(), vec![MettaValue::Long(6), MettaValue::Long(7)]);
+        let mut state = GroundedState::new(
+            "*".to_string(),
+            vec![MettaValue::Long(6), MettaValue::Long(7)],
+        );
 
         let op = MulOp;
 
@@ -1026,7 +1058,10 @@ mod tests {
     #[test]
     fn test_div_op_generic() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("/".to_string(), vec![MettaValue::Long(20), MettaValue::Long(4)]);
+        let mut state = GroundedState::new(
+            "/".to_string(),
+            vec![MettaValue::Long(20), MettaValue::Long(4)],
+        );
 
         let op = DivOp;
 
@@ -1051,7 +1086,10 @@ mod tests {
     #[test]
     fn test_div_by_zero() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("/".to_string(), vec![MettaValue::Long(10), MettaValue::Long(0)]);
+        let mut state = GroundedState::new(
+            "/".to_string(),
+            vec![MettaValue::Long(10), MettaValue::Long(0)],
+        );
 
         let op = DivOp;
 
@@ -1064,13 +1102,19 @@ mod tests {
         state.step = 2;
 
         let work = op.execute_step(&mut state, &factory);
-        assert!(matches!(work, GroundedWork::Error(ExecError::Arithmetic(_))));
+        assert!(matches!(
+            work,
+            GroundedWork::Error(ExecError::Arithmetic(_))
+        ));
     }
 
     #[test]
     fn test_mod_op_generic() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("%".to_string(), vec![MettaValue::Long(17), MettaValue::Long(5)]);
+        let mut state = GroundedState::new(
+            "%".to_string(),
+            vec![MettaValue::Long(17), MettaValue::Long(5)],
+        );
 
         let op = ModOp;
 
@@ -1206,7 +1250,10 @@ mod tests {
             GroundedWork::Done(results) => {
                 assert_eq!(results.len(), 1);
                 let v = results[0].0.as_float().expect("expected Float result");
-                assert!(v.is_nan(), "Float % 0.0 should be NaN per IEEE 754, got {v}");
+                assert!(
+                    v.is_nan(),
+                    "Float % 0.0 should be NaN per IEEE 754, got {v}"
+                );
             }
             _ => panic!("Expected Done with NaN, not Error"),
         }
@@ -1215,7 +1262,12 @@ mod tests {
     // --- Wrap-on-overflow tests (MeTTa spec §13.2 + §C.7g) ---
     // Conformance reference: metta-specification/conformance/T06-stdlib/106-integer-overflow-wraps.metta
 
-    fn run_binary(op_name: &str, a: MettaValue, b: MettaValue, op: impl GroundedOperationTCO<MettaValue>) -> Vec<MettaValue> {
+    fn run_binary(
+        op_name: &str,
+        a: MettaValue,
+        b: MettaValue,
+        op: impl GroundedOperationTCO<MettaValue>,
+    ) -> Vec<MettaValue> {
         let factory = GcFactory::default();
         let mut state = GroundedState::new(op_name.to_string(), vec![a.clone(), b.clone()]);
 
@@ -1233,7 +1285,11 @@ mod tests {
         }
     }
 
-    fn run_unary(op_name: &str, a: MettaValue, op: impl GroundedOperationTCO<MettaValue>) -> Vec<MettaValue> {
+    fn run_unary(
+        op_name: &str,
+        a: MettaValue,
+        op: impl GroundedOperationTCO<MettaValue>,
+    ) -> Vec<MettaValue> {
         let factory = GcFactory::default();
         let mut state = GroundedState::new(op_name.to_string(), vec![a.clone()]);
 
@@ -1279,7 +1335,12 @@ mod tests {
     #[test]
     fn test_mul_op_long_overflow_wraps() {
         // Conformance value: (i64::MAX/2 + 1) * 2 = 4611686018427387904 * 2 = i64::MIN
-        let r = run_binary("*", MettaValue::Long(4611686018427387904), MettaValue::Long(2), MulOp);
+        let r = run_binary(
+            "*",
+            MettaValue::Long(4611686018427387904),
+            MettaValue::Long(2),
+            MulOp,
+        );
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].as_long(), Some(i64::MIN));
     }
@@ -1328,7 +1389,10 @@ mod tests {
     #[test]
     fn test_min_op_generic_longs() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("min".to_string(), vec![MettaValue::Long(10), MettaValue::Long(3)]);
+        let mut state = GroundedState::new(
+            "min".to_string(),
+            vec![MettaValue::Long(10), MettaValue::Long(3)],
+        );
         let op = MinOp;
 
         op.execute_step(&mut state, &factory);
@@ -1352,7 +1416,10 @@ mod tests {
     #[test]
     fn test_min_op_generic_floats() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("min".to_string(), vec![MettaValue::Float(1.5), MettaValue::Float(2.5)]);
+        let mut state = GroundedState::new(
+            "min".to_string(),
+            vec![MettaValue::Float(1.5), MettaValue::Float(2.5)],
+        );
         let op = MinOp;
 
         op.execute_step(&mut state, &factory);
@@ -1376,7 +1443,10 @@ mod tests {
     #[test]
     fn test_min_op_generic_long_float() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("min".to_string(), vec![MettaValue::Long(10), MettaValue::Float(3.5)]);
+        let mut state = GroundedState::new(
+            "min".to_string(),
+            vec![MettaValue::Long(10), MettaValue::Float(3.5)],
+        );
         let op = MinOp;
 
         op.execute_step(&mut state, &factory);
@@ -1400,7 +1470,10 @@ mod tests {
     #[test]
     fn test_min_op_generic_float_long() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("min".to_string(), vec![MettaValue::Float(2.5), MettaValue::Long(10)]);
+        let mut state = GroundedState::new(
+            "min".to_string(),
+            vec![MettaValue::Float(2.5), MettaValue::Long(10)],
+        );
         let op = MinOp;
 
         op.execute_step(&mut state, &factory);
@@ -1426,7 +1499,10 @@ mod tests {
     #[test]
     fn test_max_op_generic_longs() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("max".to_string(), vec![MettaValue::Long(10), MettaValue::Long(3)]);
+        let mut state = GroundedState::new(
+            "max".to_string(),
+            vec![MettaValue::Long(10), MettaValue::Long(3)],
+        );
         let op = MaxOp;
 
         op.execute_step(&mut state, &factory);
@@ -1450,7 +1526,10 @@ mod tests {
     #[test]
     fn test_max_op_generic_floats() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("max".to_string(), vec![MettaValue::Float(1.5), MettaValue::Float(2.5)]);
+        let mut state = GroundedState::new(
+            "max".to_string(),
+            vec![MettaValue::Float(1.5), MettaValue::Float(2.5)],
+        );
         let op = MaxOp;
 
         op.execute_step(&mut state, &factory);
@@ -1474,7 +1553,10 @@ mod tests {
     #[test]
     fn test_max_op_generic_long_float() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("max".to_string(), vec![MettaValue::Long(3), MettaValue::Float(10.5)]);
+        let mut state = GroundedState::new(
+            "max".to_string(),
+            vec![MettaValue::Long(3), MettaValue::Float(10.5)],
+        );
         let op = MaxOp;
 
         op.execute_step(&mut state, &factory);
@@ -1498,7 +1580,10 @@ mod tests {
     #[test]
     fn test_max_op_generic_float_long() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new("max".to_string(), vec![MettaValue::Float(10.5), MettaValue::Long(3)]);
+        let mut state = GroundedState::new(
+            "max".to_string(),
+            vec![MettaValue::Float(10.5), MettaValue::Long(3)],
+        );
         let op = MaxOp;
 
         op.execute_step(&mut state, &factory);

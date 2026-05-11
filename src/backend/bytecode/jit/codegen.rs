@@ -6,11 +6,9 @@
 use cranelift::codegen::ir::FuncRef;
 use cranelift::prelude::*;
 
-use super::types::{
-    JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_LONG, TAG_MASK, TAG_UNIT,
-};
 #[cfg(test)]
 use super::types::TAG_PTR;
+use super::types::{JitError, JitResult, PAYLOAD_MASK, TAG_BOOL, TAG_LONG, TAG_MASK, TAG_UNIT};
 
 /// Pre-declared function references for error handlers.
 ///
@@ -387,7 +385,6 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         }
         self.terminated = true;
     }
-
 }
 
 // =============================================================================

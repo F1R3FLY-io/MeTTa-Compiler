@@ -11,6 +11,15 @@ mod tests {
         opcodes.to_vec()
     }
 
+    fn fork_inline_targets(code: &[u8], offset: usize) -> (u16, u16) {
+        assert_eq!(code[offset], Opcode::ForkInline.to_byte());
+        assert_eq!(u16::from_be_bytes([code[offset + 1], code[offset + 2]]), 2);
+        (
+            u16::from_be_bytes([code[offset + 3], code[offset + 4]]),
+            u16::from_be_bytes([code[offset + 5], code[offset + 6]]),
+        )
+    }
+
     #[test]
     fn test_nop_removal() {
         let code = make_code(&[
@@ -327,6 +336,56 @@ mod tests {
         assert_eq!(optimized[8], Opcode::Jump.to_byte());
         let jump_offset = i16::from_be_bytes([optimized[9], optimized[10]]);
         assert_eq!(jump_offset, 3); // Should remain 3
+    }
+
+    #[test]
+    fn test_peephole_does_not_scan_fork_inline_target_table() {
+        let code = make_code(&[
+            Opcode::ForkInline.to_byte(), 0, 2, 0, 7, 0, 9,
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code.clone());
+
+        assert_eq!(stats.nops_removed, 0);
+        assert_eq!(optimized, code);
+        assert_eq!(fork_inline_targets(&optimized, 0), (7, 9));
+    }
+
+    #[test]
+    fn test_peephole_remaps_fork_inline_targets_after_prior_removal() {
+        let code = make_code(&[
+            Opcode::Nop.to_byte(),
+            Opcode::ForkInline.to_byte(), 0, 2, 0, 8, 0, 10,
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        assert_eq!(stats.nops_removed, 1);
+        assert_eq!(optimized[0], Opcode::ForkInline.to_byte());
+        assert_eq!(fork_inline_targets(&optimized, 0), (7, 9));
+    }
+
+    #[test]
+    fn test_peephole_remaps_fork_inline_targets_after_branch_removal() {
+        let code = make_code(&[
+            Opcode::ForkInline.to_byte(), 0, 2, 0, 7, 0, 11,
+            Opcode::PushTrue.to_byte(),
+            Opcode::Pop.to_byte(),
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = optimize_bytecode(code);
+
+        assert_eq!(stats.push_pop_removed, 1);
+        assert_eq!(fork_inline_targets(&optimized, 0), (7, 9));
     }
 
     #[test]
@@ -656,6 +715,42 @@ mod tests {
     }
 
     #[test]
+    fn test_dce_keeps_fork_inline_branch_targets_reachable() {
+        let code = make_code(&[
+            Opcode::ForkInline.to_byte(), 0, 2, 0, 7, 0, 10,
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::Return.to_byte(),
+            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = eliminate_dead_code(code.clone());
+
+        assert_eq!(stats.blocks_removed, 0);
+        assert_eq!(optimized, code);
+    }
+
+    #[test]
+    fn test_dce_remaps_fork_inline_targets_after_prior_dead_code() {
+        let code = make_code(&[
+            Opcode::Jump.to_byte(), 0, 3,
+            Opcode::PushTrue.to_byte(),
+            Opcode::Pop.to_byte(),
+            Opcode::Nop.to_byte(),
+            Opcode::ForkInline.to_byte(), 0, 2, 0, 13, 0, 15,
+            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::Return.to_byte(),
+        ]);
+
+        let (optimized, stats) = eliminate_dead_code(code);
+
+        assert!(stats.bytes_removed >= 3);
+        assert_eq!(optimized[3], Opcode::ForkInline.to_byte());
+        assert_eq!(fork_inline_targets(&optimized, 3), (10, 12));
+    }
+
+    #[test]
     fn test_dce_combined_with_peephole() {
         // Test the combined optimizer
         //   0: Jump +3             (3 bytes) -> target = 6
@@ -701,7 +796,7 @@ mod tests {
             Opcode::PushTrue.to_byte(),  // 0
             Opcode::Return.to_byte(),    // 1
             Opcode::PushFalse.to_byte(), // 2 - DEAD
-            Opcode::PushUnit.to_byte(),   // 3 - DEAD
+            Opcode::PushUnit.to_byte(),  // 3 - DEAD
             Opcode::Pop.to_byte(),       // 4 - DEAD
         ]);
 
@@ -1020,7 +1115,7 @@ mod tests {
             Opcode::JumpIfTrue.to_byte(), // 1
             0,
             3,                           // 2-3: offset +3 to target
-            Opcode::PushUnit.to_byte(),   // 4 - skipped
+            Opcode::PushUnit.to_byte(),  // 4 - skipped
             Opcode::Return.to_byte(),    // 5
             Opcode::PushFalse.to_byte(), // 6 - target
             Opcode::Return.to_byte(),    // 7
@@ -1041,9 +1136,9 @@ mod tests {
             Opcode::PushTrue.to_byte(),    // 0
             Opcode::JumpIfFalse.to_byte(), // 1
             0,
-            2,                         // 2-3: offset +2 to target
+            2,                          // 2-3: offset +2 to target
             Opcode::PushUnit.to_byte(), // 4 - fall through
-            Opcode::Return.to_byte(),  // 5
+            Opcode::Return.to_byte(),   // 5
         ]);
 
         let (optimized, stats) = optimize_bytecode(code);
@@ -1265,24 +1360,32 @@ mod tests {
         // Create a deep chain of jumps to test iteration limit handling
         // Jump → Jump → Jump → ... → Return
         let code = make_code(&[
-            Opcode::Jump.to_byte(), 0, 3,   // 0-2: Jump to 6
-            Opcode::Nop.to_byte(),          // 3 (dead)
-            Opcode::Nop.to_byte(),          // 4 (dead)
-            Opcode::Nop.to_byte(),          // 5 (dead)
-            Opcode::Jump.to_byte(), 0, 3,   // 6-8: Jump to 12
-            Opcode::Nop.to_byte(),          // 9 (dead)
-            Opcode::Nop.to_byte(),          // 10 (dead)
-            Opcode::Nop.to_byte(),          // 11 (dead)
-            Opcode::Jump.to_byte(), 0, 3,   // 12-14: Jump to 18
-            Opcode::Nop.to_byte(),          // 15 (dead)
-            Opcode::Nop.to_byte(),          // 16 (dead)
-            Opcode::Nop.to_byte(),          // 17 (dead)
-            Opcode::Jump.to_byte(), 0, 3,   // 18-20: Jump to 24
-            Opcode::Nop.to_byte(),          // 21 (dead)
-            Opcode::Nop.to_byte(),          // 22 (dead)
-            Opcode::Nop.to_byte(),          // 23 (dead)
-            Opcode::PushTrue.to_byte(),     // 24: final destination
-            Opcode::Return.to_byte(),       // 25
+            Opcode::Jump.to_byte(),
+            0,
+            3,                     // 0-2: Jump to 6
+            Opcode::Nop.to_byte(), // 3 (dead)
+            Opcode::Nop.to_byte(), // 4 (dead)
+            Opcode::Nop.to_byte(), // 5 (dead)
+            Opcode::Jump.to_byte(),
+            0,
+            3,                     // 6-8: Jump to 12
+            Opcode::Nop.to_byte(), // 9 (dead)
+            Opcode::Nop.to_byte(), // 10 (dead)
+            Opcode::Nop.to_byte(), // 11 (dead)
+            Opcode::Jump.to_byte(),
+            0,
+            3,                     // 12-14: Jump to 18
+            Opcode::Nop.to_byte(), // 15 (dead)
+            Opcode::Nop.to_byte(), // 16 (dead)
+            Opcode::Nop.to_byte(), // 17 (dead)
+            Opcode::Jump.to_byte(),
+            0,
+            3,                          // 18-20: Jump to 24
+            Opcode::Nop.to_byte(),      // 21 (dead)
+            Opcode::Nop.to_byte(),      // 22 (dead)
+            Opcode::Nop.to_byte(),      // 23 (dead)
+            Opcode::PushTrue.to_byte(), // 24: final destination
+            Opcode::Return.to_byte(),   // 25
         ]);
         let code_len = code.len();
 
@@ -1298,11 +1401,13 @@ mod tests {
     fn test_jump_at_code_boundary() {
         // Jump targeting the exact end of code
         let code = make_code(&[
-            Opcode::Jump.to_byte(), 0, 3,   // 0-2: Jump to 6
-            Opcode::Nop.to_byte(),          // 3
-            Opcode::Nop.to_byte(),          // 4
-            Opcode::Nop.to_byte(),          // 5
-            Opcode::Return.to_byte(),       // 6: Return at target
+            Opcode::Jump.to_byte(),
+            0,
+            3,                        // 0-2: Jump to 6
+            Opcode::Nop.to_byte(),    // 3
+            Opcode::Nop.to_byte(),    // 4
+            Opcode::Nop.to_byte(),    // 5
+            Opcode::Return.to_byte(), // 6: Return at target
         ]);
 
         let (optimized, _stats) = optimize_bytecode(code.clone());
@@ -1315,16 +1420,22 @@ mod tests {
     fn test_conditional_jump_threading() {
         // JumpIfFalse to another Jump
         let code = make_code(&[
-            Opcode::PushTrue.to_byte(),         // 0
-            Opcode::JumpIfFalse.to_byte(), 0, 3, // 1-3: JumpIfFalse to 7
-            Opcode::PushLongSmall.to_byte(), 1,  // 4-5: Then branch
-            Opcode::Return.to_byte(),            // 6
-            Opcode::Jump.to_byte(), 0, 3,        // 7-9: Else branch jumps to 13
-            Opcode::Nop.to_byte(),               // 10
-            Opcode::Nop.to_byte(),               // 11
-            Opcode::Nop.to_byte(),               // 12
-            Opcode::PushLongSmall.to_byte(), 2,  // 13-14: Final target
-            Opcode::Return.to_byte(),            // 15
+            Opcode::PushTrue.to_byte(), // 0
+            Opcode::JumpIfFalse.to_byte(),
+            0,
+            3, // 1-3: JumpIfFalse to 7
+            Opcode::PushLongSmall.to_byte(),
+            1,                        // 4-5: Then branch
+            Opcode::Return.to_byte(), // 6
+            Opcode::Jump.to_byte(),
+            0,
+            3,                     // 7-9: Else branch jumps to 13
+            Opcode::Nop.to_byte(), // 10
+            Opcode::Nop.to_byte(), // 11
+            Opcode::Nop.to_byte(), // 12
+            Opcode::PushLongSmall.to_byte(),
+            2,                        // 13-14: Final target
+            Opcode::Return.to_byte(), // 15
         ]);
 
         let (optimized, _stats) = optimize_bytecode(code);
@@ -1346,7 +1457,7 @@ mod tests {
             Opcode::PushTrue.to_byte(),
             Opcode::Return.to_byte(),
             Opcode::PushFalse.to_byte(), // Unreachable
-            Opcode::Return.to_byte(),     // Unreachable
+            Opcode::Return.to_byte(),    // Unreachable
         ]);
 
         let (optimized, _stats) = optimize_bytecode(code);
@@ -1360,20 +1471,26 @@ mod tests {
     fn test_dce_unreachable_after_jump() {
         // Code after unconditional Jump is unreachable
         let code = make_code(&[
-            Opcode::Jump.to_byte(), 0, 3,  // 0-2: Jump to 6
-            Opcode::PushFalse.to_byte(),   // 3: Unreachable
-            Opcode::Return.to_byte(),       // 4: Unreachable
-            Opcode::Nop.to_byte(),          // 5: Unreachable
-            Opcode::PushTrue.to_byte(),     // 6: Jump target
-            Opcode::Return.to_byte(),       // 7
+            Opcode::Jump.to_byte(),
+            0,
+            3,                           // 0-2: Jump to 6
+            Opcode::PushFalse.to_byte(), // 3: Unreachable
+            Opcode::Return.to_byte(),    // 4: Unreachable
+            Opcode::Nop.to_byte(),       // 5: Unreachable
+            Opcode::PushTrue.to_byte(),  // 6: Jump target
+            Opcode::Return.to_byte(),    // 7
         ]);
         let code_len = code.len();
 
         let (optimized, _stats) = optimize_bytecode(code);
 
         // Should remove unreachable code (code should be smaller)
-        assert!(optimized.len() < code_len,
-            "Expected code to shrink, got {} bytes (from {})", optimized.len(), code_len);
+        assert!(
+            optimized.len() < code_len,
+            "Expected code to shrink, got {} bytes (from {})",
+            optimized.len(),
+            code_len
+        );
     }
 
     #[test]
@@ -1381,11 +1498,15 @@ mod tests {
         // PushTrue; JumpIfFalse - the false branch is never taken
         let code = make_code(&[
             Opcode::PushTrue.to_byte(),
-            Opcode::JumpIfFalse.to_byte(), 0, 5,  // Jump to 8 (never taken)
-            Opcode::PushLongSmall.to_byte(), 42,  // This is always executed
-            Opcode::Return.to_byte(),              // 7
-            Opcode::PushLongSmall.to_byte(), 0,   // 8: Dead code
-            Opcode::Return.to_byte(),              // 10: Dead code
+            Opcode::JumpIfFalse.to_byte(),
+            0,
+            5, // Jump to 8 (never taken)
+            Opcode::PushLongSmall.to_byte(),
+            42,                       // This is always executed
+            Opcode::Return.to_byte(), // 7
+            Opcode::PushLongSmall.to_byte(),
+            0,                        // 8: Dead code
+            Opcode::Return.to_byte(), // 10: Dead code
         ]);
 
         let (_optimized, stats) = optimize_bytecode(code);
@@ -1400,15 +1521,20 @@ mod tests {
         // Note: Full DCE for multiple blocks may require additional passes
         // This test verifies the optimizer handles complex CFG without panic
         let code = make_code(&[
-            Opcode::Jump.to_byte(), 0, 9,  // 0-2: Jump to 12
-            Opcode::PushLongSmall.to_byte(), 1, // 3-4: Block 1 (dead)
-            Opcode::Return.to_byte(),            // 5
-            Opcode::PushLongSmall.to_byte(), 2, // 6-7: Block 2 (dead)
-            Opcode::Return.to_byte(),            // 8
-            Opcode::PushLongSmall.to_byte(), 3, // 9-10: Block 3 (dead)
-            Opcode::Return.to_byte(),            // 11
-            Opcode::PushTrue.to_byte(),          // 12: Reachable target
-            Opcode::Return.to_byte(),            // 13
+            Opcode::Jump.to_byte(),
+            0,
+            9, // 0-2: Jump to 12
+            Opcode::PushLongSmall.to_byte(),
+            1,                        // 3-4: Block 1 (dead)
+            Opcode::Return.to_byte(), // 5
+            Opcode::PushLongSmall.to_byte(),
+            2,                        // 6-7: Block 2 (dead)
+            Opcode::Return.to_byte(), // 8
+            Opcode::PushLongSmall.to_byte(),
+            3,                          // 9-10: Block 3 (dead)
+            Opcode::Return.to_byte(),   // 11
+            Opcode::PushTrue.to_byte(), // 12: Reachable target
+            Opcode::Return.to_byte(),   // 13
         ]);
 
         let (optimized, _stats) = optimize_bytecode(code);
@@ -1429,7 +1555,7 @@ mod tests {
         let code = make_code(&[
             Opcode::PushTrue.to_byte(),
             Opcode::Return.to_byte(),
-            Opcode::Nop.to_byte(),  // NOP after return (unreachable)
+            Opcode::Nop.to_byte(), // NOP after return (unreachable)
             Opcode::Nop.to_byte(),
         ]);
 
@@ -1443,9 +1569,12 @@ mod tests {
     fn test_peephole_consecutive_pops() {
         // Multiple consecutive pops
         let code = make_code(&[
-            Opcode::PushLongSmall.to_byte(), 1,
-            Opcode::PushLongSmall.to_byte(), 2,
-            Opcode::PushLongSmall.to_byte(), 3,
+            Opcode::PushLongSmall.to_byte(),
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            2,
+            Opcode::PushLongSmall.to_byte(),
+            3,
             Opcode::Pop.to_byte(),
             Opcode::Pop.to_byte(),
             Opcode::Pop.to_byte(),
@@ -1463,8 +1592,9 @@ mod tests {
     fn test_peephole_push_pop_pairs() {
         // Push followed by Pop is dead code
         let code = make_code(&[
-            Opcode::PushLongSmall.to_byte(), 42,
-            Opcode::Pop.to_byte(),           // Push; Pop = dead
+            Opcode::PushLongSmall.to_byte(),
+            42,
+            Opcode::Pop.to_byte(), // Push; Pop = dead
             Opcode::PushTrue.to_byte(),
             Opcode::Return.to_byte(),
         ]);
@@ -1472,7 +1602,9 @@ mod tests {
         let (optimized, stats) = optimize_bytecode(code);
 
         // Push; Pop should be optimized away
-        assert!(stats.push_pop_removed >= 1 || stats.identity_ops_removed >= 1 || optimized.len() <= 4);
+        assert!(
+            stats.push_pop_removed >= 1 || stats.identity_ops_removed >= 1 || optimized.len() <= 4
+        );
     }
 
     #[test]
@@ -1499,8 +1631,10 @@ mod tests {
     fn test_sub_zero_identity() {
         // x - 0 = x
         let code = make_code(&[
-            Opcode::PushLongSmall.to_byte(), 42,
-            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::PushLongSmall.to_byte(),
+            42,
+            Opcode::PushLongSmall.to_byte(),
+            0,
             Opcode::Sub.to_byte(),
             Opcode::Return.to_byte(),
         ]);
@@ -1515,8 +1649,10 @@ mod tests {
     fn test_mul_one_identity() {
         // x * 1 = x
         let code = make_code(&[
-            Opcode::PushLongSmall.to_byte(), 42,
-            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushLongSmall.to_byte(),
+            42,
+            Opcode::PushLongSmall.to_byte(),
+            1,
             Opcode::Mul.to_byte(),
             Opcode::Return.to_byte(),
         ]);
@@ -1531,8 +1667,10 @@ mod tests {
     fn test_div_one_identity() {
         // x / 1 = x
         let code = make_code(&[
-            Opcode::PushLongSmall.to_byte(), 42,
-            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushLongSmall.to_byte(),
+            42,
+            Opcode::PushLongSmall.to_byte(),
+            1,
             Opcode::Div.to_byte(),
             Opcode::Return.to_byte(),
         ]);
@@ -1550,9 +1688,7 @@ mod tests {
     #[test]
     fn test_minimal_code() {
         // Minimal valid bytecode
-        let code = make_code(&[
-            Opcode::Return.to_byte(),
-        ]);
+        let code = make_code(&[Opcode::Return.to_byte()]);
 
         let (optimized, _stats) = optimize_bytecode(code);
 
@@ -1582,7 +1718,9 @@ mod tests {
     fn test_large_constant_pool_index() {
         // Large constant pool index (u16)
         let code = make_code(&[
-            Opcode::PushConstant.to_byte(), 1, 0,  // Constant index 256
+            Opcode::PushConstant.to_byte(),
+            1,
+            0, // Constant index 256
             Opcode::Return.to_byte(),
         ]);
 
@@ -1613,22 +1751,34 @@ mod tests {
         // JumpIfFalse jumps to 14 (else): offset = 14 - 9 = 5
         // Jump jumps to 16 (return): offset = 16 - 14 = 2
         let code = make_code(&[
-            Opcode::PushLongSmall.to_byte(), 0,    // 0-1: push 0
-            Opcode::PushLongSmall.to_byte(), 1,    // 2-3: push 1
-            cmp_op.to_byte(),                      // 4: comparison
-            Opcode::Not.to_byte(),                 // 5: negate
-            Opcode::JumpIfFalse.to_byte(), 0, 5,   // 6-8: JumpIfFalse +5 → pos 14
-            Opcode::PushLongSmall.to_byte(), 1,    // 9-10: then branch
-            Opcode::Jump.to_byte(), 0, 2,          // 11-13: Jump +2 → pos 16
-            Opcode::PushLongSmall.to_byte(), 2,    // 14-15: else branch
-            Opcode::Return.to_byte(),              // 16
+            Opcode::PushLongSmall.to_byte(),
+            0, // 0-1: push 0
+            Opcode::PushLongSmall.to_byte(),
+            1,                     // 2-3: push 1
+            cmp_op.to_byte(),      // 4: comparison
+            Opcode::Not.to_byte(), // 5: negate
+            Opcode::JumpIfFalse.to_byte(),
+            0,
+            5, // 6-8: JumpIfFalse +5 → pos 14
+            Opcode::PushLongSmall.to_byte(),
+            1, // 9-10: then branch
+            Opcode::Jump.to_byte(),
+            0,
+            2, // 11-13: Jump +2 → pos 16
+            Opcode::PushLongSmall.to_byte(),
+            2,                        // 14-15: else branch
+            Opcode::Return.to_byte(), // 16
         ]);
 
         let (optimized, stats) = optimize_bytecode(code);
 
         // Verify the fold happened
-        assert!(stats.comparison_folded >= 1,
-            "Expected comparison folding for {:?};Not → {:?}", cmp_op, expected_folded);
+        assert!(
+            stats.comparison_folded >= 1,
+            "Expected comparison folding for {:?};Not → {:?}",
+            cmp_op,
+            expected_folded
+        );
 
         // After folding: CmpOp;Not (2 bytes) → FoldedOp (1 byte), 1 byte removed
         // New layout:
@@ -1645,26 +1795,42 @@ mod tests {
         // Expected Jump offset = 15 - 13 = 2
 
         // Verify the folded opcode is present
-        assert_eq!(optimized[4], expected_folded.to_byte(),
-            "Expected folded opcode {:?} at pos 4", expected_folded);
+        assert_eq!(
+            optimized[4],
+            expected_folded.to_byte(),
+            "Expected folded opcode {:?} at pos 4",
+            expected_folded
+        );
 
         // Verify JumpIfFalse target is correct (should jump to else-branch)
-        assert_eq!(optimized[5], Opcode::JumpIfFalse.to_byte(),
-            "Expected JumpIfFalse at pos 5");
+        assert_eq!(
+            optimized[5],
+            Opcode::JumpIfFalse.to_byte(),
+            "Expected JumpIfFalse at pos 5"
+        );
         let jif_offset = i16::from_be_bytes([optimized[6], optimized[7]]);
         // JumpIfFalse at pos 5, operand at 6-7, next instruction at 8
         // Should jump to pos 13 (else branch): offset = 13 - 8 = 5
-        assert_eq!(jif_offset, 5,
-            "JumpIfFalse offset should be 5 (jump from 8 to 13), got {}", jif_offset);
+        assert_eq!(
+            jif_offset, 5,
+            "JumpIfFalse offset should be 5 (jump from 8 to 13), got {}",
+            jif_offset
+        );
 
         // Verify Jump target is correct (should jump to Return)
-        assert_eq!(optimized[10], Opcode::Jump.to_byte(),
-            "Expected Jump at pos 10");
+        assert_eq!(
+            optimized[10],
+            Opcode::Jump.to_byte(),
+            "Expected Jump at pos 10"
+        );
         let jump_offset = i16::from_be_bytes([optimized[11], optimized[12]]);
         // Jump at pos 10, operand at 11-12, next instruction at 13
         // Should jump to pos 15 (Return): offset = 15 - 13 = 2
-        assert_eq!(jump_offset, 2,
-            "Jump offset should be 2 (jump from 13 to 15), got {}", jump_offset);
+        assert_eq!(
+            jump_offset, 2,
+            "Jump offset should be 2 (jump from 13 to 15), got {}",
+            jump_offset
+        );
 
         (optimized, make_code(&[]))
     }
@@ -1712,14 +1878,19 @@ mod tests {
     fn test_add_zero_guarded_non_numeric() {
         // PushAtom; PushLongSmall 0; Add — PushAtom is NOT numeric, guard blocks
         let code = make_code(&[
-            Opcode::PushAtom.to_byte(), 0, 1, // PushAtom (3 bytes, non-numeric)
-            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::PushAtom.to_byte(),
+            0,
+            1, // PushAtom (3 bytes, non-numeric)
+            Opcode::PushLongSmall.to_byte(),
+            0,
             Opcode::Add.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code.clone());
-        assert_eq!(stats.identity_ops_removed, 0,
-            "Add-zero identity should NOT fire with non-numeric predecessor");
+        assert_eq!(
+            stats.identity_ops_removed, 0,
+            "Add-zero identity should NOT fire with non-numeric predecessor"
+        );
         assert_eq!(optimized, code);
     }
 
@@ -1727,14 +1898,19 @@ mod tests {
     fn test_sub_zero_guarded_non_numeric() {
         // PushAtom; PushLongSmall 0; Sub — guard blocks
         let code = make_code(&[
-            Opcode::PushAtom.to_byte(), 0, 1,
-            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::PushAtom.to_byte(),
+            0,
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            0,
             Opcode::Sub.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code.clone());
-        assert_eq!(stats.identity_ops_removed, 0,
-            "Sub-zero identity should NOT fire with non-numeric predecessor");
+        assert_eq!(
+            stats.identity_ops_removed, 0,
+            "Sub-zero identity should NOT fire with non-numeric predecessor"
+        );
         assert_eq!(optimized, code);
     }
 
@@ -1742,14 +1918,19 @@ mod tests {
     fn test_mul_one_guarded_non_numeric() {
         // PushAtom; PushLongSmall 1; Mul — guard blocks
         let code = make_code(&[
-            Opcode::PushAtom.to_byte(), 0, 1,
-            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushAtom.to_byte(),
+            0,
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            1,
             Opcode::Mul.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code.clone());
-        assert_eq!(stats.identity_ops_removed, 0,
-            "Mul-one identity should NOT fire with non-numeric predecessor");
+        assert_eq!(
+            stats.identity_ops_removed, 0,
+            "Mul-one identity should NOT fire with non-numeric predecessor"
+        );
         assert_eq!(optimized, code);
     }
 
@@ -1757,14 +1938,19 @@ mod tests {
     fn test_div_one_guarded_non_numeric() {
         // PushAtom; PushLongSmall 1; Div — guard blocks
         let code = make_code(&[
-            Opcode::PushAtom.to_byte(), 0, 1,
-            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushAtom.to_byte(),
+            0,
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            1,
             Opcode::Div.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code.clone());
-        assert_eq!(stats.identity_ops_removed, 0,
-            "Div-one identity should NOT fire with non-numeric predecessor");
+        assert_eq!(
+            stats.identity_ops_removed, 0,
+            "Div-one identity should NOT fire with non-numeric predecessor"
+        );
         assert_eq!(optimized, code);
     }
 
@@ -1772,14 +1958,19 @@ mod tests {
     fn test_mul_zero_guarded_non_numeric() {
         // PushAtom; PushLongSmall 0; Mul — absorber guard blocks
         let code = make_code(&[
-            Opcode::PushAtom.to_byte(), 0, 1,
-            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::PushAtom.to_byte(),
+            0,
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            0,
             Opcode::Mul.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code.clone());
-        assert_eq!(stats.mul_zero_folded, 0,
-            "Mul-zero absorber should NOT fire with non-numeric predecessor");
+        assert_eq!(
+            stats.mul_zero_folded, 0,
+            "Mul-zero absorber should NOT fire with non-numeric predecessor"
+        );
         assert_eq!(optimized, code);
     }
 
@@ -1787,14 +1978,19 @@ mod tests {
     fn test_pow_zero_guarded_non_numeric() {
         // PushAtom; PushLongSmall 0; Pow — absorber guard blocks
         let code = make_code(&[
-            Opcode::PushAtom.to_byte(), 0, 1,
-            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::PushAtom.to_byte(),
+            0,
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            0,
             Opcode::Pow.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code.clone());
-        assert_eq!(stats.pow_folded, 0,
-            "Pow-zero absorber should NOT fire with non-numeric predecessor");
+        assert_eq!(
+            stats.pow_folded, 0,
+            "Pow-zero absorber should NOT fire with non-numeric predecessor"
+        );
         assert_eq!(optimized, code);
     }
 
@@ -1802,14 +1998,19 @@ mod tests {
     fn test_pow_one_guarded_non_numeric() {
         // PushAtom; PushLongSmall 1; Pow — identity guard blocks
         let code = make_code(&[
-            Opcode::PushAtom.to_byte(), 0, 1,
-            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::PushAtom.to_byte(),
+            0,
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            1,
             Opcode::Pow.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code.clone());
-        assert_eq!(stats.pow_folded, 0,
-            "Pow-one identity should NOT fire with non-numeric predecessor");
+        assert_eq!(
+            stats.pow_folded, 0,
+            "Pow-one identity should NOT fire with non-numeric predecessor"
+        );
         assert_eq!(optimized, code);
     }
 
@@ -1817,54 +2018,72 @@ mod tests {
     fn test_add_zero_fires_with_numeric_predecessor() {
         // PushLongSmall 5; PushLongSmall 0; Add — PushLongSmall IS numeric, guard passes
         let code = make_code(&[
-            Opcode::PushLongSmall.to_byte(), 5,
-            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::PushLongSmall.to_byte(),
+            5,
+            Opcode::PushLongSmall.to_byte(),
+            0,
             Opcode::Add.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code);
-        assert_eq!(stats.identity_ops_removed, 1,
-            "Add-zero identity SHOULD fire with numeric predecessor");
-        assert_eq!(optimized, vec![
-            Opcode::PushLongSmall.to_byte(), 5,
-            Opcode::Return.to_byte(),
-        ]);
+        assert_eq!(
+            stats.identity_ops_removed, 1,
+            "Add-zero identity SHOULD fire with numeric predecessor"
+        );
+        assert_eq!(
+            optimized,
+            vec![Opcode::PushLongSmall.to_byte(), 5, Opcode::Return.to_byte(),]
+        );
     }
 
     #[test]
     fn test_identity_guard_with_arithmetic_predecessor() {
         // Add; PushLongSmall 0; Sub — Add IS a numeric producer, guard passes
         let code = make_code(&[
-            Opcode::PushLongSmall.to_byte(), 3,
-            Opcode::PushLongSmall.to_byte(), 4,
+            Opcode::PushLongSmall.to_byte(),
+            3,
+            Opcode::PushLongSmall.to_byte(),
+            4,
             Opcode::Add.to_byte(),
-            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::PushLongSmall.to_byte(),
+            0,
             Opcode::Sub.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code);
-        assert_eq!(stats.identity_ops_removed, 1,
-            "Sub-zero identity SHOULD fire with arithmetic predecessor");
-        assert_eq!(optimized, vec![
-            Opcode::PushLongSmall.to_byte(), 3,
-            Opcode::PushLongSmall.to_byte(), 4,
-            Opcode::Add.to_byte(),
-            Opcode::Return.to_byte(),
-        ]);
+        assert_eq!(
+            stats.identity_ops_removed, 1,
+            "Sub-zero identity SHOULD fire with arithmetic predecessor"
+        );
+        assert_eq!(
+            optimized,
+            vec![
+                Opcode::PushLongSmall.to_byte(),
+                3,
+                Opcode::PushLongSmall.to_byte(),
+                4,
+                Opcode::Add.to_byte(),
+                Opcode::Return.to_byte(),
+            ]
+        );
     }
 
     #[test]
     fn test_identity_guard_with_load_local_predecessor() {
         // LoadLocal; PushLongSmall 0; Add — LoadLocal is NOT numeric, guard blocks
         let code = make_code(&[
-            Opcode::LoadLocal.to_byte(), 0,
-            Opcode::PushLongSmall.to_byte(), 0,
+            Opcode::LoadLocal.to_byte(),
+            0,
+            Opcode::PushLongSmall.to_byte(),
+            0,
             Opcode::Add.to_byte(),
             Opcode::Return.to_byte(),
         ]);
         let (optimized, stats) = optimize_bytecode(code.clone());
-        assert_eq!(stats.identity_ops_removed, 0,
-            "Add-zero identity should NOT fire with LoadLocal predecessor");
+        assert_eq!(
+            stats.identity_ops_removed, 0,
+            "Add-zero identity should NOT fire with LoadLocal predecessor"
+        );
         assert_eq!(optimized, code);
     }
 
@@ -1879,51 +2098,85 @@ mod tests {
         // Between: Add (combine results)
         // Block 2: push 0; push 1; Eq; Not; JumpIfFalse→else2; push 30; Jump→end2; push 40; Return
         let code = make_code(&[
-            Opcode::PushLongSmall.to_byte(), 0,     // 0-1
-            Opcode::PushLongSmall.to_byte(), 1,     // 2-3
-            Opcode::Eq.to_byte(),                   // 4
-            Opcode::Not.to_byte(),                  // 5
-            Opcode::JumpIfFalse.to_byte(), 0, 5,    // 6-8: → 14
-            Opcode::PushLongSmall.to_byte(), 10,    // 9-10
-            Opcode::Jump.to_byte(), 0, 2,           // 11-13: → 16
-            Opcode::PushLongSmall.to_byte(), 20,    // 14-15
+            Opcode::PushLongSmall.to_byte(),
+            0, // 0-1
+            Opcode::PushLongSmall.to_byte(),
+            1,                     // 2-3
+            Opcode::Eq.to_byte(),  // 4
+            Opcode::Not.to_byte(), // 5
+            Opcode::JumpIfFalse.to_byte(),
+            0,
+            5, // 6-8: → 14
+            Opcode::PushLongSmall.to_byte(),
+            10, // 9-10
+            Opcode::Jump.to_byte(),
+            0,
+            2, // 11-13: → 16
+            Opcode::PushLongSmall.to_byte(),
+            20, // 14-15
             // end1 = 16
-            Opcode::PushLongSmall.to_byte(), 0,     // 16-17
-            Opcode::PushLongSmall.to_byte(), 1,     // 18-19
-            Opcode::Eq.to_byte(),                   // 20
-            Opcode::Not.to_byte(),                  // 21
-            Opcode::JumpIfFalse.to_byte(), 0, 5,    // 22-24: → 30
-            Opcode::PushLongSmall.to_byte(), 30,    // 25-26
-            Opcode::Jump.to_byte(), 0, 2,           // 27-29: → 32
-            Opcode::PushLongSmall.to_byte(), 40,    // 30-31
-            Opcode::Return.to_byte(),               // 32
+            Opcode::PushLongSmall.to_byte(),
+            0, // 16-17
+            Opcode::PushLongSmall.to_byte(),
+            1,                     // 18-19
+            Opcode::Eq.to_byte(),  // 20
+            Opcode::Not.to_byte(), // 21
+            Opcode::JumpIfFalse.to_byte(),
+            0,
+            5, // 22-24: → 30
+            Opcode::PushLongSmall.to_byte(),
+            30, // 25-26
+            Opcode::Jump.to_byte(),
+            0,
+            2, // 27-29: → 32
+            Opcode::PushLongSmall.to_byte(),
+            40,                       // 30-31
+            Opcode::Return.to_byte(), // 32
         ]);
 
         let original_len = code.len(); // 33 bytes
         let (optimized, stats) = optimize_bytecode(code);
 
         // Both comparison folds should happen
-        assert!(stats.comparison_folded >= 2,
-            "Expected at least 2 comparison folds, got {}", stats.comparison_folded);
+        assert!(
+            stats.comparison_folded >= 2,
+            "Expected at least 2 comparison folds, got {}",
+            stats.comparison_folded
+        );
 
         // Code should shrink by at least 2 bytes (one per fold)
-        assert!(optimized.len() <= original_len - 2,
-            "Expected at most {} bytes, got {}", original_len - 2, optimized.len());
+        assert!(
+            optimized.len() <= original_len - 2,
+            "Expected at most {} bytes, got {}",
+            original_len - 2,
+            optimized.len()
+        );
 
         // Both Ne opcodes should be present
-        let ne_count = optimized.iter()
+        let ne_count = optimized
+            .iter()
             .filter(|&&b| b == Opcode::Ne.to_byte())
             .count();
         assert_eq!(ne_count, 2, "Expected 2 Ne opcodes, found {}", ne_count);
 
         // Verify no Eq or Not opcodes remain
-        let eq_count = optimized.iter()
+        let eq_count = optimized
+            .iter()
             .filter(|&&b| b == Opcode::Eq.to_byte())
             .count();
-        let not_count = optimized.iter()
+        let not_count = optimized
+            .iter()
             .filter(|&&b| b == Opcode::Not.to_byte())
             .count();
-        assert_eq!(eq_count, 0, "Expected 0 Eq opcodes after folding, found {}", eq_count);
-        assert_eq!(not_count, 0, "Expected 0 Not opcodes after folding, found {}", not_count);
+        assert_eq!(
+            eq_count, 0,
+            "Expected 0 Eq opcodes after folding, found {}",
+            eq_count
+        );
+        assert_eq!(
+            not_count, 0,
+            "Expected 0 Not opcodes after folding, found {}",
+            not_count
+        );
     }
 }

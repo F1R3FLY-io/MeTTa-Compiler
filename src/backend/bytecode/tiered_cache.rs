@@ -38,10 +38,10 @@ use xxhash_rust::xxh3::Xxh3;
 
 use dashmap::DashMap;
 
-use crate::backend::hash_utils::IdentityU64BuildHasher;
-use crate::backend::models::{MettaValue, MettaValueInner, ValueView};
 use crate::backend::environment::core::MettaEnvironment;
+use crate::backend::hash_utils::IdentityU64BuildHasher;
 use crate::backend::models::work_pool::global_compile_pool;
+use crate::backend::models::{MettaValue, MettaValueInner, ValueView};
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
 use super::cache::hash_metta_value;
@@ -137,14 +137,13 @@ pub fn increment_exec_count(ptr: *const MettaValueInner) {
     let addr = ptr as usize;
     EXEC_PAGE_CACHE.with(|cell| {
         if let Some(cached) = cell.get() {
-            let current_gen = crate::backend::models::gc_allocator::global_allocator()
-                .page_generation();
+            let current_gen =
+                crate::backend::models::gc_allocator::global_allocator().page_generation();
             if cached.generation == current_gen && addr >= cached.base && addr < cached.end {
                 let slot_idx = (addr - cached.base) / cached.slot_size;
                 // SAFETY: slot_idx is within bounds (addr range-checked above),
                 // page is still live (generation matches), counter is AtomicU32.
-                unsafe { &*cached.counters_ptr.add(slot_idx) }
-                    .fetch_add(1, Ordering::Relaxed);
+                unsafe { &*cached.counters_ptr.add(slot_idx) }.fetch_add(1, Ordering::Relaxed);
                 return;
             }
         }
@@ -197,14 +196,13 @@ pub fn get_slot_compilation_hash(ptr: *const MettaValueInner) -> u64 {
     let addr = ptr as usize;
     EXEC_PAGE_CACHE.with(|cell| {
         if let Some(cached) = cell.get() {
-            let current_gen = crate::backend::models::gc_allocator::global_allocator()
-                .page_generation();
+            let current_gen =
+                crate::backend::models::gc_allocator::global_allocator().page_generation();
             if cached.generation == current_gen && addr >= cached.base && addr < cached.end {
                 let slot_idx = (addr - cached.base) / cached.slot_size;
                 // SAFETY: slot_idx is within bounds (addr range-checked above),
                 // page is still live (generation matches), hashes_ptr is AtomicU64.
-                return unsafe { &*cached.hashes_ptr.add(slot_idx) }
-                    .load(Ordering::Relaxed);
+                return unsafe { &*cached.hashes_ptr.add(slot_idx) }.load(Ordering::Relaxed);
             }
         }
         0 // Cache miss — return 0 (no hash available)
@@ -223,16 +221,14 @@ pub fn increment_and_get_hash(ptr: *const MettaValueInner) -> u64 {
     let addr = ptr as usize;
     EXEC_PAGE_CACHE.with(|cell| {
         if let Some(cached) = cell.get() {
-            let current_gen = crate::backend::models::gc_allocator::global_allocator()
-                .page_generation();
+            let current_gen =
+                crate::backend::models::gc_allocator::global_allocator().page_generation();
             if cached.generation == current_gen && addr >= cached.base && addr < cached.end {
                 let slot_idx = (addr - cached.base) / cached.slot_size;
                 // SAFETY: slot_idx is within bounds (addr range-checked above),
                 // page is still live (generation matches).
-                unsafe { &*cached.counters_ptr.add(slot_idx) }
-                    .fetch_add(1, Ordering::Relaxed);
-                return unsafe { &*cached.hashes_ptr.add(slot_idx) }
-                    .load(Ordering::Relaxed);
+                unsafe { &*cached.counters_ptr.add(slot_idx) }.fetch_add(1, Ordering::Relaxed);
+                return unsafe { &*cached.hashes_ptr.add(slot_idx) }.load(Ordering::Relaxed);
             }
         }
         // Cache miss: find page, populate cache, increment counter, return hash
@@ -375,7 +371,8 @@ pub struct ExprCompilationState {
     ///
     /// V8 equivalent: FeedbackVector (per-function IC slot array).
     /// HotSpot equivalent: MethodData (MDO).
-    pub runtime_profile: std::sync::Arc<parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>>,
+    pub runtime_profile:
+        std::sync::Arc<parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>>,
 
     /// Cached result of `can_compile_with_env()` (0=unknown, 1=true, 2=false).
     /// Write-once, lock-free reads. Eliminates ~922K recursive tree walks for
@@ -412,17 +409,15 @@ impl ExprCompilationState {
         &self,
         env: &crate::backend::eval::trampoline::MettaEnvironment,
     ) -> Arc<super::jit::TypeSignatureRegistry> {
-        let current_epoch = crate::backend::environment::rule_management::RULE_EPOCH
-            .load(Ordering::Acquire);
+        let current_epoch =
+            crate::backend::environment::rule_management::RULE_EPOCH.load(Ordering::Acquire);
         let mut guard = self.type_registry_cache.lock();
         if let Some((cached_epoch, ref registry)) = *guard {
             if cached_epoch == current_epoch {
                 return Arc::clone(registry);
             }
         }
-        let registry = Arc::new(
-            super::jit::TypeSignatureRegistry::from_env(env),
-        );
+        let registry = Arc::new(super::jit::TypeSignatureRegistry::from_env(env));
         *guard = Some((current_epoch, Arc::clone(&registry)));
         registry
     }
@@ -453,9 +448,9 @@ impl ExprCompilationState {
     #[inline]
     pub fn set_compilable_with_env(&self, compilable: bool) {
         let val = if compilable { 1u8 } else { 2u8 };
-        let _ = self.compilable_with_env.compare_exchange(
-            0, val, Ordering::Relaxed, Ordering::Relaxed,
-        );
+        let _ =
+            self.compilable_with_env
+                .compare_exchange(0, val, Ordering::Relaxed, Ordering::Relaxed);
     }
 
     /// Get bytecode chunk if ready (lock-free read via OnceLock)
@@ -658,6 +653,12 @@ pub struct TieredCache {
     /// Map from expression hash to compilation state
     pub(crate) entries: DashMap<u64, Arc<ExprCompilationState>, IdentityU64BuildHasher>,
 
+    /// Source expressions currently captured by queued/running bytecode
+    /// compilation tasks. These are shallow `MettaValue` roots, not owned
+    /// copies; `TieredCacheRoots` traces them while async compilation can
+    /// still dereference the source expression.
+    pending_bytecode_roots: Arc<DashMap<u64, MettaValue, IdentityU64BuildHasher>>,
+
     /// Threshold for bytecode compilation
     pub bytecode_threshold: u32,
 
@@ -717,6 +718,22 @@ pub struct TieredCache {
     jit2_failures_compiler_init: AtomicU64,
     #[cfg(feature = "track-stats")]
     jit2_failures_codegen: AtomicU64,
+}
+
+/// RAII handle for a source expression held by an async bytecode compile task.
+///
+/// The handle unregisters the root when the queued task is dropped or when the
+/// compile closure finishes. This keeps rooting tied to the actual async
+/// lifetime instead of to execution counts or tier status.
+struct PendingBytecodeRootGuard {
+    expr_hash: u64,
+    roots: Arc<DashMap<u64, MettaValue, IdentityU64BuildHasher>>,
+}
+
+impl Drop for PendingBytecodeRootGuard {
+    fn drop(&mut self) {
+        self.roots.remove(&self.expr_hash);
+    }
 }
 
 /// Statistics for the tiered compilation cache
@@ -817,6 +834,7 @@ impl TieredCache {
     pub fn new() -> Self {
         Self {
             entries: DashMap::with_hasher(IdentityU64BuildHasher),
+            pending_bytecode_roots: Arc::new(DashMap::with_hasher(IdentityU64BuildHasher)),
             bytecode_threshold: BYTECODE_THRESHOLD,
             jit1_threshold: JIT1_THRESHOLD,
             jit2_threshold: JIT2_THRESHOLD,
@@ -873,6 +891,7 @@ impl TieredCache {
     pub fn with_thresholds(bytecode: u32, jit1: u32, jit2: u32) -> Self {
         Self {
             entries: DashMap::with_hasher(IdentityU64BuildHasher),
+            pending_bytecode_roots: Arc::new(DashMap::with_hasher(IdentityU64BuildHasher)),
             bytecode_threshold: bytecode,
             jit1_threshold: jit1,
             jit2_threshold: jit2,
@@ -922,6 +941,31 @@ impl TieredCache {
             jit2_failures_compiler_init: AtomicU64::new(0),
             #[cfg(feature = "track-stats")]
             jit2_failures_codegen: AtomicU64::new(0),
+        }
+    }
+
+    fn register_pending_bytecode_root(
+        &self,
+        expr_hash: u64,
+        expr: MettaValue,
+    ) -> PendingBytecodeRootGuard {
+        self.pending_bytecode_roots.insert(expr_hash, expr);
+        PendingBytecodeRootGuard {
+            expr_hash,
+            roots: Arc::clone(&self.pending_bytecode_roots),
+        }
+    }
+
+    fn collect_roots_into(&self, roots: &mut Vec<MettaValue>) {
+        roots.extend(
+            self.pending_bytecode_roots
+                .iter()
+                .map(|entry| *entry.value()),
+        );
+        for entry in self.entries.iter() {
+            if let Some(chunk) = entry.value().bytecode_chunk() {
+                super::cache::collect_chunk_constants(&chunk, roots);
+            }
         }
     }
 
@@ -983,6 +1027,10 @@ impl TieredCache {
         state: &Arc<ExprCompilationState>,
         count: u32,
     ) {
+        // This method is reached from eval, periodic counter sync, and GC
+        // count flushing. Register here, not only from record_execution().
+        ensure_tiered_cache_roots_registered();
+
         // Check if we've reached the threshold
         if count < self.bytecode_threshold {
             return;
@@ -1011,25 +1059,31 @@ impl TieredCache {
         self.bytecode_compilations_triggered
             .fetch_add(1, Ordering::Relaxed);
 
-        // Clone what we need for the background task
+        // Capture a shallow source pointer and register it as a root for the
+        // queued/running compile task. MettaValue is pointer-like; the root
+        // provider must see this source until compile_arc has consumed it.
         let expr_clone = expr.clone();
+        let root_guard = self.register_pending_bytecode_root(state.expr_hash, expr_clone);
         let state_clone = Arc::clone(state);
 
         // Compilation closure
-        let compile_task = move || match compile_arc("tiered", &expr_clone) {
-            Ok(chunk) => {
-                state_clone.set_bytecode_ready(chunk);
-                #[cfg(feature = "track-stats")]
-                global_tiered_cache()
-                    .bytecode_compilations_completed
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            Err(_) => {
-                state_clone.set_bytecode_failed();
-                #[cfg(feature = "track-stats")]
-                global_tiered_cache()
-                    .bytecode_compilations_failed
-                    .fetch_add(1, Ordering::Relaxed);
+        let compile_task = move || {
+            let _root_guard = root_guard;
+            match compile_arc("tiered", &expr_clone) {
+                Ok(chunk) => {
+                    state_clone.set_bytecode_ready(chunk);
+                    #[cfg(feature = "track-stats")]
+                    global_tiered_cache()
+                        .bytecode_compilations_completed
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                Err(_) => {
+                    state_clone.set_bytecode_failed();
+                    #[cfg(feature = "track-stats")]
+                    global_tiered_cache()
+                        .bytecode_compilations_failed
+                        .fetch_add(1, Ordering::Relaxed);
+                }
             }
         };
 
@@ -1042,6 +1096,7 @@ impl TieredCache {
         if !enqueued {
             // Task dropped due to backpressure — revert state so future
             // executions can re-trigger compilation
+            self.pending_bytecode_roots.remove(&state.expr_hash);
             state.revert_bytecode_to_not_started();
             #[cfg(feature = "track-stats")]
             self.bytecode_compilations_triggered
@@ -1067,13 +1122,11 @@ impl TieredCache {
                 Arc::clone(entry.value())
             } else {
                 let new_state = Arc::new(ExprCompilationState::new(expr_hash));
-                self.entries
-                    .entry(expr_hash)
-                    .or_insert_with(|| {
-                        #[cfg(feature = "track-stats")]
-                        self.expressions_tracked.fetch_add(1, Ordering::Relaxed);
-                        Arc::clone(&new_state)
-                    });
+                self.entries.entry(expr_hash).or_insert_with(|| {
+                    #[cfg(feature = "track-stats")]
+                    self.expressions_tracked.fetch_add(1, Ordering::Relaxed);
+                    Arc::clone(&new_state)
+                });
                 self.entries
                     .get(&expr_hash)
                     .map(|e| Arc::clone(e.value()))
@@ -1154,8 +1207,12 @@ impl TieredCache {
                 #[cfg(feature = "track-stats")]
                 {
                     let cache = global_tiered_cache();
-                    cache.jit1_failures_nondeterminism.fetch_add(1, Ordering::Relaxed);
-                    cache.jit1_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                    cache
+                        .jit1_failures_nondeterminism
+                        .fetch_add(1, Ordering::Relaxed);
+                    cache
+                        .jit1_compilations_failed
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 return;
             }
@@ -1172,8 +1229,12 @@ impl TieredCache {
                 #[cfg(feature = "track-stats")]
                 {
                     let cache = global_tiered_cache();
-                    cache.jit1_failures_unsupported_opcode.fetch_add(1, Ordering::Relaxed);
-                    cache.jit1_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                    cache
+                        .jit1_failures_unsupported_opcode
+                        .fetch_add(1, Ordering::Relaxed);
+                    cache
+                        .jit1_compilations_failed
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 return;
             }
@@ -1206,7 +1267,9 @@ impl TieredCache {
                         {
                             let cache = global_tiered_cache();
                             cache.jit1_failures_codegen.fetch_add(1, Ordering::Relaxed);
-                            cache.jit1_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                            cache
+                                .jit1_compilations_failed
+                                .fetch_add(1, Ordering::Relaxed);
                         }
                     }
                 },
@@ -1218,8 +1281,12 @@ impl TieredCache {
                     #[cfg(feature = "track-stats")]
                     {
                         let cache = global_tiered_cache();
-                        cache.jit1_failures_compiler_init.fetch_add(1, Ordering::Relaxed);
-                        cache.jit1_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                        cache
+                            .jit1_failures_compiler_init
+                            .fetch_add(1, Ordering::Relaxed);
+                        cache
+                            .jit1_compilations_failed
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -1324,8 +1391,12 @@ impl TieredCache {
                 #[cfg(feature = "track-stats")]
                 {
                     let cache = global_tiered_cache();
-                    cache.jit2_failures_nondeterminism.fetch_add(1, Ordering::Relaxed);
-                    cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                    cache
+                        .jit2_failures_nondeterminism
+                        .fetch_add(1, Ordering::Relaxed);
+                    cache
+                        .jit2_compilations_failed
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 return;
             }
@@ -1342,8 +1413,12 @@ impl TieredCache {
                 #[cfg(feature = "track-stats")]
                 {
                     let cache = global_tiered_cache();
-                    cache.jit2_failures_unsupported_opcode.fetch_add(1, Ordering::Relaxed);
-                    cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                    cache
+                        .jit2_failures_unsupported_opcode
+                        .fetch_add(1, Ordering::Relaxed);
+                    cache
+                        .jit2_compilations_failed
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 return;
             }
@@ -1372,7 +1447,9 @@ impl TieredCache {
                         {
                             let cache = global_tiered_cache();
                             cache.jit2_failures_codegen.fetch_add(1, Ordering::Relaxed);
-                            cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                            cache
+                                .jit2_compilations_failed
+                                .fetch_add(1, Ordering::Relaxed);
                         }
                     }
                 },
@@ -1384,8 +1461,12 @@ impl TieredCache {
                     #[cfg(feature = "track-stats")]
                     {
                         let cache = global_tiered_cache();
-                        cache.jit2_failures_compiler_init.fetch_add(1, Ordering::Relaxed);
-                        cache.jit2_compilations_failed.fetch_add(1, Ordering::Relaxed);
+                        cache
+                            .jit2_failures_compiler_init
+                            .fetch_add(1, Ordering::Relaxed);
+                        cache
+                            .jit2_compilations_failed
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -1460,11 +1541,15 @@ impl TieredCache {
             jit1_executions: self.jit1_executions.load(Ordering::Relaxed),
             jit2_executions: self.jit2_executions.load(Ordering::Relaxed),
             jit1_failures_nondeterminism: self.jit1_failures_nondeterminism.load(Ordering::Relaxed),
-            jit1_failures_unsupported_opcode: self.jit1_failures_unsupported_opcode.load(Ordering::Relaxed),
+            jit1_failures_unsupported_opcode: self
+                .jit1_failures_unsupported_opcode
+                .load(Ordering::Relaxed),
             jit1_failures_compiler_init: self.jit1_failures_compiler_init.load(Ordering::Relaxed),
             jit1_failures_codegen: self.jit1_failures_codegen.load(Ordering::Relaxed),
             jit2_failures_nondeterminism: self.jit2_failures_nondeterminism.load(Ordering::Relaxed),
-            jit2_failures_unsupported_opcode: self.jit2_failures_unsupported_opcode.load(Ordering::Relaxed),
+            jit2_failures_unsupported_opcode: self
+                .jit2_failures_unsupported_opcode
+                .load(Ordering::Relaxed),
             jit2_failures_compiler_init: self.jit2_failures_compiler_init.load(Ordering::Relaxed),
             jit2_failures_codegen: self.jit2_failures_codegen.load(Ordering::Relaxed),
         }
@@ -1476,16 +1561,20 @@ impl TieredCache {
     /// Returns entries sorted by execution count descending.
     #[cfg(feature = "track-stats")]
     pub fn per_expression_stats(&self) -> Vec<PerExpressionStats> {
-        let mut stats: Vec<PerExpressionStats> = self.entries.iter().map(|entry| {
-            let state = entry.value();
-            PerExpressionStats {
-                expr_hash: state.expr_hash,
-                execution_count: state.execution_count.load(Ordering::Relaxed),
-                bytecode_status: state.bytecode_status(),
-                jit1_status: state.jit1_status(),
-                jit2_status: state.jit2_status(),
-            }
-        }).collect();
+        let mut stats: Vec<PerExpressionStats> = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let state = entry.value();
+                PerExpressionStats {
+                    expr_hash: state.expr_hash,
+                    execution_count: state.execution_count.load(Ordering::Relaxed),
+                    bytecode_status: state.bytecode_status(),
+                    jit1_status: state.jit1_status(),
+                    jit2_status: state.jit2_status(),
+                }
+            })
+            .collect();
         stats.sort_by(|a, b| b.execution_count.cmp(&a.execution_count));
         stats
     }
@@ -1511,12 +1600,16 @@ impl TieredCache {
         self.bytecode_executions.store(0, Ordering::Relaxed);
         self.jit1_executions.store(0, Ordering::Relaxed);
         self.jit2_executions.store(0, Ordering::Relaxed);
-        self.jit1_failures_nondeterminism.store(0, Ordering::Relaxed);
-        self.jit1_failures_unsupported_opcode.store(0, Ordering::Relaxed);
+        self.jit1_failures_nondeterminism
+            .store(0, Ordering::Relaxed);
+        self.jit1_failures_unsupported_opcode
+            .store(0, Ordering::Relaxed);
         self.jit1_failures_compiler_init.store(0, Ordering::Relaxed);
         self.jit1_failures_codegen.store(0, Ordering::Relaxed);
-        self.jit2_failures_nondeterminism.store(0, Ordering::Relaxed);
-        self.jit2_failures_unsupported_opcode.store(0, Ordering::Relaxed);
+        self.jit2_failures_nondeterminism
+            .store(0, Ordering::Relaxed);
+        self.jit2_failures_unsupported_opcode
+            .store(0, Ordering::Relaxed);
         self.jit2_failures_compiler_init.store(0, Ordering::Relaxed);
         self.jit2_failures_codegen.store(0, Ordering::Relaxed);
     }
@@ -1524,6 +1617,7 @@ impl TieredCache {
     /// Clear the entire cache
     pub fn clear(&self) {
         self.entries.clear();
+        self.pending_bytecode_roots.clear();
         #[cfg(feature = "track-stats")]
         self.reset_stats();
     }
@@ -1556,7 +1650,6 @@ impl TieredCache {
             }
         }
     }
-
 }
 
 impl Default for TieredCache {
@@ -1568,12 +1661,11 @@ impl Default for TieredCache {
 /// Global tiered compilation cache
 ///
 /// Shared across all evaluations for optimal reuse of compiled code.
-static GLOBAL_TIERED_CACHE: std::sync::LazyLock<TieredCache> =
-    std::sync::LazyLock::new(|| {
-        #[cfg(feature = "track-stats")]
-        maybe_register_jit_summary();
-        TieredCache::new()
-    });
+static GLOBAL_TIERED_CACHE: std::sync::LazyLock<TieredCache> = std::sync::LazyLock::new(|| {
+    #[cfg(feature = "track-stats")]
+    maybe_register_jit_summary();
+    TieredCache::new()
+});
 
 /// Get a reference to the global tiered compilation cache.
 pub fn global_tiered_cache() -> &'static TieredCache {
@@ -1634,12 +1726,7 @@ struct TieredCacheRoots;
 
 impl RootProvider for TieredCacheRoots {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        let cache = global_tiered_cache();
-        for entry in cache.entries.iter() {
-            if let Some(chunk) = entry.value().bytecode_chunk() {
-                super::cache::collect_chunk_constants(&chunk, roots);
-            }
-        }
+        global_tiered_cache().collect_roots_into(roots);
     }
 }
 
@@ -1679,13 +1766,17 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
     // Fast path for primitives, slow path for complex types
     match expr.view() {
         ValueView::Unit => UNIT_HASH,
-        ValueView::Bool(b) => if b {
-            BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
-        } else {
-            BOOL_SEED
-        },
+        ValueView::Bool(b) => {
+            if b {
+                BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
+            } else {
+                BOOL_SEED
+            }
+        }
         ValueView::Long(n) => {
-            let x = (n as u64).wrapping_add(LONG_SEED).wrapping_mul(GOLDEN_RATIO);
+            let x = (n as u64)
+                .wrapping_add(LONG_SEED)
+                .wrapping_mul(GOLDEN_RATIO);
             x ^ (x >> 32)
         }
         ValueView::Float(f) => {
@@ -1718,12 +1809,27 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
 fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H) {
     match expr.view() {
         ValueView::Unit => 0u8.hash(hasher),
-        ValueView::Bool(b) => { 2u8.hash(hasher); b.hash(hasher); }
-        ValueView::Long(n) => { 3u8.hash(hasher); n.hash(hasher); }
-        ValueView::Float(f) => { 4u8.hash(hasher); f.to_bits().hash(hasher); }
+        ValueView::Bool(b) => {
+            2u8.hash(hasher);
+            b.hash(hasher);
+        }
+        ValueView::Long(n) => {
+            3u8.hash(hasher);
+            n.hash(hasher);
+        }
+        ValueView::Float(f) => {
+            4u8.hash(hasher);
+            f.to_bits().hash(hasher);
+        }
         ValueView::Empty => 9u8.hash(hasher),
-        ValueView::String(s) => { 5u8.hash(hasher); s.hash(hasher); }
-        ValueView::Atom(s) => { 6u8.hash(hasher); s.hash(hasher); }
+        ValueView::String(s) => {
+            5u8.hash(hasher);
+            s.hash(hasher);
+        }
+        ValueView::Atom(s) => {
+            6u8.hash(hasher);
+            s.hash(hasher);
+        }
         ValueView::SExpr(items) => {
             7u8.hash(hasher);
             items.len().hash(hasher);
@@ -1737,12 +1843,13 @@ fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H)
             "quote".hash(hasher);
             hash_value_recursive(&inner, hasher);
         }
-        ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
-        | ValueView::State(_) | ValueView::Memo(_) => 10u8.hash(hasher),
+        ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_) => 10u8.hash(hasher),
     }
 }
-
-
 
 // =============================================================================
 // Sub-Expression Dispatch
@@ -1765,7 +1872,9 @@ pub fn try_sub_expr_dispatch(
     env: &MettaEnvironment,
 ) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
     let hash = get_slot_compilation_hash(ptr);
-    if hash == 0 { return None; }
+    if hash == 0 {
+        return None;
+    }
 
     let cache = global_tiered_cache();
     let state_ref = cache.entries.get(&hash)?;
@@ -1861,6 +1970,46 @@ pub fn try_sub_expr_dispatch_with_hash(
     None
 }
 
+/// Attempt to dispatch a closed, pure user-defined sub-expression through the
+/// cached environment-aware bytecode tier.
+///
+/// This path is intentionally narrower than `try_sub_expr_dispatch_with_hash`:
+/// it only uses bytecode, exhausts the VM's nondeterministic top-level results,
+/// and rejects executions that leave unreduced values or pending choices. That
+/// keeps recursive helper calls eligible for warmup without changing observable
+/// branch behavior.
+pub fn try_sub_expr_env_dispatch_with_hash(
+    hash: u64,
+    _value: &MettaValue,
+    env: &MettaEnvironment,
+) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
+    let cache = global_tiered_cache();
+    let state_ref = cache.entries.get(&hash)?;
+    let state = std::sync::Arc::clone(state_ref.value());
+    drop(state_ref);
+
+    if state.bytecode_status() != TierStatusKind::Ready {
+        return None;
+    }
+
+    let chunk = state.bytecode_chunk()?;
+    let factory = env.factory().clone();
+    let mut vm =
+        super::GenericBytecodeVM::with_env_and_factory(chunk, env.clone(), factory.clone());
+    vm.yield_on_top_return = true;
+
+    let results = vm.run().ok()?;
+    if vm.unreduced || vm.had_unreduced_result || vm.choice_points_len() > 0 {
+        return None;
+    }
+
+    let final_env = vm
+        .env
+        .take()
+        .unwrap_or_else(|| MettaEnvironment::new(factory));
+    Some((results, final_env))
+}
+
 /// Helper: dispatch to JIT-compiled native code with environment.
 fn dispatch_jit(
     state: &std::sync::Arc<ExprCompilationState>,
@@ -1938,6 +2087,48 @@ mod tests {
         assert_eq!(cache.bytecode_threshold, BYTECODE_THRESHOLD);
         assert_eq!(cache.jit1_threshold, JIT1_THRESHOLD);
         assert_eq!(cache.jit2_threshold, JIT2_THRESHOLD);
+    }
+
+    #[test]
+    fn test_pending_bytecode_root_is_collected_and_removed() {
+        let cache = TieredCache::new();
+        let factory = global_factory();
+        let expr = factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]);
+        let hash = hash_metta_value(&expr);
+
+        let guard = cache.register_pending_bytecode_root(hash, expr);
+        let mut roots = Vec::new();
+        cache.collect_roots_into(&mut roots);
+        assert!(
+            roots.contains(&expr),
+            "pending bytecode source must be visible to GC root collection"
+        );
+
+        drop(guard);
+        roots.clear();
+        cache.collect_roots_into(&mut roots);
+        assert!(
+            !roots.contains(&expr),
+            "pending bytecode source root must be removed when the task lifetime ends"
+        );
+    }
+
+    #[test]
+    fn test_tiered_cache_clear_removes_pending_bytecode_roots() {
+        let cache = TieredCache::new();
+        let factory = global_factory();
+        let expr = factory.sexpr(vec![factory.atom("*"), factory.long(3), factory.long(4)]);
+        let hash = hash_metta_value(&expr);
+
+        let _guard = cache.register_pending_bytecode_root(hash, expr);
+        cache.clear();
+
+        let mut roots = Vec::new();
+        cache.collect_roots_into(&mut roots);
+        assert!(
+            !roots.contains(&expr),
+            "clearing the tiered cache must also clear pending bytecode roots"
+        );
     }
 
     #[test]
@@ -2131,9 +2322,9 @@ mod tests {
         // No global warm-up period — per V8 best practice.
         // Each expression is tracked from first invocation.
         let cache = TieredCache::new();
-        assert_eq!(cache.bytecode_threshold, 5);    // Ignition→Sparkplug (raised from 1)
-        assert_eq!(cache.jit1_threshold, 200);       // Sparkplug→Maglev
-        assert_eq!(cache.jit2_threshold, 2_000);     // Maglev→Turbofan
+        assert_eq!(cache.bytecode_threshold, 5); // Ignition→Sparkplug (raised from 1)
+        assert_eq!(cache.jit1_threshold, 200); // Sparkplug→Maglev
+        assert_eq!(cache.jit2_threshold, 2_000); // Maglev→Turbofan
     }
 
     #[test]
@@ -2296,5 +2487,4 @@ mod tests {
         assert!(debug_str.contains("execution_count"));
         assert!(debug_str.contains("12345"));
     }
-
 }

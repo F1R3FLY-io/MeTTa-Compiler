@@ -158,8 +158,8 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     // can fire. The walker registers JitContext slab roots + the local
     // `arg` value before the safepoint protocol runs.
     {
-        let is_worker = crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER
-            .with(|f| f.get());
+        let is_worker =
+            crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER.with(|f| f.get());
         if is_worker && crate::backend::models::gc_allocator::is_gc_requested() {
             let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
             roots.push(arg.clone());
@@ -179,8 +179,8 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
 
     // Use a lightweight EvalContext adapter for the trampoline.
     use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
-use crate::backend::eval::trampoline::EvalContext;
-    use crate::backend::models::{GcFactory, global_factory};
+    use crate::backend::eval::trampoline::EvalContext;
+    use crate::backend::models::{global_factory, GcFactory};
 
     struct JitEvalContext {
         factory: GcFactory,
@@ -264,10 +264,19 @@ pub unsafe extern "C" fn jit_runtime_call(
     let head_value = &*ctx_ref.constants.add(head_index);
     let head: &str = match head_value.view() {
         ValueView::Atom(s) => s,
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::String(_) | ValueView::SExpr(_)
-        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
-        | ValueView::Space(_) | ValueView::State(_) | ValueView::Memo(_)
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::String(_)
+        | ValueView::SExpr(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
         | ValueView::Quoted(_) => {
             // Head must be an atom
             ctx_ref.bailout = true;
@@ -298,10 +307,7 @@ pub unsafe extern "C" fn jit_runtime_call(
                 items.push(JitValue::from_raw(*args_ptr.add(i)).to_metta());
             }
             let call_expr = MettaValue::SExpr(items);
-            let err = factory.error(
-                &format!("All types for '{}' are errors", head),
-                call_expr,
-            );
+            let err = factory.error(&format!("All types for '{}' are errors", head), call_expr);
             return value_to_jit_generic(&err).to_bits();
         }
     }
@@ -517,10 +523,19 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
     let head_value = &*ctx_ref.constants.add(head_index);
     let head: &str = match head_value.view() {
         ValueView::Atom(s) => s,
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::String(_) | ValueView::SExpr(_)
-        | ValueView::Error(_, _) | ValueView::Type(_) | ValueView::Conjunction(_)
-        | ValueView::Space(_) | ValueView::State(_) | ValueView::Memo(_)
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::String(_)
+        | ValueView::SExpr(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
         | ValueView::Quoted(_) => {
             ctx_ref.bailout = true;
             ctx_ref.bailout_ip = ip as usize;

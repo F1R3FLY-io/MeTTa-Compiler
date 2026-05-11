@@ -43,7 +43,8 @@ fn build_mmverify_program() -> String {
 fn run_program(src: &str) {
     let state = compile(src).expect("Failed to compile mmverify program");
     let env = new_env();
-    let result_state = run_state(MettaState::from_env(env), &state).expect("Failed to run mmverify program");
+    let result_state =
+        run_state(MettaState::from_env(env), &state).expect("Failed to run mmverify program");
     black_box(result_state);
 }
 

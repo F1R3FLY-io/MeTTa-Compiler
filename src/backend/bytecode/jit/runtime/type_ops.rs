@@ -11,12 +11,11 @@
 //! without type conversion overhead by using factories for value creation.
 
 use crate::backend::bytecode::jit::types::{
-    JitBailoutReason, JitContext, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR,
-    TAG_PTR, TAG_LONG, TAG_MASK, TAG_UNIT, TAG_VAR,
+    JitBailoutReason, JitContext, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_LONG, TAG_MASK,
+    TAG_PTR, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{
-    MettaValue, GcFactory, MettaValueFactory, MettaValueInner, MettaValueTrait,
-    SlabAllocator,
+    GcFactory, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait, SlabAllocator,
 };
 
 use super::helpers::value_to_jit_generic;
@@ -61,7 +60,11 @@ static TYPE_NAME_UNKNOWN: &str = "Unknown";
 /// For pointer payloads, the referenced value must be valid.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
-    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let arena_ptr = if !ctx.is_null() {
+        (*ctx).arena_ptr()
+    } else {
+        std::ptr::null()
+    };
     let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
         &*(arena_ptr as *const SlabAllocator)
     } else {
@@ -244,10 +247,7 @@ pub unsafe extern "C" fn jit_runtime_assert_type(
 ///
 /// # Safety
 /// For heap pointers, the referenced value must be valid.
-pub unsafe fn get_type_generic<V, F>(
-    val: u64,
-    factory: &F,
-) -> u64
+pub unsafe fn get_type_generic<V, F>(val: u64, factory: &F) -> u64
 where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
@@ -314,7 +314,9 @@ where
                             MettaValueInner::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
                             MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
                             MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
-                            MettaValueInner::Long(_) | MettaValueInner::Float(_) => TYPE_NAME_NUMBER,
+                            MettaValueInner::Long(_) | MettaValueInner::Float(_) => {
+                                TYPE_NAME_NUMBER
+                            }
                             MettaValueInner::Unit => TYPE_NAME_UNIT,
                             MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                             MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
@@ -401,11 +403,7 @@ unsafe fn get_type_name(val: u64) -> &'static str {
 /// # Safety
 /// `val` must be a valid NaN-boxed JIT value.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_is_function(
-    _ctx: *mut JitContext,
-    val: u64,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_is_function(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let tag = val & TAG_MASK;
     let is_fn = if tag == TAG_PTR {
         let ptr = (val & PAYLOAD_MASK) as *const MettaValueInner;
@@ -430,4 +428,3 @@ pub unsafe extern "C" fn jit_runtime_is_function(
     };
     TAG_BOOL | (is_fn as u64)
 }
-

@@ -115,9 +115,7 @@ fn emit_comparison_with_fallback<'a, 'b>(
     let int_path = codegen.builder.create_block();
     let runtime_path = codegen.builder.create_block();
     let merge_block = codegen.builder.create_block();
-    codegen
-        .builder
-        .append_block_param(merge_block, types::I64);
+    codegen.builder.append_block_param(merge_block, types::I64);
 
     codegen
         .builder
@@ -225,9 +223,7 @@ pub fn compile_comparison_op<'a, 'b>(
             let boxed_neq = codegen.box_bool(neq_bool);
             // Use the merge_block-style return for consistency with prior code.
             let merge_block = codegen.builder.create_block();
-            codegen
-                .builder
-                .append_block_param(merge_block, types::I64);
+            codegen.builder.append_block_param(merge_block, types::I64);
             codegen
                 .builder
                 .ins()
@@ -243,14 +239,28 @@ pub fn compile_comparison_op<'a, 'b>(
         }
 
         Opcode::StructEq => {
-            // Structural equality: compare NaN-boxed values directly
+            // BUG T0-T2-004 (plan T2/T3.B): deep structural equality.
+            //
+            // Previously this used raw NaN-box bit comparison, which works for
+            // inline values (Bool, Long, ...) but fails for heap-allocated
+            // values (SExprs, Strings, Errors, ...) because their NaN-boxed
+            // pointers differ even when their contents are structurally equal.
+            //
+            // Fix: call `jit_runtime_numeric_eq` which uses `numeric_equal()` —
+            // that helper does structural compare via MettaValue's derived
+            // PartialEq (with Long↔Float promotion in the numeric path,
+            // HE-aligned per spec §I.4.3). For non-numeric values it falls
+            // through to structural PartialEq, giving correct deep-equal
+            // semantics in a single call.
             let b = codegen.pop()?;
             let a = codegen.pop()?;
 
-            let cmp = codegen.builder.ins().icmp(IntCC::Equal, a, b);
-            let result = codegen.builder.ins().uextend(types::I64, cmp);
-            let boxed = codegen.box_bool(result);
-            codegen.push(boxed)?;
+            let func_ref = ctx
+                .module
+                .declare_func_in_func(ctx.numeric_eq_func_id, codegen.builder.func);
+            let call_inst = codegen.builder.ins().call(func_ref, &[a, b]);
+            let result = codegen.builder.inst_results(call_inst)[0];
+            codegen.push(result)?;
             Ok(())
         }
 

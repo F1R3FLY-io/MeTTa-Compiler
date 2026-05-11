@@ -573,8 +573,7 @@ mod tests {
         sm.process_event(ReplEvent::LineSubmitted("(+ 1 2)".to_string()));
 
         // Complete evaluation
-        let transition =
-            sm.process_event(ReplEvent::EvaluationComplete(vec!["3".to_string()]));
+        let transition = sm.process_event(ReplEvent::EvaluationComplete(vec!["3".to_string()]));
         match transition {
             StateTransition::Transition(ReplState::DisplayingResults) => {}
             _ => panic!("Expected transition to DisplayingResults"),

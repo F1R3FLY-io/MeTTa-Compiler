@@ -65,11 +65,7 @@ fn generate_deep_arithmetic_text(depth: usize) -> String {
     if depth == 0 {
         return "1".to_string();
     }
-    format!(
-        "(+ {} {})",
-        generate_deep_arithmetic_text(depth - 1),
-        depth
-    )
+    format!("(+ {} {})", generate_deep_arithmetic_text(depth - 1), depth)
 }
 
 /// Generate nondeterministic choice program with specified choice count and depth
@@ -185,9 +181,7 @@ fn bench_trampoline_workstack(c: &mut Criterion) {
         let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("wide_arithmetic", width), width, |b, _| {
             let env = new_env();
-            b.iter(|| {
-                eval(black_box(expr), env.clone(), &state)
-            });
+            b.iter(|| eval(black_box(expr), env.clone(), &state));
         });
     }
 
@@ -202,9 +196,7 @@ fn bench_trampoline_workstack(c: &mut Criterion) {
         let expr = state.source()[0];
         group.bench_with_input(BenchmarkId::new("deep_arithmetic", depth), depth, |b, _| {
             let env = new_env();
-            b.iter(|| {
-                eval(black_box(expr), env.clone(), &state)
-            });
+            b.iter(|| eval(black_box(expr), env.clone(), &state));
         });
     }
 

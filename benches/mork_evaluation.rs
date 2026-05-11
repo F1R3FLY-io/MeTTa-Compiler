@@ -174,9 +174,7 @@ fn bench_operations(c: &mut Criterion) {
             BenchmarkId::from_parameter(op_count),
             op_count,
             |b, &count| {
-                let facts: Vec<String> = (0..count)
-                    .map(|i| format!("(temp-fact {})", i))
-                    .collect();
+                let facts: Vec<String> = (0..count).map(|i| format!("(temp-fact {})", i)).collect();
                 let fact_refs: Vec<&str> = facts.iter().map(|s| s.as_str()).collect();
 
                 let rules: Vec<String> = (0..count)

@@ -108,8 +108,6 @@ impl<T> ErrorHandlingInit for T {
     }
 
     fn declare_error_handling_funcs<M: Module>(module: &mut M) -> JitResult<ErrorFuncIds> {
-
-
         // Type error signature: fn(ctx: *mut, ip: u64, expected: u64) -> ()
         let mut type_error_sig = module.make_signature();
         type_error_sig.params.push(AbiParam::new(types::I64)); // ctx

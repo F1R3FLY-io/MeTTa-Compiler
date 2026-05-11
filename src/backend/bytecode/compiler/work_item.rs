@@ -54,6 +54,15 @@ pub enum CompileWork {
         cont_id: usize,
     },
 
+    /// Compile arguments for a call whose head was already compiled onto
+    /// the stack. Emits `CallN`/`TailCallN` after all args are compiled.
+    CompileDynamicCallArgs {
+        args: VecDeque<MettaValue>,
+        arity: usize,
+        saved_tail_position: bool,
+        cont_id: usize,
+    },
+
     /// Compile S-expression elements as data (not call)
     CompileSExprElements {
         items: VecDeque<MettaValue>,
@@ -128,6 +137,16 @@ pub enum CompileWork {
         cont_id: usize,
     },
 
+    /// Finish a compiled case arm after its body has been emitted.
+    FinishCaseArm {
+        scrutinee: MettaValue,
+        cases: VecDeque<(MettaValue, MettaValue)>,
+        end_jumps: Vec<JumpLabel>,
+        next_case: JumpLabel,
+        parent_tail_position: bool,
+        cont_id: usize,
+    },
+
     /// Compile chain expression - sequential binding
     CompileChain {
         expr: MettaValue,
@@ -146,6 +165,13 @@ pub enum CompileWork {
         cont_id: usize,
     },
 
+    /// Finish a native collapse body after its argument has been compiled.
+    FinishCollapse {
+        jump_label: JumpLabel,
+        saved_collapse_scope: bool,
+        saved_tail_position: bool,
+    },
+
     /// Compile quoted expression (no evaluation)
     CompileQuoted { expr: MettaValue, cont_id: usize },
 
@@ -157,9 +183,7 @@ pub enum CompileWork {
     },
 
     /// Compile conjunction (multiple values via Fork)
-    CompileConjunction {
-        values: VecDeque<MettaValue>,
-    },
+    CompileConjunction { values: VecDeque<MettaValue> },
 
     /// Compile pattern binding (creates locals)
     CompilePatternBinding {
@@ -216,16 +240,10 @@ pub enum CompileWork {
     EmitOpcode { opcode: Opcode },
 
     /// Emit opcode with u8 operand
-    EmitOpcodeU8 {
-        opcode: Opcode,
-        operand: u8,
-    },
+    EmitOpcodeU8 { opcode: Opcode, operand: u8 },
 
     /// Emit opcode with u16 operand
-    EmitOpcodeU16 {
-        opcode: Opcode,
-        operand: u16,
-    },
+    EmitOpcodeU16 { opcode: Opcode, operand: u16 },
 
     /// Compile an expression as a LITERAL s-expression, never emitting a
     /// `Call` opcode for user-defined function heads. Used by
@@ -235,15 +253,7 @@ pub enum CompileWork {
     /// reconstruct the list at runtime. Non-sexpr children (atoms,
     /// variables, primitives) delegate to normal `CompileExpr` compilation,
     /// so `LoadLocal` still resolves bound variables.
-    CompileAsLiteralSExpr {
-        expr: MettaValue,
-        cont_id: usize,
-    },
-
-    /// Patch a jump offset
-    PatchJump {
-        jump_label: JumpLabel,
-    },
+    CompileAsLiteralSExpr { expr: MettaValue, cont_id: usize },
 }
 
 /// Binary operation types for the compiler

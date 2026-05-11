@@ -96,8 +96,6 @@ impl<T> PatternMatchingInit for T {
     fn declare_pattern_matching_funcs<M: Module>(
         module: &mut M,
     ) -> JitResult<PatternMatchingFuncIds> {
-
-
         // pattern_match: fn(ctx, value, pattern, ip) -> bool
         let mut pattern_match_sig = module.make_signature();
         pattern_match_sig.params.push(AbiParam::new(types::I64)); // ctx
@@ -195,7 +193,10 @@ impl<T> PatternMatchingInit for T {
         let unify_deep_func_id = module
             .declare_function("jit_runtime_unify_deep", Linkage::Import, &unify_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_unify_deep: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_unify_deep: {}",
+                    e
+                ))
             })?;
 
         // unify4: fn(ctx, val1, pattern2, ip) -> 0/1 signal (NOT NaN-boxed)
@@ -208,23 +209,40 @@ impl<T> PatternMatchingInit for T {
 
         // u_check_sexpr: fn(ctx, value, operand, ip) -> bool
         let u_check_sexpr_func_id = module
-            .declare_function("jit_runtime_u_check_sexpr", Linkage::Import, &match_arity_sig)
+            .declare_function(
+                "jit_runtime_u_check_sexpr",
+                Linkage::Import,
+                &match_arity_sig,
+            )
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_u_check_sexpr: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_u_check_sexpr: {}",
+                    e
+                ))
             })?;
 
         // u_check_arity: fn(ctx, value, arity, ip) -> bool
         let u_check_arity_func_id = module
-            .declare_function("jit_runtime_u_check_arity", Linkage::Import, &match_arity_sig)
+            .declare_function(
+                "jit_runtime_u_check_arity",
+                Linkage::Import,
+                &match_arity_sig,
+            )
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_u_check_arity: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_u_check_arity: {}",
+                    e
+                ))
             })?;
 
         // u_get_child: fn(ctx, value, index, ip) -> value
         let u_get_child_func_id = module
             .declare_function("jit_runtime_u_get_child", Linkage::Import, &match_arity_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_u_get_child: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_u_get_child: {}",
+                    e
+                ))
             })?;
 
         Ok(PatternMatchingFuncIds {

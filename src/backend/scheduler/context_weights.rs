@@ -18,7 +18,7 @@
 use dashmap::DashMap;
 
 use super::semiring::{Semiring, TropicalWeight};
-use super::wpds::{SchedulerStackSymbol, Wpds, WpdsRule, hash_context};
+use super::wpds::{hash_context, SchedulerStackSymbol, Wpds, WpdsRule};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Context weight table
@@ -51,10 +51,7 @@ impl ContextWeightTable {
     /// Returns 1.0 (neutral) if no entry exists.
     #[inline]
     pub fn get(&self, context_hash: u64) -> f32 {
-        self.weights
-            .get(&context_hash)
-            .map(|v| *v)
-            .unwrap_or(1.0)
+        self.weights.get(&context_hash).map(|v| *v).unwrap_or(1.0)
     }
 
     /// Insert or update a context weight.
@@ -182,9 +179,18 @@ pub fn build_context_weights(epoch: u64) -> ContextWeightTable {
     // Deep recursion: RuleMatch → RuleMatch → RuleMatch
     // High weight = deprioritize (likely divergent)
     let deep_recursion = vec![
-        SchedulerStackSymbol::RuleMatch { head_hash: 0, arity: 0 },
-        SchedulerStackSymbol::RuleMatch { head_hash: 0, arity: 0 },
-        SchedulerStackSymbol::RuleMatch { head_hash: 0, arity: 0 },
+        SchedulerStackSymbol::RuleMatch {
+            head_hash: 0,
+            arity: 0,
+        },
+        SchedulerStackSymbol::RuleMatch {
+            head_hash: 0,
+            arity: 0,
+        },
+        SchedulerStackSymbol::RuleMatch {
+            head_hash: 0,
+            arity: 0,
+        },
     ];
     table.insert(hash_context(&deep_recursion), 2.0);
 
@@ -200,7 +206,10 @@ pub fn build_context_weights(epoch: u64) -> ContextWeightTable {
     // Moderate weight with parallelism boost hint
     let collapse_body = vec![
         SchedulerStackSymbol::Collapse,
-        SchedulerStackSymbol::RuleMatch { head_hash: 0, arity: 0 },
+        SchedulerStackSymbol::RuleMatch {
+            head_hash: 0,
+            arity: 0,
+        },
     ];
     table.insert(hash_context(&collapse_body), 0.8);
 
@@ -266,12 +275,25 @@ mod tests {
 
         // Deep recursion should have elevated weight
         let deep = vec![
-            SchedulerStackSymbol::RuleMatch { head_hash: 0, arity: 0 },
-            SchedulerStackSymbol::RuleMatch { head_hash: 0, arity: 0 },
-            SchedulerStackSymbol::RuleMatch { head_hash: 0, arity: 0 },
+            SchedulerStackSymbol::RuleMatch {
+                head_hash: 0,
+                arity: 0,
+            },
+            SchedulerStackSymbol::RuleMatch {
+                head_hash: 0,
+                arity: 0,
+            },
+            SchedulerStackSymbol::RuleMatch {
+                head_hash: 0,
+                arity: 0,
+            },
         ];
         let weight = table.get(hash_context(&deep));
-        assert!(weight > 1.0, "deep recursion should be deprioritized: {}", weight);
+        assert!(
+            weight > 1.0,
+            "deep recursion should be deprioritized: {}",
+            weight
+        );
 
         // Guard in conditional should have reduced weight
         let guard = vec![

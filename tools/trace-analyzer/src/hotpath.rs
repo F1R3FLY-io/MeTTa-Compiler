@@ -42,11 +42,17 @@ impl SymbolProfile {
     }
 
     fn mean_ns(&self) -> u64 {
-        if self.call_count == 0 { 0 } else { self.total_self_ns / self.call_count }
+        if self.call_count == 0 {
+            0
+        } else {
+            self.total_self_ns / self.call_count
+        }
     }
 
     fn percentile(&mut self, p: f64) -> u64 {
-        if self.durations.is_empty() { return 0; }
+        if self.durations.is_empty() {
+            return 0;
+        }
         self.durations.sort_unstable();
         let idx = ((self.durations.len() as f64 * p) as usize).min(self.durations.len() - 1);
         self.durations[idx]
@@ -130,9 +136,7 @@ pub fn run(file: &str, top_n: usize, sort_by: &str) -> Result<(), String> {
         // The depth stack gives us nesting context for future correlation.
         let inclusive_ns = duration;
 
-        let profile = profiles
-            .entry(head)
-            .or_insert_with(SymbolProfile::new);
+        let profile = profiles.entry(head).or_insert_with(SymbolProfile::new);
         profile.record(duration, inclusive_ns);
     }
 
@@ -149,8 +153,16 @@ pub fn run(file: &str, top_n: usize, sort_by: &str) -> Result<(), String> {
         "count" => entries.sort_by(|a, b| b.1.call_count.cmp(&a.1.call_count)),
         "p95" => {
             entries.sort_by(|a, b| {
-                let p95_a = a.1.durations.get((a.1.durations.len() as f64 * 0.95) as usize).copied().unwrap_or(0);
-                let p95_b = b.1.durations.get((b.1.durations.len() as f64 * 0.95) as usize).copied().unwrap_or(0);
+                let p95_a =
+                    a.1.durations
+                        .get((a.1.durations.len() as f64 * 0.95) as usize)
+                        .copied()
+                        .unwrap_or(0);
+                let p95_b =
+                    b.1.durations
+                        .get((b.1.durations.len() as f64 * 0.95) as usize)
+                        .copied()
+                        .unwrap_or(0);
                 p95_b.cmp(&p95_a)
             });
         }

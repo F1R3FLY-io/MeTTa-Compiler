@@ -135,7 +135,10 @@ impl<V> GenericTokenEntry<V> {
     }
 
     /// Create a new token entry with a regex pattern.
-    pub fn new_regex(pattern: &str, constructor: GenericTokenConstructor<V>) -> Result<Self, regex::Error> {
+    pub fn new_regex(
+        pattern: &str,
+        constructor: GenericTokenConstructor<V>,
+    ) -> Result<Self, regex::Error> {
         Ok(Self {
             pattern: TokenPattern::regex(pattern)?,
             constructor,
@@ -151,7 +154,6 @@ impl<V> GenericTokenEntry<V> {
     pub fn pattern_ref(&self) -> &TokenPattern {
         &self.pattern
     }
-
 }
 
 impl<V> std::fmt::Debug for GenericTokenEntry<V> {
@@ -194,7 +196,8 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
     /// and `register_token_value_regex` are pure functions that return clones of
     /// captured values.
     pub fn collect_gc_values(&self) -> Vec<V> {
-        self.tokens.iter()
+        self.tokens
+            .iter()
             .map(|entry| (entry.constructor)(entry.pattern.pattern_str()))
             .collect()
     }
@@ -202,8 +205,9 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
     /// Collect GC values directly into the provided Vec (avoids temporary allocation).
     pub fn collect_gc_values_into(&self, roots: &mut Vec<V>) {
         roots.extend(
-            self.tokens.iter()
-                .map(|entry| (entry.constructor)(entry.pattern.pattern_str()))
+            self.tokens
+                .iter()
+                .map(|entry| (entry.constructor)(entry.pattern.pattern_str())),
         );
     }
 
@@ -242,8 +246,10 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
     where
         F: Fn(&str) -> V + Send + Sync + 'static,
     {
-        self.tokens
-            .push(GenericTokenEntry::new(pattern.to_string(), Arc::new(constructor)));
+        self.tokens.push(GenericTokenEntry::new(
+            pattern.to_string(),
+            Arc::new(constructor),
+        ));
     }
 
     /// Register a token with a regex pattern and constructor function.
@@ -305,7 +311,10 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
     ///
     /// Returns the matched string and constructor if found.
     /// Useful for tokenizer scanning where we want longest prefix match.
-    pub fn find_prefix_match<'a>(&self, input: &'a str) -> Option<(&'a str, &GenericTokenConstructor<V>)> {
+    pub fn find_prefix_match<'a>(
+        &self,
+        input: &'a str,
+    ) -> Option<(&'a str, &GenericTokenConstructor<V>)> {
         // Search in reverse order (most recent first) for shadowing
         for entry in self.tokens.iter().rev() {
             if let Some(matched) = entry.pattern_ref().match_prefix(input) {

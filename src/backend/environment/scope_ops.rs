@@ -16,10 +16,7 @@ where
     /// Called when entering lexical contexts like `let`, `match`, or function bodies.
     pub fn push_scope(&mut self) {
         self.make_owned();
-        self.shared
-            .scope_tracker
-            .write()
-            .push_scope();
+        self.shared.scope_tracker.write().push_scope();
         self.modified.store(true, Ordering::Release);
     }
 
@@ -27,10 +24,7 @@ where
     /// Called when leaving lexical contexts. Never pops the global scope.
     pub fn pop_scope(&mut self) {
         self.make_owned();
-        self.shared
-            .scope_tracker
-            .write()
-            .pop_scope();
+        self.shared.scope_tracker.write().pop_scope();
         self.modified.store(true, Ordering::Release);
     }
 
@@ -38,29 +32,20 @@ where
     /// Called when introducing bindings (e.g., pattern variables in `let` or `match`).
     pub fn add_scope_symbol(&mut self, name: String) {
         self.make_owned();
-        self.shared
-            .scope_tracker
-            .write()
-            .add_symbol(name);
+        self.shared.scope_tracker.write().add_symbol(name);
         self.modified.store(true, Ordering::Release);
     }
 
     /// Add multiple symbols to the current scope.
     pub fn add_scope_symbols(&mut self, names: impl IntoIterator<Item = String>) {
         self.make_owned();
-        self.shared
-            .scope_tracker
-            .write()
-            .add_symbols(names);
+        self.shared.scope_tracker.write().add_symbols(names);
         self.modified.store(true, Ordering::Release);
     }
 
     /// Check if a symbol is visible in the current scope hierarchy.
     pub fn is_symbol_visible(&self, name: &str) -> bool {
-        self.shared
-            .scope_tracker
-            .read()
-            .is_visible(name)
+        self.shared.scope_tracker.read().is_visible(name)
     }
 
     /// Get all visible symbols from the scope tracker, ordered local-first.
@@ -76,17 +61,11 @@ where
 
     /// Get the current scope depth (1 = global only).
     pub fn scope_depth(&self) -> usize {
-        self.shared
-            .scope_tracker
-            .read()
-            .depth()
+        self.shared.scope_tracker.read().depth()
     }
 
     /// Check if currently at global scope.
     pub fn at_global_scope(&self) -> bool {
-        self.shared
-            .scope_tracker
-            .read()
-            .at_global_scope()
+        self.shared.scope_tracker.read().at_global_scope()
     }
 }

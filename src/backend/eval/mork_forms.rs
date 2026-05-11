@@ -176,7 +176,10 @@ where
     let antecedent_goals = match extract_conjunction_goals(antecedent) {
         Some(goals) => goals,
         None => {
-            let err = factory.error("exec antecedent must be a conjunction (,)", antecedent.clone());
+            let err = factory.error(
+                "exec antecedent must be a conjunction (,)",
+                antecedent.clone(),
+            );
             return (vec![err], env);
         }
     };
@@ -281,7 +284,9 @@ where
 
         // Try to match against each fact
         for match_result in all_facts.iter() {
-            if let Some(new_bindings) = pattern_match_generic(&instantiated_goal, &match_result.value) {
+            if let Some(new_bindings) =
+                pattern_match_generic(&instantiated_goal, &match_result.value)
+            {
                 // Merge bindings
                 let mut merged = bindings.clone();
                 let mut conflict = false;
@@ -333,52 +338,77 @@ where
         return (vec![factory.unit()], env);
     }
 
-    // Pass 1: Collect bindings by matching goals against space
-    let mut current_bindings = initial_bindings.clone();
+    // BUG-T0-013 (spec §23.2): Pass 1 must Cartesian-fan-out across ALL
+    // matches for each goal, not just the first. Maintain a Vec<bindings>
+    // that grows as we iterate; for each goal, expand by all matches.
+    // Stack-safe (iterative loop, no recursion).
+    let mut binding_alternatives: Vec<GenericBindings<V>> = vec![initial_bindings.clone()];
 
     for goal in goals.iter() {
-        let instantiated_goal = apply_bindings_generic(goal, &current_bindings, factory);
-
         // Skip exec forms in pass 1
-        if is_exec_form_generic(&instantiated_goal) {
+        if is_exec_form_generic(goal) {
             continue;
         }
 
-        // If goal has variables, try to match against space
-        if has_variables_generic(&instantiated_goal) {
-            let matches = env.match_space(&instantiated_goal, &instantiated_goal);
-            if let Some(first_match) = matches.first() {
-                if let Some(new_bindings) = pattern_match_generic(&instantiated_goal, &first_match.value) {
-                    for (name, value) in new_bindings.iter() {
-                        current_bindings.insert(name, value.clone());
+        let mut next_alternatives: Vec<GenericBindings<V>> =
+            Vec::with_capacity(binding_alternatives.len());
+
+        for current_bindings in binding_alternatives.iter() {
+            let instantiated_goal = apply_bindings_generic(goal, current_bindings, factory);
+
+            // If goal has variables, fan out across all matches in space.
+            if has_variables_generic(&instantiated_goal) {
+                let matches = env.match_space(&instantiated_goal, &instantiated_goal);
+                if matches.is_empty() {
+                    // No match — preserve current bindings unchanged (so
+                    // subsequent goals can still add facts via Pass 2).
+                    next_alternatives.push(current_bindings.clone());
+                } else {
+                    // Each match produces a new alternative.
+                    for m in matches.iter() {
+                        if let Some(new_bindings) =
+                            pattern_match_generic(&instantiated_goal, &m.value)
+                        {
+                            let mut merged = current_bindings.clone();
+                            for (name, value) in new_bindings.iter() {
+                                merged.insert(name, value.clone());
+                            }
+                            next_alternatives.push(merged);
+                        }
                     }
                 }
+            } else {
+                // Ground goal — preserve current bindings.
+                next_alternatives.push(current_bindings.clone());
             }
+        }
+
+        binding_alternatives = next_alternatives;
+        if binding_alternatives.is_empty() {
+            return (vec![], env);
         }
     }
 
-    // Pass 2: Add all goals to space using interior mutability
-    // Note: We use add_to_space_shared() to mutate the shared Arc state directly,
-    // avoiding CoW copies that would cause state loss in cloned environments.
-    let mut all_results = Vec::new();
+    // Pass 2: For each binding alternative, add all goals to space and emit
+    // the instantiated results. The Cartesian product is preserved.
+    let mut all_results: Vec<V> = Vec::with_capacity(binding_alternatives.len() * goals.len());
 
-    for goal in goals.iter() {
-        let fully_instantiated = apply_bindings_generic(goal, &current_bindings, factory);
+    for current_bindings in binding_alternatives.iter() {
+        for goal in goals.iter() {
+            let fully_instantiated = apply_bindings_generic(goal, current_bindings, factory);
 
-        if is_exec_form_generic(&fully_instantiated) {
-            // Use interior mutability - no CoW copy
-            env.add_to_space_shared(&fully_instantiated);
-            all_results.push(factory.atom("ok"));
-        } else if is_operation_form_generic(&fully_instantiated) {
-            if let Some(items) = fully_instantiated.as_sexpr() {
-                // eval_operation_generic also uses shared methods now
-                let (op_results, _) = eval_operation_generic_shared(items, &env, factory);
-                all_results.extend(op_results);
+            if is_exec_form_generic(&fully_instantiated) {
+                env.add_to_space_shared(&fully_instantiated);
+                all_results.push(factory.unit());
+            } else if is_operation_form_generic(&fully_instantiated) {
+                if let Some(items) = fully_instantiated.as_sexpr() {
+                    let (op_results, _) = eval_operation_generic_shared(items, &env, factory);
+                    all_results.extend(op_results);
+                }
+            } else {
+                env.add_to_space_shared(&fully_instantiated);
+                all_results.push(fully_instantiated.clone());
             }
-        } else {
-            // Use interior mutability - no CoW copy
-            env.add_to_space_shared(&fully_instantiated);
-            all_results.push(fully_instantiated.clone());
         }
     }
 
@@ -416,7 +446,7 @@ where
         }
     }
 
-    (vec![factory.atom("ok")], env)
+    (vec![factory.unit()], env)
 }
 
 /// Evaluate operation using interior mutability (CoW-safe version).
@@ -455,7 +485,7 @@ where
         }
     }
 
-    (vec![factory.atom("ok")], ())
+    (vec![factory.unit()], ())
 }
 
 /// Generic eval_coalg: (coalg <pattern> <templates>)
@@ -484,22 +514,39 @@ where
     let templates = &args[1];
 
     // Templates must be a conjunction
-    let template_list = match templates.as_conjunction() {
+    let template_list: Vec<V> = match templates.as_conjunction() {
         Some(temps) => temps.to_vec(),
         None => {
-            let err = factory.error("coalg templates must be a conjunction (,)", templates.clone());
+            let err = factory.error(
+                "coalg templates must be a conjunction (,)",
+                templates.clone(),
+            );
             return (vec![err], env);
         }
     };
 
-    // Return coalg structure as-is (placeholder implementation)
-    let coalg_expr = factory.sexpr(vec![
-        factory.atom("coalg"),
-        pattern.clone(),
-        factory.conjunction(template_list),
-    ]);
+    // BUG-T0-011 (spec §23.4): real coalg implementation. Pattern-match
+    // against each fact in the space, substitute into every template, return
+    // all instantiated templates as a flat Vec (template-major, match-major
+    // order). Uses iterator-fusion to avoid materializing intermediate
+    // per-match Vecs. Stack-safe (no recursion).
+    let matches = env.match_space(pattern, pattern);
+    if matches.is_empty() {
+        // No fact in space matches — coalg yields no results.
+        return (vec![], env);
+    }
 
-    (vec![coalg_expr], env)
+    let mut results: Vec<V> = Vec::with_capacity(matches.len() * template_list.len());
+    for m in matches.iter() {
+        // Re-bind pattern against this match's atom value to obtain bindings.
+        if let Some(bindings) = pattern_match_generic(pattern, &m.value) {
+            for tmpl in &template_list {
+                results.push(apply_bindings_generic(tmpl, &bindings, factory));
+            }
+        }
+    }
+
+    (results, env)
 }
 
 /// Generic eval_lookup: (lookup <pattern> <success-goals> <failure-goals>)
@@ -545,12 +592,13 @@ where
         return (vec![err], env);
     }
 
-    // Check if pattern is a variable (not found) vs non-variable (found)
-    let pattern_found = if let Some(name) = pattern.as_atom() {
-        !name.starts_with('$')
-    } else {
-        true
-    };
+    // BUG-T0-010 (spec §23.5): Use actual space query, not syntactic
+    // "starts-with-$" heuristic. The pattern is "found" when env.match_space
+    // returns at least one matching atom; otherwise we evaluate the failure
+    // branch. This matches the spec's intent for `(lookup pat yes no)`:
+    // evaluate yes-conjunction if any fact matches `pat`, else evaluate no.
+    let matches = env.match_space(pattern, pattern);
+    let pattern_found = !matches.is_empty();
 
     if pattern_found {
         // Evaluate success branch
@@ -597,7 +645,7 @@ where
         // Check if goal is an exec form - add to space
         if is_exec_form_generic(&goal) {
             env.add_to_space(&goal);
-            all_results.push(factory.atom("ok"));
+            all_results.push(factory.unit());
             continue;
         }
 
@@ -781,26 +829,43 @@ mod tests {
         assert!(!results.is_empty());
     }
 
+    /// BUG-T0-011 (post-fix): coalg now performs an actual space query.
+    /// With an empty space, no matches are produced and no templates are
+    /// instantiated — coalg yields zero results. Pre-populating the space
+    /// with a matching fact restores results.
     #[test]
     fn test_eval_coalg_generic() {
-        let env = MettaEnvironment::new(GcFactory::default());
         let factory = GcFactory::default();
+        let env = MettaEnvironment::new(factory.clone());
 
         let items = vec![
-            MettaValue::Atom("coalg".to_string()),
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("tree".to_string()),
-                MettaValue::Atom("$t".to_string()),
-            ]),
-            MettaValue::Conjunction(vec![MettaValue::SExpr(vec![
-                MettaValue::Atom("ctx".to_string()),
-                MettaValue::Atom("$t".to_string()),
-                MettaValue::Atom("nil".to_string()),
+            factory.atom("coalg"),
+            factory.sexpr(vec![factory.atom("tree"), factory.atom("$t")]),
+            factory.conjunction(vec![factory.sexpr(vec![
+                factory.atom("ctx"),
+                factory.atom("$t"),
+                factory.atom("nil"),
             ])]),
         ];
 
+        // Empty space: coalg yields no results (no facts to coalgebraically
+        // unfold from).
+        let (results, env) = eval_coalg_generic(items.clone(), env, &factory);
+        assert!(
+            results.is_empty(),
+            "coalg with empty space should yield zero results, got: {:?}",
+            results
+        );
+
+        // Pre-populate space with a matching fact and re-run.
+        let fact = factory.sexpr(vec![factory.atom("tree"), factory.atom("leaf1")]);
+        env.add_to_space_shared(&fact);
         let (results, _) = eval_coalg_generic(items, env, &factory);
-        assert!(!results.is_empty());
+        assert_eq!(
+            results.len(),
+            1,
+            "coalg with one matching fact should yield one template instantiation"
+        );
     }
 
     #[test]
@@ -882,7 +947,10 @@ mod tests {
 
         let (results, _) = eval_exec_generic(items, env, &factory);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_error(), "Should return error for non-conjunction antecedent");
+        assert!(
+            results[0].is_error(),
+            "Should return error for non-conjunction antecedent"
+        );
     }
 
     #[test]
@@ -921,7 +989,10 @@ mod tests {
 
         let (results, _) = eval_coalg_generic(items, env, &factory);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_error(), "Should return error for non-conjunction templates");
+        assert!(
+            results[0].is_error(),
+            "Should return error for non-conjunction templates"
+        );
     }
 
     #[test]
@@ -965,7 +1036,10 @@ mod tests {
 
         let (results, _) = eval_lookup_generic(items, env, &factory);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_error(), "Should return error for non-conjunction success branch");
+        assert!(
+            results[0].is_error(),
+            "Should return error for non-conjunction success branch"
+        );
     }
 
     #[test]
@@ -983,7 +1057,10 @@ mod tests {
 
         let (results, _) = eval_lookup_generic(items, env, &factory);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_error(), "Should return error for non-conjunction failure branch");
+        assert!(
+            results[0].is_error(),
+            "Should return error for non-conjunction failure branch"
+        );
     }
 
     #[test]
@@ -1052,7 +1129,10 @@ mod tests {
 
         let (results, _) = eval_rulify_generic(items, env.clone(), &factory);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_error(), "Should return error for non-unary conjunction");
+        assert!(
+            results[0].is_error(),
+            "Should return error for non-unary conjunction"
+        );
 
         // Binary conjunction
         let items2 = vec![
@@ -1099,7 +1179,10 @@ mod tests {
 
         let (results, _) = eval_rulify_generic(items, env, &factory);
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_error(), "Should return error for non-conjunction templates");
+        assert!(
+            results[0].is_error(),
+            "Should return error for non-conjunction templates"
+        );
     }
 
     #[test]
@@ -1144,16 +1227,11 @@ mod tests {
     #[test]
     fn test_has_variables_error() {
         // Test has_variables_generic with Error variant
-        let err_with_var = MettaValue::Error(
-            "test".to_string(),
-            MettaValue::Atom("$x".to_string()),
-        );
+        let err_with_var =
+            MettaValue::Error("test".to_string(), MettaValue::Atom("$x".to_string()));
         assert!(has_variables_generic(&err_with_var));
 
-        let err_no_var = MettaValue::Error(
-            "test".to_string(),
-            MettaValue::Atom("foo".to_string()),
-        );
+        let err_no_var = MettaValue::Error("test".to_string(), MettaValue::Atom("foo".to_string()));
         assert!(!has_variables_generic(&err_no_var));
     }
 

@@ -32,7 +32,7 @@ use smallvec::{smallvec, SmallVec};
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
 use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
 use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
-use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
+use crate::backend::eval::trampoline::{EvalContext, MettaEnvironment};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 
 use super::step::GenericEvalStep;
@@ -49,7 +49,9 @@ pub fn eval_testing_op_generic<C: EvalContext>(
 where
     MettaValue: Clone,
 {
-    let op = items[0].as_atom().expect("testing_ops dispatch: head must be atom");
+    let op = items[0]
+        .as_atom()
+        .expect("testing_ops dispatch: head must be atom");
     match op {
         "=alpha" => eval_alpha_eq_generic(items, env, ctx),
         "test" => eval_test_generic(items, env, ctx),
@@ -144,9 +146,7 @@ where
 
     // Push frame protecting items across nested trampoline calls.
     // SAFETY: `items` outlives `_frame_guard`.
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::AssertEqual, &items)
-    };
+    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqual, &items) };
 
     // Evaluate both arguments. Each may produce multiple results.
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
@@ -157,19 +157,21 @@ where
     drop(_frame_guard);
 
     // Strip bindings — test ops compare only raw values (mechanical refactor).
-    let actual_results: SmallVec<[MettaValue; 2]> = actual_results.into_iter().map(|(v, _)| v).collect();
-    let expected_results: SmallVec<[MettaValue; 2]> = expected_results.into_iter().map(|(v, _)| v).collect();
+    let actual_results: SmallVec<[MettaValue; 2]> =
+        actual_results.into_iter().map(|(v, _)| v).collect();
+    let expected_results: SmallVec<[MettaValue; 2]> =
+        expected_results.into_iter().map(|(v, _)| v).collect();
 
     // Strip Quoted wrappers before comparing: in PeTTa, (quote X) evaluates
     // to bare X — the quote is purely an evaluation barrier. MeTTaTron's
     // (quote X) evaluates to Quoted(X), a distinct variant. For test
     // operations that evaluate both arguments, we strip this wrapper so that
     // comparison semantics match PeTTa.
-    let strip_quote = |v: &MettaValue| -> MettaValue {
-        v.as_quoted().unwrap_or(*v)
-    };
-    let actual_stripped: SmallVec<[MettaValue; 4]> = actual_results.iter().map(strip_quote).collect();
-    let expected_stripped: SmallVec<[MettaValue; 4]> = expected_results.iter().map(strip_quote).collect();
+    let strip_quote = |v: &MettaValue| -> MettaValue { v.as_quoted().unwrap_or(*v) };
+    let actual_stripped: SmallVec<[MettaValue; 4]> =
+        actual_results.iter().map(strip_quote).collect();
+    let expected_stripped: SmallVec<[MettaValue; 4]> =
+        expected_results.iter().map(strip_quote).collect();
 
     // Compare results: alpha-equivalence pairwise. If lengths differ or any
     // pair fails alpha-equivalence, the test fails.
@@ -232,9 +234,7 @@ where
 
     // Push frame protecting items across nested trampoline calls.
     // SAFETY: `items` outlives `_frame_guard`.
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::AssertEqual, &items)
-    };
+    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqual, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -250,10 +250,7 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
-                &format!(
-                    "assertEqual failed: {}",
-                    diff
-                ),
+                &format!("assertEqual failed: {}", diff),
                 ctx.factory().sexpr(items),
             );
             GenericEvalStep::Done((smallvec![err], env))
@@ -282,9 +279,7 @@ where
     }
 
     // Push frame protecting items across nested trampoline calls.
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items)
-    };
+    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -300,10 +295,7 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
-                &format!(
-                    "assertAlphaEqual failed: {}",
-                    diff
-                ),
+                &format!("assertAlphaEqual failed: {}", diff),
                 ctx.factory().sexpr(items),
             );
             GenericEvalStep::Done((smallvec![err], env))
@@ -335,9 +327,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::AssertEqual, &items)
-    };
+    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqual, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -379,9 +369,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items)
-    };
+    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -427,9 +415,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items)
-    };
+    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -475,9 +461,8 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items)
-    };
+    let _frame_guard =
+        unsafe { maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -527,9 +512,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items)
-    };
+    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -573,9 +556,8 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe {
-        maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items)
-    };
+    let _frame_guard =
+        unsafe { maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -609,10 +591,7 @@ where
 /// `Some(diff_message)` if different.
 ///
 /// Algorithm: Build count maps for both sides, then report differences.
-fn compare_results_multiset<V: MettaValueTrait>(
-    actual: &[V],
-    expected: &[V],
-) -> Option<String> {
+fn compare_results_multiset<V: MettaValueTrait>(actual: &[V], expected: &[V]) -> Option<String> {
     // Quick length check
     if actual.len() != expected.len() {
         return Some(format!(
@@ -921,7 +900,11 @@ mod tests {
         let step = eval_assert_equal_to_result_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
             // Should succeed (unit result)
-            assert!(results[0].is_unit(), "expected success (unit), got: {:?}", results[0]);
+            assert!(
+                results[0].is_unit(),
+                "expected success (unit), got: {:?}",
+                results[0]
+            );
         } else {
             panic!("expected Done");
         }
@@ -944,7 +927,10 @@ mod tests {
         let step = eval_assert_equal_to_result_generic(items, env, &ctx);
         if let GenericEvalStep::Done((results, _)) = step {
             // Should fail — count mismatch (1 actual vs 2 expected)
-            assert!(results[0].is_error(), "expected error due to count mismatch");
+            assert!(
+                results[0].is_error(),
+                "expected error due to count mismatch"
+            );
         } else {
             panic!("expected Done");
         }

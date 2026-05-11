@@ -115,8 +115,7 @@ pub fn trace_value(root: &MettaValue) -> TraceValue {
                                 result = Some(TraceValue::Atom("<space>".into()));
                             }
                             MettaValueInner::State(id) => {
-                                result =
-                                    Some(TraceValue::Atom(format!("<state:{id}>")));
+                                result = Some(TraceValue::Atom(format!("<state:{id}>")));
                             }
                             MettaValueInner::Memo(_) => {
                                 result = Some(TraceValue::Atom("<memo>".into()));
@@ -157,9 +156,8 @@ pub fn trace_value(root: &MettaValue) -> TraceValue {
                             }
                             MettaValueInner::Conjunction(items) => {
                                 if items.is_empty() {
-                                    result = Some(TraceValue::SExpr(vec![TraceValue::Atom(
-                                        ",".into(),
-                                    )]));
+                                    result =
+                                        Some(TraceValue::SExpr(vec![TraceValue::Atom(",".into())]));
                                 } else {
                                     conts.push(Cont::CollectConjunction {
                                         remaining: items.len(),
@@ -209,8 +207,7 @@ pub fn trace_value(root: &MettaValue) -> TraceValue {
                         Cont::WrapError { message } => {
                             let msg = std::mem::take(message);
                             conts.pop();
-                            result =
-                                Some(TraceValue::Error(msg, Box::new(child)));
+                            result = Some(TraceValue::Error(msg, Box::new(child)));
                         }
                         Cont::WrapType => {
                             conts.pop();
@@ -256,7 +253,9 @@ pub fn trace_value(root: &MettaValue) -> TraceValue {
 ///
 /// For the hot path with concrete `MettaValue`, prefer `trace_value()` which
 /// uses the optimized iterative trampoline with thread-local stacks.
-pub fn trace_value_generic<V: crate::backend::models::MettaValueTrait + 'static>(v: &V) -> TraceValue {
+pub fn trace_value_generic<V: crate::backend::models::MettaValueTrait + 'static>(
+    v: &V,
+) -> TraceValue {
     // Fast path: when V is MettaValue (always true in practice — all EvalContext
     // impls use Value = MettaValue), delegate to the iterative trace_value()
     // which uses thread-local work/continuation stacks and cannot overflow.
@@ -407,7 +406,10 @@ pub fn trace_bindings_ref(
 /// `ContinuationEmit`, and related v5 events. Used by the eval-trace
 /// binding-flow instrumentation in `eval_loop::process_continuation`.
 pub fn trace_bound_values(
-    bvs: &[(MettaValue, crate::backend::models::GenericBindings<MettaValue>)],
+    bvs: &[(
+        MettaValue,
+        crate::backend::models::GenericBindings<MettaValue>,
+    )],
 ) -> Vec<trace_format::BoundValueSnapshot> {
     bvs.iter()
         .map(|(v, b)| trace_format::BoundValueSnapshot {
@@ -498,10 +500,7 @@ mod convert_tests {
             tv,
             TraceValue::SExpr(vec![
                 TraceValue::Atom("+".to_string()),
-                TraceValue::SExpr(vec![
-                    TraceValue::Atom("*".to_string()),
-                    TraceValue::Long(3),
-                ]),
+                TraceValue::SExpr(vec![TraceValue::Atom("*".to_string()), TraceValue::Long(3),]),
                 TraceValue::Long(1),
             ])
         );
@@ -552,10 +551,7 @@ mod convert_tests {
     #[test]
     fn test_trace_span_conversion() {
         use crate::ir::{Position, Span};
-        let span = Span::new(
-            Position::new(5, 10, 100),
-            Position::new(5, 20, 110),
-        );
+        let span = Span::new(Position::new(5, 10, 100), Position::new(5, 20, 110));
         let ts = trace_span(&span, 3);
         assert_eq!(ts.file_id, 3);
         assert_eq!(ts.start_row, 5);

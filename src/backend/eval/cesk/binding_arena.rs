@@ -40,7 +40,7 @@
 
 use std::cell::RefCell;
 
-use crate::backend::models::{GenericBindings, MettaValueTrait};
+use crate::backend::models::{BindingName, GenericBindings, MettaValueTrait};
 
 // ============================================================================
 // Binding Entry
@@ -48,12 +48,12 @@ use crate::backend::models::{GenericBindings, MettaValueTrait};
 
 /// A single variable binding in the arena.
 ///
-/// Uses `&'static str` for the variable name (interned in the slab allocator,
-/// same as `GenericBindings`). The value is owned by the arena.
+/// Stores the variable name independently of slab-owned atom storage. The value
+/// is owned by the arena.
 #[derive(Debug, Clone)]
 pub struct BindingEntry<V: MettaValueTrait> {
-    /// Variable name (e.g., "$x"). Interned with 'static lifetime.
-    pub name: &'static str,
+    /// Variable name (e.g., "$x").
+    pub name: BindingName,
     /// Bound value.
     pub value: V,
 }
@@ -182,7 +182,11 @@ impl<V: MettaValueTrait + Clone> BindingArena<V> {
     /// Returns `true` on success. Returns `false` if the variable is already
     /// bound to a different value in any frame (conflict detection).
     #[inline]
-    pub fn bind(&mut self, name: &'static str, value: V) -> bool {
+    pub fn bind<N>(&mut self, name: N, value: V) -> bool
+    where
+        N: Into<BindingName>,
+    {
+        let name = name.into();
         // Check for conflicts in existing entries (any frame)
         for entry in self.entries.iter().rev() {
             if entry.name == name {
@@ -204,7 +208,7 @@ impl<V: MettaValueTrait + Clone> BindingArena<V> {
     pub fn get(&self, name: &str) -> Option<&V> {
         // Search from the end (innermost scope first)
         for entry in self.entries.iter().rev() {
-            if entry.name == name {
+            if entry.name.matches(name) {
                 return Some(&entry.value);
             }
         }
@@ -291,13 +295,13 @@ impl<V: MettaValueTrait + Clone> BindingArena<V> {
             0 => GenericBindings::Empty,
             1 => GenericBindings::Single((
                 crate::backend::models::generic_bindings::ROOT_SCOPE,
-                frame_entries[0].name,
+                frame_entries[0].name.clone(),
                 frame_entries[0].value.clone(),
             )),
             _ => {
                 let mut bindings = GenericBindings::new();
                 for entry in frame_entries {
-                    bindings.insert(entry.name, entry.value.clone());
+                    bindings.insert(entry.name.clone(), entry.value.clone());
                 }
                 bindings
             }
@@ -315,7 +319,7 @@ impl<V: MettaValueTrait + Clone> BindingArena<V> {
         // Build from outermost to innermost so inner shadows outer
         let mut bindings = GenericBindings::new();
         for entry in &self.entries {
-            bindings.insert(entry.name, entry.value.clone());
+            bindings.insert(entry.name.clone(), entry.value.clone());
         }
         bindings
     }
@@ -415,7 +419,7 @@ pub fn clear_thread_arena() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValueFactory};
 
     fn factory() -> crate::backend::models::GcFactory {
         global_factory()

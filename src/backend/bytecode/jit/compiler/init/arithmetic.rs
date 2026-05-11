@@ -107,25 +107,59 @@ impl<T> ArithmeticInit for T {
         builder.symbol("jit_runtime_isinf", runtime::jit_runtime_isinf as *const u8);
 
         // Numeric arithmetic with type promotion
-        builder.symbol("jit_runtime_numeric_add", runtime::jit_runtime_numeric_add as *const u8);
-        builder.symbol("jit_runtime_numeric_sub", runtime::jit_runtime_numeric_sub as *const u8);
-        builder.symbol("jit_runtime_numeric_mul", runtime::jit_runtime_numeric_mul as *const u8);
-        builder.symbol("jit_runtime_numeric_div", runtime::jit_runtime_numeric_div as *const u8);
-        builder.symbol("jit_runtime_numeric_mod", runtime::jit_runtime_numeric_mod as *const u8);
-        builder.symbol("jit_runtime_numeric_neg", runtime::jit_runtime_numeric_neg as *const u8);
-        builder.symbol("jit_runtime_numeric_abs", runtime::jit_runtime_numeric_abs as *const u8);
+        builder.symbol(
+            "jit_runtime_numeric_add",
+            runtime::jit_runtime_numeric_add as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_sub",
+            runtime::jit_runtime_numeric_sub as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_mul",
+            runtime::jit_runtime_numeric_mul as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_div",
+            runtime::jit_runtime_numeric_div as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_mod",
+            runtime::jit_runtime_numeric_mod as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_neg",
+            runtime::jit_runtime_numeric_neg as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_abs",
+            runtime::jit_runtime_numeric_abs as *const u8,
+        );
 
         // Numeric comparison with type promotion
-        builder.symbol("jit_runtime_numeric_lt", runtime::jit_runtime_numeric_lt as *const u8);
-        builder.symbol("jit_runtime_numeric_le", runtime::jit_runtime_numeric_le as *const u8);
-        builder.symbol("jit_runtime_numeric_gt", runtime::jit_runtime_numeric_gt as *const u8);
-        builder.symbol("jit_runtime_numeric_ge", runtime::jit_runtime_numeric_ge as *const u8);
-        builder.symbol("jit_runtime_numeric_eq", runtime::jit_runtime_numeric_eq as *const u8);
+        builder.symbol(
+            "jit_runtime_numeric_lt",
+            runtime::jit_runtime_numeric_lt as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_le",
+            runtime::jit_runtime_numeric_le as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_gt",
+            runtime::jit_runtime_numeric_gt as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_ge",
+            runtime::jit_runtime_numeric_ge as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_numeric_eq",
+            runtime::jit_runtime_numeric_eq as *const u8,
+        );
     }
 
     fn declare_arithmetic_funcs<M: Module>(module: &mut M) -> JitResult<ArithmeticFuncIds> {
-
-
         // Binary arithmetic signature: fn(a: u64, b: u64) -> u64
         let mut binary_sig = module.make_signature();
         binary_sig.params.push(AbiParam::new(types::I64));
@@ -238,75 +272,111 @@ impl<T> ArithmeticInit for T {
         let numeric_add_func_id = module
             .declare_function("jit_runtime_numeric_add", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_add: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_add: {}",
+                    e
+                ))
             })?;
 
         let numeric_sub_func_id = module
             .declare_function("jit_runtime_numeric_sub", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_sub: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_sub: {}",
+                    e
+                ))
             })?;
 
         let numeric_mul_func_id = module
             .declare_function("jit_runtime_numeric_mul", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_mul: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_mul: {}",
+                    e
+                ))
             })?;
 
         let numeric_div_func_id = module
             .declare_function("jit_runtime_numeric_div", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_div: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_div: {}",
+                    e
+                ))
             })?;
 
         let numeric_mod_func_id = module
             .declare_function("jit_runtime_numeric_mod", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_mod: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_mod: {}",
+                    e
+                ))
             })?;
 
         // Declare numeric unary operations with type promotion
         let numeric_neg_func_id = module
             .declare_function("jit_runtime_numeric_neg", Linkage::Import, &unary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_neg: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_neg: {}",
+                    e
+                ))
             })?;
 
         let numeric_abs_func_id = module
             .declare_function("jit_runtime_numeric_abs", Linkage::Import, &unary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_abs: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_abs: {}",
+                    e
+                ))
             })?;
 
         // Declare numeric comparison with type promotion (binary)
         let numeric_lt_func_id = module
             .declare_function("jit_runtime_numeric_lt", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_lt: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_lt: {}",
+                    e
+                ))
             })?;
 
         let numeric_le_func_id = module
             .declare_function("jit_runtime_numeric_le", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_le: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_le: {}",
+                    e
+                ))
             })?;
 
         let numeric_gt_func_id = module
             .declare_function("jit_runtime_numeric_gt", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_gt: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_gt: {}",
+                    e
+                ))
             })?;
 
         let numeric_ge_func_id = module
             .declare_function("jit_runtime_numeric_ge", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_ge: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_ge: {}",
+                    e
+                ))
             })?;
 
         let numeric_eq_func_id = module
             .declare_function("jit_runtime_numeric_eq", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!("Failed to declare jit_runtime_numeric_eq: {}", e))
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_numeric_eq: {}",
+                    e
+                ))
             })?;
 
         Ok(ArithmeticFuncIds {

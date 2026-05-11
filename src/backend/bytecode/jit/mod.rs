@@ -36,6 +36,7 @@ pub mod types;
 
 // Re-export main types
 pub use types::{
+    FunctionTypeInfo,
     JitAlternative,
     JitAlternativeTag,
     JitBailoutReason,
@@ -47,6 +48,9 @@ pub use types::{
     JitError,
     JitResult,
     JitValue,
+    // Type-driven applicative evaluation (MeTTa HE parity)
+    TypeClassification,
+    TypeSignatureRegistry,
     JIT_SIGNAL_BAILOUT,
     JIT_SIGNAL_ERROR,
     JIT_SIGNAL_FAIL,
@@ -57,23 +61,19 @@ pub use types::{
     // Optimization 5.2: Pre-allocation constants
     MAX_ALTERNATIVES_INLINE,
     MAX_STACK_SAVE_VALUES,
-    STACK_SAVE_POOL_SIZE,
-    // Optimization 5.3: Variable index cache
-    VAR_INDEX_CACHE_SIZE,
     // NaN-boxing constants (for arena JIT conversion)
     PAYLOAD_MASK,
+    STACK_SAVE_POOL_SIZE,
     TAG_ATOM,
     TAG_BOOL,
     TAG_ERROR,
-    TAG_PTR,
     TAG_LONG,
     TAG_MASK,
+    TAG_PTR,
     TAG_UNIT,
     TAG_VAR,
-    // Type-driven applicative evaluation (MeTTa HE parity)
-    TypeClassification,
-    TypeSignatureRegistry,
-    FunctionTypeInfo,
+    // Optimization 5.3: Variable index cache
+    VAR_INDEX_CACHE_SIZE,
 };
 // Space Ops Phase 4: Binding forking for nondeterminism
 pub use compiler::JitCompiler;

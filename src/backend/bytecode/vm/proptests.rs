@@ -15,6 +15,29 @@ use crate::backend::bytecode::chunk::ChunkBuilder;
 use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::models::{MettaValue, MettaValueInner};
 
+/// Extension trait: treat post-T1.A Error-atom results as `is_err() == true`.
+trait VmResultExt {
+    fn is_err_or_error_atom(&self) -> bool;
+}
+
+impl<E> VmResultExt for Result<Vec<MettaValue>, E> {
+    fn is_err_or_error_atom(&self) -> bool {
+        match self {
+            Err(_) => true,
+            Ok(results) => results.iter().any(|v| v.is_error()),
+        }
+    }
+}
+
+impl<E> VmResultExt for Result<MettaValue, E> {
+    fn is_err_or_error_atom(&self) -> bool {
+        match self {
+            Err(_) => true,
+            Ok(v) => v.is_error(),
+        }
+    }
+}
+
 // =============================================================================
 // Strategy Generators for MettaValue
 // =============================================================================
@@ -139,8 +162,19 @@ fn run_vm_binary_op(a: i64, b: i64, opcode: Opcode) -> Result<MettaValue, String
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    vm.run().map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
-        .map_err(|e| format!("{}", e))
+    let raw_result = vm
+        .run()
+        .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
+        .map_err(|e| format!("{}", e));
+    // BUG-T0-T1-001/011 (T1.A errors-as-values): the VM now returns
+    // (Error msg details) atoms instead of propagating VmError. For these
+    // proptests — which assert on the old VmError semantics — map an
+    // Error-atom result back to `Err(message)` so existing `is_err()`
+    // assertions continue to express the intended behavior.
+    match raw_result {
+        Ok(v) if v.is_error() => Err(format!("Error atom: {:?}", v.view())),
+        other => other,
+    }
 }
 
 /// Execute a unary operation on a Long value
@@ -159,8 +193,15 @@ fn run_vm_unary_op(a: i64, opcode: Opcode) -> Result<MettaValue, String> {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    vm.run().map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
-        .map_err(|e| format!("{}", e))
+    let raw_result = vm
+        .run()
+        .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
+        .map_err(|e| format!("{}", e));
+    // T1.A errors-as-values: same Error-atom remapping as run_vm_binary_op.
+    match raw_result {
+        Ok(v) if v.is_error() => Err(format!("Error atom: {:?}", v.view())),
+        other => other,
+    }
 }
 
 // =============================================================================
@@ -964,7 +1005,7 @@ proptest! {
     fn prop_div_by_zero_errors(a in 1i64..1000i64) {
         // Use non-zero numerator to get consistent DivisionByZero error
         let result = run_vm_binary_op(a, 0, Opcode::Div);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Modulo by zero returns error (non-zero numerator)
@@ -972,21 +1013,21 @@ proptest! {
     fn prop_mod_by_zero_errors(a in 1i64..1000i64) {
         // Use non-zero numerator to get consistent DivisionByZero error
         let result = run_vm_binary_op(a, 0, Opcode::Mod);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Floor division by zero returns error
     #[test]
     fn prop_floor_div_by_zero_errors(a in -1000i64..1000i64) {
         let result = run_vm_binary_op(a, 0, Opcode::FloorDiv);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Negative exponent returns type error
     #[test]
     fn prop_pow_negative_exp_errors(base in 1i64..10i64) {
         let result = run_vm_binary_op(base, -1, Opcode::Pow);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 }
 
@@ -995,7 +1036,11 @@ proptest! {
 // =============================================================================
 
 /// Helper to run a binary op with arbitrary MettaValues
-fn run_vm_binary_op_values(a: MettaValue, b: MettaValue, opcode: Opcode) -> Result<MettaValue, String> {
+fn run_vm_binary_op_values(
+    a: MettaValue,
+    b: MettaValue,
+    opcode: Opcode,
+) -> Result<MettaValue, String> {
     let mut builder = ChunkBuilder::new("prop_test");
 
     let idx_a = builder.add_constant(a);
@@ -1009,9 +1054,15 @@ fn run_vm_binary_op_values(a: MettaValue, b: MettaValue, opcode: Opcode) -> Resu
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    vm.run()
+    let raw = vm
+        .run()
         .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
-        .map_err(|e| format!("{}", e))
+        .map_err(|e| format!("{}", e));
+    // T1.A errors-as-values remapping (see run_vm_binary_op).
+    match raw {
+        Ok(v) if v.is_error() => Err(format!("Error atom: {:?}", v.view())),
+        other => other,
+    }
 }
 
 /// Helper to run a unary op with arbitrary MettaValue
@@ -1026,9 +1077,15 @@ fn run_vm_unary_op_value(a: MettaValue, opcode: Opcode) -> Result<MettaValue, St
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
-    vm.run()
+    let raw = vm
+        .run()
         .map(|r| r.into_iter().next().unwrap_or(MettaValue::Unit()))
-        .map_err(|e| format!("{}", e))
+        .map_err(|e| format!("{}", e));
+    // T1.A errors-as-values remapping.
+    match raw {
+        Ok(v) if v.is_error() => Err(format!("Error atom: {:?}", v.view())),
+        other => other,
+    }
 }
 
 proptest! {
@@ -1036,21 +1093,21 @@ proptest! {
     #[test]
     fn prop_add_type_error(a in arb_string(), b in arb_long()) {
         let result = run_vm_binary_op_values(a, b, Opcode::Add);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Sub with non-numeric types returns type error
     #[test]
     fn prop_sub_type_error(a in arb_symbol(), b in arb_long()) {
         let result = run_vm_binary_op_values(a, b, Opcode::Sub);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Mul with non-numeric types returns type error
     #[test]
     fn prop_mul_type_error(a in arb_long(), b in arb_bool()) {
         let result = run_vm_binary_op_values(a, b, Opcode::Mul);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Div with non-numeric types returns type error
@@ -1060,9 +1117,9 @@ proptest! {
         // Either type error or division by zero if b happens to be 0
         if let MettaValueInner::Long(0) = b.inner() {
             // Division by zero is also an error
-            prop_assert!(result.is_err());
+            prop_assert!(result.is_err_or_error_atom());
         } else {
-            prop_assert!(result.is_err());
+            prop_assert!(result.is_err_or_error_atom());
         }
     }
 
@@ -1070,14 +1127,14 @@ proptest! {
     #[test]
     fn prop_neg_type_error(a in arb_string()) {
         let result = run_vm_unary_op_value(a, Opcode::Neg);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Abs with non-numeric type returns type error
     #[test]
     fn prop_abs_type_error(a in arb_symbol()) {
         let result = run_vm_unary_op_value(a, Opcode::Abs);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 }
 
@@ -1090,28 +1147,28 @@ proptest! {
     #[test]
     fn prop_lt_type_error(a in arb_string(), b in arb_long()) {
         let result = run_vm_binary_op_values(a, b, Opcode::Lt);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Greater-than with type mismatch returns error
     #[test]
     fn prop_gt_type_error(a in arb_long(), b in arb_symbol()) {
         let result = run_vm_binary_op_values(a, b, Opcode::Gt);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Less-equal with type mismatch returns error
     #[test]
     fn prop_le_type_error(a in arb_bool(), b in arb_long()) {
         let result = run_vm_binary_op_values(a, b, Opcode::Le);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Greater-equal with type mismatch returns error
     #[test]
     fn prop_ge_type_error(a in arb_long(), b in arb_bool()) {
         let result = run_vm_binary_op_values(a, b, Opcode::Ge);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 }
 
@@ -1124,28 +1181,28 @@ proptest! {
     #[test]
     fn prop_and_type_error(a in arb_long(), b in arb_bool()) {
         let result = run_vm_binary_op_values(a, b, Opcode::And);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// OR with non-boolean types returns error
     #[test]
     fn prop_or_type_error(a in arb_bool(), b in arb_string()) {
         let result = run_vm_binary_op_values(a, b, Opcode::Or);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// NOT with non-boolean type returns error
     #[test]
     fn prop_not_type_error(a in arb_long()) {
         let result = run_vm_unary_op_value(a, Opcode::Not);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// XOR with non-boolean types returns error
     #[test]
     fn prop_xor_type_error(a in arb_symbol(), b in arb_symbol()) {
         let result = run_vm_binary_op_values(a, b, Opcode::Xor);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 }
 
@@ -1183,7 +1240,7 @@ proptest! {
     #[test]
     fn prop_sqrt_type_error(x in arb_string()) {
         let result = run_vm_unary_op_value(x, Opcode::Sqrt);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Trigonometric functions work on floats
@@ -1440,14 +1497,14 @@ proptest! {
     #[test]
     fn prop_isnan_type_error(x in arb_string()) {
         let result = run_vm_unary_op_value(x, Opcode::IsNan);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// isinf with invalid type returns error
     #[test]
     fn prop_isinf_type_error(x in arb_symbol()) {
         let result = run_vm_unary_op_value(x, Opcode::IsInf);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 }
 
@@ -1512,7 +1569,7 @@ proptest! {
     #[test]
     fn prop_log_type_error(base in arb_string(), value in arb_long()) {
         let result = run_vm_log(base, value);
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 }
 
@@ -1630,7 +1687,7 @@ proptest! {
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// cons-atom with Nil creates single-element S-expression
@@ -1668,7 +1725,7 @@ proptest! {
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// decon-atom on non-empty S-expression succeeds
@@ -1880,7 +1937,7 @@ proptest! {
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 }
 
@@ -2250,7 +2307,7 @@ proptest! {
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// index-atom with out-of-bounds index fails
@@ -2269,7 +2326,7 @@ proptest! {
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// index-atom with non-Long index fails
@@ -2288,7 +2345,7 @@ proptest! {
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// min-atom on numeric list returns minimum
@@ -2320,7 +2377,7 @@ proptest! {
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// max-atom on numeric list returns maximum
@@ -2387,7 +2444,7 @@ proptest! {
         builder.emit(Opcode::Return);
 
         let result = BytecodeVM::new(builder.build_arc()).run();
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 }
 
@@ -3043,7 +3100,7 @@ proptest! {
         let result = vm.run();
 
         // Type error for non-Bool
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     // =========================================================================
@@ -3495,7 +3552,7 @@ proptest! {
         let mut vm = BytecodeVM::new(chunk);
         let result = vm.run();
 
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Halt opcode returns Halted error
@@ -3508,7 +3565,7 @@ proptest! {
         let mut vm = BytecodeVM::new(chunk);
         let result = vm.run();
 
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 }
 
@@ -3527,7 +3584,7 @@ proptest! {
         let mut vm = BytecodeVM::new(chunk);
         let result = vm.run();
 
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Dup on empty stack returns StackUnderflow
@@ -3540,7 +3597,7 @@ proptest! {
         let mut vm = BytecodeVM::new(chunk);
         let result = vm.run();
 
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Swap with < 2 items returns StackUnderflow
@@ -3554,7 +3611,7 @@ proptest! {
         let mut vm = BytecodeVM::new(chunk);
         let result = vm.run();
 
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Over with < 2 items returns StackUnderflow
@@ -3568,7 +3625,7 @@ proptest! {
         let mut vm = BytecodeVM::new(chunk);
         let result = vm.run();
 
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Rot3 with < 3 items returns StackUnderflow
@@ -3583,7 +3640,7 @@ proptest! {
         let mut vm = BytecodeVM::new(chunk);
         let result = vm.run();
 
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Binary op with < 2 items returns StackUnderflow
@@ -3597,7 +3654,7 @@ proptest! {
         let mut vm = BytecodeVM::new(chunk);
         let result = vm.run();
 
-        prop_assert!(result.is_err());
+        prop_assert!(result.is_err_or_error_atom());
     }
 
     /// Return on empty stack at top-level yields empty results.
@@ -3636,12 +3693,12 @@ mod tests {
         let result = runner.run(&arb_simple_value(), |value| {
             // Just verify the value is valid
             match value.inner() {
-                MettaValueInner::Long(_) |
-                MettaValueInner::Float(_) |
-                MettaValueInner::Bool(_) |
-                MettaValueInner::Atom(_) |
-                MettaValueInner::String(_) |
-                MettaValueInner::Unit => Ok(()),
+                MettaValueInner::Long(_)
+                | MettaValueInner::Float(_)
+                | MettaValueInner::Bool(_)
+                | MettaValueInner::Atom(_)
+                | MettaValueInner::String(_)
+                | MettaValueInner::Unit => Ok(()),
                 _ => Err(TestCaseError::fail("Unexpected value type")),
             }
         });
@@ -3666,10 +3723,8 @@ mod multi_tier_tests {
     use super::*;
 
     use crate::backend::grounded::{
-        AddOp, AndOp, DivOp, EqualOp, GroundedOperationTCO,
-        GroundedState, GroundedWork, GreaterEqOp, GreaterOp,
-        LessEqOp, LessOp, ModOp, MulOp, NotEqualOp,
-        NotOp, OrOp, SubOp,
+        AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperationTCO, GroundedState,
+        GroundedWork, LessEqOp, LessOp, ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
     };
     use crate::backend::models::GcFactory;
 
@@ -3692,10 +3747,7 @@ mod multi_tier_tests {
     /// For proptests, arguments are already concrete values, so when the state
     /// machine requests `EvalArg(idx)`, we "evaluate" by returning the original
     /// argument at that index as-is (wrapping it in a single-element Vec).
-    fn drive_tco<Op>(
-        op: &Op,
-        args: Vec<MettaValue>,
-    ) -> Result<MettaValue, String>
+    fn drive_tco<Op>(op: &Op, args: Vec<MettaValue>) -> Result<MettaValue, String>
     where
         Op: GroundedOperationTCO<MettaValue>,
     {
@@ -3731,11 +3783,7 @@ mod multi_tier_tests {
     }
 
     /// Execute a binary operation via generic TCO grounded operation (tree-walker tier)
-    fn run_grounded_binary<Op>(
-        op: &Op,
-        a: MettaValue,
-        b: MettaValue,
-    ) -> Result<MettaValue, String>
+    fn run_grounded_binary<Op>(op: &Op, a: MettaValue, b: MettaValue) -> Result<MettaValue, String>
     where
         Op: GroundedOperationTCO<MettaValue>,
     {
@@ -3743,10 +3791,7 @@ mod multi_tier_tests {
     }
 
     /// Execute a unary operation via generic TCO grounded operation (tree-walker tier)
-    fn run_grounded_unary<Op>(
-        op: &Op,
-        a: MettaValue,
-    ) -> Result<MettaValue, String>
+    fn run_grounded_unary<Op>(op: &Op, a: MettaValue) -> Result<MettaValue, String>
     where
         Op: GroundedOperationTCO<MettaValue>,
     {
@@ -3912,8 +3957,16 @@ mod multi_tier_tests {
     /// Execute boolean binary op via bytecode VM
     fn run_vm_bool_binary(a: bool, b: bool, opcode: Opcode) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("test");
-        builder.emit(if a { Opcode::PushTrue } else { Opcode::PushFalse });
-        builder.emit(if b { Opcode::PushTrue } else { Opcode::PushFalse });
+        builder.emit(if a {
+            Opcode::PushTrue
+        } else {
+            Opcode::PushFalse
+        });
+        builder.emit(if b {
+            Opcode::PushTrue
+        } else {
+            Opcode::PushFalse
+        });
         builder.emit(opcode);
         builder.emit(Opcode::Return);
 
@@ -3927,7 +3980,11 @@ mod multi_tier_tests {
     /// Execute boolean unary op via bytecode VM
     fn run_vm_bool_unary(a: bool, opcode: Opcode) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("test");
-        builder.emit(if a { Opcode::PushTrue } else { Opcode::PushFalse });
+        builder.emit(if a {
+            Opcode::PushTrue
+        } else {
+            Opcode::PushFalse
+        });
         builder.emit(opcode);
         builder.emit(Opcode::Return);
 
@@ -4174,10 +4231,8 @@ mod three_tier_tests {
     use crate::backend::bytecode::opcodes::Opcode;
     use crate::backend::bytecode::BytecodeVM;
     use crate::backend::grounded::{
-        AddOp, AndOp, DivOp, EqualOp, GroundedOperationTCO,
-        GroundedState, GroundedWork, GreaterEqOp, GreaterOp,
-        LessEqOp, LessOp, ModOp, MulOp, NotEqualOp,
-        NotOp, OrOp, SubOp,
+        AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperationTCO, GroundedState,
+        GroundedWork, LessEqOp, LessOp, ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
     };
     use crate::backend::models::{GcFactory, MettaValue, MettaValueInner};
 
@@ -4190,10 +4245,7 @@ mod three_tier_tests {
     /// For tests, arguments are already concrete values, so when the state
     /// machine requests `EvalArg(idx)`, we "evaluate" by returning the original
     /// argument at that index as-is (wrapping it in a single-element Vec).
-    fn drive_tco<Op>(
-        op: &Op,
-        args: Vec<MettaValue>,
-    ) -> Result<MettaValue, String>
+    fn drive_tco<Op>(op: &Op, args: Vec<MettaValue>) -> Result<MettaValue, String>
     where
         Op: GroundedOperationTCO<MettaValue>,
     {
@@ -4227,11 +4279,7 @@ mod three_tier_tests {
     }
 
     /// Execute a binary operation via generic TCO grounded operation (Tier 0)
-    fn run_grounded_binary<Op>(
-        op: &Op,
-        a: MettaValue,
-        b: MettaValue,
-    ) -> Result<MettaValue, String>
+    fn run_grounded_binary<Op>(op: &Op, a: MettaValue, b: MettaValue) -> Result<MettaValue, String>
     where
         Op: GroundedOperationTCO<MettaValue>,
     {
@@ -4239,10 +4287,7 @@ mod three_tier_tests {
     }
 
     /// Execute a unary operation via generic TCO grounded operation (Tier 0)
-    fn run_grounded_unary<Op>(
-        op: &Op,
-        a: MettaValue,
-    ) -> Result<MettaValue, String>
+    fn run_grounded_unary<Op>(op: &Op, a: MettaValue) -> Result<MettaValue, String>
     where
         Op: GroundedOperationTCO<MettaValue>,
     {
@@ -4301,8 +4346,16 @@ mod three_tier_tests {
     /// Execute a boolean binary operation via bytecode VM (Tier 1)
     fn run_vm_bool_binary(a: bool, b: bool, opcode: Opcode) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("test");
-        builder.emit(if a { Opcode::PushTrue } else { Opcode::PushFalse });
-        builder.emit(if b { Opcode::PushTrue } else { Opcode::PushFalse });
+        builder.emit(if a {
+            Opcode::PushTrue
+        } else {
+            Opcode::PushFalse
+        });
+        builder.emit(if b {
+            Opcode::PushTrue
+        } else {
+            Opcode::PushFalse
+        });
         builder.emit(opcode);
         builder.emit(Opcode::Return);
 
@@ -4316,7 +4369,11 @@ mod three_tier_tests {
     /// Execute a boolean unary operation via bytecode VM (Tier 1)
     fn run_vm_bool_unary(a: bool, opcode: Opcode) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("test");
-        builder.emit(if a { Opcode::PushTrue } else { Opcode::PushFalse });
+        builder.emit(if a {
+            Opcode::PushTrue
+        } else {
+            Opcode::PushFalse
+        });
         builder.emit(opcode);
         builder.emit(Opcode::Return);
 
@@ -4376,8 +4433,16 @@ mod three_tier_tests {
     /// Execute a boolean binary operation via JIT (Tier 2/3)
     fn run_jit_bool_binary(a: bool, b: bool, opcode: Opcode) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("jit_test");
-        builder.emit(if a { Opcode::PushTrue } else { Opcode::PushFalse });
-        builder.emit(if b { Opcode::PushTrue } else { Opcode::PushFalse });
+        builder.emit(if a {
+            Opcode::PushTrue
+        } else {
+            Opcode::PushFalse
+        });
+        builder.emit(if b {
+            Opcode::PushTrue
+        } else {
+            Opcode::PushFalse
+        });
         builder.emit(opcode);
         builder.emit(Opcode::Return);
 
@@ -4388,7 +4453,11 @@ mod three_tier_tests {
     /// Execute a boolean unary operation via JIT (Tier 2/3)
     fn run_jit_bool_unary(a: bool, opcode: Opcode) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("jit_test");
-        builder.emit(if a { Opcode::PushTrue } else { Opcode::PushFalse });
+        builder.emit(if a {
+            Opcode::PushTrue
+        } else {
+            Opcode::PushFalse
+        });
         builder.emit(opcode);
         builder.emit(Opcode::Return);
 
@@ -4455,7 +4524,11 @@ mod three_tier_tests {
     }
 
     /// Execute a binary operation on arbitrary MettaValue operands via VM
-    fn run_vm_value_binary(a: MettaValue, b: MettaValue, opcode: Opcode) -> Result<MettaValue, String> {
+    fn run_vm_value_binary(
+        a: MettaValue,
+        b: MettaValue,
+        opcode: Opcode,
+    ) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("test");
         let idx_a = builder.add_constant(a);
         let idx_b = builder.add_constant(b);
@@ -4471,7 +4544,11 @@ mod three_tier_tests {
     }
 
     /// Execute a binary operation on arbitrary MettaValue operands via JIT
-    fn run_jit_value_binary(a: MettaValue, b: MettaValue, opcode: Opcode) -> Result<MettaValue, String> {
+    fn run_jit_value_binary(
+        a: MettaValue,
+        b: MettaValue,
+        opcode: Opcode,
+    ) -> Result<MettaValue, String> {
         let mut builder = ChunkBuilder::new("jit_test");
         let idx_a = builder.add_constant(a);
         let idx_b = builder.add_constant(b);
@@ -4484,7 +4561,9 @@ mod three_tier_tests {
     }
 
     /// Core JIT execution helper - compiles chunk and executes via JIT context
-    fn execute_jit_chunk(chunk: &Arc<crate::backend::bytecode::BytecodeChunk>) -> Result<MettaValue, String> {
+    fn execute_jit_chunk(
+        chunk: &Arc<crate::backend::bytecode::BytecodeChunk>,
+    ) -> Result<MettaValue, String> {
         // Try to create JIT compiler (may fail if JIT is disabled or unsupported)
         let mut compiler = match JitCompiler::new() {
             Ok(c) => c,
@@ -4559,11 +4638,7 @@ mod three_tier_tests {
             let grounded_val = grounded.unwrap();
             let vm_val = vm.unwrap();
 
-            assert_eq!(
-                grounded_val, vm_val,
-                "Grounded != VM for add({}, {})",
-                a, b
-            );
+            assert_eq!(grounded_val, vm_val, "Grounded != VM for add({}, {})", a, b);
 
             // JIT may not be available on all platforms
             if let Ok(jit_val) = jit {
@@ -5346,7 +5421,11 @@ mod three_tier_tests {
 
         // Sqrt should work with float input
         let sqrt_result = run_vm_float_unary(4.0, Opcode::Sqrt);
-        assert!(sqrt_result.is_ok(), "VM sqrt(4.0) failed: {:?}", sqrt_result);
+        assert!(
+            sqrt_result.is_ok(),
+            "VM sqrt(4.0) failed: {:?}",
+            sqrt_result
+        );
     }
 
     /// Test that VM arithmetic ops support both Long and Float
@@ -5564,9 +5643,10 @@ mod three_tier_tests {
         let grounded = run_grounded_binary(&DivOp, MettaValue::Long(10), MettaValue::Long(0));
         assert!(grounded.is_err(), "Grounded should error on div by zero");
 
-        // VM tier
+        // VM tier (T1.A: division-by-zero now yields an Error-atom result,
+        // not a propagated Rust Err).
         let vm = run_vm_binary(10, 0, Opcode::Div);
-        assert!(vm.is_err(), "VM should error on div by zero");
+        assert!(vm.is_err_or_error_atom(), "VM should error on div by zero");
 
         // JIT tier (if available)
         let jit = run_jit_binary(10, 0, Opcode::Div);
@@ -5581,9 +5661,9 @@ mod three_tier_tests {
         let grounded = run_grounded_binary(&ModOp, MettaValue::Long(10), MettaValue::Long(0));
         assert!(grounded.is_err(), "Grounded should error on mod by zero");
 
-        // VM tier
+        // VM tier (T1.A: mod-by-zero now yields Error atom, not Rust Err)
         let vm = run_vm_binary(10, 0, Opcode::Mod);
-        assert!(vm.is_err(), "VM should error on mod by zero");
+        assert!(vm.is_err_or_error_atom(), "VM should error on mod by zero");
 
         // JIT tier
         let jit = run_jit_binary(10, 0, Opcode::Mod);
@@ -5601,45 +5681,78 @@ mod three_tier_tests {
         let vm = run_vm_value_binary(MettaValue::Long(2), MettaValue::Float(2.0), Opcode::Eq);
         let jit = run_jit_value_binary(MettaValue::Long(2), MettaValue::Float(2.0), Opcode::Eq);
 
-        assert_eq!(grounded.unwrap(), MettaValue::Bool(true), "Grounded: Long(2) == Float(2.0)");
-        assert_eq!(vm.unwrap(), MettaValue::Bool(true), "VM: Long(2) == Float(2.0)");
+        assert_eq!(
+            grounded.unwrap(),
+            MettaValue::Bool(true),
+            "Grounded: Long(2) == Float(2.0)"
+        );
+        assert_eq!(
+            vm.unwrap(),
+            MettaValue::Bool(true),
+            "VM: Long(2) == Float(2.0)"
+        );
         if let Ok(jit_val) = jit {
-            assert_eq!(jit_val, MettaValue::Bool(true), "JIT: Long(2) == Float(2.0)");
+            assert_eq!(
+                jit_val,
+                MettaValue::Bool(true),
+                "JIT: Long(2) == Float(2.0)"
+            );
         }
     }
 
     #[test]
     fn test_three_tier_ne_long_float_same() {
         // All tiers use numeric promotion: Long(2) != Float(2.0) → false
-        let grounded = run_grounded_binary(&NotEqualOp, MettaValue::Long(2), MettaValue::Float(2.0));
+        let grounded =
+            run_grounded_binary(&NotEqualOp, MettaValue::Long(2), MettaValue::Float(2.0));
         let vm = run_vm_value_binary(MettaValue::Long(2), MettaValue::Float(2.0), Opcode::Ne);
         let jit = run_jit_value_binary(MettaValue::Long(2), MettaValue::Float(2.0), Opcode::Ne);
 
-        assert_eq!(grounded.unwrap(), MettaValue::Bool(false), "Grounded: Long(2) != Float(2.0)");
-        assert_eq!(vm.unwrap(), MettaValue::Bool(false), "VM: Long(2) != Float(2.0)");
-        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(false), "JIT: Long(2) != Float(2.0)"); }
+        assert_eq!(
+            grounded.unwrap(),
+            MettaValue::Bool(false),
+            "Grounded: Long(2) != Float(2.0)"
+        );
+        assert_eq!(
+            vm.unwrap(),
+            MettaValue::Bool(false),
+            "VM: Long(2) != Float(2.0)"
+        );
+        if let Ok(jit_val) = jit {
+            assert_eq!(
+                jit_val,
+                MettaValue::Bool(false),
+                "JIT: Long(2) != Float(2.0)"
+            );
+        }
     }
 
     #[test]
     fn test_three_tier_eq_float_float() {
-        let grounded = run_grounded_binary(&EqualOp, MettaValue::Float(3.14), MettaValue::Float(3.14));
+        let grounded =
+            run_grounded_binary(&EqualOp, MettaValue::Float(3.14), MettaValue::Float(3.14));
         let vm = run_vm_float_binary(3.14, 3.14, Opcode::Eq);
         let jit = run_jit_float_binary(3.14, 3.14, Opcode::Eq);
 
         assert_eq!(grounded.unwrap(), MettaValue::Bool(true));
         assert_eq!(vm.unwrap(), MettaValue::Bool(true));
-        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(true)); }
+        if let Ok(jit_val) = jit {
+            assert_eq!(jit_val, MettaValue::Bool(true));
+        }
     }
 
     #[test]
     fn test_three_tier_ne_float_float_different() {
-        let grounded = run_grounded_binary(&NotEqualOp, MettaValue::Float(1.0), MettaValue::Float(2.0));
+        let grounded =
+            run_grounded_binary(&NotEqualOp, MettaValue::Float(1.0), MettaValue::Float(2.0));
         let vm = run_vm_float_binary(1.0, 2.0, Opcode::Ne);
         let jit = run_jit_float_binary(1.0, 2.0, Opcode::Ne);
 
         assert_eq!(grounded.unwrap(), MettaValue::Bool(true));
         assert_eq!(vm.unwrap(), MettaValue::Bool(true));
-        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(true)); }
+        if let Ok(jit_val) = jit {
+            assert_eq!(jit_val, MettaValue::Bool(true));
+        }
     }
 
     #[test]
@@ -5650,18 +5763,23 @@ mod three_tier_tests {
 
         assert_eq!(grounded.unwrap(), MettaValue::Bool(true));
         assert_eq!(vm.unwrap(), MettaValue::Bool(true));
-        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(true)); }
+        if let Ok(jit_val) = jit {
+            assert_eq!(jit_val, MettaValue::Bool(true));
+        }
     }
 
     #[test]
     fn test_three_tier_ge_float_long() {
-        let grounded = run_grounded_binary(&GreaterEqOp, MettaValue::Float(5.0), MettaValue::Long(5));
+        let grounded =
+            run_grounded_binary(&GreaterEqOp, MettaValue::Float(5.0), MettaValue::Long(5));
         let vm = run_vm_value_binary(MettaValue::Float(5.0), MettaValue::Long(5), Opcode::Ge);
         let jit = run_jit_value_binary(MettaValue::Float(5.0), MettaValue::Long(5), Opcode::Ge);
 
         assert_eq!(grounded.unwrap(), MettaValue::Bool(true));
         assert_eq!(vm.unwrap(), MettaValue::Bool(true));
-        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Bool(true)); }
+        if let Ok(jit_val) = jit {
+            assert_eq!(jit_val, MettaValue::Bool(true));
+        }
     }
 
     #[test]
@@ -5671,15 +5789,33 @@ mod three_tier_tests {
         let vm = run_vm_value_binary(MettaValue::Long(85), MettaValue::Float(43.5), Opcode::Mod);
         let jit = run_jit_value_binary(MettaValue::Long(85), MettaValue::Float(43.5), Opcode::Mod);
 
-        let g_f = grounded.expect("Grounded mod failed").as_float().expect("Expected Float");
-        assert!((g_f - 41.5).abs() < 1e-10, "Grounded: (% 85 43.5) = {}, expected ~41.5", g_f);
+        let g_f = grounded
+            .expect("Grounded mod failed")
+            .as_float()
+            .expect("Expected Float");
+        assert!(
+            (g_f - 41.5).abs() < 1e-10,
+            "Grounded: (% 85 43.5) = {}, expected ~41.5",
+            g_f
+        );
 
-        let vm_f = vm.expect("VM mod failed").as_float().expect("Expected Float");
-        assert!((vm_f - 41.5).abs() < 1e-10, "VM: (% 85 43.5) = {}, expected ~41.5", vm_f);
+        let vm_f = vm
+            .expect("VM mod failed")
+            .as_float()
+            .expect("Expected Float");
+        assert!(
+            (vm_f - 41.5).abs() < 1e-10,
+            "VM: (% 85 43.5) = {}, expected ~41.5",
+            vm_f
+        );
 
         if let Ok(jit_val) = jit {
             let jit_f = jit_val.as_float().expect("Expected Float");
-            assert!((jit_f - 41.5).abs() < 1e-10, "JIT: (% 85 43.5) = {}, expected ~41.5", jit_f);
+            assert!(
+                (jit_f - 41.5).abs() < 1e-10,
+                "JIT: (% 85 43.5) = {}, expected ~41.5",
+                jit_f
+            );
         }
     }
 
@@ -5690,15 +5826,33 @@ mod three_tier_tests {
         let vm = run_vm_float_binary(10.5, 3.0, Opcode::Mod);
         let jit = run_jit_float_binary(10.5, 3.0, Opcode::Mod);
 
-        let g_f = grounded.expect("Grounded mod failed").as_float().expect("Expected Float");
-        assert!((g_f - 1.5).abs() < 1e-10, "Grounded: (% 10.5 3.0) = {}, expected ~1.5", g_f);
+        let g_f = grounded
+            .expect("Grounded mod failed")
+            .as_float()
+            .expect("Expected Float");
+        assert!(
+            (g_f - 1.5).abs() < 1e-10,
+            "Grounded: (% 10.5 3.0) = {}, expected ~1.5",
+            g_f
+        );
 
-        let vm_f = vm.expect("VM mod failed").as_float().expect("Expected Float");
-        assert!((vm_f - 1.5).abs() < 1e-10, "VM: (% 10.5 3.0) = {}, expected ~1.5", vm_f);
+        let vm_f = vm
+            .expect("VM mod failed")
+            .as_float()
+            .expect("Expected Float");
+        assert!(
+            (vm_f - 1.5).abs() < 1e-10,
+            "VM: (% 10.5 3.0) = {}, expected ~1.5",
+            vm_f
+        );
 
         if let Ok(jit_val) = jit {
             let jit_f = jit_val.as_float().expect("Expected Float");
-            assert!((jit_f - 1.5).abs() < 1e-10, "JIT: (% 10.5 3.0) = {}, expected ~1.5", jit_f);
+            assert!(
+                (jit_f - 1.5).abs() < 1e-10,
+                "JIT: (% 10.5 3.0) = {}, expected ~1.5",
+                jit_f
+            );
         }
     }
 
@@ -5711,7 +5865,9 @@ mod three_tier_tests {
 
         assert_eq!(grounded.unwrap(), MettaValue::Float(5.5));
         assert_eq!(vm.unwrap(), MettaValue::Float(5.5));
-        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Float(5.5)); }
+        if let Ok(jit_val) = jit {
+            assert_eq!(jit_val, MettaValue::Float(5.5));
+        }
     }
 
     #[test]
@@ -5723,6 +5879,8 @@ mod three_tier_tests {
 
         assert_eq!(grounded.unwrap(), MettaValue::Float(10.0));
         assert_eq!(vm.unwrap(), MettaValue::Float(10.0));
-        if let Ok(jit_val) = jit { assert_eq!(jit_val, MettaValue::Float(10.0)); }
+        if let Ok(jit_val) = jit {
+            assert_eq!(jit_val, MettaValue::Float(10.0));
+        }
     }
 }

@@ -223,7 +223,7 @@ impl<V: MettaValueTrait> Default for OperandStack<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValue, global_factory, MettaValueFactory};
+    use crate::backend::models::{global_factory, MettaValue, MettaValueFactory};
 
     fn make_atom(s: &str) -> MettaValue {
         global_factory().atom(s)

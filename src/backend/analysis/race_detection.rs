@@ -88,34 +88,42 @@ impl RaceDetectionResult {
 ///
 /// Identifies expression pairs that may execute in parallel and perform
 /// conflicting operations on the same shared state target.
-pub fn detect_races(
-    analysis: &AnalysisResult,
-    derived: &DerivedAnalysis,
-) -> RaceDetectionResult {
+pub fn detect_races(analysis: &AnalysisResult, derived: &DerivedAnalysis) -> RaceDetectionResult {
     let mut operations: Vec<(u64, AbstractOp)> = Vec::new();
     let mut potential_races: Vec<PotentialRace> = Vec::new();
 
     // Classify expressions by their operations
     // Pure expressions (from derived.pure_expressions) have no state operations
     // Impure expressions may have reads or writes
-    let impure_exprs: HashSet<u64> = analysis.expr_facts.keys()
+    let impure_exprs: HashSet<u64> = analysis
+        .expr_facts
+        .keys()
         .filter(|hash| !derived.pure_expressions.contains(hash))
         .copied()
         .collect();
 
     // For impure expressions, conservatively mark as Write (any state op)
     for &hash in &impure_exprs {
-        operations.push((hash, AbstractOp::Write { target: AbstractTarget::Unknown }));
+        operations.push((
+            hash,
+            AbstractOp::Write {
+                target: AbstractTarget::Unknown,
+            },
+        ));
     }
 
     // Detect Write-Write conflicts between impure expressions
     let impure_list: Vec<u64> = impure_exprs.iter().copied().collect();
     for i in 0..impure_list.len() {
-        for j in (i+1)..impure_list.len() {
+        for j in (i + 1)..impure_list.len() {
             potential_races.push(PotentialRace {
-                op1: AbstractOp::Write { target: AbstractTarget::Unknown },
+                op1: AbstractOp::Write {
+                    target: AbstractTarget::Unknown,
+                },
                 op1_expr: impure_list[i],
-                op2: AbstractOp::Write { target: AbstractTarget::Unknown },
+                op2: AbstractOp::Write {
+                    target: AbstractTarget::Unknown,
+                },
                 op2_expr: impure_list[j],
             });
         }
@@ -139,12 +147,13 @@ pub fn detect_races(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::backend::analysis::abstract_domain::AbstractStore;
-    use crate::backend::analysis::fixpoint::{ExprFact, AnalysisResult};
+    use crate::backend::analysis::fixpoint::{AnalysisResult, ExprFact};
+    use std::collections::HashMap;
 
     fn make_result(expr_hashes: Vec<u64>) -> AnalysisResult {
-        let expr_facts: HashMap<u64, ExprFact> = expr_hashes.into_iter()
+        let expr_facts: HashMap<u64, ExprFact> = expr_hashes
+            .into_iter()
             .map(|h| (h, ExprFact::default()))
             .collect();
         AnalysisResult {

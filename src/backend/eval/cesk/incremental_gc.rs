@@ -129,7 +129,6 @@ pub struct NurseryState {
 
     /// Number of values reclaimed by nursery collection.
     pub reclaimed_count: u64,
-
 }
 
 impl NurseryState {
@@ -523,7 +522,10 @@ impl NurseryCollector {
     /// When deterministic collection is active, the epoch-based cache
     /// invalidation system (`check_gc_epoch()`) is bypassed because the
     /// state space is kept garbage-free between rule matches.
-    pub fn collect_deterministic(&mut self, live_ptrs_sorted: &[usize]) -> Option<NurseryCollectResult> {
+    pub fn collect_deterministic(
+        &mut self,
+        live_ptrs_sorted: &[usize],
+    ) -> Option<NurseryCollectResult> {
         if !self.state.config.deterministic {
             return None;
         }

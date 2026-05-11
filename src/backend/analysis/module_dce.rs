@@ -6,7 +6,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-
 // ============================================================================
 // Module Reachability
 // ============================================================================
@@ -30,10 +29,7 @@ impl ModuleReachability {
     /// `module_rules` maps module names to the set of rule indices defined in
     /// that module. `dead_rules` is the set of unreachable rule indices from
     /// the AAM analysis.
-    pub fn compute(
-        module_rules: HashMap<String, HashSet<u32>>,
-        dead_rules: &HashSet<u32>,
-    ) -> Self {
+    pub fn compute(module_rules: HashMap<String, HashSet<u32>>, dead_rules: &HashSet<u32>) -> Self {
         let mut dead_modules = HashSet::new();
         let mut partially_dead_modules = HashMap::new();
         let mut live_modules = HashSet::new();
@@ -63,11 +59,15 @@ impl ModuleReachability {
 
     /// Total number of rules that can be eliminated.
     pub fn total_eliminable_rules(&self) -> usize {
-        let dead_module_rules: usize = self.dead_modules.iter()
+        let dead_module_rules: usize = self
+            .dead_modules
+            .iter()
             .filter_map(|m| self.module_rules.get(m))
             .map(|rules| rules.len())
             .sum();
-        let partial_dead_rules: usize = self.partially_dead_modules.values()
+        let partial_dead_rules: usize = self
+            .partially_dead_modules
+            .values()
             .map(|rules| rules.len())
             .sum();
         dead_module_rules + partial_dead_rules

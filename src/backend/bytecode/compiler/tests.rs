@@ -3,8 +3,8 @@
 use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::models::MettaValue;
 
-use super::error::CompileError;
 use super::compile;
+use super::error::CompileError;
 
 // Helper to compile and disassemble
 #[allow(dead_code)]
@@ -173,23 +173,29 @@ fn test_compile_unary_minus() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("neg"), "Expected 'neg' opcode in disassembly: {}", disasm);
-    assert!(!disasm.contains("sub"), "Should not contain 'sub' opcode: {}", disasm);
+    assert!(
+        disasm.contains("neg"),
+        "Expected 'neg' opcode in disassembly: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("sub"),
+        "Should not contain 'sub' opcode: {}",
+        disasm
+    );
 }
 
 #[test]
 fn test_compile_unary_minus_constant() {
     // (- 5) should constant-fold to -5
-    let expr = MettaValue::SExpr(vec![
-        MettaValue::Atom("-".to_string()),
-        MettaValue::Long(5),
-    ]);
+    let expr = MettaValue::SExpr(vec![MettaValue::Atom("-".to_string()), MettaValue::Long(5)]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Constant folding should produce push_long_small -5
     assert!(
         disasm.contains("push_long_small -5") || disasm.contains("neg"),
-        "Expected constant-folded -5 or neg opcode in disassembly: {}", disasm
+        "Expected constant-folded -5 or neg opcode in disassembly: {}",
+        disasm
     );
 }
 
@@ -203,7 +209,11 @@ fn test_compile_binary_minus_still_works() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("sub"), "Expected 'sub' opcode in disassembly: {}", disasm);
+    assert!(
+        disasm.contains("sub"),
+        "Expected 'sub' opcode in disassembly: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -745,8 +755,11 @@ fn test_compile_let() {
     assert!(disasm.contains("store_local"));
     // The optimizer folds `store_local X; load_local X` into `dup; store_local X`,
     // so we accept either `load_local` or `dup` as evidence of variable access.
-    assert!(disasm.contains("load_local") || disasm.contains("dup"),
-        "Expected load_local or dup (optimizer folded) in:\n{}", disasm);
+    assert!(
+        disasm.contains("load_local") || disasm.contains("dup"),
+        "Expected load_local or dup (optimizer folded) in:\n{}",
+        disasm
+    );
     assert!(disasm.contains("add"));
 }
 
@@ -1046,6 +1059,36 @@ fn test_compile_unknown_operation() {
 }
 
 #[test]
+fn test_compile_variable_head_call_uses_call_n() {
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("$f".to_string()),
+        MettaValue::Long(7),
+        MettaValue::SExpr(vec![
+            MettaValue::Atom("payload".to_string()),
+            MettaValue::Long(1),
+        ]),
+    ]);
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+
+    assert!(
+        disasm.contains("push_var"),
+        "dynamic call should push the head variable; got:\n{}",
+        disasm
+    );
+    assert!(
+        disasm.contains("tail_call_n"),
+        "dynamic top-level call should emit TailCallN; got:\n{}",
+        disasm
+    );
+    assert!(
+        disasm.contains("make_sexpr"),
+        "user-headed S-expression args should still be literal data; got:\n{}",
+        disasm
+    );
+}
+
+#[test]
 fn test_compile_nested_call() {
     // (foo (bar 1)) — nested user-defined call.
     //
@@ -1269,8 +1312,59 @@ fn test_branch_empty_superpose() {
         MettaValue::SExpr(vec![]),
     ]);
     let chunk = compile("test", &expr).unwrap();
-    // Empty superpose should emit PushEmpty (Unit arg triggers empty superpose path)
-    assert_eq!(chunk.read_opcode(0), Some(Opcode::PushEmpty));
+    // Empty superpose should fail outside collapse; there are no alternatives.
+    assert_eq!(chunk.read_opcode(0), Some(Opcode::Fail));
+}
+
+#[test]
+fn test_compile_collapse_empty_uses_native_barrier() {
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("collapse".to_string()),
+        MettaValue::SExpr(vec![MettaValue::Atom("empty".to_string())]),
+    ]);
+
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+
+    assert_eq!(chunk.read_opcode(0), Some(Opcode::CollapseBegin));
+    assert!(disasm.contains("collapse_begin"), "{}", disasm);
+    assert!(disasm.contains("fail"), "{}", disasm);
+    assert!(disasm.contains("collapse_end"), "{}", disasm);
+    assert!(!disasm.contains("eval_collapse"), "{}", disasm);
+}
+
+#[test]
+fn test_compile_collapse_superpose_omits_yield_inside_barrier() {
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("collapse".to_string()),
+        MettaValue::SExpr(vec![
+            MettaValue::Atom("superpose".to_string()),
+            MettaValue::SExpr(vec![MettaValue::Long(1), MettaValue::Long(2)]),
+        ]),
+    ]);
+
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+
+    assert!(disasm.contains("collapse_begin"), "{}", disasm);
+    assert!(disasm.contains("fork_inline"), "{}", disasm);
+    assert!(disasm.contains("collapse_end"), "{}", disasm);
+    assert!(!disasm.contains("yield"), "{}", disasm);
+}
+
+#[test]
+fn test_compile_dynamic_superpose_uses_eval_superpose() {
+    let expr = MettaValue::SExpr(vec![
+        MettaValue::Atom("superpose".to_string()),
+        MettaValue::Atom("$xs".to_string()),
+    ]);
+
+    let chunk = compile("test", &expr).unwrap();
+    let disasm = chunk.disassemble();
+
+    assert!(disasm.contains("eval_superpose"), "{}", disasm);
+    assert!(disasm.contains("yield"), "{}", disasm);
+    assert!(chunk.has_nondeterminism());
 }
 
 #[test]
@@ -1283,7 +1377,10 @@ fn test_compile_single_element_superpose() {
     let chunk = compile("test", &expr).unwrap();
     // Single-element superpose doesn't need Fork
     let disasm = chunk.disassemble();
-    assert!(!disasm.contains("fork"), "Single element superpose should not Fork");
+    assert!(
+        !disasm.contains("fork"),
+        "Single element superpose should not Fork"
+    );
 }
 
 // ========================================================================
@@ -1301,7 +1398,11 @@ fn test_compile_division_by_zero_no_fold() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should emit div opcode, not fold to error
-    assert!(disasm.contains("div"), "Division by zero should emit div opcode: {}", disasm);
+    assert!(
+        disasm.contains("div"),
+        "Division by zero should emit div opcode: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1315,7 +1416,11 @@ fn test_compile_modulo_by_zero_no_fold() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should emit mod opcode, not fold to error
-    assert!(disasm.contains("mod"), "Modulo by zero should emit mod opcode: {}", disasm);
+    assert!(
+        disasm.contains("mod"),
+        "Modulo by zero should emit mod opcode: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1329,7 +1434,11 @@ fn test_compile_pow_negative_exponent_no_fold() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should emit pow opcode, not fold
-    assert!(disasm.contains("pow"), "Negative exponent pow should emit pow opcode: {}", disasm);
+    assert!(
+        disasm.contains("pow"),
+        "Negative exponent pow should emit pow opcode: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1343,7 +1452,11 @@ fn test_compile_float_division_by_zero_no_fold() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should emit div opcode, not fold
-    assert!(disasm.contains("div"), "Float division by zero should emit div opcode: {}", disasm);
+    assert!(
+        disasm.contains("div"),
+        "Float division by zero should emit div opcode: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1384,9 +1497,16 @@ fn test_compile_multiply_by_zero_constant() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should NOT emit mul, should just push 0
-    assert!(!disasm.contains("mul"), "Multiply by zero should not emit mul: {}", disasm);
-    assert!(disasm.contains("push_long_small 0") || disasm.contains("push_long_small\n0"),
-        "Should emit push 0: {}", disasm);
+    assert!(
+        !disasm.contains("mul"),
+        "Multiply by zero should not emit mul: {}",
+        disasm
+    );
+    assert!(
+        disasm.contains("push_long_small 0") || disasm.contains("push_long_small\n0"),
+        "Should emit push 0: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1400,7 +1520,11 @@ fn test_compile_multiply_by_one_left() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should NOT emit mul
-    assert!(!disasm.contains("mul"), "Multiply by 1 should not emit mul: {}", disasm);
+    assert!(
+        !disasm.contains("mul"),
+        "Multiply by 1 should not emit mul: {}",
+        disasm
+    );
     // Should emit push_var for $x (variable opcode is push_var, not push_variable)
     assert!(disasm.contains("push_var"), "Should push $x: {}", disasm);
 }
@@ -1416,7 +1540,11 @@ fn test_compile_multiply_by_one_right() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should NOT emit mul
-    assert!(!disasm.contains("mul"), "Multiply by 1 should not emit mul: {}", disasm);
+    assert!(
+        !disasm.contains("mul"),
+        "Multiply by 1 should not emit mul: {}",
+        disasm
+    );
 }
 
 // ========================================================================
@@ -1434,7 +1562,11 @@ fn test_compile_divide_by_one() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should NOT emit div
-    assert!(!disasm.contains("div"), "Divide by 1 should not emit div: {}", disasm);
+    assert!(
+        !disasm.contains("div"),
+        "Divide by 1 should not emit div: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1448,7 +1580,11 @@ fn test_compile_divide_constant_by_one() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should emit push 100, not div
-    assert!(!disasm.contains("div"), "100/1 should fold to 100: {}", disasm);
+    assert!(
+        !disasm.contains("div"),
+        "100/1 should fold to 100: {}",
+        disasm
+    );
 }
 
 // ========================================================================
@@ -1466,9 +1602,16 @@ fn test_compile_pow_zero_exponent() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should NOT emit pow, should emit push 1
-    assert!(!disasm.contains("pow"), "pow $x 0 should not emit pow: {}", disasm);
-    assert!(disasm.contains("push_long_small 1") || disasm.contains("push_long_small\n1"),
-        "Should emit push 1: {}", disasm);
+    assert!(
+        !disasm.contains("pow"),
+        "pow $x 0 should not emit pow: {}",
+        disasm
+    );
+    assert!(
+        disasm.contains("push_long_small 1") || disasm.contains("push_long_small\n1"),
+        "Should emit push 1: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1482,7 +1625,11 @@ fn test_compile_pow_one_exponent() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should NOT emit pow
-    assert!(!disasm.contains("pow"), "pow $x 1 should not emit pow: {}", disasm);
+    assert!(
+        !disasm.contains("pow"),
+        "pow $x 1 should not emit pow: {}",
+        disasm
+    );
     // Should emit push_var for $x (variable opcode is push_var)
     assert!(disasm.contains("push_var"), "Should push $x: {}", disasm);
 }
@@ -1501,8 +1648,11 @@ fn test_compile_if_requires_three_args() {
     ]);
     let result = compile("test", &expr);
     // Should error with InvalidArity
-    assert!(matches!(result, Err(CompileError::InvalidArity { .. })),
-        "if without else should error: {:?}", result);
+    assert!(
+        matches!(result, Err(CompileError::InvalidArity { .. })),
+        "if without else should error: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1517,7 +1667,11 @@ fn test_compile_if_non_boolean_condition_no_fold() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should emit jump_if_false, not fold
-    assert!(disasm.contains("jump_if_false"), "Non-boolean if should not fold: {}", disasm);
+    assert!(
+        disasm.contains("jump_if_false"),
+        "Non-boolean if should not fold: {}",
+        disasm
+    );
 }
 
 // ========================================================================
@@ -1545,11 +1699,26 @@ fn test_compile_let_star_multiple_bindings() {
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("let*".to_string()),
         MettaValue::SExpr(vec![
-            MettaValue::SExpr(vec![MettaValue::Atom("$a".to_string()), MettaValue::Long(1)]),
-            MettaValue::SExpr(vec![MettaValue::Atom("$b".to_string()), MettaValue::Long(2)]),
-            MettaValue::SExpr(vec![MettaValue::Atom("$c".to_string()), MettaValue::Long(3)]),
-            MettaValue::SExpr(vec![MettaValue::Atom("$d".to_string()), MettaValue::Long(4)]),
-            MettaValue::SExpr(vec![MettaValue::Atom("$e".to_string()), MettaValue::Long(5)]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("$a".to_string()),
+                MettaValue::Long(1),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("$b".to_string()),
+                MettaValue::Long(2),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("$c".to_string()),
+                MettaValue::Long(3),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("$d".to_string()),
+                MettaValue::Long(4),
+            ]),
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("$e".to_string()),
+                MettaValue::Long(5),
+            ]),
         ]),
         MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
@@ -1560,7 +1729,11 @@ fn test_compile_let_star_multiple_bindings() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should have multiple store_local operations
-    assert!(disasm.matches("store_local").count() >= 5, "Should have 5 store_local: {}", disasm);
+    assert!(
+        disasm.matches("store_local").count() >= 5,
+        "Should have 5 store_local: {}",
+        disasm
+    );
 }
 
 // ========================================================================
@@ -1582,8 +1755,11 @@ fn test_compile_catch_expression() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should have error handling opcodes
-    assert!(disasm.contains("catch") || disasm.contains("is_error") || disasm.contains("error"),
-        "Catch should compile error handling: {}", disasm);
+    assert!(
+        disasm.contains("catch") || disasm.contains("is_error") || disasm.contains("error"),
+        "Catch should compile error handling: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1596,7 +1772,11 @@ fn test_compile_is_error_expression() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // is-error compiles to: push_var, jump_if_error, push_false, jump, push_true
-    assert!(disasm.contains("jump_if_error"), "Should emit jump_if_error for is-error: {}", disasm);
+    assert!(
+        disasm.contains("jump_if_error"),
+        "Should emit jump_if_error for is-error: {}",
+        disasm
+    );
 }
 
 // ========================================================================
@@ -1612,7 +1792,11 @@ fn test_compile_and_single_arg_arity_error() {
     ]);
     let result = compile("test", &expr);
     // Should error - and requires exactly 2 arguments
-    assert!(result.is_err(), "(and true) with single arg should error: {:?}", result);
+    assert!(
+        result.is_err(),
+        "(and true) with single arg should error: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1626,7 +1810,11 @@ fn test_compile_and_three_args_arity_error() {
     ]);
     let result = compile("test", &expr);
     // Should error - and requires exactly 2 arguments
-    assert!(result.is_err(), "(and true true true) with 3 args should error: {:?}", result);
+    assert!(
+        result.is_err(),
+        "(and true true true) with 3 args should error: {:?}",
+        result
+    );
 }
 
 // ========================================================================
@@ -1642,8 +1830,11 @@ fn test_compile_case_arity_error() {
     ]);
     let result = compile("test", &expr);
     // Should error with InvalidArity
-    assert!(matches!(result, Err(CompileError::InvalidArity { .. })),
-        "(case $x) without patterns should error: {:?}", result);
+    assert!(
+        matches!(result, Err(CompileError::InvalidArity { .. })),
+        "(case $x) without patterns should error: {:?}",
+        result
+    );
 }
 
 #[test]
@@ -1704,7 +1895,11 @@ fn test_compile_nil_less_than_no_fold() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should emit lt opcode, not fold
-    assert!(disasm.contains("lt"), "nil < nil should emit lt opcode: {}", disasm);
+    assert!(
+        disasm.contains("lt"),
+        "nil < nil should emit lt opcode: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1738,8 +1933,11 @@ fn test_compile_quoted_large_sexpr() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should use MakeSExprLarge for > 255 elements
-    assert!(disasm.contains("make_sexpr") || disasm.contains("sexpr"),
-        "Large quoted S-expr should use make_sexpr: {}", disasm);
+    assert!(
+        disasm.contains("make_sexpr") || disasm.contains("sexpr"),
+        "Large quoted S-expr should use make_sexpr: {}",
+        disasm
+    );
 }
 
 // ========================================================================
@@ -1764,9 +1962,16 @@ fn test_compile_shadowing_variables() {
     let disasm = chunk.disassemble();
     // Should have store_local and either load_local or dup (optimizer folds
     // `store_local X; load_local X` into `dup; store_local X`)
-    assert!(disasm.contains("store_local"), "Should store locals: {}", disasm);
-    assert!(disasm.contains("load_local") || disasm.contains("dup"),
-        "Should load locals (or dup via optimizer): {}", disasm);
+    assert!(
+        disasm.contains("store_local"),
+        "Should store locals: {}",
+        disasm
+    );
+    assert!(
+        disasm.contains("load_local") || disasm.contains("dup"),
+        "Should load locals (or dup via optimizer): {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1800,7 +2005,11 @@ fn test_compile_deeply_nested_scopes() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should handle nested scopes
-    assert!(disasm.matches("store_local").count() >= 3, "Should have 3 store_local: {}", disasm);
+    assert!(
+        disasm.matches("store_local").count() >= 3,
+        "Should have 3 store_local: {}",
+        disasm
+    );
 }
 
 // ========================================================================
@@ -1817,7 +2026,11 @@ fn test_compile_high_arity_function_call() {
     let expr = MettaValue::SExpr(args);
     let result = compile("test", &expr);
     // Should compile successfully
-    assert!(result.is_ok(), "100-arg function call should compile: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "100-arg function call should compile: {:?}",
+        result
+    );
 }
 
 // ========================================================================
@@ -1836,9 +2049,17 @@ fn test_compile_add_overflow_wraps() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Wrapping addition folds to i64::MIN (-9223372036854775808)
-    assert!(disasm.contains("push_long"), "Overflow should fold: {}", disasm);
+    assert!(
+        disasm.contains("push_long"),
+        "Overflow should fold: {}",
+        disasm
+    );
     // Verify no add opcode (it was folded)
-    assert!(!disasm.contains("\nadd\n"), "Should not emit add opcode: {}", disasm);
+    assert!(
+        !disasm.contains("\nadd\n"),
+        "Should not emit add opcode: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1891,8 +2112,16 @@ fn test_fold_floor_div_positive() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_long_small 3"), "floor-div should fold to 3: {}", disasm);
-    assert!(!disasm.contains("floor_div"), "floor-div should not emit opcode: {}", disasm);
+    assert!(
+        disasm.contains("push_long_small 3"),
+        "floor-div should fold to 3: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("floor_div"),
+        "floor-div should not emit opcode: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1906,7 +2135,11 @@ fn test_fold_floor_div_negative() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // -17 div_euclid 5 = -4
-    assert!(disasm.contains("push_long") || disasm.contains("-4"), "floor-div negative: {}", disasm);
+    assert!(
+        disasm.contains("push_long") || disasm.contains("-4"),
+        "floor-div negative: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1919,7 +2152,11 @@ fn test_fold_floor_div_by_zero_no_fold() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("floor_div"), "floor-div by zero should emit opcode: {}", disasm);
+    assert!(
+        disasm.contains("floor_div"),
+        "floor-div by zero should emit opcode: {}",
+        disasm
+    );
 }
 
 // --- Power (pow) Operations ---
@@ -1936,7 +2173,11 @@ fn test_fold_pow_positive() {
     let disasm = chunk.disassemble();
     // 2^8 = 256 - needs large constant
     assert!(disasm.contains("push_long"), "pow should fold: {}", disasm);
-    assert!(!disasm.contains("\npow\n"), "pow should not emit opcode: {}", disasm);
+    assert!(
+        !disasm.contains("\npow\n"),
+        "pow should not emit opcode: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1949,7 +2190,11 @@ fn test_fold_pow_math_alias() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_long_small 81"), "pow-math should fold: {}", disasm);
+    assert!(
+        disasm.contains("push_long_small 81"),
+        "pow-math should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -1987,8 +2232,16 @@ fn test_fold_pow_float() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should fold to Float(8.0) - constant pool includes the value
-    assert!(disasm.contains("push_const") || disasm.contains("Float(8"), "pow float should fold: {}", disasm);
-    assert!(!disasm.contains("\npow\n"), "pow opcode should not be emitted: {}", disasm);
+    assert!(
+        disasm.contains("push_const") || disasm.contains("Float(8"),
+        "pow float should fold: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("\npow\n"),
+        "pow opcode should not be emitted: {}",
+        disasm
+    );
 }
 
 // --- Modulo (mod) Operations ---
@@ -2003,7 +2256,11 @@ fn test_fold_mod_alias() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_long_small 2"), "mod should fold: {}", disasm);
+    assert!(
+        disasm.contains("push_long_small 2"),
+        "mod should fold: {}",
+        disasm
+    );
 }
 
 // NOTE: `usize` is always >= 0
@@ -2031,7 +2288,11 @@ fn test_fold_mod_float() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should fold to Float(2.5)
-    assert!(!disasm.contains("\nmod\n"), "float mod should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nmod\n"),
+        "float mod should fold: {}",
+        disasm
+    );
 }
 
 // --- Mixed Type Arithmetic (Long/Float Coercion) ---
@@ -2047,7 +2308,11 @@ fn test_fold_add_long_float() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Long + Float -> Float, should fold
-    assert!(!disasm.contains("\nadd\n"), "mixed add should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nadd\n"),
+        "mixed add should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2060,7 +2325,11 @@ fn test_fold_mul_float_long() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(!disasm.contains("\nmul\n"), "mixed mul should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nmul\n"),
+        "mixed mul should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2073,7 +2342,11 @@ fn test_fold_sub_long_float() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(!disasm.contains("\nsub\n"), "mixed sub should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nsub\n"),
+        "mixed sub should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2086,7 +2359,11 @@ fn test_fold_div_long_float() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(!disasm.contains("\ndiv\n"), "mixed div should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\ndiv\n"),
+        "mixed div should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2100,7 +2377,11 @@ fn test_fold_pow_long_float() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Long ^ Float -> Float (2^0.5 = sqrt(2) ≈ 1.414)
-    assert!(!disasm.contains("\npow\n"), "mixed pow should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\npow\n"),
+        "mixed pow should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2113,7 +2394,11 @@ fn test_fold_eq_long_float_same() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "mixed == (same value) should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "mixed == (same value) should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2126,7 +2411,11 @@ fn test_fold_eq_long_float_different() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_false"), "mixed == (different value) should fold to false: {}", disasm);
+    assert!(
+        disasm.contains("push_false"),
+        "mixed == (different value) should fold to false: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2139,7 +2428,11 @@ fn test_fold_ne_long_float_same() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_false"), "mixed != (same value) should fold to false: {}", disasm);
+    assert!(
+        disasm.contains("push_false"),
+        "mixed != (same value) should fold to false: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2152,7 +2445,11 @@ fn test_fold_ne_long_float_different() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "mixed != (different value) should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "mixed != (different value) should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2165,7 +2462,11 @@ fn test_fold_eq_float_float() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "float == float (same value) should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "float == float (same value) should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2179,7 +2480,11 @@ fn test_fold_mod_long_float() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Long % Float -> Float, should fold
-    assert!(!disasm.contains("\nmod\n"), "mixed mod (long % float) should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nmod\n"),
+        "mixed mod (long % float) should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2193,7 +2498,11 @@ fn test_fold_mod_float_long() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Float % Long -> Float, should fold
-    assert!(!disasm.contains("\nmod\n"), "mixed mod (float % long) should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nmod\n"),
+        "mixed mod (float % long) should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2208,7 +2517,11 @@ fn test_fold_mod_float_float() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Float % Float -> Float, should fold
-    assert!(!disasm.contains("\nmod\n"), "float mod (float % float) should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nmod\n"),
+        "float mod (float % float) should fold: {}",
+        disasm
+    );
 }
 
 // --- Unary Operations ---
@@ -2222,8 +2535,16 @@ fn test_fold_abs_positive() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_long_small 42"), "abs positive should fold: {}", disasm);
-    assert!(!disasm.contains("\nabs\n"), "abs positive should not emit opcode: {}", disasm);
+    assert!(
+        disasm.contains("push_long_small 42"),
+        "abs positive should fold: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("\nabs\n"),
+        "abs positive should not emit opcode: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2235,7 +2556,11 @@ fn test_fold_abs_negative() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_long_small 42"), "abs negative should fold to 42: {}", disasm);
+    assert!(
+        disasm.contains("push_long_small 42"),
+        "abs negative should fold to 42: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2247,7 +2572,11 @@ fn test_fold_abs_math_alias() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_long_small 100"), "abs-math should fold: {}", disasm);
+    assert!(
+        disasm.contains("push_long_small 100"),
+        "abs-math should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2259,7 +2588,11 @@ fn test_fold_abs_float() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(!disasm.contains("\nabs\n"), "abs float should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nabs\n"),
+        "abs float should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2284,7 +2617,11 @@ fn test_fold_neg_float() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(!disasm.contains("\nneg\n"), "neg float should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nneg\n"),
+        "neg float should fold: {}",
+        disasm
+    );
 }
 
 // --- Boolean XOR ---
@@ -2299,7 +2636,11 @@ fn test_fold_xor_true_false() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "xor(true, false) should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "xor(true, false) should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2312,7 +2653,11 @@ fn test_fold_xor_true_true() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_false"), "xor(true, true) should fold to false: {}", disasm);
+    assert!(
+        disasm.contains("push_false"),
+        "xor(true, true) should fold to false: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2325,7 +2670,11 @@ fn test_fold_xor_false_false() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_false"), "xor(false, false) should fold to false: {}", disasm);
+    assert!(
+        disasm.contains("push_false"),
+        "xor(false, false) should fold to false: {}",
+        disasm
+    );
 }
 
 // --- String Comparisons ---
@@ -2340,7 +2689,11 @@ fn test_fold_lt_strings() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "string < should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "string < should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2353,7 +2706,11 @@ fn test_fold_gt_strings() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "string > should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "string > should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2366,7 +2723,11 @@ fn test_fold_eq_strings() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "string == should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "string == should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2379,7 +2740,11 @@ fn test_fold_ne_strings() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "string != should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "string != should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2392,7 +2757,11 @@ fn test_fold_le_strings() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "string <= should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "string <= should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2405,7 +2774,11 @@ fn test_fold_ge_strings() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "string >= should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "string >= should fold to true: {}",
+        disasm
+    );
 }
 
 // --- Unit/Nil Comparisons ---
@@ -2420,7 +2793,11 @@ fn test_fold_unit_equality() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "unit == unit should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "unit == unit should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2433,7 +2810,11 @@ fn test_fold_unit_inequality() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_false"), "unit != unit should fold to false: {}", disasm);
+    assert!(
+        disasm.contains("push_false"),
+        "unit != unit should fold to false: {}",
+        disasm
+    );
 }
 
 // --- Boolean Comparisons ---
@@ -2448,7 +2829,11 @@ fn test_fold_bool_eq_true() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "bool == should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "bool == should fold to true: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2461,7 +2846,11 @@ fn test_fold_bool_ne() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "bool != should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "bool != should fold to true: {}",
+        disasm
+    );
 }
 
 // --- Mixed Type Comparisons (should NOT fold) ---
@@ -2477,7 +2866,11 @@ fn test_no_fold_lt_long_string() {
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
     // Should emit lt opcode since types don't match
-    assert!(disasm.contains("lt"), "mixed type < should emit opcode: {}", disasm);
+    assert!(
+        disasm.contains("lt"),
+        "mixed type < should emit opcode: {}",
+        disasm
+    );
 }
 
 // --- Nested Constant Expression Folding ---
@@ -2504,11 +2897,31 @@ fn test_fold_nested_arithmetic_complex() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_long_small 12"), "nested should fold to 12: {}", disasm);
-    assert!(!disasm.contains("\nadd\n"), "should not emit add: {}", disasm);
-    assert!(!disasm.contains("\nmul\n"), "should not emit mul: {}", disasm);
-    assert!(!disasm.contains("\nsub\n"), "should not emit sub: {}", disasm);
-    assert!(!disasm.contains("\ndiv\n"), "should not emit div: {}", disasm);
+    assert!(
+        disasm.contains("push_long_small 12"),
+        "nested should fold to 12: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("\nadd\n"),
+        "should not emit add: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("\nmul\n"),
+        "should not emit mul: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("\nsub\n"),
+        "should not emit sub: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("\ndiv\n"),
+        "should not emit div: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2527,8 +2940,16 @@ fn test_fold_nested_if_constant() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_long_small 1"), "nested if should fold: {}", disasm);
-    assert!(!disasm.contains("jump"), "should not emit jumps: {}", disasm);
+    assert!(
+        disasm.contains("push_long_small 1"),
+        "nested if should fold: {}",
+        disasm
+    );
+    assert!(
+        !disasm.contains("jump"),
+        "should not emit jumps: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2554,7 +2975,11 @@ fn test_fold_conditional_with_comparison() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_long_small 30"), "conditional should fold: {}", disasm);
+    assert!(
+        disasm.contains("push_long_small 30"),
+        "conditional should fold: {}",
+        disasm
+    );
 }
 
 // --- Variable Presence Prevents Folding ---
@@ -2569,7 +2994,11 @@ fn test_no_fold_with_variable() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("add"), "variable presence should prevent folding: {}", disasm);
+    assert!(
+        disasm.contains("add"),
+        "variable presence should prevent folding: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2586,7 +3015,11 @@ fn test_no_fold_nested_variable() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("add") || disasm.contains("mul"), "nested variable prevents folding: {}", disasm);
+    assert!(
+        disasm.contains("add") || disasm.contains("mul"),
+        "nested variable prevents folding: {}",
+        disasm
+    );
 }
 
 // --- Float Special Values ---
@@ -2601,7 +3034,11 @@ fn test_fold_float_operations() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(!disasm.contains("\nadd\n"), "float add should fold: {}", disasm);
+    assert!(
+        !disasm.contains("\nadd\n"),
+        "float add should fold: {}",
+        disasm
+    );
 }
 
 #[test]
@@ -2614,7 +3051,11 @@ fn test_fold_float_comparison_epsilon() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
-    assert!(disasm.contains("push_true"), "float == should fold to true: {}", disasm);
+    assert!(
+        disasm.contains("push_true"),
+        "float == should fold to true: {}",
+        disasm
+    );
 }
 
 // ========================================================================

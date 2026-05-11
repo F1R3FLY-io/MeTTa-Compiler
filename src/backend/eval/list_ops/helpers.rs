@@ -80,12 +80,19 @@ where
     }
 
     // Check other leaf types - these don't contain variables
-    if matches!(expr.inner_raw(),
-        MettaValueInner::Bool(_) | MettaValueInner::Long(_) | MettaValueInner::Float(_)
-        | MettaValueInner::String(_) | MettaValueInner::Unit | MettaValueInner::Space(_)
-        | MettaValueInner::State(_) | MettaValueInner::Type(_) | MettaValueInner::Memo(_)
-        | MettaValueInner::Empty)
-    {
+    if matches!(
+        expr.inner_raw(),
+        MettaValueInner::Bool(_)
+            | MettaValueInner::Long(_)
+            | MettaValueInner::Float(_)
+            | MettaValueInner::String(_)
+            | MettaValueInner::Unit
+            | MettaValueInner::Space(_)
+            | MettaValueInner::State(_)
+            | MettaValueInner::Type(_)
+            | MettaValueInner::Memo(_)
+            | MettaValueInner::Empty
+    ) {
         return expr.clone();
     }
 
@@ -298,10 +305,7 @@ mod tests {
     #[test]
     fn test_substitute_variable_generic_error() {
         let factory = GcFactory::default();
-        let expr = MettaValue::Error(
-            "test error".to_string(),
-            MettaValue::Atom("$x".to_string()),
-        );
+        let expr = MettaValue::Error("test error".to_string(), MettaValue::Atom("$x".to_string()));
         let value = MettaValue::Long(42);
 
         let result = substitute_variable_generic(&expr, "$x", &value, &factory);

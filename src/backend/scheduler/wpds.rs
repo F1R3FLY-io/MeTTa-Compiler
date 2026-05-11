@@ -102,9 +102,7 @@ impl SchedulerStackSymbol {
         let tag = self.tag() as u32;
         let payload: u32 = match self {
             Self::Root => 0,
-            Self::RuleMatch { head_hash, arity } => {
-                (*head_hash as u32) << 8 | (*arity as u32)
-            }
+            Self::RuleMatch { head_hash, arity } => (*head_hash as u32) << 8 | (*arity as u32),
             Self::Binding { rule_idx } => *rule_idx as u32,
             Self::ArgEval { position } => *position as u32,
             Self::Conditional { branch } => *branch as u32,
@@ -307,9 +305,7 @@ impl<W: Semiring> Wpds<W> {
                     }
                     WpdsRule::Replace { to, weight, .. } => {
                         let new_weight = source_weight.times(weight);
-                        let entry = weights
-                            .entry(to.clone())
-                            .or_insert_with(W::zero);
+                        let entry = weights.entry(to.clone()).or_insert_with(W::zero);
                         let combined = entry.plus(&new_weight);
                         if !combined.approx_eq(entry, 1e-10) {
                             *entry = combined;
@@ -318,9 +314,7 @@ impl<W: Semiring> Wpds<W> {
                     }
                     WpdsRule::Push { to_top, weight, .. } => {
                         let new_weight = source_weight.times(weight);
-                        let entry = weights
-                            .entry(to_top.clone())
-                            .or_insert_with(W::zero);
+                        let entry = weights.entry(to_top.clone()).or_insert_with(W::zero);
                         let combined = entry.plus(&new_weight);
                         if !combined.approx_eq(entry, 1e-10) {
                             *entry = combined;
@@ -386,8 +380,8 @@ pub fn hash_context_packed(packed_frames: &[u32]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::semiring::TropicalWeight;
+    use super::*;
 
     #[test]
     fn test_stack_symbol_pack() {

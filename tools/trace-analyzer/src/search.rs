@@ -44,7 +44,9 @@ fn matches_pattern(value: &TraceValue, pattern: &str) -> bool {
         TraceValue::Atom(s) => s.contains(pattern),
         TraceValue::String(s) => s.contains(pattern),
         TraceValue::SExpr(items) => items.iter().any(|item| matches_pattern(item, pattern)),
-        TraceValue::Error(msg, details) => msg.contains(pattern) || matches_pattern(details, pattern),
+        TraceValue::Error(msg, details) => {
+            msg.contains(pattern) || matches_pattern(details, pattern)
+        }
         TraceValue::Type(inner) => matches_pattern(inner, pattern),
         TraceValue::Quoted(inner) => matches_pattern(inner, pattern),
         _ => false,
@@ -55,9 +57,12 @@ fn kind_matches_pattern(kind: &TraceEventKind, pattern: &str) -> bool {
     match kind {
         TraceEventKind::GroundedOp { op_name, .. } => op_name.contains(pattern),
         TraceEventKind::SpecialForm { form_name, .. } => form_name.contains(pattern),
-        TraceEventKind::GroundedOpError { op_name, error_kind, message, .. } => {
-            op_name.contains(pattern) || error_kind.contains(pattern) || message.contains(pattern)
-        }
+        TraceEventKind::GroundedOpError {
+            op_name,
+            error_kind,
+            message,
+            ..
+        } => op_name.contains(pattern) || error_kind.contains(pattern) || message.contains(pattern),
         TraceEventKind::ErrorCreated { message, .. } => message.contains(pattern),
         TraceEventKind::JitBailout { reason, .. } => reason.contains(pattern),
         TraceEventKind::BytecodeHalt { reason, .. } => reason.contains(pattern),
@@ -72,12 +77,21 @@ fn kind_matches_pattern(kind: &TraceEventKind, pattern: &str) -> bool {
         | TraceEventKind::WorkPoolMonitorTick { .. }
         | TraceEventKind::WorkPoolWorkerBlocked { .. }
         | TraceEventKind::WorkPoolWorkerUnblocked { .. } => false,
-        TraceEventKind::LetBindingStep { pattern: pat, evaluated_value, form, bindings, .. } => {
+        TraceEventKind::LetBindingStep {
+            pattern: pat,
+            evaluated_value,
+            form,
+            bindings,
+            ..
+        } => {
             let p = pat.to_string();
             let v = evaluated_value.to_string();
-            p.contains(pattern) || v.contains(pattern)
+            p.contains(pattern)
+                || v.contains(pattern)
                 || form.contains(pattern)
-                || bindings.iter().any(|(k, bv)| k.contains(pattern) || bv.to_string().contains(pattern))
+                || bindings
+                    .iter()
+                    .any(|(k, bv)| k.contains(pattern) || bv.to_string().contains(pattern))
         }
         TraceEventKind::ArgumentPreEvalResult { before, after, .. } => {
             before.to_string().contains(pattern) || after.to_string().contains(pattern)
@@ -85,10 +99,17 @@ fn kind_matches_pattern(kind: &TraceEventKind, pattern: &str) -> bool {
         TraceEventKind::TablingDecision { decision, .. } => {
             decision.to_string().contains(pattern) || pattern == "TablingDecision"
         }
-        TraceEventKind::BindingsApplied { template, result, bindings, .. } => {
+        TraceEventKind::BindingsApplied {
+            template,
+            result,
+            bindings,
+            ..
+        } => {
             template.to_string().contains(pattern)
                 || result.to_string().contains(pattern)
-                || bindings.iter().any(|(k, bv)| k.contains(pattern) || bv.to_string().contains(pattern))
+                || bindings
+                    .iter()
+                    .any(|(k, bv)| k.contains(pattern) || bv.to_string().contains(pattern))
         }
         TraceEventKind::RuleSelected { selected_rhs, .. } => {
             selected_rhs.to_string().contains(pattern) || pattern == "RuleSelected"
@@ -100,7 +121,13 @@ fn kind_matches_pattern(kind: &TraceEventKind, pattern: &str) -> bool {
 fn format_value(v: &TraceValue) -> String {
     match v {
         TraceValue::Atom(s) => s.clone(),
-        TraceValue::Bool(b) => if *b { "True".to_string() } else { "False".to_string() },
+        TraceValue::Bool(b) => {
+            if *b {
+                "True".to_string()
+            } else {
+                "False".to_string()
+            }
+        }
         TraceValue::Long(n) => n.to_string(),
         TraceValue::Float(f) => f.to_string(),
         TraceValue::String(s) => format!("\"{}\"", s),

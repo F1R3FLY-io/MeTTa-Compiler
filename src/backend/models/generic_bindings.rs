@@ -24,7 +24,11 @@
 
 use smallvec::SmallVec;
 use std::fmt::Debug;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::backend::symbol::{intern as intern_symbol, Symbol};
 
 use super::MettaValueTrait;
 
@@ -55,6 +59,133 @@ static SCOPE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 #[inline]
 pub fn allocate_scope_id() -> ScopeId {
     SCOPE_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// GC-independent variable binding key.
+///
+/// Binding keys outlive the immediate `MettaValue::as_atom()` borrow that
+/// produced them, so they must not point into GC-managed slab string storage.
+/// Source/rule variable names are canonicalized through the backend symbol
+/// table. Generated textual fresh names remain process-reclaimable by using
+/// `Arc<str>` instead of the global interner.
+#[derive(Clone, Debug)]
+pub enum BindingName {
+    Stable(Symbol),
+    Ephemeral(Arc<str>),
+}
+
+impl BindingName {
+    #[inline]
+    pub fn new(name: &str) -> Self {
+        if name.starts_with("$__fr_") {
+            Self::Ephemeral(Arc::<str>::from(name))
+        } else {
+            Self::Stable(intern_symbol(name))
+        }
+    }
+
+    #[inline]
+    pub fn stable(name: &str) -> Self {
+        Self::Stable(intern_symbol(name))
+    }
+
+    #[inline]
+    pub fn ephemeral(name: impl Into<Arc<str>>) -> Self {
+        Self::Ephemeral(name.into())
+    }
+
+    #[inline]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Stable(symbol) => symbol.as_str(),
+            Self::Ephemeral(name) => name.as_ref(),
+        }
+    }
+
+    #[inline]
+    pub fn matches(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl From<&str> for BindingName {
+    #[inline]
+    fn from(value: &str) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&String> for BindingName {
+    #[inline]
+    fn from(value: &String) -> Self {
+        Self::new(value.as_str())
+    }
+}
+
+impl From<String> for BindingName {
+    #[inline]
+    fn from(value: String) -> Self {
+        if value.starts_with("$__fr_") {
+            Self::Ephemeral(Arc::<str>::from(value))
+        } else {
+            Self::Stable(intern_symbol(&value))
+        }
+    }
+}
+
+impl From<Symbol> for BindingName {
+    #[inline]
+    fn from(value: Symbol) -> Self {
+        Self::Stable(value)
+    }
+}
+
+impl From<&BindingName> for BindingName {
+    #[inline]
+    fn from(value: &BindingName) -> Self {
+        value.clone()
+    }
+}
+
+impl AsRef<str> for BindingName {
+    #[inline]
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq for BindingName {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Stable(a), Self::Stable(b)) => a == b,
+            (Self::Ephemeral(a), Self::Ephemeral(b)) => a == b,
+            _ => self.as_str() == other.as_str(),
+        }
+    }
+}
+
+impl Eq for BindingName {}
+
+impl Hash for BindingName {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+impl PartialEq<str> for BindingName {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        self.matches(other)
+    }
+}
+
+impl PartialEq<&str> for BindingName {
+    #[inline]
+    fn eq(&self, other: &&str) -> bool {
+        self.matches(other)
+    }
 }
 
 /// Generic bindings structure optimized for common cases.
@@ -96,10 +227,10 @@ pub enum GenericBindings<V: MettaValueTrait + Clone> {
     /// No bindings (zero-cost)
     Empty,
     /// Single binding (inline, no allocation)
-    Single((ScopeId, &'static str, V)),
+    Single((ScopeId, BindingName, V)),
     /// 2-8 bindings (stack-allocated via SmallVec)
     /// >8 bindings (SmallVec spills to heap automatically)
-    Small(SmallVec<[(ScopeId, &'static str, V); 8]>),
+    Small(SmallVec<[(ScopeId, BindingName, V); 8]>),
 }
 
 impl<V: MettaValueTrait + Clone> GenericBindings<V> {
@@ -122,16 +253,15 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
         match self {
             GenericBindings::Empty => None,
             GenericBindings::Single((_, n, v)) => {
-                if *n == name {
+                if n.matches(name) {
                     Some(v)
                 } else {
                     None
                 }
             }
-            GenericBindings::Small(vec) => vec
-                .iter()
-                .find(|(_, n, _)| *n == name)
-                .map(|(_, _, v)| v),
+            GenericBindings::Small(vec) => {
+                vec.iter().find(|(_, n, _)| n.matches(name)).map(|(_, _, v)| v)
+            }
         }
     }
 
@@ -146,7 +276,10 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
     /// that want overwrite-semantics should use
     /// [`insert_or_replace`](Self::insert_or_replace).
     #[inline]
-    pub fn insert(&mut self, name: &'static str, value: V) {
+    pub fn insert<N>(&mut self, name: N, value: V)
+    where
+        N: Into<BindingName>,
+    {
         self.insert_scoped(ROOT_SCOPE, name, value);
     }
 
@@ -205,9 +338,10 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
     /// Extend bindings from an iterator of `(name, value)` pairs at
     /// [`ROOT_SCOPE`]. Scope-aware extend should use
     /// [`extend_scoped`](Self::extend_scoped).
-    pub fn extend<I>(&mut self, iter: I)
+    pub fn extend<I, N>(&mut self, iter: I)
     where
-        I: IntoIterator<Item = (&'static str, V)>,
+        I: IntoIterator<Item = (N, V)>,
+        N: Into<BindingName>,
     {
         for (name, value) in iter {
             self.insert(name, value);
@@ -219,17 +353,21 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
     /// `ROOT_SCOPE`. This is the legacy shim — scope-aware callers should
     /// use [`insert_or_replace_scoped`](Self::insert_or_replace_scoped).
     #[inline]
-    pub fn insert_or_replace(&mut self, name: &'static str, value: V) {
+    pub fn insert_or_replace<N>(&mut self, name: N, value: V)
+    where
+        N: Into<BindingName>,
+    {
+        let name = name.into();
         match self {
             GenericBindings::Empty => {
                 *self = GenericBindings::Single((ROOT_SCOPE, name, value));
             }
             GenericBindings::Single((_existing_scope, existing_name, existing_value)) => {
-                if *existing_name == name {
+                if existing_name == &name {
                     *existing_value = value;
                 } else {
                     let existing_scope = *_existing_scope;
-                    let existing_name = *existing_name;
+                    let existing_name = existing_name.clone();
                     let existing_value = existing_value.clone();
                     let mut vec = SmallVec::new();
                     vec.push((existing_scope, existing_name, existing_value));
@@ -279,7 +417,7 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
         match self {
             GenericBindings::Empty => None,
             GenericBindings::Single((s, n, v)) => {
-                if *s == scope && *n == name {
+                if *s == scope && n.matches(name) {
                     Some(v)
                 } else {
                     None
@@ -287,7 +425,7 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
             }
             GenericBindings::Small(vec) => vec
                 .iter()
-                .find(|(s, n, _)| *s == scope && *n == name)
+                .find(|(s, n, _)| *s == scope && n.matches(name))
                 .map(|(_, _, v)| v),
         }
     }
@@ -311,7 +449,11 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
     /// are possible; use [`insert_or_replace_scoped`](Self::insert_or_replace_scoped)
     /// for overwrite-on-collision.
     #[inline]
-    pub fn insert_scoped(&mut self, scope: ScopeId, name: &'static str, value: V) {
+    pub fn insert_scoped<N>(&mut self, scope: ScopeId, name: N, value: V)
+    where
+        N: Into<BindingName>,
+    {
+        let name = name.into();
         match self {
             GenericBindings::Empty => {
                 *self = GenericBindings::Single((scope, name, value));
@@ -333,25 +475,20 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
     /// a new entry is appended. Same-name entries at *different* scopes
     /// co-exist — they are independent bindings.
     #[inline]
-    pub fn insert_or_replace_scoped(
-        &mut self,
-        scope: ScopeId,
-        name: &'static str,
-        value: V,
-    ) {
+    pub fn insert_or_replace_scoped<N>(&mut self, scope: ScopeId, name: N, value: V)
+    where
+        N: Into<BindingName>,
+    {
+        let name = name.into();
         match self {
             GenericBindings::Empty => {
                 *self = GenericBindings::Single((scope, name, value));
             }
             GenericBindings::Single((existing_scope, existing_name, existing_value)) => {
-                if *existing_scope == scope && *existing_name == name {
+                if *existing_scope == scope && existing_name == &name {
                     *existing_value = value;
                 } else {
-                    let triple = (
-                        *existing_scope,
-                        *existing_name,
-                        existing_value.clone(),
-                    );
+                    let triple = (*existing_scope, existing_name.clone(), existing_value.clone());
                     let mut vec = SmallVec::new();
                     vec.push(triple);
                     vec.push((scope, name, value));
@@ -371,9 +508,10 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
     }
 
     /// Extend with `(scope, name, value)` triples.
-    pub fn extend_scoped<I>(&mut self, iter: I)
+    pub fn extend_scoped<I, N>(&mut self, iter: I)
     where
-        I: IntoIterator<Item = (ScopeId, &'static str, V)>,
+        I: IntoIterator<Item = (ScopeId, N, V)>,
+        N: Into<BindingName>,
     {
         for (scope, name, value) in iter {
             self.insert_scoped(scope, name, value);
@@ -389,10 +527,7 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
     }
 
     /// Iterate over `(name, value)` pairs whose entries match `scope`.
-    pub fn iter_scoped(
-        &self,
-        scope: ScopeId,
-    ) -> impl Iterator<Item = (&'static str, &V)> + '_ {
+    pub fn iter_scoped(&self, scope: ScopeId) -> impl Iterator<Item = (&str, &V)> + '_ {
         self.iter_full()
             .filter_map(move |(s, n, v)| if s == scope { Some((n, v)) } else { None })
     }
@@ -427,7 +562,7 @@ pub struct GenericBindingsIter<'a, V: MettaValueTrait + Clone> {
 }
 
 impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsIter<'a, V> {
-    type Item = (&'static str, &'a V);
+    type Item = (&'a str, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.bindings {
@@ -435,7 +570,7 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsIter<'a, V> {
             GenericBindings::Single((_, n, v)) => {
                 if self.index == 0 {
                     self.index += 1;
-                    Some((*n, v))
+                    Some((n.as_str(), v))
                 } else {
                     None
                 }
@@ -444,7 +579,7 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsIter<'a, V> {
                 if self.index < vec.len() {
                     let result = &vec[self.index];
                     self.index += 1;
-                    Some((result.1, &result.2))
+                    Some((result.1.as_str(), &result.2))
                 } else {
                     None
                 }
@@ -470,7 +605,7 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsIter<'a, V> {
 
 impl<'a, V: MettaValueTrait + Clone> ExactSizeIterator for GenericBindingsIter<'a, V> {}
 
-/// Iterator yielding full `(ScopeId, &'static str, &V)` triples.
+/// Iterator yielding full `(ScopeId, &str, &V)` triples.
 ///
 /// Use this for scope-aware compose / merge / round-trip emission. The
 /// legacy [`GenericBindingsIter`] discards the scope and is retained as a
@@ -481,7 +616,7 @@ pub struct GenericBindingsFullIter<'a, V: MettaValueTrait + Clone> {
 }
 
 impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsFullIter<'a, V> {
-    type Item = (ScopeId, &'static str, &'a V);
+    type Item = (ScopeId, &'a str, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.bindings {
@@ -489,7 +624,7 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsFullIter<'a, V>
             GenericBindings::Single((s, n, v)) => {
                 if self.index == 0 {
                     self.index += 1;
-                    Some((*s, *n, v))
+                    Some((*s, n.as_str(), v))
                 } else {
                     None
                 }
@@ -498,7 +633,7 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for GenericBindingsFullIter<'a, V>
                 if self.index < vec.len() {
                     let result = &vec[self.index];
                     self.index += 1;
-                    Some((result.0, result.1, &result.2))
+                    Some((result.0, result.1.as_str(), &result.2))
                 } else {
                     None
                 }
@@ -527,8 +662,8 @@ impl<'a, V: MettaValueTrait + Clone> ExactSizeIterator for GenericBindingsFullIt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::MettaValue;
     use crate::backend::models::gc_allocator::global_allocator;
+    use crate::backend::models::MettaValue;
 
     #[test]
     fn test_empty_bindings() {
@@ -553,6 +688,23 @@ mod tests {
     }
 
     #[test]
+    fn test_binding_name_survives_source_string_drop() {
+        let key = {
+            let dynamic_name = String::from("$__fr_temp");
+            BindingName::from(dynamic_name.as_str())
+        };
+        assert_eq!(key.as_str(), "$__fr_temp");
+        assert!(matches!(key, BindingName::Ephemeral(_)));
+
+        let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
+        {
+            let dynamic_name = String::from("$__fr_local");
+            bindings.insert(dynamic_name.as_str(), MettaValue::Long(7));
+        }
+        assert_eq!(bindings.get("$__fr_local"), Some(&MettaValue::Long(7)));
+    }
+
+    #[test]
     fn test_transition_to_small() {
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         bindings.insert("$x", MettaValue::Long(42));
@@ -571,7 +723,10 @@ mod tests {
         let alloc = global_allocator();
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         for i in 0..5 {
-            bindings.insert(alloc.alloc_str(&format!("$v{}", i)), MettaValue::Long(i as i64));
+            bindings.insert(
+                alloc.alloc_str(&format!("$v{}", i)),
+                MettaValue::Long(i as i64),
+            );
         }
 
         assert_eq!(bindings.len(), 5);

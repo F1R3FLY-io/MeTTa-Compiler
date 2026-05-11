@@ -9,7 +9,7 @@
 //! This eliminates the single-variable regression observed with pure SmallVec while
 //! maintaining the 3.35x speedup for nested patterns.
 
-use super::MettaValue;
+use super::{BindingName, MettaValue};
 use smallvec::SmallVec;
 
 /// Hybrid bindings structure optimized for common cases
@@ -42,10 +42,10 @@ pub enum SmartBindings {
     /// No bindings (zero-cost)
     Empty,
     /// Single binding (inline, no allocation)
-    Single((&'static str, MettaValue)),
+    Single((BindingName, MettaValue)),
     /// 2-8 bindings (stack-allocated via SmallVec)
     /// >8 bindings (SmallVec spills to heap automatically)
-    Small(SmallVec<[(&'static str, MettaValue); 8]>),
+    Small(SmallVec<[(BindingName, MettaValue); 8]>),
 }
 
 impl SmartBindings {
@@ -61,13 +61,15 @@ impl SmartBindings {
         match self {
             SmartBindings::Empty => None,
             SmartBindings::Single((n, v)) => {
-                if *n == name {
+                if n.matches(name) {
                     Some(v)
                 } else {
                     None
                 }
             }
-            SmartBindings::Small(vec) => vec.iter().find(|(n, _)| *n == name).map(|(_, v)| v),
+            SmartBindings::Small(vec) => {
+                vec.iter().find(|(n, _)| n.matches(name)).map(|(_, v)| v)
+            }
         }
     }
 
@@ -78,7 +80,11 @@ impl SmartBindings {
     /// - Single → Small (with 2 elements)
     /// - Small → Small (push)
     #[inline]
-    pub fn insert(&mut self, name: &'static str, value: MettaValue) {
+    pub fn insert<N>(&mut self, name: N, value: MettaValue)
+    where
+        N: Into<BindingName>,
+    {
+        let name = name.into();
         match self {
             SmartBindings::Empty => {
                 *self = SmartBindings::Single((name, value));
@@ -134,7 +140,7 @@ pub struct SmartBindingsIter<'a> {
 }
 
 impl<'a> Iterator for SmartBindingsIter<'a> {
-    type Item = (&'static str, &'a MettaValue);
+    type Item = (&'a str, &'a MettaValue);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.bindings {
@@ -142,7 +148,7 @@ impl<'a> Iterator for SmartBindingsIter<'a> {
             SmartBindings::Single((n, v)) => {
                 if self.index == 0 {
                     self.index += 1;
-                    Some((*n, v))
+                    Some((n.as_str(), v))
                 } else {
                     None
                 }
@@ -151,7 +157,7 @@ impl<'a> Iterator for SmartBindingsIter<'a> {
                 if self.index < vec.len() {
                     let result = &vec[self.index];
                     self.index += 1;
-                    Some((result.0, &result.1))
+                    Some((result.0.as_str(), &result.1))
                 } else {
                     None
                 }
@@ -188,6 +194,16 @@ mod tests {
     }
 
     #[test]
+    fn test_binding_name_survives_source_string_drop() {
+        let mut bindings = SmartBindings::new();
+        {
+            let dynamic_name = String::from("$__fr_smart");
+            bindings.insert(dynamic_name.as_str(), MettaValue::Long(11));
+        }
+        assert_eq!(bindings.get("$__fr_smart"), Some(&MettaValue::Long(11)));
+    }
+
+    #[test]
     fn test_transition_to_small() {
         let mut bindings = SmartBindings::new();
         bindings.insert("$x", MettaValue::Long(42));
@@ -206,7 +222,10 @@ mod tests {
         let alloc = global_allocator();
         let mut bindings = SmartBindings::new();
         for i in 0..5 {
-            bindings.insert(alloc.alloc_str(&format!("$v{}", i)), MettaValue::Long(i as i64));
+            bindings.insert(
+                alloc.alloc_str(&format!("$v{}", i)),
+                MettaValue::Long(i as i64),
+            );
         }
 
         assert_eq!(bindings.len(), 5);

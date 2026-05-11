@@ -21,8 +21,8 @@
 //! See `/Users/dylon/.claude/plans/twinkling-discovering-scott.md` for the
 //! design and the full overridable-name partition.
 
-use mettatron::{compile, eval, new_env};
 use mettatron::backend::models::MettaValue;
+use mettatron::{compile, eval, new_env};
 
 fn run_program(source: &str) -> Vec<MettaValue> {
     let state = compile(source).expect("compile failed");
@@ -70,7 +70,12 @@ fn user_append_overrides_grounded_for_cons_data_type() {
         !(append (Cons 1 (Cons 2 Nil)) (Cons 3 (Cons 4 Nil)))
     "#;
     let results = run_program(source);
-    assert_eq!(results.len(), 1, "expected one result, got {:?}", results_to_strings(&results));
+    assert_eq!(
+        results.len(),
+        1,
+        "expected one result, got {:?}",
+        results_to_strings(&results)
+    );
     assert_eq!(
         format!("{}", results[0]),
         "(Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil))))",

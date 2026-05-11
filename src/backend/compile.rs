@@ -9,7 +9,9 @@
 
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
-use crate::backend::models::{MettaState, MettaValue, MettaValueFactory, MettaValueTrait, global_factory};
+use crate::backend::models::{
+    global_factory, MettaState, MettaValue, MettaValueFactory, MettaValueTrait,
+};
 use crate::ir::MettaExpr;
 use crate::parser::{MettaParser, ValueEmitter};
 use crate::tree_sitter_parser::SyntaxError;
@@ -217,7 +219,10 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         e
     })?;
 
-    info!(expr_count = values.len(), "MettaState compilation successful");
+    info!(
+        expr_count = values.len(),
+        "MettaState compilation successful"
+    );
 
     // Create MettaState with fully-populated source — GC registration happens
     // once with the complete Vec, never contended during population.
@@ -229,10 +234,7 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
 /// Compile MeTTa source code to MettaState with a file path for error reporting.
 ///
 /// Like `compile`, but includes the file path in any syntax error messages.
-pub fn compile_with_path(
-    src: &str,
-    file_path: Option<&str>,
-) -> Result<MettaState, SyntaxError> {
+pub fn compile_with_path(src: &str, file_path: Option<&str>) -> Result<MettaState, SyntaxError> {
     compile(src).map_err(|e| match file_path {
         Some(path) => e.with_file_path(path),
         None => e,
@@ -272,7 +274,12 @@ mod tests {
         assert!(state.output().is_empty());
 
         // Should be: (+ 1 2) - operator symbol preserved
-        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(items) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             assert_eq!(items[1], MettaValue::Long(1));
@@ -305,7 +312,12 @@ mod tests {
         for (op, expected) in operators {
             let src = format!("({} 1 2)", op);
             let state = compile(&src).unwrap();
-            if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+            if let MettaValueInner::SExpr(items) = {
+                let s = state.source();
+                s[0]
+            }
+            .inner()
+            {
                 assert_eq!(
                     items[0],
                     MettaValue::Atom(expected.to_string()),
@@ -321,7 +333,12 @@ mod tests {
         // Test > operator - should be preserved as-is
         let src = "(> 1 2)";
         let state = compile(src).unwrap();
-        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(items) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(items[0], MettaValue::Atom(">".to_string()));
         }
 
@@ -335,7 +352,12 @@ mod tests {
         let src = "(+ -5 -10)";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(items) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(items[0], MettaValue::Atom("+".to_string()));
             assert_eq!(items[1], MettaValue::Long(-5));
             assert_eq!(items[2], MettaValue::Long(-10));
@@ -350,7 +372,13 @@ mod tests {
         let state = compile(src).unwrap();
 
         assert_eq!(state.source().len(), 1);
-        assert_eq!({let s = state.source(); s[0]}, MettaValue::Long(0));
+        assert_eq!(
+            {
+                let s = state.source();
+                s[0]
+            },
+            MettaValue::Long(0)
+        );
     }
 
     #[test]
@@ -358,7 +386,12 @@ mod tests {
         let src = "(True False 42 \"hello\")";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(items) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(items[0], MettaValue::Bool(true));
             assert_eq!(items[1], MettaValue::Bool(false));
             assert_eq!(items[2], MettaValue::Long(42));
@@ -371,7 +404,12 @@ mod tests {
         let src = "(list 42 -7 0 True False \"text\" ())";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(items) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(items[0], MettaValue::Atom("list".to_string()));
             assert_eq!(items[1], MettaValue::Long(42));
             assert_eq!(items[2], MettaValue::Long(-7));
@@ -393,7 +431,12 @@ mod tests {
         let src = "(true false)";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(items) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Atom("true".to_string()));
             assert_eq!(items[1], MettaValue::Atom("false".to_string()));
@@ -405,7 +448,12 @@ mod tests {
         let src = "(True False)";
         let state = compile(src).unwrap();
 
-        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(items) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Bool(true));
             assert_eq!(items[1], MettaValue::Bool(false));
@@ -433,7 +481,12 @@ mod tests {
 
         assert_eq!(state.source().len(), 1);
 
-        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(items) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(items.len(), 3);
             assert_eq!(items[0], MettaValue::Atom(":".to_string()));
             assert_eq!(items[1], MettaValue::Atom("x".to_string()));
@@ -450,7 +503,12 @@ mod tests {
 
         assert_eq!(state.source().len(), 1);
 
-        if let MettaValueInner::SExpr(items) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(items) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(items.len(), 2);
             assert_eq!(items[0], MettaValue::Atom("!".to_string()));
 
@@ -471,7 +529,13 @@ mod tests {
         let state = compile(src).unwrap();
 
         assert_eq!(state.source().len(), 1);
-        assert_eq!({let s = state.source(); s[0]}, MettaValue::Atom("$x".to_string()));
+        assert_eq!(
+            {
+                let s = state.source();
+                s[0]
+            },
+            MettaValue::Atom("$x".to_string())
+        );
     }
 
     #[test]
@@ -483,7 +547,10 @@ mod tests {
         // Parser treats 'quoted as a prefixed expression: (quote quoted)
         // compile.rs detects (quote X) and produces Quoted(X)
         assert_eq!(
-            {let s = state.source(); s[0]},
+            {
+                let s = state.source();
+                s[0]
+            },
             MettaValue::Quoted(MettaValue::Atom("quoted".to_string()))
         );
     }
@@ -496,7 +563,12 @@ mod tests {
         assert_eq!(state.source().len(), 1);
 
         // Outer: (+ 1 ...)
-        if let MettaValueInner::SExpr(outer) = {let s = state.source(); s[0]}.inner() {
+        if let MettaValueInner::SExpr(outer) = {
+            let s = state.source();
+            s[0]
+        }
+        .inner()
+        {
             assert_eq!(outer[0], MettaValue::Atom("+".to_string()));
             assert_eq!(outer[1], MettaValue::Long(1));
 
@@ -555,7 +627,14 @@ mod tests {
         let input = r#"!(error failure-code 42)"#;
         let state = compile(input).expect("compile failed");
         let env = new_env();
-        let (results, _env) = eval({let s = state.source(); s[0]}, env, &state);
+        let (results, _env) = eval(
+            {
+                let s = state.source();
+                s[0]
+            },
+            env,
+            &state,
+        );
 
         assert_eq!(results.len(), 1);
         if let MettaValueInner::Error(msg, _) = results[0].inner() {
@@ -574,7 +653,10 @@ mod tests {
         // Source:  "$x"
         // Offsets: 0123
         let state = compile("$x").unwrap();
-        let val = {let s = state.source(); s[0]};
+        let val = {
+            let s = state.source();
+            s[0]
+        };
 
         // Value should be a Spanned atom
         assert!(val.is_spanned(), "compiled atom should have a span");
@@ -596,7 +678,10 @@ mod tests {
         // Source:  "42"
         // Offsets: 01
         let state = compile("42").unwrap();
-        let val = {let s = state.source(); s[0]};
+        let val = {
+            let s = state.source();
+            s[0]
+        };
 
         assert!(val.is_spanned());
         let span = val.span().expect("integer should carry a span");
@@ -611,7 +696,10 @@ mod tests {
         // Source:  '"hello"'
         // Offsets: 0123456
         let state = compile("\"hello\"").unwrap();
-        let val = {let s = state.source(); s[0]};
+        let val = {
+            let s = state.source();
+            s[0]
+        };
 
         assert!(val.is_spanned());
         let span = val.span().expect("string should carry a span");
@@ -626,7 +714,10 @@ mod tests {
         // Source:  "(+ 1 2)"
         // Offsets: 0123456
         let state = compile("(+ 1 2)").unwrap();
-        let val = {let s = state.source(); s[0]};
+        let val = {
+            let s = state.source();
+            s[0]
+        };
 
         // Outer expression should have a span covering the full S-expression
         assert!(val.is_spanned());
@@ -661,7 +752,10 @@ mod tests {
         // Source:  "!(+ 1 2)"
         // Offsets: 012345678
         let state = compile("!(+ 1 2)").unwrap();
-        let val = {let s = state.source(); s[0]};
+        let val = {
+            let s = state.source();
+            s[0]
+        };
 
         // Outer span should cover the full "!(+ 1 2)"
         assert!(val.is_spanned());
@@ -710,7 +804,10 @@ mod tests {
     fn test_compile_span_transparent_equality() {
         // Spanned values should equal non-spanned values (span-transparent equality)
         let state = compile("42").unwrap();
-        let val = {let s = state.source(); s[0]};
+        let val = {
+            let s = state.source();
+            s[0]
+        };
 
         // val is Spanned(Long(42), span) but should equal bare Long(42)
         assert_eq!(val, MettaValue::Long(42));
@@ -721,7 +818,10 @@ mod tests {
         // Source:  "'foo"
         // Offsets: 0123
         let state = compile("'foo").unwrap();
-        let val = {let s = state.source(); s[0]};
+        let val = {
+            let s = state.source();
+            s[0]
+        };
 
         // Should be Spanned(Quoted(Spanned(Atom("foo"), ...)), full_span)
         assert!(val.is_spanned());
@@ -744,7 +844,14 @@ mod tests {
         let env = new_env();
 
         // Evaluate the expression
-        let (results, _env) = eval_trampoline({let s = state.source(); s[0]}, env, &state);
+        let (results, _env) = eval_trampoline(
+            {
+                let s = state.source();
+                s[0]
+            },
+            env,
+            &state,
+        );
 
         // Results should contain [3]
         assert_eq!(results.len(), 1);

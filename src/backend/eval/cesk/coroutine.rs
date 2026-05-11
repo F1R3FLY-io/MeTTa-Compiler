@@ -51,7 +51,9 @@ impl Demand {
 }
 
 impl Default for Demand {
-    fn default() -> Self { Demand::All }
+    fn default() -> Self {
+        Demand::All
+    }
 }
 
 // ============================================================================
@@ -288,9 +290,11 @@ impl<V: MettaValueTrait + Clone> BranchCoroutine<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValue, MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValue, MettaValueFactory};
 
-    fn f() -> crate::backend::models::GcFactory { global_factory() }
+    fn f() -> crate::backend::models::GcFactory {
+        global_factory()
+    }
 
     #[test]
     fn test_demand_all() {

@@ -36,11 +36,9 @@ use std::fmt::Debug;
 use crate::backend::environment::MettaEnvironment;
 use crate::backend::models::MettaValue;
 
+use super::super::trampoline::{Continuation, EvalResult, WorkItem};
 use super::operand_stack::OperandStack;
 use super::roots::RootSet;
-use super::super::trampoline::{
-    Continuation, EvalResult, WorkItem,
-};
 
 // ============================================================================
 // SeckState — The Complete Machine State
@@ -183,9 +181,12 @@ impl SeckState {
     /// from the work stack (it's not on the stack but still holds live values).
     pub fn collect_gc_roots(&mut self, current_work: &WorkItem) {
         self.root_set.clear();
-        self.root_set.collect_from_operand_stack(&self.operand_stack);
-        self.root_set.collect_from_work_items(current_work, &self.work_stack);
-        self.root_set.collect_from_continuations(&self.continuations);
+        self.root_set
+            .collect_from_operand_stack(&self.operand_stack);
+        self.root_set
+            .collect_from_work_items(current_work, &self.work_stack);
+        self.root_set
+            .collect_from_continuations(&self.continuations);
     }
 
     /// Take the collected roots as a Vec for the GC subsystem.
@@ -230,7 +231,7 @@ impl Debug for SeckState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValueFactory};
 
     fn factory() -> crate::backend::models::GcFactory {
         global_factory()

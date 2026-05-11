@@ -49,20 +49,20 @@ pub mod call_support;
 pub mod debug_meta;
 pub mod error_handling;
 pub mod expression_ops;
+pub mod gc_roots;
 pub mod global_ops;
 pub mod helpers;
 pub mod higher_order;
-pub mod gc_roots;
 pub mod mork_ops;
 pub mod multi_value;
 pub mod nondeterminism;
 pub mod pattern_matching;
 pub mod rule_dispatch;
+pub mod set_ops;
 pub mod sexpr_ops;
 pub mod space_ops;
 pub mod special_forms;
 pub mod stack_ops;
-pub mod set_ops;
 pub mod state_ops;
 pub mod type_ops;
 pub mod type_predicates;
@@ -84,15 +84,14 @@ pub use error_handling::{
 
 // Arithmetic
 pub use arithmetic::{
-    check_and_clear_jit_type_error, signal_jit_type_error,
-    jit_runtime_abs, jit_runtime_acos, jit_runtime_asin, jit_runtime_atan, jit_runtime_ceil,
-    jit_runtime_cos, jit_runtime_floor_math, jit_runtime_isinf, jit_runtime_isnan, jit_runtime_log,
-    jit_runtime_numeric_abs, jit_runtime_numeric_add, jit_runtime_numeric_div,
-    jit_runtime_numeric_eq, jit_runtime_numeric_ge, jit_runtime_numeric_gt,
-    jit_runtime_numeric_le, jit_runtime_numeric_lt, jit_runtime_numeric_mod,
-    jit_runtime_numeric_mul, jit_runtime_numeric_neg, jit_runtime_numeric_sub, jit_runtime_pow,
-    jit_runtime_round, jit_runtime_signum, jit_runtime_sin, jit_runtime_sqrt, jit_runtime_tan,
-    jit_runtime_trunc,
+    check_and_clear_jit_type_error, jit_runtime_abs, jit_runtime_acos, jit_runtime_asin,
+    jit_runtime_atan, jit_runtime_ceil, jit_runtime_cos, jit_runtime_floor_math, jit_runtime_isinf,
+    jit_runtime_isnan, jit_runtime_log, jit_runtime_numeric_abs, jit_runtime_numeric_add,
+    jit_runtime_numeric_div, jit_runtime_numeric_eq, jit_runtime_numeric_ge,
+    jit_runtime_numeric_gt, jit_runtime_numeric_le, jit_runtime_numeric_lt,
+    jit_runtime_numeric_mod, jit_runtime_numeric_mul, jit_runtime_numeric_neg,
+    jit_runtime_numeric_sub, jit_runtime_pow, jit_runtime_round, jit_runtime_signum,
+    jit_runtime_sin, jit_runtime_sqrt, jit_runtime_tan, jit_runtime_trunc, signal_jit_type_error,
 };
 
 // Stack operations
@@ -111,18 +110,26 @@ pub use type_predicates::{
 
 // Type operations
 pub use type_ops::{
-    jit_runtime_assert_type, jit_runtime_check_type, jit_runtime_get_type,
-    jit_runtime_is_function,
     // Generic variants (zero-conversion support)
     get_type_generic,
+    jit_runtime_assert_type,
+    jit_runtime_check_type,
+    jit_runtime_get_type,
+    jit_runtime_is_function,
 };
 
 // Value creation
 pub use value_creation::{
-    jit_runtime_cons_atom, jit_runtime_make_list, jit_runtime_make_quote, jit_runtime_make_sexpr,
-    jit_runtime_push_uri,
     // Generic variants (zero-conversion support)
-    cons_atom_generic, make_list_generic, make_quote_generic, make_sexpr_generic,
+    cons_atom_generic,
+    jit_runtime_cons_atom,
+    jit_runtime_make_list,
+    jit_runtime_make_quote,
+    jit_runtime_make_sexpr,
+    jit_runtime_push_uri,
+    make_list_generic,
+    make_quote_generic,
+    make_sexpr_generic,
 };
 
 // S-expression operations
@@ -175,17 +182,22 @@ pub use bindings::{
 
 // Core helpers (NaN-boxing and conversion)
 pub use helpers::{
-    box_long, extract_long_signed, make_jit_error, make_jit_error_with_details, metta_to_jit,
+    box_long,
+    extract_long_signed,
     // Generic conversion (zero-conversion support)
-    jit_to_value_generic, value_to_jit_generic,
+    jit_to_value_generic,
+    make_jit_error,
+    make_jit_error_with_details,
+    metta_to_jit,
+    value_to_jit_generic,
 };
 
 // Pattern matching
 pub use pattern_matching::{
     jit_runtime_match_arity, jit_runtime_match_head, jit_runtime_pattern_match,
-    jit_runtime_pattern_match_bind, jit_runtime_unify, jit_runtime_unify4,
-    jit_runtime_unify_bind, jit_runtime_unify_deep, jit_runtime_u_check_sexpr,
-    jit_runtime_u_check_arity, jit_runtime_u_get_child,
+    jit_runtime_pattern_match_bind, jit_runtime_u_check_arity, jit_runtime_u_check_sexpr,
+    jit_runtime_u_get_child, jit_runtime_unify, jit_runtime_unify4, jit_runtime_unify_bind,
+    jit_runtime_unify_deep,
 };
 
 // Space operations
@@ -259,9 +271,7 @@ pub use set_ops::{
 };
 
 // State operations
-pub use state_ops::{
-    jit_runtime_change_state, jit_runtime_get_state, jit_runtime_new_state,
-};
+pub use state_ops::{jit_runtime_change_state, jit_runtime_get_state, jit_runtime_new_state};
 
 // =============================================================================
 // Re-export constants for submodules

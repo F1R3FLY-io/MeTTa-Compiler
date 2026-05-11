@@ -31,7 +31,7 @@
 
 use smallvec::SmallVec;
 
-use crate::backend::models::{GenericBindings, MettaValueTrait};
+use crate::backend::models::{BindingName, GenericBindings, MettaValueTrait};
 
 // ============================================================================
 // Dynamic Match Path (no depth limit)
@@ -157,7 +157,11 @@ fn get_child_owned<V: MettaValueTrait + Clone>(value: &V, idx: usize) -> Option<
         return goals.get(idx).cloned();
     }
     if let Some((_msg, details)) = value.as_error() {
-        return if idx == 0 { Some(details.clone()) } else { None };
+        return if idx == 0 {
+            Some(details.clone())
+        } else {
+            None
+        };
     }
     None
 }
@@ -171,7 +175,11 @@ fn is_var_name(name: &str) -> bool {
         && name != "$_"
         && (name.starts_with('$')
             || name.starts_with('\'')
-            || (name.starts_with('&') && name != "&" && name != "&self" && name != "&kb" && name != "&stack"))
+            || (name.starts_with('&')
+                && name != "&"
+                && name != "&self"
+                && name != "&kb"
+                && name != "&stack"))
 }
 
 // ============================================================================
@@ -184,23 +192,38 @@ pub enum ECheck {
     /// Verify S-expression arity at path.
     Arity { path: MatchPathDyn, expected: u16 },
     /// Verify atom equality at path (interned pointer comparison).
-    Atom { path: MatchPathDyn, expected: &'static str },
+    Atom {
+        path: MatchPathDyn,
+        expected: &'static str,
+    },
     /// Verify i64 equality at path.
     Long { path: MatchPathDyn, expected: i64 },
     /// Verify bool equality at path.
     Bool { path: MatchPathDyn, expected: bool },
     /// Verify f64 bitwise equality at path.
-    Float { path: MatchPathDyn, expected_bits: u64 },
+    Float {
+        path: MatchPathDyn,
+        expected_bits: u64,
+    },
     /// Verify string equality at path (interned pointer comparison).
-    Str { path: MatchPathDyn, expected: &'static str },
+    Str {
+        path: MatchPathDyn,
+        expected: &'static str,
+    },
     /// Verify value at path is a Type wrapper.
     IsType { path: MatchPathDyn },
     /// Verify value at path is a Quoted wrapper.
     IsQuoted { path: MatchPathDyn },
     /// Verify value at path is an Error with the given message.
-    IsError { path: MatchPathDyn, expected_msg: &'static str },
+    IsError {
+        path: MatchPathDyn,
+        expected_msg: &'static str,
+    },
     /// Verify value at path is a Conjunction with the given number of goals.
-    IsConjunction { path: MatchPathDyn, expected_len: u16 },
+    IsConjunction {
+        path: MatchPathDyn,
+        expected_len: u16,
+    },
     /// Verify value at path is Unit (empty tuple `()`).
     IsUnit { path: MatchPathDyn },
 }
@@ -212,13 +235,10 @@ pub enum SlotOp {
     Bind {
         path: MatchPathDyn,
         slot: u8,
-        name: &'static str,
+        name: BindingName,
     },
     /// Check that value at path equals the value already in the given slot.
-    EqualCheck {
-        path: MatchPathDyn,
-        slot: u8,
-    },
+    EqualCheck { path: MatchPathDyn, slot: u8 },
 }
 
 // ============================================================================
@@ -245,7 +265,7 @@ pub struct EnhancedMatcher {
     slot_count: u8,
 
     /// Mapping from slot index to variable name (for export to GenericBindings).
-    slot_names: SmallVec<[&'static str; 8]>,
+    slot_names: SmallVec<[BindingName; 8]>,
 
     /// Maximum pattern depth (for diagnostics).
     max_depth: u16,
@@ -261,7 +281,7 @@ impl EnhancedMatcher {
         let mut atom_checks = Vec::new();
         let mut literal_checks = Vec::new();
         let mut slot_ops = Vec::new();
-        let mut seen_vars: SmallVec<[(&'static str, u8); 8]> = SmallVec::new();
+        let mut seen_vars: SmallVec<[(BindingName, u8); 8]> = SmallVec::new();
         let mut slot_count: u8 = 0;
         let mut max_depth: u16 = 0;
 
@@ -282,14 +302,14 @@ impl EnhancedMatcher {
 
         // Order checks: arity first (cheapest, most discriminative), then atoms,
         // then literals. This maximizes fail-fast effectiveness.
-        let mut checks = Vec::with_capacity(
-            arity_checks.len() + atom_checks.len() + literal_checks.len(),
-        );
+        let mut checks =
+            Vec::with_capacity(arity_checks.len() + atom_checks.len() + literal_checks.len());
         checks.extend(arity_checks);
         checks.extend(atom_checks);
         checks.extend(literal_checks);
 
-        let slot_names: SmallVec<[&'static str; 8]> = seen_vars.iter().map(|(name, _)| *name).collect();
+        let slot_names: SmallVec<[BindingName; 8]> =
+            seen_vars.iter().map(|(name, _)| name.clone()).collect();
 
         Some(EnhancedMatcher {
             checks,
@@ -315,11 +335,12 @@ impl EnhancedMatcher {
         }
 
         // Phase 2: Slot operations
-        let mut slots: SmallVec<[Option<V>; 8]> = smallvec::smallvec![None; self.slot_count as usize];
+        let mut slots: SmallVec<[Option<V>; 8]> =
+            smallvec::smallvec![None; self.slot_count as usize];
         // Extra bindings produced by bidirectional unification at EqualCheck
         // (variables not in the rule's slot table — typically free input
         // variables matched against already-bound rule variables).
-        let mut extra: SmallVec<[(&'static str, V); 4]> = SmallVec::new();
+        let mut extra: SmallVec<[(BindingName, V); 4]> = SmallVec::new();
 
         for op in &self.slot_ops {
             match op {
@@ -335,15 +356,20 @@ impl EnhancedMatcher {
                         // (Martelli-Montanari) unification — see
                         // `StructuralMatcher::try_match` for the rationale (PLN
                         // Modus Ponens with free vars in implications).
-                        let unify_bindings = crate::backend::eval::bindings::bidirectional_unify_generic(bound, val)?;
+                        let unify_bindings =
+                            crate::backend::eval::bindings::bidirectional_unify_generic(
+                                bound, val,
+                            )?;
                         for (var_name, var_val) in unify_bindings.iter() {
                             // Check existing extras for conflict
-                            if let Some((_, existing)) = extra.iter().find(|(n, _)| *n == var_name) {
+                            if let Some((_, existing)) =
+                                extra.iter().find(|(n, _)| n.matches(var_name))
+                            {
                                 if existing != var_val {
                                     return None;
                                 }
                             } else {
-                                extra.push((var_name, var_val.clone()));
+                                extra.push((BindingName::from(var_name), var_val.clone()));
                             }
                         }
                     }
@@ -354,7 +380,7 @@ impl EnhancedMatcher {
         // Phase 3: Export to GenericBindings, including any extras
         let mut bindings = self.export_bindings(&slots);
         for (name, val) in extra {
-            if bindings.get(name).is_none() {
+            if bindings.get(name.as_str()).is_none() {
                 bindings.insert(name, val);
             }
         }
@@ -381,8 +407,9 @@ impl EnhancedMatcher {
         }
 
         // Phase 2: Slot operations with resolution
-        let mut slots: SmallVec<[Option<V>; 8]> = smallvec::smallvec![None; self.slot_count as usize];
-        let mut extra: SmallVec<[(&'static str, V); 4]> = SmallVec::new();
+        let mut slots: SmallVec<[Option<V>; 8]> =
+            smallvec::smallvec![None; self.slot_count as usize];
+        let mut extra: SmallVec<[(BindingName, V); 4]> = SmallVec::new();
 
         for op in &self.slot_ops {
             match op {
@@ -395,14 +422,19 @@ impl EnhancedMatcher {
                     let bound = slots[*slot as usize].as_ref()?;
                     if val != *bound {
                         // Bidirectional unification fallback (see try_match above).
-                        let unify_bindings = crate::backend::eval::bindings::bidirectional_unify_generic(bound, &val)?;
+                        let unify_bindings =
+                            crate::backend::eval::bindings::bidirectional_unify_generic(
+                                bound, &val,
+                            )?;
                         for (var_name, var_val) in unify_bindings.iter() {
-                            if let Some((_, existing)) = extra.iter().find(|(n, _)| *n == var_name) {
+                            if let Some((_, existing)) =
+                                extra.iter().find(|(n, _)| n.matches(var_name))
+                            {
                                 if existing != var_val {
                                     return None;
                                 }
                             } else {
-                                extra.push((var_name, var_val.clone()));
+                                extra.push((BindingName::from(var_name), var_val.clone()));
                             }
                         }
                     }
@@ -412,7 +444,7 @@ impl EnhancedMatcher {
 
         let mut bindings = self.export_bindings(&slots);
         for (name, val) in extra {
-            if bindings.get(name).is_none() {
+            if bindings.get(name.as_str()).is_none() {
                 bindings.insert(name, val);
             }
         }
@@ -441,56 +473,46 @@ impl EnhancedMatcher {
 
     fn execute_check<V: MettaValueTrait>(&self, check: &ECheck, expr: &V) -> bool {
         match check {
-            ECheck::Arity { path, expected } => {
-                path.navigate(expr)
-                    .and_then(|v| v.as_sexpr())
-                    .map_or(false, |items| items.len() == *expected as usize)
-            }
-            ECheck::Atom { path, expected } => {
-                path.navigate(expr)
-                    .and_then(|v| v.as_atom())
-                    .map_or(false, |a| a == *expected)
-            }
-            ECheck::Long { path, expected } => {
-                path.navigate(expr)
-                    .and_then(|v| v.as_long())
-                    .map_or(false, |n| n == *expected)
-            }
-            ECheck::Bool { path, expected } => {
-                path.navigate(expr)
-                    .and_then(|v| v.as_bool())
-                    .map_or(false, |b| b == *expected)
-            }
-            ECheck::Float { path, expected_bits } => {
-                path.navigate(expr)
-                    .and_then(|v| v.as_float())
-                    .map_or(false, |f| f.to_bits() == *expected_bits)
-            }
-            ECheck::Str { path, expected } => {
-                path.navigate(expr)
-                    .and_then(|v| v.as_string())
-                    .map_or(false, |s| s == *expected)
-            }
-            ECheck::IsType { path } => {
-                path.navigate(expr).map_or(false, |v| v.is_type())
-            }
-            ECheck::IsQuoted { path } => {
-                path.navigate(expr).map_or(false, |v| v.is_quoted())
-            }
-            ECheck::IsError { path, expected_msg } => {
-                path.navigate(expr)
-                    .and_then(|v| v.as_error())
-                    .map_or(false, |(msg, _)| msg == *expected_msg)
-            }
-            ECheck::IsConjunction { path, expected_len } => {
-                path.navigate(expr)
-                    .and_then(|v| v.as_conjunction())
-                    .map_or(false, |goals| goals.len() == *expected_len as usize)
-            }
-            ECheck::IsUnit { path } => {
-                path.navigate(expr)
-                    .map_or(false, |v| v.is_unit() || v.is_empty())
-            }
+            ECheck::Arity { path, expected } => path
+                .navigate(expr)
+                .and_then(|v| v.as_sexpr())
+                .map_or(false, |items| items.len() == *expected as usize),
+            ECheck::Atom { path, expected } => path
+                .navigate(expr)
+                .and_then(|v| v.as_atom())
+                .map_or(false, |a| a == *expected),
+            ECheck::Long { path, expected } => path
+                .navigate(expr)
+                .and_then(|v| v.as_long())
+                .map_or(false, |n| n == *expected),
+            ECheck::Bool { path, expected } => path
+                .navigate(expr)
+                .and_then(|v| v.as_bool())
+                .map_or(false, |b| b == *expected),
+            ECheck::Float {
+                path,
+                expected_bits,
+            } => path
+                .navigate(expr)
+                .and_then(|v| v.as_float())
+                .map_or(false, |f| f.to_bits() == *expected_bits),
+            ECheck::Str { path, expected } => path
+                .navigate(expr)
+                .and_then(|v| v.as_string())
+                .map_or(false, |s| s == *expected),
+            ECheck::IsType { path } => path.navigate(expr).map_or(false, |v| v.is_type()),
+            ECheck::IsQuoted { path } => path.navigate(expr).map_or(false, |v| v.is_quoted()),
+            ECheck::IsError { path, expected_msg } => path
+                .navigate(expr)
+                .and_then(|v| v.as_error())
+                .map_or(false, |(msg, _)| msg == *expected_msg),
+            ECheck::IsConjunction { path, expected_len } => path
+                .navigate(expr)
+                .and_then(|v| v.as_conjunction())
+                .map_or(false, |goals| goals.len() == *expected_len as usize),
+            ECheck::IsUnit { path } => path
+                .navigate(expr)
+                .map_or(false, |v| v.is_unit() || v.is_empty()),
         }
     }
 
@@ -501,58 +523,53 @@ impl EnhancedMatcher {
         bindings: &GenericBindings<V>,
     ) -> bool {
         match check {
-            ECheck::Arity { path, expected } => {
-                path.navigate_resolving(template, bindings)
-                    .and_then(|v| v.as_sexpr().map(|items| items.len() == *expected as usize))
-                    .unwrap_or(false)
-            }
-            ECheck::Atom { path, expected } => {
-                path.navigate_resolving(template, bindings)
-                    .and_then(|v| v.as_atom().map(|a| a == *expected))
-                    .unwrap_or(false)
-            }
-            ECheck::Long { path, expected } => {
-                path.navigate_resolving(template, bindings)
-                    .and_then(|v| v.as_long().map(|n| n == *expected))
-                    .unwrap_or(false)
-            }
-            ECheck::Bool { path, expected } => {
-                path.navigate_resolving(template, bindings)
-                    .and_then(|v| v.as_bool().map(|b| b == *expected))
-                    .unwrap_or(false)
-            }
-            ECheck::Float { path, expected_bits } => {
-                path.navigate_resolving(template, bindings)
-                    .and_then(|v| v.as_float().map(|f| f.to_bits() == *expected_bits))
-                    .unwrap_or(false)
-            }
-            ECheck::Str { path, expected } => {
-                path.navigate_resolving(template, bindings)
-                    .and_then(|v| v.as_string().map(|s| s == *expected))
-                    .unwrap_or(false)
-            }
-            ECheck::IsType { path } => {
-                path.navigate_resolving(template, bindings)
-                    .map_or(false, |v| v.is_type())
-            }
-            ECheck::IsQuoted { path } => {
-                path.navigate_resolving(template, bindings)
-                    .map_or(false, |v| v.is_quoted())
-            }
-            ECheck::IsError { path, expected_msg } => {
-                path.navigate_resolving(template, bindings)
-                    .and_then(|v| v.as_error().map(|(msg, _)| msg == *expected_msg))
-                    .unwrap_or(false)
-            }
-            ECheck::IsConjunction { path, expected_len } => {
-                path.navigate_resolving(template, bindings)
-                    .and_then(|v| v.as_conjunction().map(|g| g.len() == *expected_len as usize))
-                    .unwrap_or(false)
-            }
-            ECheck::IsUnit { path } => {
-                path.navigate_resolving(template, bindings)
-                    .map_or(false, |v| v.is_unit() || v.is_empty())
-            }
+            ECheck::Arity { path, expected } => path
+                .navigate_resolving(template, bindings)
+                .and_then(|v| v.as_sexpr().map(|items| items.len() == *expected as usize))
+                .unwrap_or(false),
+            ECheck::Atom { path, expected } => path
+                .navigate_resolving(template, bindings)
+                .and_then(|v| v.as_atom().map(|a| a == *expected))
+                .unwrap_or(false),
+            ECheck::Long { path, expected } => path
+                .navigate_resolving(template, bindings)
+                .and_then(|v| v.as_long().map(|n| n == *expected))
+                .unwrap_or(false),
+            ECheck::Bool { path, expected } => path
+                .navigate_resolving(template, bindings)
+                .and_then(|v| v.as_bool().map(|b| b == *expected))
+                .unwrap_or(false),
+            ECheck::Float {
+                path,
+                expected_bits,
+            } => path
+                .navigate_resolving(template, bindings)
+                .and_then(|v| v.as_float().map(|f| f.to_bits() == *expected_bits))
+                .unwrap_or(false),
+            ECheck::Str { path, expected } => path
+                .navigate_resolving(template, bindings)
+                .and_then(|v| v.as_string().map(|s| s == *expected))
+                .unwrap_or(false),
+            ECheck::IsType { path } => path
+                .navigate_resolving(template, bindings)
+                .map_or(false, |v| v.is_type()),
+            ECheck::IsQuoted { path } => path
+                .navigate_resolving(template, bindings)
+                .map_or(false, |v| v.is_quoted()),
+            ECheck::IsError { path, expected_msg } => path
+                .navigate_resolving(template, bindings)
+                .and_then(|v| v.as_error().map(|(msg, _)| msg == *expected_msg))
+                .unwrap_or(false),
+            ECheck::IsConjunction { path, expected_len } => path
+                .navigate_resolving(template, bindings)
+                .and_then(|v| {
+                    v.as_conjunction()
+                        .map(|g| g.len() == *expected_len as usize)
+                })
+                .unwrap_or(false),
+            ECheck::IsUnit { path } => path
+                .navigate_resolving(template, bindings)
+                .map_or(false, |v| v.is_unit() || v.is_empty()),
         }
     }
 
@@ -563,7 +580,7 @@ impl EnhancedMatcher {
         let mut bindings = GenericBindings::new();
         for (i, name) in self.slot_names.iter().enumerate() {
             if let Some(ref val) = slots[i] {
-                bindings.insert(name, val.clone());
+                bindings.insert(name.clone(), val.clone());
             }
         }
         bindings
@@ -576,7 +593,7 @@ impl EnhancedMatcher {
         atom_checks: &mut Vec<ECheck>,
         literal_checks: &mut Vec<ECheck>,
         slot_ops: &mut Vec<SlotOp>,
-        seen_vars: &mut SmallVec<[(&'static str, u8); 8]>,
+        seen_vars: &mut SmallVec<[(BindingName, u8); 8]>,
         slot_count: &mut u8,
         max_depth: &mut u16,
         current_depth: u16,
@@ -621,19 +638,20 @@ impl EnhancedMatcher {
         if let Some(atom) = value.as_atom() {
             if is_var_name(atom) {
                 // Variable — check for repeats
-                if let Some(pos) = seen_vars.iter().position(|(name, _)| *name == atom) {
+                if let Some(pos) = seen_vars.iter().position(|(name, _)| name.matches(atom)) {
                     slot_ops.push(SlotOp::EqualCheck {
                         path,
                         slot: seen_vars[pos].1,
                     });
                 } else {
                     let slot = *slot_count;
-                    seen_vars.push((atom, slot));
+                    let name = BindingName::from(atom);
+                    seen_vars.push((name.clone(), slot));
                     *slot_count += 1;
                     slot_ops.push(SlotOp::Bind {
                         path,
                         slot,
-                        name: atom,
+                        name,
                     });
                 }
                 return true;
@@ -748,7 +766,8 @@ impl EnhancedMatcher {
 
         // Error: has message + details
         if let Some((msg, details)) = value.as_error() {
-            let interned_msg = crate::backend::models::gc_allocator::global_allocator().alloc_str(msg);
+            let interned_msg =
+                crate::backend::models::gc_allocator::global_allocator().alloc_str(msg);
             arity_checks.push(ECheck::IsError {
                 path: path.clone(),
                 expected_msg: interned_msg,
@@ -780,7 +799,7 @@ impl EnhancedMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValue, MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValue, MettaValueFactory};
 
     fn f() -> crate::backend::models::GcFactory {
         global_factory()
@@ -950,7 +969,8 @@ mod tests {
         outer.insert("$a", f().long(1));
         outer.insert("$b", f().atom("hello"));
 
-        let bindings = matcher.try_match_with_bindings(&template, &outer)
+        let bindings = matcher
+            .try_match_with_bindings(&template, &outer)
             .expect("should match after resolution");
         assert_eq!(bindings.get("$y").expect("$y").as_atom(), Some("hello"));
     }
@@ -975,16 +995,22 @@ mod tests {
         // Pattern: (op $a $b $c $d $e)
         let pattern = f().sexpr(vec![
             f().atom("op"),
-            f().atom("$a"), f().atom("$b"), f().atom("$c"),
-            f().atom("$d"), f().atom("$e"),
+            f().atom("$a"),
+            f().atom("$b"),
+            f().atom("$c"),
+            f().atom("$d"),
+            f().atom("$e"),
         ]);
         let matcher = EnhancedMatcher::analyze(&pattern).expect("should analyze");
         assert_eq!(matcher.slot_count(), 5);
 
         let expr = f().sexpr(vec![
             f().atom("op"),
-            f().long(1), f().long(2), f().long(3),
-            f().long(4), f().long(5),
+            f().long(1),
+            f().long(2),
+            f().long(3),
+            f().long(4),
+            f().long(5),
         ]);
         let bindings = matcher.try_match(&expr).expect("should match");
         assert_eq!(bindings.get("$a").expect("a").as_long(), Some(1));

@@ -57,21 +57,28 @@ pub mod thread_local_region;
 pub mod thunk;
 
 // Re-export primary types
-pub use state::SeckState;
-pub use store::{Store, AllocHint, AllocRegion};
-pub use roots::RootSet;
-pub use operand_stack::OperandStack;
-pub use binding_arena::{BindingArena, ChoicePoint, with_thread_arena, clear_thread_arena};
-pub use branch_analysis::{BranchPurity, analyze_branch_purity, classify_branches};
-pub use discrimination_tree::{DiscriminationTree, DiscKey};
-pub use enhanced_matcher::{EnhancedMatcher, MatchPathDyn};
-pub use incremental_gc::{NurseryCollector, NurseryConfig, NurseryState, with_nursery_collector, clear_nursery_collector};
-pub use region_alloc::{RegionStack, with_region_stack, clear_region_stack};
-pub use reductions::{ReductionCounter, EvalOutcome, SuspendedEval, reduction_budget};
-pub use speculative_match::{MatchCandidate, should_speculate, chunk_candidates};
-pub use striped_queue::{StripedQueue, StripedTask, current_worker_id, set_worker_id};
-pub use thread_local_region::{ThreadLocalRegion, RegionGuard, with_thread_local_region, is_thread_region_active};
-pub use tabling::{SubgoalTable, TableLookup, with_subgoal_table, clear_subgoal_table, invalidate_subgoal_table, is_actively_evaluating, mark_eval_active, unmark_eval_active, clear_active_eval_set};
-pub use thunk::{ThunkTable, ThunkLookup, with_thunk_table, clear_thunk_table};
-pub use rete_incremental::with_incremental_index;
 pub use adaptive_indexing::with_adaptive_registry;
+pub use binding_arena::{clear_thread_arena, with_thread_arena, BindingArena, ChoicePoint};
+pub use branch_analysis::{analyze_branch_purity, classify_branches, BranchPurity};
+pub use discrimination_tree::{DiscKey, DiscriminationTree};
+pub use enhanced_matcher::{EnhancedMatcher, MatchPathDyn};
+pub use incremental_gc::{
+    clear_nursery_collector, with_nursery_collector, NurseryCollector, NurseryConfig, NurseryState,
+};
+pub use operand_stack::OperandStack;
+pub use reductions::{reduction_budget, EvalOutcome, ReductionCounter, SuspendedEval};
+pub use region_alloc::{clear_region_stack, with_region_stack, RegionStack};
+pub use rete_incremental::with_incremental_index;
+pub use roots::RootSet;
+pub use speculative_match::{chunk_candidates, should_speculate, MatchCandidate};
+pub use state::SeckState;
+pub use store::{AllocHint, AllocRegion, Store};
+pub use striped_queue::{current_worker_id, set_worker_id, StripedQueue, StripedTask};
+pub use tabling::{
+    clear_active_eval_set, clear_subgoal_table, invalidate_subgoal_table, is_actively_evaluating,
+    mark_eval_active, unmark_eval_active, with_subgoal_table, SubgoalTable, TableLookup,
+};
+pub use thread_local_region::{
+    is_thread_region_active, with_thread_local_region, RegionGuard, ThreadLocalRegion,
+};
+pub use thunk::{clear_thunk_table, with_thunk_table, ThunkLookup, ThunkTable};

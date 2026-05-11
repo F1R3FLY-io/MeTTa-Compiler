@@ -36,9 +36,7 @@ use crossbeam_channel::{self, Receiver, Sender};
 use tracing::{debug, warn};
 
 use super::adaptive_pool::WorkerPark;
-use super::gc_allocator::{
-    GcResponse, GcSnapshot, mark_snapshot, sweep_snapshot,
-};
+use super::gc_allocator::{mark_snapshot, sweep_snapshot, GcResponse, GcSnapshot};
 
 // ============================================================================
 // Configuration
@@ -171,11 +169,7 @@ impl AdaptiveGcPool {
             workers.push(parking_lot::Mutex::new(Some(handle)));
         }
 
-        debug!(
-            min_workers,
-            max_workers,
-            "AdaptiveGcPool started"
-        );
+        debug!(min_workers, max_workers, "AdaptiveGcPool started");
 
         Self {
             high_tx,
@@ -333,7 +327,10 @@ impl AdaptiveGcPool {
             if let Some(old_handle) = guard.take() {
                 match old_handle.join() {
                     Ok(()) => {
-                        tracing::warn!(worker_id = id, "AdaptiveGcPool: worker exited unexpectedly -- respawning");
+                        tracing::warn!(
+                            worker_id = id,
+                            "AdaptiveGcPool: worker exited unexpectedly -- respawning"
+                        );
                     }
                     Err(payload) => {
                         tracing::error!(
@@ -533,10 +530,10 @@ const MAX_QUIESCENCE_RETRIES: u32 = 10;
 
 fn execute_session_release(context_ids: &[u32]) {
     use super::gc_allocator::{
-        global_allocator, GcInProgressGuard, ACTIVE_EVALUATORS,
-        SESSION_RELEASE_INHIBITORS, INHIBITOR_MUTEX, INHIBITOR_CONDVAR,
-        QUIESCENT_MUTEX, QUIESCENT_CONDVAR,
-        GC_PROGRESS_MUTEX, GC_PROGRESS_CONDVAR, GC_IN_PROGRESS,
+        gc_cycle_in_flight, global_allocator, wait_for_gc_cycle_idle, GcInProgressGuard,
+        ACTIVE_EVALUATORS, GC_IN_PROGRESS, GC_PROGRESS_CONDVAR, GC_PROGRESS_MUTEX,
+        INHIBITOR_CONDVAR, INHIBITOR_MUTEX, QUIESCENT_CONDVAR, QUIESCENT_MUTEX,
+        SESSION_RELEASE_INHIBITORS,
     };
 
     let mut retries = 0u32;
@@ -586,9 +583,7 @@ fn execute_session_release(context_ids: &[u32]) {
             let mut lock = INHIBITOR_MUTEX.lock();
             while SESSION_RELEASE_INHIBITORS.load(Ordering::Acquire) > 0 {
                 let result = INHIBITOR_CONDVAR.wait_for(&mut lock, QUIESCENCE_TIMEOUT);
-                if result.timed_out()
-                    && SESSION_RELEASE_INHIBITORS.load(Ordering::Acquire) > 0
-                {
+                if result.timed_out() && SESSION_RELEASE_INHIBITORS.load(Ordering::Acquire) > 0 {
                     continue 'quiescence;
                 }
             }
@@ -596,6 +591,19 @@ fn execute_session_release(context_ids: &[u32]) {
         // Re-verify ACTIVE_EVALUATORS is still 0 after waiting on inhibitors
         // (an evaluator could have entered between the two waits).
         if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
+            continue 'quiescence;
+        }
+
+        // A session release physically frees session-owned slots. Do not let it
+        // overlap an outstanding mark/sweep response: that response's dead set
+        // was computed against the pre-release slot state and can otherwise
+        // double-free a slot the session release has already returned.
+        if !wait_for_gc_cycle_idle(QUIESCENCE_TIMEOUT) {
+            continue 'quiescence;
+        }
+        if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0
+            || SESSION_RELEASE_INHIBITORS.load(Ordering::Acquire) > 0
+        {
             continue 'quiescence;
         }
 
@@ -611,13 +619,8 @@ fn execute_session_release(context_ids: &[u32]) {
                     // notifications (race between CAS failure and lock acquire).
                     let mut lock = GC_PROGRESS_MUTEX.lock();
                     while GC_IN_PROGRESS.load(Ordering::Acquire) {
-                        let result = GC_PROGRESS_CONDVAR.wait_for(
-                            &mut lock,
-                            QUIESCENCE_TIMEOUT,
-                        );
-                        if result.timed_out()
-                            && GC_IN_PROGRESS.load(Ordering::Acquire)
-                        {
+                        let result = GC_PROGRESS_CONDVAR.wait_for(&mut lock, QUIESCENCE_TIMEOUT);
+                        if result.timed_out() && GC_IN_PROGRESS.load(Ordering::Acquire) {
                             // GC_IN_PROGRESS still held after timeout — retry
                             // the outer quiescence loop (which has bounded retries)
                             drop(lock);
@@ -628,11 +631,26 @@ fn execute_session_release(context_ids: &[u32]) {
             }
         };
 
-        // Double-check: no eval snuck in between quiescence wait and CAS
-        if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0 {
+        // Double-check: no eval or result-protection hold snuck in between
+        // the quiescence waits and the GC_IN_PROGRESS CAS. The waits above
+        // are not atomic with respect to a new top-level session entering
+        // GcHoldGuard, so both counters must be rechecked after the guard is
+        // acquired.
+        if ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0
+            || SESSION_RELEASE_INHIBITORS.load(Ordering::Acquire) > 0
+        {
             drop(gc_guard); // clears GC_IN_PROGRESS + notifies waiters
             continue 'quiescence;
         }
+        if gc_cycle_in_flight() {
+            drop(gc_guard);
+            continue 'quiescence;
+        }
+
+        // Serialize with the periodic exec-counter sync. If a sync task has
+        // already begun scanning live slots, wait for any pending compile root
+        // registration to finish before computing the surviving set.
+        let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();
 
         // === Safe: trace roots at quiescent point ===
         let alloc = global_allocator();
@@ -686,9 +704,9 @@ pub fn global_gc_pool() -> &'static AdaptiveGcPool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::gc_allocator::{GcFactory, SlabAllocator};
     use super::super::metta_value_trait::MettaValueFactory;
+    use super::*;
 
     /// Helper to create a test allocator with 'static lifetime.
     fn test_alloc() -> &'static SlabAllocator {
@@ -718,7 +736,8 @@ mod tests {
         pool.submit_high(GcWorkItem::Collect(snapshot));
 
         // Wait for response
-        let response = pool.recv_response_blocking()
+        let response = pool
+            .recv_response_blocking()
             .expect("should receive GC response");
 
         assert!(
@@ -745,7 +764,8 @@ mod tests {
             let snapshot = alloc.build_snapshot(vec![alive]);
             pool.submit_high(GcWorkItem::Collect(snapshot));
 
-            let response = pool.recv_response_blocking()
+            let response = pool
+                .recv_response_blocking()
                 .expect("should receive GC response");
             alloc.process_gc_response(&response);
         }
@@ -773,13 +793,18 @@ mod tests {
         let root = factory.sexpr(vec![
             factory.atom("+"),
             factory.atom("one"),
-            factory.sexpr(vec![factory.atom("*"), factory.atom("two"), factory.atom("three")]),
+            factory.sexpr(vec![
+                factory.atom("*"),
+                factory.atom("two"),
+                factory.atom("three"),
+            ]),
         ]);
 
         let snapshot = alloc.build_snapshot(vec![root]);
         pool.submit_high(GcWorkItem::Collect(snapshot));
 
-        let response = pool.recv_response_blocking()
+        let response = pool
+            .recv_response_blocking()
             .expect("should receive GC response");
         alloc.process_gc_response(&response);
 
@@ -838,7 +863,8 @@ mod tests {
         let alive = factory.long(1);
         let snapshot = alloc.build_snapshot(vec![alive]);
         pool.submit_high(GcWorkItem::Collect(snapshot));
-        let resp = pool.recv_response_blocking()
+        let resp = pool
+            .recv_response_blocking()
             .expect("should receive first GC response");
         alloc.process_gc_response(&resp);
 
@@ -846,7 +872,8 @@ mod tests {
         let alive2 = factory.long(2);
         let snapshot2 = alloc.build_snapshot(vec![alive2]);
         pool.submit_high(GcWorkItem::Collect(snapshot2));
-        let resp2 = pool.recv_response_blocking()
+        let resp2 = pool
+            .recv_response_blocking()
             .expect("should receive second GC response");
         alloc.process_gc_response(&resp2);
 

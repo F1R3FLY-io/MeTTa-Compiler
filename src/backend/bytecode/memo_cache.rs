@@ -304,8 +304,14 @@ mod tests {
         cache.insert("double", &[factory.long(5)], factory.long(10));
         cache.insert("double", &[factory.long(7)], factory.long(14));
 
-        assert_eq!(cache.get("double", &[factory.long(5)]), Some(factory.long(10)));
-        assert_eq!(cache.get("double", &[factory.long(7)]), Some(factory.long(14)));
+        assert_eq!(
+            cache.get("double", &[factory.long(5)]),
+            Some(factory.long(10))
+        );
+        assert_eq!(
+            cache.get("double", &[factory.long(7)]),
+            Some(factory.long(14))
+        );
         assert!(cache.get("double", &[factory.long(9)]).is_none());
     }
 
@@ -345,7 +351,10 @@ mod tests {
     fn test_global_memo_cache_returns_same_arc() {
         let cache1 = global_memo_cache();
         let cache2 = global_memo_cache();
-        assert!(Arc::ptr_eq(cache1, cache2), "global_memo_cache() must return the same Arc");
+        assert!(
+            Arc::ptr_eq(cache1, cache2),
+            "global_memo_cache() must return the same Arc"
+        );
     }
 
     #[test]

@@ -70,9 +70,7 @@ pub fn hash_trace_values(values: &[TraceValue]) -> u64 {
 /// For other value types, returns a descriptive placeholder.
 pub fn extract_head_symbol(value: &TraceValue) -> &str {
     match value {
-        TraceValue::SExpr(items) if !items.is_empty() => {
-            extract_head_symbol(&items[0])
-        }
+        TraceValue::SExpr(items) if !items.is_empty() => extract_head_symbol(&items[0]),
         TraceValue::Atom(s) => s.as_str(),
         TraceValue::Bool(_) => "<Bool>",
         TraceValue::Long(_) => "<Long>",
@@ -267,9 +265,7 @@ mod tests {
     #[test]
     fn test_extract_head_symbol_nested() {
         let v = TraceValue::SExpr(vec![
-            TraceValue::SExpr(vec![
-                TraceValue::Atom("inner".to_string()),
-            ]),
+            TraceValue::SExpr(vec![TraceValue::Atom("inner".to_string())]),
             TraceValue::Long(1),
         ]);
         assert_eq!(extract_head_symbol(&v), "inner");
@@ -285,14 +281,20 @@ mod tests {
     #[test]
     fn test_extract_operator_name_branch_start() {
         let v = TraceValue::Unit;
-        let kind = TraceEventKind::BranchStart { branch_index: 0, total_branches: 3 };
+        let kind = TraceEventKind::BranchStart {
+            branch_index: 0,
+            total_branches: 3,
+        };
         assert_eq!(extract_operator_name(&v, &kind), "<branch-start>");
     }
 
     #[test]
     fn test_extract_operator_name_branch_end() {
         let v = TraceValue::Unit;
-        let kind = TraceEventKind::BranchEnd { branch_index: 1, result_count: 2 };
+        let kind = TraceEventKind::BranchEnd {
+            branch_index: 1,
+            result_count: 2,
+        };
         assert_eq!(extract_operator_name(&v, &kind), "<branch-end>");
     }
 
@@ -303,15 +305,24 @@ mod tests {
             "<eval-start>"
         );
         assert_eq!(
-            extract_operator_name(&TraceValue::Unit, &TraceEventKind::EvalEnd { result_count: 1 }),
+            extract_operator_name(
+                &TraceValue::Unit,
+                &TraceEventKind::EvalEnd { result_count: 1 }
+            ),
             "<eval-end>"
         );
     }
 
     #[test]
     fn test_extract_operator_name_gc_safepoint() {
-        let kind = TraceEventKind::GcSafepoint { root_count: 42, allocation_delta_bytes: 1024 };
-        assert_eq!(extract_operator_name(&TraceValue::Unit, &kind), "<gc-safepoint>");
+        let kind = TraceEventKind::GcSafepoint {
+            root_count: 42,
+            allocation_delta_bytes: 1024,
+        };
+        assert_eq!(
+            extract_operator_name(&TraceValue::Unit, &kind),
+            "<gc-safepoint>"
+        );
     }
 
     #[test]

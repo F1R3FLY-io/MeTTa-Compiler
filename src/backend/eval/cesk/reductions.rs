@@ -72,7 +72,10 @@ pub fn reduction_budget() -> u32 {
 #[derive(Debug)]
 pub enum EvalOutcome {
     /// Evaluation completed. Contains the final (results, environment).
-    Complete(smallvec::SmallVec<[crate::backend::eval::trampoline::types::BoundValue; 2]>, crate::backend::environment::MettaEnvironment),
+    Complete(
+        smallvec::SmallVec<[crate::backend::eval::trampoline::types::BoundValue; 2]>,
+        crate::backend::environment::MettaEnvironment,
+    ),
 
     /// Evaluation yielded after exhausting its reduction budget.
     /// Contains the suspended state for resumption.
@@ -210,7 +213,7 @@ mod tests {
 
         assert!(!counter.tick()); // 1
         assert!(!counter.tick()); // 2
-        assert!(counter.tick());  // 3 — budget reached
+        assert!(counter.tick()); // 3 — budget reached
         assert_eq!(counter.current(), 3);
         assert_eq!(counter.total(), 3);
     }
@@ -228,7 +231,7 @@ mod tests {
         assert_eq!(counter.total(), 2); // Total preserved
 
         assert!(!counter.tick()); // 1 (new slice)
-        assert!(counter.tick());  // 2 — budget again
+        assert!(counter.tick()); // 2 — budget again
         assert_eq!(counter.total(), 4);
     }
 

@@ -4,24 +4,25 @@
 // The eval() entry point handles bytecode/JIT tiering with
 // tree-walker fallback via eval_trampoline().
 
+pub(crate) mod alpha_equiv;
 pub(crate) mod bindings;
 pub mod cesk;
 pub(crate) mod frame_chain;
 pub(crate) mod freshening;
-mod helpers;
-pub mod monad_registry;
-pub(crate) mod space_match;
-mod list_ops;
-pub(crate) mod alpha_equiv;
-pub(crate) mod set_ops;
-pub(crate) mod testing_ops;
-pub(crate) mod modules;
 pub(crate) mod git_import;
+mod helpers;
+mod list_ops;
+pub(crate) mod modules;
+pub mod monad_registry;
 pub(crate) mod mork_forms;
 mod pattern;
 pub mod priority;
 mod processing;
+pub(crate) mod set_ops;
+pub(crate) mod space_match;
 pub(crate) mod step;
+pub(crate) mod testing_ops;
+pub mod tier_forced;
 pub mod trampoline;
 pub(crate) mod type_fixpoint;
 pub(crate) mod types;
@@ -43,23 +44,18 @@ pub use trampoline::eval_trampoline;
 pub use trampoline::{MettaEnvironment, StaticEvalContext};
 
 // Type system re-exports for benchmarking
-pub use types::{
-    infer_types_generic, infer_type_generic,
-    types_match_generic, types_match_with_subtypes,
-    match_types_with_bindings, apply_type_bindings,
-    freshen_type_variables, is_meta_type,
-    eval_get_type_generic, eval_check_type_generic,
-    eval_type_cast_generic, eval_validate_atom_generic,
-    eval_get_type_space_generic,
-    infer_arrow_type_from_rule,
-    extract_type_constraint, get_ground_type, is_pattern_type_compatible,
+pub use step::{
+    extract_arg_types, extract_return_type, find_grounded_arg_indices_generic,
+    find_typed_arg_indices_generic, is_arrow_type, is_declared_value_type, is_meta_type_value,
+    validate_grounded_arg_types,
 };
 pub use type_fixpoint::run_type_fixpoint;
-pub use step::{
-    find_typed_arg_indices_generic, find_grounded_arg_indices_generic,
-    is_declared_value_type, validate_grounded_arg_types,
-    extract_arg_types, extract_return_type, is_arrow_type,
-    is_meta_type_value,
+pub use types::{
+    apply_type_bindings, eval_check_type_generic, eval_get_type_generic,
+    eval_get_type_space_generic, eval_type_cast_generic, eval_validate_atom_generic,
+    extract_type_constraint, freshen_type_variables, get_ground_type, infer_arrow_type_from_rule,
+    infer_type_generic, infer_types_generic, is_meta_type, is_pattern_type_compatible,
+    match_types_with_bindings, types_match_generic, types_match_with_subtypes,
 };
 
 // =============================================================================
@@ -129,6 +125,35 @@ fn snapshot_cache_roots() -> Option<SafepointRootHandle> {
     }
 }
 
+/// Refresh this thread's persistent cache-root handle.
+///
+/// Main eval threads and parallel worker threads both hold thread-local
+/// evaluation caches. The handle keeps those cached values visible to
+/// quiescent/session GC while the thread is idle between eval calls.
+pub(crate) fn refresh_thread_local_cache_roots() {
+    let new_handle = snapshot_cache_roots();
+    CACHE_ROOT_HANDLE.with(|h| {
+        *h.borrow_mut() = new_handle;
+    });
+}
+
+/// Drop guard used by worker closures so cache roots are refreshed while their
+/// EvalGuard is still active, including cancellation unwind paths.
+pub(crate) struct CacheRootRefreshGuard;
+
+impl CacheRootRefreshGuard {
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+impl Drop for CacheRootRefreshGuard {
+    fn drop(&mut self) {
+        refresh_thread_local_cache_roots();
+    }
+}
+
 /// Evaluate an MettaValue with bytecode/JIT tiering.
 ///
 /// This function provides zero-conversion evaluation for MettaValue expressions
@@ -190,10 +215,7 @@ pub fn eval(
         // use-after-poison when the cache returns freed values.
         //
         // The handle replaces the previous one — old roots are unregistered.
-        let new_handle = snapshot_cache_roots();
-        CACHE_ROOT_HANDLE.with(|h| {
-            *h.borrow_mut() = new_handle;
-        });
+        refresh_thread_local_cache_roots();
 
         r
     };
@@ -241,16 +263,33 @@ pub fn eval_with_trace(
         let r = eval_inner_with_trace(value, env, state, collector);
 
         // Snapshot cache roots before EvalGuard drops (same rationale as eval()).
-        let new_handle = snapshot_cache_roots();
-        CACHE_ROOT_HANDLE.with(|h| {
-            *h.borrow_mut() = new_handle;
-        });
+        refresh_thread_local_cache_roots();
 
         r
     };
 
     result.1.maybe_run_type_fixpoint();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_refresh_thread_local_cache_roots_registers_eval_memo_values() {
+        let cached = MettaValue::sym("thread-local-cache-root");
+
+        trampoline::dispatch_hints::clear_eval_memo();
+        trampoline::dispatch_hints::eval_memo_put(0xfeed_cafe, &[cached]);
+        refresh_thread_local_cache_roots();
+
+        let roots = crate::backend::models::collect_all_roots();
+        assert!(roots.contains(&cached));
+
+        trampoline::dispatch_hints::clear_eval_memo();
+        refresh_thread_local_cache_roots();
+    }
 }
 
 /// Inner eval body with trace — bytecode/JIT tiered execution with trace-enabled
@@ -267,19 +306,20 @@ fn eval_inner_with_trace(
     state: &crate::backend::models::MettaState,
     collector: &std::sync::Arc<crate::backend::trace::TraceCollector>,
 ) -> EvalResult {
-    use crate::backend::bytecode::{
-        can_compile, can_compile_with_env, eval_bytecode_arena_with_env,
-        execute_arena, global_tiered_cache,
-        TierStatusKind,
-    };
     #[cfg(feature = "track-stats")]
     use crate::backend::bytecode::ExecutionTier;
+    use crate::backend::bytecode::{
+        can_compile, can_compile_with_env, eval_bytecode_arena_with_env, execute_arena,
+        global_tiered_cache, TierStatusKind,
+    };
     use crate::backend::trace::thread_local_sink::{
-        set_thread_trace_collector, clear_thread_trace_collector,
+        clear_thread_trace_collector, set_thread_trace_collector,
     };
 
     let compilation_state = global_tiered_cache().record_execution(&value);
-    let execution_count = compilation_state.execution_count.load(std::sync::atomic::Ordering::Relaxed);
+    let execution_count = compilation_state
+        .execution_count
+        .load(std::sync::atomic::Ordering::Relaxed);
     let expr_hash = compilation_state.expr_hash;
 
     // Set thread-local trace collector for bytecode/JIT instrumentation.
@@ -297,9 +337,11 @@ fn eval_inner_with_trace(
             if let Some(code) = compilation_state.jit2_code() {
                 // Emit TierDispatch event
                 collector.emit_converted(
-                    trace_format::TraceTier::JitStage2, 0,
+                    trace_format::TraceTier::JitStage2,
+                    0,
                     crate::backend::trace::trace_value_generic(&value),
-                    vec![], None,
+                    vec![],
+                    None,
                     trace_format::TraceEventKind::TierDispatch {
                         expression_hash: expr_hash,
                         selected_tier: trace_format::TraceTier::JitStage2,
@@ -310,8 +352,7 @@ fn eval_inner_with_trace(
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
                         #[cfg(feature = "track-stats")]
-                        global_tiered_cache()
-                            .record_tier_execution(ExecutionTier::JitStage2);
+                        global_tiered_cache().record_tier_execution(ExecutionTier::JitStage2);
                         clear_thread_trace_collector();
                         return (SmallVec::from_vec(results), new_env);
                     }
@@ -324,9 +365,11 @@ fn eval_inner_with_trace(
         if compilation_state.jit1_status() == TierStatusKind::Ready {
             if let Some(code) = compilation_state.jit1_code() {
                 collector.emit_converted(
-                    trace_format::TraceTier::JitStage1, 0,
+                    trace_format::TraceTier::JitStage1,
+                    0,
                     crate::backend::trace::trace_value_generic(&value),
-                    vec![], None,
+                    vec![],
+                    None,
                     trace_format::TraceEventKind::TierDispatch {
                         expression_hash: expr_hash,
                         selected_tier: trace_format::TraceTier::JitStage1,
@@ -337,8 +380,7 @@ fn eval_inner_with_trace(
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
                         #[cfg(feature = "track-stats")]
-                        global_tiered_cache()
-                            .record_tier_execution(ExecutionTier::JitStage1);
+                        global_tiered_cache().record_tier_execution(ExecutionTier::JitStage1);
                         clear_thread_trace_collector();
                         return (SmallVec::from_vec(results), new_env);
                     }
@@ -351,9 +393,11 @@ fn eval_inner_with_trace(
         if compilation_state.bytecode_status() == TierStatusKind::Ready {
             if let Some(chunk) = compilation_state.bytecode_chunk() {
                 collector.emit_converted(
-                    trace_format::TraceTier::BytecodeVM, 0,
+                    trace_format::TraceTier::BytecodeVM,
+                    0,
                     crate::backend::trace::trace_value_generic(&value),
-                    vec![], None,
+                    vec![],
+                    None,
                     trace_format::TraceEventKind::TierDispatch {
                         expression_hash: expr_hash,
                         selected_tier: trace_format::TraceTier::BytecodeVM,
@@ -367,8 +411,7 @@ fn eval_inner_with_trace(
                             // Bytecode couldn't reduce — fall through
                         } else {
                             #[cfg(feature = "track-stats")]
-                            global_tiered_cache()
-                                .record_tier_execution(ExecutionTier::Bytecode);
+                            global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
                             clear_thread_trace_collector();
                             return (SmallVec::from_vec(results), new_env);
                         }
@@ -379,22 +422,79 @@ fn eval_inner_with_trace(
         }
     }
 
-    // Environment-aware bytecode. Gate out calls whose head has a declared
-    // arrow type with meta-typed parameters: the VM eagerly evaluates args,
-    // violating HE's `interpret_function` semantics (meta-typed args must
-    // pass unevaluated). The trampoline honors declared meta-types via
-    // `find_typed_arg_indices_generic`.
-    // Environment-aware bytecode. Gate out calls whose head has a declared
-    // arrow type with meta-typed parameters: the VM eagerly evaluates args,
-    // violating HE's `interpret_function` semantics (meta-typed args must
-    // pass unevaluated). The trampoline honors declared meta-types via
-    // `find_typed_arg_indices_generic`.
+    // Check pre-compiled built-in registry — keep this aligned with eval_inner
+    // so enabling trace does not change tier selection for common operations.
+    if !has_overridden_grounded {
+        if let Some(items) = value.as_sexpr() {
+            if let Some(head_atom) = items.first().and_then(|v| v.as_atom()) {
+                let arity = (items.len() - 1) as u8;
+                if let Some(builtin_chunk) =
+                    crate::backend::bytecode::builtin_chunks::get_builtin_chunk(head_atom, arity)
+                {
+                    let mut arg_values = SmallVec::<[MettaValue; 4]>::with_capacity(arity as usize);
+                    let mut current_env = env.clone();
+                    let mut all_single = true;
+                    for arg in &items[1..] {
+                        clear_thread_trace_collector();
+                        let (results, new_env) = trampoline::eval_trampoline_with_trace(
+                            *arg,
+                            current_env,
+                            state,
+                            collector,
+                        );
+                        current_env = std::sync::Arc::try_unwrap(new_env)
+                            .unwrap_or_else(|arc| (*arc).clone());
+                        if results.len() == 1 {
+                            arg_values.push(results.into_iter().next().expect("len checked").0);
+                        } else {
+                            all_single = false;
+                            break;
+                        }
+                    }
+                    if all_single {
+                        set_thread_trace_collector(collector);
+                        let factory = current_env.factory().clone();
+                        let mut vm =
+                            crate::backend::bytecode::GenericBytecodeVM::with_env_and_factory(
+                                builtin_chunk,
+                                current_env.clone(),
+                                factory,
+                            );
+                        for arg in arg_values {
+                            vm.value_stack.push(arg);
+                        }
+                        if let Ok((results, _env_opt)) = vm.run_with_env() {
+                            if !results.is_empty() {
+                                clear_thread_trace_collector();
+                                return (SmallVec::from_vec(results), current_env);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Environment-aware bytecode is only valid for pure, closed rule-backed
+    // calls. Keep this gate aligned with trampoline sub-expression dispatch:
+    // meta-typed args, overridden grounded heads, and impure/cut rule bodies
+    // require the tree-walker.
+    let compilable_with_env = compilation_state
+        .cached_compilable_with_env()
+        .unwrap_or_else(|| {
+            let result = can_compile_with_env(&value);
+            compilation_state.set_compilable_with_env(result);
+            result
+        });
     let has_meta_typed = expression_has_declared_meta_typed_params(&value, &env);
-    if can_compile_with_env(&value) && !has_meta_typed && !has_overridden_grounded {
+    let has_impure_rules = expression_involves_impure_rules(&value, &env);
+    if compilable_with_env && !has_meta_typed && !has_overridden_grounded && !has_impure_rules {
         collector.emit_converted(
-            trace_format::TraceTier::BytecodeVM, 0,
+            trace_format::TraceTier::BytecodeVM,
+            0,
             crate::backend::trace::trace_value_generic(&value),
-            vec![], None,
+            vec![],
+            None,
             trace_format::TraceEventKind::TierDispatch {
                 expression_hash: expr_hash,
                 selected_tier: trace_format::TraceTier::BytecodeVM,
@@ -402,40 +502,69 @@ fn eval_inner_with_trace(
             },
         );
 
-        match eval_bytecode_arena_with_env(&value, env.clone()) {
-            Ok((results, new_env, unreduced, has_choices)) => {
-                if unreduced || has_choices {
-                    // Bytecode couldn't reduce or has unexplored nondeterministic
-                    // alternatives — fall through to tree-walker for correct handling
-                } else {
-                    #[cfg(feature = "track-stats")]
-                    global_tiered_cache()
-                        .record_tier_execution(ExecutionTier::Bytecode);
-                    // Complete evaluation via trampoline (see eval_inner for rationale)
-                    let mut final_results = SmallVec::with_capacity(results.len());
-                    let mut final_env = new_env;
-                    for result in results {
-                        clear_thread_trace_collector();
-                        let (sub_results, sub_env) =
-                            trampoline::eval_trampoline_with_trace(result, final_env, state, &collector);
-                        // Strip per-branch bindings at the external API boundary.
-                        final_results.extend(sub_results.into_iter().map(|(v, _)| v));
-                        final_env = std::sync::Arc::try_unwrap(sub_env)
-                            .unwrap_or_else(|arc| (*arc).clone());
+        let vm_result = if let Some(chunk) = compilation_state.bytecode_chunk() {
+            let factory = env.factory().clone();
+            let mut vm = crate::backend::bytecode::GenericBytecodeVM::with_env_and_factory(
+                chunk,
+                env.clone(),
+                factory.clone(),
+            );
+            vm.yield_on_top_return = true;
+            vm.run()
+                .map(|results| {
+                    let unreduced = vm.unreduced || vm.had_unreduced_result;
+                    let has_choices = vm.choice_points_len() > 0;
+                    let final_env = vm.env.take().unwrap_or_else(|| {
+                        crate::backend::environment::core::MettaEnvironment::new(factory)
+                    });
+                    (results, final_env, unreduced, has_choices)
+                })
+                .ok()
+        } else {
+            match eval_bytecode_arena_with_env(&value, env.clone()) {
+                Ok((results, new_env, unreduced, has_choices)) => {
+                    if compilation_state.try_start_bytecode_compile() {
+                        if let Ok(chunk) =
+                            crate::backend::bytecode::compile_bytecode_arc("cached_env", &value)
+                        {
+                            compilation_state.set_bytecode_ready(chunk);
+                        }
                     }
-                    clear_thread_trace_collector();
-                    return (final_results, final_env);
+                    Some((results, new_env, unreduced, has_choices))
                 }
+                Err(_) => None,
             }
-            Err(_) => {}
+        };
+
+        if let Some((results, new_env, unreduced, has_choices)) = vm_result {
+            if !unreduced && !has_choices {
+                #[cfg(feature = "track-stats")]
+                global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
+                // Complete evaluation via trampoline (see eval_inner for rationale).
+                let mut final_results = SmallVec::with_capacity(results.len());
+                let mut final_env = new_env;
+                for result in results {
+                    clear_thread_trace_collector();
+                    let (sub_results, sub_env) =
+                        trampoline::eval_trampoline_with_trace(result, final_env, state, collector);
+                    // Strip per-branch bindings at the external API boundary.
+                    final_results.extend(sub_results.into_iter().map(|(v, _)| v));
+                    final_env =
+                        std::sync::Arc::try_unwrap(sub_env).unwrap_or_else(|arc| (*arc).clone());
+                }
+                clear_thread_trace_collector();
+                return (final_results, final_env);
+            }
         }
     }
 
     // Tier 0: Tree-walker with trace collection
     collector.emit_converted(
-        trace_format::TraceTier::TreeWalker, 0,
+        trace_format::TraceTier::TreeWalker,
+        0,
         crate::backend::trace::trace_value_generic(&value),
-        vec![], None,
+        vec![],
+        None,
         trace_format::TraceEventKind::TierDispatch {
             expression_hash: expr_hash,
             selected_tier: trace_format::TraceTier::TreeWalker,
@@ -462,13 +591,12 @@ fn eval_inner(
     env: MettaEnvironment,
     state: &crate::backend::models::MettaState,
 ) -> EvalResult {
-    use crate::backend::bytecode::{
-        can_compile, can_compile_with_env, eval_bytecode_arena_with_env,
-        execute_arena, global_tiered_cache,
-        TierStatusKind,
-    };
     #[cfg(feature = "track-stats")]
     use crate::backend::bytecode::ExecutionTier;
+    use crate::backend::bytecode::{
+        can_compile, can_compile_with_env, eval_bytecode_arena_with_env, execute_arena,
+        global_tiered_cache, TierStatusKind,
+    };
 
     // Record execution in arena tiered cache
     // This triggers background bytecode and JIT compilation at thresholds
@@ -488,8 +616,7 @@ fn eval_inner(
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
                         #[cfg(feature = "track-stats")]
-                        global_tiered_cache()
-                            .record_tier_execution(ExecutionTier::JitStage2);
+                        global_tiered_cache().record_tier_execution(ExecutionTier::JitStage2);
                         return (SmallVec::from_vec(results), new_env);
                     }
                     Err(_) => {
@@ -505,8 +632,7 @@ fn eval_inner(
                 match execute_jit_arena_with_env(&compilation_state, code.ptr, env.clone()) {
                     Ok((results, new_env)) => {
                         #[cfg(feature = "track-stats")]
-                        global_tiered_cache()
-                            .record_tier_execution(ExecutionTier::JitStage1);
+                        global_tiered_cache().record_tier_execution(ExecutionTier::JitStage1);
                         return (SmallVec::from_vec(results), new_env);
                     }
                     Err(_) => {
@@ -526,8 +652,7 @@ fn eval_inner(
                             // Bytecode couldn't reduce — fall through
                         } else {
                             #[cfg(feature = "track-stats")]
-                            global_tiered_cache()
-                                .record_tier_execution(ExecutionTier::Bytecode);
+                            global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
                             return (SmallVec::from_vec(results), new_env);
                         }
                     }
@@ -542,72 +667,63 @@ fn eval_inner(
     // Check pre-compiled built-in registry — zero compilation overhead for
     // common operations like (+, -, *, /, car-atom, etc.)
     if !has_overridden_grounded {
-    if let Some(items) = value.as_sexpr() {
-        if let Some(head_atom) = items.first().and_then(|v| v.as_atom()) {
-            let arity = (items.len() - 1) as u8;
-            if let Some(builtin_chunk) = crate::backend::bytecode::builtin_chunks::get_builtin_chunk(head_atom, arity) {
-                // Evaluate arguments first (they may need reduction)
-                let mut arg_values = SmallVec::<[MettaValue; 4]>::with_capacity(arity as usize);
-                let mut current_env = env.clone();
-                let mut all_single = true;
-                for arg in &items[1..] {
-                    let (results, new_env) = eval_trampoline(arg.clone(), current_env, state);
-                    current_env = (*new_env).clone();
-                    if results.len() == 1 {
-                        arg_values.push(results.into_iter().next().expect("len checked").0);
-                    } else {
-                        all_single = false;
-                        break;
+        if let Some(items) = value.as_sexpr() {
+            if let Some(head_atom) = items.first().and_then(|v| v.as_atom()) {
+                let arity = (items.len() - 1) as u8;
+                if let Some(builtin_chunk) =
+                    crate::backend::bytecode::builtin_chunks::get_builtin_chunk(head_atom, arity)
+                {
+                    // Evaluate arguments first (they may need reduction)
+                    let mut arg_values = SmallVec::<[MettaValue; 4]>::with_capacity(arity as usize);
+                    let mut current_env = env.clone();
+                    let mut all_single = true;
+                    for arg in &items[1..] {
+                        let (results, new_env) = eval_trampoline(arg.clone(), current_env, state);
+                        current_env = (*new_env).clone();
+                        if results.len() == 1 {
+                            arg_values.push(results.into_iter().next().expect("len checked").0);
+                        } else {
+                            all_single = false;
+                            break;
+                        }
                     }
-                }
-                if all_single {
-                    let factory = current_env.factory().clone();
-                    let mut vm = crate::backend::bytecode::GenericBytecodeVM::with_env_and_factory(
-                        builtin_chunk, current_env.clone(), factory.clone(),
-                    );
-                    for arg in arg_values {
-                        vm.value_stack.push(arg);
-                    }
-                    if let Ok((results, _env_opt)) = vm.run_with_env() {
-                        if !results.is_empty() {
-                            return (SmallVec::from_vec(results), current_env);
+                    if all_single {
+                        let factory = current_env.factory().clone();
+                        let mut vm =
+                            crate::backend::bytecode::GenericBytecodeVM::with_env_and_factory(
+                                builtin_chunk,
+                                current_env.clone(),
+                                factory.clone(),
+                            );
+                        for arg in arg_values {
+                            vm.value_stack.push(arg);
+                        }
+                        if let Ok((results, _env_opt)) = vm.run_with_env() {
+                            if !results.is_empty() {
+                                return (SmallVec::from_vec(results), current_env);
+                            }
                         }
                     }
                 }
             }
         }
     }
-    }
 
     // Try environment-aware bytecode for expressions that need rule dispatch.
     // Cache compiled chunks in TieredCache to avoid recompilation on every call.
     // Use cached compilability check to avoid redundant recursive tree walks.
-    let compilable_with_env = compilation_state.cached_compilable_with_env()
+    let compilable_with_env = compilation_state
+        .cached_compilable_with_env()
         .unwrap_or_else(|| {
             let result = can_compile_with_env(&value);
             compilation_state.set_compilable_with_env(result);
             result
         });
-    // Gate: skip the bytecode path when ANY sub-expression's head has
-    // rules whose RHS bodies contain `(cut)`. The bytecode VM evaluates
-    // all nondeterministic branches unconditionally (no fork/cut
-    // mechanism), so cut semantics only work in the tree-walker trampoline.
-    // For `(! (foo 1))`, we need to check `foo`'s rules, not just `!`.
-    let has_cut_rules = expression_involves_cut_rules(&value, &env);
-    // Gate: skip the bytecode path when any sub-expression's head has a
-    // declared arrow type with meta-typed parameters. The VM's eager
-    // applicative arg evaluation reduces such args, violating HE's
-    // `interpret_function` semantics (which passes meta-typed args
-    // unevaluated). The trampoline honors per-arg meta-type declarations
-    // via `find_typed_arg_indices_generic`.
-    // Gate: skip the bytecode path when any sub-expression's head has a
-    // declared arrow type with meta-typed parameters. The VM's eager
-    // applicative arg evaluation reduces such args, violating HE's
-    // `interpret_function` semantics (which passes meta-typed args
-    // unevaluated). The trampoline honors per-arg meta-type declarations
-    // via `find_typed_arg_indices_generic`.
+    // Environment-aware bytecode is only valid for pure, closed rule-backed
+    // calls. Keep this gate aligned with trampoline sub-expression dispatch.
+    let has_impure_rules = expression_involves_impure_rules(&value, &env);
     let has_meta_typed = expression_has_declared_meta_typed_params(&value, &env);
-    if compilable_with_env && !has_cut_rules && !has_meta_typed && !has_overridden_grounded {
+    if compilable_with_env && !has_impure_rules && !has_meta_typed && !has_overridden_grounded {
         // Reuse compilation_state from the record_execution at line 371 —
         // same expression hash, avoids redundant DashMap lookup + hash computation.
         let compilation_state_env = &compilation_state;
@@ -619,12 +735,14 @@ fn eval_inner(
             // within a single run() call, eliminating tree-walker fallback.
             let factory = env.factory().clone();
             let mut vm = crate::backend::bytecode::GenericBytecodeVM::with_env_and_factory(
-                chunk, env.clone(), factory.clone(),
+                chunk,
+                env.clone(),
+                factory.clone(),
             );
             vm.yield_on_top_return = true;
             vm.run()
                 .map(|results| {
-                    let unreduced = vm.unreduced;
+                    let unreduced = vm.unreduced || vm.had_unreduced_result;
                     let has_choices = vm.choice_points_len() > 0;
                     let final_env = vm.env.take().unwrap_or_else(|| {
                         crate::backend::environment::core::MettaEnvironment::new(factory)
@@ -638,9 +756,9 @@ fn eval_inner(
                 Ok((results, new_env, unreduced, has_choices)) => {
                     // Cache the compiled chunk for future reuse
                     if compilation_state_env.try_start_bytecode_compile() {
-                        if let Ok(chunk) = crate::backend::bytecode::compile_bytecode_arc(
-                            "cached_env", &value,
-                        ) {
+                        if let Ok(chunk) =
+                            crate::backend::bytecode::compile_bytecode_arc("cached_env", &value)
+                        {
                             compilation_state_env.set_bytecode_ready(chunk);
                         }
                     }
@@ -653,8 +771,7 @@ fn eval_inner(
         if let Some((results, new_env, unreduced, has_choices)) = vm_result {
             if !unreduced && !has_choices {
                 #[cfg(feature = "track-stats")]
-                global_tiered_cache()
-                    .record_tier_execution(ExecutionTier::Bytecode);
+                global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
                 // Complete evaluation via trampoline (returns immediately for
                 // normal forms via O(1) bloom filter check).
                 let mut final_results = SmallVec::with_capacity(results.len());
@@ -673,19 +790,55 @@ fn eval_inner(
     #[cfg(feature = "track-stats")]
     global_tiered_cache().record_tier_execution(ExecutionTier::Interpreter);
     let (results, shared_env) = eval_trampoline(value, env, state);
-    (results.into_iter().map(|(v, _)| v).collect(), (*shared_env).clone())
+    (
+        results.into_iter().map(|(v, _)| v).collect(),
+        (*shared_env).clone(),
+    )
 }
 
 /// Recursively check if any sub-expression's head has rules that use `(cut)`.
 /// Used to gate the bytecode path: the bytecode VM doesn't implement cut.
-fn expression_involves_cut_rules(value: &MettaValue, env: &MettaEnvironment) -> bool {
+pub(crate) fn expression_involves_cut_rules(value: &MettaValue, env: &MettaEnvironment) -> bool {
+    expression_involves_rule_rhs_atom(value, env, &["cut"])
+}
+
+pub(crate) fn expression_involves_impure_rules(value: &MettaValue, env: &MettaEnvironment) -> bool {
+    expression_involves_cut_rules(value, env)
+        || expression_involves_rule_rhs_atom(
+            value,
+            env,
+            &[
+                "println!",
+                "trace!",
+                "add-atom",
+                "remove-atom",
+                "change-state!",
+                "bind!",
+                "import!",
+                "include",
+                "new-state",
+                "new-space",
+            ],
+        )
+}
+
+fn expression_involves_rule_rhs_atom(
+    value: &MettaValue,
+    env: &MettaEnvironment,
+    needles: &[&str],
+) -> bool {
     if let Some(head) = value.get_head_symbol() {
-        if env.rule_rhs_contains_atom(head, "cut") {
+        if needles
+            .iter()
+            .any(|needle| env.rule_rhs_contains_atom(head, needle))
+        {
             return true;
         }
     }
     if let Some(items) = value.as_sexpr() {
-        return items.iter().any(|item| expression_involves_cut_rules(item, env));
+        return items
+            .iter()
+            .any(|item| expression_involves_rule_rhs_atom(item, env, needles));
     }
     false
 }
@@ -707,7 +860,7 @@ fn expression_involves_cut_rules(value: &MettaValue, env: &MettaEnvironment) -> 
 /// an explicitly declared arrow type with at least one meta-typed formal
 /// parameter. Inferred types are ignored — only user-declared `(: f (-> ...))`
 /// assertions trigger this gate, matching HE's "declared types win" rule.
-fn expression_has_declared_meta_typed_params(
+pub(crate) fn expression_has_declared_meta_typed_params(
     value: &MettaValue,
     env: &MettaEnvironment,
 ) -> bool {
@@ -741,9 +894,9 @@ fn expression_has_declared_meta_typed_params_recursive(
                 }
             }
         }
-        return items.iter().any(|item|
-            expression_has_declared_meta_typed_params_recursive(item, env)
-        );
+        return items
+            .iter()
+            .any(|item| expression_has_declared_meta_typed_params_recursive(item, env));
     }
     false
 }
@@ -760,7 +913,7 @@ fn expression_has_declared_meta_typed_params_recursive(
 ///
 /// Fast exit: if no override bit is set on the env's `DispatchOverrides`,
 /// return `false` in O(1) without walking the expression tree.
-fn expression_has_overridden_grounded_op(
+pub(crate) fn expression_has_overridden_grounded_op(
     value: &MettaValue,
     env: &MettaEnvironment,
 ) -> bool {
@@ -797,15 +950,15 @@ fn expression_has_overridden_grounded_op_recursive(
                 }
             }
         }
-        return items.iter().any(|item|
-            expression_has_overridden_grounded_op_recursive(item, overrides)
-        );
+        return items
+            .iter()
+            .any(|item| expression_has_overridden_grounded_op_recursive(item, overrides));
     }
     false
 }
 
 /// Execute JIT-compiled code for arena expression with environment threading.
-fn execute_jit_arena_with_env(
+pub(crate) fn execute_jit_arena_with_env(
     state: &std::sync::Arc<crate::backend::bytecode::ExprCompilationState>,
     native_ptr: *const (),
     env: MettaEnvironment,

@@ -99,10 +99,7 @@ pub fn extract_return_type<V: MettaValueTrait + Clone>(typ: &V) -> Option<V> {
 ///
 /// MeTTa HE parity: only operators with arrow types trigger applicative evaluation.
 /// If the operator has no type or a non-function type, returns false.
-pub fn should_pre_eval_by_type<V, F>(
-    op: &str,
-    env: &GenericEnvironment<V, F>,
-) -> bool
+pub fn should_pre_eval_by_type<V, F>(op: &str, env: &GenericEnvironment<V, F>) -> bool
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
@@ -154,7 +151,10 @@ where
                     // deep type inference, pre-evaluate it. Uses AtomicBloomFilter
                     // for O(1) rejection before DashMap lookup.
                     else if env.has_inferred_type(op)
-                        && env.get_inferred_fn_types(op).iter().any(|t| is_arrow_type(t))
+                        && env
+                            .get_inferred_fn_types(op)
+                            .iter()
+                            .any(|t| is_arrow_type(t))
                     {
                         indices.push(i);
                     }
@@ -218,9 +218,9 @@ where
 
         // If formal type is a meta-type in ALL arrow types, skip (don't pre-evaluate).
         // Conservative: if ANY arrow type says value-typed at this position, pre-eval.
-        let all_meta = all_arg_types.iter().all(|arg_types| {
-            arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx])
-        });
+        let all_meta = all_arg_types
+            .iter()
+            .all(|arg_types| arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx]));
         if all_meta {
             continue;
         }
@@ -276,11 +276,7 @@ where
 ///
 /// This provides clear type error messages instead of `NoReduce` → reconstructed
 /// unreduced expression trees when ground-typed args don't match the signature.
-pub fn validate_grounded_arg_types<V, F>(
-    op: &str,
-    args: &[V],
-    factory: &F,
-) -> Option<V>
+pub fn validate_grounded_arg_types<V, F>(op: &str, args: &[V], factory: &F) -> Option<V>
 where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
@@ -296,7 +292,9 @@ where
     };
 
     for (i, arg) in args.iter().enumerate() {
-        if i >= arg_types.len() { break; }
+        if i >= arg_types.len() {
+            break;
+        }
 
         // Pattern match on (actual_inner, expected_type) pairs.
         // Only validate ground-type args in final form; skip S-exprs/atoms/variables.
@@ -314,8 +312,14 @@ where
             (MettaValueInner::String(_), TypeExpr::Number) => true,
             (MettaValueInner::String(_), TypeExpr::Bool) => true,
             // Polymorphic expected types — always compatible
-            (_, TypeExpr::Var(_) | TypeExpr::Any | TypeExpr::Atom
-               | TypeExpr::Undefined | TypeExpr::Expression) => false,
+            (
+                _,
+                TypeExpr::Var(_)
+                | TypeExpr::Any
+                | TypeExpr::Atom
+                | TypeExpr::Undefined
+                | TypeExpr::Expression,
+            ) => false,
             // Non-ground args (S-expr, atom, variable) — can't validate yet
             _ => false,
         };
@@ -334,8 +338,13 @@ where
                 _ => unreachable!("only concrete types reach mismatch=true"),
             };
             return Some(factory.error(
-                &format!("{}: argument {} expected {}, got {}",
-                    op, i + 1, expected_name, actual_type),
+                &format!(
+                    "{}: argument {} expected {}, got {}",
+                    op,
+                    i + 1,
+                    expected_name,
+                    actual_type
+                ),
                 factory.atom("TypeError"),
             ));
         }
@@ -458,8 +467,8 @@ mod tests {
             f.sexpr(vec![f.atom("+"), f.long(3), f.long(4)]),
         ];
 
-        let indices = find_typed_arg_indices_generic(&items, &e, None)
-            .expect("should find typed indices");
+        let indices =
+            find_typed_arg_indices_generic(&items, &e, None).expect("should find typed indices");
         // Only index 2 (second arg, Number type) should be selected
         assert_eq!(indices, vec![2]);
     }

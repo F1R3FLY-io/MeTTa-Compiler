@@ -679,8 +679,8 @@ fn test_context_arity_variadic_case_many_args() {
     ]);
     let expr = vec![
         MettaValue::Atom("caze".to_string()),
-        MettaValue::Atom("x".to_string()),     // Atom — matches Atom
-        pattern_pair.clone(),                   // SExpr — matches Expression
+        MettaValue::Atom("x".to_string()), // Atom — matches Atom
+        pattern_pair.clone(),              // SExpr — matches Expression
         pattern_pair.clone(),
         pattern_pair.clone(),
         pattern_pair,

@@ -37,7 +37,11 @@ pub enum AbstractType {
 impl AbstractType {
     /// Join two types into their least upper bound.
     pub fn join(self, other: Self) -> Self {
-        if self == other { self } else { AbstractType::Top }
+        if self == other {
+            self
+        } else {
+            AbstractType::Top
+        }
     }
 }
 
@@ -62,7 +66,10 @@ impl AbstractAddr {
     /// Create a monovariant address (k=0, no context).
     #[inline]
     pub fn mono(site: u64) -> Self {
-        Self { site, context: SmallVec::new() }
+        Self {
+            site,
+            context: SmallVec::new(),
+        }
     }
 
     /// Create a context-sensitive address (k-CFA).
@@ -154,9 +161,15 @@ pub fn alpha(value: &MettaValue) -> AbstractValue {
             arity: items.len() as u16,
         };
     }
-    if value.is_error() { return AbstractValue::Error; }
-    if value.is_unit() { return AbstractValue::Unit; }
-    if value.is_empty() { return AbstractValue::Empty; }
+    if value.is_error() {
+        return AbstractValue::Error;
+    }
+    if value.is_unit() {
+        return AbstractValue::Unit;
+    }
+    if value.is_empty() {
+        return AbstractValue::Empty;
+    }
     AbstractValue::Top
 }
 
@@ -180,11 +193,17 @@ pub struct AbstractValueSet {
 
 impl AbstractValueSet {
     pub fn new() -> Self {
-        Self { values: BTreeSet::new(), max_size: DEFAULT_MAX_SET_SIZE }
+        Self {
+            values: BTreeSet::new(),
+            max_size: DEFAULT_MAX_SET_SIZE,
+        }
     }
 
     pub fn with_max_size(max_size: usize) -> Self {
-        Self { values: BTreeSet::new(), max_size }
+        Self {
+            values: BTreeSet::new(),
+            max_size,
+        }
     }
 
     pub fn singleton(v: AbstractValue) -> Self {
@@ -213,7 +232,9 @@ impl AbstractValueSet {
     /// Widen if set exceeds max size.
     fn maybe_widen(&mut self) {
         if self.values.len() > self.max_size {
-            let widened_type = self.values.iter()
+            let widened_type = self
+                .values
+                .iter()
                 .map(|v| v.abstract_type())
                 .fold(None, |acc: Option<AbstractType>, t| {
                     Some(match acc {
@@ -272,7 +293,9 @@ impl AbstractValueSet {
 }
 
 impl Default for AbstractValueSet {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ============================================================================
@@ -287,12 +310,15 @@ pub struct AbstractStore {
 
 impl AbstractStore {
     pub fn new() -> Self {
-        Self { store: HashMap::new() }
+        Self {
+            store: HashMap::new(),
+        }
     }
 
     /// Allocate a value at an abstract address. Returns `true` if store changed.
     pub fn alloc(&mut self, addr: AbstractAddr, value: AbstractValue) -> bool {
-        self.store.entry(addr)
+        self.store
+            .entry(addr)
             .or_insert_with(AbstractValueSet::new)
             .insert(value)
     }
@@ -315,7 +341,9 @@ impl AbstractStore {
 }
 
 impl Default for AbstractStore {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ============================================================================
@@ -334,7 +362,9 @@ pub struct AbstractEnv {
 
 impl AbstractEnv {
     pub fn new() -> Self {
-        Self { bindings: std::collections::BTreeMap::new() }
+        Self {
+            bindings: std::collections::BTreeMap::new(),
+        }
     }
 
     pub fn lookup(&self, name: &str) -> Option<&AbstractAddr> {
@@ -357,7 +387,9 @@ impl AbstractEnv {
 }
 
 impl Default for AbstractEnv {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ============================================================================
@@ -404,9 +436,11 @@ impl Default for AnalysisConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValueFactory};
 
-    fn f() -> crate::backend::models::GcFactory { global_factory() }
+    fn f() -> crate::backend::models::GcFactory {
+        global_factory()
+    }
 
     #[test]
     fn test_alpha_atom() {
@@ -501,7 +535,10 @@ mod tests {
         // Fourth insert triggers widening
         set.insert(AbstractValue::Long(4));
         assert_eq!(set.len(), 1); // Widened to AnyOfType
-        assert_eq!(set.as_singleton(), Some(&AbstractValue::AnyOfType(AbstractType::Long)));
+        assert_eq!(
+            set.as_singleton(),
+            Some(&AbstractValue::AnyOfType(AbstractType::Long))
+        );
     }
 
     #[test]
@@ -561,7 +598,13 @@ mod tests {
 
     #[test]
     fn test_type_join() {
-        assert_eq!(AbstractType::Long.join(AbstractType::Long), AbstractType::Long);
-        assert_eq!(AbstractType::Long.join(AbstractType::Bool), AbstractType::Top);
+        assert_eq!(
+            AbstractType::Long.join(AbstractType::Long),
+            AbstractType::Long
+        );
+        assert_eq!(
+            AbstractType::Long.join(AbstractType::Bool),
+            AbstractType::Top
+        );
     }
 }

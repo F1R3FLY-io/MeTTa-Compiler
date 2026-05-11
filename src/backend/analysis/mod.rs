@@ -27,19 +27,17 @@
 
 pub mod abstract_domain;
 pub mod abstract_transition;
-pub mod fixpoint;
 pub mod derived;
+pub mod fixpoint;
 pub mod module_dce;
 pub mod pushdown;
 pub mod race_detection;
 
 // Re-exports
 pub use abstract_domain::{
-    AbstractAddr, AbstractValue, AbstractValueSet, AbstractStore,
-    AbstractEnv, AbstractType, AnalysisConfig,
+    AbstractAddr, AbstractEnv, AbstractStore, AbstractType, AbstractValue, AbstractValueSet,
+    AnalysisConfig,
 };
-pub use abstract_transition::{
-    AbstractState, AbstractControl, AbstractKont, EnvironmentSnapshot,
-};
-pub use fixpoint::{run_analysis, AnalysisResult, ExprFact};
+pub use abstract_transition::{AbstractControl, AbstractKont, AbstractState, EnvironmentSnapshot};
 pub use derived::{derive_analysis, DerivedAnalysis, DispatchHint};
+pub use fixpoint::{run_analysis, AnalysisResult, ExprFact};

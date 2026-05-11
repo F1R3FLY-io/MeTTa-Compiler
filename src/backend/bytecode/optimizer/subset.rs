@@ -69,7 +69,9 @@ pub fn subset_construction(nfa: &Nfa, classes: &EquivClasses) -> Dfa {
     worklist.push(start_nfa_set);
 
     while let Some(current_nfa_set) = worklist.pop() {
-        let current_dfa = *state_map.get(&current_nfa_set).expect("state must exist in map");
+        let current_dfa = *state_map
+            .get(&current_nfa_set)
+            .expect("state must exist in map");
 
         for class_id in 0..num_classes {
             let representative_byte = class_representative[class_id];

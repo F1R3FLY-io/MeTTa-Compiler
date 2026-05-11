@@ -10,17 +10,17 @@
 //! - Retrieval into any value type via `MettaValueFactory::deserialize()`
 //! - Zero deep copies between value types - just serialization/deserialization
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 use xxhash_rust::xxh3::xxh3_64;
 
-use crate::backend::hash_utils::IdentityU64BuildHasher;
-use super::metta_value_trait::{MettaValueTrait, MettaValueFactory};
+use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use super::{GcFactory, MettaValue};
+use crate::backend::hash_utils::IdentityU64BuildHasher;
 
 /// Global counter for unique memo IDs
 static NEXT_MEMO_ID: AtomicU64 = AtomicU64::new(1);
@@ -177,12 +177,7 @@ impl MemoHandle {
         let results_bytes: Vec<Vec<u8>> = results.iter().map(|r| r.serialize()).collect();
 
         // Insert new entry
-        inner.cache.insert(
-            hash,
-            MemoEntry {
-                results_bytes,
-            },
-        );
+        inner.cache.insert(hash, MemoEntry { results_bytes });
 
         // Update LRU order
         if inner.max_size > 0 {
@@ -229,7 +224,6 @@ impl MemoHandle {
             (hits as f64 / total as f64) * 100.0
         }
     }
-
 }
 
 impl Clone for MemoHandle {

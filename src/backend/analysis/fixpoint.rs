@@ -63,7 +63,9 @@ impl AnalysisResult {
 
     /// Check if a specific rule is reachable from any expression.
     pub fn is_rule_reachable(&self, rule_index: u32) -> bool {
-        self.expr_facts.values().any(|fact| fact.reachable_rules.contains(&rule_index))
+        self.expr_facts
+            .values()
+            .any(|fact| fact.reachable_rules.contains(&rule_index))
     }
 
     /// Get all expression hashes that were analyzed.
@@ -140,12 +142,16 @@ pub fn snapshot_environment(
         };
 
         let purity = analyze_branch_purity(&entry.rhs);
-        let rhs_type = entry.rhs.as_sexpr()
+        let rhs_type = entry
+            .rhs
+            .as_sexpr()
             .and_then(|items| items.first())
             .and_then(|h| h.as_atom())
             .and_then(|name| match name {
                 "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => Some(AbstractType::Long),
-                "<" | "<=" | ">" | ">=" | "==" | "!=" | "and" | "or" | "not" => Some(AbstractType::Bool),
+                "<" | "<=" | ">" | ">=" | "==" | "!=" | "and" | "or" | "not" => {
+                    Some(AbstractType::Bool)
+                }
                 _ => None,
             });
 
@@ -160,9 +166,7 @@ pub fn snapshot_environment(
             rule_index: total_rules,
         };
 
-        rules.entry((head, arity))
-            .or_default()
-            .push(abstract_rule);
+        rules.entry((head, arity)).or_default().push(abstract_rule);
         total_rules += 1;
     }
 
@@ -212,15 +216,16 @@ pub fn run_analysis(
             if let Some(head) = items.first().and_then(|h| h.as_atom()) {
                 let candidates = env_snapshot.get_candidates(head, items.len());
                 if !candidates.is_empty() {
-                    let indices: SmallVec<[u32; 8]> = candidates.iter()
-                        .map(|r| r.rule_index)
-                        .collect();
+                    let indices: SmallVec<[u32; 8]> =
+                        candidates.iter().map(|r| r.rule_index).collect();
 
                     // Record reachable rules for this expression
                     let fact = expr_facts.entry(hash).or_default();
                     fact.reachable_rules = indices.iter().copied().collect();
                     fact.is_deterministic = Some(indices.len() == 1);
-                    fact.is_pure = Some(candidates.iter().all(|r| r.purity == crate::backend::eval::cesk::branch_analysis::BranchPurity::Pure));
+                    fact.is_pure = Some(candidates.iter().all(|r| {
+                        r.purity == crate::backend::eval::cesk::branch_analysis::BranchPurity::Pure
+                    }));
                     fact.visit_count += 1;
 
                     // Schedule RHS bodies
@@ -252,9 +257,7 @@ pub fn run_analysis(
         }
         iterations += 1;
 
-        let (successors, _store_changed) = abstract_step(
-            &state, &mut store, &env_snapshot, config,
-        );
+        let (successors, _store_changed) = abstract_step(&state, &mut store, &env_snapshot, config);
 
         for successor in successors {
             // Update expression facts
@@ -287,10 +290,12 @@ pub fn run_analysis(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValueFactory, global_factory};
     use crate::backend::eval::trampoline::StaticEvalContext;
+    use crate::backend::models::{global_factory, MettaValueFactory};
 
-    fn f() -> crate::backend::models::GcFactory { global_factory() }
+    fn f() -> crate::backend::models::GcFactory {
+        global_factory()
+    }
 
     #[test]
     fn test_analysis_empty_program() {
@@ -325,9 +330,7 @@ mod tests {
             max_iterations: 100,
             ..Default::default()
         };
-        let exprs = vec![
-            f().sexpr(vec![f().atom("+"), f().long(1), f().long(2)]),
-        ];
+        let exprs = vec![f().sexpr(vec![f().atom("+"), f().long(1), f().long(2)])];
         let result = run_analysis(&exprs, &env, &config);
         assert!(result.converged);
     }
@@ -339,20 +342,29 @@ mod tests {
 
         // Add rule: (= (double $x) (+ $x $x))
         let lhs = factory.sexpr(vec![factory.atom("double"), factory.atom("$x")]);
-        let rhs = factory.sexpr(vec![factory.atom("+"), factory.atom("$x"), factory.atom("$x")]);
+        let rhs = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.atom("$x"),
+            factory.atom("$x"),
+        ]);
         env.add_rule(lhs, rhs);
 
         let config = AnalysisConfig::default();
-        let exprs = vec![
-            factory.sexpr(vec![factory.atom("double"), factory.long(5)]),
-        ];
+        let exprs = vec![factory.sexpr(vec![factory.atom("double"), factory.long(5)])];
         let result = run_analysis(&exprs, &env, &config);
 
         // Should find the rule for "double" with arity 2
         let hash = exprs[0].hash_value();
         if let Some(fact) = result.get_fact(hash) {
-            assert!(!fact.reachable_rules.is_empty(), "Should find reachable rules");
-            assert_eq!(fact.is_deterministic, Some(true), "Single rule = deterministic");
+            assert!(
+                !fact.reachable_rules.is_empty(),
+                "Should find reachable rules"
+            );
+            assert_eq!(
+                fact.is_deterministic,
+                Some(true),
+                "Single rule = deterministic"
+            );
         }
     }
 

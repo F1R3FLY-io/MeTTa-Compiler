@@ -202,8 +202,17 @@ where
                     return Ok(());
                 }
 
+                // Dynamic higher-order call: `($f arg...)`.
+                // The VM/JIT already implement CallN/TailCallN; emitting it
+                // here lets compiled rule bodies execute helpers such as PLN's
+                // `(BestCandidate $rank ...)`, whose body calls
+                // `($evaluateCandidateFunction $head)`.
+                if op_name.starts_with('$') {
+                    return self.compile_dynamic_call(head, &items[1..]);
+                }
+
                 // Not a builtin - check if it's a potential function call
-                if !op_name.starts_with('$') && !op_name.starts_with('&') {
+                if !op_name.starts_with('&') {
                     return self.compile_call(op_name, &items[1..]);
                 }
             }
@@ -335,6 +344,40 @@ where
             self.builder.emit_u16(Opcode::Call, head_index);
         }
         self.builder.emit_raw(&[arity as u8]);
+
+        Ok(())
+    }
+
+    /// Compile a function call whose head is supplied at runtime.
+    ///
+    /// Stack contract for `CallN`/`TailCallN` is `[head, arg1, ..., argN]`.
+    /// Arguments use the same HE-parity path as constant-head user calls:
+    /// user-headed S-expression args are materialized as data, while grounded
+    /// and eager special-form args are reduced.
+    fn compile_dynamic_call(&mut self, head: &V, args: &[V]) -> CompileResult<()> {
+        let arity = args.len();
+        if arity > 255 {
+            return Err(CompileError::InvalidArityRange {
+                op: head.as_atom().unwrap_or("<dynamic>").to_string(),
+                min: 0,
+                max: 255,
+                got: arity,
+            });
+        }
+
+        let saved_tail = self.in_tail_position;
+        self.in_tail_position = false;
+        self.compile(head)?;
+        for arg in args {
+            self.compile_arg_for_user_call(arg)?;
+        }
+        self.in_tail_position = saved_tail;
+
+        if self.in_tail_position {
+            self.builder.emit_byte(Opcode::TailCallN, arity as u8);
+        } else {
+            self.builder.emit_byte(Opcode::CallN, arity as u8);
+        }
 
         Ok(())
     }
@@ -635,12 +678,15 @@ where
             //   CollapseBindEnd
             "collapse-bind" => {
                 self.check_arity("collapse-bind", args.len(), 1)?;
-                // Precompute tracked_vars from expr's free variables; emit as constant.
-                // For Phase A scaffold, emit an empty tracked_vars placeholder;
-                // Phase C will populate it via free_variables analysis.
-                let tracked_vars_placeholder = self.factory.sexpr(vec![]);
-                let tracked_idx = self.builder.add_constant(tracked_vars_placeholder);
-                self.builder.emit_u16(Opcode::CollapseBindBegin, tracked_idx);
+                let tracked_vars = args[0]
+                    .free_variables()
+                    .into_iter()
+                    .map(|name| self.factory.atom(name))
+                    .collect();
+                let tracked_vars_value = self.factory.sexpr(tracked_vars);
+                let tracked_idx = self.builder.add_constant(tracked_vars_value);
+                self.builder
+                    .emit_u16(Opcode::CollapseBindBegin, tracked_idx);
                 self.compile(&args[0])?;
                 self.builder.emit(Opcode::CollapseBindEnd);
                 Ok(Some(()))
@@ -723,9 +769,9 @@ where
             }
             "type-cast" => {
                 self.check_arity("type-cast", args.len(), 3)?;
-                self.compile(&args[0])?;  // atom
-                self.compile(&args[1])?;  // expected type
-                self.compile(&args[2])?;  // space
+                self.compile(&args[0])?; // atom
+                self.compile(&args[1])?; // expected type
+                self.compile(&args[2])?; // space
                 self.builder.emit(Opcode::TypeCast);
                 Ok(Some(()))
             }
@@ -1256,19 +1302,12 @@ where
                     crate::backend::eval::freshening::intern_fresh_name(epoch, "fa_item");
                 let acc_var = self.factory.atom(acc_var_name);
                 let item_var = self.factory.atom(item_var_name);
-                let operation = self.factory.sexpr(vec![
-                    func,
-                    acc_var.clone(),
-                    item_var.clone(),
-                ]);
+                let operation = self
+                    .factory
+                    .sexpr(vec![func, acc_var.clone(), item_var.clone()]);
                 let foldl_sym = self.factory.atom("foldl-atom");
                 let five_arg = self.factory.sexpr(vec![
-                    foldl_sym,
-                    list_arg,
-                    init,
-                    acc_var,
-                    item_var,
-                    operation,
+                    foldl_sym, list_arg, init, acc_var, item_var, operation,
                 ]);
                 return self.compile(&five_arg).map(Some);
             }
@@ -1621,9 +1660,16 @@ where
                 // Bug-Fix Phase 2b (2026-04): no cleanup emission — see compile_let.
                 let _local_count = self.context.end_scope();
             } else {
-                // Standard arm: Dup, PushConstant(pattern), MatchBind, JumpIfFalse
+                // Standard arm: isolate MatchBind variables to this arm.
+                // The frame must exist before quoting the pattern so outer
+                // bindings remain visible while prior arm bindings do not leak.
+                self.builder.emit(Opcode::PushBindingFrame);
+
+                // Dup scrutinee, push pattern, swap to MatchBind's [pattern,
+                // value] stack contract.
                 self.builder.emit(Opcode::Dup);
                 self.compile_quoted(pattern)?;
+                self.builder.emit(Opcode::Swap);
                 self.builder.emit(Opcode::MatchBind);
                 let next_arm = self.builder.emit_jump(Opcode::JumpIfFalse);
 
@@ -1641,14 +1687,17 @@ where
                 // Bug-Fix Phase 2b (2026-04): no cleanup emission — see compile_let.
                 let _local_count = self.context.end_scope();
 
-                if !is_last_arm {
-                    // Jump to end (skip remaining arms)
-                    let end_jump = self.builder.emit_jump(Opcode::Jump);
-                    end_jumps.push(end_jump);
-                }
+                self.builder.emit(Opcode::PopBindingFrame);
+
+                // Jump to end on success. This is required even for the last
+                // non-catch-all arm, otherwise a matched arm falls through into
+                // the no-match Fail fallback.
+                let end_jump = self.builder.emit_jump(Opcode::Jump);
+                end_jumps.push(end_jump);
 
                 // Patch JumpIfFalse to here (next arm or fallback)
                 self.builder.patch_jump(next_arm);
+                self.builder.emit(Opcode::PopBindingFrame);
             }
         }
 
@@ -1699,9 +1748,14 @@ where
     /// Catch-all patterns: wildcard `_`, bare variable `$x`, `&var`, `'var`.
     fn is_catch_all_pattern(&self, pattern: &V) -> bool {
         if let Some(name) = pattern.as_atom() {
-            name == "_" || name.starts_with('$') || name.starts_with('\'')
-                || (name.starts_with('&') && name != "&" && name != "&self"
-                    && name != "&kb" && name != "&stack")
+            name == "_"
+                || name.starts_with('$')
+                || name.starts_with('\'')
+                || (name.starts_with('&')
+                    && name != "&"
+                    && name != "&self"
+                    && name != "&kb"
+                    && name != "&stack")
         } else {
             false
         }
@@ -1759,32 +1813,49 @@ where
                 return self.compile(&items[0]);
             }
 
-            // Multiple items - emit Fork opcode with value constants
-            // Each alternative is stored as a value constant (not a sub-chunk),
-            // matching the VM's op_fork which reads constants via get_constant().
-            let mut const_indices = Vec::with_capacity(items.len());
-            for item in items {
-                let idx = self.builder.add_constant(item.clone());
-                const_indices.push(idx);
+            // Multiple items: branch to inline compiled alternatives. Keeping
+            // alternatives in the parent chunk preserves local slots and binding
+            // frames, and lets failing alternatives `(empty)` backtrack before a
+            // surrounding collapse collects anything.
+            let count = items.len() as u16;
+            self.builder.emit_u16(Opcode::ForkInline, count);
+            let mut target_operands = Vec::with_capacity(items.len());
+            for _ in items {
+                let operand_offset = self.builder.current_offset();
+                self.builder.emit_raw(&0u16.to_be_bytes());
+                target_operands.push(operand_offset);
             }
 
-            // Emit Fork with count as u16 (big-endian), matching VM's read_u16()
-            let count = const_indices.len() as u16;
-            self.builder.emit_u16(Opcode::Fork, count);
-            for idx in const_indices {
-                self.builder.emit_raw(&idx.to_be_bytes());
+            let mut end_jumps = Vec::with_capacity(items.len());
+            for (item, operand_offset) in items.iter().zip(target_operands.into_iter()) {
+                let target = self.builder.current_offset();
+                if target > u16::MAX as usize {
+                    return Err(CompileError::InvalidExpression(
+                        "superpose branch target exceeds u16 bytecode address".to_string(),
+                    ));
+                }
+                self.builder.patch_u16_at(operand_offset, target as u16);
+                self.compile(item)?;
+                end_jumps.push(self.builder.emit_jump(Opcode::Jump));
+            }
+
+            for jump in end_jumps {
+                self.builder.patch_jump(jump);
             }
 
             // Inside collapse scope: omit Yield. CollapseEnd drives backtracking
-            // via op_fail_within_collapse. Fork's resume_ip will point to CollapseEnd.
-            // Outside collapse scope: Yield saves result and backtracks normally.
+            // via op_fail_within_collapse. Outside collapse scope: Yield saves
+            // each branch result and backtracks normally.
             if !self.in_collapse_scope {
                 self.builder.emit(Opcode::Yield);
             }
         } else {
-            // Not a list - compile the list expression and it will be dynamically superposed
+            // Not a literal list - evaluate it, then superpose the runtime list value.
             self.compile(list)?;
-            // Dynamic superpose not yet supported in generic VM, just return the value
+            self.builder.emit(Opcode::EvalSuperpose);
+            if !self.in_collapse_scope {
+                self.builder.emit(Opcode::Yield);
+            }
         }
 
         Ok(())
@@ -1896,8 +1967,8 @@ where
 // Arena-Specific Entry Points
 // =============================================================================
 
-use crate::backend::models::{MettaValue, GcFactory};
 use crate::backend::eval::trampoline::get_static_factory;
+use crate::backend::models::{GcFactory, MettaValue};
 
 /// Compile an MettaValue expression to bytecode (zero-conversion).
 ///

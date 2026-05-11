@@ -8,8 +8,8 @@
 
 use super::helpers::value_to_jit_generic;
 use crate::backend::bytecode::jit::types::{
-    JitAlternative, JitAlternativeTag, JitBailoutReason, JitContext, JitValue,
-    JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, MAX_ALTERNATIVES_INLINE,
+    JitAlternative, JitAlternativeTag, JitBailoutReason, JitContext, JitValue, JIT_SIGNAL_ERROR,
+    JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD, MAX_ALTERNATIVES_INLINE,
     MAX_STACK_SAVE_VALUES, TAG_UNIT,
 };
 use crate::backend::models::{MettaValue, ValueView};

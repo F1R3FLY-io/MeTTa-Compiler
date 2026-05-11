@@ -34,20 +34,11 @@ use std::fmt;
 use super::models::MettaValue;
 
 // Re-export operation types
-pub use arithmetic::{
-    AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp,
-};
-pub use comparison::{
-    EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp,
-};
+pub use arithmetic::{AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp};
+pub use comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
 pub use logical::{AndOp, NotOp, OrOp, XorOp};
-pub use registry::{
-    execute_grounded_op, get_grounded_registry, has_grounded_op,
-    GroundedRegistry,
-};
-pub use state::{
-    find_error, friendly_type_name, GroundedState, GroundedWork,
-};
+pub use registry::{execute_grounded_op, get_grounded_registry, has_grounded_op, GroundedRegistry};
+pub use state::{find_error, friendly_type_name, GroundedState, GroundedWork};
 pub use traits::GroundedOperationTCO;
 
 /// Bindings from pattern matching (variable name -> value)

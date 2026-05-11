@@ -395,7 +395,9 @@ fn quoted_string(input: &str) -> IResult<&str, &str> {
 
 /// Parse a simple token (like `...` or placeholders)
 fn simple_token(input: &str) -> IResult<&str, &str> {
-    take_while1(|c: char| c != ',' && c != ')' && c != '(' && c != ']' && c != '[' && !c.is_whitespace())(input)
+    take_while1(|c: char| {
+        c != ',' && c != ')' && c != '(' && c != ']' && c != '[' && !c.is_whitespace()
+    })(input)
 }
 
 /// Parse a field list item: ["fieldname", value]

@@ -76,8 +76,6 @@ impl<T> RulesInit for T {
     }
 
     fn declare_rules_funcs<M: Module>(module: &mut M) -> JitResult<RulesFuncIds> {
-
-
         // dispatch_rules: fn(ctx, expr, ip) -> count
         let mut dispatch_rules_sig = module.make_signature();
         dispatch_rules_sig.params.push(AbiParam::new(types::I64)); // ctx

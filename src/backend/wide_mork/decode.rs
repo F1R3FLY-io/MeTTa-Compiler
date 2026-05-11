@@ -39,12 +39,10 @@ static WIDE_VARNAME_EPOCH: AtomicU64 = AtomicU64::new(0);
 /// Base variable names (same as MORK decoder).  For indices > 64 we generate
 /// programmatically: `$v64`, `$v65`, etc.
 static VARNAME_BASES: [&str; 64] = [
-    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l",
-    "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x",
-    "y", "z", "a1", "b1", "c1", "d1", "e1", "f1", "g1", "h1",
-    "i1", "j1", "k1", "l1", "m1", "n1", "o1", "p1", "q1", "r1",
-    "s1", "t1", "u1", "v1", "w1", "x1", "y1", "z1", "a2", "b2",
-    "c2", "d2", "e2", "f2", "g2", "h2", "i2", "j2", "k2", "l2",
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s",
+    "t", "u", "v", "w", "x", "y", "z", "a1", "b1", "c1", "d1", "e1", "f1", "g1", "h1", "i1", "j1",
+    "k1", "l1", "m1", "n1", "o1", "p1", "q1", "r1", "s1", "t1", "u1", "v1", "w1", "x1", "y1", "z1",
+    "a2", "b2", "c2", "d2", "e2", "f2", "g2", "h2", "i2", "j2", "k2", "l2",
 ];
 
 // ============================================================================
@@ -185,14 +183,20 @@ where
         'parsing: loop {
             if offset >= bytes.len() {
                 if stack.is_empty() && offset > 0 {
-                    return Err("Unexpected end of Wide MORK bytes (all consumed but no value produced)".to_string());
+                    return Err(
+                        "Unexpected end of Wide MORK bytes (all consumed but no value produced)"
+                            .to_string(),
+                    );
                 }
                 return Err("Unexpected end of Wide MORK bytes".to_string());
             }
 
             let tag_byte = bytes[offset];
             let tag = WideTag::from_byte(tag_byte).map_err(|b| {
-                format!("Unknown Wide MORK tag byte 0x{:02x} at offset {}", b, offset)
+                format!(
+                    "Unknown Wide MORK tag byte 0x{:02x} at offset {}",
+                    b, offset
+                )
             })?;
             offset += 1;
 
@@ -255,7 +259,11 @@ where
 
                     // Raw UTF-8 (no symbol table lookup — Wide MORK doesn't use interning)
                     let symbol_str = std::str::from_utf8(symbol_bytes).map_err(|e| {
-                        format!("Invalid UTF-8 in symbol at offset {}: {}", offset - size as usize, e)
+                        format!(
+                            "Invalid UTF-8 in symbol at offset {}: {}",
+                            offset - size as usize,
+                            e
+                        )
                     })?;
 
                     // Heuristic type detection (same as mork_bytes_to_generic_value)
@@ -355,10 +363,7 @@ where
         factory.bool(true)
     } else if symbol_str == "False" {
         factory.bool(false)
-    } else if symbol_str.starts_with('"')
-        && symbol_str.ends_with('"')
-        && symbol_str.len() >= 2
-    {
+    } else if symbol_str.starts_with('"') && symbol_str.ends_with('"') && symbol_str.len() >= 2 {
         factory.string(&symbol_str[1..symbol_str.len() - 1])
     } else if symbol_str == "%Empty%" {
         factory.empty()

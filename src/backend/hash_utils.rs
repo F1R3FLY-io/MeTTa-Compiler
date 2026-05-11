@@ -19,11 +19,17 @@ pub(crate) struct IdentityU64Hasher(u64);
 
 impl Hasher for IdentityU64Hasher {
     #[inline(always)]
-    fn finish(&self) -> u64 { self.0 }
+    fn finish(&self) -> u64 {
+        self.0
+    }
     #[inline(always)]
-    fn write_u64(&mut self, i: u64) { self.0 = i; }
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
     #[inline(always)]
-    fn write(&mut self, _bytes: &[u8]) { unreachable!("IdentityU64Hasher only accepts u64") }
+    fn write(&mut self, _bytes: &[u8]) {
+        unreachable!("IdentityU64Hasher only accepts u64")
+    }
 }
 
 #[derive(Clone, Default)]
@@ -32,7 +38,9 @@ pub(crate) struct IdentityU64BuildHasher;
 impl BuildHasher for IdentityU64BuildHasher {
     type Hasher = IdentityU64Hasher;
     #[inline(always)]
-    fn build_hasher(&self) -> IdentityU64Hasher { IdentityU64Hasher(0) }
+    fn build_hasher(&self) -> IdentityU64Hasher {
+        IdentityU64Hasher(0)
+    }
 }
 
 // ============================================================================
@@ -46,7 +54,9 @@ pub(crate) struct PtrHasher(u64);
 
 impl Hasher for PtrHasher {
     #[inline(always)]
-    fn finish(&self) -> u64 { self.0 }
+    fn finish(&self) -> u64 {
+        self.0
+    }
     #[inline(always)]
     fn write_usize(&mut self, i: usize) {
         // Fibonacci hashing: multiply by golden ratio constant, then use
@@ -54,7 +64,9 @@ impl Hasher for PtrHasher {
         self.0 = (i as u64).wrapping_mul(0x517cc1b727220a95);
     }
     #[inline(always)]
-    fn write(&mut self, _bytes: &[u8]) { unreachable!("PtrHasher only accepts usize") }
+    fn write(&mut self, _bytes: &[u8]) {
+        unreachable!("PtrHasher only accepts usize")
+    }
 }
 
 #[derive(Clone, Default)]
@@ -63,7 +75,9 @@ pub(crate) struct PtrBuildHasher;
 impl BuildHasher for PtrBuildHasher {
     type Hasher = PtrHasher;
     #[inline(always)]
-    fn build_hasher(&self) -> PtrHasher { PtrHasher(0) }
+    fn build_hasher(&self) -> PtrHasher {
+        PtrHasher(0)
+    }
 }
 
 /// HashSet for slab pointers using Fibonacci hashing instead of SipHash.
@@ -84,7 +98,9 @@ const FX_SEED: u64 = 0x517cc1b727220a95; // same golden-ratio constant used else
 
 impl Hasher for FxHasher {
     #[inline(always)]
-    fn finish(&self) -> u64 { self.0 }
+    fn finish(&self) -> u64 {
+        self.0
+    }
 
     #[inline]
     fn write(&mut self, bytes: &[u8]) {
@@ -119,5 +135,7 @@ pub(crate) struct FxBuildHasher;
 impl BuildHasher for FxBuildHasher {
     type Hasher = FxHasher;
     #[inline(always)]
-    fn build_hasher(&self) -> FxHasher { FxHasher(0) }
+    fn build_hasher(&self) -> FxHasher {
+        FxHasher(0)
+    }
 }

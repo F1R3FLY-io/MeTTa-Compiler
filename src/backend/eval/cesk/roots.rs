@@ -29,10 +29,8 @@
 
 use crate::backend::models::MettaValueTrait;
 
+use super::super::trampoline::{Continuation, WorkItem};
 use super::operand_stack::OperandStack;
-use super::super::trampoline::{
-    Continuation, WorkItem,
-};
 
 // ============================================================================
 // RootSet
@@ -163,11 +161,7 @@ impl RootSet<crate::backend::models::MettaValue> {
     ///
     /// Corresponds to `addrs_in(C)` in the algebraic root formula.
     /// Includes the currently-popped work item and all items remaining on the stack.
-    pub fn collect_from_work_items(
-        &mut self,
-        current_work: &WorkItem,
-        work_stack: &[WorkItem],
-    ) {
+    pub fn collect_from_work_items(&mut self, current_work: &WorkItem, work_stack: &[WorkItem]) {
         current_work.collect_values(&mut self.roots);
         for w in work_stack {
             w.collect_values(&mut self.roots);
@@ -177,10 +171,7 @@ impl RootSet<crate::backend::models::MettaValue> {
     /// Collect roots from the continuation stack (K component).
     ///
     /// Corresponds to `addrs_in(K)` in the algebraic root formula.
-    pub fn collect_from_continuations(
-        &mut self,
-        continuations: &[Continuation],
-    ) {
+    pub fn collect_from_continuations(&mut self, continuations: &[Continuation]) {
         for c in continuations {
             c.collect_values(&mut self.roots);
         }
@@ -217,9 +208,9 @@ impl RootSet<crate::backend::models::MettaValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use smallvec::smallvec;
     use crate::backend::environment::MettaEnvironment;
-    use crate::backend::models::{MettaValue, MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValue, MettaValueFactory};
+    use smallvec::smallvec;
 
     fn factory() -> crate::backend::models::GcFactory {
         global_factory()
@@ -261,17 +252,15 @@ mod tests {
             demand: None,
             carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
         };
-        let stack: Vec<WorkItem> = vec![
-            WorkItem::Resume {
-                result: (
-                    smallvec![
-                        crate::backend::eval::trampoline::types::bv(f.long(1)),
-                        crate::backend::eval::trampoline::types::bv(f.long(2)),
-                    ],
-                    std::sync::Arc::new(env()),
-                ),
-            },
-        ];
+        let stack: Vec<WorkItem> = vec![WorkItem::Resume {
+            result: (
+                smallvec![
+                    crate::backend::eval::trampoline::types::bv(f.long(1)),
+                    crate::backend::eval::trampoline::types::bv(f.long(2)),
+                ],
+                std::sync::Arc::new(env()),
+            ),
+        }];
 
         let mut rs = RootSet::with_capacity(8);
         rs.collect_from_work_items(&current, &stack);
@@ -313,9 +302,7 @@ mod tests {
             carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
         };
         let work_stack: Vec<WorkItem> = vec![];
-        let continuations: Vec<Continuation> = vec![
-            Continuation::Done,
-        ];
+        let continuations: Vec<Continuation> = vec![Continuation::Done];
 
         let mut rs = RootSet::with_estimated_capacity(0, 1, 1);
         rs.collect_all(&operand_stack, &current, &work_stack, &continuations);

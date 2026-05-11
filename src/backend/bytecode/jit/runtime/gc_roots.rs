@@ -13,10 +13,10 @@
 //! `MettaValue` to a caller-supplied `Vec<MettaValue>`.
 //!
 //! Inline NaN-boxed values (Bool/Long/Float/Unit/Empty), atom/var string
-//! pointers, opaque registry pointers, and bytecode-chunk pointers are
-//! skipped — only `TAG_PTR` and `TAG_ERROR` payloads contribute to the
-//! root set. `TAG_ATOM` and `TAG_VAR` payloads point at interned
-//! `String`s, not slab `MettaValueInner`, so they don't need rooting
+//! pointers, and opaque registry pointers are skipped. `TAG_PTR` and
+//! `TAG_ERROR` payloads contribute directly to the root set; bytecode-chunk
+//! pointers contribute their constant pools. `TAG_ATOM` and `TAG_VAR` point at
+//! interned `String`s, not slab `MettaValueInner`, so they don't need rooting
 //! through the slab GC (the strings are managed by `arc-interner`).
 //!
 //! # Safety
@@ -41,6 +41,14 @@ use crate::backend::models::{MettaValue, MettaValueInner};
 /// payloads on the JIT stack must satisfy the invariant described above.
 #[inline]
 pub(crate) unsafe fn collect_jit_roots_into(ctx: &JitContext, out: &mut Vec<MettaValue>) {
+    collect_constant_array_roots(ctx.constants, ctx.constants_len, out);
+    collect_constant_array_roots(
+        ctx.arena_constants as *const MettaValue,
+        ctx.arena_constants_len,
+        out,
+    );
+    collect_chunk_ptr_constants(ctx.current_chunk, out);
+
     // F1: value_stack[0..sp]
     if !ctx.value_stack.is_null() && ctx.sp > 0 {
         for i in 0..ctx.sp {
@@ -111,6 +119,29 @@ pub(crate) unsafe fn collect_jit_roots_into(ctx: &JitContext, out: &mut Vec<Mett
     }
 }
 
+#[inline]
+unsafe fn collect_constant_array_roots(
+    constants: *const MettaValue,
+    constants_len: usize,
+    out: &mut Vec<MettaValue>,
+) {
+    if constants.is_null() || constants_len == 0 {
+        return;
+    }
+    for i in 0..constants_len {
+        out.push(*constants.add(i));
+    }
+}
+
+#[inline]
+unsafe fn collect_chunk_ptr_constants(chunk: *const (), out: &mut Vec<MettaValue>) {
+    if chunk.is_null() {
+        return;
+    }
+    let chunk = &*(chunk as *const crate::backend::bytecode::BytecodeChunk);
+    crate::backend::bytecode::cache::collect_chunk_constants(chunk, out);
+}
+
 /// Decode a single NaN-boxed JitValue and push its slab root to `out`,
 /// if the tag indicates a slab-allocated payload (`TAG_PTR` or `TAG_ERROR`).
 /// Inline values (Long/Bool/Unit/Empty/Float) and atom/var string-pointer
@@ -135,9 +166,9 @@ pub(crate) unsafe fn collect_jit_value_into(v: JitValue, out: &mut Vec<MettaValu
 /// Walk one `JitChoicePoint`'s alternatives and push slab roots to `out`.
 ///
 /// Alternatives use a 4-byte tag enum (`JitAlternativeTag`) plus up to three
-/// payloads. Only `Value` and `SpaceMatch` carry slab pointers as their
-/// primary payload; `Chunk` is a `*const BytecodeChunk` and `Index` is a
-/// numeric index, so neither contributes.
+/// payloads. `Value` and `SpaceMatch` carry slab pointers as their primary
+/// payload; `Chunk` and `RuleMatch` carry bytecode chunks whose constants must
+/// be rooted; `Index` is a numeric index and does not contribute.
 ///
 /// `RuleMatch.payload2` is a `*const Bindings` whose contents are owned
 /// by the dispatch arena; the array length is opaque from the choice
@@ -147,10 +178,8 @@ pub(crate) unsafe fn collect_jit_value_into(v: JitValue, out: &mut Vec<MettaValu
 /// values are also reachable through `binding_frames` (F9), so they're
 /// covered by the main walk above.
 #[inline]
-unsafe fn collect_choice_point_roots_into(
-    cp: &JitChoicePoint,
-    out: &mut Vec<MettaValue>,
-) {
+unsafe fn collect_choice_point_roots_into(cp: &JitChoicePoint, out: &mut Vec<MettaValue>) {
+    collect_chunk_ptr_constants(cp.saved_chunk, out);
     if cp.alt_count == 0 {
         return;
     }
@@ -169,12 +198,90 @@ unsafe fn collect_choice_point_roots_into(
                 collect_jit_value_into(JitValue::from_raw(alt.payload), out);
             }
             JitAlternativeTag::Chunk => {
-                // Chunk pointer; not a slab root.
+                collect_chunk_ptr_constants(alt.payload as *const (), out);
             }
             JitAlternativeTag::RuleMatch => {
-                // payload is *const BytecodeChunk (not slab); payload2
-                // is *const Bindings (covered by binding_frames).
+                collect_chunk_ptr_constants(alt.payload as *const (), out);
+                // payload2 is *const Bindings (covered by binding_frames).
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::backend::bytecode::ChunkBuilder;
+    use crate::backend::bytecode::jit::types::{JitAlternative, JitChoicePoint};
+
+    fn chunk_with_constant(
+        name: &str,
+        value: MettaValue,
+    ) -> Arc<crate::backend::bytecode::BytecodeChunk> {
+        let mut builder = ChunkBuilder::new(name);
+        builder.add_constant(value);
+        builder.build_arc()
+    }
+
+    #[test]
+    fn test_collect_jit_roots_includes_constant_arrays_and_chunks() {
+        let array_const = MettaValue::sym("jit-array-root");
+        let current_const = MettaValue::sym("jit-current-chunk-root");
+        let saved_const = MettaValue::sym("jit-saved-chunk-root");
+        let alt_const = MettaValue::sym("jit-alt-chunk-root");
+        let rule_const = MettaValue::sym("jit-rule-chunk-root");
+
+        let constants = vec![array_const];
+        let current_chunk = chunk_with_constant("jit-current", current_const);
+        let saved_chunk = chunk_with_constant("jit-saved", saved_const);
+        let alt_chunk = chunk_with_constant("jit-alt", alt_const);
+        let rule_chunk = chunk_with_constant("jit-rule", rule_const);
+
+        let mut stack = vec![JitValue::unit(); 4];
+        let mut results = vec![JitValue::unit(); 4];
+        let mut choice_points = vec![JitChoicePoint::default(); 1];
+        choice_points[0].saved_chunk = Arc::as_ptr(&saved_chunk) as *const ();
+        choice_points[0].alt_count = 2;
+        choice_points[0].alternatives_inline[0] =
+            JitAlternative::chunk(Arc::as_ptr(&alt_chunk) as *const ());
+        choice_points[0].alternatives_inline[1] = JitAlternative::rule_match(
+            Arc::as_ptr(&rule_chunk) as *const (),
+            std::ptr::null(),
+        );
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+        ctx.current_chunk = Arc::as_ptr(&current_chunk) as *const ();
+        ctx.choice_point_count = 1;
+
+        let mut roots = Vec::new();
+        unsafe {
+            collect_jit_roots_into(&ctx, &mut roots);
+        }
+
+        for expected in [
+            array_const,
+            current_const,
+            saved_const,
+            alt_const,
+            rule_const,
+        ] {
+            assert!(
+                roots.contains(&expected),
+                "missing JIT chunk/constant root: {expected:?}"
+            );
         }
     }
 }

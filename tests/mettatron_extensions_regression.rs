@@ -30,7 +30,11 @@ fn run_one(source: &str) -> Vec<MettaValue> {
 }
 
 fn fmt_results(results: &[MettaValue]) -> String {
-    results.iter().map(|v| format!("{}", v)).collect::<Vec<_>>().join(" ")
+    results
+        .iter()
+        .map(|v| format!("{}", v))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ============================================================================
@@ -49,13 +53,21 @@ fn fmt_results(results: &[MettaValue]) -> String {
 fn ext3_add_with_empty_returns_empty_branch() {
     let results = run_one("!(+ (empty) 10)");
     // Empty sentinel arg → branch annihilation → 0 results
-    assert!(results.is_empty(), "Expected empty results, got: {:?}", results);
+    assert!(
+        results.is_empty(),
+        "Expected empty results, got: {:?}",
+        results
+    );
 }
 
 #[test]
 fn ext3_lt_with_empty_returns_empty_branch() {
     let results = run_one("!(< (empty) 5)");
-    assert!(results.is_empty(), "Expected empty results, got: {:?}", results);
+    assert!(
+        results.is_empty(),
+        "Expected empty results, got: {:?}",
+        results
+    );
 }
 
 // ============================================================================
@@ -73,7 +85,11 @@ fn ext4_unary_minus_int_returns_negated() {
 fn ext4_unary_minus_negative_returns_positive() {
     let results = run_one("!(- -7)");
     let s = fmt_results(&results);
-    assert!(s.contains("7") && !s.contains("-7"), "Expected 7, got: {}", s);
+    assert!(
+        s.contains("7") && !s.contains("-7"),
+        "Expected 7, got: {}",
+        s
+    );
 }
 
 #[test]
@@ -171,9 +187,8 @@ fn ext7_struct_unique_atom_keeps_byte_distinct_alpha_equivalent() {
 fn ext7_struct_unique_atom_dedups_repeated_ground() {
     // Byte-identical ground sub-expressions dedupe under both byte-identity
     // and alpha-equivalence — agreement is expected.
-    let results = run_one(
-        "!(struct-unique-atom ((Inheritance A B) (Inheritance A B) (Inheritance A C)))",
-    );
+    let results =
+        run_one("!(struct-unique-atom ((Inheritance A B) (Inheritance A B) (Inheritance A C)))");
     let s = fmt_results(&results);
     assert!(
         s.contains("Inheritance A B") && s.contains("Inheritance A C"),

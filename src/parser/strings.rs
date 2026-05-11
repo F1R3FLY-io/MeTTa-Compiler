@@ -23,7 +23,8 @@ pub fn unescape_string_content<'a>(
     // Fast path: if no backslash, content is already valid UTF-8 (ASCII subset)
     if memchr::memchr(b'\\', content).is_none() {
         // Validate UTF-8
-        return std::str::from_utf8(content).map_err(|_| make_escape_error(line, col, "invalid UTF-8 in string"));
+        return std::str::from_utf8(content)
+            .map_err(|_| make_escape_error(line, col, "invalid UTF-8 in string"));
     }
 
     // Slow path: process escape sequences
@@ -36,16 +37,35 @@ pub fn unescape_string_content<'a>(
                 return Err(make_escape_error(line, col, "unterminated escape sequence"));
             }
             match content[i] {
-                b'n' => { buf.push('\n'); i += 1; }
-                b't' => { buf.push('\t'); i += 1; }
-                b'r' => { buf.push('\r'); i += 1; }
-                b'\\' => { buf.push('\\'); i += 1; }
-                b'"' => { buf.push('"'); i += 1; }
+                b'n' => {
+                    buf.push('\n');
+                    i += 1;
+                }
+                b't' => {
+                    buf.push('\t');
+                    i += 1;
+                }
+                b'r' => {
+                    buf.push('\r');
+                    i += 1;
+                }
+                b'\\' => {
+                    buf.push('\\');
+                    i += 1;
+                }
+                b'"' => {
+                    buf.push('"');
+                    i += 1;
+                }
                 b'x' => {
                     // Hex escape: \xHH
                     i += 1;
                     if i + 2 > content.len() {
-                        return Err(make_escape_error(line, col, "incomplete hex escape sequence"));
+                        return Err(make_escape_error(
+                            line,
+                            col,
+                            "incomplete hex escape sequence",
+                        ));
                     }
                     let hi = hex_digit(content[i]).ok_or_else(|| {
                         make_escape_error(line, col, "invalid hex digit in \\x escape")
@@ -66,25 +86,40 @@ pub fn unescape_string_content<'a>(
                     let start = i;
                     while i < content.len() && content[i] != b'}' {
                         if !content[i].is_ascii_hexdigit() {
-                            return Err(make_escape_error(line, col, "invalid character in unicode escape"));
+                            return Err(make_escape_error(
+                                line,
+                                col,
+                                "invalid character in unicode escape",
+                            ));
                         }
                         i += 1;
                     }
                     if i >= content.len() {
-                        return Err(make_escape_error(line, col, "unterminated unicode escape sequence"));
+                        return Err(make_escape_error(
+                            line,
+                            col,
+                            "unterminated unicode escape sequence",
+                        ));
                     }
                     let hex_slice = &content[start..i];
                     if hex_slice.is_empty() {
-                        return Err(make_escape_error(line, col, "empty unicode escape sequence"));
+                        return Err(make_escape_error(
+                            line,
+                            col,
+                            "empty unicode escape sequence",
+                        ));
                     }
                     if hex_slice.len() > 6 {
-                        return Err(make_escape_error(line, col, "unicode escape too long (max 6 hex digits)"));
+                        return Err(make_escape_error(
+                            line,
+                            col,
+                            "unicode escape too long (max 6 hex digits)",
+                        ));
                     }
                     // SAFETY: we verified all bytes are ASCII hex digits above
                     let hex_str = unsafe { std::str::from_utf8_unchecked(hex_slice) };
-                    let code_point = u32::from_str_radix(hex_str, 16).map_err(|_| {
-                        make_escape_error(line, col, "invalid unicode escape")
-                    })?;
+                    let code_point = u32::from_str_radix(hex_str, 16)
+                        .map_err(|_| make_escape_error(line, col, "invalid unicode escape"))?;
                     let ch = char::from_u32(code_point).ok_or_else(|| {
                         make_escape_error(line, col, "invalid unicode code point")
                     })?;

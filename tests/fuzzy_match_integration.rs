@@ -6,7 +6,7 @@
 use mettatron::backend::builtin_signatures::{builtin_names, get_signature, is_builtin, TypeExpr};
 use mettatron::backend::fuzzy_match::{SuggestionConfidence, SuggestionContext};
 use mettatron::backend::models::MettaValue;
-use mettatron::backend::{compile, MettaEnvironment, FuzzyMatcher};
+use mettatron::backend::{compile, FuzzyMatcher, MettaEnvironment};
 
 // Arena API imports for evaluation tests
 use mettatron::{eval, new_env, MettaValueInner};
@@ -504,7 +504,10 @@ fn test_compile_multiple_expressions() {
     assert!(result.is_ok(), "Should compile multiple expressions");
 
     let state = result.unwrap();
-    assert!(state.source().len() >= 2, "Should have multiple expressions");
+    assert!(
+        state.source().len() >= 2,
+        "Should have multiple expressions"
+    );
 }
 
 // ============================================================================

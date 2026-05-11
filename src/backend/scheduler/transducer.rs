@@ -93,7 +93,10 @@ mod tests {
         assert!(table[CostClass::GroundArith as usize].memoizable);
 
         // Impure: sequential, sticky
-        assert_eq!(table[CostClass::ImpureSequential as usize].parallelism_degree, 1);
+        assert_eq!(
+            table[CostClass::ImpureSequential as usize].parallelism_degree,
+            1
+        );
         assert_eq!(
             table[CostClass::ImpureSequential as usize].affinity_hint,
             AffinityHint::Sticky

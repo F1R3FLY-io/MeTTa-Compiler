@@ -160,7 +160,12 @@ fn let_bound_var_substitutes_through_rule_body() {
     "#,
     );
     let kb_atoms = outputs.last().expect("expected get-atoms output");
-    assert_eq!(kb_atoms.len(), 1, "Expected 1 atom in kb, got {:?}", kb_atoms);
+    assert_eq!(
+        kb_atoms.len(),
+        1,
+        "Expected 1 atom in kb, got {:?}",
+        kb_atoms
+    );
     let sexpr = kb_atoms[0].as_sexpr().expect("expected (Item 99) sexpr");
     assert_eq!(sexpr.len(), 2);
     assert!(matches!(sexpr[0].inner(), MettaValueInner::Atom("Item")));
@@ -253,7 +258,12 @@ fn rule_body_repeated_calls_substitute_per_call() {
     "#,
     );
     let kb_atoms = outputs.last().expect("expected get-atoms output");
-    assert_eq!(kb_atoms.len(), 4, "Expected 4 distinct atoms, got {:?}", kb_atoms);
+    assert_eq!(
+        kb_atoms.len(),
+        4,
+        "Expected 4 distinct atoms, got {:?}",
+        kb_atoms
+    );
 
     // Collect the string payloads
     let mut payloads: Vec<&'static str> = kb_atoms
@@ -299,7 +309,11 @@ fn add_atom_with_rule_shaped_data_registers_via_extract() {
     "#,
     );
     let last = outputs.last().expect("expected match output");
-    assert_eq!(last.len(), 1, "Expected match to find the registered rule body");
+    assert_eq!(
+        last.len(),
+        1,
+        "Expected match to find the registered rule body"
+    );
     let payload = match last[0].inner() {
         MettaValueInner::String(s) => *s,
         other => panic!("Expected String(\"result\"), got {:?}", other),

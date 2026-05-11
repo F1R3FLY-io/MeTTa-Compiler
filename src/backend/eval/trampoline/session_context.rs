@@ -21,12 +21,12 @@ use std::cell::Cell;
 #[cfg(feature = "trace")]
 use std::sync::Arc;
 
+use crate::backend::models::gc_allocator::safepoint_wait_for_quiescence;
 use crate::backend::models::{
     alloc_count_snapshot, drop_eval_guard_for_safepoint, global_factory,
-    reacquire_eval_guard_after_safepoint, register_temporary_roots, request_gc,
-    MettaState, MettaValue, GcFactory,
+    reacquire_eval_guard_after_safepoint, register_temporary_roots, request_gc, GcFactory,
+    MettaState, MettaValue,
 };
-use crate::backend::models::gc_allocator::safepoint_wait_for_quiescence;
 
 use super::context::{EvalContext, MettaEnvironment};
 
@@ -108,7 +108,10 @@ impl<'s> SessionContext<'s> {
     /// specified on the command line.
     #[cfg(feature = "trace")]
     #[inline]
-    pub fn with_trace_collector(mut self, collector: Arc<crate::backend::trace::TraceCollector>) -> Self {
+    pub fn with_trace_collector(
+        mut self,
+        collector: Arc<crate::backend::trace::TraceCollector>,
+    ) -> Self {
         self.trace_collector = Some(collector);
         self
     }
@@ -252,7 +255,9 @@ impl<'s> EvalContext for SessionContext<'s> {
         compilation_hash: u64,
     ) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
         crate::backend::bytecode::tiered_cache::try_sub_expr_dispatch_with_hash(
-            compilation_hash, value, env,
+            compilation_hash,
+            value,
+            env,
         )
     }
 }
@@ -297,9 +302,7 @@ mod tests {
 
         // eval_factory and storage_factory return the same GcFactory,
         // so allocations from either are interchangeable
-        let eval_values: Vec<_> = (0..100)
-            .map(|i| ctx.eval_factory().long(i))
-            .collect();
+        let eval_values: Vec<_> = (0..100).map(|i| ctx.eval_factory().long(i)).collect();
         let storage_values: Vec<_> = (0..100)
             .map(|i| ctx.storage_factory().long(i + 1000))
             .collect();
@@ -320,5 +323,4 @@ mod tests {
         let debug_str = format!("{:?}", ctx);
         assert!(debug_str.contains("SessionContext"));
     }
-
 }

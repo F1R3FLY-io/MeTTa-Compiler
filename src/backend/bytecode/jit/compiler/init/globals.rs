@@ -52,8 +52,6 @@ impl<T> GlobalsInit for T {
     }
 
     fn declare_globals_funcs<M: Module>(module: &mut M) -> JitResult<GlobalsFuncIds> {
-
-
         // load_global: fn(ctx, symbol_idx, ip) -> value
         let mut load_global_sig = module.make_signature();
         load_global_sig.params.push(AbiParam::new(types::I64)); // ctx

@@ -70,11 +70,7 @@ fn bench_simple_arithmetic(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(
-                    black_box(expr),
-                    black_box(env),
-                    black_box(&state),
-                );
+                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
                 black_box(result);
             });
         });
@@ -98,11 +94,7 @@ fn bench_nested_expressions(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("eval_depth", depth), depth, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(
-                    black_box(expr),
-                    black_box(env),
-                    black_box(&state),
-                );
+                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
                 black_box(result);
             });
         });
@@ -125,11 +117,7 @@ fn bench_mixed_complexity(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(
-                    black_box(expr),
-                    black_box(env),
-                    black_box(&state),
-                );
+                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
                 black_box(result);
             });
         });
@@ -160,11 +148,7 @@ fn bench_threshold_tuning(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("operations", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(
-                    black_box(expr),
-                    black_box(env),
-                    black_box(&state),
-                );
+                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
                 black_box(result);
             });
         });
@@ -260,11 +244,7 @@ fn bench_parallel_overhead(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("trivial_ops", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(
-                    black_box(expr),
-                    black_box(env),
-                    black_box(&state),
-                );
+                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
                 black_box(result);
             });
         });
@@ -288,11 +268,7 @@ fn bench_scalability(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("scale", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(
-                    black_box(expr),
-                    black_box(env),
-                    black_box(&state),
-                );
+                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
                 black_box(result);
             });
         });

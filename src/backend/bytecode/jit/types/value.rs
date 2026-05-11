@@ -6,8 +6,8 @@
 use std::fmt;
 
 use super::constants::{
-    PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_EMPTY, TAG_ERROR, TAG_PTR,
-    TAG_LONG, TAG_MASK, TAG_UNIT, TAG_VAR,
+    PAYLOAD_MASK, SIGN_BIT_48, SIGN_EXTEND_MASK, TAG_ATOM, TAG_BOOL, TAG_EMPTY, TAG_ERROR,
+    TAG_LONG, TAG_MASK, TAG_PTR, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{MettaValue, MettaValueInner, ValueView};
 

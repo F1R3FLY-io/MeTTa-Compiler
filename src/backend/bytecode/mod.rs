@@ -101,6 +101,7 @@ pub mod cache;
 pub mod chunk;
 pub mod compiler;
 pub mod external_registry;
+pub(crate) mod instruction;
 pub mod memo_cache;
 pub mod mork_bridge;
 pub mod native_registry;
@@ -118,34 +119,53 @@ pub mod vm;
 pub mod jit;
 
 // Re-export main types
-pub use cache::{cache_sizes, clear_caches, BytecodeCacheStatsSnapshot};
 #[cfg(feature = "track-stats")]
 pub use cache::get_stats as cache_stats;
+pub use cache::{cache_sizes, clear_caches, BytecodeCacheStatsSnapshot};
 pub use chunk::{
-    BytecodeChunk, ChunkBuilder, CompiledPattern, JumpLabel, JumpLabelShort, JumpTable,
+    BytecodeChunk,
+    ChunkBuilder,
+    CompiledPattern,
     // Generic chunk types for zero-conversion support
-    GenericBytecodeChunk, GenericChunkBuilder,
+    GenericBytecodeChunk,
+    GenericChunkBuilder,
+    JumpLabel,
+    JumpLabelShort,
+    JumpTable,
 };
 pub use compiler::{compile, compile_arc, CompileContext, CompileError, CompileResult, Compiler};
 // Generic compiler for zero-conversion support
 pub use compiler::core::{
-    compile_bytecode, compile_bytecode_arc, compile_generic, compile_generic_arc,
-    MettaCompiler, GenericCompiler,
+    compile_bytecode, compile_bytecode_arc, compile_generic, compile_generic_arc, GenericCompiler,
+    MettaCompiler,
 };
 pub use external_registry::{
-    ExternalContext, ExternalError, ExternalFn, ExternalRegistry, ExternalResult,
+    ExternalContext,
+    ExternalError,
+    ExternalFn,
+    ExternalRegistry,
+    ExternalResult,
     // Generic external registry for zero-conversion support
-    GenericExternalContext, GenericExternalFn, GenericExternalRegistry, GenericExternalResult,
+    GenericExternalContext,
+    GenericExternalFn,
+    GenericExternalRegistry,
+    GenericExternalResult,
 };
 pub use memo_cache::{
-    CacheStats, MemoCache,
-    global_memo_cache, ensure_memo_cache_roots_registered,
+    ensure_memo_cache_roots_registered, global_memo_cache, CacheStats, MemoCache,
 };
 pub use mork_bridge::{BridgeStats, CompiledRule, MorkBridge};
 pub use native_registry::{
-    NativeContext, NativeError, NativeFn, NativeRegistry, NativeResult,
     // Generic native registry for zero-conversion support
-    GenericNativeContext, GenericNativeFn, GenericNativeRegistry, GenericNativeResult,
+    GenericNativeContext,
+    GenericNativeFn,
+    GenericNativeRegistry,
+    GenericNativeResult,
+    NativeContext,
+    NativeError,
+    NativeFn,
+    NativeRegistry,
+    NativeResult,
 };
 pub use opcodes::Opcode;
 pub use optimizer::{
@@ -154,10 +174,20 @@ pub use optimizer::{
 };
 pub use space_registry::SpaceRegistry;
 pub use vm::{
-    Alternative, BindingFrame, BytecodeVM, CallFrame, ChoicePoint, VmConfig, VmError, VmResult,
+    Alternative,
+    BindingFrame,
+    BytecodeVM,
+    CallFrame,
+    ChoicePoint,
     // Generic VM types for zero-conversion support
-    GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
+    GenericAlternative,
+    GenericBindingFrame,
     GenericBytecodeVM,
+    GenericCallFrame,
+    GenericChoicePoint,
+    VmConfig,
+    VmError,
+    VmResult,
 };
 
 // JIT re-exports - always available with tiered compilation
@@ -200,32 +230,30 @@ pub use jit::{
 
 // Runtime type profile re-exports
 pub use runtime_profile::{
-    RuntimeTypeProfile, TypeTag,
-    BranchFeedback, ArgTypeFeedback, RuleMatchFeedback, GuardFeedback,
+    ArgTypeFeedback, BranchFeedback, GuardFeedback, RuleMatchFeedback, RuntimeTypeProfile, TypeTag,
 };
 
 // Unified tiered compilation cache re-exports
 pub use tiered_cache::{
+    get_slot_compilation_hash,
+    global_tiered_cache,
+    hash_value,
+    increment_and_get_hash,
+    // Per-slot atomic counter infrastructure for sub-expression tiering
+    increment_exec_count,
+    try_sub_expr_dispatch,
+    try_sub_expr_dispatch_with_hash,
     ExecutionTier,
     ExprCompilationState,
     NativeCode,
     TierStatusKind,
-    TieredCacheStats,
     TieredCache,
-    global_tiered_cache,
+    TieredCacheStats,
     BYTECODE_THRESHOLD,
+    FLUSH_INTERVAL,
     JIT1_THRESHOLD,
     JIT2_THRESHOLD,
-    FLUSH_INTERVAL,
-    hash_value,
-    // Per-slot atomic counter infrastructure for sub-expression tiering
-    increment_exec_count,
-    get_slot_compilation_hash,
-    increment_and_get_hash,
-    try_sub_expr_dispatch,
-    try_sub_expr_dispatch_with_hash,
 };
-
 
 /// Bytecode VM is always enabled with tiered compilation
 ///
@@ -483,6 +511,20 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     // println! builds S-expr for trampoline; nop emits PushUnit
                     "println!" | "nop" => true,
                     "mod-space!" | "print-mods!" => false,
+                    // BUG T0-T1-005 / plan T1.D — MORK forms.
+                    //
+                    // exec/coalg/lookup/rulify use PathMap query machinery
+                    // (env.match_space, RuleIndex::match_rules_native) and
+                    // multi-result fan-out that has no measurable performance
+                    // benefit from bytecode compilation. Per plan invariant #3,
+                    // these are an explicit *compile-time* tier-selection
+                    // exception: `can_compile_with_env` returns false here, so
+                    // the bytecode dispatch never sees these forms — they
+                    // evaluate on T0 from the start. This is compile-time
+                    // tier selection, not a runtime down-bail mid-execution,
+                    // which keeps the spec K T0-T1-005 row satisfied without
+                    // re-implementing ~600 LOC of PathMap-walking bytecode.
+                    "exec" | "coalg" | "lookup" | "rulify" => false,
                     // User-defined functions: compiled as Call opcodes.
                     // The VM dispatches via op_dispatch_rules → match_rules_native.
                     // eval_inner completes evaluation via trampoline re-eval.
@@ -681,7 +723,9 @@ pub fn try_bytecode_eval_with_env<F>(
     fallback: F,
 ) -> (Vec<MettaValue>, GenericEnvironment<MettaValue, GcFactory>)
 where
-    F: FnOnce(GenericEnvironment<MettaValue, GcFactory>) -> (Vec<MettaValue>, GenericEnvironment<MettaValue, GcFactory>),
+    F: FnOnce(
+        GenericEnvironment<MettaValue, GcFactory>,
+    ) -> (Vec<MettaValue>, GenericEnvironment<MettaValue, GcFactory>),
 {
     if can_compile_with_env(expr) {
         match eval_bytecode_with_env(expr, env.clone()) {
@@ -858,7 +902,7 @@ pub fn execute_arena(
     let factory = env.factory().clone();
     let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
     let (results, env_opt) = vm.run_with_env()?;
-    let unreduced = vm.unreduced;
+    let unreduced = vm.unreduced || vm.had_unreduced_result;
     let final_env = env_opt.unwrap_or_else(|| MettaEnvironment::new(factory));
     Ok((results, final_env, unreduced))
 }
@@ -894,8 +938,7 @@ pub fn eval_bytecode_arena_with_env(
     env: MettaEnvironment,
 ) -> VmResult<(Vec<MettaValue>, MettaEnvironment, bool, bool)> {
     // Compile the expression to bytecode
-    let chunk = compile_bytecode_arc("arena_with_env", expr)
-        .map_err(|_| VmError::CompileError)?;
+    let chunk = compile_bytecode_arc("arena_with_env", expr).map_err(|_| VmError::CompileError)?;
 
     // Execute via GenericBytecodeVM with environment.
     // yield_on_top_return exhausts all nondeterministic alternatives within run().
@@ -903,10 +946,13 @@ pub fn eval_bytecode_arena_with_env(
     let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
     vm.yield_on_top_return = true;
     let results = vm.run()?;
-    let unreduced = vm.unreduced;
+    let unreduced = vm.unreduced || vm.had_unreduced_result;
     let has_unexplored_choices = vm.choice_points_len() > 0;
 
-    let final_env = vm.env.take().unwrap_or_else(|| MettaEnvironment::new(factory));
+    let final_env = vm
+        .env
+        .take()
+        .unwrap_or_else(|| MettaEnvironment::new(factory));
     Ok((results, final_env, unreduced, has_unexplored_choices))
 }
 
@@ -967,7 +1013,6 @@ where
     let mut vm = GenericBytecodeVM::with_factory(chunk, factory);
     vm.run()
 }
-
 
 #[cfg(test)]
 mod tests {

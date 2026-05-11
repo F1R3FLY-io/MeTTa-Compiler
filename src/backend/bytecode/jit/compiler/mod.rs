@@ -27,6 +27,7 @@ use super::handlers;
 use super::runtime;
 use super::types::{JitError, JitResult};
 
+use crate::backend::bytecode::instruction::instruction_size;
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
 /// Cached check for the `METTATRON_DISABLE_JIT` environment variable.
@@ -146,7 +147,6 @@ pub struct JitCompiler {
     mork_match_func_id: FuncId,
     mork_insert_func_id: FuncId,
     mork_delete_func_id: FuncId,
-
 }
 
 /// Block info for JIT compilation - tracks jump targets and predecessor counts
@@ -163,8 +163,6 @@ impl JitCompiler {
     /// This method uses trait-based initialization for grouped FuncIds,
     /// providing zero-cost abstraction through static dispatch.
     pub fn new() -> JitResult<Self> {
-        
-
         // Check for environment variable to disable JIT (useful for benchmarking)
         if is_jit_disabled() {
             return Err(JitError::CompilationError(
@@ -676,7 +674,7 @@ impl JitCompiler {
                 )?;
 
                 // Advance to next instruction
-                offset += 1 + op.immediate_size();
+                offset += instruction_size(chunk.code(), offset);
             }
 
             // Ensure function ends with return
@@ -720,10 +718,7 @@ impl JitCompiler {
             // =====================================================================
             // Value Creation - Simple (delegated to handlers module)
             // =====================================================================
-            Opcode::PushUnit
-            | Opcode::PushTrue
-            | Opcode::PushFalse
-            | Opcode::PushLongSmall => {
+            Opcode::PushUnit | Opcode::PushTrue | Opcode::PushFalse | Opcode::PushLongSmall => {
                 return handlers::compile_simple_value_op(codegen, chunk, op, offset);
             }
 
@@ -1068,12 +1063,7 @@ impl JitCompiler {
             // =====================================================================
             // Comparison Operations (delegated to handlers module)
             // =====================================================================
-            Opcode::Lt
-            | Opcode::Le
-            | Opcode::Gt
-            | Opcode::Ge
-            | Opcode::Eq
-            | Opcode::Ne => {
+            Opcode::Lt | Opcode::Le | Opcode::Gt | Opcode::Ge | Opcode::Eq | Opcode::Ne => {
                 let mut ctx = handlers::ComparisonHandlerContext {
                     module: &mut self.module,
                     numeric_lt_func_id: self.arithmetic.numeric_lt_func_id,
@@ -2457,26 +2447,41 @@ impl JitCompiler {
             // If-Reducible & Match-Or: not yet JIT-compiled, fall back to interpreter
             // =====================================================================
             Opcode::ValidateAtom | Opcode::GetTypeSpace => {
-                return Err(JitError::NotCompilable(
-                    format!("Opcode {:?} requires full type inference — falls back to tree-walker", op),
-                ));
+                return Err(JitError::NotCompilable(format!(
+                    "Opcode {:?} requires full type inference — falls back to tree-walker",
+                    op
+                )));
             }
 
-            Opcode::EvalIfReducible | Opcode::EvalMatchOr
-            | Opcode::JumpIfIdentical | Opcode::MatchSelf | Opcode::MatchSelfOr
-            | Opcode::TrailMark | Opcode::TrailUndo
-            | Opcode::UCheckSExpr | Opcode::UCheckArity | Opcode::UCheckAtom
-            | Opcode::UGetChild | Opcode::UBindVar | Opcode::UCheckLong
-            | Opcode::UCheckValue | Opcode::UWildcard
-            | Opcode::UnifyDeep | Opcode::UnifyDeepBind | Opcode::OccursCheck
-            | Opcode::MatchExternal | Opcode::MatchExternalOr
-            | Opcode::CollapseBindBegin | Opcode::CollapseBindEnd => {
+            Opcode::EvalIfReducible
+            | Opcode::EvalMatchOr
+            | Opcode::JumpIfIdentical
+            | Opcode::MatchSelf
+            | Opcode::MatchSelfOr
+            | Opcode::TrailMark
+            | Opcode::TrailUndo
+            | Opcode::UCheckSExpr
+            | Opcode::UCheckArity
+            | Opcode::UCheckAtom
+            | Opcode::UGetChild
+            | Opcode::UBindVar
+            | Opcode::UCheckLong
+            | Opcode::UCheckValue
+            | Opcode::UWildcard
+            | Opcode::UnifyDeep
+            | Opcode::UnifyDeepBind
+            | Opcode::OccursCheck
+            | Opcode::MatchExternal
+            | Opcode::MatchExternalOr
+            | Opcode::CollapseBindBegin
+            | Opcode::CollapseBindEnd => {
                 // Phase C-E native opcodes: JIT bail-out for now;
                 // Phase D (collapse-bind) and Phase E JIT (match external) add
                 // JIT-native compile paths. Unify4 moved to native JIT in Phase B.
-                return Err(JitError::NotCompilable(
-                    format!("Opcode {:?} not yet JIT-compiled — falls back to bytecode VM", op),
-                ));
+                return Err(JitError::NotCompilable(format!(
+                    "Opcode {:?} not yet JIT-compiled — falls back to bytecode VM",
+                    op
+                )));
             }
 
             // =====================================================================
@@ -2492,11 +2497,13 @@ impl JitCompiler {
             | Opcode::ZipAtom
             | Opcode::TakeAtom
             | Opcode::DropAtom
+            | Opcode::ForkInline
             | Opcode::CollapseBegin
             | Opcode::CollapseEnd => {
-                return Err(JitError::NotCompilable(
-                    format!("Opcode {:?} not yet JIT-compiled, falling back to VM interpreter", op),
-                ));
+                return Err(JitError::NotCompilable(format!(
+                    "Opcode {:?} not yet JIT-compiled, falling back to VM interpreter",
+                    op
+                )));
             }
         }
         // Note: all Opcode variants are handled above with early returns

@@ -13,12 +13,12 @@
 use std::cell::{Cell, RefCell};
 
 use crate::backend::environment::GenericEnvironment;
+use crate::backend::models::gc_allocator::safepoint_wait_for_quiescence;
 use crate::backend::models::{
     alloc_count_snapshot, drop_eval_guard_for_safepoint, global_factory,
-    reacquire_eval_guard_after_safepoint, register_temporary_roots, request_gc,
-    MettaValue, GcFactory,
+    reacquire_eval_guard_after_safepoint, register_temporary_roots, request_gc, GcFactory,
+    MettaValue,
 };
-use crate::backend::models::gc_allocator::safepoint_wait_for_quiescence;
 
 /// Evaluation context for the trampoline engine.
 ///
@@ -227,41 +227,24 @@ impl EvalContext for StaticEvalContext {
 
 /// Per-worker safepoint allocation threshold.
 ///
-/// Default mirrors `SessionContext`'s `SAFEPOINT_ALLOC_THRESHOLD` (500K).
-/// Tunable via `METTATRON_PARALLEL_SAFEPOINT_ALLOCS` for benchmark/regression
-/// debugging. The threshold compares against the global slab `alloc_count`
-/// so all participants (workers + parent) converge on the same crossing
-/// — when one drops its guard for safepoint, the others are likely to do
-/// the same within the 10ms condvar window.
-const PARALLEL_SAFEPOINT_ALLOC_DEFAULT: u64 = 500_000;
+/// Mirrors `SessionContext`'s `SAFEPOINT_ALLOC_THRESHOLD` (500K). The threshold
+/// compares against the global slab `alloc_count` so all participants (workers
+/// + parent) converge on the same crossing — when one drops its guard for a
+/// safepoint, the others are likely to do the same within the 10ms condvar
+/// window.
+const PARALLEL_SAFEPOINT_THRESHOLD: u64 = 500_000;
 
-/// Per-worker safepoint threshold, resolved once on first access.
+/// Per-worker safepoint threshold.
+#[inline]
 fn parallel_safepoint_threshold() -> u64 {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<u64> = OnceLock::new();
-    *CACHE.get_or_init(|| {
-        std::env::var("METTATRON_PARALLEL_SAFEPOINT_ALLOCS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .filter(|n| *n > 0)
-            .unwrap_or(PARALLEL_SAFEPOINT_ALLOC_DEFAULT)
-    })
+    PARALLEL_SAFEPOINT_THRESHOLD
 }
 
 /// Whether parallel-branch GC cooperation is enabled.
-///
-/// Set `METTATRON_PARALLEL_GC_COOP=0` to fall back to the trait-default
-/// no-op `should_safepoint`/`perform_safepoint` (pre-fix behavior). This
-/// is a runtime escape hatch for regression debugging — the default is
-/// cooperation enabled (matches the post-fix design).
+/// Parallel workers always participate in GC cooperation.
+#[inline]
 pub(super) fn parallel_gc_coop_enabled() -> bool {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<bool> = OnceLock::new();
-    *CACHE.get_or_init(|| {
-        std::env::var("METTATRON_PARALLEL_GC_COOP")
-            .map(|s| s != "0" && !s.eq_ignore_ascii_case("false"))
-            .unwrap_or(true)
-    })
+    true
 }
 
 /// Evaluation context for parallel branch worker threads.
@@ -555,10 +538,7 @@ mod tests {
         // Create env and add a rule
         let mut env = StaticEvalContext::get_or_create_env();
 
-        let lhs = factory.sexpr(vec![
-            factory.atom("test-fn"),
-            factory.atom("$x"),
-        ]);
+        let lhs = factory.sexpr(vec![factory.atom("test-fn"), factory.atom("$x")]);
         let rhs = factory.atom("result");
 
         env.add_rule(lhs.clone(), rhs);
@@ -575,7 +555,6 @@ mod tests {
 
     #[test]
     fn test_static_arena_env_persists_space_facts() {
-
         // Reset to ensure clean state
         StaticEvalContext::reset_env();
 

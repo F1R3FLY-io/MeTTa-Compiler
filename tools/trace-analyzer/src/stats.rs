@@ -46,7 +46,8 @@ pub fn run(file: &str) -> Result<(), String> {
         // Collect duration data
         if let Some(dur) = event.duration_ns {
             timed_events += 1;
-            duration_by_kind.entry(kind_name.to_string())
+            duration_by_kind
+                .entry(kind_name.to_string())
                 .or_default()
                 .push(dur);
 
@@ -106,7 +107,10 @@ pub fn run(file: &str) -> Result<(), String> {
     println!("Bailouts: {bailout_count}");
     println!("GC safepoints: {gc_safepoint_count}");
     if total_gc_pause_ns > 0 {
-        println!("GC total pause: {:.3}ms", total_gc_pause_ns as f64 / 1_000_000.0);
+        println!(
+            "GC total pause: {:.3}ms",
+            total_gc_pause_ns as f64 / 1_000_000.0
+        );
     }
     println!("Work pool events: {workpool_event_count}");
     println!("Wall time: {:.3}ms", total_wall_ns as f64 / 1_000_000.0);
@@ -140,8 +144,10 @@ pub fn run(file: &str) -> Result<(), String> {
             let sum_a: u64 = a.1.iter().sum();
             sum_b.cmp(&sum_a)
         });
-        println!("  {:<30} {:>6} {:>12} {:>12} {:>12} {:>12} {:>12}",
-                 "Kind", "Count", "Total", "Mean", "Median", "P95", "P99");
+        println!(
+            "  {:<30} {:>6} {:>12} {:>12} {:>12} {:>12} {:>12}",
+            "Kind", "Count", "Total", "Mean", "Median", "P95", "P99"
+        );
         for (kind, mut durations) in dur_entries {
             let n = durations.len();
             let total: u64 = durations.iter().sum();
@@ -150,8 +156,10 @@ pub fn run(file: &str) -> Result<(), String> {
             let median = durations[n / 2];
             let p95 = durations[(n as f64 * 0.95) as usize];
             let p99 = durations[(n as f64 * 0.99) as usize];
-            println!("  {:<30} {:>6} {:>10}ns {:>10}ns {:>10}ns {:>10}ns {:>10}ns",
-                     kind, n, total, mean, median, p95, p99);
+            println!(
+                "  {:<30} {:>6} {:>10}ns {:>10}ns {:>10}ns {:>10}ns {:>10}ns",
+                kind, n, total, mean, median, p95, p99
+            );
         }
     }
 

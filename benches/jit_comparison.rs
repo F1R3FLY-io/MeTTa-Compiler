@@ -358,7 +358,8 @@ fn bench_jit_compilation_overhead(c: &mut Criterion) {
             &expr,
             |b, expr| {
                 b.iter(|| {
-                    let chunk = compile_bytecode("bench", black_box(expr)).expect("compilation failed");
+                    let chunk =
+                        compile_bytecode("bench", black_box(expr)).expect("compilation failed");
                     let mut compiler = JitCompiler::new().expect("JIT compiler creation failed");
                     let code_ptr = compiler.compile(&chunk).expect("JIT compilation failed");
                     let constants = chunk.constants().to_vec();

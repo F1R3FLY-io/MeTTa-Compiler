@@ -186,7 +186,8 @@ impl HybridExecutor {
                     vm_stack.push(metta_val);
                 }
 
-                let mut vm = BytecodeVM::with_config(Arc::clone(chunk), self.config.vm_config.clone());
+                let mut vm =
+                    BytecodeVM::with_config(Arc::clone(chunk), self.config.vm_config.clone());
 
                 // Get VM results and combine with any already collected JIT results
                 let vm_results = vm.resume_from_bailout(ctx.bailout_ip, vm_stack)?;

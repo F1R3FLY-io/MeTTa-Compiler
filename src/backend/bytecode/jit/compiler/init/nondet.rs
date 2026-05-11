@@ -84,8 +84,6 @@ impl<T> NondetInit for T {
     }
 
     fn declare_nondet_funcs<M: Module>(module: &mut M) -> JitResult<NondetFuncIds> {
-
-
         // fork_native: fn(ctx, n_alternatives, resume_ip, ip) -> result
         let mut fork_sig = module.make_signature();
         fork_sig.params.push(AbiParam::new(types::I64)); // ctx

@@ -83,9 +83,7 @@ fn emit_binary_arith_with_fallback<'a, 'b>(
     let merge_block = codegen.builder.create_block();
 
     // Add block parameter for the merge block
-    codegen
-        .builder
-        .append_block_param(merge_block, types::I64);
+    codegen.builder.append_block_param(merge_block, types::I64);
 
     // Branch: both long → int_path, else → runtime_path
     codegen
@@ -150,9 +148,7 @@ fn emit_unary_arith_with_fallback<'a, 'b>(
     let int_path = codegen.builder.create_block();
     let runtime_path = codegen.builder.create_block();
     let merge_block = codegen.builder.create_block();
-    codegen
-        .builder
-        .append_block_param(merge_block, types::I64);
+    codegen.builder.append_block_param(merge_block, types::I64);
 
     codegen
         .builder
@@ -292,10 +288,7 @@ pub fn compile_arithmetic_op<'a, 'b>(
                 |cg, a| {
                     // abs(x) = x < 0 ? -x : x
                     let zero = cg.builder.ins().iconst(types::I64, 0);
-                    let is_neg = cg
-                        .builder
-                        .ins()
-                        .icmp(IntCC::SignedLessThan, a, zero);
+                    let is_neg = cg.builder.ins().icmp(IntCC::SignedLessThan, a, zero);
                     let negated = cg.builder.ins().ineg(a);
                     cg.builder.ins().select(is_neg, negated, a)
                 },
@@ -323,10 +316,7 @@ pub fn compile_arithmetic_op<'a, 'b>(
             Ok(())
         }
 
-        _ => unreachable!(
-            "compile_arithmetic_op called with wrong opcode: {:?}",
-            op
-        ),
+        _ => unreachable!("compile_arithmetic_op called with wrong opcode: {:?}", op),
     }
 }
 

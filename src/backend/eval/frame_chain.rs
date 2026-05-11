@@ -31,8 +31,8 @@ use std::cell::Cell;
 use std::fmt;
 use std::ptr;
 
-use crate::backend::models::MettaValue;
 use crate::backend::eval::trampoline::EvalContext;
+use crate::backend::models::MettaValue;
 
 // ============================================================================
 // Core Data Structures
@@ -47,7 +47,7 @@ use crate::backend::eval::trampoline::EvalContext;
 /// `data` must point to a valid instance of the original type that was passed
 /// to `EvalFrameGuard::push_vec()`. The caller must ensure the data outlives
 /// the frame.
-type RootCollectorFn = unsafe fn(data: *const (), out: &mut Vec<MettaValue>);
+pub(crate) type RootCollectorFn = unsafe fn(data: *const (), out: &mut Vec<MettaValue>);
 
 /// A single frame in the thread-local evaluation frame chain.
 ///
@@ -156,15 +156,27 @@ impl EvalFrameGuard {
     /// returned guard. Typically, both the Vec and the guard are locals in
     /// the same function scope, guaranteeing this.
     #[inline]
-    pub unsafe fn push_vec(
+    pub unsafe fn push_vec(label: FrameLabel, data: *const Vec<MettaValue>) -> Self {
+        unsafe { Self::push_custom(label, data as *const (), collect_vec_roots) }
+    }
+
+    /// Push a frame with a caller-supplied root collector.
+    ///
+    /// # Safety
+    ///
+    /// `data` must point to a value that outlives the returned guard, and
+    /// `root_collector` must cast that pointer back to the same concrete type.
+    #[inline]
+    pub(crate) unsafe fn push_custom(
         label: FrameLabel,
-        data: *const Vec<MettaValue>,
+        data: *const (),
+        root_collector: RootCollectorFn,
     ) -> Self {
         let parent = FRAME_CHAIN_HEAD.with(|h| h.get());
         let frame = Box::new(EvalFrame {
             parent,
-            root_data: data as *const (),
-            root_collector: collect_vec_roots,
+            root_data: data,
+            root_collector,
             label,
         });
         // Push: set this frame as the new chain head.
@@ -305,9 +317,7 @@ mod tests {
 
         let mut roots = Vec::new();
         {
-            let _guard = unsafe {
-                EvalFrameGuard::push_vec(FrameLabel::Include, &values)
-            };
+            let _guard = unsafe { EvalFrameGuard::push_vec(FrameLabel::Include, &values) };
             collect_frame_chain_roots(&mut roots);
         }
         // Guard dropped — chain should be empty again
@@ -323,6 +333,43 @@ mod tests {
     }
 
     #[test]
+    fn test_custom_frame_collects_roots() {
+        struct CustomRoots {
+            values: Vec<MettaValue>,
+            extra: MettaValue,
+        }
+
+        unsafe fn collect_custom_roots(data: *const (), out: &mut Vec<MettaValue>) {
+            let roots = unsafe { &*(data as *const CustomRoots) };
+            out.extend_from_slice(&roots.values);
+            out.push(roots.extra);
+        }
+
+        let f = global_factory();
+        let roots_data = CustomRoots {
+            values: vec![f.atom("queued"), f.long(7)],
+            extra: f.bool(false),
+        };
+
+        let mut roots = Vec::new();
+        {
+            let _guard = unsafe {
+                EvalFrameGuard::push_custom(
+                    FrameLabel::Custom("custom-roots"),
+                    &roots_data as *const CustomRoots as *const (),
+                    collect_custom_roots,
+                )
+            };
+            collect_frame_chain_roots(&mut roots);
+        }
+
+        assert_eq!(roots.len(), 3);
+        assert_eq!(roots[0].as_atom(), Some("queued"));
+        assert_eq!(roots[1].as_long(), Some(7));
+        assert_eq!(roots[2].as_bool(), Some(false));
+    }
+
+    #[test]
     fn test_nested_frames_collect_all_roots() {
         let f = global_factory();
         let outer_values = vec![f.atom("outer1"), f.atom("outer2")];
@@ -330,13 +377,11 @@ mod tests {
 
         let mut roots = Vec::new();
         {
-            let _outer_guard = unsafe {
-                EvalFrameGuard::push_vec(FrameLabel::Include, &outer_values)
-            };
+            let _outer_guard =
+                unsafe { EvalFrameGuard::push_vec(FrameLabel::Include, &outer_values) };
             {
-                let _inner_guard = unsafe {
-                    EvalFrameGuard::push_vec(FrameLabel::Import, &inner_values)
-                };
+                let _inner_guard =
+                    unsafe { EvalFrameGuard::push_vec(FrameLabel::Import, &inner_values) };
                 collect_frame_chain_roots(&mut roots);
             }
             // Inner guard dropped, outer still active
@@ -362,17 +407,11 @@ mod tests {
         let v3 = vec![f.unit()];
 
         {
-            let _g1 = unsafe {
-                EvalFrameGuard::push_vec(FrameLabel::Eval, &v1)
-            };
+            let _g1 = unsafe { EvalFrameGuard::push_vec(FrameLabel::Eval, &v1) };
             {
-                let _g2 = unsafe {
-                    EvalFrameGuard::push_vec(FrameLabel::Include, &v2)
-                };
+                let _g2 = unsafe { EvalFrameGuard::push_vec(FrameLabel::Include, &v2) };
                 {
-                    let _g3 = unsafe {
-                        EvalFrameGuard::push_vec(FrameLabel::Import, &v3)
-                    };
+                    let _g3 = unsafe { EvalFrameGuard::push_vec(FrameLabel::Import, &v3) };
 
                     let trace = capture_stack_trace();
                     assert_eq!(trace.len(), 3);
@@ -401,12 +440,8 @@ mod tests {
         let v1 = vec![f.unit()];
         let v2 = vec![f.unit()];
 
-        let _g1 = unsafe {
-            EvalFrameGuard::push_vec(FrameLabel::Include, &v1)
-        };
-        let _g2 = unsafe {
-            EvalFrameGuard::push_vec(FrameLabel::AssertEqual, &v2)
-        };
+        let _g1 = unsafe { EvalFrameGuard::push_vec(FrameLabel::Include, &v1) };
+        let _g2 = unsafe { EvalFrameGuard::push_vec(FrameLabel::AssertEqual, &v2) };
 
         let trace = format_stack_trace();
         assert!(trace.contains("#0: assertEqual"));
@@ -420,9 +455,7 @@ mod tests {
         let f = global_factory();
         let values: Vec<MettaValue> = vec![f.atom("test"), f.long(99)];
 
-        let guard = unsafe {
-            maybe_push_frame::<StaticEvalContext>(FrameLabel::Eval, &values)
-        };
+        let guard = unsafe { maybe_push_frame::<StaticEvalContext>(FrameLabel::Eval, &values) };
         assert!(guard.is_some(), "should push frame for MettaValue type");
 
         let mut roots = Vec::new();

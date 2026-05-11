@@ -54,10 +54,20 @@ pub unsafe extern "C" fn jit_runtime_decons_atom(_ctx: *mut JitContext, val: u64
             let result = MettaValue::SExpr(vec![MettaValue::Unit(), MettaValue::SExpr(vec![])]);
             metta_to_jit(&result).to_bits()
         }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
-        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => {
             // Non-S-expression - return Unit
             JitValue::unit().to_bits()
         }

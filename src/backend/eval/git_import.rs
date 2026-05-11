@@ -82,10 +82,7 @@ where
     };
 
     if url.is_empty() {
-        return vec![factory.error(
-            "git-import!: URL string is empty",
-            items[1].clone(),
-        )];
+        return vec![factory.error("git-import!: URL string is empty", items[1].clone())];
     }
 
     // Optional second arg: build command, also accepted as String or atom.
@@ -110,7 +107,10 @@ where
         Some(n) => n.to_string(),
         None => {
             return vec![factory.error(
-                &format!("git-import!: could not extract repo name from URL '{}'", url),
+                &format!(
+                    "git-import!: could not extract repo name from URL '{}'",
+                    url
+                ),
                 items[1].clone(),
             )];
         }

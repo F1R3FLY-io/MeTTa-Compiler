@@ -21,7 +21,10 @@ where
     pub fn bind(&mut self, symbol: &str, value: V) {
         self.make_owned();
 
-        self.shared.bindings.write().insert(symbol.to_string(), value);
+        self.shared
+            .bindings
+            .write()
+            .insert(symbol.to_string(), value);
 
         // Also register in fuzzy matcher for suggestions
         self.shared.fuzzy_matcher.write().insert(symbol);
@@ -67,4 +70,3 @@ where
         self.shared.tokenizer.read().has_token(token)
     }
 }
-

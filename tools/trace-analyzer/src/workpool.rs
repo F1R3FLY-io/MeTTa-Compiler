@@ -71,12 +71,27 @@ impl WorkpoolData {
     fn collect(&mut self, event: &trace_format::TraceEvent) {
         match &event.kind {
             TraceEventKind::WorkPoolScaleEvent {
-                action, active_workers_after, min_workers, max_workers,
-                queue_depth, ema_throughput, objective, emergency,
-                hc_direction, hc_cooldown_remaining, hc_improvement,
-                term_throughput, term_queue_depth, term_slab_pressure, term_rss_pressure,
-                bp_level, blocked_worker_count, overflow_count, decision_phase,
-                delta_evals, elapsed_seconds,
+                action,
+                active_workers_after,
+                min_workers,
+                max_workers,
+                queue_depth,
+                ema_throughput,
+                objective,
+                emergency,
+                hc_direction,
+                hc_cooldown_remaining,
+                hc_improvement,
+                term_throughput,
+                term_queue_depth,
+                term_slab_pressure,
+                term_rss_pressure,
+                bp_level,
+                blocked_worker_count,
+                overflow_count,
+                decision_phase,
+                delta_evals,
+                elapsed_seconds,
                 ..
             } => {
                 self.scale_events.push(ScaleRecord {
@@ -105,7 +120,9 @@ impl WorkpoolData {
                 });
             }
             TraceEventKind::WorkPoolBlockedWorkersDetected {
-                blocked_count, active_workers, ..
+                blocked_count,
+                active_workers,
+                ..
             } => {
                 self.blocked_events.push(BlockedRecord {
                     timestamp_ns: event.timestamp_ns,
@@ -114,8 +131,12 @@ impl WorkpoolData {
                 });
             }
             TraceEventKind::WorkPoolCompensatoryAction {
-                core_unparked, overflow_spawned, overflow_drained,
-                deficit, rss_veto, ..
+                core_unparked,
+                overflow_spawned,
+                overflow_drained,
+                deficit,
+                rss_veto,
+                ..
             } => {
                 self.compensatory_events.push(CompensatoryRecord {
                     timestamp_ns: event.timestamp_ns,
@@ -170,7 +191,10 @@ fn print_report(data: &WorkpoolData) {
     }
     let emergency_count = events.iter().filter(|e| e.emergency).count();
     let emergency_pct = 100.0 * emergency_count as f64 / total as f64;
-    println!("  Emergency ticks: {} ({:.1}%)", emergency_count, emergency_pct);
+    println!(
+        "  Emergency ticks: {} ({:.1}%)",
+        emergency_count, emergency_pct
+    );
     println!();
 
     // 3. Active Worker Trajectory
@@ -183,15 +207,26 @@ fn print_report(data: &WorkpoolData) {
     let min_bound = events[0].min_workers;
     let max_bound = events[0].max_workers;
 
-    println!("  Active workers: min={}, max={}, mean={:.1}", min_w, max_w, mean_w);
+    println!(
+        "  Active workers: min={}, max={}, mean={:.1}",
+        min_w, max_w, mean_w
+    );
     println!("  Bounds: [{}, {}]", min_bound, max_bound);
 
     let at_floor = workers.iter().filter(|w| **w == min_bound).count();
     let at_ceiling = workers.iter().filter(|w| **w == max_bound).count();
-    println!("  Time at floor ({}): {} ticks ({:.1}%)",
-             min_bound, at_floor, 100.0 * at_floor as f64 / total as f64);
-    println!("  Time at ceiling ({}): {} ticks ({:.1}%)",
-             max_bound, at_ceiling, 100.0 * at_ceiling as f64 / total as f64);
+    println!(
+        "  Time at floor ({}): {} ticks ({:.1}%)",
+        min_bound,
+        at_floor,
+        100.0 * at_floor as f64 / total as f64
+    );
+    println!(
+        "  Time at ceiling ({}): {} ticks ({:.1}%)",
+        max_bound,
+        at_ceiling,
+        100.0 * at_ceiling as f64 / total as f64
+    );
 
     // ASCII sparkline (50 chars wide)
     let sparkline = make_sparkline(&workers, 50, min_bound, max_bound);
@@ -213,21 +248,32 @@ fn print_report(data: &WorkpoolData) {
             Box::new(|e: &ScaleRecord| e.term_rss_pressure),
         ];
 
-        println!("  {:>16}  {:>10}  {:>10}  {:>10}", "term", "mean", "max", "dominates");
+        println!(
+            "  {:>16}  {:>10}  {:>10}  {:>10}",
+            "term", "mean", "max", "dominates"
+        );
         for (i, term) in terms.iter().enumerate() {
             let values: Vec<f64> = non_emergency.iter().map(|e| (extractors[i])(e)).collect();
             let mean = values.iter().sum::<f64>() / values.len() as f64;
             let max = values.iter().cloned().fold(0.0_f64, f64::max);
 
             // Count ticks where this term is the largest contributor
-            let dominant_count = non_emergency.iter().filter(|e| {
-                let v = (extractors[i])(e);
-                extractors.iter().enumerate().all(|(j, f)| j == i || v >= f(e))
-            }).count();
+            let dominant_count = non_emergency
+                .iter()
+                .filter(|e| {
+                    let v = (extractors[i])(e);
+                    extractors
+                        .iter()
+                        .enumerate()
+                        .all(|(j, f)| j == i || v >= f(e))
+                })
+                .count();
             let dom_pct = 100.0 * dominant_count as f64 / non_emergency.len() as f64;
 
-            println!("  {:>16}  {:>10.4}  {:>10.4}  {:>6} ({:.0}%)",
-                     term, mean, max, dominant_count, dom_pct);
+            println!(
+                "  {:>16}  {:>10.4}  {:>10.4}  {:>6} ({:.0}%)",
+                term, mean, max, dominant_count, dom_pct
+            );
         }
 
         let obj_values: Vec<f64> = non_emergency.iter().map(|e| e.objective).collect();
@@ -235,7 +281,10 @@ fn print_report(data: &WorkpoolData) {
         let obj_min = obj_values.iter().cloned().fold(f64::INFINITY, f64::min);
         let obj_max = obj_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         println!();
-        println!("  Objective J(N): mean={:.4}, min={:.4}, max={:.4}", obj_mean, obj_min, obj_max);
+        println!(
+            "  Objective J(N): mean={:.4}, min={:.4}, max={:.4}",
+            obj_mean, obj_min, obj_max
+        );
     }
     println!();
 
@@ -250,9 +299,15 @@ fn print_report(data: &WorkpoolData) {
     }
     println!("  Direction reversals: {}", direction_reversals);
 
-    let cooldown_ticks = events.iter().filter(|e| e.hc_cooldown_remaining > 0).count();
+    let cooldown_ticks = events
+        .iter()
+        .filter(|e| e.hc_cooldown_remaining > 0)
+        .count();
     let cooldown_pct = 100.0 * cooldown_ticks as f64 / total as f64;
-    println!("  Ticks in cooldown: {} ({:.1}%)", cooldown_ticks, cooldown_pct);
+    println!(
+        "  Ticks in cooldown: {} ({:.1}%)",
+        cooldown_ticks, cooldown_pct
+    );
 
     // Improvement distribution
     let improvements: Vec<f64> = non_emergency.iter().map(|e| e.hc_improvement).collect();
@@ -261,26 +316,30 @@ fn print_report(data: &WorkpoolData) {
         let genuine = improvements.iter().filter(|i| **i >= threshold).count();
         let worsening = improvements.iter().filter(|i| **i <= -threshold).count();
         let dead_zone = improvements.iter().filter(|i| i.abs() < threshold).count();
-        println!("  Improvement: genuine={}, worsening={}, dead_zone={}",
-                 genuine, worsening, dead_zone);
+        println!(
+            "  Improvement: genuine={}, worsening={}, dead_zone={}",
+            genuine, worsening, dead_zone
+        );
     }
     println!();
 
     // 6. Memory Pressure Timeline
     println!("=== 6. Memory Pressure Timeline ===");
     println!();
-    let bp_events: Vec<_> = events.iter()
-        .filter(|e| e.bp_level > 0)
-        .collect();
+    let bp_events: Vec<_> = events.iter().filter(|e| e.bp_level > 0).collect();
     if bp_events.is_empty() {
         println!("  No backpressure events (bp_level always 0).");
     } else {
         let first_bp = bp_events[0];
         let first_bp_ms = first_bp.timestamp_ns as f64 / 1_000_000.0;
-        println!("  First bp_level > 0 at {:.2}ms (level={})", first_bp_ms, first_bp.bp_level);
+        println!(
+            "  First bp_level > 0 at {:.2}ms (level={})",
+            first_bp_ms, first_bp.bp_level
+        );
 
         // Find first park response after first bp
-        let first_park_after_bp = events.iter()
+        let first_park_after_bp = events
+            .iter()
             .find(|e| e.timestamp_ns >= first_bp.timestamp_ns && e.action == "park");
         if let Some(park) = first_park_after_bp {
             let latency_ms = (park.timestamp_ns - first_bp.timestamp_ns) as f64 / 1_000_000.0;
@@ -290,16 +349,26 @@ fn print_report(data: &WorkpoolData) {
         let max_bp: u32 = events.iter().map(|e| e.bp_level).max().unwrap_or(0);
         let bp_ticks: usize = events.iter().filter(|e| e.bp_level > 0).count();
         println!("  Max bp_level: {}", max_bp);
-        println!("  Ticks with bp > 0: {} ({:.1}%)", bp_ticks, 100.0 * bp_ticks as f64 / total as f64);
+        println!(
+            "  Ticks with bp > 0: {} ({:.1}%)",
+            bp_ticks,
+            100.0 * bp_ticks as f64 / total as f64
+        );
     }
     println!();
 
     // 7. Throughput Efficiency
     println!("=== 7. Throughput Efficiency ===");
     println!();
-    let efficiency: Vec<(u32, f64)> = events.iter()
+    let efficiency: Vec<(u32, f64)> = events
+        .iter()
         .filter(|e| e.active_workers_after > 0 && e.ema_throughput > 0.0)
-        .map(|e| (e.active_workers_after, e.ema_throughput / e.active_workers_after as f64))
+        .map(|e| {
+            (
+                e.active_workers_after,
+                e.ema_throughput / e.active_workers_after as f64,
+            )
+        })
         .collect();
     if efficiency.is_empty() {
         println!("  No throughput data available.");
@@ -309,7 +378,8 @@ fn print_report(data: &WorkpoolData) {
         for (w, eff) in &efficiency {
             by_workers.entry(*w).or_default().push(*eff);
         }
-        let mut sorted: Vec<(u32, f64, usize)> = by_workers.iter()
+        let mut sorted: Vec<(u32, f64, usize)> = by_workers
+            .iter()
             .map(|(w, effs)| (*w, effs.iter().sum::<f64>() / effs.len() as f64, effs.len()))
             .collect();
         sorted.sort_by_key(|(w, _, _)| *w);
@@ -335,9 +405,13 @@ fn print_report(data: &WorkpoolData) {
         println!("  Scaling curve (workers vs total ema_throughput):");
         let mut scatter: HashMap<u32, Vec<f64>> = HashMap::new();
         for e in events.iter().filter(|e| e.active_workers_after > 0) {
-            scatter.entry(e.active_workers_after).or_default().push(e.ema_throughput);
+            scatter
+                .entry(e.active_workers_after)
+                .or_default()
+                .push(e.ema_throughput);
         }
-        let mut scatter_sorted: Vec<(u32, f64)> = scatter.iter()
+        let mut scatter_sorted: Vec<(u32, f64)> = scatter
+            .iter()
             .map(|(w, tps)| (*w, tps.iter().sum::<f64>() / tps.len() as f64))
             .collect();
         scatter_sorted.sort_by_key(|(w, _)| *w);
@@ -355,8 +429,18 @@ fn print_report(data: &WorkpoolData) {
         println!("  No blocked worker events detected.");
     } else {
         let total_blocked = data.blocked_events.len();
-        let max_blocked: u32 = data.blocked_events.iter().map(|e| e.blocked_count).max().unwrap_or(0);
-        let mean_blocked: f64 = data.blocked_events.iter().map(|e| e.blocked_count as f64).sum::<f64>() / total_blocked as f64;
+        let max_blocked: u32 = data
+            .blocked_events
+            .iter()
+            .map(|e| e.blocked_count)
+            .max()
+            .unwrap_or(0);
+        let mean_blocked: f64 = data
+            .blocked_events
+            .iter()
+            .map(|e| e.blocked_count as f64)
+            .sum::<f64>()
+            / total_blocked as f64;
         println!("  Blocked worker detection events: {}", total_blocked);
         println!("  Max blocked at once: {}", max_blocked);
         println!("  Mean blocked count: {:.1}", mean_blocked);
@@ -375,31 +459,52 @@ fn print_report(data: &WorkpoolData) {
         println!("  Blocking episodes: {}", episodes);
 
         // Correlation with compensatory actions
-        let comp_after_blocked = data.compensatory_events.iter()
-            .filter(|c| data.blocked_events.iter().any(|b| {
-                c.timestamp_ns >= b.timestamp_ns && c.timestamp_ns - b.timestamp_ns < 500_000_000
-            }))
+        let comp_after_blocked = data
+            .compensatory_events
+            .iter()
+            .filter(|c| {
+                data.blocked_events.iter().any(|b| {
+                    c.timestamp_ns >= b.timestamp_ns
+                        && c.timestamp_ns - b.timestamp_ns < 500_000_000
+                })
+            })
             .count();
-        println!("  Compensatory actions correlated with blocking: {}", comp_after_blocked);
+        println!(
+            "  Compensatory actions correlated with blocking: {}",
+            comp_after_blocked
+        );
     }
     println!();
 
     // 9. Overflow Pool Usage
     println!("=== 9. Overflow Pool Usage ===");
     println!();
-    let total_overflow_spawned: u32 = data.compensatory_events.iter()
-        .map(|c| c.overflow_spawned).sum();
-    let total_overflow_drained: u32 = data.compensatory_events.iter()
-        .map(|c| c.overflow_drained).sum();
+    let total_overflow_spawned: u32 = data
+        .compensatory_events
+        .iter()
+        .map(|c| c.overflow_spawned)
+        .sum();
+    let total_overflow_drained: u32 = data
+        .compensatory_events
+        .iter()
+        .map(|c| c.overflow_drained)
+        .sum();
     let max_overflow: u32 = events.iter().map(|e| e.overflow_count).max().unwrap_or(0);
     let overflow_ticks = events.iter().filter(|e| e.overflow_count > 0).count();
-    let rss_veto_count = data.compensatory_events.iter().filter(|c| c.rss_veto).count();
+    let rss_veto_count = data
+        .compensatory_events
+        .iter()
+        .filter(|c| c.rss_veto)
+        .count();
 
     println!("  Total overflow spawned: {}", total_overflow_spawned);
     println!("  Total overflow drained: {}", total_overflow_drained);
     println!("  Max concurrent overflow: {}", max_overflow);
-    println!("  Ticks with overflow > 0: {} ({:.1}%)",
-             overflow_ticks, 100.0 * overflow_ticks as f64 / total as f64);
+    println!(
+        "  Ticks with overflow > 0: {} ({:.1}%)",
+        overflow_ticks,
+        100.0 * overflow_ticks as f64 / total as f64
+    );
     println!("  RSS vetoes: {}", rss_veto_count);
     println!();
 
@@ -420,11 +525,17 @@ fn print_report(data: &WorkpoolData) {
             queue_was_nonzero = false;
             let drain_ticks = (i - queue_start_tick) as f64;
             if drain_ticks > 0.0 {
-                let avg_workers = events[queue_start_tick..i].iter()
+                let avg_workers = events[queue_start_tick..i]
+                    .iter()
                     .map(|e| e.active_workers_after as f64)
-                    .sum::<f64>() / drain_ticks;
+                    .sum::<f64>()
+                    / drain_ticks;
                 let drain_rate = queue_start_depth as f64 / drain_ticks;
-                let per_worker = if avg_workers > 0.0 { drain_rate / avg_workers } else { 0.0 };
+                let per_worker = if avg_workers > 0.0 {
+                    drain_rate / avg_workers
+                } else {
+                    0.0
+                };
                 drain_episodes.push((queue_start_depth, avg_workers as u32, per_worker));
             }
         }
@@ -434,7 +545,10 @@ fn print_report(data: &WorkpoolData) {
         println!("  No complete queue drain episodes detected.");
     } else {
         println!("  Queue drain episodes: {}", drain_episodes.len());
-        println!("  {:>12}  {:>10}  {:>14}", "start_depth", "workers", "drain/worker/tick");
+        println!(
+            "  {:>12}  {:>10}  {:>14}",
+            "start_depth", "workers", "drain/worker/tick"
+        );
         for (depth, workers, rate) in &drain_episodes {
             println!("  {:>12}  {:>10}  {:>14.3}", depth, workers, rate);
         }
@@ -445,7 +559,8 @@ fn print_report(data: &WorkpoolData) {
             for (_, w, rate) in &drain_episodes {
                 by_workers.entry(*w).or_default().push(*rate);
             }
-            let mut sorted: Vec<(u32, f64)> = by_workers.iter()
+            let mut sorted: Vec<(u32, f64)> = by_workers
+                .iter()
                 .map(|(w, rates)| (*w, rates.iter().sum::<f64>() / rates.len() as f64))
                 .collect();
             sorted.sort_by_key(|(w, _)| *w);
@@ -468,10 +583,17 @@ fn make_sparkline(values: &[u32], width: usize, min_val: u32, max_val: u32) -> S
         return String::new();
     }
 
-    let blocks = [' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+    let blocks = [
+        ' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
 
     // If all values are the same, show a flat line
-    let range = if max_val == min_val { 1 } else { max_val - min_val };
+    let range = if max_val == min_val {
+        1
+    } else {
+        max_val - min_val
+    };
 
     // Sample values to fit within width
     let step = values.len().max(1) as f64 / width as f64;

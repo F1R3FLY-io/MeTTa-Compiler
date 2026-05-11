@@ -37,9 +37,11 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, global_factory};
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
+use crate::backend::models::{
+    global_factory, GcFactory, MettaValue, MettaValueFactory, MettaValueTrait,
+};
 
 /// Error type for native function calls
 #[derive(Debug, Clone)]
@@ -103,9 +105,8 @@ where
 }
 
 /// Generic type alias for native function signature
-pub type GenericNativeFn<V, F> = Arc<
-    dyn Fn(&[V], &GenericNativeContext<V, F>) -> GenericNativeResult<V> + Send + Sync,
->;
+pub type GenericNativeFn<V, F> =
+    Arc<dyn Fn(&[V], &GenericNativeContext<V, F>) -> GenericNativeResult<V> + Send + Sync>;
 
 /// Generic registry entry for a native function
 struct GenericRegistryEntry<V, F>
@@ -183,7 +184,8 @@ where
     /// If a function with this name already exists, returns its existing ID.
     pub fn register<Func>(&mut self, name: &str, func: Func) -> u16
     where
-        Func: Fn(&[V], &GenericNativeContext<V, F>) -> GenericNativeResult<V> + Send + Sync + 'static,
+        Func:
+            Fn(&[V], &GenericNativeContext<V, F>) -> GenericNativeResult<V> + Send + Sync + 'static,
     {
         // Check if already registered
         if let Some(&id) = self.name_to_id.get(name) {
@@ -210,7 +212,12 @@ where
     }
 
     /// Call a native function by ID
-    pub fn call(&self, id: u16, args: &[V], ctx: &GenericNativeContext<V, F>) -> GenericNativeResult<V> {
+    pub fn call(
+        &self,
+        id: u16,
+        args: &[V],
+        ctx: &GenericNativeContext<V, F>,
+    ) -> GenericNativeResult<V> {
         let entry = self
             .functions
             .get(id as usize)

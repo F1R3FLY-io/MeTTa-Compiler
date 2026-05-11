@@ -22,32 +22,32 @@
 //! - `massif-correlate` — Cross-validate trace with Valgrind massif memory profile
 //! - `gdb-correlate` — Cross-correlate GDB coredump backtrace with evaluation trace
 
-mod reader;
-mod util;
-mod dump;
-mod stats;
-mod search;
-mod errors;
 mod bailouts;
-mod timeline;
-mod parallel;
-mod bottlenecks;
-mod export_chrome;
-mod lint;
-mod workpool;
-mod hotpath;
-mod redundancy;
-mod fanout;
-mod critical_path;
-mod function_map;
-mod perf_parser;
-mod massif_parser;
-mod perf_correlate;
-mod massif_correlate;
-mod gdb_parser;
-mod gdb_correlate;
 mod bindings;
+mod bottlenecks;
 mod closure;
+mod critical_path;
+mod dump;
+mod errors;
+mod export_chrome;
+mod fanout;
+mod function_map;
+mod gdb_correlate;
+mod gdb_parser;
+mod hotpath;
+mod lint;
+mod massif_correlate;
+mod massif_parser;
+mod parallel;
+mod perf_correlate;
+mod perf_parser;
+mod reader;
+mod redundancy;
+mod search;
+mod stats;
+mod timeline;
+mod util;
+mod workpool;
 
 use clap::{Parser, Subcommand};
 
@@ -226,11 +226,14 @@ enum Commands {
         /// Path to the trace file (.mtrace)
         file: String,
         /// Path to GDB backtrace file (output of `thread apply all bt`)
-        #[arg(long, long_help = "Path to GDB backtrace file.\n\n\
+        #[arg(
+            long,
+            long_help = "Path to GDB backtrace file.\n\n\
             Generate with coredumpctl:\n  \
             coredumpctl debug BINARY --debugger-arguments=\"-batch -ex 'thread apply all bt'\" > bt.txt\n\n\
             Or from a core file:\n  \
-            gdb -batch -ex 'thread apply all bt' ./target/release/mettatron /path/to/core > bt.txt")]
+            gdb -batch -ex 'thread apply all bt' ./target/release/mettatron /path/to/core > bt.txt"
+        )]
         gdb_bt: String,
         /// Number of tail events to keep per trace thread (default: 50)
         #[arg(long, default_value = "50")]
@@ -291,18 +294,31 @@ fn main() {
         Commands::Bailouts { file } => bailouts::run(&file),
         Commands::Timeline { file } => timeline::run(&file),
         Commands::Parallel { file, bucket_us } => parallel::run(&file, bucket_us),
-        Commands::Bottlenecks { file, concurrency_threshold, duration_threshold_us, top_n } =>
-            bottlenecks::run(&file, concurrency_threshold, duration_threshold_us, top_n),
+        Commands::Bottlenecks {
+            file,
+            concurrency_threshold,
+            duration_threshold_us,
+            top_n,
+        } => bottlenecks::run(&file, concurrency_threshold, duration_threshold_us, top_n),
         Commands::ExportChrome { file, output } => export_chrome::run(&file, &output),
-        Commands::Lint { file, severity, lint, depth_threshold } =>
-            lint::run(&file, &severity, lint.as_deref(), depth_threshold),
+        Commands::Lint {
+            file,
+            severity,
+            lint,
+            depth_threshold,
+        } => lint::run(&file, &severity, lint.as_deref(), depth_threshold),
         Commands::Workpool { file } => workpool::run(&file),
-        Commands::Hotpath { file, top_n, sort_by } =>
-            hotpath::run(&file, top_n, &sort_by),
-        Commands::Redundancy { file, top_n, min_count } =>
-            redundancy::run(&file, top_n, min_count),
-        Commands::Fanout { file, top_n } =>
-            fanout::run(&file, top_n),
+        Commands::Hotpath {
+            file,
+            top_n,
+            sort_by,
+        } => hotpath::run(&file, top_n, &sort_by),
+        Commands::Redundancy {
+            file,
+            top_n,
+            min_count,
+        } => redundancy::run(&file, top_n, min_count),
+        Commands::Fanout { file, top_n } => fanout::run(&file, top_n),
         Commands::CriticalPath { file, workers } => {
             let worker_counts: Vec<usize> = workers
                 .split(',')
@@ -314,23 +330,43 @@ fn main() {
                 critical_path::run(&file, &worker_counts)
             }
         }
-        Commands::PerfCorrelate { file, perf_stacks, top_n, json } =>
-            perf_correlate::run(&file, &perf_stacks, top_n, json),
-        Commands::MassifCorrelate { file, massif_out, top_n, json } =>
-            massif_correlate::run(&file, &massif_out, top_n, json),
-        Commands::GdbCorrelate { file, gdb_bt, tail_n, top_n, json } =>
-            gdb_correlate::run(&file, &gdb_bt, tail_n, top_n, json),
-        Commands::Bindings { file, drops_only, var, cont, limit } => {
-            let var_filter: Option<Vec<String>> = var.map(|s| {
-                s.split(',').map(|v| v.trim().to_string()).collect()
-            });
-            let cont_filter: Option<Vec<String>> = cont.map(|s| {
-                s.split(',').map(|c| c.trim().to_string()).collect()
-            });
+        Commands::PerfCorrelate {
+            file,
+            perf_stacks,
+            top_n,
+            json,
+        } => perf_correlate::run(&file, &perf_stacks, top_n, json),
+        Commands::MassifCorrelate {
+            file,
+            massif_out,
+            top_n,
+            json,
+        } => massif_correlate::run(&file, &massif_out, top_n, json),
+        Commands::GdbCorrelate {
+            file,
+            gdb_bt,
+            tail_n,
+            top_n,
+            json,
+        } => gdb_correlate::run(&file, &gdb_bt, tail_n, top_n, json),
+        Commands::Bindings {
+            file,
+            drops_only,
+            var,
+            cont,
+            limit,
+        } => {
+            let var_filter: Option<Vec<String>> =
+                var.map(|s| s.split(',').map(|v| v.trim().to_string()).collect());
+            let cont_filter: Option<Vec<String>> =
+                cont.map(|s| s.split(',').map(|c| c.trim().to_string()).collect());
             bindings::run(&file, drops_only, var_filter, cont_filter, limit)
         }
-        Commands::Closure { file, top_n, show_graph } =>
-            closure::run(&file, top_n, show_graph),
+        Commands::Closure {
+            file,
+            top_n,
+            show_graph,
+        } => closure::run(&file, top_n, show_graph),
     };
 
     if let Err(e) = result {

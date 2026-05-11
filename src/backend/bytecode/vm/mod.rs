@@ -38,8 +38,8 @@ use super::opcodes::Opcode;
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::eval::bindings::apply_bindings_generic;
 use crate::backend::models::{
-    numeric_equal_generic, GenericBindings, MettaValue, MettaValueFactory,
-    MettaValueTrait, SpaceHandle, ValueView,
+    numeric_equal_generic, GenericBindings, MettaValue, MettaValueFactory, MettaValueTrait,
+    SpaceHandle, ValueView,
 };
 
 // === Submodules ===
@@ -57,9 +57,9 @@ mod proptests;
 pub use types::{VmConfig, VmError, VmResult};
 // Generic types
 pub use types::{
+    Alternative, BindingFrame, CallFrame, ChoicePoint, CollapseBindFrame, CollapseFrame,
     GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
     GenericCollapseBindFrame, GenericCollapseFrame, TrailEntry, VmBoundValue,
-    Alternative, BindingFrame, CallFrame, ChoicePoint, CollapseBindFrame, CollapseFrame,
 };
 
 // ============================================================================
@@ -179,8 +179,9 @@ where
     /// there (with resize-on-demand). On call: caller's `locals_base` is saved
     /// into the call frame and `self.locals_base = self.locals.len()` bumps
     /// forward so the callee's slots are allocated beyond the caller's.
-    /// On return: `self.locals.truncate(frame.locals_base);
-    /// self.locals_base = frame.locals_base` restores caller's scope exactly.
+    /// On return: `self.locals.truncate(frame.caller_locals_len);
+    /// self.locals_base = frame.locals_base` drops callee slots while preserving
+    /// caller locals that live above the caller's base.
     /// Mirrors the pre-Phase-1 `value_stack + base_ptr` discipline for the
     /// now-separated locals vector.
     pub(crate) locals_base: usize,
@@ -252,12 +253,24 @@ where
     ///
     /// V8 equivalent: FeedbackVector (per-function IC slot array).
     /// HotSpot equivalent: MethodData (MDO).
-    pub(crate) runtime_profile: Option<std::sync::Arc<parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>>>,
+    pub(crate) runtime_profile:
+        Option<std::sync::Arc<parking_lot::Mutex<super::runtime_profile::RuntimeTypeProfile>>>,
 
-    /// Set to `true` by `DispatchRules` when no rules matched — signals that
-    /// the expression was returned unchanged. Callers use this O(1) flag instead
-    /// of an O(expression_size) structural comparison (`results[0] == expr`).
+    /// Set to `true` when the VM reaches semantics it cannot finish itself and
+    /// tier dispatch must retry in the tree-walker.
+    ///
+    /// Plain no-rule data constructors are complete normal forms, not fallback
+    /// triggers; this flag is reserved for unsupported control paths and failed
+    /// function dispatches that need interpreter semantics.
     pub unreduced: bool,
+
+    /// Sticky companion to `unreduced` for `yield_on_top_return`.
+    ///
+    /// Backtracking restores `unreduced` from each choice point, so the final
+    /// flag can be false even after one yielded top-level result was unreduced.
+    /// Tier dispatch callers must reject that whole VM run and fall back to the
+    /// tree-walker.
+    pub had_unreduced_result: bool,
 
     /// When `true`, top-level Return/chunk-end yields results and backtracks
     /// via `op_fail` instead of breaking, exhausting all nondeterministic
@@ -306,6 +319,10 @@ where
     /// scrutinee evaluation, the nearest barrier catches it, restores state,
     /// and jumps to the handler which pushes `Empty`.
     case_barrier_frames: Vec<CaseBarrierFrame>,
+
+    /// Monotonic id used to order nested failure barriers when their
+    /// choice-point floors are equal.
+    next_barrier_id: u64,
 }
 
 /// Frame for case scrutinee fail barriers.
@@ -313,10 +330,17 @@ where
 struct CaseBarrierFrame {
     handler_ip: usize,
     choice_point_floor: usize,
+    barrier_id: u64,
     value_stack_height: usize,
     call_stack_height: usize,
     bindings_stack_height: usize,
     saved_unreduced: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailureBarrier {
+    Case,
+    Collapse,
 }
 
 impl<V, F> fmt::Debug for GenericBytecodeVM<V, F>
@@ -349,7 +373,11 @@ where
     }
 
     /// Create a new generic VM with custom configuration and explicit factory.
-    pub fn with_config_and_factory(chunk: Arc<GenericBytecodeChunk<V>>, config: VmConfig, factory: F) -> Self {
+    pub fn with_config_and_factory(
+        chunk: Arc<GenericBytecodeChunk<V>>,
+        config: VmConfig,
+        factory: F,
+    ) -> Self {
         Self {
             value_stack: Vec::with_capacity(256),
             locals: Vec::new(),
@@ -361,7 +389,9 @@ where
             ip: 0,
             chunk,
             config,
-            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::with_stdlib(factory.clone())),
+            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::with_stdlib(
+                factory.clone(),
+            )),
             external_registry: Arc::new(super::external_registry::GenericExternalRegistry::new()),
             memo_cache: get_or_create_memo_cache::<V, F>(),
             factory,
@@ -369,6 +399,7 @@ where
             expected_type: None,
             runtime_profile: None,
             unreduced: false,
+            had_unreduced_result: false,
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
             collapse_bind_frames: Vec::new(),
@@ -377,6 +408,7 @@ where
             trail: Vec::new(),
             trail_marks: Vec::new(),
             case_barrier_frames: Vec::new(),
+            next_barrier_id: 0,
             current_bindings: GenericBindings::new(),
         }
     }
@@ -398,7 +430,9 @@ where
             ip: 0,
             chunk,
             config: VmConfig::default(),
-            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::with_stdlib(factory.clone())),
+            native_registry: Arc::new(super::native_registry::GenericNativeRegistry::with_stdlib(
+                factory.clone(),
+            )),
             external_registry: Arc::new(super::external_registry::GenericExternalRegistry::new()),
             memo_cache: get_or_create_memo_cache::<V, F>(),
             factory,
@@ -406,6 +440,7 @@ where
             expected_type: None,
             runtime_profile: None,
             unreduced: false,
+            had_unreduced_result: false,
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
             collapse_bind_frames: Vec::new(),
@@ -414,6 +449,7 @@ where
             trail: Vec::new(),
             trail_marks: Vec::new(),
             case_barrier_frames: Vec::new(),
+            next_barrier_id: 0,
             current_bindings: GenericBindings::new(),
         }
     }
@@ -446,6 +482,7 @@ where
             expected_type: None,
             runtime_profile: None,
             unreduced: false,
+            had_unreduced_result: false,
             yield_on_top_return: false,
             collapse_frames: Vec::new(),
             collapse_bind_frames: Vec::new(),
@@ -454,12 +491,22 @@ where
             trail: Vec::new(),
             trail_marks: Vec::new(),
             case_barrier_frames: Vec::new(),
+            next_barrier_id: 0,
             current_bindings: GenericBindings::new(),
         }
     }
 
+    fn allocate_failure_barrier_id(&mut self) -> u64 {
+        let id = self.next_barrier_id;
+        self.next_barrier_id = self.next_barrier_id.wrapping_add(1);
+        id
+    }
+
     /// Set the external function registry (builder pattern).
-    pub fn with_external_registry(mut self, registry: Arc<super::external_registry::GenericExternalRegistry<V, F>>) -> Self {
+    pub fn with_external_registry(
+        mut self,
+        registry: Arc<super::external_registry::GenericExternalRegistry<V, F>>,
+    ) -> Self {
         self.external_registry = registry;
         self
     }
@@ -491,7 +538,10 @@ where
         if let Some(ref profile_arc) = self.runtime_profile {
             let mut profile = profile_arc.lock();
             // Find or create feedback entry for this offset
-            let entry = profile.branch_frequencies.iter().position(|bf| bf.offset == offset);
+            let entry = profile
+                .branch_frequencies
+                .iter()
+                .position(|bf| bf.offset == offset);
             match entry {
                 Some(idx) => {
                     if taken {
@@ -503,7 +553,11 @@ where
                 None => {
                     use super::runtime_profile::BranchFeedback;
                     let bf = BranchFeedback::new(offset);
-                    if taken { bf.record_taken(); } else { bf.record_not_taken(); }
+                    if taken {
+                        bf.record_taken();
+                    } else {
+                        bf.record_not_taken();
+                    }
                     profile.branch_frequencies.push(bf);
                 }
             }
@@ -516,10 +570,17 @@ where
     fn profile_guard(&self, offset: u16, passed: bool) {
         if let Some(ref profile_arc) = self.runtime_profile {
             let mut profile = profile_arc.lock();
-            let entry = profile.guard_outcomes.iter_mut().find(|g| g.offset == offset);
+            let entry = profile
+                .guard_outcomes
+                .iter_mut()
+                .find(|g| g.offset == offset);
             match entry {
                 Some(gf) => {
-                    if passed { gf.pass_count += 1; } else { gf.fail_count += 1; }
+                    if passed {
+                        gf.pass_count += 1;
+                    } else {
+                        gf.fail_count += 1;
+                    }
                 }
                 None => {
                     use super::runtime_profile::GuardFeedback;
@@ -541,7 +602,10 @@ where
             let mut profile = profile_arc.lock();
             for rule_index in 0..match_count.min(u16::MAX as usize) {
                 let idx = rule_index as u16;
-                let entry = profile.rule_match_hits.iter_mut().find(|r| r.site_hash == site_hash && r.rule_index == idx);
+                let entry = profile
+                    .rule_match_hits
+                    .iter_mut()
+                    .find(|r| r.site_hash == site_hash && r.rule_index == idx);
                 match entry {
                     Some(rmf) => {
                         rmf.match_count += 1;
@@ -789,13 +853,17 @@ where
                     TrailEntry::NewBinding { frame_index, name } => {
                         // Remove the binding from the frame
                         if let Some(frame) = self.bindings_stack.get_mut(frame_index) {
-                            frame.remove(name);
+                            frame.remove(&name);
                         }
                     }
-                    TrailEntry::Rebinding { frame_index, name, old_value } => {
+                    TrailEntry::Rebinding {
+                        frame_index,
+                        name,
+                        old_value,
+                    } => {
                         // Restore the old value
                         if let Some(frame) = self.bindings_stack.get_mut(frame_index) {
-                            frame.set(name.to_string(), old_value);
+                            frame.set(name, old_value);
                         }
                     }
                 }
@@ -843,6 +911,7 @@ where
     /// we still hold, causing UAF on resume.
     ///
     /// Walks every `V`-bearing field of the VM exhaustively:
+    /// - current/call/choice/alternative/collapse chunk constants
     /// - `value_stack`, `locals`, `current_bindings`, `bindings_stack`
     /// - `results`, `expected_type`
     /// - `choice_points` and their `alternatives` (5 variant decode arms)
@@ -858,6 +927,11 @@ where
     /// - `native_registry`/`external_registry`: hold function pointers, no V values
     /// - `memo_cache`: registered as `MemoCacheRoots` separately
     pub(crate) fn collect_roots_into(&self, out: &mut Vec<V>) {
+        // Chunks are immutable, but their constant pools can contain slab
+        // values. Transient VM-owned chunks are not necessarily present in the
+        // global bytecode cache, so the VM must root their constants directly.
+        super::cache::collect_generic_chunk_constants(&self.chunk, out);
+
         // Direct V-bearing fields
         out.extend(self.value_stack.iter().cloned());
         out.extend(self.locals.iter().cloned());
@@ -867,7 +941,7 @@ where
         }
 
         // current_bindings: GenericBindings<V>
-        for (_name, val) in self.current_bindings.iter() {
+        for (_scope, _name, val) in self.current_bindings.iter_full() {
             out.push(val.clone());
         }
 
@@ -880,46 +954,55 @@ where
 
         // call_stack: Vec<GenericCallFrame<V, _>> — only saved_bindings holds V
         for frame in self.call_stack.iter() {
-            for (_name, val) in frame.saved_bindings.iter() {
+            super::cache::collect_generic_chunk_constants(&frame.return_chunk, out);
+            for (_scope, _name, val) in frame.saved_bindings.iter_full() {
                 out.push(val.clone());
             }
         }
 
         // choice_points: Vec<GenericChoicePoint<V, _>> — alternatives + saved_current_bindings
         for cp in self.choice_points.iter() {
+            super::cache::collect_generic_chunk_constants(&cp.chunk, out);
             for alt in cp.alternatives.iter() {
                 match alt {
                     GenericAlternative::Value(v) => out.push(v.clone()),
-                    GenericAlternative::Chunk(_) => {}
+                    GenericAlternative::Chunk(chunk) => {
+                        super::cache::collect_generic_chunk_constants(chunk, out);
+                    }
                     GenericAlternative::Index(_) => {}
-                    GenericAlternative::RuleMatch { chunk: _, bindings } => {
-                        for (_name, val) in bindings.iter() {
+                    GenericAlternative::RuleMatch { chunk, bindings } => {
+                        super::cache::collect_generic_chunk_constants(chunk, out);
+                        for (_scope, _name, val) in bindings.iter_full() {
                             out.push(val.clone());
                         }
                     }
                     GenericAlternative::BoundValue { value, bindings } => {
                         out.push(value.clone());
-                        for (_name, val) in bindings.iter() {
+                        for (_scope, _name, val) in bindings.iter_full() {
                             out.push(val.clone());
                         }
                     }
                 }
             }
-            for (_name, val) in cp.saved_current_bindings.iter() {
+            for (_scope, _name, val) in cp.saved_current_bindings.iter_full() {
                 out.push(val.clone());
             }
         }
 
         // collapse_frames: saved_results
         for frame in self.collapse_frames.iter() {
+            super::cache::collect_generic_chunk_constants(&frame.continuation_chunk, out);
             out.extend(frame.saved_results.iter().cloned());
         }
 
         // collapse_bind_frames: saved_results + saved_per_result_bindings
         for frame in self.collapse_bind_frames.iter() {
+            if let Some(chunk) = &frame.continuation_chunk {
+                super::cache::collect_generic_chunk_constants(chunk, out);
+            }
             out.extend(frame.saved_results.iter().cloned());
             for bindings in frame.saved_per_result_bindings.iter() {
-                for (_name, val) in bindings.iter() {
+                for (_scope, _name, val) in bindings.iter_full() {
                     out.push(val.clone());
                 }
             }
@@ -927,7 +1010,7 @@ where
 
         // per_result_bindings
         for bindings in self.per_result_bindings.iter() {
-            for (_name, val) in bindings.iter() {
+            for (_scope, _name, val) in bindings.iter_full() {
                 out.push(val.clone());
             }
         }
@@ -956,17 +1039,25 @@ where
             return;
         }
         let mut buf: Vec<V> = Vec::with_capacity(
-            self.value_stack.len()
-                + self.locals.len()
-                + self.results.len()
-                + 64,
+            self.value_stack.len() + self.locals.len() + self.results.len() + 64,
         );
         self.collect_roots_into(&mut buf);
         // SAFETY: V == MettaValue verified via TypeId; Vec<V> and
         // Vec<MettaValue> have identical layout. Same pattern as
         // `get_or_create_memo_cache` at the top of mod.rs.
-        let buf_mv: Vec<MettaValue> = unsafe { std::mem::transmute::<Vec<V>, Vec<MettaValue>>(buf) };
+        let buf_mv: Vec<MettaValue> =
+            unsafe { std::mem::transmute::<Vec<V>, Vec<MettaValue>>(buf) };
         crate::backend::eval::trampoline::eval_loop::worker_cooperative_safepoint(&buf_mv);
+    }
+
+    /// Build an Error atom from a runtime-data VmError per spec K T1.A
+    /// (errors-as-values). The resulting value is pushed onto the operand
+    /// stack instead of bubbling up as a Rust `Err`. Used by the dispatch
+    /// loop's error interceptor.
+    fn materialize_runtime_error_atom(&self, err: &VmError) -> V {
+        let (msg, kind) = err.as_error_strings();
+        let details = self.factory.atom(kind);
+        self.factory.error(&msg, details)
     }
 
     /// Run the VM to completion, returning all results.
@@ -996,15 +1087,27 @@ where
             if iter_counter & 0xFF == 0 {
                 let is_worker = crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER
                     .with(|f| f.get());
-                if is_worker
-                    && crate::backend::models::gc_allocator::is_gc_requested()
-                {
+                if is_worker && crate::backend::models::gc_allocator::is_gc_requested() {
                     self.run_cooperative_safepoint();
                 }
             }
-            match self.step()? {
-                ControlFlow::Continue(()) => continue,
-                ControlFlow::Break(results) => return Ok(results),
+            // BUG-T0-T1-001/011 (errors-as-values, plan T1.A):
+            // Convert runtime-data errors (DivisionByZero, TypeError,
+            // ArithmeticOverflow) into Error atoms pushed onto the value
+            // stack instead of propagating them as VM errors. This matches
+            // T0's HE-aligned behavior: errors are first-class values that
+            // downstream pattern-matching / dispatch can consume. Genuine
+            // internal-VM failures (StackUnderflow, IpOutOfBounds, etc.)
+            // still propagate.
+            match self.step() {
+                Ok(ControlFlow::Continue(())) => continue,
+                Ok(ControlFlow::Break(results)) => return Ok(results),
+                Err(err) if err.is_runtime_data_error() => {
+                    let error_atom = self.materialize_runtime_error_atom(&err);
+                    self.push(error_atom);
+                    continue;
+                }
+                Err(err) => return Err(err),
             }
         }
     }
@@ -1049,14 +1152,15 @@ where
 
         // Read opcode
         let opcode_byte = self.read_u8()?;
-        let opcode = Opcode::from_byte(opcode_byte)
-            .ok_or(VmError::InvalidOpcode(opcode_byte))?;
+        let opcode = Opcode::from_byte(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
 
         // Execute opcode
         match opcode {
             // === Stack Operations ===
             Opcode::Nop => {}
-            Opcode::Pop => { self.pop()?; }
+            Opcode::Pop => {
+                self.pop()?;
+            }
             Opcode::Dup => self.dup()?,
             Opcode::Swap => self.swap()?,
             Opcode::Rot3 => self.op_rot3()?,
@@ -1076,10 +1180,15 @@ where
                 let n = self.read_i8()? as i64;
                 self.push(self.make_long(n));
             }
-            Opcode::PushLong | Opcode::PushAtom | Opcode::PushString |
-            Opcode::PushUri | Opcode::PushConstant => {
+            Opcode::PushLong
+            | Opcode::PushAtom
+            | Opcode::PushString
+            | Opcode::PushUri
+            | Opcode::PushConstant => {
                 let index = self.read_u16()?;
-                let value = self.chunk.get_constant(index)
+                let value = self
+                    .chunk
+                    .get_constant(index)
                     .ok_or(VmError::InvalidConstant(index))?
                     .clone();
                 self.push(value);
@@ -1120,7 +1229,9 @@ where
             Opcode::LoadLocal => {
                 let slot = self.read_u8()? as usize;
                 let abs = self.locals_base + slot;
-                let value = self.locals.get(abs)
+                let value = self
+                    .locals
+                    .get(abs)
                     .ok_or(VmError::InvalidLocal(slot as u16))?
                     .clone();
                 self.push(value);
@@ -1137,7 +1248,9 @@ where
             Opcode::LoadLocalWide => {
                 let slot = self.read_u16()? as usize;
                 let abs = self.locals_base + slot;
-                let value = self.locals.get(abs)
+                let value = self
+                    .locals
+                    .get(abs)
                     .ok_or(VmError::InvalidLocal(slot as u16))?
                     .clone();
                 self.push(value);
@@ -1153,7 +1266,9 @@ where
             }
             Opcode::LoadBinding => {
                 let index = self.read_u16()?;
-                let name = self.chunk.get_constant(index)
+                let name = self
+                    .chunk
+                    .get_constant(index)
                     .and_then(|v| v.as_atom().map(|s| s.to_string()))
                     .ok_or(VmError::InvalidConstant(index))?;
                 // Search bindings from innermost to outermost
@@ -1165,7 +1280,9 @@ where
             }
             Opcode::StoreBinding => {
                 let index = self.read_u16()?;
-                let name = self.chunk.get_constant(index)
+                let name = self
+                    .chunk
+                    .get_constant(index)
                     .and_then(|v| v.as_atom().map(|s| s.to_string()))
                     .ok_or(VmError::InvalidConstant(index))?;
                 let value = self.pop()?;
@@ -1173,7 +1290,9 @@ where
             }
             Opcode::HasBinding => {
                 let index = self.read_u16()?;
-                let name = self.chunk.get_constant(index)
+                let name = self
+                    .chunk
+                    .get_constant(index)
                     .and_then(|v| v.as_atom().map(|s| s.to_string()))
                     .ok_or(VmError::InvalidConstant(index))?;
                 let has = self.get_binding(&name).is_some();
@@ -1194,7 +1313,9 @@ where
             Opcode::LoadUpvalue => {
                 // Upvalues are stored as constants in parent scopes
                 let index = self.read_u16()?;
-                let value = self.chunk.get_constant(index)
+                let value = self
+                    .chunk
+                    .get_constant(index)
                     .ok_or(VmError::InvalidConstant(index))?
                     .clone();
                 self.push(value);
@@ -1230,7 +1351,8 @@ where
                 let offset = self.read_i16()?;
                 let b = self.pop()?; // original (unevaluated)
                 let a = self.pop()?; // result (evaluated)
-                if a == b { // PartialEq — exact match including variable names
+                if a == b {
+                    // PartialEq — exact match including variable names
                     self.ip = (self.ip as isize + offset as isize) as usize;
                 }
             }
@@ -1297,6 +1419,10 @@ where
                 // Float / 0.0 → IEEE 754 (±Inf or NaN), no error.
                 let b = self.pop()?;
                 let a = self.pop()?;
+                // BUG-T0-T1-003: Empty annihilation per spec §14.1.1 Ext-3.
+                if a.is_empty() || b.is_empty() {
+                    self.push(self.factory.empty());
+                } else {
                 match (a.as_long(), b.as_long()) {
                     (Some(_), Some(0)) => return Err(VmError::DivisionByZero),
                     (Some(x), Some(y)) => self.push(self.make_long(x.wrapping_div(y))),
@@ -1308,11 +1434,17 @@ where
                                 (Some(x), Some(y)) => self.push(self.make_float(x as f64 / y)),
                                 _ => match (a.as_float(), b.as_long()) {
                                     (Some(x), Some(y)) => self.push(self.make_float(x / y as f64)),
-                                    _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
-                                }
+                                    _ => {
+                                        return Err(VmError::TypeError {
+                                            expected: "number",
+                                            got: "other",
+                                        })
+                                    }
+                                },
                             }
                         }
-                    }
+                    },
+                }
                 }
             }
             Opcode::Mod => {
@@ -1320,13 +1452,23 @@ where
                 // (so i64::MIN % -1 wraps to 0). Float % 0.0 → NaN per IEEE/HE.
                 let b = self.pop()?;
                 let a = self.pop()?;
-                match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
-                    (Some(_), _, Some(0), _) => return Err(VmError::DivisionByZero),
-                    (Some(x), _, Some(y), _) => self.push(self.make_long(x.wrapping_rem(y))),
-                    (_, Some(x), _, Some(y)) => self.push(self.make_float(x % y)),
-                    (Some(x), _, _, Some(y)) => self.push(self.make_float(x as f64 % y)),
-                    (_, Some(x), Some(y), _) => self.push(self.make_float(x % y as f64)),
-                    _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                // BUG-T0-T1-003: Empty annihilation per spec §14.1.1 Ext-3.
+                if a.is_empty() || b.is_empty() {
+                    self.push(self.factory.empty());
+                } else {
+                    match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
+                        (Some(_), _, Some(0), _) => return Err(VmError::DivisionByZero),
+                        (Some(x), _, Some(y), _) => self.push(self.make_long(x.wrapping_rem(y))),
+                        (_, Some(x), _, Some(y)) => self.push(self.make_float(x % y)),
+                        (Some(x), _, _, Some(y)) => self.push(self.make_float(x as f64 % y)),
+                        (_, Some(x), Some(y), _) => self.push(self.make_float(x % y as f64)),
+                        _ => {
+                            return Err(VmError::TypeError {
+                                expected: "number",
+                                got: "other",
+                            })
+                        }
+                    }
                 }
             }
             Opcode::Neg => {
@@ -1337,7 +1479,10 @@ where
                 } else if let Some(x) = a.as_float() {
                     self.push(self.make_float(-x));
                 } else {
-                    return Err(VmError::TypeError { expected: "number", got: "other" });
+                    return Err(VmError::TypeError {
+                        expected: "number",
+                        got: "other",
+                    });
                 }
             }
             Opcode::Abs => {
@@ -1350,7 +1495,10 @@ where
                 } else if let Some(x) = a.as_float() {
                     self.push(self.make_float(x.abs()));
                 } else {
-                    return Err(VmError::TypeError { expected: "number", got: "other" });
+                    return Err(VmError::TypeError {
+                        expected: "number",
+                        got: "other",
+                    });
                 }
             }
             Opcode::FloorDiv => {
@@ -1373,19 +1521,28 @@ where
                             // Mixed Long/Float type promotion
                             match (a.as_long(), b.as_float()) {
                                 (Some(x), Some(y)) => {
-                                    if y == 0.0 { return Err(VmError::DivisionByZero); }
+                                    if y == 0.0 {
+                                        return Err(VmError::DivisionByZero);
+                                    }
                                     self.push(self.make_long((x as f64 / y).floor() as i64));
                                 }
                                 _ => match (a.as_float(), b.as_long()) {
                                     (Some(x), Some(y)) => {
-                                        if y == 0 { return Err(VmError::DivisionByZero); }
+                                        if y == 0 {
+                                            return Err(VmError::DivisionByZero);
+                                        }
                                         self.push(self.make_long((x / y as f64).floor() as i64));
                                     }
-                                    _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
-                                }
+                                    _ => {
+                                        return Err(VmError::TypeError {
+                                            expected: "number",
+                                            got: "other",
+                                        })
+                                    }
+                                },
                             }
                         }
-                    }
+                    },
                 }
             }
             Opcode::Pow => {
@@ -1393,22 +1550,33 @@ where
                 // i64::wrapping_pow handles overflow without panicking.
                 let b = self.pop()?;
                 let a = self.pop()?;
-                match (a.as_long(), b.as_long()) {
-                    (Some(x), Some(y)) if y >= 0 => {
-                        self.push(self.make_long(x.wrapping_pow(y as u32)));
-                    }
-                    _ => match (a.as_float(), b.as_float()) {
-                        (Some(x), Some(y)) => self.push(self.make_float(x.powf(y))),
-                        _ => match (a.as_long(), b.as_float()) {
-                            (Some(x), Some(y)) => self.push(self.make_float((x as f64).powf(y))),
-                            _ => match (a.as_float(), b.as_long()) {
-                                (Some(x), Some(y)) => self.push(self.make_float(x.powi(y as i32))),
-                                _ => return Err(VmError::TypeError {
-                                    expected: "number (Long or Float)",
-                                    got: "other",
-                                }),
-                            }
+                // BUG-T0-T1-003: Empty annihilation per spec §14.1.1 Ext-3.
+                if a.is_empty() || b.is_empty() {
+                    self.push(self.factory.empty());
+                } else {
+                    match (a.as_long(), b.as_long()) {
+                        (Some(x), Some(y)) if y >= 0 => {
+                            self.push(self.make_long(x.wrapping_pow(y as u32)));
                         }
+                        _ => match (a.as_float(), b.as_float()) {
+                            (Some(x), Some(y)) => self.push(self.make_float(x.powf(y))),
+                            _ => match (a.as_long(), b.as_float()) {
+                                (Some(x), Some(y)) => {
+                                    self.push(self.make_float((x as f64).powf(y)))
+                                }
+                                _ => match (a.as_float(), b.as_long()) {
+                                    (Some(x), Some(y)) => {
+                                        self.push(self.make_float(x.powi(y as i32)))
+                                    }
+                                    _ => {
+                                        return Err(VmError::TypeError {
+                                            expected: "number (Long or Float)",
+                                            got: "other",
+                                        })
+                                    }
+                                },
+                            },
+                        },
                     }
                 }
             }
@@ -1419,7 +1587,10 @@ where
                 } else if let Some(x) = a.as_long() {
                     self.push(self.make_float((x as f64).sqrt()));
                 } else {
-                    return Err(VmError::TypeError { expected: "number", got: "other" });
+                    return Err(VmError::TypeError {
+                        expected: "number",
+                        got: "other",
+                    });
                 }
             }
             Opcode::Log => {
@@ -1433,11 +1604,18 @@ where
                         _ => match (base.as_float(), value.as_long()) {
                             (Some(b), Some(v)) => self.push(self.make_float((v as f64).log(b))),
                             _ => match (base.as_long(), value.as_long()) {
-                                (Some(b), Some(v)) => self.push(self.make_float((v as f64).log(b as f64))),
-                                _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
-                            }
-                        }
-                    }
+                                (Some(b), Some(v)) => {
+                                    self.push(self.make_float((v as f64).log(b as f64)))
+                                }
+                                _ => {
+                                    return Err(VmError::TypeError {
+                                        expected: "Float or Long",
+                                        got: "other",
+                                    })
+                                }
+                            },
+                        },
+                    },
                 }
             }
             Opcode::Trunc => {
@@ -1445,7 +1623,12 @@ where
                 match a.view() {
                     ValueView::Float(x) => self.push(self.make_long(x.trunc() as i64)),
                     ValueView::Long(_) => self.push(a),
-                    _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
+                    _ => {
+                        return Err(VmError::TypeError {
+                            expected: "number",
+                            got: "other",
+                        })
+                    }
                 }
             }
             Opcode::Ceil => {
@@ -1453,7 +1636,12 @@ where
                 match a.view() {
                     ValueView::Float(x) => self.push(self.make_long(x.ceil() as i64)),
                     ValueView::Long(_) => self.push(a),
-                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+                    _ => {
+                        return Err(VmError::TypeError {
+                            expected: "Float or Long",
+                            got: "other",
+                        })
+                    }
                 }
             }
             Opcode::FloorMath => {
@@ -1461,7 +1649,12 @@ where
                 match a.view() {
                     ValueView::Float(x) => self.push(self.make_long(x.floor() as i64)),
                     ValueView::Long(_) => self.push(a),
-                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+                    _ => {
+                        return Err(VmError::TypeError {
+                            expected: "Float or Long",
+                            got: "other",
+                        })
+                    }
                 }
             }
             Opcode::Round => {
@@ -1469,7 +1662,12 @@ where
                 match a.view() {
                     ValueView::Float(x) => self.push(self.make_long(x.round() as i64)),
                     ValueView::Long(_) => self.push(a),
-                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+                    _ => {
+                        return Err(VmError::TypeError {
+                            expected: "Float or Long",
+                            got: "other",
+                        })
+                    }
                 }
             }
             Opcode::Sin => self.op_unary_float(f64::sin)?,
@@ -1483,7 +1681,12 @@ where
                 match a.view() {
                     ValueView::Float(x) => self.push(self.make_bool(x.is_nan())),
                     ValueView::Long(_) => self.push(self.make_bool(false)),
-                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+                    _ => {
+                        return Err(VmError::TypeError {
+                            expected: "Float or Long",
+                            got: "other",
+                        })
+                    }
                 }
             }
             Opcode::IsInf => {
@@ -1491,15 +1694,20 @@ where
                 match a.view() {
                     ValueView::Float(x) => self.push(self.make_bool(x.is_infinite())),
                     ValueView::Long(_) => self.push(self.make_bool(false)),
-                    _ => return Err(VmError::TypeError { expected: "Float or Long", got: "other" }),
+                    _ => {
+                        return Err(VmError::TypeError {
+                            expected: "Float or Long",
+                            got: "other",
+                        })
+                    }
                 }
             }
 
             // === Comparison ===
-            Opcode::Lt => self.op_comparison(|a, b| a < b, |a, b| a < b)?,
-            Opcode::Le => self.op_comparison(|a, b| a <= b, |a, b| a <= b)?,
-            Opcode::Gt => self.op_comparison(|a, b| a > b, |a, b| a > b)?,
-            Opcode::Ge => self.op_comparison(|a, b| a >= b, |a, b| a >= b)?,
+            Opcode::Lt => self.op_comparison(|a, b| a < b, |a, b| a < b, |a, b| a < b)?,
+            Opcode::Le => self.op_comparison(|a, b| a <= b, |a, b| a <= b, |a, b| a <= b)?,
+            Opcode::Gt => self.op_comparison(|a, b| a > b, |a, b| a > b, |a, b| a > b)?,
+            Opcode::Ge => self.op_comparison(|a, b| a >= b, |a, b| a >= b, |a, b| a >= b)?,
             Opcode::Eq => {
                 let b = self.pop()?;
                 let a = self.pop()?;
@@ -1529,7 +1737,12 @@ where
                 let a = self.pop()?;
                 match (a.as_bool(), b.as_bool()) {
                     (Some(x), Some(y)) => self.push(self.make_bool(x && y)),
-                    _ => return Err(VmError::TypeError { expected: "bool", got: "other" }),
+                    _ => {
+                        return Err(VmError::TypeError {
+                            expected: "bool",
+                            got: "other",
+                        })
+                    }
                 }
             }
             Opcode::Or => {
@@ -1537,14 +1750,24 @@ where
                 let a = self.pop()?;
                 match (a.as_bool(), b.as_bool()) {
                     (Some(x), Some(y)) => self.push(self.make_bool(x || y)),
-                    _ => return Err(VmError::TypeError { expected: "bool", got: "other" }),
+                    _ => {
+                        return Err(VmError::TypeError {
+                            expected: "bool",
+                            got: "other",
+                        })
+                    }
                 }
             }
             Opcode::Not => {
                 let a = self.pop()?;
                 match a.as_bool() {
                     Some(x) => self.push(self.make_bool(!x)),
-                    None => return Err(VmError::TypeError { expected: "bool", got: "other" }),
+                    None => {
+                        return Err(VmError::TypeError {
+                            expected: "bool",
+                            got: "other",
+                        })
+                    }
                 }
             }
             Opcode::Xor => {
@@ -1552,7 +1775,12 @@ where
                 let a = self.pop()?;
                 match (a.as_bool(), b.as_bool()) {
                     (Some(x), Some(y)) => self.push(self.make_bool(x ^ y)),
-                    _ => return Err(VmError::TypeError { expected: "bool", got: "other" }),
+                    _ => {
+                        return Err(VmError::TypeError {
+                            expected: "bool",
+                            got: "other",
+                        })
+                    }
                 }
             }
 
@@ -1716,6 +1944,8 @@ where
 
             // === Nondeterminism ===
             Opcode::Fork => return self.op_fork(),
+            Opcode::ForkInline => return self.op_fork_inline(),
+            Opcode::EvalSuperpose => return self.op_eval_superpose(),
             Opcode::Fail => return self.op_fail(),
             Opcode::Cut => self.op_cut(),
             Opcode::Collect => self.op_collect()?,
@@ -1805,9 +2035,11 @@ where
                     use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                     with_thread_trace_collector(|tc| {
                         tc.emit_converted(
-                            trace_format::TraceTier::BytecodeVM, 0,
+                            trace_format::TraceTier::BytecodeVM,
+                            0,
                             trace_format::TraceValue::Unit,
-                            vec![], None,
+                            vec![],
+                            None,
                             trace_format::TraceEventKind::BytecodeHalt {
                                 ip: self.ip as u32,
                                 reason: "Halt opcode".to_string(),
@@ -1839,6 +2071,8 @@ where
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
+            self.locals.truncate(frame.caller_locals_len);
+            self.locals_base = frame.locals_base;
 
             // Pop binding frame
             if self.bindings_stack.len() > frame.bindings_base {
@@ -1851,6 +2085,9 @@ where
         } else {
             // End of top-level
             if !self.value_stack.is_empty() {
+                if self.unreduced {
+                    self.had_unreduced_result = true;
+                }
                 self.results.extend(self.value_stack.drain(..));
             }
             // yield_on_top_return: exhaust remaining alternatives
@@ -1875,6 +2112,27 @@ where
     ) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
+        // Error propagation per HE semantics: if either operand is already an
+        // Error atom, propagate it (deepest error wins). Avoids wrapping a
+        // nested error in a fresh "TypeError: expected number" — matches T0's
+        // trampoline error-propagation in `arithmetic.rs:eval_*`.
+        if a.is_error() {
+            self.push(a);
+            return Ok(());
+        }
+        if b.is_error() {
+            self.push(b);
+            return Ok(());
+        }
+        // BUG-T0-T1-003 (spec §14.1.1 Ext-3): Empty annihilation in arithmetic.
+        // When either operand is the Empty sentinel, the entire arithmetic
+        // expression yields no result (branch annihilation), matching T0's
+        // canonical behavior in `src/backend/grounded/arithmetic.rs:94-97`.
+        // Push Empty so downstream handlers propagate the annihilation.
+        if a.is_empty() || b.is_empty() {
+            self.push(self.factory.empty());
+            return Ok(());
+        }
         match (a.as_long(), b.as_long()) {
             (Some(x), Some(y)) => self.push(self.make_long(int_op(x, y))),
             _ => match (a.as_float(), b.as_float()) {
@@ -1885,11 +2143,16 @@ where
                         (Some(x), Some(y)) => self.push(self.make_float(float_op(x as f64, y))),
                         _ => match (a.as_float(), b.as_long()) {
                             (Some(x), Some(y)) => self.push(self.make_float(float_op(x, y as f64))),
-                            _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
-                        }
+                            _ => {
+                                return Err(VmError::TypeError {
+                                    expected: "number",
+                                    got: "other",
+                                })
+                            }
+                        },
                     }
                 }
-            }
+            },
         }
         Ok(())
     }
@@ -1903,20 +2166,48 @@ where
         } else if let Some(x) = a.as_long() {
             self.push(self.make_float(op(x as f64)));
         } else {
-            return Err(VmError::TypeError { expected: "number", got: "other" });
+            return Err(VmError::TypeError {
+                expected: "number",
+                got: "other",
+            });
         }
         Ok(())
     }
 
     /// Comparison operation helper.
+    ///
+    /// `string_cmp` is invoked when both operands are Strings (BUG-T0-T1-004,
+    /// spec §14.2.1 Ext-5). Callers pass the matching comparison combinator;
+    /// `String::cmp` then yields the lexicographic ordering Bool.
     #[inline]
     fn op_comparison(
         &mut self,
         int_cmp: impl Fn(i64, i64) -> bool,
         float_cmp: impl Fn(f64, f64) -> bool,
+        string_cmp: impl Fn(&str, &str) -> bool,
     ) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
+        // Error propagation: preserve nested errors instead of synthesizing
+        // a fresh TypeError. Matches T0's trampoline behavior.
+        if a.is_error() {
+            self.push(a);
+            return Ok(());
+        }
+        if b.is_error() {
+            self.push(b);
+            return Ok(());
+        }
+        // BUG-T0-T1-003: Empty annihilation in comparisons per spec §14.2.1.
+        if a.is_empty() || b.is_empty() {
+            self.push(self.factory.empty());
+            return Ok(());
+        }
+        // BUG-T0-T1-004: String comparison (lex order) per spec §14.2.1 Ext-5.
+        if let (Some(x), Some(y)) = (a.as_string(), b.as_string()) {
+            self.push(self.make_bool(string_cmp(x, y)));
+            return Ok(());
+        }
         match (a.as_long(), b.as_long()) {
             (Some(x), Some(y)) => self.push(self.make_bool(int_cmp(x, y))),
             _ => match (a.as_float(), b.as_float()) {
@@ -1927,11 +2218,16 @@ where
                         (Some(x), Some(y)) => self.push(self.make_bool(float_cmp(x as f64, y))),
                         _ => match (a.as_float(), b.as_long()) {
                             (Some(x), Some(y)) => self.push(self.make_bool(float_cmp(x, y as f64))),
-                            _ => return Err(VmError::TypeError { expected: "number", got: "other" }),
-                        }
+                            _ => {
+                                return Err(VmError::TypeError {
+                                    expected: "number",
+                                    got: "other",
+                                })
+                            }
+                        },
                     }
                 }
-            }
+            },
         }
         Ok(())
     }
@@ -1989,7 +2285,9 @@ where
 
     fn op_push_variable(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
-        let var = self.chunk.get_constant(index)
+        let var = self
+            .chunk
+            .get_constant(index)
             .ok_or(VmError::InvalidConstant(index))?
             .clone();
 
@@ -2065,10 +2363,9 @@ where
         let selector = self.pop()?;
 
         // Get jump table from chunk
-        let jump_table = self
-            .chunk
-            .get_jump_table(table_index)
-            .ok_or_else(|| VmError::Runtime(format!("Invalid jump table index: {}", table_index)))?;
+        let jump_table = self.chunk.get_jump_table(table_index).ok_or_else(|| {
+            VmError::Runtime(format!("Invalid jump table index: {}", table_index))
+        })?;
 
         // Compute hash of selector value for table lookup
         // Hash the selector value using debug repr for consistent hashing
@@ -2099,7 +2396,10 @@ where
         args.reverse();
 
         // Build call expression from head + args
-        let head = self.chunk.get_constant(head_idx).cloned()
+        let head = self
+            .chunk
+            .get_constant(head_idx)
+            .cloned()
             .ok_or(VmError::InvalidConstant(head_idx))?;
         let mut items = Vec::with_capacity(arity + 1);
         items.push(head);
@@ -2125,7 +2425,10 @@ where
         args.reverse();
 
         // Build call expression from head + args
-        let head = self.chunk.get_constant(head_idx).cloned()
+        let head = self
+            .chunk
+            .get_constant(head_idx)
+            .cloned()
             .ok_or(VmError::InvalidConstant(head_idx))?;
         let mut items = Vec::with_capacity(arity + 1);
         items.push(head);
@@ -2246,8 +2549,8 @@ where
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
-            // Bug-fix 2026-04-follow-up: drop callee's locals, restore caller's base.
-            self.locals.truncate(frame.locals_base);
+            // Drop callee locals while preserving the caller's local slots.
+            self.locals.truncate(frame.caller_locals_len);
             self.locals_base = frame.locals_base;
 
             // Pop binding frames down to caller's level
@@ -2287,6 +2590,9 @@ where
         } else {
             // Return from top-level — record the result + its bindings snapshot
             // (Phase C: sidecar encoding for collapse-bind).
+            if self.unreduced {
+                self.had_unreduced_result = true;
+            }
             self.results.push(value);
             if !self.collapse_bind_frames.is_empty() {
                 self.per_result_bindings.push(self.current_bindings.clone());
@@ -2315,8 +2621,8 @@ where
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
-            // Bug-fix 2026-04-follow-up: drop callee's locals, restore caller's base.
-            self.locals.truncate(frame.locals_base);
+            // Drop callee locals while preserving the caller's local slots.
+            self.locals.truncate(frame.caller_locals_len);
             self.locals_base = frame.locals_base;
 
             // Pop binding frames down to caller's level
@@ -2376,7 +2682,10 @@ where
         let expected = if let Some(name) = type_val.as_atom() {
             name
         } else {
-            return Err(VmError::TypeError { expected: "type symbol", got: "other" });
+            return Err(VmError::TypeError {
+                expected: "type symbol",
+                got: "other",
+            });
         };
 
         // Type variables match anything (consistent with tree-visitor)
@@ -2401,7 +2710,10 @@ where
         let expected = if let Some(name) = type_val.as_atom() {
             name
         } else {
-            return Err(VmError::TypeError { expected: "type symbol", got: "other" });
+            return Err(VmError::TypeError {
+                expected: "type symbol",
+                got: "other",
+            });
         };
 
         if value.type_name() != expected {
@@ -2538,7 +2850,9 @@ where
         let const_idx = self.read_u16()?;
         let offset = self.read_i16()?;
         let value = self.pop()?;
-        let expected = self.chunk.get_constant(const_idx)
+        let expected = self
+            .chunk
+            .get_constant(const_idx)
             .ok_or(VmError::InvalidConstant(const_idx))?;
         let matches = if let (Some(v_name), Some(e_name)) = (value.as_atom(), expected.as_atom()) {
             v_name == e_name
@@ -2574,23 +2888,31 @@ where
         let name_idx = self.read_u16()?;
         let offset = self.read_i16()?;
         let value = self.pop()?;
-        let name_val = self.chunk.get_constant(name_idx)
+        let name_val = self
+            .chunk
+            .get_constant(name_idx)
             .ok_or(VmError::InvalidConstant(name_idx))?;
         let var_name = name_val.as_atom().ok_or(VmError::TypeError {
             expected: "atom (variable name)",
             got: "non-atom constant",
         })?;
 
-        // Check if variable is already bound in the current frame
+        // Check if variable is already bound in the current frame.
+        //
+        // BUG T0-T1-009 (per plan invariant #2 tier-locality): use iterative
+        // work-stack unification inline in the VM handler — NOT a call into
+        // T0's bidirectional_unify_generic. Each tier owns its semantics.
+        // The previously-bound value may itself contain unbound variables;
+        // testing structural equality misses cases where they would still
+        // unify (e.g., `$a := f($x)` then `$a vs f(1)` must unify `$x → 1`).
+        // Stack-safe: iterative work-stack, no recursion.
         if let Some(frame) = self.bindings_stack.last() {
             if let Some(existing) = frame.get(var_name) {
-                // Consistency check: existing binding must equal new value
-                if existing != &value {
+                if !structurally_unify(existing, &value) {
                     let jump_from = self.ip;
                     self.ip = (jump_from as isize + offset as isize) as usize;
                     return Ok(());
                 }
-                // Consistent — no need to rebind
                 return Ok(());
             }
         }
@@ -2599,7 +2921,7 @@ where
         let frame_index = self.bindings_stack.len().saturating_sub(1);
         self.trail.push(TrailEntry::NewBinding {
             frame_index,
-            name: var_name,
+            name: var_name.to_string(),
         });
         self.set_binding(var_name.to_string(), value);
         Ok(())
@@ -2610,7 +2932,9 @@ where
         let const_idx = self.read_u16()?;
         let offset = self.read_i16()?;
         let value = self.pop()?;
-        let expected = self.chunk.get_constant(const_idx)
+        let expected = self
+            .chunk
+            .get_constant(const_idx)
             .ok_or(VmError::InvalidConstant(const_idx))?;
         let matches = if let (Some(v_long), Some(e_long)) = (value.as_long(), expected.as_long()) {
             v_long == e_long
@@ -2629,7 +2953,9 @@ where
         let const_idx = self.read_u16()?;
         let offset = self.read_i16()?;
         let value = self.pop()?;
-        let expected = self.chunk.get_constant(const_idx)
+        let expected = self
+            .chunk
+            .get_constant(const_idx)
             .ok_or(VmError::InvalidConstant(const_idx))?;
         if !value.structurally_equivalent(expected) {
             let jump_from = self.ip;
@@ -2657,7 +2983,8 @@ where
         let b = self.pop()?;
         let a = self.pop()?;
 
-        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&a, &b) {
+        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&a, &b)
+        {
             for (name, val) in bindings.iter() {
                 self.set_binding(name.to_string(), val.clone());
             }
@@ -2678,13 +3005,14 @@ where
         let b = self.pop()?;
         let a = self.pop()?;
 
-        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&a, &b) {
+        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&a, &b)
+        {
             // Trail all new bindings
             let frame_index = self.bindings_stack.len().saturating_sub(1);
             for (name, _val) in bindings.iter() {
                 self.trail.push(TrailEntry::NewBinding {
                     frame_index,
-                    name,
+                    name: name.to_string(),
                 });
             }
             // Install bindings in current frame
@@ -2759,9 +3087,7 @@ where
     fn op_is_function(&mut self) -> VmResult<()> {
         let value = self.pop()?;
         let is_fn = match value.view() {
-            ValueView::SExpr(items) => {
-                items.first().and_then(|v| v.as_atom()) == Some("->")
-            }
+            ValueView::SExpr(items) => items.first().and_then(|v| v.as_atom()) == Some("->"),
             _ => false,
         };
         self.push(self.make_bool(is_fn));
@@ -2803,7 +3129,9 @@ where
     /// after the iteration's value is collected; only the value
     /// flows into the mapped list.
     fn op_map_atom(&mut self) -> VmResult<()> {
-        use crate::backend::eval::bindings::{apply_bindings_generic, apply_chain_generic, compose_outer_inner_generic};
+        use crate::backend::eval::bindings::{
+            apply_bindings_generic, apply_chain_generic, compose_outer_inner_generic,
+        };
 
         let chunk_idx = self.read_u16()?;
         let list = self.pop()?;
@@ -2845,11 +3173,8 @@ where
             if !acc_bindings.is_empty() {
                 effective = apply_bindings_generic(&effective, &acc_bindings, &self.factory);
             }
-            let (result, tmpl_bindings) = self
-                .execute_generic_template_with_binding(
-                    Arc::clone(&template_chunk),
-                    effective,
-                )?;
+            let (result, tmpl_bindings) =
+                self.execute_generic_template_with_binding(Arc::clone(&template_chunk), effective)?;
             results.push(result);
 
             // H13 mirror — filter per-iter bindings to caller-scope names
@@ -2865,15 +3190,9 @@ where
                 }
             }
             if !step_propagating.is_empty() {
-                let mut composed = compose_outer_inner_generic(
-                    &acc_bindings,
-                    &step_propagating,
-                    &self.factory,
-                );
-                if composed.is_empty()
-                    && !acc_bindings.is_empty()
-                    && !step_propagating.is_empty()
-                {
+                let mut composed =
+                    compose_outer_inner_generic(&acc_bindings, &step_propagating, &self.factory);
+                if composed.is_empty() && !acc_bindings.is_empty() && !step_propagating.is_empty() {
                     self.push(self.factory.empty());
                     return Ok(());
                 }
@@ -2885,11 +3204,8 @@ where
         // Compose acc_bindings into VM's current_bindings so caller
         // sees the threaded result (mirror op_foldl_atom).
         if !acc_bindings.is_empty() {
-            self.current_bindings = compose_outer_inner_generic(
-                &self.current_bindings,
-                &acc_bindings,
-                &self.factory,
-            );
+            self.current_bindings =
+                compose_outer_inner_generic(&self.current_bindings, &acc_bindings, &self.factory);
             apply_chain_generic(&mut self.current_bindings, &self.factory);
         }
 
@@ -2909,7 +3225,9 @@ where
     /// matching HE's `FilterAtomOp` semantics where the filter
     /// preserves structural identity.
     fn op_filter_atom(&mut self) -> VmResult<()> {
-        use crate::backend::eval::bindings::{apply_bindings_generic, apply_chain_generic, compose_outer_inner_generic};
+        use crate::backend::eval::bindings::{
+            apply_bindings_generic, apply_chain_generic, compose_outer_inner_generic,
+        };
 
         let chunk_idx = self.read_u16()?;
         let list = self.pop()?;
@@ -2949,10 +3267,8 @@ where
             if !acc_bindings.is_empty() {
                 effective = apply_bindings_generic(&effective, &acc_bindings, &self.factory);
             }
-            let (result, pred_bindings) = self.execute_generic_template_with_binding(
-                Arc::clone(&predicate_chunk),
-                effective,
-            )?;
+            let (result, pred_bindings) = self
+                .execute_generic_template_with_binding(Arc::clone(&predicate_chunk), effective)?;
 
             // H13 mirror — compose per-iter bindings BEFORE keep/drop test.
             let mut step_propagating: GenericBindings<V> = GenericBindings::new();
@@ -2964,15 +3280,9 @@ where
                 }
             }
             if !step_propagating.is_empty() {
-                let mut composed = compose_outer_inner_generic(
-                    &acc_bindings,
-                    &step_propagating,
-                    &self.factory,
-                );
-                if composed.is_empty()
-                    && !acc_bindings.is_empty()
-                    && !step_propagating.is_empty()
-                {
+                let mut composed =
+                    compose_outer_inner_generic(&acc_bindings, &step_propagating, &self.factory);
+                if composed.is_empty() && !acc_bindings.is_empty() && !step_propagating.is_empty() {
                     self.push(self.factory.empty());
                     return Ok(());
                 }
@@ -2988,11 +3298,8 @@ where
 
         // Compose acc_bindings into VM's current_bindings.
         if !acc_bindings.is_empty() {
-            self.current_bindings = compose_outer_inner_generic(
-                &self.current_bindings,
-                &acc_bindings,
-                &self.factory,
-            );
+            self.current_bindings =
+                compose_outer_inner_generic(&self.current_bindings, &acc_bindings, &self.factory);
             apply_chain_generic(&mut self.current_bindings, &self.factory);
         }
 
@@ -3085,11 +3392,8 @@ where
                 apply_bindings_generic(item, &acc_bindings, &self.factory)
             };
 
-            let (new_acc, step_bindings) = self.execute_generic_foldl_template(
-                Arc::clone(&op_chunk),
-                acc,
-                substituted_item,
-            )?;
+            let (new_acc, step_bindings) =
+                self.execute_generic_foldl_template(Arc::clone(&op_chunk), acc, substituted_item)?;
 
             // Filter step_bindings: retain user-level vars AND caller-
             // scope freshened vars (appearing in items' free variables).
@@ -3106,15 +3410,9 @@ where
             // Compose into running acc_bindings. Returns empty on
             // genuine ground/ground conflict (Phase 2B). A branch with
             // such a conflict dies — HE-faithful.
-            let mut composed = compose_outer_inner_generic(
-                &acc_bindings,
-                &step_propagating,
-                &self.factory,
-            );
-            if composed.is_empty()
-                && !acc_bindings.is_empty()
-                && !step_propagating.is_empty()
-            {
+            let mut composed =
+                compose_outer_inner_generic(&acc_bindings, &step_propagating, &self.factory);
+            if composed.is_empty() && !acc_bindings.is_empty() && !step_propagating.is_empty() {
                 self.push(self.factory.empty());
                 return Ok(());
             }
@@ -3127,11 +3425,8 @@ where
         // current_bindings so the caller (which composed its outer
         // context into `acc_bindings` implicitly via the per-step
         // template exec) continues with the right context.
-        self.current_bindings = compose_outer_inner_generic(
-            &self.current_bindings,
-            &acc_bindings,
-            &self.factory,
-        );
+        self.current_bindings =
+            compose_outer_inner_generic(&self.current_bindings, &acc_bindings, &self.factory);
         apply_chain_generic(&mut self.current_bindings, &self.factory);
 
         self.push(acc);
@@ -3176,16 +3471,15 @@ where
             use std::any::TypeId;
             if TypeId::of::<V>() == TypeId::of::<MettaValue>() {
                 let materialized: Vec<V> = saved_current_bindings
-                    .iter()
-                    .map(|(_n, v)| v.clone())
+                    .iter_full()
+                    .map(|(_scope, _n, v)| v.clone())
                     .collect();
                 // SAFETY: V == MettaValue verified via TypeId; Vec<V> and
                 // Vec<MettaValue> have identical layout. The guard ties
                 // the frame's lifetime to this scope, ensuring the Vec
                 // outlives any safepoint that might collect roots from it.
-                let materialized_mv: Vec<MettaValue> = unsafe {
-                    std::mem::transmute::<Vec<V>, Vec<MettaValue>>(materialized)
-                };
+                let materialized_mv: Vec<MettaValue> =
+                    unsafe { std::mem::transmute::<Vec<V>, Vec<MettaValue>>(materialized) };
                 let materialized_box = Box::new(materialized_mv);
                 let ptr = &*materialized_box as *const Vec<MettaValue>;
                 let guard = unsafe {
@@ -3226,10 +3520,8 @@ where
             match self.step() {
                 Ok(ControlFlow::Continue(())) => {}
                 Ok(ControlFlow::Break(results)) => {
-                    let template_bindings = std::mem::replace(
-                        &mut self.current_bindings,
-                        saved_current_bindings,
-                    );
+                    let template_bindings =
+                        std::mem::replace(&mut self.current_bindings, saved_current_bindings);
                     self.ip = saved_ip;
                     self.chunk = saved_chunk;
                     self.value_stack.truncate(saved_stack_base);
@@ -3251,10 +3543,8 @@ where
 
         // Get result
         let result = self.pop().unwrap_or_else(|_| self.factory.unit());
-        let template_bindings = std::mem::replace(
-            &mut self.current_bindings,
-            saved_current_bindings,
-        );
+        let template_bindings =
+            std::mem::replace(&mut self.current_bindings, saved_current_bindings);
 
         // Restore state
         self.ip = saved_ip;
@@ -3289,12 +3579,11 @@ where
             use std::any::TypeId;
             if TypeId::of::<V>() == TypeId::of::<MettaValue>() {
                 let materialized: Vec<V> = saved_current_bindings
-                    .iter()
-                    .map(|(_n, v)| v.clone())
+                    .iter_full()
+                    .map(|(_scope, _n, v)| v.clone())
                     .collect();
-                let materialized_mv: Vec<MettaValue> = unsafe {
-                    std::mem::transmute::<Vec<V>, Vec<MettaValue>>(materialized)
-                };
+                let materialized_mv: Vec<MettaValue> =
+                    unsafe { std::mem::transmute::<Vec<V>, Vec<MettaValue>>(materialized) };
                 let materialized_box = Box::new(materialized_mv);
                 let ptr = &*materialized_box as *const Vec<MettaValue>;
                 let guard = unsafe {
@@ -3336,10 +3625,8 @@ where
             match self.step() {
                 Ok(ControlFlow::Continue(())) => {}
                 Ok(ControlFlow::Break(results)) => {
-                    let template_bindings = std::mem::replace(
-                        &mut self.current_bindings,
-                        saved_current_bindings,
-                    );
+                    let template_bindings =
+                        std::mem::replace(&mut self.current_bindings, saved_current_bindings);
                     self.ip = saved_ip;
                     self.chunk = saved_chunk;
                     self.value_stack.truncate(saved_stack_base);
@@ -3361,10 +3648,8 @@ where
 
         // Get result
         let result = self.pop().unwrap_or_else(|_| self.factory.unit());
-        let template_bindings = std::mem::replace(
-            &mut self.current_bindings,
-            saved_current_bindings,
-        );
+        let template_bindings =
+            std::mem::replace(&mut self.current_bindings, saved_current_bindings);
 
         // Restore state
         self.ip = saved_ip;
@@ -3544,15 +3829,13 @@ where
         let space = self.pop()?;
 
         // Construct (match space pattern template) and delegate to trampoline
-        let sexpr = self.factory.sexpr(vec![
-            self.factory.atom("match"),
-            space,
-            pattern,
-            template,
-        ]);
-        let env = self.env.clone().ok_or_else(|| {
-            VmError::Runtime("match: no environment available".to_string())
-        })?;
+        let sexpr = self
+            .factory
+            .sexpr(vec![self.factory.atom("match"), space, pattern, template]);
+        let env = self
+            .env
+            .clone()
+            .ok_or_else(|| VmError::Runtime("match: no environment available".to_string()))?;
         let result = self.eval_sub_expr_vm(sexpr, env)?;
         self.push(result);
         Ok(())
@@ -3575,9 +3858,10 @@ where
             default,
             template,
         ]);
-        let env = self.env.clone().ok_or_else(|| {
-            VmError::Runtime("match-or: no environment available".to_string())
-        })?;
+        let env = self
+            .env
+            .clone()
+            .ok_or_else(|| VmError::Runtime("match-or: no environment available".to_string()))?;
         let result = self.eval_sub_expr_vm(sexpr, env)?;
         self.push(result);
         Ok(())
@@ -3610,13 +3894,15 @@ where
         let val1 = self.pop()?;
 
         // Non-space native path: bidirectional unify val1 ↔ pattern2.
-        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&val1, &pattern2) {
+        if let Some(bindings) =
+            crate::backend::eval::bindings::bidirectional_unify_generic(&val1, &pattern2)
+        {
             // Trail all new bindings so backtracking can restore state.
             let frame_index = self.bindings_stack.len().saturating_sub(1);
             for (name, _val) in bindings.iter() {
                 self.trail.push(TrailEntry::NewBinding {
                     frame_index,
-                    name,
+                    name: name.to_string(),
                 });
             }
             // Install bindings in current frame; success body's LoadBinding ops
@@ -3655,9 +3941,10 @@ where
         // Route by space kind:
         let matches: Vec<V> = if handle.is_module_space() || handle.name == "self" {
             // Module / &self space: use env.match_space (native to op_match_self path).
-            let env = self.env.as_ref().ok_or_else(|| {
-                VmError::Runtime("match: no environment available".to_string())
-            })?;
+            let env = self
+                .env
+                .as_ref()
+                .ok_or_else(|| VmError::Runtime("match: no environment available".to_string()))?;
             env.match_space(&pattern, &template)
                 .into_iter()
                 .flat_map(|m| std::iter::repeat(m.value).take(m.count))
@@ -3667,10 +3954,14 @@ where
             let atoms = handle.collapse_with_multiplicity_generic(&self.factory);
             let mut out = Vec::new();
             for m in atoms.into_iter() {
-                if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&pattern, &m.value) {
+                if let Some(bindings) =
+                    crate::backend::eval::bindings::bidirectional_unify_generic(&pattern, &m.value)
+                {
                     // Apply bindings to template for each match.
                     let instantiated = crate::backend::eval::bindings::apply_bindings_generic(
-                        &template, &bindings, &self.factory,
+                        &template,
+                        &bindings,
+                        &self.factory,
                     );
                     for _ in 0..m.count {
                         out.push(instantiated.clone());
@@ -3734,9 +4025,13 @@ where
             let atoms = handle.collapse_with_multiplicity_generic(&self.factory);
             let mut out = Vec::new();
             for m in atoms.into_iter() {
-                if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&pattern, &m.value) {
+                if let Some(bindings) =
+                    crate::backend::eval::bindings::bidirectional_unify_generic(&pattern, &m.value)
+                {
                     let instantiated = crate::backend::eval::bindings::apply_bindings_generic(
-                        &template, &bindings, &self.factory,
+                        &template,
+                        &bindings,
+                        &self.factory,
                     );
                     for _ in 0..m.count {
                         out.push(instantiated.clone());
@@ -3792,19 +4087,22 @@ where
         let tracked_vars: Vec<&'static str> = self
             .chunk
             .get_constant(tracked_vars_idx as u16)
-            .and_then(|v| v.as_sexpr().map(|items| {
-                items
-                    .iter()
-                    .filter_map(|v| v.as_atom())
-                    .map(|s| {
-                        // Leak-free: rely on `as_atom` returning an interned
-                        // `&'static str` (SharedMapping). If non-static, fall
-                        // back to an empty slice later.
-                        let ptr: &'static str = unsafe { std::mem::transmute::<&str, &'static str>(s) };
-                        ptr
-                    })
-                    .collect()
-            }))
+            .and_then(|v| {
+                v.as_sexpr().map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_atom())
+                        .map(|s| {
+                            // Leak-free: rely on `as_atom` returning an interned
+                            // `&'static str` (SharedMapping). If non-static, fall
+                            // back to an empty slice later.
+                            let ptr: &'static str =
+                                unsafe { std::mem::transmute::<&str, &'static str>(s) };
+                            ptr
+                        })
+                        .collect()
+                })
+            })
             .unwrap_or_default();
 
         let frame: GenericCollapseBindFrame<V> = GenericCollapseBindFrame {
@@ -3812,8 +4110,8 @@ where
             saved_per_result_bindings: std::mem::take(&mut self.per_result_bindings),
             choice_point_base: self.choice_points.len(),
             value_stack_height: self.value_stack.len(),
-            continuation_ip: 0,             // set lazily on first CollapseBindEnd
-            continuation_chunk: None,       // set with continuation_ip
+            continuation_ip: 0,       // set lazily on first CollapseBindEnd
+            continuation_chunk: None, // set with continuation_ip
             tracked_vars,
         };
         self.collapse_bind_frames.push(frame);
@@ -3841,9 +4139,13 @@ where
             }
         }
 
-        let (value_stack_height, choice_point_base) = {
+        let (value_stack_height, choice_point_base, tracked_vars) = {
             let frame = self.collapse_bind_frames.last().expect("checked above");
-            (frame.value_stack_height, frame.choice_point_base)
+            (
+                frame.value_stack_height,
+                frame.choice_point_base,
+                frame.tracked_vars.clone(),
+            )
         };
 
         // Collect the current result (one iteration of the body), preserving
@@ -3851,8 +4153,20 @@ where
         if self.value_stack.len() > value_stack_height {
             let value = self.pop()?;
             if !value.is_unit() {
-                self.results.push(value);
-                self.per_result_bindings.push(self.current_bindings.clone());
+                if self.unreduced {
+                    self.had_unreduced_result = true;
+                }
+                if let Some(projected) =
+                    crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+                        &self.current_bindings,
+                        &[&value],
+                        Some(&tracked_vars),
+                        &self.factory,
+                    )
+                {
+                    self.results.push(value);
+                    self.per_result_bindings.push(projected);
+                }
             }
         }
 
@@ -3877,32 +4191,15 @@ where
             if value.is_unit() {
                 continue;
             }
-            let raw_bindings = bindings_list
-                .get(i)
-                .cloned()
-                .unwrap_or_default();
+            let raw_bindings = bindings_list.get(i).cloned().unwrap_or_default();
 
-            // Resolve aliases via apply_chain.
-            let mut resolved = raw_bindings;
-            crate::backend::eval::bindings::apply_chain_generic(
-                &mut resolved,
+            let projected = crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+                &raw_bindings,
+                &[&value],
+                Some(&frame.tracked_vars),
                 &self.factory,
-            );
-
-            // Project to tracked_vars (empty → drops all user bindings).
-            let projected = if frame.tracked_vars.is_empty() {
-                // Phase C scaffold: compile_collapse_bind emits empty
-                // tracked_vars. Keep ALL bindings for now (matching trampoline's
-                // None-tracked_vars_for_sidecar path). A follow-up will wire
-                // compile-time free-variable analysis so tracked_vars is the
-                // correct user-visible whitelist.
-                resolved
-            } else {
-                crate::backend::eval::bindings::project_bindings_generic(
-                    &resolved,
-                    &frame.tracked_vars,
-                )
-            };
+            )
+            .unwrap_or_default();
 
             // Filter `$__fr_*` (per-invocation freshening artifacts).
             let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
@@ -3917,11 +4214,10 @@ where
                 projected
             };
 
-            let bindings_sexpr =
-                crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
-                    &filtered,
-                    &self.factory,
-                );
+            let bindings_sexpr = crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
+                &filtered,
+                &self.factory,
+            );
             pairs.push(self.make_sexpr(vec![value, bindings_sexpr]));
         }
 
@@ -4032,16 +4328,13 @@ where
                 continue;
             }
             let raw_bindings = bindings_list.get(i).cloned().unwrap_or_default();
-            let mut resolved = raw_bindings;
-            crate::backend::eval::bindings::apply_chain_generic(&mut resolved, &self.factory);
-            let projected = if frame.tracked_vars.is_empty() {
-                resolved
-            } else {
-                crate::backend::eval::bindings::project_bindings_generic(
-                    &resolved,
-                    &frame.tracked_vars,
-                )
-            };
+            let projected = crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+                &raw_bindings,
+                &[&value],
+                Some(&frame.tracked_vars),
+                &self.factory,
+            )
+            .unwrap_or_default();
             let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
                 let mut f = GenericBindings::new();
                 for (name, val) in projected.iter() {
@@ -4053,11 +4346,10 @@ where
             } else {
                 projected
             };
-            let bindings_sexpr =
-                crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
-                    &filtered,
-                    &self.factory,
-                );
+            let bindings_sexpr = crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
+                &filtered,
+                &self.factory,
+            );
             pairs.push(self.make_sexpr(vec![value, bindings_sexpr]));
         }
 
@@ -4073,9 +4365,10 @@ where
         let template = self.pop()?;
         let pattern = self.pop()?;
 
-        let env = self.env.as_ref().ok_or_else(|| {
-            VmError::Runtime("match: no environment available".to_string())
-        })?;
+        let env = self
+            .env
+            .as_ref()
+            .ok_or_else(|| VmError::Runtime("match: no environment available".to_string()))?;
 
         let matches = env.match_space(&pattern, &template);
 
@@ -4124,9 +4417,10 @@ where
         let default = self.pop()?;
         let pattern = self.pop()?;
 
-        let env = self.env.as_ref().ok_or_else(|| {
-            VmError::Runtime("match-or: no environment available".to_string())
-        })?;
+        let env = self
+            .env
+            .as_ref()
+            .ok_or_else(|| VmError::Runtime("match-or: no environment available".to_string()))?;
 
         let matches = env.match_space(&pattern, &template);
 
@@ -4181,7 +4475,10 @@ where
         let case_branches_idx = self.read_u16()?;
         let scrutinee = self.pop()?;
 
-        let case_branches = self.chunk.get_constant(case_branches_idx).cloned()
+        let case_branches = self
+            .chunk
+            .get_constant(case_branches_idx)
+            .cloned()
             .ok_or(VmError::InvalidConstant(case_branches_idx))?;
 
         // Only the concrete-typed MettaValue path has a shared `eval_switch`
@@ -4198,8 +4495,8 @@ where
         // Attempt native path if V == MettaValue.
         let scrutinee_concrete = (&scrutinee as &dyn std::any::Any).downcast_ref::<ConcreteMV>();
         let branches_concrete = (&case_branches as &dyn std::any::Any).downcast_ref::<ConcreteMV>();
-        let factory_concrete =
-            (&self.factory as &dyn std::any::Any).downcast_ref::<crate::backend::models::GcFactory>();
+        let factory_concrete = (&self.factory as &dyn std::any::Any)
+            .downcast_ref::<crate::backend::models::GcFactory>();
 
         if let (Some(atom), Some(cases), Some(factory)) =
             (scrutinee_concrete, branches_concrete, factory_concrete)
@@ -4209,7 +4506,9 @@ where
                     // Cast the concrete MettaValue back to V (same type).
                     let instantiated_v: &V = (&instantiated as &dyn std::any::Any)
                         .downcast_ref::<V>()
-                        .expect("concrete MettaValue → V downcast must succeed when V == MettaValue");
+                        .expect(
+                            "concrete MettaValue → V downcast must succeed when V == MettaValue",
+                        );
                     self.push(instantiated_v.clone());
                     // Instantiated template may require further reduction;
                     // eval_inner will drive it natively within the VM tier.
@@ -4250,13 +4549,13 @@ where
     fn op_eval_collapse(&mut self) -> VmResult<()> {
         let expr = self.pop()?;
 
-        let sexpr = self.factory.sexpr(vec![
-            self.factory.atom("collapse"),
-            expr,
-        ]);
-        let env = self.env.clone().ok_or_else(|| {
-            VmError::Runtime("collapse: no environment available".to_string())
-        })?;
+        let sexpr = self
+            .factory
+            .sexpr(vec![self.factory.atom("collapse"), expr]);
+        let env = self
+            .env
+            .clone()
+            .ok_or_else(|| VmError::Runtime("collapse: no environment available".to_string()))?;
         let result = self.eval_sub_expr_vm(sexpr, env)?;
         self.push(result);
         Ok(())
@@ -4273,9 +4572,11 @@ where
         let jump_from = self.ip; // IP is now past the operand bytes
         let continuation_ip = (jump_from as isize + offset as isize) as usize;
 
+        let barrier_id = self.allocate_failure_barrier_id();
         let frame = GenericCollapseFrame {
             saved_results: std::mem::take(&mut self.results),
             choice_point_base: self.choice_points.len(),
+            barrier_id,
             value_stack_height: self.value_stack.len(),
             continuation_ip,
             continuation_chunk: Arc::clone(&self.chunk),
@@ -4309,6 +4610,9 @@ where
         if self.value_stack.len() > value_stack_height {
             let value = self.pop()?;
             if !value.is_unit() {
+                if self.unreduced {
+                    self.had_unreduced_result = true;
+                }
                 self.results.push(value);
                 if !self.collapse_bind_frames.is_empty() {
                     self.per_result_bindings.push(self.current_bindings.clone());
@@ -4344,7 +4648,9 @@ where
     /// Backtrack within a collapse scope, respecting the barrier.
     /// Same logic as `op_fail` but stops at the collapse frame's `choice_point_base`.
     fn op_fail_within_collapse(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
-        let collapse_base = self.collapse_frames.last()
+        let collapse_base = self
+            .collapse_frames
+            .last()
             .map(|f| f.choice_point_base)
             .unwrap_or(0);
 
@@ -4615,10 +4921,7 @@ where
             } else if let Some(f) = e.as_float() {
                 f
             } else {
-                let err = self.make_error(
-                    "msort: all elements must be numeric (Long or Float)",
-                    e,
-                );
+                let err = self.make_error("msort: all elements must be numeric (Long or Float)", e);
                 self.push(err);
                 return Ok(());
             };
@@ -4842,7 +5145,11 @@ where
                 got: "other",
             })?
         };
-        let filtered: Vec<V> = items.iter().filter(|item| **item != elem).cloned().collect();
+        let filtered: Vec<V> = items
+            .iter()
+            .filter(|item| **item != elem)
+            .cloned()
+            .collect();
         self.push(self.make_sexpr(filtered));
         Ok(())
     }
@@ -4961,7 +5268,11 @@ where
             expected: "Long",
             got: "other",
         })?;
-        let take_count = if n < 0 { 0 } else { (n as usize).min(items.len()) };
+        let take_count = if n < 0 {
+            0
+        } else {
+            (n as usize).min(items.len())
+        };
         let taken: Vec<V> = items[..take_count].to_vec();
         self.push(self.make_sexpr(taken));
         Ok(())
@@ -4980,7 +5291,11 @@ where
             expected: "Long",
             got: "other",
         })?;
-        let drop_count = if n < 0 { 0 } else { (n as usize).min(items.len()) };
+        let drop_count = if n < 0 {
+            0
+        } else {
+            (n as usize).min(items.len())
+        };
         let remaining: Vec<V> = items[drop_count..].to_vec();
         self.push(self.make_sexpr(remaining));
         Ok(())
@@ -5106,9 +5421,11 @@ where
             use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
             with_thread_trace_collector(|tc| {
                 tc.emit_converted(
-                    trace_format::TraceTier::BytecodeVM, 0,
+                    trace_format::TraceTier::BytecodeVM,
+                    0,
                     trace_format::TraceValue::Unit,
-                    vec![], None,
+                    vec![],
+                    None,
                     trace_format::TraceEventKind::NondeterministicFork {
                         branch_count: count as u32,
                     },
@@ -5145,13 +5462,150 @@ where
         Ok(ControlFlow::Continue(()))
     }
 
+    fn op_fork_inline(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "fork_inline");
+        let count = self.read_u16()? as usize;
+        if count == 0 {
+            return self.op_fail();
+        }
+
+        let mut targets = Vec::with_capacity(count);
+        for _ in 0..count {
+            targets.push(self.read_u16()? as usize);
+        }
+
+        #[cfg(feature = "trace")]
+        {
+            use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+            with_thread_trace_collector(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::BytecodeVM,
+                    0,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::NondeterministicFork {
+                        branch_count: count as u32,
+                    },
+                );
+            });
+        }
+
+        if targets.len() > 1 {
+            let alternatives = targets[1..]
+                .iter()
+                .copied()
+                .map(GenericAlternative::Index)
+                .collect();
+            self.choice_points.push(GenericChoicePoint {
+                ip: self.ip,
+                chunk: Arc::clone(&self.chunk),
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                alternatives,
+                saved_unreduced: self.unreduced,
+                trail_height: self.trail.len(),
+                saved_current_bindings: self.current_bindings.clone(),
+                locals_height: self.locals.len(),
+                locals_base_at_cp: self.locals_base,
+            });
+        }
+
+        self.ip = targets[0];
+        Ok(ControlFlow::Continue(()))
+    }
+
+    fn op_eval_superpose(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
+        trace!(target: "mettatron::vm::nondet", ip = self.ip, "eval_superpose");
+
+        let value = self.pop()?;
+        let alternatives = if value.is_unit() {
+            Vec::new()
+        } else if let Some(items) = value.as_sexpr() {
+            items.to_vec()
+        } else {
+            self.push(value);
+            return Ok(ControlFlow::Continue(()));
+        };
+
+        if alternatives.is_empty() {
+            return self.op_fail();
+        }
+
+        #[cfg(feature = "trace")]
+        {
+            use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+            with_thread_trace_collector(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::BytecodeVM,
+                    0,
+                    trace_format::TraceValue::Unit,
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::NondeterministicFork {
+                        branch_count: alternatives.len() as u32,
+                    },
+                );
+            });
+        }
+
+        if alternatives.len() > 1 {
+            let remaining: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = alternatives[1..]
+                .iter()
+                .cloned()
+                .map(GenericAlternative::Value)
+                .collect();
+            self.choice_points.push(GenericChoicePoint {
+                value_stack_height: self.value_stack.len(),
+                call_stack_height: self.call_stack.len(),
+                bindings_stack_height: self.bindings_stack.len(),
+                ip: self.ip,
+                chunk: Arc::clone(&self.chunk),
+                alternatives: remaining,
+                saved_unreduced: self.unreduced,
+                trail_height: self.trail.len(),
+                saved_current_bindings: self.current_bindings.clone(),
+                locals_height: self.locals.len(),
+                locals_base_at_cp: self.locals_base,
+            });
+        }
+
+        self.push(alternatives.into_iter().next().expect("non-empty checked"));
+        Ok(ControlFlow::Continue(()))
+    }
+
     fn op_fail(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         trace!(target: "mettatron::vm::nondet", ip = self.ip, choice_points = self.choice_points.len(), "fail");
 
-        // Respect case barrier floor: don't backtrack past the barrier scope
-        let barrier_floor = self.case_barrier_frames.last()
-            .map(|b| b.choice_point_floor)
-            .unwrap_or(0);
+        // Respect the nearest active failure barrier. Choice-point stack
+        // heights identify most nesting; barrier ids break ties when two
+        // barriers were entered at the same choice-point depth.
+        let mut active_barrier: Option<(usize, u64, FailureBarrier)> = None;
+        let mut consider_barrier =
+            |floor: usize, barrier_id: u64, kind: FailureBarrier| match active_barrier {
+                Some((active_floor, active_id, _))
+                    if active_floor > floor
+                        || (active_floor == floor && active_id > barrier_id) => {}
+                _ => active_barrier = Some((floor, barrier_id, kind)),
+            };
+
+        if let Some(barrier) = self.case_barrier_frames.last() {
+            consider_barrier(
+                barrier.choice_point_floor,
+                barrier.barrier_id,
+                FailureBarrier::Case,
+            );
+        }
+        if let Some(frame) = self.collapse_frames.last() {
+            consider_barrier(
+                frame.choice_point_base,
+                frame.barrier_id,
+                FailureBarrier::Collapse,
+            );
+        }
+
+        let barrier_floor = active_barrier.map(|(floor, _, _)| floor).unwrap_or(0);
 
         // Backtrack to most recent choice point (above barrier floor)
         while self.choice_points.len() > barrier_floor {
@@ -5242,16 +5696,26 @@ where
             return Ok(ControlFlow::Continue(()));
         }
 
-        // No choice points above barrier floor. Check case barrier.
-        if let Some(barrier) = self.case_barrier_frames.pop() {
-            // Restore state from barrier and jump to handler (pushes Empty)
-            self.value_stack.truncate(barrier.value_stack_height);
-            self.call_stack.truncate(barrier.call_stack_height);
-            self.bindings_stack.truncate(barrier.bindings_stack_height);
-            self.choice_points.truncate(barrier.choice_point_floor);
-            self.unreduced = barrier.saved_unreduced;
-            self.ip = barrier.handler_ip;
-            return Ok(ControlFlow::Continue(()));
+        // No choice points above the nearest barrier floor. Let that barrier
+        // handle the failure rather than escaping to the enclosing scope.
+        if let Some((_, _, kind)) = active_barrier {
+            match kind {
+                FailureBarrier::Case => {
+                    let barrier = self.case_barrier_frames.pop().ok_or_else(|| {
+                        VmError::Runtime("case barrier lost during backtracking".to_string())
+                    })?;
+                    self.value_stack.truncate(barrier.value_stack_height);
+                    self.call_stack.truncate(barrier.call_stack_height);
+                    self.bindings_stack.truncate(barrier.bindings_stack_height);
+                    self.choice_points.truncate(barrier.choice_point_floor);
+                    self.unreduced = barrier.saved_unreduced;
+                    self.ip = barrier.handler_ip;
+                    return Ok(ControlFlow::Continue(()));
+                }
+                FailureBarrier::Collapse => {
+                    return self.op_fail_within_collapse();
+                }
+            }
         }
 
         // No more choice points or barriers - return collected results
@@ -5262,9 +5726,11 @@ where
         let offset = self.read_u16()? as i16;
         let jump_from = self.ip;
         let handler_ip = (jump_from as isize + offset as isize) as usize;
+        let barrier_id = self.allocate_failure_barrier_id();
         self.case_barrier_frames.push(CaseBarrierFrame {
             handler_ip,
             choice_point_floor: self.choice_points.len(),
+            barrier_id,
             value_stack_height: self.value_stack.len(),
             call_stack_height: self.call_stack.len(),
             bindings_stack_height: self.bindings_stack.len(),
@@ -5326,6 +5792,9 @@ where
 
     fn op_yield(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         let value = self.pop()?;
+        if self.unreduced {
+            self.had_unreduced_result = true;
+        }
         self.results.push(value);
         // Phase C: record bindings snapshot inside a collapse-bind scope.
         if !self.collapse_bind_frames.is_empty() {
@@ -5376,8 +5845,11 @@ where
         }
 
         // Create choice point with alternatives 1..N (skipping first)
-        let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
-            alts[1..].iter().cloned().map(GenericAlternative::Value).collect();
+        let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = alts[1..]
+            .iter()
+            .cloned()
+            .map(GenericAlternative::Value)
+            .collect();
 
         self.choice_points.push(GenericChoicePoint {
             ip: self.ip, // Resume at current IP for alternatives
@@ -5453,9 +5925,7 @@ where
         let ctx = GenericNativeContext::new(env, self.factory.clone());
 
         // Call through registry
-        let call_result = self
-            .native_registry
-            .call(func_id, &args, &ctx);
+        let call_result = self.native_registry.call(func_id, &args, &ctx);
 
         match call_result {
             Ok(result) => {
@@ -5465,16 +5935,18 @@ where
                     use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                     use crate::backend::trace::trace_value_generic;
                     with_thread_trace_collector(|tc| {
-                        let op_name = self.native_registry
+                        let op_name = self
+                            .native_registry
                             .name_for_id(func_id)
                             .unwrap_or("?")
                             .to_string();
                         tc.emit_converted(
-                            trace_format::TraceTier::BytecodeVM, 0,
+                            trace_format::TraceTier::BytecodeVM,
+                            0,
                             trace_format::TraceValue::SExpr(
                                 std::iter::once(trace_format::TraceValue::Atom(op_name.clone()))
                                     .chain(args.iter().map(|a| trace_value_generic(a)))
-                                    .collect()
+                                    .collect(),
                             ),
                             result.iter().map(|v| trace_value_generic(v)).collect(),
                             None,
@@ -5505,18 +5977,21 @@ where
                     use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                     use crate::backend::trace::trace_value_generic;
                     with_thread_trace_collector(|tc| {
-                        let op_name = self.native_registry
+                        let op_name = self
+                            .native_registry
                             .name_for_id(func_id)
                             .unwrap_or("?")
                             .to_string();
                         tc.emit_converted(
-                            trace_format::TraceTier::BytecodeVM, 0,
+                            trace_format::TraceTier::BytecodeVM,
+                            0,
                             trace_format::TraceValue::SExpr(
                                 std::iter::once(trace_format::TraceValue::Atom(op_name.clone()))
                                     .chain(args.iter().map(|a| trace_value_generic(a)))
-                                    .collect()
+                                    .collect(),
                             ),
-                            vec![], None,
+                            vec![],
+                            None,
                             trace_format::TraceEventKind::GroundedOpError {
                                 op_name,
                                 error_kind: "Runtime".to_string(),
@@ -5663,7 +6138,9 @@ where
 
     fn op_load_global(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
-        let name = self.chunk.get_constant(index)
+        let name = self
+            .chunk
+            .get_constant(index)
             .ok_or(VmError::InvalidConstant(index))?
             .clone();
 
@@ -5684,7 +6161,9 @@ where
 
     fn op_store_global(&mut self) -> VmResult<()> {
         let index = self.read_u16()?;
-        let name = self.chunk.get_constant(index)
+        let name = self
+            .chunk
+            .get_constant(index)
             .and_then(|v| v.as_atom().map(|s| s.to_string()))
             .ok_or(VmError::InvalidConstant(index))?;
         let value = self.pop()?;
@@ -5815,10 +6294,9 @@ where
                             })
                         })
                     {
-                        let err = self.factory.error(
-                            &format!("All types for '{}' are errors", head),
-                            expr,
-                        );
+                        let err = self
+                            .factory
+                            .error(&format!("All types for '{}' are errors", head), expr);
                         self.push(err);
                         return Ok(());
                     }
@@ -5849,10 +6327,8 @@ where
             // Multi-combination fanout: iterate each combination
             // through the full dispatch pipeline, collect results, and
             // expose them as a choice point with BoundValue alternatives.
-            return self.op_dispatch_rules_multi_combo(
-                pre_eval_combinations,
-                saved_pre_eval_bindings,
-            );
+            return self
+                .op_dispatch_rules_multi_combo(pre_eval_combinations, saved_pre_eval_bindings);
         }
 
         // Single combination (len == 1 after pre-eval) — fall through
@@ -5931,7 +6407,8 @@ where
         // Phase 5 (Bug 1): thread caller-side bindings so `apply_bindings_with_rename_scoped`
         // can resolve caller variables in captured rule bodies (e.g.
         // `(uncle $a $b)` substituted into `$C` via the `=>` template).
-        let mut matches = env.match_rules_native(&expr, apply_bindings_generic, &self.current_bindings);
+        let mut matches =
+            env.match_rules_native(&expr, apply_bindings_generic, &self.current_bindings);
         if matches.is_empty() && expr.has_variables_fast() {
             matches = env.match_rules_via_unify(&expr);
         }
@@ -5959,14 +6436,17 @@ where
             use crate::backend::trace::trace_value_generic;
             with_thread_trace_collector(|tc| {
                 tc.emit_converted(
-                    trace_format::TraceTier::BytecodeVM, 0,
+                    trace_format::TraceTier::BytecodeVM,
+                    0,
                     trace_value_generic(&expr),
-                    vec![], None,
+                    vec![],
+                    None,
                     trace_format::TraceEventKind::RuleMatchSet {
                         match_count: matches.len() as u32,
-                        matches: matches.iter().map(|m| {
-                            (trace_value_generic(&m.instantiated_rhs), None)
-                        }).collect(),
+                        matches: matches
+                            .iter()
+                            .map(|m| (trace_value_generic(&m.instantiated_rhs), None))
+                            .collect(),
                     },
                 );
             });
@@ -5997,7 +6477,10 @@ where
                     .and_then(|items| items.first())
                     .and_then(|v| v.as_atom())
                 {
-                    let arity = expr.as_sexpr().map(|it| it.len().saturating_sub(1)).unwrap_or(0);
+                    let arity = expr
+                        .as_sexpr()
+                        .map(|it| it.len().saturating_sub(1))
+                        .unwrap_or(0);
                     self.env
                         .as_ref()
                         .map(|env| {
@@ -6044,9 +6527,28 @@ where
             if expr.as_sexpr().is_some() {
                 crate::backend::eval::trampoline::memoize_normal_form(&expr);
             }
-            // Signal no reduction so callers can skip O(n) structural comparison
-            self.unreduced = true;
-            // No rules match (data constructor) - return expression unchanged
+            // HE ADD-mode parity: at top-level, bare S-expressions with no
+            // matching rules are facts and must be inserted into env's
+            // PathMap so subsequent `match &self` queries find them. The
+            // trampoline post-pass at `eval/mod.rs:780` is short-circuited
+            // by the `memoize_normal_form` bloom we set above, so we must
+            // do the insert here. Only add when the fact is not already
+            // present, to avoid multiplicity inflation when the same
+            // expression is evaluated multiple times (e.g., tier-promotion
+            // re-runs).
+            if self.call_stack.is_empty() && expr.as_sexpr().is_some() {
+                if let Some(env_mut) = self.env.as_mut() {
+                    if !env_mut.match_space_exists(&expr) {
+                        env_mut.add_to_space(&expr);
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                    }
+                }
+            }
+            // No rules match and no rules exist for this head: this is a data
+            // constructor / normal form. Returning it unchanged is a complete
+            // VM result, matching the JIT runtime's no-bailout behavior for
+            // irreducible calls. Do not set `unreduced`, or one inert data
+            // sub-expression forces whole-expression tree-walker fallback.
             self.push(expr);
             return Ok(());
         }
@@ -6061,12 +6563,14 @@ where
                 use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                 use crate::backend::trace::trace_value_generic;
                 with_thread_trace_collector(|tc| {
-                    let bindings_tv: Vec<(String, trace_format::TraceValue)> = result.bindings
+                    let bindings_tv: Vec<(String, trace_format::TraceValue)> = result
+                        .bindings
                         .iter()
                         .map(|(k, v)| (k.to_string(), trace_value_generic(v)))
                         .collect();
                     tc.emit_converted(
-                        trace_format::TraceTier::BytecodeVM, 0,
+                        trace_format::TraceTier::BytecodeVM,
+                        0,
                         trace_value_generic(&expr),
                         vec![trace_value_generic(&result.instantiated_rhs)],
                         None,
@@ -6166,7 +6670,8 @@ where
 
             // Fast path: skip trampoline for values memoized as normal form.
             if crate::backend::eval::trampoline::is_memoized_normal_form(&rhs) {
-                self.dispatch_memo.insert(expr_hash, (current_epoch, vec![rhs.clone()]));
+                self.dispatch_memo
+                    .insert(expr_hash, (current_epoch, vec![rhs.clone()]));
                 self.push(rhs);
                 return Ok(());
             }
@@ -6190,7 +6695,8 @@ where
                     && !result.bindings.is_empty();
                 if conflict {
                     return Err(VmError::Runtime(
-                        "op_dispatch_rules: rule-match bindings conflict with current_bindings".to_string()
+                        "op_dispatch_rules: rule-match bindings conflict with current_bindings"
+                            .to_string(),
                     ));
                 }
                 self.current_bindings = composed;
@@ -6204,11 +6710,13 @@ where
             // `current_bindings` (matching the prior `eval_sub_expr_vm`
             // semantics for deterministic callers).
             let epoch_before = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
-            let env = self.env.as_ref()
-                .expect("op_dispatch_rules requires env").clone();
+            let env = self
+                .env
+                .as_ref()
+                .expect("op_dispatch_rules requires env")
+                .clone();
             let saved_outer_bindings = self.current_bindings.clone();
-            let sub_outcomes =
-                self.eval_sub_expr_vm_all_with_bindings(rhs.clone(), env);
+            let sub_outcomes = self.eval_sub_expr_vm_all_with_bindings(rhs.clone(), env);
 
             if sub_outcomes.is_empty() {
                 // No reduction — push the unevaluated RHS as a data
@@ -6227,15 +6735,12 @@ where
             if sub_outcomes.len() == 1 {
                 let (v, sub_b) = sub_outcomes.into_iter().next().expect("len==1");
                 if !sub_b.is_empty() {
-                    let mut composed =
-                        crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &self.current_bindings,
-                            &sub_b,
-                            &self.factory,
-                        );
-                    if composed.is_empty()
-                        && !self.current_bindings.is_empty()
-                        && !sub_b.is_empty()
+                    let mut composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &self.current_bindings,
+                        &sub_b,
+                        &self.factory,
+                    );
+                    if composed.is_empty() && !self.current_bindings.is_empty() && !sub_b.is_empty()
                     {
                         return Err(VmError::Runtime(
                             "op_dispatch_rules: ground/ground binding conflict (branch inconsistent)".to_string(),
@@ -6267,15 +6772,12 @@ where
                 } else if saved_outer_bindings.is_empty() {
                     sub_b
                 } else {
-                    let composed =
-                        crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &saved_outer_bindings,
-                            &sub_b,
-                            &self.factory,
-                        );
-                    if composed.is_empty()
-                        && !saved_outer_bindings.is_empty()
-                        && !sub_b.is_empty()
+                    let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &saved_outer_bindings,
+                        &sub_b,
+                        &self.factory,
+                    );
+                    if composed.is_empty() && !saved_outer_bindings.is_empty() && !sub_b.is_empty()
                     {
                         // Per-alt branch inconsistent — drop, do not poison siblings.
                         continue;
@@ -6291,11 +6793,8 @@ where
                 return Ok(());
             }
 
-            if crate::backend::eval::trampoline::dispatch_hints::mutation_epoch()
-                == epoch_before
-            {
-                let cache_values: Vec<V> =
-                    merged_outcomes.iter().map(|(v, _)| v.clone()).collect();
+            if crate::backend::eval::trampoline::dispatch_hints::mutation_epoch() == epoch_before {
+                let cache_values: Vec<V> = merged_outcomes.iter().map(|(v, _)| v.clone()).collect();
                 self.dispatch_memo
                     .insert(expr_hash, (epoch_before, cache_values));
             }
@@ -6345,7 +6844,7 @@ where
                     locals_base_at_cp: cp_locals_base_at_cp,
                 });
             }
-    self.current_bindings = first_b;
+            self.current_bindings = first_b;
             self.push(first_v);
             return Ok(());
         }
@@ -6363,9 +6862,11 @@ where
             use crate::backend::trace::trace_value_generic;
             with_thread_trace_collector(|tc| {
                 tc.emit_converted(
-                    trace_format::TraceTier::BytecodeVM, 0,
+                    trace_format::TraceTier::BytecodeVM,
+                    0,
                     trace_value_generic(&expr),
-                    vec![], None,
+                    vec![],
+                    None,
                     trace_format::TraceEventKind::NondeterministicFork {
                         branch_count: matches.len() as u32,
                     },
@@ -6379,12 +6880,15 @@ where
         // each match's rule-match aliases, evaluate, then merge sub-result
         // bindings on top — restoring the snapshot before the next match so
         // per-match outcomes stay isolated.
-        let env = self.env.as_ref().expect("op_dispatch_rules requires env").clone();
+        let env = self
+            .env
+            .as_ref()
+            .expect("op_dispatch_rules requires env")
+            .clone();
         let saved_outer_bindings = self.current_bindings.clone();
 
         let epoch_before_multi = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
-        let mut all_outcomes: Vec<(V, crate::backend::models::GenericBindings<V>)> =
-            Vec::new();
+        let mut all_outcomes: Vec<(V, crate::backend::models::GenericBindings<V>)> = Vec::new();
 
         for result in matches {
             // Restore the outer ambient before each iteration so prior matches
@@ -6396,12 +6900,11 @@ where
             // single-match path. Without this, caller-typed query vars
             // (e.g. `(? (grandfather $who c))`) see no projection.
             let per_match_ambient = if !result.bindings.is_empty() {
-                let composed =
-                    crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &self.current_bindings,
-                        &result.bindings,
-                        &self.factory,
-                    );
+                let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                    &self.current_bindings,
+                    &result.bindings,
+                    &self.factory,
+                );
                 let conflict = composed.is_empty()
                     && !self.current_bindings.is_empty()
                     && !result.bindings.is_empty();
@@ -6418,10 +6921,8 @@ where
 
             // Evaluate the instantiated RHS through the trampoline,
             // preserving each sub-result's bindings.
-            let sub_results = self.eval_sub_expr_vm_all_with_bindings(
-                result.instantiated_rhs,
-                env.clone(),
-            );
+            let sub_results =
+                self.eval_sub_expr_vm_all_with_bindings(result.instantiated_rhs, env.clone());
             if sub_results.is_empty() {
                 continue;
             }
@@ -6432,16 +6933,12 @@ where
                 } else if per_match_ambient.is_empty() {
                     sub_b
                 } else {
-                    let composed =
-                        crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &per_match_ambient,
-                            &sub_b,
-                            &self.factory,
-                        );
-                    if composed.is_empty()
-                        && !per_match_ambient.is_empty()
-                        && !sub_b.is_empty()
-                    {
+                    let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &per_match_ambient,
+                        &sub_b,
+                        &self.factory,
+                    );
+                    if composed.is_empty() && !per_match_ambient.is_empty() && !sub_b.is_empty() {
                         // Sub-result inconsistent — drop, don't poison siblings.
                         continue;
                     }
@@ -6463,8 +6960,7 @@ where
             && crate::backend::eval::trampoline::dispatch_hints::mutation_epoch()
                 == epoch_before_multi
         {
-            let cache_values: Vec<V> =
-                all_outcomes.iter().map(|(v, _)| v.clone()).collect();
+            let cache_values: Vec<V> = all_outcomes.iter().map(|(v, _)| v.clone()).collect();
             self.dispatch_memo
                 .insert(expr_hash, (epoch_before_multi, cache_values));
         }
@@ -6574,7 +7070,8 @@ where
             // VM-tier bidirectional-unify fallback (mirrors single-combo path
             // at line ~5526) — see commentary there for rationale.
             // Phase 5 (Bug 1): thread caller-side outer bindings.
-            let mut matches = env.match_rules_native(&combo_expr, apply_bindings_generic, &self.current_bindings);
+            let mut matches =
+                env.match_rules_native(&combo_expr, apply_bindings_generic, &self.current_bindings);
             if matches.is_empty() && combo_expr.has_variables_fast() {
                 matches = env.match_rules_via_unify(&combo_expr);
             }
@@ -6656,7 +7153,10 @@ where
         let mut iter = all_outcomes.into_iter();
         let (first_v, first_b) = iter.next().expect("non-empty");
         let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = iter
-            .map(|(v, b)| GenericAlternative::BoundValue { value: v, bindings: b })
+            .map(|(v, b)| GenericAlternative::BoundValue {
+                value: v,
+                bindings: b,
+            })
             .collect();
         if !alternatives.is_empty() {
             // Pre-pop the active compiled-RHS callee frame on backtrack
@@ -6762,7 +7262,8 @@ where
         // result list (1..N entries).
         //
         // `per_arg_results[0]` is the HEAD (always a single entry).
-        let mut per_arg_results: Vec<Vec<(V, GenericBindings<V>)>> = Vec::with_capacity(items.len());
+        let mut per_arg_results: Vec<Vec<(V, GenericBindings<V>)>> =
+            Vec::with_capacity(items.len());
         per_arg_results.push(vec![(items[0].clone(), empty_b.clone())]);
 
         let mut any_multi = false;
@@ -6771,9 +7272,9 @@ where
         for i in 1..items.len() {
             let arg_idx = i - 1;
 
-            let all_meta = all_arg_types.iter().all(|arg_types| {
-                arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx])
-            });
+            let all_meta = all_arg_types
+                .iter()
+                .all(|arg_types| arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx]));
             if all_meta {
                 per_arg_results.push(vec![(items[i].clone(), empty_b.clone())]);
                 continue;
@@ -6847,15 +7348,9 @@ where
                     let merged = if sub_b.is_empty() {
                         bindings_so_far.clone()
                     } else {
-                        let composed = compose_outer_inner_generic(
-                            bindings_so_far,
-                            sub_b,
-                            &self.factory,
-                        );
-                        if composed.is_empty()
-                            && !bindings_so_far.is_empty()
-                            && !sub_b.is_empty()
-                        {
+                        let composed =
+                            compose_outer_inner_generic(bindings_so_far, sub_b, &self.factory);
+                        if composed.is_empty() && !bindings_so_far.is_empty() && !sub_b.is_empty() {
                             // Ground/ground conflict — drop this
                             // combination (tree-walker parity).
                             continue;
@@ -6893,8 +7388,8 @@ where
     /// operations see the syntactic form (e.g. `(car-atom (grandfather a b))`
     /// returns `grandfather`, never forcing a rule call on user-defined heads).
     fn maybe_pre_eval_structural(&mut self, v: V) -> VmResult<V> {
-        use crate::backend::eval::{is_grounded_op, is_eager_special_form};
         use crate::backend::eval::step::should_pre_eval_by_type;
+        use crate::backend::eval::{is_eager_special_form, is_grounded_op};
 
         let items = match v.as_sexpr() {
             Some(s) => s,
@@ -6989,14 +7484,8 @@ where
     /// `current_bindings` and the sub-expression's bindings, this
     /// method returns `VmError::Runtime` so the VM's Fail path can
     /// prune the inconsistent branch — HE-faithful.
-    fn eval_sub_expr_vm(
-        &mut self,
-        sub_expr: V,
-        env: GenericEnvironment<V, F>,
-    ) -> VmResult<V> {
-        use crate::backend::eval::bindings::{
-            apply_chain_generic, compose_outer_inner_generic,
-        };
+    fn eval_sub_expr_vm(&mut self, sub_expr: V, env: GenericEnvironment<V, F>) -> VmResult<V> {
+        use crate::backend::eval::bindings::{apply_chain_generic, compose_outer_inner_generic};
         use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
         use crate::backend::models::GenericBindings;
 
@@ -7008,13 +7497,13 @@ where
         // eval_trampoline now takes MettaValue + MettaEnvironment.
         // Transmute via TypeId check — in practice V is always MettaValue.
         assert_eq!(
-            TypeId::of::<V>(), TypeId::of::<MettaValue>(),
+            TypeId::of::<V>(),
+            TypeId::of::<MettaValue>(),
             "eval_sub_expr_vm: V must be MettaValue"
         );
         // SAFETY: V == MettaValue verified above. Identical layouts.
-        let metta_sub_expr: MettaValue = unsafe {
-            std::ptr::read(&sub_expr as *const V as *const MettaValue)
-        };
+        let metta_sub_expr: MettaValue =
+            unsafe { std::ptr::read(&sub_expr as *const V as *const MettaValue) };
         let metta_env: crate::backend::eval::trampoline::MettaEnvironment = unsafe {
             std::ptr::read(
                 &env as *const GenericEnvironment<V, F>
@@ -7030,9 +7519,7 @@ where
 
         if let Some((first_metta, first_b_metta)) = results.into_iter().next() {
             // SAFETY: V == MettaValue verified above. Transmute back.
-            let value: V = unsafe {
-                std::ptr::read(&first_metta as *const MettaValue as *const V)
-            };
+            let value: V = unsafe { std::ptr::read(&first_metta as *const MettaValue as *const V) };
             let sub_bindings: GenericBindings<V> = unsafe {
                 std::ptr::read(
                     &first_b_metta as *const GenericBindings<MettaValue>
@@ -7060,7 +7547,8 @@ where
                     // Signal via Runtime error so the VM's Fail path
                     // can prune (HE-faithful strict unification).
                     return Err(VmError::Runtime(
-                        "eval_sub_expr_vm: ground/ground binding conflict (branch inconsistent)".to_string(),
+                        "eval_sub_expr_vm: ground/ground binding conflict (branch inconsistent)"
+                            .to_string(),
                     ));
                 }
                 apply_chain_generic(&mut composed, &self.factory);
@@ -7070,9 +7558,8 @@ where
         } else {
             // No results — return expression unchanged (data constructor).
             // current_bindings unchanged.
-            let value: V = unsafe {
-                std::ptr::read(&metta_sub_expr as *const MettaValue as *const V)
-            };
+            let value: V =
+                unsafe { std::ptr::read(&metta_sub_expr as *const MettaValue as *const V) };
             std::mem::forget(metta_sub_expr);
             Ok(value)
         }
@@ -7095,13 +7582,13 @@ where
         };
 
         assert_eq!(
-            TypeId::of::<V>(), TypeId::of::<MettaValue>(),
+            TypeId::of::<V>(),
+            TypeId::of::<MettaValue>(),
             "eval_sub_expr_vm_all_with_bindings: V must be MettaValue"
         );
         // SAFETY: V == MettaValue verified above. Identical layouts.
-        let metta_sub_expr: MettaValue = unsafe {
-            std::ptr::read(&sub_expr as *const V as *const MettaValue)
-        };
+        let metta_sub_expr: MettaValue =
+            unsafe { std::ptr::read(&sub_expr as *const V as *const MettaValue) };
         let metta_env: crate::backend::eval::trampoline::MettaEnvironment = unsafe {
             std::ptr::read(
                 &env as *const GenericEnvironment<V, F>
@@ -7134,11 +7621,7 @@ where
     /// Evaluate a sub-expression via the trampoline, returning ALL results.
     /// Used by eager multi-match evaluation to collect all nondeterministic
     /// results from each matched RHS without creating VM choice points.
-    fn eval_sub_expr_vm_all(
-        &self,
-        sub_expr: V,
-        env: GenericEnvironment<V, F>,
-    ) -> Vec<V> {
+    fn eval_sub_expr_vm_all(&self, sub_expr: V, env: GenericEnvironment<V, F>) -> Vec<V> {
         use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 
         let ctx = VmEvalContext {
@@ -7148,13 +7631,13 @@ where
         // eval_trampoline now takes MettaValue + MettaEnvironment.
         // Transmute via TypeId check — in practice V is always MettaValue.
         assert_eq!(
-            TypeId::of::<V>(), TypeId::of::<MettaValue>(),
+            TypeId::of::<V>(),
+            TypeId::of::<MettaValue>(),
             "eval_sub_expr_vm_all: V must be MettaValue"
         );
         // SAFETY: V == MettaValue verified above. Identical layouts.
-        let metta_sub_expr: MettaValue = unsafe {
-            std::ptr::read(&sub_expr as *const V as *const MettaValue)
-        };
+        let metta_sub_expr: MettaValue =
+            unsafe { std::ptr::read(&sub_expr as *const V as *const MettaValue) };
         let metta_env: crate::backend::eval::trampoline::MettaEnvironment = unsafe {
             std::ptr::read(
                 &env as *const GenericEnvironment<V, F>
@@ -7229,7 +7712,8 @@ where
                         } else {
                             handle.add_atom_generic(&atom);
                         }
-                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch(
+                        );
                         self.push(self.make_unit());
                         return Ok(());
                     }
@@ -7257,7 +7741,9 @@ where
         if let Some(handle) = space.as_space() {
             if handle.is_module_space() || handle.name == "self" {
                 let env = self.env.as_mut().ok_or_else(|| {
-                    VmError::Runtime("remove-atom: no environment for &self/module space".to_string())
+                    VmError::Runtime(
+                        "remove-atom: no environment for &self/module space".to_string(),
+                    )
                 })?;
                 env.remove_from_space(&atom);
             } else {
@@ -7287,7 +7773,8 @@ where
                         } else {
                             let _removed = handle.remove_atom_generic(&atom);
                         }
-                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch(
+                        );
                         self.push(self.make_unit());
                         return Ok(());
                     }
@@ -7399,7 +7886,9 @@ where
     /// Load a space by name from the constant pool.
     fn op_load_space(&mut self) -> VmResult<()> {
         let const_idx = self.read_u16()?;
-        let name = self.chunk.get_constant(const_idx)
+        let name = self
+            .chunk
+            .get_constant(const_idx)
             .ok_or(VmError::InvalidConstant(const_idx))?
             .clone();
 
@@ -7416,11 +7905,7 @@ where
     }
 
     /// Substitute variable bindings into a template expression.
-    fn substitute_bindings_generic(
-        &self,
-        template: &V,
-        bindings: &[(String, V)],
-    ) -> V {
+    fn substitute_bindings_generic(&self, template: &V, bindings: &[(String, V)]) -> V {
         // Variables are substituted with bound values
         if let Some(name) = template.as_atom() {
             if name.starts_with('$') {
@@ -7450,9 +7935,10 @@ where
     fn op_new_state(&mut self) -> VmResult<()> {
         let initial = self.pop()?;
 
-        let env = self.env.as_mut().ok_or_else(|| {
-            VmError::Runtime("new-state requires environment".to_string())
-        })?;
+        let env = self
+            .env
+            .as_mut()
+            .ok_or_else(|| VmError::Runtime("new-state requires environment".to_string()))?;
 
         let state_id = env.create_state(&initial);
         crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
@@ -7460,22 +7946,49 @@ where
         Ok(())
     }
 
+    /// Resolve a stack value to a State id, looking up env-bound atoms.
+    ///
+    /// Post-T1.A, op_get_state / op_change_state can encounter the bound
+    /// atom name (e.g. `&c`) rather than its resolved State value, because
+    /// errors no longer propagate as VmError to trigger T0 fallback. This
+    /// helper does the env lookup inline so state ops succeed in T1.
+    fn resolve_to_state_id(&self, state_ref: &V) -> Option<u64> {
+        if let Some(id) = state_ref.as_state() {
+            return Some(id);
+        }
+        if let Some(name) = state_ref.as_atom() {
+            if let Some(env) = self.env.as_ref() {
+                if let Some(resolved) = env.lookup_token_generic(name, &self.factory) {
+                    return resolved.as_state();
+                }
+            }
+        }
+        None
+    }
+
     fn op_get_state(&mut self) -> VmResult<()> {
         let state_ref = self.pop()?;
 
-        if let Some(state_id) = state_ref.as_state() {
-            let env = self.env.as_ref().ok_or_else(|| {
-                VmError::Runtime("get-state requires environment".to_string())
-            })?;
+        if let Some(state_id) = self.resolve_to_state_id(&state_ref) {
+            let env = self
+                .env
+                .as_ref()
+                .ok_or_else(|| VmError::Runtime("get-state requires environment".to_string()))?;
 
             if let Some(value) = env.get_state(state_id) {
                 self.push(value);
                 Ok(())
             } else {
-                Err(VmError::Runtime(format!("get-state: state {} not found", state_id)))
+                Err(VmError::Runtime(format!(
+                    "get-state: state {} not found",
+                    state_id
+                )))
             }
         } else {
-            Err(VmError::TypeError { expected: "State", got: state_ref.type_name() })
+            Err(VmError::TypeError {
+                expected: "State",
+                got: state_ref.type_name(),
+            })
         }
     }
 
@@ -7483,7 +7996,7 @@ where
         let new_value = self.pop()?;
         let state_ref = self.pop()?;
 
-        if let Some(state_id) = state_ref.as_state() {
+        if let Some(state_id) = self.resolve_to_state_id(&state_ref) {
             let env = self.env.as_mut().ok_or_else(|| {
                 VmError::Runtime("change-state! requires environment".to_string())
             })?;
@@ -7493,10 +8006,16 @@ where
                 self.push(self.factory.state(state_id));
                 Ok(())
             } else {
-                Err(VmError::Runtime(format!("change-state!: state {} not found", state_id)))
+                Err(VmError::Runtime(format!(
+                    "change-state!: state {} not found",
+                    state_id
+                )))
             }
         } else {
-            Err(VmError::TypeError { expected: "State", got: state_ref.type_name() })
+            Err(VmError::TypeError {
+                expected: "State",
+                got: state_ref.type_name(),
+            })
         }
     }
 
@@ -7525,7 +8044,9 @@ where
                 if let Some(v_items) = value.as_sexpr() {
                     let p_items = pattern.as_sexpr().expect("matched SExpr");
                     p_items.len() == v_items.len()
-                        && p_items.iter().zip(v_items.iter())
+                        && p_items
+                            .iter()
+                            .zip(v_items.iter())
                             .all(|(p, v)| self.pattern_matches_generic(p, v))
                 } else {
                     false
@@ -7648,10 +8169,7 @@ where
     }
 
     /// Create a new VM with an environment, using the default factory.
-    pub fn with_env(
-        chunk: Arc<GenericBytecodeChunk<V>>,
-        env: GenericEnvironment<V, F>,
-    ) -> Self {
+    pub fn with_env(chunk: Arc<GenericBytecodeChunk<V>>, env: GenericEnvironment<V, F>) -> Self {
         Self::with_env_and_factory(chunk, env, F::default())
     }
 
@@ -7685,6 +8203,110 @@ where
 // Free Helper Functions
 // ============================================================================
 
+/// In-tier structural unification for VM-side repeated-variable consistency
+/// (BUG T0-T1-009 fix, plan invariant #2 tier-locality).
+///
+/// Returns true iff `a` and `b` unify structurally. Iterative work-stack —
+/// no recursion. Matches the T0 canonical matcher's structural compare but
+/// is implemented inline in the VM tier (no FFI to T0). Both inputs are
+/// already evaluated values, so the check is structural equality with
+/// cross-tier Long↔Float promotion (HE-aligned per spec §I.4.3).
+///
+/// Generic over `V: MettaValueTrait` so the VM continues to work for any
+/// value type the bytecode VM is parameterized over.
+fn structurally_unify<V: MettaValueTrait + Clone>(a: &V, b: &V) -> bool {
+    let mut work: smallvec::SmallVec<[(V, V); 8]> = smallvec::SmallVec::new();
+    work.push((a.clone(), b.clone()));
+
+    while let Some((lhs, rhs)) = work.pop() {
+        // Ground types: trait-method dispatch (no ValueView coupling).
+        if let (Some(x), Some(y)) = (lhs.as_bool(), rhs.as_bool()) {
+            if x != y {
+                return false;
+            }
+            continue;
+        }
+        // Long↔Float promotion: try numeric coercion via as_long/as_float.
+        match (lhs.as_long(), lhs.as_float(), rhs.as_long(), rhs.as_float()) {
+            (Some(x), _, Some(y), _) => {
+                if x != y {
+                    return false;
+                }
+                continue;
+            }
+            (_, Some(x), _, Some(y)) => {
+                if x != y {
+                    return false;
+                }
+                continue;
+            }
+            (Some(x), _, _, Some(y)) => {
+                if (x as f64) != y {
+                    return false;
+                }
+                continue;
+            }
+            (_, Some(x), Some(y), _) => {
+                if x != (y as f64) {
+                    return false;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if let (Some(x), Some(y)) = (lhs.as_string(), rhs.as_string()) {
+            if x != y {
+                return false;
+            }
+            continue;
+        }
+        if let (Some(x), Some(y)) = (lhs.as_atom(), rhs.as_atom()) {
+            if x != y {
+                return false;
+            }
+            continue;
+        }
+        if lhs.is_unit() && rhs.is_unit() {
+            continue;
+        }
+        if lhs.is_empty() && rhs.is_empty() {
+            continue;
+        }
+        if let (Some(xs), Some(ys)) = (lhs.as_sexpr(), rhs.as_sexpr()) {
+            if xs.len() != ys.len() {
+                return false;
+            }
+            for (x, y) in xs.iter().zip(ys.iter()).rev() {
+                work.push((x.clone(), y.clone()));
+            }
+            continue;
+        }
+        if let (Some(xs), Some(ys)) = (lhs.as_conjunction(), rhs.as_conjunction()) {
+            if xs.len() != ys.len() {
+                return false;
+            }
+            for (x, y) in xs.iter().zip(ys.iter()).rev() {
+                work.push((x.clone(), y.clone()));
+            }
+            continue;
+        }
+        if let (Some((xmsg, xdet)), Some((ymsg, ydet))) = (lhs.as_error(), rhs.as_error()) {
+            if xmsg != ymsg {
+                return false;
+            }
+            work.push((xdet.clone(), ydet.clone()));
+            continue;
+        }
+        if let (Some(x), Some(y)) = (lhs.as_type(), rhs.as_type()) {
+            work.push((x.clone(), y.clone()));
+            continue;
+        }
+        // Cross-variant or unsupported: not structurally equal.
+        return false;
+    }
+    true
+}
+
 /// Map a `ValueView` to its MeTTa metatype string.
 ///
 /// Used by `op_get_metatype` (VM). Spanned layers are already stripped by `view()`.
@@ -7700,7 +8322,9 @@ fn metatype_of_view(view: ValueView) -> &'static str {
         ValueView::String(_) => "String",
         ValueView::Error(..) => "Error",
         ValueView::State(_) => "State",
-        ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
+        ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
         | ValueView::Memo(_) => "Grounded",
     }
 }
@@ -7717,4 +8341,3 @@ use crate::backend::models::GcFactory;
 /// All existing `BytecodeVM::new(chunk)` call sites continue to work
 /// because `GcFactory` implements `Default` (returning `global_factory()`).
 pub type BytecodeVM = GenericBytecodeVM<MettaValue, GcFactory>;
-

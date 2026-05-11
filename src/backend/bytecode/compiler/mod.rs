@@ -10,9 +10,9 @@
 
 mod context;
 mod control_flow;
+pub mod core;
 mod error;
 pub mod folding;
-pub mod core;
 mod higher_order;
 mod iterative;
 mod work_item;
@@ -39,6 +39,8 @@ pub struct Compiler {
     current_line: u32,
     /// Whether we're compiling in tail position (for TCO)
     pub(crate) in_tail_position: bool,
+    /// Whether we're compiling inside a `(collapse ...)` body.
+    pub(crate) in_collapse_scope: bool,
 }
 
 impl Compiler {
@@ -49,6 +51,7 @@ impl Compiler {
             context: CompileContext::new(),
             current_line: 1,
             in_tail_position: true, // Top-level is always tail position
+            in_collapse_scope: false,
         }
     }
 
@@ -59,6 +62,7 @@ impl Compiler {
             context,
             current_line: 1,
             in_tail_position: true, // Top-level is always tail position
+            in_collapse_scope: false,
         }
     }
 
@@ -101,7 +105,11 @@ impl Compiler {
     /// `MettaValue` is reused directly as the constant, avoiding redundant
     /// string + slab allocation. `None` is used for synthetic atoms created
     /// during compilation (e.g., function call heads).
-    fn compile_atom(&mut self, name: &str, original_value: Option<MettaValue>) -> CompileResult<()> {
+    fn compile_atom(
+        &mut self,
+        name: &str,
+        original_value: Option<MettaValue>,
+    ) -> CompileResult<()> {
         // Check if it's a variable (starts with $)
         if let Some(var_name) = name.strip_prefix('$') {
             // First try to resolve as local
@@ -133,7 +141,6 @@ impl Compiler {
         }
         Ok(())
     }
-
 
     /// Check arity of an operation
     pub(crate) fn check_arity(&self, op: &str, got: usize, expected: usize) -> CompileResult<()> {

@@ -74,6 +74,41 @@ pub enum VmError {
     GuardFailed,
 }
 
+impl VmError {
+    /// Returns true if this VmError represents a *runtime data error*
+    /// (TypeError, DivisionByZero, ArithmeticOverflow) — these should be
+    /// converted to first-class Error atoms on the value stack per
+    /// HE-aligned errors-as-values semantics (spec K T1.A).
+    ///
+    /// Returns false for genuinely-internal VM failures (StackUnderflow,
+    /// InvalidOpcode, IpOutOfBounds, etc.) which must continue to propagate
+    /// as Rust `Err` for the host to handle.
+    pub fn is_runtime_data_error(&self) -> bool {
+        matches!(
+            self,
+            Self::TypeError { .. } | Self::DivisionByZero | Self::ArithmeticOverflow
+        )
+    }
+
+    /// Format a runtime-data error as a `(msg, details_atom)` pair that the
+    /// VM uses to build a `(Error msg details)` atom. Spec K T1.A.
+    pub fn as_error_strings(&self) -> (String, &'static str) {
+        match self {
+            Self::TypeError { expected, got } => (
+                format!("Type error: expected {}, got {}", expected, got),
+                "BadType",
+            ),
+            Self::DivisionByZero => {
+                ("Division by zero".to_string(), "DivisionByZero")
+            }
+            Self::ArithmeticOverflow => {
+                ("Arithmetic overflow".to_string(), "ArithmeticOverflow")
+            }
+            _ => ("Unexpected error".to_string(), "Unknown"),
+        }
+    }
+}
+
 impl std::fmt::Display for VmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -308,10 +343,9 @@ where
     /// HE's `Stack` frame-level binding retention.
     pub saved_bindings: GenericBindings<V>,
     /// Bug-fix 2026-04-follow-up: caller's `self.locals_base` at call time.
-    /// On return, `self.locals.truncate(locals_base); self.locals_base = frame.locals_base`
-    /// restores the caller's local-slot namespace. Introduced after commit `897b3df`
-    /// split locals into `self.locals` — the parallel of how `base_ptr` isolates
-    /// the operand portion of `value_stack` across calls.
+    /// On return, `self.locals_base = frame.locals_base` restores the caller's
+    /// local-slot namespace. The vector length itself must restore to
+    /// `caller_locals_len`, because caller locals can live above `locals_base`.
     pub locals_base: usize,
     /// Bug-fix 2026-05 (within-query cache leak): `self.locals.len()` AT
     /// the moment this frame was pushed. When a `BoundValue` choice
@@ -406,16 +440,16 @@ pub enum TrailEntry<V: MettaValueTrait + Clone> {
     NewBinding {
         /// Index into the bindings_stack
         frame_index: usize,
-        /// Variable name (interned string)
-        name: &'static str,
+        /// Variable name.
+        name: String,
     },
     /// A variable was rebound (had a previous value).
     /// To undo: restore the old value in the specified frame.
     Rebinding {
         /// Index into the bindings_stack
         frame_index: usize,
-        /// Variable name (interned string)
-        name: &'static str,
+        /// Variable name.
+        name: String,
         /// The previous value to restore
         old_value: V,
     },
@@ -444,6 +478,8 @@ pub struct GenericCollapseFrame<V: MettaValueTrait + Clone + Send + Sync + 'stat
     pub saved_results: Vec<V>,
     /// Choice point stack height at collapse entry — backtracking barrier
     pub choice_point_base: usize,
+    /// Monotonic VM-local id for ordering nested failure barriers.
+    pub barrier_id: u64,
     /// Value stack height at collapse entry (for cleanup)
     pub value_stack_height: usize,
     /// IP to resume at after collapse completes (instruction after CollapseEnd)

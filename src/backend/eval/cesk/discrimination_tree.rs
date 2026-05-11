@@ -198,7 +198,10 @@ impl DiscriminationTree {
         // Walk the trie, creating nodes as needed
         let mut node = &mut self.root;
         for key in &keys {
-            node = node.children.entry(key.clone()).or_insert_with(DiscNode::new);
+            node = node
+                .children
+                .entry(key.clone())
+                .or_insert_with(DiscNode::new);
         }
         node.rule_indices.push(rule_index);
         self.total_rules += 1;
@@ -565,7 +568,7 @@ impl Default for DiscriminationTree {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValue, MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValue, MettaValueFactory};
 
     fn f() -> crate::backend::models::GcFactory {
         global_factory()
@@ -656,8 +659,14 @@ mod tests {
         // Query (f 3 4) — only variable pattern matches
         let expr2 = f().sexpr(vec![f().atom("f"), f().long(3), f().long(4)]);
         let results2 = tree.query(&expr2);
-        assert!(results2.contains(&0), "Variable pattern should match anything");
-        assert!(!results2.contains(&1), "Concrete (f 1 $y) shouldn't match (f 3 4)");
+        assert!(
+            results2.contains(&0),
+            "Variable pattern should match anything"
+        );
+        assert!(
+            !results2.contains(&1),
+            "Concrete (f 1 $y) shouldn't match (f 3 4)"
+        );
     }
 
     #[test]
@@ -665,7 +674,7 @@ mod tests {
         let mut tree = DiscriminationTree::new();
 
         tree.insert(0, &pattern_f_xy()); // (f $x $y) — arity 3
-        tree.insert(1, &pattern_g_x());  // (g $x) — arity 2
+        tree.insert(1, &pattern_g_x()); // (g $x) — arity 2
 
         // Query (f 1 2) — only rule 0
         let expr = f().sexpr(vec![f().atom("f"), f().long(1), f().long(2)]);
@@ -685,7 +694,7 @@ mod tests {
         let mut tree = DiscriminationTree::new();
 
         tree.insert(0, &pattern_f_gx_y()); // (f (g $x) $y)
-        tree.insert(1, &pattern_f_1y());    // (f 1 $y)
+        tree.insert(1, &pattern_f_1y()); // (f 1 $y)
 
         // Query (f (g 42) 99) — only rule 0
         let expr = f().sexpr(vec![
@@ -695,12 +704,18 @@ mod tests {
         ]);
         let results = tree.query(&expr);
         assert!(results.contains(&0), "Nested pattern should match");
-        assert!(!results.contains(&1), "Flat pattern shouldn't match nested expr");
+        assert!(
+            !results.contains(&1),
+            "Flat pattern shouldn't match nested expr"
+        );
 
         // Query (f 1 99) — only rule 1
         let expr2 = f().sexpr(vec![f().atom("f"), f().long(1), f().long(99)]);
         let results2 = tree.query(&expr2);
-        assert!(!results2.contains(&0), "Nested pattern shouldn't match flat expr");
+        assert!(
+            !results2.contains(&0),
+            "Nested pattern shouldn't match flat expr"
+        );
         assert!(results2.contains(&1), "Flat pattern should match");
     }
 
@@ -737,11 +752,7 @@ mod tests {
 
         // Insert 10 rules with head "f" but different structures
         for i in 0..10u32 {
-            let pattern = f().sexpr(vec![
-                f().atom("f"),
-                f().long(i as i64),
-                f().atom("$y"),
-            ]);
+            let pattern = f().sexpr(vec![f().atom("f"), f().long(i as i64), f().atom("$y")]);
             tree.insert(i, &pattern);
         }
 
@@ -752,7 +763,11 @@ mod tests {
         // Others should not match
         for i in 0..10u32 {
             if i != 5 {
-                assert!(!results.contains(&i), "Rule {} should not match (f 5 99)", i);
+                assert!(
+                    !results.contains(&i),
+                    "Rule {} should not match (f 5 99)",
+                    i
+                );
             }
         }
     }
@@ -800,10 +815,7 @@ mod tests {
                 f().atom("b"),
                 f().sexpr(vec![
                     f().atom("c"),
-                    f().sexpr(vec![
-                        f().atom("d"),
-                        f().atom("$x"),
-                    ]),
+                    f().sexpr(vec![f().atom("d"), f().atom("$x")]),
                 ]),
             ]),
         ]);

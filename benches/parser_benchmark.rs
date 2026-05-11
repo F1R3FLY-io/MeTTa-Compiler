@@ -8,9 +8,9 @@
 //! - String-heavy: generated input with many escape sequences (~10 KB)
 
 use divan::black_box;
+use mettatron::global_factory;
 use mettatron::parser::{IrEmitter, MettaParser, ValueEmitter};
 use mettatron::tree_sitter_parser::TreeSitterMettaParser;
-use mettatron::global_factory;
 
 fn main() {
     divan::main();
@@ -64,7 +64,10 @@ fn generate_mixed_atoms(count: usize) -> String {
     for i in 0..count {
         buf.push_str(&format!(
             "(= (fn-{} $x) (+ $x {}))\n!(fn-{} {})\n",
-            i, i, i, i * 2
+            i,
+            i,
+            i,
+            i * 2
         ));
     }
     buf

@@ -203,7 +203,8 @@ fn test_peano_in_space_operations() {
     env.add_to_space(&peano_fact.source()[0]);
 
     // Verify it exists
-    let query = compile("(match &self (count (S (S (S Z)))) (count (S (S (S Z)))))").expect("compile failed");
+    let query = compile("(match &self (count (S (S (S Z)))) (count (S (S (S Z)))))")
+        .expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query.source()[0];

@@ -1122,7 +1122,9 @@ fn test_example_robot_planning() {
         if demo2_pathmap.is_some() || demo2_text {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected location output [room_c] not found in PathMaps or stdout")
+            ValidationResult::fail(
+                "Expected location output [room_c] not found in PathMaps or stdout",
+            )
         },
     );
 
@@ -1224,7 +1226,9 @@ fn test_example_robot_planning() {
         if demo4_plan.is_some() || demo4_plan_text {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail("Expected plan structure for ball1 not found in PathMaps or stdout")
+            ValidationResult::fail(
+                "Expected plan structure for ball1 not found in PathMaps or stdout",
+            )
         },
     );
 
@@ -1245,8 +1249,7 @@ fn test_example_robot_planning() {
             }
         })
     });
-    let demo4_validated_text =
-        stdout.contains("validated") && stdout.contains("multihop_required");
+    let demo4_validated_text = stdout.contains("validated") && stdout.contains("multihop_required");
     report.add_result(
         "Demo 4 Step 4: validated structure (validated (plan ...) multihop_required)",
         if demo4_validated.is_some() || demo4_validated_text {
@@ -1269,9 +1272,8 @@ fn test_example_robot_planning() {
     let has_ball1_steps_pathmap = pathmaps
         .iter()
         .any(|pm| OutputMatcher::new(pm).match_steps_sequence(&ball1_steps_2hop));
-    let has_ball1_steps_text = stdout.contains("navigate")
-        && stdout.contains("pickup")
-        && stdout.contains("putdown");
+    let has_ball1_steps_text =
+        stdout.contains("navigate") && stdout.contains("pickup") && stdout.contains("putdown");
     report.add_result(
         "Demo 4: ball1 transport steps [navigate(room_c), pickup(ball1), navigate(room_b), navigate(room_a), putdown]",
         if has_ball1_steps_pathmap || has_ball1_steps_text {
@@ -1309,9 +1311,7 @@ fn test_example_robot_planning() {
         if demo5_distance.is_some() || demo5_text {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(
-                "Expected distance value 2 not found in PathMaps or stdout",
-            )
+            ValidationResult::fail("Expected distance value 2 not found in PathMaps or stdout")
         },
     );
 
@@ -1417,9 +1417,7 @@ fn test_example_robot_planning() {
         if no_pathmap_errors && no_runtime_errors {
             ValidationResult::pass()
         } else {
-            ValidationResult::fail(
-                "Output contains unexpected Error values",
-            )
+            ValidationResult::fail("Output contains unexpected Error values")
         },
     );
 
@@ -1430,7 +1428,10 @@ fn test_example_robot_planning() {
     // Validation 17: Demo 1 - Dynamic inventory (objects from atom space)
     report.add_result(
         "Demo 1 new: dynamic inventory contains objects",
-        if (stdout.contains("Inventory") || stdout.contains("inventory") || stdout.contains("Objects") || stdout.contains("objects"))
+        if (stdout.contains("Inventory")
+            || stdout.contains("inventory")
+            || stdout.contains("Objects")
+            || stdout.contains("objects"))
             && stdout.contains("box1")
             && stdout.contains("ball1")
         {
@@ -1443,7 +1444,10 @@ fn test_example_robot_planning() {
     // Validation 18: Demo 2 - Topology query (connections from atom space)
     report.add_result(
         "Demo 2 new: topology query with room connections",
-        if (stdout.contains("Topology") || stdout.contains("topology") || stdout.contains("connections") || stdout.contains("Connections"))
+        if (stdout.contains("Topology")
+            || stdout.contains("topology")
+            || stdout.contains("connections")
+            || stdout.contains("Connections"))
             && stdout.contains("room_a")
             && stdout.contains("room_b")
         {
@@ -1468,7 +1472,8 @@ fn test_example_robot_planning() {
     // Validation 20: Demo 10 - State forking (independent branches)
     report.add_result(
         "Demo 10: state forking with independent branches",
-        if stdout.contains("Branch A") && stdout.contains("Branch B")
+        if stdout.contains("Branch A")
+            && stdout.contains("Branch B")
             && (stdout.contains("independent") || stdout.contains("forked"))
         {
             ValidationResult::pass()
@@ -1481,7 +1486,9 @@ fn test_example_robot_planning() {
     report.add_result(
         "Demo 11: error detection via PathMap decomposition",
         if (stdout.contains("Detection") || stdout.contains("detection"))
-            && (stdout.contains("detected") || stdout.contains("phantom") || stdout.contains("decomposition"))
+            && (stdout.contains("detected")
+                || stdout.contains("phantom")
+                || stdout.contains("decomposition"))
         {
             ValidationResult::pass()
         } else {
@@ -1515,7 +1522,8 @@ fn test_example_robot_planning() {
     // Validation 24: Demo 14 - Runtime rule addition
     report.add_result(
         "Demo 14: runtime rule addition with greet/hello",
-        if stdout.contains("greet") && stdout.contains("hello")
+        if stdout.contains("greet")
+            && stdout.contains("hello")
             && (stdout.contains("runtime") || stdout.contains("Runtime"))
         {
             ValidationResult::pass()
@@ -1527,8 +1535,10 @@ fn test_example_robot_planning() {
     // Validation 25: Demo 15 - World modification with before/after
     report.add_result(
         "Demo 15: world modification with before/after verification",
-        if stdout.contains("Before") && stdout.contains("After")
-            && stdout.contains("room_a") && stdout.contains("room_d")
+        if stdout.contains("Before")
+            && stdout.contains("After")
+            && stdout.contains("room_a")
+            && stdout.contains("room_d")
         {
             ValidationResult::pass()
         } else {
@@ -1552,7 +1562,8 @@ fn test_example_robot_planning() {
     // Validation 27: Demo 17 - Multi-object mission
     report.add_result(
         "Demo 17: multi-object mission with ball1 and key1",
-        if stdout.contains("ball1") && stdout.contains("key1")
+        if stdout.contains("ball1")
+            && stdout.contains("key1")
             && (stdout.contains("Mission") || stdout.contains("mission"))
         {
             ValidationResult::pass()

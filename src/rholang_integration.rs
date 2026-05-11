@@ -16,8 +16,8 @@ use crate::backend::eval::eval;
 use crate::backend::eval::trampoline::{new_env, MettaEnvironment};
 use crate::backend::fuzzy_match::FuzzyMatcher;
 use crate::backend::models::{
-    EvalGuard, MettaState, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait,
-    SessionGuard, ValueView, global_factory,
+    global_factory, EvalGuard, MettaState, MettaValue, MettaValueFactory, MettaValueInner,
+    MettaValueTrait, SessionGuard, ValueView,
 };
 use crate::tree_sitter_parser::{SyntaxError, SyntaxErrorKind};
 
@@ -118,10 +118,8 @@ pub fn compile_safe(src: &str) -> MettaState {
             // Use global factory first, then create MettaState with
             // fully-populated source — no contention with GC during population.
             let factory = global_factory();
-            let error_sexpr = factory.sexpr(vec![
-                factory.atom("error"),
-                factory.string(&improved_msg),
-            ]);
+            let error_sexpr =
+                factory.sexpr(vec![factory.atom("error"), factory.string(&improved_msg)]);
             MettaState::new_compiled(vec![error_sexpr])
         }
     }
@@ -264,7 +262,10 @@ fn value_to_json_string(value: &MettaValue) -> String {
             )
         }
         ValueView::Quoted(inner) => {
-            format!(r#"{{"type":"quoted","value":{}}}"#, value_to_json_string(&inner))
+            format!(
+                r#"{{"type":"quoted","value":{}}}"#,
+                value_to_json_string(&inner)
+            )
         }
     }
 }
@@ -291,17 +292,9 @@ fn escape_json(s: &str) -> String {
 /// **Use Case**: Debugging, logging, inspection
 /// **Not Recommended**: Rholang integration (use PathMap Par instead)
 pub fn state_to_json(state: &MettaState) -> String {
-    let source_json: Vec<String> = state
-        .source()
-        .iter()
-        .map(value_to_json_string)
-        .collect();
+    let source_json: Vec<String> = state.source().iter().map(value_to_json_string).collect();
 
-    let outputs_json: Vec<String> = state
-        .output()
-        .iter()
-        .map(value_to_json_string)
-        .collect();
+    let outputs_json: Vec<String> = state.output().iter().map(value_to_json_string).collect();
 
     format!(
         r#"{{"source":[{}],"output":[{}]}}"#,
@@ -417,9 +410,7 @@ pub async fn run_state_async(
 
         // If this is a rule definition or ground fact and we have a batch, evaluate the batch first
         if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {
-            let batch_results = evaluate_batch_parallel_arena(
-                current_batch, env.clone(),
-            ).await;
+            let batch_results = evaluate_batch_parallel_arena(current_batch, env.clone()).await;
             for (_batch_idx, results, should_output) in batch_results {
                 if should_output {
                     let mut output = result_state.output_mut();
@@ -442,9 +433,7 @@ pub async fn run_state_async(
 
     // Evaluate any remaining batch
     if !current_batch.is_empty() {
-        let batch_results = evaluate_batch_parallel_arena(
-            current_batch, env.clone(),
-        ).await;
+        let batch_results = evaluate_batch_parallel_arena(current_batch, env.clone()).await;
         for (_batch_idx, results, should_output) in batch_results {
             if should_output {
                 let mut output = result_state.output_mut();
@@ -533,10 +522,7 @@ async fn evaluate_batch_parallel_arena(
         );
     }
 
-    trace!(
-        num_tasks,
-        "Tasks spawned on work pool"
-    );
+    trace!(num_tasks, "Tasks spawned on work pool");
 
     // Wait for all tasks to complete
     {
@@ -643,12 +629,12 @@ pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
     // Convert results to strings BEFORE MettaState drops
     // This ensures we have owned data that survives the arena
     let output = state.output();
-    let result_strings: Vec<String> = output
-        .iter()
-        .map(|v| v.friendly_repr())
-        .collect();
+    let result_strings: Vec<String> = output.iter().map(|v| v.friendly_repr()).collect();
 
-    info!(result_count = result_strings.len(), "Session evaluation complete");
+    info!(
+        result_count = result_strings.len(),
+        "Session evaluation complete"
+    );
 
     // MettaState drops here: O(1) bulk deallocation
     // - Storage arena returned to pool (reset, not freed)
@@ -728,7 +714,10 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
         drop(guard);
     }
 
-    info!(result_count = state.output().len(), "Session evaluation complete (raw)");
+    info!(
+        result_count = state.output().len(),
+        "Session evaluation complete (raw)"
+    );
 
     Ok(state)
 }
@@ -753,7 +742,6 @@ mod tests {
 
     #[test]
     fn test_value_atom_json() {
-
         let f = global_factory();
         let value = f.atom("test");
         let json = value_to_json_string(&value);
@@ -762,7 +750,6 @@ mod tests {
 
     #[test]
     fn test_value_number_json() {
-
         let f = global_factory();
         let value = f.long(42);
         let json = value_to_json_string(&value);
@@ -771,7 +758,6 @@ mod tests {
 
     #[test]
     fn test_value_bool_json() {
-
         let f = global_factory();
         let value = f.bool(true);
         let json = value_to_json_string(&value);
@@ -780,7 +766,6 @@ mod tests {
 
     #[test]
     fn test_value_string_json() {
-
         let f = global_factory();
         let value = f.string("hello");
         let json = value_to_json_string(&value);
@@ -789,7 +774,6 @@ mod tests {
 
     #[test]
     fn test_value_unit_json() {
-
         let f = global_factory();
         let value = f.unit();
         let json = value_to_json_string(&value);
@@ -798,7 +782,6 @@ mod tests {
 
     #[test]
     fn test_value_sexpr_json() {
-
         let f = global_factory();
         let value = f.sexpr(vec![f.atom("+"), f.long(1), f.long(2)]);
         let json = value_to_json_string(&value);
@@ -814,7 +797,6 @@ mod tests {
 
     #[test]
     fn test_compile_safe_success() {
-
         let state = compile_safe("(+ 1 2)");
         let source = state.source();
         assert_eq!(source.len(), 1);
@@ -833,7 +815,6 @@ mod tests {
 
     #[test]
     fn test_compile_safe_syntax_error() {
-
         let state = compile_safe("(+ 1 2");
         let source = state.source();
         assert_eq!(source.len(), 1);
@@ -858,7 +839,6 @@ mod tests {
 
     #[test]
     fn test_compile_safe_improves_error_message() {
-
         let state = compile_safe("(+ 1 2");
         let source = state.source();
         match source[0].inner() {
@@ -874,7 +854,6 @@ mod tests {
 
     #[test]
     fn test_run_state_simple() {
-
         let env = new_env();
         let state = compile("!(+ 1 2)").expect("compile failed");
 
@@ -890,7 +869,6 @@ mod tests {
 
     #[test]
     fn test_run_state_with_rules() {
-
         let env = new_env();
         let state = compile(
             r#"
@@ -914,11 +892,12 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_simple() {
-
         let env = new_env();
         let state = compile("!(+ 1 2)").expect("compile failed");
 
-        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state)
+            .await
+            .expect("run_state_async failed");
         let outputs = result.output();
 
         // Should have output
@@ -932,7 +911,6 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_parallel() {
-
         let env = new_env();
         let state = compile(
             r#"
@@ -943,7 +921,9 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state)
+            .await
+            .expect("run_state_async failed");
         let outputs = result.output();
 
         // Should have all outputs
@@ -965,7 +945,6 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_with_rules() {
-
         let env = new_env();
         let state = compile(
             r#"
@@ -976,7 +955,9 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state)
+            .await
+            .expect("run_state_async failed");
         let outputs = result.output();
 
         // Should have outputs (parallel evaluation of both double calls)
@@ -995,14 +976,18 @@ mod tests {
     fn test_ground_facts_not_in_output() {
         // Regression test: verify ground facts are NOT added to output
         // Add ground facts
-        let state1 = compile("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
-        let result1 = run_state(MettaState::from_env(new_env()), &state1).expect("run_state failed");
+        let state1 =
+            compile("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
+        let result1 =
+            run_state(MettaState::from_env(new_env()), &state1).expect("run_state failed");
         // Ground facts should NOT produce output
         assert_eq!(result1.output().len(), 0);
 
         // Verify ground facts are in environment (can be queried)
-        let state2 = compile("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
-        let result2 = run_state(MettaState::from_env(result1.environment.clone()), &state2).expect("run_state failed");
+        let state2 =
+            compile("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
+        let result2 = run_state(MettaState::from_env(result1.environment.clone()), &state2)
+            .expect("run_state failed");
         // Now output should contain query results (2 matches)
         assert_eq!(result2.output().len(), 2);
     }
@@ -1010,7 +995,6 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "async")]
     async fn test_run_state_async_multiple_rules_sequential() {
-
         let env = new_env();
         let state = compile(
             r#"
@@ -1022,7 +1006,9 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state)
+            .await
+            .expect("run_state_async failed");
         let outputs = result.output();
 
         assert_eq!(outputs.len(), 2);
@@ -1038,13 +1024,14 @@ mod tests {
 
     #[test]
     fn test_run_state_accumulated_state() {
-
         // Test that rules persist across multiple run_state calls
         let state1 = compile("(= (double $x) (* $x 2))").expect("compile failed");
-        let result1 = run_state(MettaState::from_env(new_env()), &state1).expect("run_state failed");
+        let result1 =
+            run_state(MettaState::from_env(new_env()), &state1).expect("run_state failed");
 
         let state2 = compile("!(double 5)").expect("compile failed");
-        let result2 = run_state(MettaState::from_env(result1.environment.clone()), &state2).expect("run_state failed");
+        let result2 = run_state(MettaState::from_env(result1.environment.clone()), &state2)
+            .expect("run_state failed");
         let outputs = result2.output();
 
         assert!(!outputs.is_empty());
@@ -1115,7 +1102,6 @@ mod tests {
     // Space Operations Tests - Adding Facts
     #[test]
     fn test_run_state_add_facts_to_space() {
-
         let env = new_env();
         let state = compile(
             r#"
@@ -1148,7 +1134,8 @@ mod tests {
                 "#,
         )
         .expect("compile failed");
-        let result1 = run_state(MettaState::from_env(new_env()), &state1).expect("run_state failed");
+        let result1 =
+            run_state(MettaState::from_env(new_env()), &state1).expect("run_state failed");
 
         // Second run: use facts via rules
         let state2 = compile(
@@ -1160,7 +1147,8 @@ mod tests {
                 "#,
         )
         .expect("compile failed");
-        let result2 = run_state(MettaState::from_env(result1.environment.clone()), &state2).expect("run_state failed");
+        let result2 = run_state(MettaState::from_env(result1.environment.clone()), &state2)
+            .expect("run_state failed");
         let outputs = result2.output();
 
         // Should be able to query the facts
@@ -1296,7 +1284,6 @@ mod tests {
     // Constraint Solving Tests
     #[test]
     fn test_run_state_nondeterministic_choice() {
-
         let env = new_env();
         let state = compile(
             r#"
@@ -1497,7 +1484,9 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state)
+            .await
+            .expect("run_state_async failed");
         let outputs = result.output();
 
         assert!(!outputs.is_empty());
@@ -1508,14 +1497,20 @@ mod tests {
     async fn test_ground_facts_not_in_output_async() {
         // Regression test: verify ground facts are NOT added to output (async version)
         // Add ground facts
-        let state1 = compile("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
-        let result1 = run_state_async(MettaState::from_env(new_env()), &state1).await.expect("run_state_async failed");
+        let state1 =
+            compile("(connected room_a room_b) (connected room_b room_c)").expect("compile failed");
+        let result1 = run_state_async(MettaState::from_env(new_env()), &state1)
+            .await
+            .expect("run_state_async failed");
         // Ground facts should NOT produce output
         assert_eq!(result1.output().len(), 0);
 
         // Verify ground facts are in environment (can be queried)
-        let state2 = compile("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
-        let result2 = run_state_async(MettaState::from_env(result1.environment.clone()), &state2).await.expect("run_state_async failed");
+        let state2 =
+            compile("!(match &self (connected $from $to) ($from $to))").expect("compile failed");
+        let result2 = run_state_async(MettaState::from_env(result1.environment.clone()), &state2)
+            .await
+            .expect("run_state_async failed");
         // Now output should contain query results (2 matches)
         assert_eq!(result2.output().len(), 2);
     }
@@ -1537,7 +1532,9 @@ mod tests {
         )
         .expect("compile failed");
 
-        let result = run_state_async(MettaState::from_env(env), &state).await.expect("run_state_async failed");
+        let result = run_state_async(MettaState::from_env(env), &state)
+            .await
+            .expect("run_state_async failed");
         let outputs = result.output();
 
         // Both queries should execute in parallel
@@ -1588,7 +1585,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unclosed_paren() {
-
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnclosedDelimiter('('),
             line: 1,
@@ -1603,7 +1599,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_extra_close_paren() {
-
         let error = SyntaxError {
             kind: SyntaxErrorKind::ExtraClosingDelimiter(')'),
             line: 1,
@@ -1618,7 +1613,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unclosed_string() {
-
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnclosedString,
             line: 1,
@@ -1633,7 +1627,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_invalid_escape() {
-
         let error = SyntaxError {
             kind: SyntaxErrorKind::InvalidEscape("z".to_string()),
             line: 1,
@@ -1648,7 +1641,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_generic_has_hint() {
-
         let error = SyntaxError {
             kind: SyntaxErrorKind::Generic,
             line: 1,
@@ -1668,7 +1660,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unclosed_bracket() {
-
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnclosedDelimiter('['),
             line: 1,
@@ -1683,7 +1674,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unclosed_brace() {
-
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnclosedDelimiter('{'),
             line: 1,
@@ -1698,7 +1688,6 @@ mod tests {
 
     #[test]
     fn test_keyword_suggestion_quota_to_quote() {
-
         // "quota" is close to "quote"
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnexpectedToken,
@@ -1718,7 +1707,6 @@ mod tests {
 
     #[test]
     fn test_keyword_suggestion_iff_to_if() {
-
         // "iff" is close to "if"
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnexpectedToken,
@@ -1738,7 +1726,6 @@ mod tests {
 
     #[test]
     fn test_keyword_suggestion_no_match() {
-
         // "xyzzy" is not close to any keyword
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnexpectedToken,
@@ -1758,7 +1745,6 @@ mod tests {
 
     #[test]
     fn test_keyword_suggestion_empty_text() {
-
         // Empty text should not produce a suggestion
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnexpectedToken,
@@ -1777,7 +1763,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_unknown_node_kind() {
-
         let error = SyntaxError {
             kind: SyntaxErrorKind::UnknownNodeKind("weird_node".to_string()),
             line: 1,
@@ -1801,7 +1786,6 @@ mod tests {
 
     #[test]
     fn test_improve_error_message_parser_init() {
-
         let error = SyntaxError {
             kind: SyntaxErrorKind::ParserInit("failed to load grammar".to_string()),
             line: 0,
@@ -1831,7 +1815,8 @@ mod tests {
     /// Helper to compile and run a MeTTa expression, returning the first output.
     fn eval_first(src: &str) -> MettaValue {
         let compiled = compile(src).expect("compile failed");
-        let result = run_state(MettaState::from_env(new_env()), &compiled).expect("run_state failed");
+        let result =
+            run_state(MettaState::from_env(new_env()), &compiled).expect("run_state failed");
         let outputs = result.output();
         assert!(
             !outputs.is_empty(),
@@ -1868,10 +1853,7 @@ mod tests {
     #[test]
     fn test_subexpr_inner_if_not_eq_01() {
         // (not (== 0 1)) = True → then branch 1
-        assert_eq!(
-            eval_first("!(if (not (== 0 1)) 1 0)"),
-            MettaValue::Long(1)
-        );
+        assert_eq!(eval_first("!(if (not (== 0 1)) 1 0)"), MettaValue::Long(1));
     }
 
     #[test]
@@ -1946,7 +1928,9 @@ mod tests {
         // X = (if (not (== 0 1)) 1 0) = 1
         // (or (> 0 1) (== 0 1)) = or(False, False) = False → else branch = 99
         assert_eq!(
-            eval_first("!(if (or (> 0 (if (not (== 0 1)) 1 0)) (== 0 (if (not (== 0 1)) 1 0))) 0 99)"),
+            eval_first(
+                "!(if (or (> 0 (if (not (== 0 1)) 1 0)) (== 0 (if (not (== 0 1)) 1 0))) 0 99)"
+            ),
             MettaValue::Long(99)
         );
     }

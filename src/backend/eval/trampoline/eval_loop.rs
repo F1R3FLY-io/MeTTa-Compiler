@@ -21,9 +21,9 @@
 //! with arena-allocated `MettaValue` values.
 
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 // ── Background Drop Worker ─────────────────────────────────────────────
 //
@@ -32,7 +32,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 // trie cascade drops (33% inclusive CPU) now happen here instead of on
 // the eval thread. Spawned lazily on first use.
 
-type SharedEnvArc = std::sync::Arc<crate::backend::environment::GenericEnvironmentShared<MettaValue>>;
+type SharedEnvArc =
+    std::sync::Arc<crate::backend::environment::GenericEnvironmentShared<MettaValue>>;
 
 // ── H11 (2026-05-05) — Worker-side cooperative GC drop ─────────────────
 //
@@ -156,8 +157,12 @@ pub(crate) fn clear_aba_sensitive_caches() {
     // Hash-consing table — entries reference slab pointers.
     crate::backend::models::gc_allocator::clear_hash_cons_table();
 
-    // Normal-form bloom filter — keyed by inner_ptr.
-    invalidate_normal_form_memo();
+    // Operator dispatch cache — keyed by interned atom string pointers.
+    clear_operator_cache();
+
+    // Do not clear the normal-form bloom here. It is content-addressed and
+    // records within-query semantic state for freeze-tuple/collapse handling;
+    // query boundaries and rule mutations invalidate it explicitly.
 }
 
 static DROP_SENDER: OnceLock<std::sync::mpsc::Sender<Vec<SharedEnvArc>>> = OnceLock::new();
@@ -177,49 +182,47 @@ fn get_drop_sender() -> &'static std::sync::mpsc::Sender<Vec<SharedEnvArc>> {
     })
 }
 
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 use tracing::trace;
 
+use super::super::list_ops::substitute_variable_generic;
+use super::super::processing::{process_collected_sexpr_generic, GenericProcessedSExpr};
+use super::super::step::{eval_step_generic, GenericEvalStep};
 use super::context::{EvalContext, MettaEnvironment, SharedEnv};
-use crate::backend::models::gc_allocator::RootProvider;
 use super::engine::{
     apply_bindings, eval_switch, is_boolean_check_pattern, pattern_match,
-    try_match_all_rules, try_deferred_deterministic_chain, DeferredChainResult,
-    SwitchResult,
+    try_deferred_deterministic_chain, try_match_all_rules, DeferredChainResult, SwitchResult,
 };
-use super::types::{bv, bv_with, bvs_from_values, values_of, BoundValue, Continuation, EvalResult, WorkItem};
-use super::super::list_ops::substitute_variable_generic;
-use super::super::processing::{
-    process_collected_sexpr_generic, GenericProcessedSExpr,
+use super::types::{
+    bv, bv_with, bvs_from_values, empty_shared_bindings, values_of, BoundValue, Continuation,
+    EvalResult, SharedBindings, WorkItem,
 };
-use super::super::step::{eval_step_generic, GenericEvalStep};
+use crate::backend::models::gc_allocator::RootProvider;
 
 use crate::backend::eval::types::{
-    extract_type_constraint, get_ground_type, is_pattern_type_compatible,
-    infer_type_generic, types_match_generic, types_match_with_subtypes,
+    extract_type_constraint, get_ground_type, infer_type_generic, is_pattern_type_compatible,
+    types_match_generic, types_match_with_subtypes,
 };
 use crate::backend::grounded::{execute_grounded_op, ExecError, GroundedWork};
+use crate::backend::models::metta_value::is_variable_str;
+use crate::backend::models::work_pool::global_eval_pool;
 use crate::backend::models::{
     EvalGuard, GcFactory, GenericMultiplicityMatch, MettaValue, MettaValueFactory, MettaValueInner,
     MettaValueTrait,
 };
-use crate::backend::models::metta_value::is_variable_str;
-use crate::backend::models::work_pool::global_eval_pool;
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
 // Evaluation memoization and type-driven dispatch helpers extracted to `dispatch_hints`
 // module for icache locality. Re-import the functions used in this file.
 use super::dispatch_hints::{
-    invalidate_normal_form_memo, is_memoized_normal_form, memoize_normal_form,
-    is_normal_form_bounded,
-    derive_arg_expected_type,
-    should_memoize, should_memoize_with_env, eval_memo_get, eval_memo_put,
-    collect_eval_memo_roots, collect_match_result_roots,
-    mutation_epoch, increment_mutation_epoch, set_mutation_epoch,
-    enter_fork_scope, next_branch_scope, leave_fork_scope,
+    clear_operator_cache, collect_eval_memo_roots, collect_match_result_roots,
+    derive_arg_expected_type, enter_fork_scope, eval_memo_get, eval_memo_put,
+    increment_mutation_epoch, is_memoized_normal_form, is_normal_form_bounded, leave_fork_scope,
+    memoize_normal_form, mutation_epoch, next_branch_scope, set_mutation_epoch, should_memoize,
+    should_memoize_with_env,
 };
+use super::dispatch_hints::{is_embedded_kernel_op, is_reducible_head};
 use super::engine::{try_deterministic_chain, try_match_rules_with_bindings};
-use super::dispatch_hints::{is_reducible_head, is_embedded_kernel_op};
 
 // =============================================================================
 // WPDS Context Hashing (Layer 3)
@@ -238,8 +241,7 @@ fn continuation_to_stack_symbol(
 
     match cont {
         Continuation::Done => SchedulerStackSymbol::Root,
-        Continuation::ProcessRuleMatches { .. }
-        | Continuation::ProcessRuleMatchesLazy { .. } => {
+        Continuation::ProcessRuleMatches { .. } | Continuation::ProcessRuleMatchesLazy { .. } => {
             SchedulerStackSymbol::RuleMatch {
                 head_hash: 0,
                 arity: 0,
@@ -250,29 +252,19 @@ fn continuation_to_stack_symbol(
         | Continuation::CollectFreezeArgs { .. } => SchedulerStackSymbol::GroundedOp,
         Continuation::ProcessCombinations { .. } => SchedulerStackSymbol::Combinations,
         Continuation::ProcessCombinationsBound { .. } => SchedulerStackSymbol::Combinations,
-        Continuation::ProcessLet { .. }
-        | Continuation::ProcessLetStar { .. } => {
+        Continuation::ProcessLet { .. } | Continuation::ProcessLetStar { .. } => {
             SchedulerStackSymbol::LetChain { depth: 0 }
         }
-        Continuation::CollectSExpr { .. }
-        | Continuation::CollectGroundedArg { .. } => {
+        Continuation::CollectSExpr { .. } | Continuation::CollectGroundedArg { .. } => {
             SchedulerStackSymbol::ArgEval { position: 0 }
         }
-        Continuation::ProcessIfCondition { .. } => {
-            SchedulerStackSymbol::Conditional { branch: 0 }
-        }
+        Continuation::ProcessIfCondition { .. } => SchedulerStackSymbol::Conditional { branch: 0 },
         Continuation::ProcessCaseAtom { .. }
-        | Continuation::ProcessCaseEvalScrutineeResults { .. } => {
-            SchedulerStackSymbol::CaseSwitch
-        }
-        Continuation::ProcessCollapseEvalResults { .. } => {
-            SchedulerStackSymbol::Collapse
-        }
+        | Continuation::ProcessCaseEvalScrutineeResults { .. } => SchedulerStackSymbol::CaseSwitch,
+        Continuation::ProcessCollapseEvalResults { .. } => SchedulerStackSymbol::Collapse,
         Continuation::MemoizeResult { .. }
         | Continuation::CompleteSubgoal { .. }
-        | Continuation::CompleteThunk { .. } => {
-            SchedulerStackSymbol::Memoize
-        }
+        | Continuation::CompleteThunk { .. } => SchedulerStackSymbol::Memoize,
         _ => SchedulerStackSymbol::Root,
     }
 }
@@ -281,9 +273,7 @@ fn continuation_to_stack_symbol(
 ///
 /// Returns a 64-bit context hash suitable for the SchedulerAutomaton's
 /// context_weight() method.
-fn hash_continuation_context(
-    continuations: &[Continuation],
-) -> u64 {
+fn hash_continuation_context(continuations: &[Continuation]) -> u64 {
     let len = continuations.len();
     let limit = len.min(3);
     let mut packed = [0u32; 3];
@@ -467,17 +457,57 @@ fn release_budget(n: u32, depth: u32) {
 #[inline]
 fn filter_fold_propagating_bindings(
     bindings: &crate::backend::models::GenericBindings<MettaValue>,
-    propagate_keys: &[&'static str],
+    propagate_keys: &[crate::backend::models::BindingName],
 ) -> crate::backend::models::GenericBindings<MettaValue> {
     let mut out = crate::backend::models::GenericBindings::new();
     for (name, val) in bindings.iter() {
         let is_user = !name.starts_with("$__fr_");
-        let is_caller_freshened = propagate_keys.contains(&name);
+        let is_caller_freshened = propagate_keys.iter().any(|key| key.matches(name));
         if is_user || is_caller_freshened {
             out.insert_or_replace(name, val.clone());
         }
     }
     out
+}
+
+#[inline]
+fn project_carrying_for_consumer(
+    bindings: &SharedBindings,
+    consumer: &MettaValue,
+    tracked_vars: Option<&[&'static str]>,
+    factory: &GcFactory,
+) -> Option<SharedBindings> {
+    if bindings.is_empty() {
+        return Some(bindings.clone());
+    }
+    let projected = crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+        bindings,
+        &[consumer],
+        tracked_vars,
+        factory,
+    )?;
+    if projected.is_empty() {
+        Some(empty_shared_bindings())
+    } else if projected == **bindings {
+        Some(bindings.clone())
+    } else {
+        Some(std::sync::Arc::new(projected))
+    }
+}
+
+#[inline]
+fn project_owned_bindings_for_consumer(
+    bindings: &crate::backend::models::GenericBindings<MettaValue>,
+    consumer: &MettaValue,
+    tracked_vars: Option<&[&'static str]>,
+    factory: &GcFactory,
+) -> Option<crate::backend::models::GenericBindings<MettaValue>> {
+    crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+        bindings,
+        &[consumer],
+        tracked_vars,
+        factory,
+    )
 }
 
 /// # Precondition
@@ -495,7 +525,10 @@ fn filter_fold_propagating_bindings(
 /// immediately return themselves from the trampoline.
 #[inline]
 fn dispatch_rule_matches<C: EvalContext>(
-    mut matches: Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+    mut matches: Vec<(
+        MettaValue,
+        crate::backend::models::GenericBindings<MettaValue>,
+    )>,
     base_results: SmallVec<[BoundValue; 2]>,
     env: MettaEnvironment,
     depth: usize,
@@ -508,7 +541,10 @@ fn dispatch_rule_matches<C: EvalContext>(
     // Wrap bare env in Arc for O(1) sharing across WorkItem/Continuation fields.
     let env: SharedEnv = Arc::new(env);
 
-    debug_assert!(!matches.is_empty(), "dispatch_rule_matches called with empty matches");
+    debug_assert!(
+        !matches.is_empty(),
+        "dispatch_rule_matches called with empty matches"
+    );
 
     // ── Single-match fast path ──
     // 93.3% of rule matches produce exactly 1 result. When there's exactly 1
@@ -562,7 +598,9 @@ fn dispatch_rule_matches<C: EvalContext>(
                 bindings.clone()
             } else {
                 match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                    outer_carrying, &bindings, ctx.factory(),
+                    outer_carrying,
+                    &bindings,
+                    ctx.factory(),
                 ) {
                     Some(b) => b,
                     None => {
@@ -632,7 +670,9 @@ fn dispatch_rule_matches<C: EvalContext>(
                     outer_carrying.clone()
                 } else {
                     match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                        outer_carrying, &bindings, ctx.factory(),
+                        outer_carrying,
+                        &bindings,
+                        ctx.factory(),
                     ) {
                         Some(b) => b,
                         None => {
@@ -652,7 +692,9 @@ fn dispatch_rule_matches<C: EvalContext>(
                     outer_carrying.clone()
                 } else {
                     match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                        outer_carrying, &bindings, ctx.factory(),
+                        outer_carrying,
+                        &bindings,
+                        ctx.factory(),
                     ) {
                         Some(b) => b,
                         None => {
@@ -727,85 +769,88 @@ fn dispatch_rule_matches<C: EvalContext>(
     // pruning by setting demand on their WorkItem::Eval.
     let effective_demand = demand.unwrap_or(crate::backend::eval::cesk::coroutine::Demand::All);
     if !effective_demand.is_all() && matches.len() > 1 {
-            let mut coroutine = crate::backend::eval::cesk::coroutine::BranchCoroutine::new(
-                matches, effective_demand,
-            );
-            // BranchCoroutine with non-empty matches always has at least one branch.
-            let (rhs, bindings) = coroutine.next_branch()
-                .expect("BranchCoroutine::new with non-empty matches must have first branch");
-            // Push the lazy continuation to collect results incrementally.
-            // Stage 1c: stash this branch's match bindings so incoming sub-eval
-            // results get composed with them (per-branch provenance).
-            // Stage 1d-revised: compose with outer_carrying (caller's ambient).
-            // Phase 2.B Issue #5 fix: strict compose — drop branch on conflict.
-            let current_branch_bindings = std::sync::Arc::new(if outer_carrying.is_empty() {
+        let mut coroutine =
+            crate::backend::eval::cesk::coroutine::BranchCoroutine::new(matches, effective_demand);
+        // BranchCoroutine with non-empty matches always has at least one branch.
+        let (rhs, bindings) = coroutine
+            .next_branch()
+            .expect("BranchCoroutine::new with non-empty matches must have first branch");
+        // Push the lazy continuation to collect results incrementally.
+        // Stage 1c: stash this branch's match bindings so incoming sub-eval
+        // results get composed with them (per-branch provenance).
+        // Stage 1d-revised: compose with outer_carrying (caller's ambient).
+        // Phase 2.B Issue #5 fix: strict compose — drop branch on conflict.
+        let current_branch_bindings = std::sync::Arc::new(if outer_carrying.is_empty() {
+            bindings.clone()
+        } else {
+            match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                outer_carrying,
+                &bindings,
+                ctx.factory(),
+            ) {
+                Some(b) => b,
+                None => {
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), env),
+                    });
+                    return;
+                }
+            }
+        });
+        let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
+        continuations.push(Continuation::ProcessRuleMatchesLazy {
+            coroutine: Box::new(coroutine),
+            results: base_results.into_vec(),
+            env: env.clone(),
+            depth,
+            current_branch_bindings,
+            outer_carrying: std::sync::Arc::new(outer_carrying.clone()),
+            tracked_vars_hint,
+        });
+        // Stage 1d-revised: Lazy first branch RHS carrying = compose(outer, match).
+        // Reuse the same strict-composed value (already validated non-conflict above).
+        let lazy_carrying: crate::backend::models::GenericBindings<MettaValue> =
+            if outer_carrying.is_empty() && !in_collapse_bind_scope() {
+                crate::backend::models::GenericBindings::new()
+            } else if outer_carrying.is_empty() {
                 bindings.clone()
             } else {
+                // Already composed above for current_branch_bindings; re-derive
+                // locally (same strict compose — can't fail here since we got
+                // past the first compose, but keep the safety check).
                 match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                    outer_carrying, &bindings, ctx.factory(),
+                    outer_carrying,
+                    &bindings,
+                    ctx.factory(),
                 ) {
                     Some(b) => b,
-                    None => {
-                        work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::new(), env),
-                        });
-                        return;
-                    }
+                    None => crate::backend::models::GenericBindings::new(),
                 }
+            };
+        // Evaluate the first branch
+        if rhs.has_variables_fast() {
+            work_stack.push(WorkItem::EvalWithBindings {
+                template: rhs,
+                bindings: std::sync::Arc::new(bindings),
+                env,
+                depth: depth + 1,
+                is_tail_call: false,
+                expected_type: None,
+                carrying_bindings: std::sync::Arc::new(lazy_carrying),
             });
-            let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
-            continuations.push(Continuation::ProcessRuleMatchesLazy {
-                coroutine: Box::new(coroutine),
-                results: base_results.into_vec(),
-                env: env.clone(),
-                depth,
-                current_branch_bindings,
-                outer_carrying: std::sync::Arc::new(outer_carrying.clone()),
-                tracked_vars_hint,
+        } else {
+            work_stack.push(WorkItem::Eval {
+                value: apply_bindings(&rhs, &bindings, ctx.factory()),
+                env,
+                depth: depth + 1,
+                is_tail_call: false,
+                expected_type: None,
+                demand: None,
+                carrying_bindings: std::sync::Arc::new(lazy_carrying),
             });
-            // Stage 1d-revised: Lazy first branch RHS carrying = compose(outer, match).
-            // Reuse the same strict-composed value (already validated non-conflict above).
-            let lazy_carrying: crate::backend::models::GenericBindings<MettaValue> =
-                if outer_carrying.is_empty() && !in_collapse_bind_scope() {
-                    crate::backend::models::GenericBindings::new()
-                } else if outer_carrying.is_empty() {
-                    bindings.clone()
-                } else {
-                    // Already composed above for current_branch_bindings; re-derive
-                    // locally (same strict compose — can't fail here since we got
-                    // past the first compose, but keep the safety check).
-                    match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                        outer_carrying, &bindings, ctx.factory(),
-                    ) {
-                        Some(b) => b,
-                        None => crate::backend::models::GenericBindings::new(),
-                    }
-                };
-            // Evaluate the first branch
-            if rhs.has_variables_fast() {
-                work_stack.push(WorkItem::EvalWithBindings {
-                    template: rhs,
-                    bindings: std::sync::Arc::new(bindings),
-                    env,
-                    depth: depth + 1,
-                    is_tail_call: false,
-                    expected_type: None,
-                    carrying_bindings: std::sync::Arc::new(lazy_carrying),
-                });
-            } else {
-                work_stack.push(WorkItem::Eval {
-                    value: apply_bindings(&rhs, &bindings, ctx.factory()),
-                    env,
-                    depth: depth + 1,
-                    is_tail_call: false,
-                    expected_type: None,
-                    demand: None,
-                    carrying_bindings: std::sync::Arc::new(lazy_carrying),
-                });
-            }
-            return;
         }
-
+        return;
+    }
 
     // ── Parallel nondeterministic branching gate ──
     // Uses the WFST transduction table's parallelism_degree to decide whether
@@ -845,7 +890,7 @@ fn dispatch_rule_matches<C: EvalContext>(
     if budget > 0 {
         // ── Parallel path: dispatch all branches to work pool ──
         let factory = ctx.factory();
-        let branches: Vec<MettaValue> = matches
+        let branch_values: Vec<MettaValue> = matches
             .into_iter()
             .map(|(rhs, bindings)| {
                 if rhs.has_variables_fast() {
@@ -869,7 +914,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                     vec![],
                     None,
                     trace_format::TraceEventKind::NondeterministicFork {
-                        branch_count: branches.len() as u32,
+                        branch_count: branch_values.len() as u32,
                     },
                 );
             }
@@ -879,7 +924,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         // Fork branches are "hot by definition" — pre-seeding eliminates warmup delay.
         {
             let cache = crate::backend::bytecode::tiered_cache::global_tiered_cache();
-            for branch in &branches {
+            for branch in &branch_values {
                 cache.preseed_for_immediate_compile(branch.hash_value());
             }
         }
@@ -897,8 +942,16 @@ fn dispatch_rule_matches<C: EvalContext>(
         // parameter on dispatch_rule_matches threads the caller's demand
         // through; default is `Demand::All`.
         let dispatch_demand = demand.unwrap_or(crate::backend::eval::cesk::coroutine::Demand::All);
+        let branches: Vec<ParallelBranch> = branch_values
+            .into_iter()
+            .map(|branch| (branch, empty_shared_bindings()))
+            .collect();
         let results = parallel_branch_eval(
-            branches, metta_env, actual_budget_acquired, current_depth, dispatch_demand,
+            branches,
+            metta_env,
+            actual_budget_acquired,
+            current_depth,
+            dispatch_demand,
         );
 
         // Phase 2 Part A: results now carry per-branch bindings. Compose each
@@ -913,7 +966,9 @@ fn dispatch_rule_matches<C: EvalContext>(
                     bv_with(v, oc.clone())
                 } else {
                     let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &oc, &b, ctx.factory(),
+                        &oc,
+                        &b,
+                        ctx.factory(),
                     );
                     bv_with(v, composed)
                 }
@@ -980,7 +1035,9 @@ fn dispatch_rule_matches<C: EvalContext>(
             bindings.clone()
         } else {
             crate::backend::eval::bindings::compose_outer_inner_generic(
-                outer_carrying, &bindings, ctx.factory(),
+                outer_carrying,
+                &bindings,
+                ctx.factory(),
             )
         });
         let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
@@ -998,9 +1055,7 @@ fn dispatch_rule_matches<C: EvalContext>(
             #[cfg(feature = "trace")]
             branch_span_id: _branch_span_id,
             #[cfg(feature = "trace")]
-            branch_start_ns: {
-                ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
-            },
+            branch_start_ns: { ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0) },
             #[cfg(feature = "trace")]
             branch_index: 0,
             #[cfg(feature = "trace")]
@@ -1050,7 +1105,9 @@ fn dispatch_rule_matches<C: EvalContext>(
                 bindings.clone()
             } else {
                 match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                    outer_carrying, &bindings, ctx.factory(),
+                    outer_carrying,
+                    &bindings,
+                    ctx.factory(),
                 ) {
                     Some(b) => b,
                     None => {
@@ -1144,6 +1201,29 @@ thread_local! {
     /// `dispatch_rule_matches` with 2+ matches, decremented when the
     /// corresponding `ProcessRuleMatches` continuation completes.
     static FORK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+struct DemandScope {
+    previous: Option<crate::backend::eval::cesk::coroutine::Demand>,
+}
+
+impl DemandScope {
+    #[inline]
+    fn enter(demand: crate::backend::eval::cesk::coroutine::Demand) -> Self {
+        let previous = CURRENT_DEMAND.with(|current| {
+            let previous = current.get();
+            current.set(Some(demand));
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for DemandScope {
+    #[inline]
+    fn drop(&mut self) {
+        CURRENT_DEMAND.with(|current| current.set(self.previous));
+    }
 }
 
 // ── Binding Capture for collapse-bind ─────────────────────────────────
@@ -1263,7 +1343,10 @@ fn active_tracked_vars() -> Option<SmallVec<[&'static str; 4]>> {
 /// bindings now flow via `ProcessRuleMatches.current_branch_match_bindings`
 /// (Stage 1c).
 #[inline]
-fn capture_bindings_if_active(_match_bindings: &crate::backend::models::GenericBindings<MettaValue>) {}
+fn capture_bindings_if_active(
+    _match_bindings: &crate::backend::models::GenericBindings<MettaValue>,
+) {
+}
 
 /// Stage 1b no-op: snapshots were replaced by BoundValue.1 propagation.
 #[inline]
@@ -1357,8 +1440,59 @@ fn enter_fork() -> u32 {
 fn leave_fork() {
     FORK_DEPTH.with(|c| {
         let d = c.get();
-        if d > 0 { c.set(d - 1); }
+        if d > 0 {
+            c.set(d - 1);
+        }
     });
+}
+
+type ParallelEvalResults = std::sync::Arc<std::sync::Mutex<Vec<Option<Vec<BoundValue>>>>>;
+type ParallelBranch = (MettaValue, SharedBindings);
+
+struct ParallelBranchRootFrame {
+    branches: Vec<ParallelBranch>,
+    results: ParallelEvalResults,
+}
+
+struct ParallelCollapseRootFrame {
+    items: Vec<BoundValue>,
+    results: ParallelEvalResults,
+}
+
+fn collect_bound_value_roots(out: &mut Vec<MettaValue>, value: &BoundValue) {
+    let (val, bindings) = value;
+    out.push(val.clone());
+    for (_, bound) in bindings.iter() {
+        out.push(bound.clone());
+    }
+}
+
+fn collect_parallel_result_roots(results: &ParallelEvalResults, out: &mut Vec<MettaValue>) {
+    let guard = results.lock().expect("parallel results mutex poisoned");
+    for slot in guard.iter().flatten() {
+        for value in slot.iter() {
+            collect_bound_value_roots(out, value);
+        }
+    }
+}
+
+unsafe fn collect_parallel_branch_frame_roots(data: *const (), out: &mut Vec<MettaValue>) {
+    let frame = unsafe { &*(data as *const ParallelBranchRootFrame) };
+    for (value, bindings) in frame.branches.iter() {
+        out.push(value.clone());
+        for (_, bound) in bindings.iter() {
+            out.push(bound.clone());
+        }
+    }
+    collect_parallel_result_roots(&frame.results, out);
+}
+
+unsafe fn collect_parallel_collapse_frame_roots(data: *const (), out: &mut Vec<MettaValue>) {
+    let frame = unsafe { &*(data as *const ParallelCollapseRootFrame) };
+    for item in frame.items.iter() {
+        collect_bound_value_roots(out, item);
+    }
+    collect_parallel_result_roots(&frame.results, out);
 }
 
 /// Evaluate nondeterministic branches in parallel via the work pool.
@@ -1381,7 +1515,7 @@ fn leave_fork() {
 /// re-wrap everything with a single `outer_carrying` and losing the
 /// downstream binding-threading HE expects.
 fn parallel_branch_eval(
-    branches: Vec<crate::backend::models::MettaValue>,
+    branches: Vec<ParallelBranch>,
     env: crate::backend::environment::core::MettaEnvironment,
     budget_acquired: u32,
     caller_depth: u32,
@@ -1394,15 +1528,19 @@ fn parallel_branch_eval(
     type MettaValue = crate::backend::models::MettaValue;
 
     let num_branches = branches.len();
-    debug_assert!(num_branches >= 2, "parallel_branch_eval requires at least 2 branches");
+    debug_assert!(
+        num_branches >= 2,
+        "parallel_branch_eval requires at least 2 branches"
+    );
 
     // Trace: ParallelDispatch enter
     #[cfg(feature = "trace")]
     {
         crate::backend::trace::with_trace_collector_ref(|tc| {
-            let branch_tvs: Vec<trace_format::TraceValue> = branches.iter()
+            let branch_tvs: Vec<trace_format::TraceValue> = branches
+                .iter()
                 .take(4)
-                .map(|b| crate::backend::trace::trace_value_generic(b))
+                .map(|(b, _)| crate::backend::trace::trace_value_generic(b))
                 .collect();
             tc.emit_converted(
                 trace_format::TraceTier::TreeWalker,
@@ -1422,9 +1560,7 @@ fn parallel_branch_eval(
 
     // Pre-allocate result slots: Vec<Option<Vec<BoundValue>>>
     // Phase 2 Part A: preserve per-branch evaluation bindings.
-    use crate::backend::eval::trampoline::types::BoundValue;
-    let results: Arc<Mutex<Vec<Option<Vec<BoundValue>>>>> =
-        Arc::new(Mutex::new(vec![None; num_branches]));
+    let results: ParallelEvalResults = Arc::new(Mutex::new(vec![None; num_branches]));
     let remaining = Arc::new(AtomicU32::new((num_branches - 1) as u32));
     let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
 
@@ -1435,16 +1571,31 @@ fn parallel_branch_eval(
     // the first non-empty branch flips `satisfied`; sibling workers observe
     // it at their next safepoint via `ParallelBranchContext::should_safepoint`
     // and bail by raising `BranchCancelled`.
-    let cancel_token = Arc::new(crate::backend::eval::cesk::coroutine::CancelToken::new(demand));
+    let cancel_token = Arc::new(crate::backend::eval::cesk::coroutine::CancelToken::new(
+        demand,
+    ));
 
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
 
+    let parallel_root_frame = Box::new(ParallelBranchRootFrame {
+        branches: branches.clone(),
+        results: Arc::clone(&results),
+    });
+    let _parallel_root_guard = unsafe {
+        crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
+            crate::backend::eval::frame_chain::FrameLabel::Custom("parallel-branch"),
+            &*parallel_root_frame as *const ParallelBranchRootFrame as *const (),
+            collect_parallel_branch_frame_roots,
+        )
+    };
+
     // Spawn branches 1..N to the work pool via PriorityQueue.
     // PriorityQueue provides instant condvar wakeup, priority levels, and
     // adaptive worker scaling — purpose-built for MeTTaTron's scheduling.
-    for (slot, branch_expr) in branches.iter().enumerate().skip(1) {
+    for (slot, (branch_expr, branch_bindings)) in branches.iter().enumerate().skip(1) {
         let branch_expr = branch_expr.clone();
+        let branch_bindings = branch_bindings.clone();
         let env = env.clone();
         let results = Arc::clone(&results);
         let remaining = Arc::clone(&remaining);
@@ -1472,9 +1623,8 @@ fn parallel_branch_eval(
             _ => 0u8,
         };
         let depth_bucket = crate::backend::scheduler::TaskDescriptor::depth_to_bucket(child_depth);
-        let descriptor = crate::backend::scheduler::TaskDescriptor::pack(
-            head_hash, arity, depth_bucket, 0,
-        );
+        let descriptor =
+            crate::backend::scheduler::TaskDescriptor::pack(head_hash, arity, depth_bucket, 0);
 
         // WPDS Layer 3: compute effective priority using continuation context
         let ctx_hash = CONTINUATION_CONTEXT_HASH.with(|h| h.get());
@@ -1490,6 +1640,7 @@ fn parallel_branch_eval(
 
             // Track this parallel eval as active (prevents GC during evaluation)
             let _guard = EvalGuard::enter();
+            let _demand_scope = DemandScope::enter(demand);
 
             // H11 (2026-05-05): mark this thread as a parallel-branch worker
             // so non-trampoline tiers (bytecode VM, JIT, grounded ops) can
@@ -1497,6 +1648,7 @@ fn parallel_branch_eval(
             // when GC is requested. MUST drop before _guard so the marker is
             // cleared before the work-pool thread is reused for other tasks.
             let _worker_marker = WorkerEvalScope::enter();
+            let _cache_root_refresh = crate::backend::eval::CacheRootRefreshGuard::new();
 
             // catch_unwind boundary: cooperative cancellation arrives via
             // `panic::resume_unwind(Box::new(BranchCancelled))` from
@@ -1507,7 +1659,7 @@ fn parallel_branch_eval(
             let cancel_outer = Arc::clone(&cancel_token);
             let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let ctx = ParallelBranchContext::with_cancel(Arc::clone(&cancel_outer));
-                eval_trampoline(branch_expr, env, &ctx)
+                eval_trampoline_with_carrying(branch_expr, env, &ctx, branch_bindings)
             }));
 
             match unwind_result {
@@ -1573,14 +1725,18 @@ fn parallel_branch_eval(
     // Evaluate branch 0 locally (avoids pool overhead for 1 task).
     // Increment depth so any recursive MatchRules in this branch goes sequential.
     // Wrap in catch_unwind so the local branch can also bail on cancellation.
-    let branch0_outcome: Option<smallvec::SmallVec<[crate::backend::eval::trampoline::types::BoundValue; 2]>> = {
+    let branch0_outcome: Option<
+        smallvec::SmallVec<[crate::backend::eval::trampoline::types::BoundValue; 2]>,
+    > = {
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
         let cancel_b0 = Arc::clone(&cancel_token);
         let env_b0 = env.clone();
-        let branch0_expr = branches[0].clone();
+        let branch0_expr = branches[0].0.clone();
+        let branch0_bindings = branches[0].1.clone();
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _demand_scope = DemandScope::enter(demand);
             let ctx = ParallelBranchContext::with_cancel(Arc::clone(&cancel_b0));
-            eval_trampoline(branch0_expr, env_b0, &ctx)
+            eval_trampoline_with_carrying(branch0_expr, env_b0, &ctx, branch0_bindings)
         }));
         PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
         match unwind {
@@ -1654,14 +1810,13 @@ fn parallel_branch_eval(
         // Mirrors `ParallelBranchContext::should_safepoint` so the parent
         // crosses its threshold around the same time as the workers — when
         // they all drop simultaneously, `ACTIVE_EVALUATORS` reaches 0.
-        let parent_last_safepoint_allocs = std::cell::Cell::new(
-            crate::backend::models::alloc_count_snapshot(),
-        );
+        let parent_last_safepoint_allocs =
+            std::cell::Cell::new(crate::backend::models::alloc_count_snapshot());
 
         // Edit 5 hoist: stable input-branches snapshot (immutable for whole
         // wait), reused by the coop-drop and the stolen-task safepoint
         // (Edit 1) to avoid re-cloning the input branches on every safepoint.
-        let stable_branches: Vec<MettaValue> = branches.iter().cloned().collect();
+        let stable_branches: Vec<ParallelBranch> = branches.clone();
 
         let (lock, cvar) = &*done_pair;
         let mut done = lock.lock().expect("done mutex poisoned");
@@ -1716,14 +1871,18 @@ fn parallel_branch_eval(
                     // Gate on `is_gc_requested()` so this is a no-op when
                     // GC isn't pressing — keeps Smokes (no GC pressure)
                     // on the existing fast path.
-                    let gc_pending_steal =
-                        crate::backend::models::gc_allocator::is_gc_requested();
+                    let gc_pending_steal = crate::backend::models::gc_allocator::is_gc_requested();
                     if gc_pending_steal {
                         let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
                         crate::backend::eval::frame_chain::collect_frame_chain_roots(
                             &mut parent_roots,
                         );
-                        parent_roots.extend(stable_branches.iter().cloned());
+                        for (value, bindings) in stable_branches.iter() {
+                            parent_roots.push(value.clone());
+                            for (_, bound) in bindings.iter() {
+                                parent_roots.push(bound.clone());
+                            }
+                        }
                         {
                             let g = results.lock().expect("results mutex poisoned");
                             for slot in g.iter().flatten() {
@@ -1764,9 +1923,7 @@ fn parallel_branch_eval(
             // pins ACTIVE_EVALUATORS ≥ 1 even when all 33 workers
             // simultaneously safepoint — quiescence is unreachable and
             // GC never runs.
-            if super::context::parallel_gc_coop_enabled()
-                && remaining.load(Ordering::Acquire) > 0
-            {
+            if super::context::parallel_gc_coop_enabled() && remaining.load(Ordering::Acquire) > 0 {
                 // Drop our EvalGuard when EITHER:
                 //   1. GC has explicitly requested cooperation
                 //      (`is_gc_requested()`), regardless of our local
@@ -1793,7 +1950,12 @@ fn parallel_branch_eval(
                     //     pairs, including their bindings' values)
                     let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
                     crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
-                    parent_roots.extend(stable_branches.iter().cloned());
+                    for (value, bindings) in stable_branches.iter() {
+                        parent_roots.push(value.clone());
+                        for (_, bound) in bindings.iter() {
+                            parent_roots.push(bound.clone());
+                        }
+                    }
                     {
                         let g = results.lock().expect("results mutex poisoned");
                         for slot in g.iter().flatten() {
@@ -1810,7 +1972,8 @@ fn parallel_branch_eval(
                     // see `clear_aba_sensitive_caches` for the ABA hazard.
                     clear_aba_sensitive_caches();
 
-                    let _root_handle = crate::backend::models::register_temporary_roots(parent_roots);
+                    let _root_handle =
+                        crate::backend::models::register_temporary_roots(parent_roots);
                     crate::backend::models::drop_eval_guard_for_safepoint();
                     crate::backend::models::request_gc();
                     crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
@@ -1869,7 +2032,6 @@ fn parallel_branch_eval(
 /// is cheaper due to lower overhead (no Arc, no Mutex, no condvar).
 const PARALLEL_COLLAPSE_THRESHOLD: usize = 16;
 
-
 /// Evaluate collapse results in parallel via the work pool.
 ///
 /// Structurally identical to `parallel_branch_eval`, but evaluates each item
@@ -1904,30 +2066,41 @@ fn parallel_collapse_eval(
     use std::sync::{Arc, Condvar, Mutex};
 
     use super::context::ParallelBranchContext;
-    use crate::backend::eval::trampoline::types::BoundValue;
 
     let num_items = items.len();
-    debug_assert!(num_items >= 2, "parallel_collapse_eval requires at least 2 items");
+    debug_assert!(
+        num_items >= 2,
+        "parallel_collapse_eval requires at least 2 items"
+    );
 
     // Pre-allocate result slots: Vec<Option<Vec<BoundValue>>> so each
     // item's per-result bindings are preserved through the barrier.
-    let results: Arc<Mutex<Vec<Option<Vec<BoundValue>>>>> =
-        Arc::new(Mutex::new(vec![None; num_items]));
+    let results: ParallelEvalResults = Arc::new(Mutex::new(vec![None; num_items]));
     let remaining = Arc::new(AtomicU32::new((num_items - 1) as u32));
     let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
 
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
 
+    let parallel_root_frame = Box::new(ParallelCollapseRootFrame {
+        items: items.clone(),
+        results: Arc::clone(&results),
+    });
+    let _parallel_root_guard = unsafe {
+        crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
+            crate::backend::eval::frame_chain::FrameLabel::Custom("parallel-collapse"),
+            &*parallel_root_frame as *const ParallelCollapseRootFrame as *const (),
+            collect_parallel_collapse_frame_roots,
+        )
+    };
+
     // Spawn items 1..N to the work pool.
     // Phase 2 Part A fix: each worker seeds with the item's own bindings
-    // (passed via `items` as BoundValue) — callers pre-substitute via
-    // `carrying_bindings` flow so the item_expr already reflects the item's
-    // ambient context; the bindings are retained on the result for sidecar
-    // encoding at the collapse-bind output stage.
+    // (passed via `items` as BoundValue). The bindings also seed the worker
+    // re-evaluation, matching the sequential collapse path.
     for (slot, (item_expr, item_bindings)) in items.iter().enumerate().skip(1) {
         let item_expr = item_expr.clone();
-        let _item_bindings = item_bindings.clone(); // reserved for future carrying_bindings plumbing
+        let item_bindings = item_bindings.clone();
         let env = env.clone();
         let results = Arc::clone(&results);
         let remaining = Arc::clone(&remaining);
@@ -1953,9 +2126,8 @@ fn parallel_collapse_eval(
             _ => 0u8,
         };
         let depth_bucket = crate::backend::scheduler::TaskDescriptor::depth_to_bucket(child_depth);
-        let descriptor = crate::backend::scheduler::TaskDescriptor::pack(
-            head_hash, arity, depth_bucket, 0,
-        );
+        let descriptor =
+            crate::backend::scheduler::TaskDescriptor::pack(head_hash, arity, depth_bucket, 0);
 
         let closure = move || {
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
@@ -1964,6 +2136,8 @@ fn parallel_collapse_eval(
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
 
             let _guard = EvalGuard::enter();
+            let _demand_scope =
+                DemandScope::enter(crate::backend::eval::cesk::coroutine::Demand::All);
             // H11 (2026-05-05): mark thread as parallel-branch worker.
             let _worker_marker = WorkerEvalScope::enter();
 
@@ -1980,11 +2154,15 @@ fn parallel_collapse_eval(
             let eval_results: smallvec::SmallVec<
                 [crate::backend::eval::trampoline::types::BoundValue; 2],
             > = if crate::backend::eval::trampoline::is_memoized_normal_form(&item_expr) {
-                smallvec::smallvec![bv(item_expr.clone())]
+                smallvec::smallvec![bv_with(item_expr.clone(), item_bindings.clone())]
             } else {
                 let ctx = ParallelBranchContext::get();
-                let (results, _new_env) =
-                    eval_trampoline(item_expr.clone(), env, &ctx);
+                let (results, _new_env) = eval_trampoline_with_carrying(
+                    item_expr.clone(),
+                    env,
+                    &ctx,
+                    std::sync::Arc::new(item_bindings.clone()),
+                );
                 results
             };
 
@@ -2016,12 +2194,18 @@ fn parallel_collapse_eval(
     // item is already in normal form (mirrors the worker closure logic).
     let item0_results = {
         if crate::backend::eval::trampoline::is_memoized_normal_form(&items[0].0) {
-            smallvec::smallvec![bv(items[0].0.clone())]
+            smallvec::smallvec![bv_with(items[0].0.clone(), items[0].1.clone())]
         } else {
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
+            let _demand_scope =
+                DemandScope::enter(crate::backend::eval::cesk::coroutine::Demand::All);
             let ctx = ParallelBranchContext::get();
-            let (eval_results, _new_env) =
-                eval_trampoline(items[0].0.clone(), env.clone(), &ctx);
+            let (eval_results, _new_env) = eval_trampoline_with_carrying(
+                items[0].0.clone(),
+                env.clone(),
+                &ctx,
+                std::sync::Arc::new(items[0].1.clone()),
+            );
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
             eval_results
         }
@@ -2042,15 +2226,13 @@ fn parallel_collapse_eval(
         let mut overflow_requested = false;
         let queue = pool.queue();
 
-        let parent_last_safepoint_allocs = std::cell::Cell::new(
-            crate::backend::models::alloc_count_snapshot(),
-        );
+        let parent_last_safepoint_allocs =
+            std::cell::Cell::new(crate::backend::models::alloc_count_snapshot());
 
         // Edit 5 hoist: stable input-items snapshot (immutable for whole
         // wait), reused by the coop-drop and the stolen-task safepoint
         // (Edit 1).
-        let stable_items: Vec<crate::backend::eval::trampoline::types::BoundValue> =
-            items.clone();
+        let stable_items: Vec<crate::backend::eval::trampoline::types::BoundValue> = items.clone();
 
         let (lock, cvar) = &*done_pair;
         let mut done = lock.lock().expect("done mutex poisoned");
@@ -2073,8 +2255,7 @@ fn parallel_collapse_eval(
                     // Edit 1 — yield parent's outer EvalGuard around
                     // stolen-task execution if GC is requesting cooperation.
                     // See parallel_branch_eval for the full rationale.
-                    let gc_pending_steal =
-                        crate::backend::models::gc_allocator::is_gc_requested();
+                    let gc_pending_steal = crate::backend::models::gc_allocator::is_gc_requested();
                     if gc_pending_steal {
                         let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
                         crate::backend::eval::frame_chain::collect_frame_chain_roots(
@@ -2119,9 +2300,7 @@ fn parallel_collapse_eval(
             // Drops EvalGuard when EITHER the GC has explicitly requested
             // cooperation OR our local alloc-delta crossed 500k (mirrors the
             // worker-side `should_safepoint` pressure-driven path).
-            if super::context::parallel_gc_coop_enabled()
-                && remaining.load(Ordering::Acquire) > 0
-            {
+            if super::context::parallel_gc_coop_enabled() && remaining.load(Ordering::Acquire) > 0 {
                 let current_allocs = crate::backend::models::alloc_count_snapshot();
                 let last = parent_last_safepoint_allocs.get();
                 let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
@@ -2152,7 +2331,8 @@ fn parallel_collapse_eval(
 
                     clear_aba_sensitive_caches();
 
-                    let _root_handle = crate::backend::models::register_temporary_roots(parent_roots);
+                    let _root_handle =
+                        crate::backend::models::register_temporary_roots(parent_roots);
                     crate::backend::models::drop_eval_guard_for_safepoint();
                     crate::backend::models::request_gc();
                     crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
@@ -2237,6 +2417,15 @@ pub fn eval_trampoline<C: EvalContext>(
     env: MettaEnvironment,
     ctx: &C,
 ) -> EvalResult {
+    eval_trampoline_with_carrying(value, env, ctx, empty_shared_bindings())
+}
+
+fn eval_trampoline_with_carrying<C: EvalContext>(
+    value: MettaValue,
+    env: MettaEnvironment,
+    ctx: &C,
+    carrying_bindings: SharedBindings,
+) -> EvalResult {
     // Isolate fork/cut thread-local state so nested trampoline calls
     // (from `test`, `assertEqual`, `collapse` within synchronous ops,
     // etc.) don't corrupt the outer trampoline's cut signaling.
@@ -2245,7 +2434,7 @@ pub fn eval_trampoline<C: EvalContext>(
     let saved_fork = FORK_DEPTH.with(|c| c.replace(0));
     let saved_cut = CUT_TARGET_DEPTH.with(|c| c.replace(0));
 
-    let mut outcome = eval_trampoline_inner(value, env, ctx, None, None, 0);
+    let mut outcome = eval_trampoline_inner(value, env, ctx, None, None, 0, carrying_bindings);
     let result = loop {
         match outcome {
             crate::backend::eval::cesk::EvalOutcome::Complete(results, env) => {
@@ -2290,6 +2479,7 @@ fn resume_trampoline_inner<C: EvalContext>(
         Some(suspended.work_stack),
         Some(suspended.continuations),
         suspended.total_reductions,
+        empty_shared_bindings(),
     )
 }
 
@@ -2305,8 +2495,8 @@ fn eval_trampoline_inner<C: EvalContext>(
     resume_work_stack: Option<Vec<WorkItem>>,
     resume_continuations: Option<Vec<Continuation>>,
     resume_reductions: u64,
+    initial_carrying_bindings: SharedBindings,
 ) -> crate::backend::eval::cesk::EvalOutcome {
-
     // Trace: EvalStart with span correlation + start timestamp.
     // These variables carry the start timestamp and span ID to the EvalEnd site.
     #[cfg(feature = "trace")]
@@ -2346,31 +2536,29 @@ fn eval_trampoline_inner<C: EvalContext>(
 
     // Initialize work stack and continuations, either from resume state or fresh.
     let is_resuming = resume_work_stack.is_some();
-    let mut work_stack: Vec<WorkItem> =
-        if let Some(ws) = resume_work_stack {
-            ws
-        } else {
-            let mut ws = Vec::with_capacity(32);
-            ws.push(WorkItem::Eval {
-                value,
-                env: Arc::new(env.clone()),
-                depth: 0,
-                is_tail_call: false,
-                expected_type: None,
-                demand: None,
-                carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
-            });
-            ws
-        };
+    let mut work_stack: Vec<WorkItem> = if let Some(ws) = resume_work_stack {
+        ws
+    } else {
+        let mut ws = Vec::with_capacity(32);
+        ws.push(WorkItem::Eval {
+            value,
+            env: Arc::new(env.clone()),
+            depth: 0,
+            is_tail_call: false,
+            expected_type: None,
+            demand: None,
+            carrying_bindings: initial_carrying_bindings,
+        });
+        ws
+    };
 
-    let mut continuations: Vec<Continuation> =
-        if let Some(cs) = resume_continuations {
-            cs
-        } else {
-            let mut cs = Vec::with_capacity(64);
-            cs.push(Continuation::Done);
-            cs
-        };
+    let mut continuations: Vec<Continuation> = if let Some(cs) = resume_continuations {
+        cs
+    } else {
+        let mut cs = Vec::with_capacity(64);
+        cs.push(Continuation::Done);
+        cs
+    };
 
     // Final result storage
     let mut final_result: Option<EvalResult> = None;
@@ -2389,9 +2577,8 @@ fn eval_trampoline_inner<C: EvalContext>(
     // SECK Phase 0.5: Reusable root set for GC safepoints.
     // Allocated once here, cleared and reused across safepoints. This avoids
     // re-allocating a Vec<V> on every safepoint (previously ~every 4096 iterations).
-    let mut root_set = crate::backend::eval::cesk::RootSet::<MettaValue>::with_estimated_capacity(
-        32, 64, 0,
-    );
+    let mut root_set =
+        crate::backend::eval::cesk::RootSet::<MettaValue>::with_estimated_capacity(32, 64, 0);
 
     // I-4/I-6: Clear subgoal and thunk tables between top-level evaluations
     // to prevent stale cached results from previous evaluations.
@@ -2418,14 +2605,24 @@ fn eval_trampoline_inner<C: EvalContext>(
     // At each GC safepoint, we call collect_roots() on each deferred env to add
     // their MettaValues to the root_set (so the GC doesn't sweep them), then
     // clear the Vec AFTER the safepoint completes.
-    let mut deferred_shared_drops: Vec<std::sync::Arc<
-        crate::backend::environment::GenericEnvironmentShared<MettaValue>,
-    >> = Vec::new();
+    let mut deferred_shared_drops: Vec<
+        std::sync::Arc<crate::backend::environment::GenericEnvironmentShared<MettaValue>>,
+    > = Vec::new();
 
     // Main trampoline loop
     #[cfg(feature = "trace")]
     let mut _trampoline_iter: u64 = 0;
     while let Some(work) = work_stack.pop() {
+        if crate::backend::interrupt::is_interrupted() {
+            let interrupted_env = match &work {
+                WorkItem::Eval { env, .. } | WorkItem::EvalWithBindings { env, .. } => env.clone(),
+                WorkItem::Resume { result } => result.1.clone(),
+            };
+            final_result = Some((SmallVec::new(), interrupted_env));
+            work_stack.clear();
+            break;
+        }
+
         // ── G1 trampoline-tick balance check (every 65536 iterations).
         // ──   Catches threads that hold a leaked `pages.read()` guard
         // ──   while iterating in the trampoline. The 65k tick interval
@@ -2447,7 +2644,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                             Some(crate::backend::trace::trace_value_generic(value)),
                             *depth as u32,
                         ),
-                        WorkItem::EvalWithBindings { template, depth, .. } => (
+                        WorkItem::EvalWithBindings {
+                            template, depth, ..
+                        } => (
                             "EvalWithBindings",
                             Some(crate::backend::trace::trace_value_generic(template)),
                             *depth as u32,
@@ -2531,9 +2730,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                 }
             }
 
+            // Clear all pointer-keyed caches before either nursery or old-gen
+            // collection can free/reuse slab slots. The nursery collector runs
+            // even when ctx.should_safepoint() is false, so this cannot live
+            // only inside the old-gen safepoint branch.
+            clear_aba_sensitive_caches();
+
             // Phase 2.2: Incremental nursery collection (thread-local, no quiescence needed).
-            // Runs BEFORE cache clearing and old-gen safepoint. Uses the algebraic
-            // root set to determine which nursery values are live.
+            // Uses the algebraic root set to determine which nursery values are live.
             //
             // Build a sorted, deduped live-pointer slice (not a HashSet). The root
             // set is bounded by depth × continuation chain (~hundreds, not millions),
@@ -2564,56 +2768,51 @@ fn eval_trampoline_inner<C: EvalContext>(
             // (StaticEvalContext, ParallelBranchContext) — those evaluators
             // do not coordinate the slab GC's mark-sweep cycle.
             if ctx.should_safepoint() {
+                #[cfg(feature = "trace")]
+                let _root_count = root_set.len() as u32;
+                #[cfg(feature = "trace")]
+                let _safepoint_start =
+                    { ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0) };
+                // Drain roots into a Vec for the GC. The RootSet retains its
+                // allocated capacity for reuse at the next safepoint.
+                ctx.perform_safepoint(root_set.drain_into_vec());
 
-            // Clear all caches whose keys are slab pointers — see comment on
-            // `clear_aba_sensitive_caches()` for the ABA hazard rationale.
-            clear_aba_sensitive_caches();
-
-            #[cfg(feature = "trace")]
-            let _root_count = root_set.len() as u32;
-            #[cfg(feature = "trace")]
-            let _safepoint_start = {
-                ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
-            };
-            // Drain roots into a Vec for the GC. The RootSet retains its
-            // allocated capacity for reuse at the next safepoint.
-            ctx.perform_safepoint(root_set.drain_into_vec());
-
-            // Batch-drain deferred drops AFTER safepoint completes.
-            // Their roots were collected into root_set above, so the GC saw them.
-            // Send the batch to the background drop worker thread to avoid
-            // PathMap/MettaTrie cascade drops on the hot eval path.
-            if !deferred_shared_drops.is_empty() {
-                let drain_count = deferred_shared_drops.len().min(32);
-                let batch_start = deferred_shared_drops.len() - drain_count;
-                let batch: Vec<SharedEnvArc> = deferred_shared_drops.drain(batch_start..).collect();
-                // Send concrete Arc<GenericEnvironmentShared<MettaValue>> to background
-                // drop worker. No type erasure needed — concrete dispatch.
-                let _ = get_drop_sender().send(batch);
-            }
-
-            // Trace: GcSafepoint with measured pause duration
-            #[cfg(feature = "trace")]
-            {
-                if let Some(tc) = ctx.trace_collector() {
-                    let end_ns = tc.elapsed_ns();
-                    let duration = end_ns.saturating_sub(_safepoint_start);
-                    tc.emit_timed(
-                        trace_format::TraceTier::TreeWalker,
-                        0,
-                        trace_format::TraceValue::Unit,
-                        vec![],
-                        None,
-                        trace_format::TraceEventKind::GcSafepoint {
-                            root_count: _root_count,
-                            allocation_delta_bytes: 0,
-                        },
-                        _safepoint_start,
-                        Some(duration),
-                        None, // no span correlation needed for safepoints
-                    );
+                // Batch-drain deferred drops AFTER safepoint completes.
+                // Their roots were collected into root_set above, so the GC saw them.
+                // Send the batch to the background drop worker thread to avoid
+                // PathMap/MettaTrie cascade drops on the hot eval path.
+                if !deferred_shared_drops.is_empty() {
+                    let drain_count = deferred_shared_drops.len().min(32);
+                    let batch_start = deferred_shared_drops.len() - drain_count;
+                    let batch: Vec<SharedEnvArc> =
+                        deferred_shared_drops.drain(batch_start..).collect();
+                    // Send concrete Arc<GenericEnvironmentShared<MettaValue>> to background
+                    // drop worker. No type erasure needed — concrete dispatch.
+                    let _ = get_drop_sender().send(batch);
                 }
-            }
+
+                // Trace: GcSafepoint with measured pause duration
+                #[cfg(feature = "trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        let end_ns = tc.elapsed_ns();
+                        let duration = end_ns.saturating_sub(_safepoint_start);
+                        tc.emit_timed(
+                            trace_format::TraceTier::TreeWalker,
+                            0,
+                            trace_format::TraceValue::Unit,
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::GcSafepoint {
+                                root_count: _root_count,
+                                allocation_delta_bytes: 0,
+                            },
+                            _safepoint_start,
+                            Some(duration),
+                            None, // no span correlation needed for safepoints
+                        );
+                    }
+                }
             } // end: if ctx.should_safepoint()
         } // end: if gc_counter & 0xFFF == 0
 
@@ -2631,9 +2830,7 @@ fn eval_trampoline_inner<C: EvalContext>(
         {
             // Push the popped work item back so it can be resumed
             work_stack.push(work);
-            let depth_hint = continuations.last()
-                .map(|c| c.depth_hint())
-                .unwrap_or(0) as u32;
+            let depth_hint = continuations.last().map(|c| c.depth_hint()).unwrap_or(0) as u32;
             return crate::backend::eval::cesk::EvalOutcome::Yielded(
                 crate::backend::eval::cesk::SuspendedEval {
                     work_stack,
@@ -2677,7 +2874,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                 if is_sexpr && is_memoized_normal_form(&value) {
                     let cb = &*carrying_bindings;
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![if cb.is_empty() { bv(value) } else { bv_with(value, cb.clone()) }], env),
+                        result: (
+                            smallvec![if cb.is_empty() {
+                                bv(value)
+                            } else {
+                                bv_with(value, cb.clone())
+                            }],
+                            env,
+                        ),
                     });
                     continue;
                 }
@@ -2696,7 +2900,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // the same `should_memoize_with_env` predicate, so the writes are
                 // dominated by the subgoal-table path. Audit #7c: 5-8% wall savings.
                 let mut subgoal_path_taken = false;
-                if is_sexpr && depth >= 2 && !value.has_variables_fast() && should_memoize_with_env(&value, &*env) {
+                if is_sexpr
+                    && depth >= 2
+                    && !value.has_variables_fast()
+                    && should_memoize_with_env(&value, &*env)
+                {
                     subgoal_path_taken = true;
                     let tabling_hash = value.hash_value();
 
@@ -2727,9 +2935,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Step 2: Check memoization cache (Complete results).
-                    let lookup = crate::backend::eval::cesk::with_subgoal_table(|t| {
-                        t.lookup(tabling_hash)
-                    });
+                    let lookup =
+                        crate::backend::eval::cesk::with_subgoal_table(|t| t.lookup(tabling_hash));
                     match lookup {
                         crate::backend::eval::cesk::TableLookup::Complete(cached) => {
                             #[cfg(feature = "trace")]
@@ -2739,7 +2946,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         trace_format::TraceTier::TreeWalker,
                                         depth as u32,
                                         crate::backend::trace::trace_value_generic(&value),
-                                        cached.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                        cached
+                                            .iter()
+                                            .map(|v| crate::backend::trace::trace_value_generic(v))
+                                            .collect(),
                                         None,
                                         trace_format::TraceEventKind::TablingDecision {
                                             expr_hash: tabling_hash,
@@ -2757,7 +2967,22 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // branch's carrying_bindings is HE-bisimilar.
                             let resumed: smallvec::SmallVec<[BoundValue; 2]> = cached
                                 .into_iter()
-                                .map(|v| bv_with(v, (*carrying_bindings).clone()))
+                                .filter_map(|v| {
+                                    let tracked = active_tracked_vars();
+                                    project_carrying_for_consumer(
+                                        &carrying_bindings,
+                                        &v,
+                                        tracked.as_deref(),
+                                        ctx.factory(),
+                                    )
+                                    .map(|projected| {
+                                        if projected.is_empty() {
+                                            bv(v)
+                                        } else {
+                                            bv_with(v, (*projected).clone())
+                                        }
+                                    })
+                                })
                                 .collect();
                             work_stack.push(WorkItem::Resume {
                                 result: (resumed, env),
@@ -2797,74 +3022,54 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Expression-level memoization: check if we've evaluated this
                 // exact expression before (by content hash). Only for MettaValue
                 // (compile-time constant after monomorphization) and pure expressions.
-                let memo_hash = if is_sexpr && should_memoize_with_env(&value, &*env) {
-                    let h = value.hash_value();
-                    if let Some(cached_results) = eval_memo_get(h) {
-                        // Cache hit — skip evaluation entirely.
-                        let cb = &*carrying_bindings;
-                        work_stack.push(WorkItem::Resume {
-                            result: (if cb.is_empty() {
-                                cached_results.into_iter().map(bv).collect()
-                            } else {
-                                cached_results.into_iter().map(|v| bv_with(v, cb.clone())).collect()
-                            }, env),
-                        });
-                        continue;
-                    }
-                    Some(h)
-                } else {
-                    None
-                };
+                let memo_hash =
+                    if is_sexpr && should_memoize_with_env(&value, &*env) {
+                        let h = value.hash_value();
+                        if let Some(cached_results) = eval_memo_get(h) {
+                            // Cache hit — skip evaluation entirely.
+                            let cb = &*carrying_bindings;
+                            work_stack.push(WorkItem::Resume {
+                                result: (
+                                    if cb.is_empty() {
+                                        cached_results.into_iter().map(bv).collect()
+                                    } else {
+                                        cached_results
+                                            .into_iter()
+                                            .filter_map(|v| {
+                                                let tracked = active_tracked_vars();
+                                                project_carrying_for_consumer(
+                                                    &carrying_bindings,
+                                                    &v,
+                                                    tracked.as_deref(),
+                                                    ctx.factory(),
+                                                )
+                                                .map(|projected| {
+                                                    if projected.is_empty() {
+                                                        bv(v)
+                                                    } else {
+                                                        bv_with(v, (*projected).clone())
+                                                    }
+                                                })
+                                            })
+                                            .collect()
+                                    },
+                                    env,
+                                ),
+                            });
+                            continue;
+                        }
+                        Some(h)
+                    } else {
+                        None
+                    };
 
-                // Sub-expression tiered dispatch: increment per-slot execution counter
-                // and attempt dispatch to compiled bytecode/JIT.
+                // Sub-expression tiered dispatch.
                 //
-                // For compilable S-expressions (~3% of all in PLN), this:
-                // 1. Increments the per-slot atomic counter (~10-15 cycles)
-                // 2. Reads the cached compilation hash from the slot (~3 cycles)
-                // 3. If hash is non-zero (cron has flushed): DashMap lookup (~15 cycles)
-                // 4. If compiled code is ready: dispatch to highest tier (JIT2 > JIT1 > Bytecode)
-                // 5. On dispatch success: push Resume and skip eval_step_generic
-                //
-                // Net overhead for cold expressions (no compiled code): ~25-30 cycles
-                // Net benefit for hot expressions: tree-walker step replaced by bytecode/JIT
-                //
+                // Direct built-in forms still use the cheap per-slot counter path.
+                // Closed, pure user-defined calls additionally record structural
+                // hotness by content hash so recursive helpers whose calls allocate
+                // fresh S-expressions can still warm up.
                 if is_sexpr {
-                    let has_compilable_head = if let Some(items) = value.as_sexpr() {
-                        if let Some(head) = items.first() {
-                            if let Some(name) = head.as_atom() {
-                                matches!(name,
-                                    "!" | "eval"
-                                    | "+" | "-" | "*" | "/" | "%" | "abs" | "pow"
-                                    | "<" | "<=" | ">" | ">=" | "==" | "!="
-                                    | "and" | "or" | "not" | "xor"
-                                    | "if" | "case" | "chain"
-                                    | "let" | "let*"
-                                    | "superpose"
-                                    | "quote" | "unquote"
-                                    | "car-atom" | "cdr-atom" | "cons-atom" | "size-atom"
-                                    | "decons-atom" | "empty"
-                                    | "map-atom" | "filter-atom" | "foldl-atom"
-                                    | "get-type" | "get-metatype"
-                                    | "error" | "is-error" | "catch"
-                                    | "repr"
-                                )
-                            } else { false }
-                        } else { false }
-                    } else { false };
-                    // Skip tiered dispatch if any argument is a grounded sub-expression
-                    // that needs pre-evaluation (e.g., (+ 1 1)). The bytecode VM
-                    // would dispatch the rule with unevaluated arguments, binding
-                    // $var = (+ 1 1) instead of $var = 2. The tree-walker's Step 2
-                    // correctly pre-evaluates these before rule matching.
-                    let has_grounded_args = if has_compilable_head {
-                        if let Some(items) = value.as_sexpr() {
-                            items.iter().skip(1).any(|arg| {
-                                super::engine::binding_value_needs_eval(arg)
-                            })
-                        } else { false }
-                    } else { false };
-
                     // HE-faithful binding-propagation guard: when
                     // collapse-bind is active or `carrying_bindings` is
                     // non-empty, per-branch bindings are semantically
@@ -2884,15 +3089,96 @@ fn eval_trampoline_inner<C: EvalContext>(
                     let bindings_load_bearing =
                         in_collapse_bind_scope() || !carrying_bindings.is_empty();
 
-                    if has_compilable_head && !has_grounded_args && !bindings_load_bearing {
-                        // Merged: increment per-slot exec counter AND read cached compilation hash
-                        // in a single thread-local + generation check (vs 2× for separate calls).
-                        let compilation_hash = crate::backend::bytecode::tiered_cache::increment_and_get_hash(value.inner_ptr());
+                    let has_grounded_args = if let Some(items) = value.as_sexpr() {
+                        items
+                            .iter()
+                            .skip(1)
+                            .any(|arg| super::engine::binding_value_needs_eval(arg))
+                    } else {
+                        false
+                    };
 
-                        // Try dispatching to compiled bytecode/JIT.
-                        // hash != 0 guard short-circuits before any trait dispatch / DashMap lookup for cold code.
-                        if compilation_hash != 0 {
-                        if let Some((results, new_env)) = ctx.try_compiled_dispatch(&value, &env, compilation_hash) {
+                    if !bindings_load_bearing && !has_grounded_args {
+                        let direct_compilable = crate::backend::bytecode::can_compile(&value);
+
+                        if direct_compilable {
+                            // Merged: increment per-slot exec counter AND read cached compilation hash
+                            // in a single thread-local + generation check (vs 2× for separate calls).
+                            let compilation_hash =
+                                crate::backend::bytecode::tiered_cache::increment_and_get_hash(
+                                    value.inner_ptr(),
+                                );
+
+                            // Try dispatching to compiled bytecode/JIT.
+                            // hash != 0 guard short-circuits before any trait dispatch / DashMap lookup for cold code.
+                            if compilation_hash != 0 {
+                                if let Some((results, new_env)) =
+                                    ctx.try_compiled_dispatch(&value, &env, compilation_hash)
+                                {
+                                    #[cfg(feature = "trace")]
+                                    {
+                                        if let Some(tc) = ctx.trace_collector() {
+                                            let output_tvs: Vec<trace_format::TraceValue> = results
+                                                .iter()
+                                                .map(|v| {
+                                                    crate::backend::trace::trace_value_generic(v)
+                                                })
+                                                .collect();
+                                            tc.emit_converted(
+                                                trace_format::TraceTier::BytecodeVM,
+                                                depth as u32,
+                                                crate::backend::trace::trace_value_generic(&value),
+                                                output_tvs,
+                                                None,
+                                                trace_format::TraceEventKind::TierDispatch {
+                                                    expression_hash: compilation_hash,
+                                                    selected_tier:
+                                                        trace_format::TraceTier::BytecodeVM,
+                                                    execution_count: 0,
+                                                },
+                                            );
+                                        }
+                                    }
+                                    work_stack.push(WorkItem::Resume {
+                                        result: (
+                                            results.into_iter().map(bv).collect(),
+                                            Arc::new(new_env),
+                                        ),
+                                    });
+                                    continue; // Skip eval_step_generic — compiled code handled it
+                                }
+                            }
+                        } else if should_memoize_with_env(&value, &*env)
+                            && !crate::backend::eval::expression_has_overridden_grounded_op(
+                                &value, &*env,
+                            )
+                            && !crate::backend::eval::expression_has_declared_meta_typed_params(
+                                &value, &*env,
+                            )
+                            && !crate::backend::eval::expression_involves_impure_rules(
+                                &value, &*env,
+                            )
+                        {
+                            let cache = crate::backend::bytecode::global_tiered_cache();
+                            let compilation_state = cache.record_execution(&value);
+                            let compilable_with_env = compilation_state
+                                .cached_compilable_with_env()
+                                .unwrap_or_else(|| {
+                                    let result =
+                                        crate::backend::bytecode::can_compile_with_env(&value);
+                                    compilation_state.set_compilable_with_env(result);
+                                    result
+                                });
+
+                            if compilable_with_env {
+                                let compilation_hash = compilation_state.expr_hash;
+                                if let Some((results, new_env)) =
+                                    crate::backend::bytecode::tiered_cache::try_sub_expr_env_dispatch_with_hash(
+                                        compilation_hash,
+                                        &value,
+                                        &env,
+                                    )
+                                {
                             #[cfg(feature = "trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
@@ -2906,20 +3192,19 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         output_tvs,
                                         None,
                                         trace_format::TraceEventKind::TierDispatch {
-                                            expression_hash: 0,
+                                                    expression_hash: compilation_hash,
                                             selected_tier: trace_format::TraceTier::BytecodeVM,
-                                            execution_count: 0,
+                                                    execution_count: compilation_state.count(),
                                         },
                                     );
                                 }
                             }
                             work_stack.push(WorkItem::Resume {
                                 result: (results.into_iter().map(bv).collect(), Arc::new(new_env)),
-
                             });
-                            continue; // Skip eval_step_generic — compiled code handled it
-                        }
-                        // Dispatch returned None — fall through to tree-walker
+                                    continue;
+                                }
+                            }
                         }
                     }
                 }
@@ -2943,7 +3228,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                 }
 
                 // Save input pointer for fixpoint detection (Phase 9.5)
-                let input_ptr = if is_sexpr { value.inner_ptr() } else { std::ptr::null() };
+                let input_ptr = if is_sexpr {
+                    value.inner_ptr()
+                } else {
+                    std::ptr::null()
+                };
 
                 // Phase 6 (Bug 1, trace-driven): substitute caller-side
                 // bindings into `value` BEFORE eval_step_generic runs.
@@ -2970,7 +3259,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                 let value = if cb_subst.is_empty() || !value.has_variables_fast() {
                     value
                 } else {
-                    crate::backend::eval::trampoline::apply_bindings(&value, cb_subst, ctx.factory())
+                    crate::backend::eval::trampoline::apply_bindings(
+                        &value,
+                        cb_subst,
+                        ctx.factory(),
+                    )
                 };
 
                 // Perform one step of evaluation using generic step function
@@ -3002,9 +3295,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             (values.into_iter().map(bv).collect(), Arc::new(step_env))
                         } else {
                             (
-                                values.into_iter()
-                                    .map(|v| bv_with(v, cb.clone()))
-                                    .collect(),
+                                values.into_iter().map(|v| bv_with(v, cb.clone())).collect(),
                                 Arc::new(step_env),
                             )
                         };
@@ -3012,7 +3303,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Need to evaluate S-expression sub-items
-                    GenericEvalStep::EvalSExpr { items, env: step_env, depth } => {
+                    GenericEvalStep::EvalSExpr {
+                        items,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         if items.is_empty() {
                             work_stack.push(WorkItem::Resume {
@@ -3045,35 +3340,41 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start a TCO grounded operation
                     // Uses static dispatch - works with any V: MettaValueTrait (NO conversion)
-                    GenericEvalStep::StartGroundedOp { state, env: step_env, depth } => {
+                    GenericEvalStep::StartGroundedOp {
+                        state,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         let mut state = state;
                         // Use static dispatch - monomorphized for each value type
                         // Clone op_name to avoid borrow conflict with mutable state
                         let op_name = state.op_name.clone();
                         #[cfg(feature = "trace")]
-                        let _grounded_start_ns = {
-                            ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0)
-                        };
-                        if let Some(work) = execute_grounded_op(&op_name, &mut state, ctx.factory()) {
+                        let _grounded_start_ns =
+                            { ctx.trace_collector().map(|tc| tc.elapsed_ns()).unwrap_or(0) };
+                        if let Some(work) = execute_grounded_op(&op_name, &mut state, ctx.factory())
+                        {
                             match work {
                                 GroundedWork::Done(results) => {
                                     // Results are already in correct type V - NO conversion
-                                    let values: Vec<MettaValue> = results
-                                        .into_iter()
-                                        .map(|(v, _)| v)
-                                        .collect();
+                                    let values: Vec<MettaValue> =
+                                        results.into_iter().map(|(v, _)| v).collect();
                                     // Trace: GroundedOp success with duration
                                     #[cfg(feature = "trace")]
                                     {
                                         if let Some(tc) = ctx.trace_collector() {
                                             let end_ns = tc.elapsed_ns();
-                                            let duration = end_ns.saturating_sub(_grounded_start_ns);
+                                            let duration =
+                                                end_ns.saturating_sub(_grounded_start_ns);
                                             let input = crate::backend::trace::trace_value_generic(
                                                 &ctx.factory().sexpr({
-                                                    let mut parts = Vec::with_capacity(1 + state.args.len());
+                                                    let mut parts =
+                                                        Vec::with_capacity(1 + state.args.len());
                                                     parts.push(ctx.factory().atom(&op_name));
-                                                    for arg in state.args.iter() { parts.push(arg.clone()); }
+                                                    for arg in state.args.iter() {
+                                                        parts.push(arg.clone());
+                                                    }
                                                     parts
                                                 }),
                                             );
@@ -3095,14 +3396,23 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     }
                                     let cb = &*carrying_bindings;
                                     work_stack.push(WorkItem::Resume {
-                                        result: (if cb.is_empty() {
-                                            values.into_iter().map(bv).collect()
-                                        } else {
-                                            values.into_iter().map(|v| bv_with(v, cb.clone())).collect()
-                                        }, env),
+                                        result: (
+                                            if cb.is_empty() {
+                                                values.into_iter().map(bv).collect()
+                                            } else {
+                                                values
+                                                    .into_iter()
+                                                    .map(|v| bv_with(v, cb.clone()))
+                                                    .collect()
+                                            },
+                                            env,
+                                        ),
                                     });
                                 }
-                                GroundedWork::EvalArg { arg_idx, state: new_state } => {
+                                GroundedWork::EvalArg {
+                                    arg_idx,
+                                    state: new_state,
+                                } => {
                                     continuations.push(Continuation::ProcessGroundedOp {
                                         state: Box::new(new_state.clone()),
                                         pending_arg_idx: arg_idx,
@@ -3135,14 +3445,21 @@ fn eval_trampoline_inner<C: EvalContext>(
                                             let (error_kind, message) = match &e {
                                                 ExecError::NoReduce => ("NoReduce", String::new()),
                                                 ExecError::Runtime(msg) => ("Runtime", msg.clone()),
-                                                ExecError::Arithmetic(msg) => ("Arithmetic", msg.clone()),
-                                                ExecError::IncorrectArgument(msg) => ("IncorrectArgument", msg.clone()),
+                                                ExecError::Arithmetic(msg) => {
+                                                    ("Arithmetic", msg.clone())
+                                                }
+                                                ExecError::IncorrectArgument(msg) => {
+                                                    ("IncorrectArgument", msg.clone())
+                                                }
                                             };
                                             let input = crate::backend::trace::trace_value_generic(
                                                 &ctx.factory().sexpr({
-                                                    let mut parts = Vec::with_capacity(1 + state.args.len());
+                                                    let mut parts =
+                                                        Vec::with_capacity(1 + state.args.len());
                                                     parts.push(ctx.factory().atom(&op_name));
-                                                    for arg in state.args.iter() { parts.push(arg.clone()); }
+                                                    for arg in state.args.iter() {
+                                                        parts.push(arg.clone());
+                                                    }
                                                     parts
                                                 }),
                                             );
@@ -3164,7 +3481,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     match e {
                                         ExecError::NoReduce => {
                                             // MeTTa HE semantics: return the original expression unreduced
-                                            let mut expr_parts = Vec::with_capacity(1 + state.args.len());
+                                            let mut expr_parts =
+                                                Vec::with_capacity(1 + state.args.len());
                                             expr_parts.push(ctx.factory().atom(&state.op_name));
                                             for arg in state.args.iter() {
                                                 expr_parts.push(arg.clone());
@@ -3176,9 +3494,19 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         }
                                         _ => {
                                             let error_value = match e {
-                                                ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
-                                                ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
-                                                ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("IncorrectArgument")),
+                                                ExecError::Runtime(msg) => ctx
+                                                    .factory()
+                                                    .error(&msg, ctx.factory().atom("TypeError")),
+                                                ExecError::Arithmetic(msg) => ctx.factory().error(
+                                                    &msg,
+                                                    ctx.factory().atom("ArithmeticError"),
+                                                ),
+                                                ExecError::IncorrectArgument(msg) => {
+                                                    ctx.factory().error(
+                                                        &msg,
+                                                        ctx.factory().atom("IncorrectArgument"),
+                                                    )
+                                                }
                                                 ExecError::NoReduce => unreachable!(),
                                             };
                                             work_stack.push(WorkItem::Resume {
@@ -3194,7 +3522,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // generic registry. Custom operations should be added there, not to the
                             // legacy registry.
                             let error_value = ctx.factory().error(
-                                &format!("Grounded operation '{}' not found in generic registry", op_name),
+                                &format!(
+                                    "Grounded operation '{}' not found in generic registry",
+                                    op_name
+                                ),
                                 ctx.factory().atom("OperationNotFoundError"),
                             );
                             work_stack.push(WorkItem::Resume {
@@ -3204,7 +3535,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start let binding
-                    GenericEvalStep::StartLetBinding { pattern, value_expr, body, env: step_env, depth } => {
+                    GenericEvalStep::StartLetBinding {
+                        pattern,
+                        value_expr,
+                        body,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessLet {
                             pending_values: None,
@@ -3229,7 +3566,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate if branch (TCO)
-                    GenericEvalStep::EvalIfBranch { branch, env: step_env, depth } => {
+                    GenericEvalStep::EvalIfBranch {
+                        branch,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         work_stack.push(WorkItem::Eval {
                             value: branch,
@@ -3245,7 +3586,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Evaluate rule matches with unevaluated arguments (lazy evaluation)
                     // Note: matches are now in generic type (V, GenericBindings<V>, Option<V>)
                     // Phase 8.7: Prune matches whose rhs_type is incompatible with expected_type
-                    GenericEvalStep::EvalRuleMatchesLazy { mut matches, env: step_env, depth } => {
+                    GenericEvalStep::EvalRuleMatchesLazy {
+                        mut matches,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         // 8.7: Branch pruning — filter out matches whose rhs_type
                         // is known to be incompatible with the expected_type
@@ -3253,7 +3598,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let before_count = matches.len();
 
                             #[cfg(feature = "trace")]
-                            let mut pruned_types: Vec<Option<trace_format::TraceValue>> = Vec::new();
+                            let mut pruned_types: Vec<
+                                Option<trace_format::TraceValue>,
+                            > = Vec::new();
 
                             matches.retain(|(_rhs, _bindings, rhs_type)| {
                                 let keep = match rhs_type {
@@ -3263,7 +3610,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 #[cfg(feature = "trace")]
                                 if !keep {
                                     pruned_types.push(
-                                        rhs_type.as_ref().map(crate::backend::trace::trace_value_generic)
+                                        rhs_type
+                                            .as_ref()
+                                            .map(crate::backend::trace::trace_value_generic),
                                     );
                                 }
                                 keep
@@ -3281,7 +3630,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                                             vec![],
                                             None,
                                             trace_format::TraceEventKind::BranchPrune {
-                                                expected_type: crate::backend::trace::trace_value_generic(expected),
+                                                expected_type:
+                                                    crate::backend::trace::trace_value_generic(
+                                                        expected,
+                                                    ),
                                                 pruned_count: (before_count - matches.len()) as u32,
                                                 surviving_count: matches.len() as u32,
                                                 pruned_types,
@@ -3300,15 +3652,31 @@ fn eval_trampoline_inner<C: EvalContext>(
                             });
                         } else {
                             // Strip rhs_type from 3-tuples → 2-tuples for unified dispatch
-                            let matches_deque: Vec<_> = matches.into_iter()
+                            let matches_deque: Vec<_> = matches
+                                .into_iter()
                                 .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
                                 .collect();
-                            dispatch_rule_matches(matches_deque, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, demand, &*carrying_bindings);
+                            dispatch_rule_matches(
+                                matches_deque,
+                                SmallVec::new(),
+                                (*env).clone(),
+                                depth,
+                                ctx,
+                                &mut work_stack,
+                                &mut continuations,
+                                demand,
+                                &*carrying_bindings,
+                            );
                         }
                     }
 
                     // Evaluate grounded arguments
-                    GenericEvalStep::EvalGroundedArgs { items, grounded_indices, env: step_env, depth } => {
+                    GenericEvalStep::EvalGroundedArgs {
+                        items,
+                        grounded_indices,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         if grounded_indices.is_empty() {
                             work_stack.push(WorkItem::Eval {
@@ -3327,7 +3695,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // Phase 9.2: Derive expected_type from parent op's
                             // builtin signature for branch pruning (Phase 8.7).
                             let arg_expected_type = derive_arg_expected_type::<C>(
-                                &items, first_idx, &env, ctx.factory(),
+                                &items,
+                                first_idx,
+                                &env,
+                                ctx.factory(),
                             );
 
                             let grounded_count = grounded_indices.len();
@@ -3354,7 +3725,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start map-atom
-                    GenericEvalStep::StartMapAtom { elements, var_name, template, env: step_env, depth } => {
+                    GenericEvalStep::StartMapAtom {
+                        elements,
+                        var_name,
+                        template,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             work_stack.push(WorkItem::Resume {
@@ -3378,7 +3755,10 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             // Substitute variable and evaluate - NO CONVERSION NEEDED
                             let instantiated = substitute_variable_generic(
-                                &template, &var_name, &first, ctx.factory(),
+                                &template,
+                                &var_name,
+                                &first,
+                                ctx.factory(),
                             );
 
                             work_stack.push(WorkItem::Eval {
@@ -3394,7 +3774,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start filter-atom
-                    GenericEvalStep::StartFilterAtom { elements, var_name, predicate, env: step_env, depth } => {
+                    GenericEvalStep::StartFilterAtom {
+                        elements,
+                        var_name,
+                        predicate,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             work_stack.push(WorkItem::Resume {
@@ -3419,7 +3805,10 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             // NO CONVERSION NEEDED - use generic substitute
                             let instantiated = substitute_variable_generic(
-                                &predicate, &var_name, &first, ctx.factory(),
+                                &predicate,
+                                &var_name,
+                                &first,
+                                ctx.factory(),
                             );
 
                             work_stack.push(WorkItem::Eval {
@@ -3436,7 +3825,15 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start foldl-atom
-                    GenericEvalStep::StartFoldlAtom { elements, init, acc_var_name, item_var_name, operation, env: step_env, depth } => {
+                    GenericEvalStep::StartFoldlAtom {
+                        elements,
+                        init,
+                        acc_var_name,
+                        item_var_name,
+                        operation,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             work_stack.push(WorkItem::Resume {
@@ -3459,10 +3856,16 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             // NO CONVERSION NEEDED - use generic substitute for both variables
                             let instantiated = substitute_variable_generic(
-                                &operation, &acc_var_name, &init, ctx.factory(),
+                                &operation,
+                                &acc_var_name,
+                                &init,
+                                ctx.factory(),
                             );
                             let instantiated = substitute_variable_generic(
-                                &instantiated, &item_var_name, &first, ctx.factory(),
+                                &instantiated,
+                                &item_var_name,
+                                &first,
+                                ctx.factory(),
                             );
 
                             work_stack.push(WorkItem::Eval {
@@ -3478,7 +3881,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start sort-tuple (insertion sort via trampoline)
-                    GenericEvalStep::StartSortTuple { elements, var1_name, var2_name, comparator, env: step_env, depth } => {
+                    GenericEvalStep::StartSortTuple {
+                        elements,
+                        var1_name,
+                        var2_name,
+                        comparator,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         if elements.len() <= 1 {
                             // 0 or 1 elements — already sorted
@@ -3495,10 +3905,16 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             // Compare current vs sorted[0] (= first)
                             let instantiated = substitute_variable_generic(
-                                &comparator, &var1_name, &current, ctx.factory(),
+                                &comparator,
+                                &var1_name,
+                                &current,
+                                ctx.factory(),
                             );
                             let instantiated = substitute_variable_generic(
-                                &instantiated, &var2_name, &first, ctx.factory(),
+                                &instantiated,
+                                &var2_name,
+                                &first,
+                                ctx.factory(),
                             );
 
                             continuations.push(Continuation::ProcessSortTuple {
@@ -3527,7 +3943,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start best-candidate (linear scan via trampoline)
-                    GenericEvalStep::StartBestCandidate { elements, var_name, rank_fn, env: step_env, depth } => {
+                    GenericEvalStep::StartBestCandidate {
+                        elements,
+                        var_name,
+                        rank_fn,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         if elements.is_empty() {
                             // Empty tuple — return Unit
@@ -3540,7 +3962,10 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             // Evaluate rank function for first element
                             let instantiated = substitute_variable_generic(
-                                &rank_fn, &var_name, &first, ctx.factory(),
+                                &rank_fn,
+                                &var_name,
+                                &first,
+                                ctx.factory(),
                             );
 
                             continuations.push(Continuation::ProcessBestCandidate {
@@ -3568,7 +3993,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate if condition
-                    GenericEvalStep::EvalIfCondition { condition, then_branch, else_branch, env: step_env, depth } => {
+                    GenericEvalStep::EvalIfCondition {
+                        condition,
+                        then_branch,
+                        else_branch,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         // Fast path: literal Bool condition — skip continuation + work item
                         if let Some(is_true) = condition.as_bool() {
@@ -3579,10 +4010,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 depth,
                                 is_tail_call: true,
                                 expected_type: None,
-                                demand: None,
+                                demand: Some(crate::backend::eval::cesk::coroutine::Demand::All),
                                 carrying_bindings: carrying_bindings.clone(),
                             });
                         } else {
+                            let outer_demand = CURRENT_DEMAND
+                                .with(|d| d.get())
+                                .unwrap_or(crate::backend::eval::cesk::coroutine::Demand::All);
+
                             continuations.push(Continuation::ProcessIfCondition {
                                 then_branch,
                                 else_branch,
@@ -3590,6 +4025,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 env: env.clone(),
                                 depth,
                                 outer_carrying: carrying_bindings.clone(),
+                                outer_demand,
                             });
 
                             // 8.7: if-condition always expects Bool — prune non-Bool branches.
@@ -3601,14 +4037,21 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 depth: depth + 1,
                                 is_tail_call: false,
                                 expected_type: Some(ctx.factory().atom("Bool")),
-                                demand: Some(crate::backend::eval::cesk::coroutine::Demand::Exactly(1)),
+                                demand: Some(
+                                    crate::backend::eval::cesk::coroutine::Demand::Exactly(1),
+                                ),
                                 carrying_bindings: carrying_bindings.clone(),
                             });
                         }
                     }
 
                     // Evaluate case atom
-                    GenericEvalStep::EvalCaseAtom { atom, cases, env: step_env, depth } => {
+                    GenericEvalStep::EvalCaseAtom {
+                        atom,
+                        cases,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessCaseAtom {
                             cases,
@@ -3630,7 +4073,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Switch: pattern match WITHOUT evaluating atom
-                    GenericEvalStep::SwitchAtom { atom, cases, env: step_env, depth } => {
+                    GenericEvalStep::SwitchAtom {
+                        atom,
+                        cases,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         // Switch does NOT evaluate atom - pattern match directly
                         match eval_switch(&atom, &cases, ctx.factory()) {
@@ -3661,7 +4109,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate eval
-                    GenericEvalStep::EvalEval { arg, env: step_env, depth } => {
+                    GenericEvalStep::EvalEval {
+                        arg,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessEvalEval {
                             env: env.clone(),
@@ -3681,7 +4133,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate return
-                    GenericEvalStep::EvalReturn { value, env: step_env, depth } => {
+                    GenericEvalStep::EvalReturn {
+                        value,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessReturn {
                             env: env.clone(),
@@ -3718,7 +4174,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     //
                     // Without this gate, chain unboundedly cascades user-rule
                     // recursion (PLN Toothbrush consumed 21GB RAM in 19 min).
-                    GenericEvalStep::StartChain { expr, var, body, env: step_env, depth } => {
+                    GenericEvalStep::StartChain {
+                        expr,
+                        var,
+                        body,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
 
                         let head_is_kernel = expr
@@ -3751,9 +4213,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                         } else {
                             // Data: substitute $var → expr in body, evaluate body.
                             let var_name = var.as_atom().unwrap_or("");
-                            let instantiated = substitute_variable_generic(
-                                &body, var_name, &expr, ctx.factory(),
-                            );
+                            let instantiated =
+                                substitute_variable_generic(&body, var_name, &expr, ctx.factory());
                             work_stack.push(WorkItem::Eval {
                                 value: instantiated,
                                 env,
@@ -3767,7 +4228,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start function
-                    GenericEvalStep::StartFunction { expr, env: step_env, depth } => {
+                    GenericEvalStep::StartFunction {
+                        expr,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessFunction {
                             iteration_count: 1,
@@ -3788,7 +4253,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Evaluate is-error
-                    GenericEvalStep::EvalIsError { expr, env: step_env, depth } => {
+                    GenericEvalStep::EvalIsError {
+                        expr,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessIsError {
                             env: env.clone(),
@@ -3808,7 +4277,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start catch
-                    GenericEvalStep::StartCatch { expr, default, env: step_env, depth } => {
+                    GenericEvalStep::StartCatch {
+                        expr,
+                        default,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessCatch {
                             default,
@@ -3830,7 +4304,12 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Start freeze-tuple: evaluate reducible args, then
                     // construct tuple and mark as normal form.
-                    GenericEvalStep::StartFreezeTuple { args, reducible_indices, env: step_env, depth } => {
+                    GenericEvalStep::StartFreezeTuple {
+                        args,
+                        reducible_indices,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         let first_idx = reducible_indices[0];
                         let arg_to_eval = args[first_idx].clone();
@@ -3857,7 +4336,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start conjunction
-                    GenericEvalStep::StartConjunction { goals, env: step_env, depth } => {
+                    GenericEvalStep::StartConjunction {
+                        goals,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         if goals.is_empty() {
                             work_stack.push(WorkItem::Resume {
@@ -3899,7 +4382,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start unify
-                    GenericEvalStep::StartUnify { pattern1, pattern2, success_body, failure_body, env: step_env, depth } => {
+                    GenericEvalStep::StartUnify {
+                        pattern1,
+                        pattern2,
+                        success_body,
+                        failure_body,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessUnifyPattern1 {
                             pattern2,
@@ -3922,7 +4412,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start collapse
-                    GenericEvalStep::StartCollapse { expr, env: step_env, depth } => {
+                    GenericEvalStep::StartCollapse {
+                        expr,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessCollapse {
                             env: env.clone(),
@@ -3942,7 +4436,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start collapse-bind
-                    GenericEvalStep::StartCollapseBind { expr, env: step_env, depth } => {
+                    GenericEvalStep::StartCollapseBind {
+                        expr,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
 
                         // Push a binding capture frame if the expression has
@@ -3958,15 +4456,16 @@ fn eval_trampoline_inner<C: EvalContext>(
                             expr.clone()
                         } else {
                             crate::backend::eval::bindings::apply_bindings_generic(
-                                &expr, &*carrying_bindings, ctx.factory(),
+                                &expr,
+                                &*carrying_bindings,
+                                ctx.factory(),
                             )
                         };
                         if effective_expr.has_variables_fast() {
                             let free_vars = effective_expr.free_variables();
                             if !free_vars.is_empty() {
-                                let tracked: SmallVec<[&'static str; 4]> = free_vars
-                                    .into_iter()
-                                    .collect();
+                                let tracked: SmallVec<[&'static str; 4]> =
+                                    free_vars.into_iter().collect();
                                 push_binding_capture_frame(tracked);
                             }
                         }
@@ -3989,7 +4488,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start amb
-                    GenericEvalStep::StartAmb { alternatives, env: step_env, depth } => {
+                    GenericEvalStep::StartAmb {
+                        alternatives,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         if alternatives.is_empty() {
                             work_stack.push(WorkItem::Resume {
@@ -4061,8 +4564,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 let amb_demand = CURRENT_DEMAND
                                     .with(|d| d.get())
                                     .unwrap_or(crate::backend::eval::cesk::coroutine::Demand::All);
+                                let branches: Vec<ParallelBranch> = alternatives
+                                    .into_iter()
+                                    .map(|alt| (alt, empty_shared_bindings()))
+                                    .collect();
                                 let results = parallel_branch_eval(
-                                    alternatives,
+                                    branches,
                                     metta_env,
                                     par_budget,
                                     current_depth,
@@ -4085,9 +4592,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     .map(bv)
                                     .collect::<Vec<_>>()
                                     .into_iter();
-                                let (first_val, _first_b) = alts_iter
-                                    .next()
-                                    .expect("alternatives is non-empty");
+                                let (first_val, _first_b) =
+                                    alts_iter.next().expect("alternatives is non-empty");
 
                                 continuations.push(Continuation::ProcessAmb {
                                     remaining_alts: alts_iter,
@@ -4111,7 +4617,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start guard
-                    GenericEvalStep::StartGuard { condition, env: step_env, depth } => {
+                    GenericEvalStep::StartGuard {
+                        condition,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessGuard {
                             env: env.clone(),
@@ -4131,7 +4641,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start get-atoms
-                    GenericEvalStep::StartGetAtoms { space_ref, env: step_env, depth } => {
+                    GenericEvalStep::StartGetAtoms {
+                        space_ref,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessGetAtoms {
                             space_ref: space_ref.clone(),
@@ -4152,7 +4666,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start memo
-                    GenericEvalStep::StartMemo { memo_ref, expr, first_only, env: step_env, depth } => {
+                    GenericEvalStep::StartMemo {
+                        memo_ref,
+                        expr,
+                        first_only,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessMemoTable {
                             memo_ref: memo_ref.clone(),
@@ -4175,7 +4695,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start new-memo
-                    GenericEvalStep::StartNewMemo { name_arg, size_arg, env: step_env, depth } => {
+                    GenericEvalStep::StartNewMemo {
+                        name_arg,
+                        size_arg,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessNewMemoName {
                             name_arg: name_arg.clone(),
@@ -4197,7 +4722,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start memo operation
-                    GenericEvalStep::StartMemoOp { memo_ref, op_type, env: step_env, depth } => {
+                    GenericEvalStep::StartMemoOp {
+                        memo_ref,
+                        op_type,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         let is_clear = matches!(op_type, super::super::step::MemoOpType::Clear);
                         continuations.push(Continuation::ProcessMemoOp {
@@ -4220,7 +4750,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start match
-                    GenericEvalStep::StartMatch { space_arg, pattern, template, env: step_env, depth } => {
+                    GenericEvalStep::StartMatch {
+                        space_arg,
+                        pattern,
+                        template,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessMatchSpace {
                             space_arg: space_arg.clone(),
@@ -4243,7 +4779,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start add-atom
-                    GenericEvalStep::StartAddAtom { space_ref, atom, env: step_env, depth } => {
+                    GenericEvalStep::StartAddAtom {
+                        space_ref,
+                        atom,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessAddAtomSpace {
                             space_ref: space_ref.clone(),
@@ -4265,7 +4806,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start remove-atom
-                    GenericEvalStep::StartRemoveAtom { space_ref, atom, env: step_env, depth } => {
+                    GenericEvalStep::StartRemoveAtom {
+                        space_ref,
+                        atom,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessRemoveAtomSpace {
                             space_ref: space_ref.clone(),
@@ -4287,7 +4833,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start new-state
-                    GenericEvalStep::StartNewState { initial_value, env: step_env, depth } => {
+                    GenericEvalStep::StartNewState {
+                        initial_value,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessNewState {
                             initial_value: initial_value.clone(),
@@ -4308,7 +4858,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start get-state
-                    GenericEvalStep::StartGetState { state_ref, env: step_env, depth } => {
+                    GenericEvalStep::StartGetState {
+                        state_ref,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessGetState {
                             state_ref: state_ref.clone(),
@@ -4329,7 +4883,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start change-state
-                    GenericEvalStep::StartChangeState { state_ref, new_value, env: step_env, depth } => {
+                    GenericEvalStep::StartChangeState {
+                        state_ref,
+                        new_value,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessChangeStateRef {
                             state_ref: state_ref.clone(),
@@ -4351,7 +4910,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start repr
-                    GenericEvalStep::StartRepr { atom, env: step_env, depth } => {
+                    GenericEvalStep::StartRepr {
+                        atom,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessRepr {
                             atom: atom.clone(),
@@ -4372,7 +4935,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start format-args
-                    GenericEvalStep::StartFormatArgs { format_arg, args_arg, env: step_env, depth } => {
+                    GenericEvalStep::StartFormatArgs {
+                        format_arg,
+                        args_arg,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessFormatArgsString {
                             format_arg: format_arg.clone(),
@@ -4394,7 +4962,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start println
-                    GenericEvalStep::StartPrintln { atom, env: step_env, depth } => {
+                    GenericEvalStep::StartPrintln {
+                        atom,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessPrintln {
                             atom: atom.clone(),
@@ -4415,7 +4987,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start trace
-                    GenericEvalStep::StartTrace { message, value_expr, env: step_env, depth } => {
+                    GenericEvalStep::StartTrace {
+                        message,
+                        value_expr,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessTraceMessage {
                             message: message.clone(),
@@ -4437,7 +5014,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start get-metatype
-                    GenericEvalStep::StartGetMetatype { atom, env: step_env, depth } => {
+                    GenericEvalStep::StartGetMetatype {
+                        atom,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessGetMetatype {
                             atom: atom.clone(),
@@ -4458,7 +5039,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start bind
-                    GenericEvalStep::StartBind { token, atom_expr, env: step_env, depth } => {
+                    GenericEvalStep::StartBind {
+                        token,
+                        atom_expr,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessBind {
                             token,
@@ -4479,7 +5065,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start if-reducible: evaluate expr, then compare to original
-                    GenericEvalStep::EvalIfReducible { expr, then_branch, else_branch, env: step_env, depth } => {
+                    GenericEvalStep::EvalIfReducible {
+                        expr,
+                        then_branch,
+                        else_branch,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessIfReducible {
                             original_expr: expr.clone(),
@@ -4502,7 +5094,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
 
                     // Start match-or: evaluate space, then match with default fallback
-                    GenericEvalStep::StartMatchOr { space_arg, pattern, default, template, env: step_env, depth } => {
+                    GenericEvalStep::StartMatchOr {
+                        space_arg,
+                        pattern,
+                        default,
+                        template,
+                        env: step_env,
+                        depth,
+                    } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessMatchOrSpace {
                             space_arg: space_arg.clone(),
@@ -4574,7 +5173,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                         std::sync::Arc::new((*bindings).clone())
                     } else {
                         match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                            &*carrying_bindings, &*bindings, ctx.factory(),
+                            &*carrying_bindings,
+                            &*bindings,
+                            ctx.factory(),
                         ) {
                             Some(b) => std::sync::Arc::new(b),
                             None => {
@@ -4583,56 +5184,24 @@ fn eval_trampoline_inner<C: EvalContext>(
                             }
                         }
                     };
-
-                // Phase 2.4: Environment trimming — remove bindings not referenced
-                // by the template. This reduces root set size at GC safepoints and
-                // avoids carrying dead bindings through nested let* chains.
-                //
-                // CRITICAL: must compute the **transitive closure** of needed
-                // variables. If the template uses $B, and $B is bound to
-                // `(Inheritance $1 ...)`, then $1 must also be kept — otherwise
-                // it will be lost when $B is later substituted (e.g., for
-                // bidirectional unification cases where a rule variable is
-                // bound to an expression containing a free input variable that
-                // was bound by unification of a sibling occurrence).
-                //
-                // Algorithm: fixpoint expansion. Start with `template.free_variables()`,
-                // then for each kept binding, add its value's free variables to
-                // the needed set. Repeat until stable. Bounded by `bindings.len()`.
-                let bindings = if bindings.len() > 1 {
-                    let mut needed = template.free_variables();
-                    // Fixpoint: expand needed set with transitively-referenced vars.
-                    // Each iteration adds at least one new variable, so the loop
-                    // terminates after at most `bindings.len()` iterations.
-                    loop {
-                        let prev_len = needed.len();
-                        for (name, val) in bindings.iter() {
-                            if needed.contains(&name) && val.has_variables_fast() {
-                                let val_vars = val.free_variables();
-                                for v in val_vars {
-                                    if !needed.contains(&v) {
-                                        needed.push(v);
-                                    }
-                                }
-                            }
-                        }
-                        if needed.len() == prev_len {
-                            break;
-                        }
-                    }
-                    if needed.len() < bindings.len() {
-                        let mut trimmed = crate::backend::models::GenericBindings::new();
-                        for (name, val) in bindings.iter() {
-                            if needed.contains(&name) {
-                                trimmed.insert(name, val.clone());
-                            }
-                        }
-                        std::sync::Arc::new(trimmed)
-                    } else {
-                        bindings
-                    }
-                } else {
-                    bindings
+                let tracked = active_tracked_vars();
+                let carrying_bindings = match project_carrying_for_consumer(
+                    &carrying_bindings,
+                    &template,
+                    tracked.as_deref(),
+                    ctx.factory(),
+                ) {
+                    Some(b) => b,
+                    None => continue,
+                };
+                let bindings = match project_owned_bindings_for_consumer(
+                    &bindings,
+                    &template,
+                    tracked.as_deref(),
+                    ctx.factory(),
+                ) {
+                    Some(b) => std::sync::Arc::new(b),
+                    None => continue,
                 };
 
                 // I-6: ThunkTable lookup — check if (template, bindings) was previously evaluated.
@@ -4648,22 +5217,47 @@ fn eval_trampoline_inner<C: EvalContext>(
                             thunk_hash = thunk_hash.wrapping_mul(31).wrapping_add(b as u64);
                         }
                     }
-                    let lookup = crate::backend::eval::cesk::with_thunk_table(|t| t.lookup(thunk_hash));
+                    let lookup =
+                        crate::backend::eval::cesk::with_thunk_table(|t| t.lookup(thunk_hash));
                     match lookup {
                         crate::backend::eval::cesk::ThunkLookup::Evaluated(cached) => {
                             let cb = &*carrying_bindings;
                             work_stack.push(WorkItem::Resume {
-                                result: (if cb.is_empty() {
-                                    cached.into_iter().map(bv).collect()
-                                } else {
-                                    cached.into_iter().map(|v| bv_with(v, cb.clone())).collect()
-                                }, env),
+                                result: (
+                                    if cb.is_empty() {
+                                        cached.into_iter().map(bv).collect()
+                                    } else {
+                                        cached
+                                            .into_iter()
+                                            .filter_map(|v| {
+                                                let tracked = active_tracked_vars();
+                                                project_carrying_for_consumer(
+                                                    &carrying_bindings,
+                                                    &v,
+                                                    tracked.as_deref(),
+                                                    ctx.factory(),
+                                                )
+                                                .map(|projected| {
+                                                    if projected.is_empty() {
+                                                        bv(v)
+                                                    } else {
+                                                        bv_with(v, (*projected).clone())
+                                                    }
+                                                })
+                                            })
+                                            .collect()
+                                    },
+                                    env,
+                                ),
                             });
                             continue;
                         }
                         crate::backend::eval::cesk::ThunkLookup::Blackhole => {
                             // Infinite recursion detected — return error
-                            let error_val = ctx.factory().error("blackhole", ctx.factory().atom("infinite recursion in EvalWithBindings"));
+                            let error_val = ctx.factory().error(
+                                "blackhole",
+                                ctx.factory().atom("infinite recursion in EvalWithBindings"),
+                            );
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(error_val)], env),
                             });
@@ -4710,7 +5304,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                             }
                         } else {
                             work_stack.push(WorkItem::Eval {
-                                value: template, env, depth, is_tail_call, expected_type, demand: None,
+                                value: template,
+                                env,
+                                depth,
+                                is_tail_call,
+                                expected_type,
+                                demand: None,
                                 carrying_bindings: carrying_bindings.clone(),
                             });
                         }
@@ -4755,7 +5354,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // Special forms (if, let, chain, case, etc.) handle their own
                     // argument evaluation, so they're excluded.
                     if super::engine::template_has_grounded_arg_heads(&template)
-                        || bindings.iter().any(|(_, val)| super::engine::binding_value_needs_eval(val))
+                        || bindings
+                            .iter()
+                            .any(|(_, val)| super::engine::binding_value_needs_eval(val))
                     {
                         let materialized = apply_bindings(&template, &bindings, ctx.factory());
                         #[cfg(feature = "trace")]
@@ -4768,17 +5369,32 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     vec![crate::backend::trace::trace_value_generic(&materialized)],
                                     None,
                                     trace_format::TraceEventKind::BindingsApplied {
-                                        template: crate::backend::trace::trace_value_generic(&template),
-                                        bindings: bindings.iter()
-                                            .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                                        template: crate::backend::trace::trace_value_generic(
+                                            &template,
+                                        ),
+                                        bindings: bindings
+                                            .iter()
+                                            .map(|(k, v)| {
+                                                (
+                                                    k.to_string(),
+                                                    crate::backend::trace::trace_value_generic(v),
+                                                )
+                                            })
                                             .collect(),
-                                        result: crate::backend::trace::trace_value_generic(&materialized),
+                                        result: crate::backend::trace::trace_value_generic(
+                                            &materialized,
+                                        ),
                                     },
                                 );
                             }
                         }
                         work_stack.push(WorkItem::Eval {
-                            value: materialized, env, depth, is_tail_call, expected_type, demand: None,
+                            value: materialized,
+                            env,
+                            depth,
+                            is_tail_call,
+                            expected_type,
+                            demand: None,
                             carrying_bindings: carrying_bindings.clone(),
                         });
                         continue;
@@ -4793,14 +5409,25 @@ fn eval_trampoline_inner<C: EvalContext>(
                             .iter()
                             .map(|item| {
                                 let materialized = apply_bindings(item, &bindings, ctx.factory());
-                                if let Some(inner) = materialized.as_quoted() { inner } else { materialized }
+                                if let Some(inner) = materialized.as_quoted() {
+                                    inner
+                                } else {
+                                    materialized
+                                }
                             })
                             .collect();
                         let tuple = ctx.factory().sexpr(materialized_args);
                         memoize_normal_form(&tuple);
                         let cb = &*carrying_bindings;
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![if cb.is_empty() { bv(tuple) } else { bv_with(tuple, cb.clone()) }], env),
+                            result: (
+                                smallvec![if cb.is_empty() {
+                                    bv(tuple)
+                                } else {
+                                    bv_with(tuple, cb.clone())
+                                }],
+                                env,
+                            ),
                         });
                         continue;
                     }
@@ -4827,15 +5454,16 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // ── `let` with lazy body: the key optimization ──
                     //
                     // For `(let pattern value_expr body)` with pending bindings B:
-                    // 1. Materialize pattern and value_expr with B (needed immediately)
-                    // 2. Keep body RAW + store B as outer_bindings on ProcessLet
-                    // 3. When ProcessLet produces pattern-match bindings B2:
+                    // 1. Keep pattern RAW because it is a binder position.
+                    // 2. Materialize only value_expr with B (needed immediately).
+                    // 3. Keep body RAW + store B as outer_bindings on ProcessLet.
+                    // 4. When ProcessLet produces pattern-match bindings B2:
                     //    compose(B, B2) and push EvalWithBindings{body, compose(B, B2)}
                     //
                     // For nested let* of depth N, the body is never materialized
                     // until the innermost level, giving O(N) instead of O(N^2).
                     if resolved_head_atom == Some("let") && items.len() == 4 {
-                        let pattern = apply_bindings(&items[1], &bindings, ctx.factory());
+                        let pattern = items[1].clone();
                         let value_expr = apply_bindings(&items[2], &bindings, ctx.factory());
 
                         continuations.push(Continuation::ProcessLet {
@@ -4874,17 +5502,26 @@ fn eval_trampoline_inner<C: EvalContext>(
                         // Fast path: literal Bool after binding substitution
                         if let Some(is_true) = condition.as_bool() {
                             let branch_raw = if is_true { &items[2] } else { &items[3] };
-                            work_stack.push(WorkItem::EvalWithBindings {
-                                template: branch_raw.clone(),
-                                bindings,
+                            let branch = if branch_raw.has_variables_fast() {
+                                apply_bindings(branch_raw, &bindings, ctx.factory())
+                            } else {
+                                branch_raw.clone()
+                            };
+                            work_stack.push(WorkItem::Eval {
+                                value: branch,
                                 env,
                                 depth,
                                 is_tail_call,
                                 expected_type,
+                                demand: Some(crate::backend::eval::cesk::coroutine::Demand::All),
                                 carrying_bindings: carrying_bindings.clone(),
                             });
                             continue;
                         }
+
+                        let outer_demand = CURRENT_DEMAND
+                            .with(|d| d.get())
+                            .unwrap_or(crate::backend::eval::cesk::coroutine::Demand::All);
 
                         continuations.push(Continuation::ProcessIfCondition {
                             then_branch: items[2].clone(), // RAW — not materialized
@@ -4893,6 +5530,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             env: env.clone(),
                             depth,
                             outer_carrying: carrying_bindings.clone(),
+                            outer_demand,
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -4901,7 +5539,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             depth: depth + 1,
                             is_tail_call: false,
                             expected_type: Some(ctx.factory().atom("Bool")),
-                            demand: None,
+                            demand: Some(crate::backend::eval::cesk::coroutine::Demand::Exactly(1)),
                             carrying_bindings: carrying_bindings.clone(),
                         });
                         continue;
@@ -4915,7 +5553,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // evaluate value expressions sequentially and accumulate bindings.
                     // Reduces to N+2 iterations and 0 nested `let` allocations.
                     if resolved_head_atom == Some("let*") && items.len() == 3 {
-                        let bindings_expr = apply_bindings(&items[1], &bindings, ctx.factory());
+                        let bindings_expr = if items[1].as_sexpr().is_some() {
+                            items[1].clone()
+                        } else {
+                            apply_bindings(&items[1], &bindings, ctx.factory())
+                        };
                         if let Some(binding_pairs) = bindings_expr.as_sexpr() {
                             if binding_pairs.is_empty() || bindings_expr.is_unit() {
                                 // No bindings — evaluate body with outer bindings
@@ -4932,7 +5574,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                             }
 
                             // Extract (pattern, value_expr) pairs
-                            let mut pairs: Vec<(MettaValue, MettaValue)> = Vec::with_capacity(binding_pairs.len());
+                            let mut pairs: Vec<(MettaValue, MettaValue)> =
+                                Vec::with_capacity(binding_pairs.len());
                             for binding in binding_pairs.iter() {
                                 if let Some(pair) = binding.as_sexpr() {
                                     if pair.len() == 2 {
@@ -4957,12 +5600,13 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             // Pop first pair, materialize its value_expr with current bindings
                             let (first_pattern, first_value_expr) = pairs.remove(0);
-                            let materialized_value = apply_bindings(
-                                &first_value_expr, &bindings, ctx.factory(),
-                            );
+                            let materialized_value =
+                                apply_bindings(&first_value_expr, &bindings, ctx.factory());
 
                             // I-5: Enter region for let* scope
-                            let region_id = crate::backend::eval::cesk::with_region_stack(|s| s.enter(depth as u32));
+                            let region_id = crate::backend::eval::cesk::with_region_stack(|s| {
+                                s.enter(depth as u32)
+                            });
                             continuations.push(Continuation::ProcessLetStar {
                                 current_pattern: first_pattern,
                                 remaining_pairs: pairs,
@@ -5031,9 +5675,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // then evaluate.
                             let var_name = items[2].as_atom().unwrap_or("");
                             let instantiated = substitute_variable_generic(
-                                &items[3], var_name, &expr, ctx.factory(),
+                                &items[3],
+                                var_name,
+                                &expr,
+                                ctx.factory(),
                             );
-                            let materialized = apply_bindings(&instantiated, &bindings, ctx.factory());
+                            let materialized =
+                                apply_bindings(&instantiated, &bindings, ctx.factory());
                             work_stack.push(WorkItem::Eval {
                                 value: materialized,
                                 env,
@@ -5084,21 +5732,32 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // the full trampoline dispatch loop. This saves 2-3 trampoline
                     // iterations per chain step and defers apply_bindings allocation
                     // when the RHS has variables (compose bindings instead).
-                    if let Some(chain_result) = try_deferred_deterministic_chain(
-                        &template, &bindings, &env, ctx.factory(),
-                    ) {
+                    if let Some(chain_result) =
+                        try_deferred_deterministic_chain(&template, &bindings, &env, ctx.factory())
+                    {
                         match chain_result {
-                            DeferredChainResult::Deferred { template: new_template, bindings: new_bindings } => {
+                            DeferredChainResult::Deferred {
+                                template: new_template,
+                                bindings: new_bindings,
+                            } => {
                                 work_stack.push(WorkItem::EvalWithBindings {
                                     template: new_template,
                                     bindings: std::sync::Arc::new(new_bindings),
-                                    env, depth, is_tail_call, expected_type,
+                                    env,
+                                    depth,
+                                    is_tail_call,
+                                    expected_type,
                                     carrying_bindings: carrying_bindings.clone(),
                                 });
                             }
                             DeferredChainResult::Concrete(value) => {
                                 work_stack.push(WorkItem::Eval {
-                                    value, env, depth, is_tail_call, expected_type, demand: None,
+                                    value,
+                                    env,
+                                    depth,
+                                    is_tail_call,
+                                    expected_type,
+                                    demand: None,
                                     carrying_bindings: carrying_bindings.clone(),
                                 });
                             }
@@ -5129,10 +5788,25 @@ fn eval_trampoline_inner<C: EvalContext>(
                         if !is_reducible_head(head_name) {
                             let arity = items.len() - 1;
                             if let Some(matches) = try_match_rules_with_bindings(
-                                &template, &bindings, head_name, arity, &env, ctx.factory(),
+                                &template,
+                                &bindings,
+                                head_name,
+                                arity,
+                                &env,
+                                ctx.factory(),
                             ) {
                                 if !matches.is_empty() {
-                                    dispatch_rule_matches(matches, SmallVec::new(), (*env).clone(), depth, ctx, &mut work_stack, &mut continuations, None, &*carrying_bindings);
+                                    dispatch_rule_matches(
+                                        matches,
+                                        SmallVec::new(),
+                                        (*env).clone(),
+                                        depth,
+                                        ctx,
+                                        &mut work_stack,
+                                        &mut continuations,
+                                        None,
+                                        &*carrying_bindings,
+                                    );
                                     continue;
                                 }
                                 // matches is empty → no rule matched → self-evaluating
@@ -5145,7 +5819,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // All other S-expressions: full materialization + Eval
                     let materialized = apply_bindings(&template, &bindings, ctx.factory());
                     work_stack.push(WorkItem::Eval {
-                        value: materialized, env, depth, is_tail_call, expected_type, demand: None,
+                        value: materialized,
+                        env,
+                        depth,
+                        is_tail_call,
+                        expected_type,
+                        demand: None,
                         carrying_bindings: carrying_bindings.clone(),
                     });
                     continue;
@@ -5154,7 +5833,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Non-S-expression (type, conjunction, etc.): materialize
                 let materialized = apply_bindings(&template, &bindings, ctx.factory());
                 work_stack.push(WorkItem::Eval {
-                    value: materialized, env, depth, is_tail_call, expected_type, demand: None,
+                    value: materialized,
+                    env,
+                    depth,
+                    is_tail_call,
+                    expected_type,
+                    demand: None,
                     carrying_bindings: carrying_bindings.clone(),
                 });
             }
@@ -5221,9 +5905,9 @@ fn process_continuation<C: EvalContext>(
     continuations: &mut Vec<Continuation>,
     final_result: &mut Option<EvalResult>,
     ctx: &C,
-    deferred_shared_drops: &mut Vec<std::sync::Arc<
-        crate::backend::environment::GenericEnvironmentShared<MettaValue>,
-    >>,
+    deferred_shared_drops: &mut Vec<
+        std::sync::Arc<crate::backend::environment::GenericEnvironmentShared<MettaValue>>,
+    >,
 ) {
     // Eval-trace binding-flow instrumentation (v5).
     // Capture the Resume boundary's inputs BEFORE the match consumes cont
@@ -5242,8 +5926,7 @@ fn process_continuation<C: EvalContext>(
         Vec<trace_format::BoundValueSnapshot>,
         usize,
     )> = if ctx.trace_collector().is_some()
-        && (in_collapse_bind_scope()
-            || result.0.iter().any(|(_, b)| !b.is_empty()))
+        && (in_collapse_bind_scope() || result.0.iter().any(|(_, b)| !b.is_empty()))
     {
         let cont_kind = cont.discriminant_name().to_string();
         let flow_id = next_flow_id();
@@ -5320,7 +6003,12 @@ fn process_continuation<C: EvalContext>(
                                 result: (results, Arc::new(env)),
                             });
                         }
-                        GenericProcessedSExprBound::EvalRuleMatches { matches, env, depth, base_results } => {
+                        GenericProcessedSExprBound::EvalRuleMatches {
+                            matches,
+                            env,
+                            depth,
+                            base_results,
+                        } => {
                             if matches.is_empty() {
                                 work_stack.push(WorkItem::Resume {
                                     result: (base_results, Arc::new(env)),
@@ -5336,18 +6024,28 @@ fn process_continuation<C: EvalContext>(
                                 dispatch_rule_matches(
                                     matches,
                                     base_results,
-                                    env, depth, ctx, work_stack, continuations, None,
+                                    env,
+                                    depth,
+                                    ctx,
+                                    work_stack,
+                                    continuations,
+                                    None,
                                     &combo_b,
                                 );
                             }
                         }
-                        GenericProcessedSExprBound::EvalCombinations { combinations, env, depth } => {
+                        GenericProcessedSExprBound::EvalCombinations {
+                            combinations,
+                            env,
+                            depth,
+                        } => {
                             let env: SharedEnv = Arc::new(env);
                             continuations.push(Continuation::ProcessCombinationsBound {
                                 combinations: Box::new(combinations),
                                 results: Vec::with_capacity(8),
                                 pending_rule_matches: Vec::new(),
-                                pending_combo_bindings: crate::backend::models::GenericBindings::new(),
+                                pending_combo_bindings:
+                                    crate::backend::models::GenericBindings::new(),
                                 env: env.clone(),
                                 depth,
                                 outer_carrying: outer_carrying.clone(),
@@ -5357,7 +6055,12 @@ fn process_continuation<C: EvalContext>(
                                 result: (SmallVec::new(), env),
                             });
                         }
-                        GenericProcessedSExprBound::RedispatchSExpr { items, combo_bindings, env, depth: redispatch_depth } => {
+                        GenericProcessedSExprBound::RedispatchSExpr {
+                            items,
+                            combo_bindings,
+                            env,
+                            depth: redispatch_depth,
+                        } => {
                             let sexpr = ctx.factory().sexpr(items);
                             work_stack.push(WorkItem::EvalWithBindings {
                                 template: sexpr,
@@ -5371,113 +6074,143 @@ fn process_continuation<C: EvalContext>(
                         }
                     }
                 } else {
-                // Fast path (single-alternative children):
-                // Compute the merged bindings from each collected child's
-                // only result. On conflict (HE-bisimilar): emit ZERO results
-                // to silently drop this combination, matching HE's
-                // `BindingsSet::empty()` pruning. The old behavior reset
-                // merged_bindings to empty and continued, producing ghost
-                // tuples downstream with wrong/empty bindings.
-                let mut merged_bindings = crate::backend::models::GenericBindings::new();
-                let mut merge_ok = true;
-                for (vals, _) in collected.iter() {
-                    if let Some((_, child_b)) = vals.first() {
-                        if !merged_bindings.merge(child_b) {
-                            merge_ok = false;
-                            break;
+                    // Fast path (single-alternative children):
+                    // Compute the merged bindings from each collected child's
+                    // only result. On conflict (HE-bisimilar): emit ZERO results
+                    // to silently drop this combination, matching HE's
+                    // `BindingsSet::empty()` pruning. The old behavior reset
+                    // merged_bindings to empty and continued, producing ghost
+                    // tuples downstream with wrong/empty bindings.
+                    let mut merged_bindings = crate::backend::models::GenericBindings::new();
+                    let mut merge_ok = true;
+                    for (vals, _) in collected.iter() {
+                        if let Some((_, child_b)) = vals.first() {
+                            if !merged_bindings.merge(child_b) {
+                                merge_ok = false;
+                                break;
+                            }
                         }
                     }
-                }
-                if !merge_ok {
-                    // Phase 2.B fix: drop this combination (HE-bisimilar).
-                    // Emits zero results so the caller sees no contribution
-                    // from this tuple assembly.
-                    work_stack.push(WorkItem::Resume {
-                        result: (SmallVec::new(), original_env.clone()),
-                    });
-                    return;
-                }
-
-                // Use generic version - zero conversion needed!
-                // Unwrap SharedEnv → bare MettaEnvironment for process_collected_sexpr_generic
-                let collected_bare: Vec<(SmallVec<[MettaValue; 2]>, MettaEnvironment)> = collected
-                    .into_iter()
-                    .map(|(vals, shared_env)| (values_of(&vals), (*shared_env).clone()))
-                    .collect();
-                let processed = process_collected_sexpr_generic(collected_bare, (*original_env).clone(), depth, ctx.factory());
-
-                match processed {
-                    GenericProcessedSExpr::Done((results, env)) => {
-                        let mb = merged_bindings.clone();
+                    if !merge_ok {
+                        // Phase 2.B fix: drop this combination (HE-bisimilar).
+                        // Emits zero results so the caller sees no contribution
+                        // from this tuple assembly.
                         work_stack.push(WorkItem::Resume {
-                            result: (
-                                results.into_iter()
-                                    .map(|v| (v, mb.clone()))
-                                    .collect(),
-                                Arc::new(env),
-                            ),
+                            result: (SmallVec::new(), original_env.clone()),
                         });
+                        return;
                     }
-                    GenericProcessedSExpr::EvalRuleMatches { matches, env, depth, base_results } => {
-                        if matches.is_empty() {
+
+                    // Use generic version - zero conversion needed!
+                    // Unwrap SharedEnv → bare MettaEnvironment for process_collected_sexpr_generic
+                    let collected_bare: Vec<(SmallVec<[MettaValue; 2]>, MettaEnvironment)> =
+                        collected
+                            .into_iter()
+                            .map(|(vals, shared_env)| (values_of(&vals), (*shared_env).clone()))
+                            .collect();
+                    let processed = process_collected_sexpr_generic(
+                        collected_bare,
+                        (*original_env).clone(),
+                        depth,
+                        ctx.factory(),
+                    );
+
+                    match processed {
+                        GenericProcessedSExpr::Done((results, env)) => {
                             let mb = merged_bindings.clone();
                             work_stack.push(WorkItem::Resume {
                                 result: (
-                                    base_results.into_iter()
-                                        .map(|v| (v, mb.clone()))
-                                        .collect(),
+                                    results.into_iter().map(|v| (v, mb.clone())).collect(),
                                     Arc::new(env),
                                 ),
                             });
-                        } else {
-                            // Stage 1d-revised: base-results carry merged_bindings
-                            // so fallback results (no rule match dispatched) have
-                            // correct bindings. For dispatched matches, the
-                            // WorkItem::Eval carrying_bindings field (added by
-                            // Stage 1d-revised) threads merged_bindings into each
-                            // RHS evaluation — see dispatch_rule_matches outer_carrying.
-                            let mb = merged_bindings.clone();
-                            dispatch_rule_matches(
-                                matches,
-                                base_results.into_iter()
-                                    .map(|v| (v, mb.clone()))
-                                    .collect(),
-                                env, depth, ctx, work_stack, continuations, None,
-                                &mb,
-                            );
+                        }
+                        GenericProcessedSExpr::EvalRuleMatches {
+                            matches,
+                            env,
+                            depth,
+                            base_results,
+                        } => {
+                            if matches.is_empty() {
+                                let mb = merged_bindings.clone();
+                                work_stack.push(WorkItem::Resume {
+                                    result: (
+                                        base_results.into_iter().map(|v| (v, mb.clone())).collect(),
+                                        Arc::new(env),
+                                    ),
+                                });
+                            } else {
+                                // Stage 1d-revised: base-results carry merged_bindings
+                                // so fallback results (no rule match dispatched) have
+                                // correct bindings. For dispatched matches, the
+                                // WorkItem::Eval carrying_bindings field (added by
+                                // Stage 1d-revised) threads merged_bindings into each
+                                // RHS evaluation — see dispatch_rule_matches outer_carrying.
+                                let mb = merged_bindings.clone();
+                                dispatch_rule_matches(
+                                    matches,
+                                    base_results.into_iter().map(|v| (v, mb.clone())).collect(),
+                                    env,
+                                    depth,
+                                    ctx,
+                                    work_stack,
+                                    continuations,
+                                    None,
+                                    &mb,
+                                );
+                            }
+                        }
+                        GenericProcessedSExpr::EvalCombinations {
+                            combinations,
+                            env,
+                            depth,
+                        } => {
+                            let env: SharedEnv = Arc::new(env);
+                            continuations.push(Continuation::ProcessCombinations {
+                                combinations: Box::new(combinations),
+                                results: Vec::with_capacity(8),
+                                pending_rule_matches: Vec::new(),
+                                env: env.clone(),
+                                depth,
+                                outer_carrying: outer_carrying.clone(),
+                            });
+
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), env),
+                            });
+                        }
+                        GenericProcessedSExpr::RedispatchSExpr {
+                            items,
+                            env,
+                            depth: redispatch_depth,
+                        } => {
+                            let sexpr = ctx.factory().sexpr(items);
+                            work_stack.push(WorkItem::Eval {
+                                value: sexpr,
+                                env: Arc::new(env),
+                                depth: redispatch_depth,
+                                is_tail_call: false,
+                                expected_type: None,
+                                demand: None,
+                                carrying_bindings: outer_carrying.clone(),
+                            });
                         }
                     }
-                    GenericProcessedSExpr::EvalCombinations { combinations, env, depth } => {
-                        let env: SharedEnv = Arc::new(env);
-                        continuations.push(Continuation::ProcessCombinations {
-                            combinations: Box::new(combinations),
-                            results: Vec::with_capacity(8),
-                            pending_rule_matches: Vec::new(),
-                            env: env.clone(),
-                            depth,
-                            outer_carrying: outer_carrying.clone(),
-                        });
-
-                        work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::new(), env),
-                        });
-                    }
-                    GenericProcessedSExpr::RedispatchSExpr { items, env, depth: redispatch_depth } => {
-                        let sexpr = ctx.factory().sexpr(items);
-                        work_stack.push(WorkItem::Eval {
-                            value: sexpr,
-                            env: Arc::new(env),
-                            depth: redispatch_depth,
-                            is_tail_call: false,
-                            expected_type: None,
-                            demand: None,
-                            carrying_bindings: outer_carrying.clone(),
-                        });
-                    }
-                }
                 }
             } else {
                 let next = remaining.next().expect("remaining is non-empty");
+                let tracked = active_tracked_vars();
+                let Some(next_carrying) = project_carrying_for_consumer(
+                    &outer_carrying,
+                    &next,
+                    tracked.as_deref(),
+                    ctx.factory(),
+                ) else {
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), original_env),
+                    });
+                    return;
+                };
 
                 continuations.push(Continuation::CollectSExpr {
                     remaining,
@@ -5494,7 +6227,7 @@ fn process_continuation<C: EvalContext>(
                     is_tail_call: false,
                     expected_type: None,
                     demand: None,
-                    carrying_bindings: outer_carrying.clone(),
+                    carrying_bindings: next_carrying,
                 });
             }
         }
@@ -5539,80 +6272,84 @@ fn process_continuation<C: EvalContext>(
                 result.0
             } else {
                 let factory = ctx.factory();
-                result.0.into_iter().map(|(v, child_b)| {
-                    let mut composed =
-                        crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*current_branch_bindings,
-                            &child_b,
-                            factory,
-                        );
-                    crate::backend::eval::bindings::apply_chain_generic(&mut composed, factory);
-                    // Layer A: projection moved to sidecar encoding in
-                    // ProcessCollapseEvalResults so user-named bindings (e.g.
-                    // $who=a) survive the entire pipeline and get projected
-                    // only at the observation point — matching HE's
-                    // Bindings::resolve() semantics (interpreter.rs:624).
-                    // let projected = match &tracked_vars_hint {
-                    //     Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
-                    //         &composed,
-                    //         tv.as_slice(),
-                    //     ),
-                    //     None => composed,
-                    // };
+                result
+                    .0
+                    .into_iter()
+                    .map(|(v, child_b)| {
+                        let mut composed =
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*current_branch_bindings,
+                                &child_b,
+                                factory,
+                            );
+                        crate::backend::eval::bindings::apply_chain_generic(&mut composed, factory);
+                        // Layer A: projection moved to sidecar encoding in
+                        // ProcessCollapseEvalResults so user-named bindings (e.g.
+                        // $who=a) survive the entire pipeline and get projected
+                        // only at the observation point — matching HE's
+                        // Bindings::resolve() semantics (interpreter.rs:624).
+                        // let projected = match &tracked_vars_hint {
+                        //     Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
+                        //         &composed,
+                        //         tv.as_slice(),
+                        //     ),
+                        //     None => composed,
+                        // };
 
-                    // Removed (2026-05-06): the "Fix 4 mmverify hang plan,
-                    // defense-in-depth" trim that called
-                    // `transitive_live_vars_generic` and dropped freshened
-                    // bindings unreachable from `v`.
-                    //
-                    // Why removed: the trim was too aggressive when this
-                    // handler is dispatched from inside a foldl-atom
-                    // iteration. It had no visibility into sibling
-                    // iterations on the continuation stack, so it dropped
-                    // freshened bindings that ARE referenced by the next
-                    // iteration's items. Specifically, for a fold over
-                    // `((father b $__fr_182_b) (father $__fr_182_b c))`,
-                    // iteration 1's match against `(father b c)` produces
-                    // `$__fr_182_b → c`; the trim erased it because
-                    // `live_vars((stv 1 0.9))` is empty; iteration 2 then
-                    // re-bound `$__fr_182_b → b` against `(father b c)`,
-                    // yielding spurious `(grandfather b c)` for PLN's
-                    // Direct.metta tests 2/3.
-                    //
-                    // Why safe to remove: the actual mmverify-hang fix is
-                    // Fix 1 at `engine.rs:649-680` (partial-bind rejection
-                    // at rule-match source), per Fix 4's own docstring.
-                    // The proper iteration-boundary liveness gate is
-                    // `filter_fold_propagating_bindings` at
-                    // `eval_loop.rs:468-481` (called from ProcessFoldlAtom
-                    // at `:7600`, `:7643`, `:7748`). The lazy sibling
-                    // handler `ProcessRuleMatchesLazy` at `:5779-5821`
-                    // already takes this no-trim path — existence proof
-                    // that compose-without-trim is HE-bisimilar.
-                    //
-                    // HE bisimilarity: HE's `Bindings::merge` uses strict
-                    // rejection on inconsistent bindings; HE has no
-                    // analogous trim. This restoration matches HE.
-                    //
-                    // Memory bound: Fix 1 caps freshened-binding count at
-                    // per-rule var count (small constant). Debug-build
-                    // canary below catches regression.
-                    #[cfg(debug_assertions)]
-                    {
-                        let freshened_count = composed
-                            .iter()
-                            .filter(|(k, _)| k.starts_with("$__fr_"))
-                            .count();
-                        debug_assert!(
-                            freshened_count < 1024,
-                            "ProcessRuleMatches compose produced {} freshened-binding keys; \
+                        // Removed (2026-05-06): the "Fix 4 mmverify hang plan,
+                        // defense-in-depth" trim that called
+                        // `transitive_live_vars_generic` and dropped freshened
+                        // bindings unreachable from `v`.
+                        //
+                        // Why removed: the trim was too aggressive when this
+                        // handler is dispatched from inside a foldl-atom
+                        // iteration. It had no visibility into sibling
+                        // iterations on the continuation stack, so it dropped
+                        // freshened bindings that ARE referenced by the next
+                        // iteration's items. Specifically, for a fold over
+                        // `((father b $__fr_182_b) (father $__fr_182_b c))`,
+                        // iteration 1's match against `(father b c)` produces
+                        // `$__fr_182_b → c`; the trim erased it because
+                        // `live_vars((stv 1 0.9))` is empty; iteration 2 then
+                        // re-bound `$__fr_182_b → b` against `(father b c)`,
+                        // yielding spurious `(grandfather b c)` for PLN's
+                        // Direct.metta tests 2/3.
+                        //
+                        // Why safe to remove: the actual mmverify-hang fix is
+                        // Fix 1 at `engine.rs:649-680` (partial-bind rejection
+                        // at rule-match source), per Fix 4's own docstring.
+                        // The proper iteration-boundary liveness gate is
+                        // `filter_fold_propagating_bindings` at
+                        // `eval_loop.rs:468-481` (called from ProcessFoldlAtom
+                        // at `:7600`, `:7643`, `:7748`). The lazy sibling
+                        // handler `ProcessRuleMatchesLazy` at `:5779-5821`
+                        // already takes this no-trim path — existence proof
+                        // that compose-without-trim is HE-bisimilar.
+                        //
+                        // HE bisimilarity: HE's `Bindings::merge` uses strict
+                        // rejection on inconsistent bindings; HE has no
+                        // analogous trim. This restoration matches HE.
+                        //
+                        // Memory bound: Fix 1 caps freshened-binding count at
+                        // per-rule var count (small constant). Debug-build
+                        // canary below catches regression.
+                        #[cfg(debug_assertions)]
+                        {
+                            let freshened_count = composed
+                                .iter()
+                                .filter(|(k, _)| k.starts_with("$__fr_"))
+                                .count();
+                            debug_assert!(
+                                freshened_count < 1024,
+                                "ProcessRuleMatches compose produced {} freshened-binding keys; \
                              possible Fix 1 regression. Investigate \
                              enumerate_rules_via_unification.",
-                            freshened_count
-                        );
-                    }
-                    (v, composed)
-                }).collect()
+                                freshened_count
+                            );
+                        }
+                        (v, composed)
+                    })
+                    .collect()
             };
             results.extend(composed);
 
@@ -5669,7 +6406,9 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 // remaining_matches is already in generic type (V, GenericBindings<V>)
-                let (rhs, raw_bindings) = remaining_matches.next().expect("remaining_matches is non-empty");
+                let (rhs, raw_bindings) = remaining_matches
+                    .next()
+                    .expect("remaining_matches is non-empty");
 
                 // Stage 1c: rotate to the next branch's match bindings so the
                 // next COMPOSE_MATCH uses them. Each sibling branch has its
@@ -5680,7 +6419,9 @@ fn process_continuation<C: EvalContext>(
                     raw_bindings.clone()
                 } else {
                     crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &*outer_carrying, &raw_bindings, ctx.factory(),
+                        &*outer_carrying,
+                        &raw_bindings,
+                        ctx.factory(),
                     )
                 });
 
@@ -5768,7 +6509,9 @@ fn process_continuation<C: EvalContext>(
                     if let Some(tc) = ctx.trace_collector() {
                         let bindings_tv: Vec<(String, trace_format::TraceValue)> = bindings
                             .iter()
-                            .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                            .map(|(k, v)| {
+                                (k.to_string(), crate::backend::trace::trace_value_generic(v))
+                            })
                             .collect();
                         let trace_rhs = crate::backend::trace::trace_value_generic(&rhs);
                         tc.emit_converted(
@@ -5841,35 +6584,36 @@ fn process_continuation<C: EvalContext>(
             // Stage 1c: COMPOSE_MATCH composition for each sub-eval result,
             // mirroring ProcessRuleMatches (A.2). Empty bindings fast path
             // preserves zero-overhead for non-collapse-bind evaluations.
-            let composed: SmallVec<[BoundValue; 2]> = if current_branch_bindings.is_empty()
-                && tracked_vars_hint.is_none()
-            {
-                eval_results
-            } else {
-                let factory = ctx.factory();
-                eval_results.into_iter().map(|(v, child_b)| {
-                    let mut c =
-                        crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*current_branch_bindings,
-                            &child_b,
-                            factory,
-                        );
-                    crate::backend::eval::bindings::apply_chain_generic(&mut c, factory);
-                    // Layer A: projection moved to sidecar encoding — see
-                    // ProcessCollapseEvalResults. Preserve user-named
-                    // bindings through the pipeline; only the observation
-                    // point projects to the tracked set (HE Bindings::resolve
-                    // semantics).
-                    // let projected = match &tracked_vars_hint {
-                    //     Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
-                    //         &c,
-                    //         tv.as_slice(),
-                    //     ),
-                    //     None => c,
-                    // };
-                    (v, c)
-                }).collect()
-            };
+            let composed: SmallVec<[BoundValue; 2]> =
+                if current_branch_bindings.is_empty() && tracked_vars_hint.is_none() {
+                    eval_results
+                } else {
+                    let factory = ctx.factory();
+                    eval_results
+                        .into_iter()
+                        .map(|(v, child_b)| {
+                            let mut c = crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*current_branch_bindings,
+                                &child_b,
+                                factory,
+                            );
+                            crate::backend::eval::bindings::apply_chain_generic(&mut c, factory);
+                            // Layer A: projection moved to sidecar encoding — see
+                            // ProcessCollapseEvalResults. Preserve user-named
+                            // bindings through the pipeline; only the observation
+                            // point projects to the tracked set (HE Bindings::resolve
+                            // semantics).
+                            // let projected = match &tracked_vars_hint {
+                            //     Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
+                            //         &c,
+                            //         tv.as_slice(),
+                            //     ),
+                            //     None => c,
+                            // };
+                            (v, c)
+                        })
+                        .collect()
+                };
 
             // Record results from the just-evaluated branch
             for val in composed.iter() {
@@ -5889,7 +6633,9 @@ fn process_continuation<C: EvalContext>(
                     bindings.clone()
                 } else {
                     crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &*outer_carrying, &bindings, ctx.factory(),
+                        &*outer_carrying,
+                        &bindings,
+                        ctx.factory(),
                     )
                 });
 
@@ -5912,7 +6658,8 @@ fn process_continuation<C: EvalContext>(
                         depth: depth + 1,
                         is_tail_call: false,
                         expected_type: None,
-                        carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
+                        carrying_bindings:
+                            crate::backend::eval::trampoline::types::empty_shared_bindings(),
                     });
                 } else {
                     work_stack.push(WorkItem::Eval {
@@ -5922,7 +6669,8 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
+                        carrying_bindings:
+                            crate::backend::eval::trampoline::types::empty_shared_bindings(),
                     });
                 }
             } else {
@@ -5990,21 +6738,21 @@ fn process_continuation<C: EvalContext>(
             // inconsistent — emit zero results rather than firing the
             // grounded op with empty bindings (which produced ghost
             // outputs downstream). HE-bisimilar silent pruning.
-            let composed: crate::backend::eval::trampoline::types::SharedBindings = match
-                crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+            let composed: crate::backend::eval::trampoline::types::SharedBindings =
+                match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
                     &*arg_bindings,
                     &chosen_bindings,
                     ctx.factory(),
                 ) {
-                Some(b) => std::sync::Arc::new(b),
-                None => {
-                    // Conflicting alt: emit zero and return.
-                    work_stack.push(WorkItem::Resume {
-                        result: (SmallVec::new(), result_env),
-                    });
-                    return;
-                }
-            };
+                    Some(b) => std::sync::Arc::new(b),
+                    None => {
+                        // Conflicting alt: emit zero and return.
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), result_env),
+                        });
+                        return;
+                    }
+                };
 
             // Install the single-valued arg in state — each branch sees
             // exactly one value at `pending_arg_idx`, matching HE where
@@ -6016,21 +6764,19 @@ fn process_continuation<C: EvalContext>(
             if let Some(work) = execute_grounded_op(&op_name, &mut state, ctx.factory()) {
                 match work {
                     GroundedWork::Done(results) => {
-                        let values: Vec<MettaValue> = results
-                            .into_iter()
-                            .map(|(v, _)| v)
-                            .collect();
+                        let values: Vec<MettaValue> = results.into_iter().map(|(v, _)| v).collect();
                         let tag = (*composed).clone();
                         work_stack.push(WorkItem::Resume {
                             result: (
-                                values.into_iter()
-                                    .map(|v| (v, tag.clone()))
-                                    .collect(),
+                                values.into_iter().map(|v| (v, tag.clone())).collect(),
                                 result_env,
                             ),
                         });
                     }
-                    GroundedWork::EvalArg { arg_idx, state: new_state } => {
+                    GroundedWork::EvalArg {
+                        arg_idx,
+                        state: new_state,
+                    } => {
                         let arg_bindings_for_eval = composed.clone();
                         continuations.push(Continuation::ProcessGroundedOp {
                             state: Box::new(new_state.clone()),
@@ -6067,9 +6813,15 @@ fn process_continuation<C: EvalContext>(
                             }
                             _ => {
                                 let error_value = match e {
-                                    ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
-                                    ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
-                                    ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("IncorrectArgument")),
+                                    ExecError::Runtime(msg) => {
+                                        ctx.factory().error(&msg, ctx.factory().atom("TypeError"))
+                                    }
+                                    ExecError::Arithmetic(msg) => ctx
+                                        .factory()
+                                        .error(&msg, ctx.factory().atom("ArithmeticError")),
+                                    ExecError::IncorrectArgument(msg) => ctx
+                                        .factory()
+                                        .error(&msg, ctx.factory().atom("IncorrectArgument")),
                                     ExecError::NoReduce => unreachable!(),
                                 };
                                 work_stack.push(WorkItem::Resume {
@@ -6081,7 +6833,10 @@ fn process_continuation<C: EvalContext>(
                 }
             } else {
                 let error_value = ctx.factory().error(
-                    &format!("Grounded operation '{}' not found in generic registry", state.op_name),
+                    &format!(
+                        "Grounded operation '{}' not found in generic registry",
+                        state.op_name
+                    ),
                     ctx.factory().atom("OperationNotFoundError"),
                 );
                 work_stack.push(WorkItem::Resume {
@@ -6159,21 +6914,20 @@ fn process_continuation<C: EvalContext>(
                 if let Some(work) = execute_grounded_op(&op_name, &mut state_i, ctx.factory()) {
                     match work {
                         GroundedWork::Done(branch_results) => {
-                            let values: Vec<MettaValue> = branch_results
-                                .into_iter()
-                                .map(|(v, _)| v)
-                                .collect();
+                            let values: Vec<MettaValue> =
+                                branch_results.into_iter().map(|(v, _)| v).collect();
                             let tag = (*composed).clone();
                             work_stack.push(WorkItem::Resume {
                                 result: (
-                                    values.into_iter()
-                                        .map(|v| (v, tag.clone()))
-                                        .collect(),
+                                    values.into_iter().map(|v| (v, tag.clone())).collect(),
                                     result_env,
                                 ),
                             });
                         }
-                        GroundedWork::EvalArg { arg_idx, state: new_state } => {
+                        GroundedWork::EvalArg {
+                            arg_idx,
+                            state: new_state,
+                        } => {
                             let arg_bindings_for_eval = composed.clone();
                             continuations.push(Continuation::ProcessGroundedOp {
                                 state: Box::new(new_state.clone()),
@@ -6210,9 +6964,15 @@ fn process_continuation<C: EvalContext>(
                                 }
                                 _ => {
                                     let error_value = match e {
-                                        ExecError::Runtime(msg) => ctx.factory().error(&msg, ctx.factory().atom("TypeError")),
-                                        ExecError::Arithmetic(msg) => ctx.factory().error(&msg, ctx.factory().atom("ArithmeticError")),
-                                        ExecError::IncorrectArgument(msg) => ctx.factory().error(&msg, ctx.factory().atom("IncorrectArgument")),
+                                        ExecError::Runtime(msg) => ctx
+                                            .factory()
+                                            .error(&msg, ctx.factory().atom("TypeError")),
+                                        ExecError::Arithmetic(msg) => ctx
+                                            .factory()
+                                            .error(&msg, ctx.factory().atom("ArithmeticError")),
+                                        ExecError::IncorrectArgument(msg) => ctx
+                                            .factory()
+                                            .error(&msg, ctx.factory().atom("IncorrectArgument")),
                                         ExecError::NoReduce => unreachable!(),
                                     };
                                     work_stack.push(WorkItem::Resume {
@@ -6224,7 +6984,10 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let error_value = ctx.factory().error(
-                        &format!("Grounded operation '{}' not found in generic registry", state_i.op_name),
+                        &format!(
+                            "Grounded operation '{}' not found in generic registry",
+                            state_i.op_name
+                        ),
                         ctx.factory().atom("OperationNotFoundError"),
                     );
                     work_stack.push(WorkItem::Resume {
@@ -6291,7 +7054,8 @@ fn process_continuation<C: EvalContext>(
                 let generic_sexpr = ctx.factory().sexpr(combo.to_vec());
 
                 // Try to match rules using generic version - no conversion needed!
-                let all_matches_with_types = try_match_all_rules(&generic_sexpr, &result_env, *ctx.factory());
+                let all_matches_with_types =
+                    try_match_all_rules(&generic_sexpr, &result_env, *ctx.factory());
 
                 if all_matches_with_types.is_empty() {
                     // Phase 2.B HE-bisimilarity fix: distinguish function with
@@ -6351,13 +7115,22 @@ fn process_continuation<C: EvalContext>(
                     });
 
                     // Dispatch rule matches (parallel or sequential)
-                    dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None, &*outer_carrying);
+                    dispatch_rule_matches(
+                        matches_deque,
+                        SmallVec::new(),
+                        (*result_env).clone(),
+                        depth,
+                        ctx,
+                        work_stack,
+                        continuations,
+                        None,
+                        &*outer_carrying,
+                    );
                 }
             } else {
                 // All combinations processed - results already contains generic values
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), env),
-
                 });
             }
         }
@@ -6427,12 +7200,17 @@ fn process_continuation<C: EvalContext>(
                     (*outer_carrying).clone()
                 } else {
                     crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &*outer_carrying, &combo_bindings, ctx.factory(),
+                        &*outer_carrying,
+                        &combo_bindings,
+                        ctx.factory(),
                     )
                 };
                 let all_matches_with_types =
                     crate::backend::eval::trampoline::engine::try_match_all_rules_with_outer(
-                        &generic_sexpr, &result_env, *ctx.factory(), &combo_outer,
+                        &generic_sexpr,
+                        &result_env,
+                        *ctx.factory(),
+                        &combo_outer,
                     );
 
                 if all_matches_with_types.is_empty() {
@@ -6493,7 +7271,11 @@ fn process_continuation<C: EvalContext>(
                         matches_deque,
                         SmallVec::new(),
                         (*result_env).clone(),
-                        depth, ctx, work_stack, continuations, None,
+                        depth,
+                        ctx,
+                        work_stack,
+                        continuations,
+                        None,
                         &combo_bindings,
                     );
                 }
@@ -6519,6 +7301,17 @@ fn process_continuation<C: EvalContext>(
 
             // Phase 8.5: Extract type constraint once for all values
             let type_constraint = extract_type_constraint(&pattern);
+            let shadowed_outer_carrying = if outer_carrying.is_empty()
+                || !pattern.has_variables_fast()
+            {
+                outer_carrying.clone()
+            } else {
+                std::sync::Arc::new(crate::backend::eval::bindings::prepare_letstar_accumulated(
+                    &*outer_carrying,
+                    &pattern,
+                    ctx.factory(),
+                ))
+            };
 
             match pending_values {
                 None => {
@@ -6532,7 +7325,10 @@ fn process_continuation<C: EvalContext>(
                                 trace_format::TraceTier::TreeWalker,
                                 depth as u32,
                                 crate::backend::trace::trace_value_generic(&pattern),
-                                result_values.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                                result_values
+                                    .iter()
+                                    .map(|(v, _)| crate::backend::trace::trace_value_generic(v))
+                                    .collect(),
                                 None,
                                 trace_format::TraceEventKind::SpecialForm {
                                     form_name: "let".to_string(),
@@ -6559,7 +7355,8 @@ fn process_continuation<C: EvalContext>(
                         // Phase 8.5: Type pre-check for typed patterns
                         if let Some(ref tc) = type_constraint {
                             if get_ground_type(value).is_some() {
-                                let value_type = infer_type_generic(value, ctx.factory(), &result_env);
+                                let value_type =
+                                    infer_type_generic(value, ctx.factory(), &result_env);
                                 if !types_match_with_subtypes(&value_type, tc, &result_env) {
                                     continue;
                                 }
@@ -6571,33 +7368,65 @@ fn process_continuation<C: EvalContext>(
                             // body sees variables bound by both. Previously `_b`
                             // was discarded, losing scrutinee-level bindings
                             // like `$y=$b` from `(rule $y) → $y=<ground>`.
-                            let pm_with_scrutinee: crate::backend::models::GenericBindings<MettaValue> =
-                                if b.is_empty() {
-                                    pm_bindings
-                                } else {
-                                    match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                                        b, &pm_bindings, ctx.factory(),
+                            let pm_with_scrutinee: crate::backend::models::GenericBindings<
+                                MettaValue,
+                            > = if b.is_empty() {
+                                pm_bindings
+                            } else {
+                                let scrutinee_shadowed =
+                                    crate::backend::eval::bindings::prepare_letstar_accumulated(
+                                        b,
+                                        &pattern,
+                                        ctx.factory(),
+                                    );
+                                match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                                        &scrutinee_shadowed, &pm_bindings, ctx.factory(),
                                     ) {
                                         Some(composed) => composed,
                                         None => continue, // conflict → drop
                                     }
-                                };
+                            };
                             if let Some(ref ob) = outer_bindings {
+                                let outer_shadowed =
+                                    crate::backend::eval::bindings::prepare_letstar_accumulated(
+                                        ob,
+                                        &pattern,
+                                        ctx.factory(),
+                                    );
                                 match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                                    ob, &pm_with_scrutinee, ctx.factory(),
+                                    &outer_shadowed,
+                                    &pm_with_scrutinee,
+                                    ctx.factory(),
                                 ) {
                                     Some(composed) => {
-                                        bound_bodies.push(BoundBody::Deferred(composed));
+                                        let tracked = active_tracked_vars();
+                                        if let Some(projected) = project_owned_bindings_for_consumer(
+                                            &composed,
+                                            &body,
+                                            tracked.as_deref(),
+                                            ctx.factory(),
+                                        ) {
+                                            bound_bodies.push(BoundBody::Deferred(projected));
+                                        }
                                     }
                                     None => continue, // conflict → drop this alt
                                 }
                             } else if !pm_with_scrutinee.is_empty() && body.has_variables_fast() {
                                 // Defer via EvalWithBindings when body has vars
                                 // to resolve via scrutinee bindings.
-                                bound_bodies.push(BoundBody::Deferred(pm_with_scrutinee));
+                                let tracked = active_tracked_vars();
+                                if let Some(projected) = project_owned_bindings_for_consumer(
+                                    &pm_with_scrutinee,
+                                    &body,
+                                    tracked.as_deref(),
+                                    ctx.factory(),
+                                ) {
+                                    bound_bodies.push(BoundBody::Deferred(projected));
+                                }
                             } else {
                                 // No outer, no scrutinee — materialize body as before
-                                let instantiated = apply_bindings(&body, &pm_with_scrutinee, ctx.factory());
+                                let instantiated =
+                                    apply_bindings(&body, &pm_with_scrutinee, ctx.factory());
                                 bound_bodies.push(BoundBody::Materialized(instantiated));
                             }
                         }
@@ -6615,6 +7444,18 @@ fn process_continuation<C: EvalContext>(
                         let single = bound_bodies.into_iter().next().expect("len == 1");
                         match single {
                             BoundBody::Materialized(val) => {
+                                let tracked = active_tracked_vars();
+                                let Some(carrying) = project_carrying_for_consumer(
+                                    &shadowed_outer_carrying,
+                                    &val,
+                                    tracked.as_deref(),
+                                    ctx.factory(),
+                                ) else {
+                                    work_stack.push(WorkItem::Resume {
+                                        result: (SmallVec::new(), result_env),
+                                    });
+                                    return;
+                                };
                                 work_stack.push(WorkItem::Eval {
                                     value: val,
                                     env: result_env,
@@ -6622,10 +7463,22 @@ fn process_continuation<C: EvalContext>(
                                     is_tail_call: true,
                                     expected_type: None,
                                     demand: None,
-                                    carrying_bindings: outer_carrying.clone(),
+                                    carrying_bindings: carrying,
                                 });
                             }
                             BoundBody::Deferred(composed_bindings) => {
+                                let tracked = active_tracked_vars();
+                                let Some(carrying) = project_carrying_for_consumer(
+                                    &shadowed_outer_carrying,
+                                    &body,
+                                    tracked.as_deref(),
+                                    ctx.factory(),
+                                ) else {
+                                    work_stack.push(WorkItem::Resume {
+                                        result: (SmallVec::new(), result_env),
+                                    });
+                                    return;
+                                };
                                 work_stack.push(WorkItem::EvalWithBindings {
                                     template: body.clone(),
                                     bindings: std::sync::Arc::new(composed_bindings),
@@ -6633,7 +7486,7 @@ fn process_continuation<C: EvalContext>(
                                     depth,
                                     is_tail_call: true,
                                     expected_type: None,
-                                    carrying_bindings: outer_carrying.clone(),
+                                    carrying_bindings: carrying,
                                 });
                             }
                         }
@@ -6641,14 +7494,15 @@ fn process_continuation<C: EvalContext>(
                     }
 
                     // Multiple matches: materialize all deferred bodies for dispatch
-                    let instantiated_bodies: Vec<MettaValue> = bound_bodies.into_iter().map(|bb| {
-                        match bb {
+                    let instantiated_bodies: Vec<MettaValue> = bound_bodies
+                        .into_iter()
+                        .map(|bb| match bb {
                             BoundBody::Materialized(val) => val,
                             BoundBody::Deferred(composed_bindings) => {
                                 apply_bindings(&body, &composed_bindings, ctx.factory())
                             }
-                        }
-                    }).collect();
+                        })
+                        .collect();
 
                     // ── Parallel path: evaluate all matched bodies concurrently ──
                     // When multiple values match, their body evaluations are
@@ -6665,7 +7519,9 @@ fn process_continuation<C: EvalContext>(
                         });
                         // H2: branch-purity gate (spec §5.6.1).
                         let all_pure = instantiated_bodies.iter().all(|body| {
-                            !crate::backend::scheduler::classification::body_contains_impure(body, 8)
+                            !crate::backend::scheduler::classification::body_contains_impure(
+                                body, 8,
+                            )
                         });
                         degree_ok && all_pure
                     } else {
@@ -6676,10 +7532,7 @@ fn process_continuation<C: EvalContext>(
                         && current_depth < max_parallel_depth()
                         && global_eval_pool().active_workers() > 0
                     {
-                        try_acquire_budget(
-                            (instantiated_bodies.len() - 1) as u32,
-                            current_depth,
-                        )
+                        try_acquire_budget((instantiated_bodies.len() - 1) as u32, current_depth)
                     } else {
                         0
                     };
@@ -6689,8 +7542,27 @@ fn process_continuation<C: EvalContext>(
                         // ProcessLet's parallel body dispatch is a fan-out: every
                         // matched-pattern body must produce its result for the
                         // outer let to collect. `Demand::All` is correct here.
+                        let tracked = active_tracked_vars();
+                        let branches: Vec<ParallelBranch> = instantiated_bodies
+                            .into_iter()
+                            .filter_map(|body| {
+                                project_carrying_for_consumer(
+                                    &shadowed_outer_carrying,
+                                    &body,
+                                    tracked.as_deref(),
+                                    ctx.factory(),
+                                )
+                                .map(|carrying| (body, carrying))
+                            })
+                            .collect();
+                        if branches.is_empty() {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::from_vec(results), result_env),
+                            });
+                            return;
+                        }
                         let par_results = parallel_branch_eval(
-                            instantiated_bodies,
+                            branches,
                             metta_env,
                             par_budget,
                             current_depth,
@@ -6703,7 +7575,6 @@ fn process_continuation<C: EvalContext>(
 
                         work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(merged), result_env),
-
                         });
                     } else {
                         // ── Sequential path: process bodies one at a time ──
@@ -6716,18 +7587,29 @@ fn process_continuation<C: EvalContext>(
                             .map(bv)
                             .collect::<Vec<_>>()
                             .into_iter();
-                        let (first_body, _first_b) = bodies_iter
-                            .next()
-                            .expect("bodies is non-empty");
+                        let (first_body, _first_b) =
+                            bodies_iter.next().expect("bodies is non-empty");
 
                         continuations.push(Continuation::ProcessAmb {
                             remaining_alts: bodies_iter,
                             results,
                             env: result_env.clone(),
                             depth,
-                            outer_carrying: outer_carrying.clone(),
+                            outer_carrying: shadowed_outer_carrying.clone(),
                         });
 
+                        let tracked = active_tracked_vars();
+                        let Some(carrying) = project_carrying_for_consumer(
+                            &shadowed_outer_carrying,
+                            &first_body,
+                            tracked.as_deref(),
+                            ctx.factory(),
+                        ) else {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), result_env),
+                            });
+                            return;
+                        };
                         work_stack.push(WorkItem::Eval {
                             value: first_body,
                             env: result_env,
@@ -6735,7 +7617,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: carrying,
                         });
                     }
                     return;
@@ -6752,8 +7634,10 @@ fn process_continuation<C: EvalContext>(
                                 // Phase 8.5: Type pre-check for typed patterns (: $var Type)
                                 if let Some(ref tc) = type_constraint {
                                     if get_ground_type(&value).is_some() {
-                                        let value_type = infer_type_generic(&value, ctx.factory(), &result_env);
-                                        if !types_match_with_subtypes(&value_type, tc, &result_env) {
+                                        let value_type =
+                                            infer_type_generic(&value, ctx.factory(), &result_env);
+                                        if !types_match_with_subtypes(&value_type, tc, &result_env)
+                                        {
                                             continue; // Type mismatch — skip
                                         }
                                     }
@@ -6761,17 +7645,18 @@ fn process_continuation<C: EvalContext>(
                                 // Task #70 gap-fix: compose scrutinee_b (per-value
                                 // bindings, previously `_b` discarded) into the
                                 // pattern-match bindings so body eval sees them.
-                                let pm_and_scrutinee = |pm: crate::backend::models::GenericBindings<MettaValue>|
-                                    -> Option<crate::backend::models::GenericBindings<MettaValue>>
-                                {
-                                    if scrutinee_b.is_empty() {
-                                        Some(pm)
-                                    } else {
-                                        crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                                let pm_and_scrutinee =
+                                    |pm: crate::backend::models::GenericBindings<MettaValue>| -> Option<
+                                        crate::backend::models::GenericBindings<MettaValue>,
+                                    > {
+                                        if scrutinee_b.is_empty() {
+                                            Some(pm)
+                                        } else {
+                                            crate::backend::eval::bindings::compose_outer_inner_strict_generic(
                                             &scrutinee_b, &pm, ctx.factory(),
                                         )
-                                    }
-                                };
+                                        }
+                                    };
                                 if let Some(bindings) = pattern_match(&pattern, &value) {
                                     let bindings = match pm_and_scrutinee(bindings) {
                                         Some(b) => b,
@@ -6784,8 +7669,12 @@ fn process_continuation<C: EvalContext>(
                                             tc.emit_converted(
                                                 trace_format::TraceTier::TreeWalker,
                                                 depth as u32,
-                                                crate::backend::trace::trace_value_generic(&pattern),
-                                                vec![crate::backend::trace::trace_value_generic(&value)],
+                                                crate::backend::trace::trace_value_generic(
+                                                    &pattern,
+                                                ),
+                                                vec![crate::backend::trace::trace_value_generic(
+                                                    &value,
+                                                )],
                                                 None,
                                                 trace_format::TraceEventKind::SpecialForm {
                                                     form_name: "let".to_string(),
@@ -6803,18 +7692,47 @@ fn process_continuation<C: EvalContext>(
                                     // The old code used `.compose()` which silently
                                     // overwrote conflicts, producing ghost results.
                                     if let Some(ref ob) = outer_bindings {
+                                        let outer_shadowed =
+                                            crate::backend::eval::bindings::prepare_letstar_accumulated(
+                                                ob,
+                                                &pattern,
+                                                ctx.factory(),
+                                            );
                                         let composed = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                                            ob, &bindings, ctx.factory(),
+                                            &outer_shadowed,
+                                            &bindings,
+                                            ctx.factory(),
                                         ) {
                                             Some(b) => b,
                                             None => continue, // conflict → try next value
                                         };
+                                        let tracked = active_tracked_vars();
+                                        let composed = match project_owned_bindings_for_consumer(
+                                            &composed,
+                                            &body,
+                                            tracked.as_deref(),
+                                            ctx.factory(),
+                                        ) {
+                                            Some(b) => b,
+                                            None => continue,
+                                        };
+                                        let carrying = match project_carrying_for_consumer(
+                                            &shadowed_outer_carrying,
+                                            &body,
+                                            tracked.as_deref(),
+                                            ctx.factory(),
+                                        ) {
+                                            Some(b) => b,
+                                            None => continue,
+                                        };
+                                        let cont_remaining = std::mem::take(&mut remaining_values);
+                                        let cont_results = std::mem::take(&mut results);
                                         continuations.push(Continuation::ProcessLet {
-                                            pending_values: Some(remaining_values),
+                                            pending_values: Some(cont_remaining),
                                             pattern,
                                             body: body.clone(),
                                             outer_bindings: outer_bindings.clone(),
-                                            results,
+                                            results: cont_results,
                                             env: result_env.clone(),
                                             depth,
                                             outer_carrying: outer_carrying.clone(),
@@ -6826,20 +7744,33 @@ fn process_continuation<C: EvalContext>(
                                             depth,
                                             is_tail_call: true,
                                             expected_type: None,
-                                            carrying_bindings: outer_carrying.clone(),
+                                            carrying_bindings: carrying,
                                         });
                                     } else {
+                                        let instantiated_body =
+                                            apply_bindings(&body, &bindings, ctx.factory());
+                                        let tracked = active_tracked_vars();
+                                        let carrying = match project_carrying_for_consumer(
+                                            &shadowed_outer_carrying,
+                                            &instantiated_body,
+                                            tracked.as_deref(),
+                                            ctx.factory(),
+                                        ) {
+                                            Some(b) => b,
+                                            None => continue,
+                                        };
+                                        let cont_remaining = std::mem::take(&mut remaining_values);
+                                        let cont_results = std::mem::take(&mut results);
                                         continuations.push(Continuation::ProcessLet {
-                                            pending_values: Some(remaining_values),
+                                            pending_values: Some(cont_remaining),
                                             pattern,
                                             body: body.clone(),
                                             outer_bindings: outer_bindings.clone(),
-                                            results,
+                                            results: cont_results,
                                             env: result_env.clone(),
                                             depth,
                                             outer_carrying: outer_carrying.clone(),
                                         });
-                                        let instantiated_body = apply_bindings(&body, &bindings, ctx.factory());
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_body,
                                             env: result_env,
@@ -6847,7 +7778,7 @@ fn process_continuation<C: EvalContext>(
                                             is_tail_call: true,
                                             expected_type: None,
                                             demand: None,
-                                            carrying_bindings: outer_carrying.clone(),
+                                            carrying_bindings: carrying,
                                         });
                                     }
                                     return;
@@ -6875,7 +7806,6 @@ fn process_continuation<C: EvalContext>(
                                 // All values processed - return results to parent
                                 work_stack.push(WorkItem::Resume {
                                     result: (SmallVec::from_vec(results), result_env),
-
                                 });
                                 return;
                             }
@@ -6911,9 +7841,8 @@ fn process_continuation<C: EvalContext>(
                 let arg_to_eval = items[arg_idx].clone();
 
                 // Phase 9.2: Derive expected_type for next arg
-                let arg_expected_type = derive_arg_expected_type::<C>(
-                    &items, arg_idx, &result_env, ctx.factory(),
-                );
+                let arg_expected_type =
+                    derive_arg_expected_type::<C>(&items, arg_idx, &result_env, ctx.factory());
 
                 continuations.push(Continuation::CollectGroundedArg {
                     items,
@@ -6969,7 +7898,9 @@ fn process_continuation<C: EvalContext>(
                     // combination's evaluation carries its per-branch bindings.
                     // Start with a single empty combination (indices all 0)
                     let mut combo_indices: Vec<usize> = vec![0; evaluated_results.len()];
-                    let mut combo_bindings: Vec<crate::backend::models::GenericBindings<MettaValue>> = Vec::new();
+                    let mut combo_bindings: Vec<
+                        crate::backend::models::GenericBindings<MettaValue>,
+                    > = Vec::new();
                     loop {
                         // Build this combination's items
                         let mut combo_items = items.clone();
@@ -7021,12 +7952,18 @@ fn process_continuation<C: EvalContext>(
                     // Stage 1d-revised: zip combinations with their
                     // per-combo bindings so each combination's evaluation
                     // carries the merged arg bindings.
-                    let combos_with_b: Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)> =
-                        combinations.into_iter().zip(combo_bindings.into_iter()).collect();
+                    let combos_with_b: Vec<(
+                        MettaValue,
+                        crate::backend::models::GenericBindings<MettaValue>,
+                    )> = combinations
+                        .into_iter()
+                        .zip(combo_bindings.into_iter())
+                        .collect();
                     let mut combinations_iter = combos_with_b.into_iter();
 
                     if combinations_iter.len() == 1 {
-                        let (sexpr, combo_b) = combinations_iter.next().expect("combinations is non-empty");
+                        let (sexpr, combo_b) =
+                            combinations_iter.next().expect("combinations is non-empty");
                         // Compose outer_carrying with the combo's merged arg bindings.
                         let combo_carrying = if outer_carrying.is_empty() {
                             combo_b
@@ -7034,7 +7971,9 @@ fn process_continuation<C: EvalContext>(
                             (*outer_carrying).clone()
                         } else {
                             crate::backend::eval::bindings::compose_outer_inner_generic(
-                                &*outer_carrying, &combo_b, ctx.factory(),
+                                &*outer_carrying,
+                                &combo_b,
+                                ctx.factory(),
                             )
                         };
 
@@ -7050,11 +7989,21 @@ fn process_continuation<C: EvalContext>(
                                 );
 
                             if !all_matches_with_types.is_empty() {
-                                let matches_deque: Vec<_> =
-                                    all_matches_with_types.into_iter()
-                                        .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
-                                        .collect();
-                                dispatch_rule_matches(matches_deque, SmallVec::new(), (*result_env).clone(), depth, ctx, work_stack, continuations, None, &combo_carrying);
+                                let matches_deque: Vec<_> = all_matches_with_types
+                                    .into_iter()
+                                    .map(|(rhs, bindings, _rhs_type)| (rhs, bindings))
+                                    .collect();
+                                dispatch_rule_matches(
+                                    matches_deque,
+                                    SmallVec::new(),
+                                    (*result_env).clone(),
+                                    depth,
+                                    ctx,
+                                    work_stack,
+                                    continuations,
+                                    None,
+                                    &combo_carrying,
+                                );
                             } else {
                                 work_stack.push(WorkItem::Resume {
                                     result: (smallvec![bv_with(sexpr, combo_carrying)], result_env),
@@ -7073,7 +8022,8 @@ fn process_continuation<C: EvalContext>(
                         }
                     } else {
                         // Multiple combinations — evaluate each and collect results.
-                        let first_pair = combinations_iter.next().expect("combinations is non-empty");
+                        let first_pair =
+                            combinations_iter.next().expect("combinations is non-empty");
                         let (first_sexpr, first_b) = first_pair;
                         let first_carrying = if outer_carrying.is_empty() {
                             first_b
@@ -7081,14 +8031,18 @@ fn process_continuation<C: EvalContext>(
                             (*outer_carrying).clone()
                         } else {
                             crate::backend::eval::bindings::compose_outer_inner_generic(
-                                &*outer_carrying, &first_b, ctx.factory(),
+                                &*outer_carrying,
+                                &first_b,
+                                ctx.factory(),
                             )
                         };
                         let app_capacity = combinations_iter.len() + 1;
                         // Store the remaining combos + their bindings for
                         // CollectApplicativeResults to dispatch in order.
-                        let remaining_vec: Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)> =
-                            combinations_iter.collect();
+                        let remaining_vec: Vec<(
+                            MettaValue,
+                            crate::backend::models::GenericBindings<MettaValue>,
+                        )> = combinations_iter.collect();
                         // Keep `remaining` field type (IntoIter<MettaValue>) —
                         // store the pairs via a side field; but since adding a
                         // new field to CollectApplicativeResults requires type
@@ -7101,9 +8055,14 @@ fn process_continuation<C: EvalContext>(
                         // `remaining` to hold the pairs via a type change in
                         // the continuation. Done in the next edit.
                         let remaining_pairs_only_values: std::vec::IntoIter<MettaValue> =
-                            remaining_vec.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>().into_iter();
-                        let remaining_pairs_bindings: Vec<crate::backend::models::GenericBindings<MettaValue>> =
-                            remaining_vec.iter().map(|(_, b)| b.clone()).collect();
+                            remaining_vec
+                                .iter()
+                                .map(|(v, _)| v.clone())
+                                .collect::<Vec<_>>()
+                                .into_iter();
+                        let remaining_pairs_bindings: Vec<
+                            crate::backend::models::GenericBindings<MettaValue>,
+                        > = remaining_vec.iter().map(|(_, b)| b.clone()).collect();
 
                         continuations.push(Continuation::CollectApplicativeResults {
                             remaining: remaining_pairs_only_values,
@@ -7143,7 +8102,6 @@ fn process_continuation<C: EvalContext>(
                 // All combinations evaluated — resume parent with collected results
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), result_env),
-
                 });
             } else {
                 // Stage 1d-revised: evaluate next combination with its specific
@@ -7160,7 +8118,9 @@ fn process_continuation<C: EvalContext>(
                     (*outer_carrying).clone()
                 } else {
                     crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &*outer_carrying, &next_b, ctx.factory(),
+                        &*outer_carrying,
+                        &next_b,
+                        ctx.factory(),
                     )
                 };
 
@@ -7207,17 +8167,18 @@ fn process_continuation<C: EvalContext>(
             // collide with iter-(N+1)'s fresh rebindings (see
             // `test_state_mutation_inside_map_atom` which would fail without
             // this filter).
-            let propagate_keys: smallvec::SmallVec<[&'static str; 16]> = {
-                let mut keys: smallvec::SmallVec<[&'static str; 16]> = smallvec::SmallVec::new();
+            let propagate_keys: smallvec::SmallVec<[crate::backend::models::BindingName; 16]> = {
+                let mut keys: smallvec::SmallVec<[crate::backend::models::BindingName; 16]> =
+                    smallvec::SmallVec::new();
                 for (name, _) in outer_carrying.iter() {
-                    if !keys.contains(&name) {
-                        keys.push(name);
+                    if !keys.iter().any(|key| key.matches(name)) {
+                        keys.push(crate::backend::models::BindingName::from(name));
                     }
                 }
                 for item in remaining_elements.as_slice() {
                     for v in item.free_variables() {
-                        if !keys.contains(&v) {
-                            keys.push(v);
+                        if !keys.iter().any(|key| key.matches(v)) {
+                            keys.push(crate::backend::models::BindingName::from(v));
                         }
                     }
                 }
@@ -7225,9 +8186,9 @@ fn process_continuation<C: EvalContext>(
                 for v in template.free_variables() {
                     if v != var_name.as_str()
                         && !bound.contains(&v)
-                        && !keys.contains(&v)
+                        && !keys.iter().any(|key| key.matches(v))
                     {
-                        keys.push(v);
+                        keys.push(crate::backend::models::BindingName::from(v));
                     }
                 }
                 keys
@@ -7251,7 +8212,7 @@ fn process_continuation<C: EvalContext>(
                 if !first_result.1.is_empty() {
                     let mut filtered = crate::backend::models::GenericBindings::default();
                     for (name, val) in first_result.1.iter() {
-                        if propagate_keys.contains(&name) {
+                        if propagate_keys.iter().any(|key| key.matches(name)) {
                             filtered.insert(name, val.clone());
                         }
                     }
@@ -7262,10 +8223,7 @@ fn process_continuation<C: EvalContext>(
                             ctx.factory(),
                         );
                         // Genuine ground/ground caller-scope conflict → kill branch.
-                        if composed.is_empty()
-                            && !acc_bindings.is_empty()
-                            && !filtered.is_empty()
-                        {
+                        if composed.is_empty() && !acc_bindings.is_empty() && !filtered.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), result_env),
                             });
@@ -7284,9 +8242,9 @@ fn process_continuation<C: EvalContext>(
                 // `bv_with(..., outer_carrying)` discarded acc_bindings entirely,
                 // breaking apply_subst patterns like
                 // `(map-atom $stmt $tok (apply_subst_tok $subst $tok))`.
-                let result_list = ctx.factory().sexpr(
-                    collected_results.into_iter().map(|(v, _)| v).collect()
-                );
+                let result_list = ctx
+                    .factory()
+                    .sexpr(collected_results.into_iter().map(|(v, _)| v).collect());
                 let final_bindings = if acc_bindings.is_empty() {
                     (*outer_carrying).clone()
                 } else if outer_carrying.is_empty() {
@@ -7303,12 +8261,13 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 // More elements to process
-                let next_element = remaining_elements.next().expect("remaining_elements is non-empty");
+                let next_element = remaining_elements
+                    .next()
+                    .expect("remaining_elements is non-empty");
 
                 // Use generic substitute - NO conversion needed
-                let instantiated = substitute_variable_generic(
-                    &template, &var_name, &next_element, ctx.factory(),
-                );
+                let instantiated =
+                    substitute_variable_generic(&template, &var_name, &next_element, ctx.factory());
 
                 // H1 full (2026-05-05): thread acc_bindings to next iter's
                 // carrying via compose(outer_carrying, acc_bindings). The
@@ -7378,17 +8337,18 @@ fn process_continuation<C: EvalContext>(
             // `acc_bindings` flows binding emissions across iterations even
             // when the keep/drop verdict differs — matching HE's
             // `chain (eval (sealed (V) F)) ... (cons-atom ...)` binding flow.
-            let propagate_keys: smallvec::SmallVec<[&'static str; 16]> = {
-                let mut keys: smallvec::SmallVec<[&'static str; 16]> = smallvec::SmallVec::new();
+            let propagate_keys: smallvec::SmallVec<[crate::backend::models::BindingName; 16]> = {
+                let mut keys: smallvec::SmallVec<[crate::backend::models::BindingName; 16]> =
+                    smallvec::SmallVec::new();
                 for (name, _) in outer_carrying.iter() {
-                    if !keys.contains(&name) {
-                        keys.push(name);
+                    if !keys.iter().any(|key| key.matches(name)) {
+                        keys.push(crate::backend::models::BindingName::from(name));
                     }
                 }
                 for item in remaining_elements.as_slice() {
                     for v in item.free_variables() {
-                        if !keys.contains(&v) {
-                            keys.push(v);
+                        if !keys.iter().any(|key| key.matches(v)) {
+                            keys.push(crate::backend::models::BindingName::from(v));
                         }
                     }
                 }
@@ -7396,9 +8356,9 @@ fn process_continuation<C: EvalContext>(
                 for v in predicate.free_variables() {
                     if v != var_name.as_str()
                         && !bound.contains(&v)
-                        && !keys.contains(&v)
+                        && !keys.iter().any(|key| key.matches(v))
                     {
-                        keys.push(v);
+                        keys.push(crate::backend::models::BindingName::from(v));
                     }
                 }
                 keys
@@ -7423,7 +8383,7 @@ fn process_continuation<C: EvalContext>(
                 if !first_result.1.is_empty() {
                     let mut filtered = crate::backend::models::GenericBindings::default();
                     for (name, val) in first_result.1.iter() {
-                        if propagate_keys.contains(&name) {
+                        if propagate_keys.iter().any(|key| key.matches(name)) {
                             filtered.insert(name, val.clone());
                         }
                     }
@@ -7434,10 +8394,7 @@ fn process_continuation<C: EvalContext>(
                             ctx.factory(),
                         );
                         // Genuine ground/ground caller-scope conflict → kill branch.
-                        if composed.is_empty()
-                            && !acc_bindings.is_empty()
-                            && !filtered.is_empty()
-                        {
+                        if composed.is_empty() && !acc_bindings.is_empty() && !filtered.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), result_env),
                             });
@@ -7464,9 +8421,9 @@ fn process_continuation<C: EvalContext>(
                 // All elements processed - return filtered list.
                 // H13: attach compose(outer_carrying, acc_bindings) so per-iter
                 // bindings flow back to the caller (mirror map-atom's H1 full).
-                let result_list = ctx.factory().sexpr(
-                    filtered_results.into_iter().map(|(v, _)| v).collect()
-                );
+                let result_list = ctx
+                    .factory()
+                    .sexpr(filtered_results.into_iter().map(|(v, _)| v).collect());
                 let final_bindings = if acc_bindings.is_empty() {
                     (*outer_carrying).clone()
                 } else if outer_carrying.is_empty() {
@@ -7483,11 +8440,16 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 // More elements to process
-                let next_element = remaining_elements.next().expect("remaining_elements is non-empty");
+                let next_element = remaining_elements
+                    .next()
+                    .expect("remaining_elements is non-empty");
 
                 // Use generic substitute - NO conversion needed
                 let instantiated = substitute_variable_generic(
-                    &predicate, &var_name, &next_element, ctx.factory(),
+                    &predicate,
+                    &var_name,
+                    &next_element,
+                    ctx.factory(),
                 );
 
                 // H13: thread acc_bindings to next iter via compose.
@@ -7621,19 +8583,19 @@ fn process_continuation<C: EvalContext>(
             // Note: we also include vars from the current iteration's
             // item path via acc_bindings' existing keys — anything
             // previously-bound stays bound.
-            let propagate_keys: Vec<&'static str> = {
-                let mut keys: Vec<&'static str> = Vec::new();
+            let propagate_keys: Vec<crate::backend::models::BindingName> = {
+                let mut keys: Vec<crate::backend::models::BindingName> = Vec::new();
                 for item in &remaining_vec {
                     for v in item.free_variables() {
-                        if !keys.contains(&v) {
-                            keys.push(v);
+                        if !keys.iter().any(|key| key.matches(v)) {
+                            keys.push(crate::backend::models::BindingName::from(v));
                         }
                     }
                 }
                 // Plus anything already in acc_bindings (carried forward).
                 for (k, _) in acc_bindings.iter() {
-                    if !keys.contains(&k) {
-                        keys.push(k);
+                    if !keys.iter().any(|key| key.matches(k)) {
+                        keys.push(crate::backend::models::BindingName::from(k));
                     }
                 }
                 keys
@@ -7647,24 +8609,23 @@ fn process_continuation<C: EvalContext>(
                 let final_results: SmallVec<[BoundValue; 2]> = result_values
                     .into_iter()
                     .filter_map(|(v, child_b)| {
-                        let filtered =
-                            filter_fold_propagating_bindings(&child_b, &propagate_keys);
+                        let filtered = filter_fold_propagating_bindings(&child_b, &propagate_keys);
                         let mut composed =
                             crate::backend::eval::bindings::compose_outer_inner_generic(
-                                &*acc_bindings, &filtered, ctx.factory(),
+                                &*acc_bindings,
+                                &filtered,
+                                ctx.factory(),
                             );
                         // Prune branches whose final USER-LEVEL bindings
                         // are inconsistent (compose returned empty from
                         // two non-empty user-bindings inputs — HE's
                         // strict unification rejection).
-                        if composed.is_empty()
-                            && !acc_bindings.is_empty()
-                            && !filtered.is_empty()
-                        {
+                        if composed.is_empty() && !acc_bindings.is_empty() && !filtered.is_empty() {
                             return None;
                         }
                         crate::backend::eval::bindings::apply_chain_generic(
-                            &mut composed, ctx.factory(),
+                            &mut composed,
+                            ctx.factory(),
                         );
                         Some((v, composed))
                     })
@@ -7690,20 +8651,17 @@ fn process_continuation<C: EvalContext>(
                 // spurious ground/ground conflicts on repeat invocations
                 // of the same op rule (MeTTaTron one-time-freshening
                 // artifact with no HE analogue).
-                let filtered_child_b =
-                    filter_fold_propagating_bindings(&child_b, &propagate_keys);
+                let filtered_child_b = filter_fold_propagating_bindings(&child_b, &propagate_keys);
 
                 // Compose user-level child bindings with accumulator
                 // bindings. Genuine user-level conflicts still abort the
                 // fold (HE-faithful).
-                let mut composed =
-                    crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &*acc_bindings, &filtered_child_b, ctx.factory(),
-                    );
-                if composed.is_empty()
-                    && !acc_bindings.is_empty()
-                    && !filtered_child_b.is_empty()
-                {
+                let mut composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                    &*acc_bindings,
+                    &filtered_child_b,
+                    ctx.factory(),
+                );
+                if composed.is_empty() && !acc_bindings.is_empty() && !filtered_child_b.is_empty() {
                     // Genuine user-level binding inconsistency — branch
                     // dies. Matches HE's `Bindings::merge` strict
                     // rejection.
@@ -7712,9 +8670,7 @@ fn process_continuation<C: EvalContext>(
                     });
                     return;
                 }
-                crate::backend::eval::bindings::apply_chain_generic(
-                    &mut composed, ctx.factory(),
-                );
+                crate::backend::eval::bindings::apply_chain_generic(&mut composed, ctx.factory());
                 let new_acc_bindings = std::sync::Arc::new(composed);
 
                 let mut remaining_iter = remaining_vec.into_iter();
@@ -7723,10 +8679,16 @@ fn process_continuation<C: EvalContext>(
                     .expect("remaining_vec.is_empty() short-circuited above");
 
                 let instantiated = substitute_variable_generic(
-                    &operation, &acc_var_name, &first_result, ctx.factory(),
+                    &operation,
+                    &acc_var_name,
+                    &first_result,
+                    ctx.factory(),
                 );
                 let instantiated = substitute_variable_generic(
-                    &instantiated, &item_var_name, &next_element, ctx.factory(),
+                    &instantiated,
+                    &item_var_name,
+                    &next_element,
+                    ctx.factory(),
                 );
 
                 let acc_bindings_for_eval = new_acc_bindings.clone();
@@ -7795,22 +8757,20 @@ fn process_continuation<C: EvalContext>(
             let alternatives: Vec<BoundValue> = result_values
                 .into_iter()
                 .filter_map(|(branch_acc, child_b)| {
-                    let filtered =
-                        filter_fold_propagating_bindings(&child_b, &propagate_keys);
-                    let mut composed =
-                        crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*acc_bindings, &filtered, ctx.factory(),
-                        );
+                    let filtered = filter_fold_propagating_bindings(&child_b, &propagate_keys);
+                    let mut composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &*acc_bindings,
+                        &filtered,
+                        ctx.factory(),
+                    );
                     // Prune branches with genuinely inconsistent
                     // USER-LEVEL bindings.
-                    if composed.is_empty()
-                        && !acc_bindings.is_empty()
-                        && !filtered.is_empty()
-                    {
+                    if composed.is_empty() && !acc_bindings.is_empty() && !filtered.is_empty() {
                         return None;
                     }
                     crate::backend::eval::bindings::apply_chain_generic(
-                        &mut composed, ctx.factory(),
+                        &mut composed,
+                        ctx.factory(),
                     );
                     let sub_foldl = ctx.factory().sexpr(vec![
                         foldl_sym,
@@ -7833,8 +8793,9 @@ fn process_continuation<C: EvalContext>(
             }
 
             let mut alts_iter = alternatives.into_iter();
-            let (first_val, first_b) =
-                alts_iter.next().expect("alternatives.is_empty() short-circuited above");
+            let (first_val, first_b) = alts_iter
+                .next()
+                .expect("alternatives.is_empty() short-circuited above");
 
             // ProcessAmb collects each alt's results into one merged
             // Resume. outer_carrying is empty here because each alt's
@@ -7845,8 +8806,7 @@ fn process_continuation<C: EvalContext>(
                 results: Vec::new(),
                 env: result_env.clone(),
                 depth,
-                outer_carrying:
-                    crate::backend::eval::trampoline::types::empty_shared_bindings(),
+                outer_carrying: crate::backend::eval::trampoline::types::empty_shared_bindings(),
             });
 
             work_stack.push(WorkItem::Eval {
@@ -7875,7 +8835,8 @@ fn process_continuation<C: EvalContext>(
             let (cmp_results, result_env) = result;
 
             // Extract boolean comparison result
-            let cmp_true = cmp_results.first()
+            let cmp_true = cmp_results
+                .first()
                 .and_then(|(v, _)| v.as_bool())
                 .unwrap_or(false);
 
@@ -7888,10 +8849,16 @@ fn process_continuation<C: EvalContext>(
                 if next_pos < sorted.len() {
                     // Compare current vs sorted[next_pos]
                     let instantiated = substitute_variable_generic(
-                        &comparator, &var1_name, &current, ctx.factory(),
+                        &comparator,
+                        &var1_name,
+                        &current,
+                        ctx.factory(),
                     );
                     let instantiated = substitute_variable_generic(
-                        &instantiated, &var2_name, &sorted[next_pos], ctx.factory(),
+                        &instantiated,
+                        &var2_name,
+                        &sorted[next_pos],
+                        ctx.factory(),
                     );
 
                     continuations.push(Continuation::ProcessSortTuple {
@@ -7935,10 +8902,16 @@ fn process_continuation<C: EvalContext>(
 
                 // Compare next_current vs sorted[0]
                 let instantiated = substitute_variable_generic(
-                    &comparator, &var1_name, &next_current, ctx.factory(),
+                    &comparator,
+                    &var1_name,
+                    &next_current,
+                    ctx.factory(),
                 );
                 let instantiated = substitute_variable_generic(
-                    &instantiated, &var2_name, &sorted[0], ctx.factory(),
+                    &instantiated,
+                    &var2_name,
+                    &sorted[0],
+                    ctx.factory(),
                 );
 
                 continuations.push(Continuation::ProcessSortTuple {
@@ -7980,9 +8953,9 @@ fn process_continuation<C: EvalContext>(
             let (rank_results, result_env) = result;
 
             // Extract numeric rank from evaluation result
-            let current_rank = rank_results.first().and_then(|(v, _)| {
-                v.as_float().or_else(|| v.as_long().map(|l| l as f64))
-            });
+            let current_rank = rank_results
+                .first()
+                .and_then(|(v, _)| v.as_float().or_else(|| v.as_long().map(|l| l as f64)));
 
             // Determine new best
             let (new_best, new_best_rank) = match (current_rank, best_rank) {
@@ -8000,9 +8973,8 @@ fn process_continuation<C: EvalContext>(
                 // Evaluate next element's rank
                 let next = remaining.next().expect("remaining is non-empty");
 
-                let instantiated = substitute_variable_generic(
-                    &rank_fn, &var_name, &next, ctx.factory(),
-                );
+                let instantiated =
+                    substitute_variable_generic(&rank_fn, &var_name, &next, ctx.factory());
 
                 continuations.push(Continuation::ProcessBestCandidate {
                     best: Some(new_best),
@@ -8035,8 +9007,103 @@ fn process_continuation<C: EvalContext>(
             env: _,
             depth,
             outer_carrying,
+            outer_demand: _,
         } => {
             let (cond_results, env_after_cond) = result;
+
+            // BUG-T0-009 (spec §06.6, §12): when the condition yields multiple
+            // nondeterministic results, fan-out across all alternatives.
+            //
+            // Approach (per plan T0.B, Plan-agent design 2026-05-11): wrap each
+            // condition alternative as a fresh `(if <literal-cond> then else)`
+            // expression and dispatch them through a single `ProcessAmb`
+            // continuation (same shape used by `superpose` at line 4598+ and
+            // `case` at 9990+). Each wrapped if re-enters this handler with
+            // `cond_results.len() == 1` and trivially hits the single-result
+            // fast path below, which already handles True/False/Error/non-Bool
+            // alternatives correctly. ProcessAmb collects all alt results into
+            // a single outer `Resume`, preserving the 1:1 Resume↔continuation
+            // discipline (avoids the "non-empty continuation stack" panic).
+            //
+            // PLN cardinality safety: the multi-result path is gated on
+            // `cond_results.len() > 1`. The common case (PLN's
+            // `Demand::Exactly(1)` condition descent at line 4040-4042) takes
+            // the unchanged single-result fast path below, so the Phase 3
+            // regression that ballooned Robot.metta peak RSS from 219MB to
+            // >900MB (see warning at lines 9148-9158) cannot recur.
+            if cond_results.len() > 1 {
+                let amb_capacity = cond_results.len();
+                let alts: Vec<crate::backend::eval::trampoline::types::BoundValue> = cond_results
+                    .iter()
+                    .map(|(cond_val, cond_b)| {
+                        // Wrap this alternative as a literal-condition if. When
+                        // re-entered, the literal short-circuits to its value
+                        // and this handler dispatches the appropriate branch.
+                        // Cloning `then`/`else` per alt is the unavoidable cost
+                        // of fan-out — they are MettaValue (Copy / 8 bytes).
+                        let alt_if = ctx.factory().sexpr(vec![
+                            ctx.factory().atom("if"),
+                            *cond_val,
+                            then_branch,
+                            else_branch,
+                        ]);
+                        (alt_if, cond_b.clone())
+                    })
+                    .collect();
+
+                let mut alts_iter = alts.into_iter();
+                let (first_val, first_b) =
+                    alts_iter.next().expect("cond_results.len() > 1");
+
+                continuations.push(Continuation::ProcessAmb {
+                    remaining_alts: alts_iter,
+                    results: Vec::with_capacity(amb_capacity),
+                    env: env_after_cond.clone(),
+                    depth,
+                    outer_carrying: outer_carrying.clone(),
+                });
+
+                // Compose outer_carrying with this alt's bindings for the
+                // first alt — mirrors the ProcessAmb handler's per-alt
+                // composition at line 11885-11898.
+                let first_carrying: crate::backend::eval::trampoline::types::SharedBindings =
+                    if first_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(first_b.clone())
+                    } else {
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                &first_b,
+                                ctx.factory(),
+                            ),
+                        )
+                    };
+                let tracked = active_tracked_vars();
+                let Some(first_carrying) = project_carrying_for_consumer(
+                    &first_carrying,
+                    &first_val,
+                    tracked.as_deref(),
+                    ctx.factory(),
+                ) else {
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), env_after_cond),
+                    });
+                    return;
+                };
+
+                work_stack.push(WorkItem::Eval {
+                    value: first_val,
+                    env: env_after_cond,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                    expected_type: None,
+                    demand: None,
+                    carrying_bindings: first_carrying,
+                });
+                return;
+            }
 
             if let Some((first, first_b)) = cond_results.first() {
                 // Compose the condition's per-branch bindings with the
@@ -8048,11 +9115,13 @@ fn process_continuation<C: EvalContext>(
                     } else if outer_carrying.is_empty() {
                         std::sync::Arc::new(first_b.clone())
                     } else {
-                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*outer_carrying,
-                            first_b,
-                            ctx.factory(),
-                        ))
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                first_b,
+                                ctx.factory(),
+                            ),
+                        )
                     };
 
                 // Trace: condition-result phase
@@ -8124,41 +9193,39 @@ fn process_continuation<C: EvalContext>(
                         }
                         else_branch
                     };
-                    // Phase C: If outer_bindings present, defer materialization
-                    // of the taken branch via EvalWithBindings.
-                    if let Some(ob) = outer_bindings {
+                    // Restore the caller demand for the selected branch. The
+                    // condition itself is evaluated with `Exactly(1)`, but
+                    // that bounded demand must not leak into the branch body.
+                    let branch = if let Some(ob) = outer_bindings {
                         if branch.has_variables_fast() {
-                            work_stack.push(WorkItem::EvalWithBindings {
-                                template: branch,
-                                bindings: ob,
-                                env: env_after_cond,
-                                depth,
-                                is_tail_call: true,
-                                expected_type: None,
-                                carrying_bindings: branch_carrying,
-                            });
+                            apply_bindings(&branch, &ob, ctx.factory())
                         } else {
-                            work_stack.push(WorkItem::Eval {
-                                value: branch,
-                                env: env_after_cond,
-                                depth,
-                                is_tail_call: true,
-                                expected_type: None,
-                                demand: None,
-                                carrying_bindings: branch_carrying,
-                            });
+                            branch
                         }
                     } else {
-                        work_stack.push(WorkItem::Eval {
-                            value: branch,
-                            env: env_after_cond,
-                            depth,
-                            is_tail_call: true,
-                            expected_type: None,
-                            demand: None,
-                            carrying_bindings: branch_carrying,
+                        branch
+                    };
+                    let tracked = active_tracked_vars();
+                    let Some(projected_branch_carrying) = project_carrying_for_consumer(
+                        &branch_carrying,
+                        &branch,
+                        tracked.as_deref(),
+                        ctx.factory(),
+                    ) else {
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), env_after_cond),
                         });
-                    }
+                        return;
+                    };
+                    work_stack.push(WorkItem::Eval {
+                        value: branch,
+                        env: env_after_cond,
+                        depth,
+                        is_tail_call: true,
+                        expected_type: None,
+                        demand: Some(crate::backend::eval::cesk::coroutine::Demand::All),
+                        carrying_bindings: projected_branch_carrying,
+                    });
                 } else {
                     // Non-boolean (including Unit) → return unreduced (if cond then else)
                     //
@@ -8255,7 +9322,10 @@ fn process_continuation<C: EvalContext>(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
                         crate::backend::trace::trace_value_generic(&cases),
-                        atom_results.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                        atom_results
+                            .iter()
+                            .map(|(v, _)| crate::backend::trace::trace_value_generic(v))
+                            .collect(),
                         None,
                         trace_format::TraceEventKind::SpecialForm {
                             form_name: "case".to_string(),
@@ -8277,6 +9347,18 @@ fn process_continuation<C: EvalContext>(
                 let empty_atom = ctx.factory().atom("Empty");
                 match eval_switch(&empty_atom, &cases, ctx.factory()) {
                     SwitchResult::Match(template, _bindings) => {
+                        let tracked = active_tracked_vars();
+                        let Some(carrying) = project_carrying_for_consumer(
+                            &outer_carrying,
+                            &template,
+                            tracked.as_deref(),
+                            ctx.factory(),
+                        ) else {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), atom_env),
+                            });
+                            return;
+                        };
                         // Template needs evaluation
                         work_stack.push(WorkItem::Eval {
                             value: template,
@@ -8285,7 +9367,7 @@ fn process_continuation<C: EvalContext>(
                             is_tail_call: true,
                             expected_type: None,
                             demand: None,
-                            carrying_bindings: outer_carrying.clone(),
+                            carrying_bindings: carrying,
                         });
                     }
                     SwitchResult::Error(err) => {
@@ -8315,7 +9397,8 @@ fn process_continuation<C: EvalContext>(
             // the already-evaluated results. We mirror this by evaluating each raw
             // scrutinee result before matching.
             let mut remaining_raw = filtered_results.into_iter();
-            let (first_raw, first_raw_bindings) = remaining_raw.next().expect("filtered_results is non-empty");
+            let (first_raw, first_raw_bindings) =
+                remaining_raw.next().expect("filtered_results is non-empty");
 
             // Task #68 gap-fix: preserve first_raw's bindings as
             // current_raw_bindings so the scrutinee re-eval inherits the
@@ -8327,11 +9410,37 @@ fn process_continuation<C: EvalContext>(
             } else if outer_carrying.is_empty() {
                 std::sync::Arc::new(first_raw_bindings.clone())
             } else {
-                std::sync::Arc::new(
-                    crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &*outer_carrying, &first_raw_bindings, ctx.factory(),
-                    )
-                )
+                std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
+                    &*outer_carrying,
+                    &first_raw_bindings,
+                    ctx.factory(),
+                ))
+            };
+            let tracked = active_tracked_vars();
+            let Some(first_raw_carrying) = project_carrying_for_consumer(
+                &first_raw_carrying,
+                &first_raw,
+                tracked.as_deref(),
+                ctx.factory(),
+            ) else {
+                work_stack.push(WorkItem::Resume {
+                    result: (SmallVec::new(), atom_env),
+                });
+                return;
+            };
+            let first_raw_bindings = match project_owned_bindings_for_consumer(
+                &first_raw_bindings,
+                &first_raw,
+                tracked.as_deref(),
+                ctx.factory(),
+            ) {
+                Some(b) => b,
+                None => {
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), atom_env),
+                    });
+                    return;
+                }
             };
 
             continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
@@ -8374,33 +9483,36 @@ fn process_continuation<C: EvalContext>(
                 // Phase 2 Part A fix (task #63): compose per-atom bindings with
                 // outer_carrying so scrutinee-bound variables flow into the
                 // case body. Strict compose drops the case match on conflict.
-                let per_atom_carrying: std::sync::Arc<crate::backend::models::GenericBindings<MettaValue>> =
-                    if atom_bindings.is_empty() {
-                        outer_carrying.clone()
-                    } else if outer_carrying.is_empty() {
-                        std::sync::Arc::new(atom_bindings.clone())
-                    } else {
-                        match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                            &*outer_carrying, &atom_bindings, ctx.factory(),
-                        ) {
-                            Some(b) => std::sync::Arc::new(b),
-                            None => {
-                                // Conflict — skip this atom (HE-bisimilar drop).
-                                continuations.push(Continuation::ProcessCaseMultiResults {
-                                    remaining_atoms,
-                                    cases,
-                                    collected,
-                                    env: env.clone(),
-                                    depth,
-                                    outer_carrying: outer_carrying.clone(),
-                                });
-                                work_stack.push(WorkItem::Resume {
-                                    result: (SmallVec::new(), env),
-                                });
-                                return;
-                            }
+                let per_atom_carrying: std::sync::Arc<
+                    crate::backend::models::GenericBindings<MettaValue>,
+                > = if atom_bindings.is_empty() {
+                    outer_carrying.clone()
+                } else if outer_carrying.is_empty() {
+                    std::sync::Arc::new(atom_bindings.clone())
+                } else {
+                    match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                        &*outer_carrying,
+                        &atom_bindings,
+                        ctx.factory(),
+                    ) {
+                        Some(b) => std::sync::Arc::new(b),
+                        None => {
+                            // Conflict — skip this atom (HE-bisimilar drop).
+                            continuations.push(Continuation::ProcessCaseMultiResults {
+                                remaining_atoms,
+                                cases,
+                                collected,
+                                env: env.clone(),
+                                depth,
+                                outer_carrying: outer_carrying.clone(),
+                            });
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), env),
+                            });
+                            return;
                         }
-                    };
+                    }
+                };
 
                 // Check if atom is empty - use trait methods, NO conversion
                 let is_empty_atom = next_atom.is_empty()
@@ -8417,13 +9529,17 @@ fn process_continuation<C: EvalContext>(
                 // matching against structurally incompatible patterns.
                 let effective_cases = if let Some(scrutinee_type) = get_ground_type(&switch_atom) {
                     if let Some(case_pairs) = cases.as_sexpr() {
-                        let filtered: Vec<MettaValue> = case_pairs.iter().filter(|pair| {
-                            pair.as_sexpr().map_or(true, |p| {
-                                p.first().map_or(true, |pattern| {
-                                    is_pattern_type_compatible(pattern, scrutinee_type)
+                        let filtered: Vec<MettaValue> = case_pairs
+                            .iter()
+                            .filter(|pair| {
+                                pair.as_sexpr().map_or(true, |p| {
+                                    p.first().map_or(true, |pattern| {
+                                        is_pattern_type_compatible(pattern, scrutinee_type)
+                                    })
                                 })
                             })
-                        }).cloned().collect();
+                            .cloned()
+                            .collect();
                         if filtered.len() < case_pairs.len() {
                             // Some patterns were skipped — use filtered cases
                             ctx.factory().sexpr(filtered)
@@ -8457,16 +9573,51 @@ fn process_continuation<C: EvalContext>(
                         // substituted via EvalWithBindings. Mirrors
                         // ProcessLet/ProcessChainBody precedent.
                         if template.has_variables_fast() && !per_atom_carrying.is_empty() {
+                            let tracked = active_tracked_vars();
+                            let Some(projected_bindings) = project_carrying_for_consumer(
+                                &per_atom_carrying,
+                                &template,
+                                tracked.as_deref(),
+                                ctx.factory(),
+                            ) else {
+                                work_stack.push(WorkItem::Resume {
+                                    result: (SmallVec::new(), env),
+                                });
+                                return;
+                            };
+                            let Some(projected_outer) = project_carrying_for_consumer(
+                                &outer_carrying,
+                                &template,
+                                tracked.as_deref(),
+                                ctx.factory(),
+                            ) else {
+                                work_stack.push(WorkItem::Resume {
+                                    result: (SmallVec::new(), env),
+                                });
+                                return;
+                            };
                             work_stack.push(WorkItem::EvalWithBindings {
                                 template,
-                                bindings: per_atom_carrying,
+                                bindings: projected_bindings,
                                 env,
                                 depth,
                                 is_tail_call: true,
                                 expected_type: None,
-                                carrying_bindings: outer_carrying.clone(),
+                                carrying_bindings: projected_outer,
                             });
                         } else {
+                            let tracked = active_tracked_vars();
+                            let Some(projected_carrying) = project_carrying_for_consumer(
+                                &per_atom_carrying,
+                                &template,
+                                tracked.as_deref(),
+                                ctx.factory(),
+                            ) else {
+                                work_stack.push(WorkItem::Resume {
+                                    result: (SmallVec::new(), env),
+                                });
+                                return;
+                            };
                             work_stack.push(WorkItem::Eval {
                                 value: template,
                                 env,
@@ -8474,7 +9625,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
-                                carrying_bindings: per_atom_carrying,
+                                carrying_bindings: projected_carrying,
                             });
                         }
                     }
@@ -8547,9 +9698,55 @@ fn process_continuation<C: EvalContext>(
                 } else {
                     std::sync::Arc::new(
                         crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*outer_carrying, &next_raw_bindings, ctx.factory(),
-                        )
+                            &*outer_carrying,
+                            &next_raw_bindings,
+                            ctx.factory(),
+                        ),
                     )
+                };
+                let tracked = active_tracked_vars();
+                let Some(next_raw_carrying) = project_carrying_for_consumer(
+                    &next_raw_carrying,
+                    &next_raw,
+                    tracked.as_deref(),
+                    ctx.factory(),
+                ) else {
+                    continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
+                        remaining_raw,
+                        evaluated,
+                        cases,
+                        env: eval_env.clone(),
+                        depth,
+                        current_raw_bindings,
+                        outer_carrying: outer_carrying.clone(),
+                    });
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), eval_env),
+                    });
+                    return;
+                };
+                let next_raw_bindings = match project_owned_bindings_for_consumer(
+                    &next_raw_bindings,
+                    &next_raw,
+                    tracked.as_deref(),
+                    ctx.factory(),
+                ) {
+                    Some(b) => b,
+                    None => {
+                        continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
+                            remaining_raw,
+                            evaluated,
+                            cases,
+                            env: eval_env.clone(),
+                            depth,
+                            current_raw_bindings,
+                            outer_carrying: outer_carrying.clone(),
+                        });
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), eval_env),
+                        });
+                        return;
+                    }
                 };
                 // More raw scrutinee results to evaluate — reuse cont slot
                 continuations.push(Continuation::ProcessCaseEvalScrutineeResults {
@@ -8578,6 +9775,18 @@ fn process_continuation<C: EvalContext>(
                     let empty_atom = ctx.factory().atom("Empty");
                     match eval_switch(&empty_atom, &cases, ctx.factory()) {
                         SwitchResult::Match(template, _bindings) => {
+                            let tracked = active_tracked_vars();
+                            let Some(carrying) = project_carrying_for_consumer(
+                                &outer_carrying,
+                                &template,
+                                tracked.as_deref(),
+                                ctx.factory(),
+                            ) else {
+                                work_stack.push(WorkItem::Resume {
+                                    result: (SmallVec::new(), eval_env),
+                                });
+                                return;
+                            };
                             work_stack.push(WorkItem::Eval {
                                 value: template,
                                 env: eval_env,
@@ -8585,7 +9794,7 @@ fn process_continuation<C: EvalContext>(
                                 is_tail_call: true,
                                 expected_type: None,
                                 demand: None,
-                                carrying_bindings: outer_carrying.clone(),
+                                carrying_bindings: carrying,
                             });
                         }
                         SwitchResult::Error(err) => {
@@ -8610,41 +9819,46 @@ fn process_continuation<C: EvalContext>(
                 if let Some((first_atom, first_atom_bindings)) = eval_atoms.next() {
                     // Compose per-atom bindings with outer_carrying for this
                     // atom's case body evaluation. Strict: drop on conflict.
-                    let first_carrying: std::sync::Arc<crate::backend::models::GenericBindings<MettaValue>> =
-                        if first_atom_bindings.is_empty() {
-                            outer_carrying.clone()
-                        } else if outer_carrying.is_empty() {
-                            std::sync::Arc::new(first_atom_bindings.clone())
-                        } else {
-                            match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                                &*outer_carrying, &first_atom_bindings, ctx.factory(),
-                            ) {
-                                Some(b) => std::sync::Arc::new(b),
-                                None => {
-                                    // Conflict on first atom — move to rest.
-                                    if eval_atoms.len() == 0 {
-                                        work_stack.push(WorkItem::Resume {
-                                            result: (SmallVec::new(), eval_env),
-                                        });
-                                    } else {
-                                        continuations.push(Continuation::ProcessCaseMultiResults {
-                                            remaining_atoms: eval_atoms,
-                                            cases,
-                                            collected: vec![],
-                                            env: eval_env.clone(),
-                                            depth,
-                                            outer_carrying: outer_carrying.clone(),
-                                        });
-                                        work_stack.push(WorkItem::Resume {
-                                            result: (SmallVec::new(), eval_env),
-                                        });
-                                    }
-                                    return;
+                    let first_carrying: std::sync::Arc<
+                        crate::backend::models::GenericBindings<MettaValue>,
+                    > = if first_atom_bindings.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(first_atom_bindings.clone())
+                    } else {
+                        match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                            &*outer_carrying,
+                            &first_atom_bindings,
+                            ctx.factory(),
+                        ) {
+                            Some(b) => std::sync::Arc::new(b),
+                            None => {
+                                // Conflict on first atom — move to rest.
+                                if eval_atoms.len() == 0 {
+                                    work_stack.push(WorkItem::Resume {
+                                        result: (SmallVec::new(), eval_env),
+                                    });
+                                } else {
+                                    continuations.push(Continuation::ProcessCaseMultiResults {
+                                        remaining_atoms: eval_atoms,
+                                        cases,
+                                        collected: vec![],
+                                        env: eval_env.clone(),
+                                        depth,
+                                        outer_carrying: outer_carrying.clone(),
+                                    });
+                                    work_stack.push(WorkItem::Resume {
+                                        result: (SmallVec::new(), eval_env),
+                                    });
                                 }
+                                return;
                             }
-                        };
+                        }
+                    };
                     let is_empty_atom = first_atom.is_empty()
-                        || first_atom.as_sexpr().map_or(false, |items| items.is_empty());
+                        || first_atom
+                            .as_sexpr()
+                            .map_or(false, |items| items.is_empty());
                     let switch_atom = if is_empty_atom {
                         ctx.factory().atom("Empty")
                     } else {
@@ -8677,16 +9891,51 @@ fn process_continuation<C: EvalContext>(
                             // ProcessCaseMultiResults fix at ~7383.
                             if eval_atoms.len() == 0 {
                                 if template.has_variables_fast() && !first_carrying.is_empty() {
+                                    let tracked = active_tracked_vars();
+                                    let Some(projected_bindings) = project_carrying_for_consumer(
+                                        &first_carrying,
+                                        &template,
+                                        tracked.as_deref(),
+                                        ctx.factory(),
+                                    ) else {
+                                        work_stack.push(WorkItem::Resume {
+                                            result: (SmallVec::new(), eval_env),
+                                        });
+                                        return;
+                                    };
+                                    let Some(projected_outer) = project_carrying_for_consumer(
+                                        &outer_carrying,
+                                        &template,
+                                        tracked.as_deref(),
+                                        ctx.factory(),
+                                    ) else {
+                                        work_stack.push(WorkItem::Resume {
+                                            result: (SmallVec::new(), eval_env),
+                                        });
+                                        return;
+                                    };
                                     work_stack.push(WorkItem::EvalWithBindings {
                                         template,
-                                        bindings: first_carrying,
+                                        bindings: projected_bindings,
                                         env: eval_env,
                                         depth,
                                         is_tail_call: true,
                                         expected_type: None,
-                                        carrying_bindings: outer_carrying.clone(),
+                                        carrying_bindings: projected_outer,
                                     });
                                 } else {
+                                    let tracked = active_tracked_vars();
+                                    let Some(projected_carrying) = project_carrying_for_consumer(
+                                        &first_carrying,
+                                        &template,
+                                        tracked.as_deref(),
+                                        ctx.factory(),
+                                    ) else {
+                                        work_stack.push(WorkItem::Resume {
+                                            result: (SmallVec::new(), eval_env),
+                                        });
+                                        return;
+                                    };
                                     work_stack.push(WorkItem::Eval {
                                         value: template,
                                         env: eval_env,
@@ -8694,7 +9943,7 @@ fn process_continuation<C: EvalContext>(
                                         is_tail_call: true,
                                         expected_type: None,
                                         demand: None,
-                                        carrying_bindings: first_carrying,
+                                        carrying_bindings: projected_carrying,
                                     });
                                 }
                             } else {
@@ -8711,16 +9960,51 @@ fn process_continuation<C: EvalContext>(
                                 });
 
                                 if template.has_variables_fast() && !first_carrying.is_empty() {
+                                    let tracked = active_tracked_vars();
+                                    let Some(projected_bindings) = project_carrying_for_consumer(
+                                        &first_carrying,
+                                        &template,
+                                        tracked.as_deref(),
+                                        ctx.factory(),
+                                    ) else {
+                                        work_stack.push(WorkItem::Resume {
+                                            result: (SmallVec::new(), eval_env),
+                                        });
+                                        return;
+                                    };
+                                    let Some(projected_outer) = project_carrying_for_consumer(
+                                        &outer_carrying,
+                                        &template,
+                                        tracked.as_deref(),
+                                        ctx.factory(),
+                                    ) else {
+                                        work_stack.push(WorkItem::Resume {
+                                            result: (SmallVec::new(), eval_env),
+                                        });
+                                        return;
+                                    };
                                     work_stack.push(WorkItem::EvalWithBindings {
                                         template,
-                                        bindings: first_carrying,
+                                        bindings: projected_bindings,
                                         env: eval_env,
                                         depth,
                                         is_tail_call: true,
                                         expected_type: None,
-                                        carrying_bindings: outer_carrying.clone(),
+                                        carrying_bindings: projected_outer,
                                     });
                                 } else {
+                                    let tracked = active_tracked_vars();
+                                    let Some(projected_carrying) = project_carrying_for_consumer(
+                                        &first_carrying,
+                                        &template,
+                                        tracked.as_deref(),
+                                        ctx.factory(),
+                                    ) else {
+                                        work_stack.push(WorkItem::Resume {
+                                            result: (SmallVec::new(), eval_env),
+                                        });
+                                        return;
+                                    };
                                     work_stack.push(WorkItem::Eval {
                                         value: template,
                                         env: eval_env,
@@ -8728,7 +10012,7 @@ fn process_continuation<C: EvalContext>(
                                         is_tail_call: true,
                                         expected_type: None,
                                         demand: None,
-                                        carrying_bindings: first_carrying,
+                                        carrying_bindings: projected_carrying,
                                     });
                                 }
                             }
@@ -8794,11 +10078,13 @@ fn process_continuation<C: EvalContext>(
                     } else if outer_carrying.is_empty() {
                         std::sync::Arc::new(alt_b)
                     } else {
-                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*outer_carrying,
-                            &alt_b,
-                            ctx.factory(),
-                        ))
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                &alt_b,
+                                ctx.factory(),
+                            ),
+                        )
                     };
                 work_stack.push(WorkItem::Eval {
                     value,
@@ -8817,7 +10103,11 @@ fn process_continuation<C: EvalContext>(
                 let results_vec: Vec<BoundValue> = eval_results
                     .into_iter()
                     .map(|(v, b)| {
-                        let unwrapped = if let Some(inner) = v.as_quoted() { inner } else { v };
+                        let unwrapped = if let Some(inner) = v.as_quoted() {
+                            inner
+                        } else {
+                            v
+                        };
                         (unwrapped, b)
                     })
                     .collect();
@@ -8839,11 +10129,13 @@ fn process_continuation<C: EvalContext>(
                     } else if outer_carrying.is_empty() {
                         std::sync::Arc::new(first_b)
                     } else {
-                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*outer_carrying,
-                            &first_b,
-                            ctx.factory(),
-                        ))
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                &first_b,
+                                ctx.factory(),
+                            ),
+                        )
                     };
 
                 work_stack.push(WorkItem::Eval {
@@ -8874,16 +10166,10 @@ fn process_continuation<C: EvalContext>(
                 // Wrap results in return structure: (return value)
                 let return_results: Vec<MettaValue> = arg_results
                     .into_iter()
-                    .map(|(r, _)| {
-                        ctx.factory().sexpr(vec![
-                            ctx.factory().atom("return"),
-                            r,
-                        ])
-                    })
+                    .map(|(r, _)| ctx.factory().sexpr(vec![ctx.factory().atom("return"), r]))
                     .collect();
                 work_stack.push(WorkItem::Resume {
                     result: (return_results.into_iter().map(bv).collect(), arg_env),
-
                 });
             }
         }
@@ -8902,12 +10188,19 @@ fn process_continuation<C: EvalContext>(
             #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
-                    let phase = if expr_results.is_empty() { "expr-empty" } else { "expr-result" };
+                    let phase = if expr_results.is_empty() {
+                        "expr-empty"
+                    } else {
+                        "expr-result"
+                    };
                     tc.emit_converted(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
                         crate::backend::trace::trace_value_generic(&var),
-                        expr_results.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                        expr_results
+                            .iter()
+                            .map(|(v, _)| crate::backend::trace::trace_value_generic(v))
+                            .collect(),
                         None,
                         trace_format::TraceEventKind::SpecialForm {
                             form_name: "chain".to_string(),
@@ -8934,11 +10227,13 @@ fn process_continuation<C: EvalContext>(
                     } else if outer_carrying.is_empty() {
                         std::sync::Arc::new(first_b.clone())
                     } else {
-                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*outer_carrying,
-                            &first_b,
-                            ctx.factory(),
-                        ))
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                &first_b,
+                                ctx.factory(),
+                            ),
+                        )
                     };
                 if let Some(mut ob) = outer_bindings {
                     // Merge alt_b into ob so body-eval resolves alt-bound vars.
@@ -8974,12 +10269,8 @@ fn process_continuation<C: EvalContext>(
                         });
                     }
                 } else {
-                    let instantiated = substitute_variable_generic(
-                        &body,
-                        var_name,
-                        &first_val,
-                        ctx.factory(),
-                    );
+                    let instantiated =
+                        substitute_variable_generic(&body, var_name, &first_val, ctx.factory());
                     work_stack.push(WorkItem::Eval {
                         value: instantiated,
                         env: result_env,
@@ -8994,10 +10285,7 @@ fn process_continuation<C: EvalContext>(
                 // Multiple results - chain evaluates each alt with its own
                 // per-branch bindings composed into ob/carrying_bindings.
                 let chain_capacity = expr_results.len();
-                let mut remaining_values = expr_results
-                    .into_iter()
-                    .collect::<Vec<_>>()
-                    .into_iter();
+                let mut remaining_values = expr_results.into_iter().collect::<Vec<_>>().into_iter();
                 let (first_val, first_b) = remaining_values.next().unwrap();
 
                 continuations.push(Continuation::ProcessChainBody {
@@ -9018,11 +10306,13 @@ fn process_continuation<C: EvalContext>(
                     } else if outer_carrying.is_empty() {
                         std::sync::Arc::new(first_b.clone())
                     } else {
-                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*outer_carrying,
-                            &first_b,
-                            ctx.factory(),
-                        ))
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                &first_b,
+                                ctx.factory(),
+                            ),
+                        )
                     };
                 if let Some(mut ob) = outer_bindings {
                     {
@@ -9054,12 +10344,8 @@ fn process_continuation<C: EvalContext>(
                         });
                     }
                 } else {
-                    let instantiated = substitute_variable_generic(
-                        &body,
-                        var_name,
-                        &first_val,
-                        ctx.factory(),
-                    );
+                    let instantiated =
+                        substitute_variable_generic(&body, var_name, &first_val, ctx.factory());
                     work_stack.push(WorkItem::Eval {
                         value: instantiated,
                         env: result_env,
@@ -9105,11 +10391,13 @@ fn process_continuation<C: EvalContext>(
                     } else if outer_carrying.is_empty() {
                         std::sync::Arc::new(next_b.clone())
                     } else {
-                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*outer_carrying,
-                            &next_b,
-                            ctx.factory(),
-                        ))
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                &next_b,
+                                ctx.factory(),
+                            ),
+                        )
                     };
                 if let Some(mut ob) = outer_bindings {
                     {
@@ -9141,12 +10429,8 @@ fn process_continuation<C: EvalContext>(
                         });
                     }
                 } else {
-                    let instantiated = substitute_variable_generic(
-                        &body,
-                        var_name,
-                        &next_val,
-                        ctx.factory(),
-                    );
+                    let instantiated =
+                        substitute_variable_generic(&body, var_name, &next_val, ctx.factory());
                     work_stack.push(WorkItem::Eval {
                         value: instantiated,
                         env,
@@ -9160,7 +10444,6 @@ fn process_continuation<C: EvalContext>(
             } else {
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), env),
-
                 });
             }
         }
@@ -9192,8 +10475,9 @@ fn process_continuation<C: EvalContext>(
                 }
 
                 // Partition into return values and continue expressions
-                let (final_results, continue_exprs): (Vec<_>, Vec<_>) =
-                    eval_results.into_iter().partition(|(r, _)| is_return_expr(r));
+                let (final_results, continue_exprs): (Vec<_>, Vec<_>) = eval_results
+                    .into_iter()
+                    .partition(|(r, _)| is_return_expr(r));
 
                 if !final_results.is_empty() {
                     // Extract return values - unwrap (return value) to just value
@@ -9209,7 +10493,6 @@ fn process_continuation<C: EvalContext>(
                         .collect();
                     work_stack.push(WorkItem::Resume {
                         result: (returns.into_iter().map(bv).collect(), current_env),
-
                     });
                 } else if continue_exprs.is_empty() {
                     // Nothing to continue
@@ -9220,7 +10503,6 @@ fn process_continuation<C: EvalContext>(
                     // Hit iteration limit
                     work_stack.push(WorkItem::Resume {
                         result: (SmallVec::from_vec(continue_exprs), current_env),
-
                     });
                 } else {
                     // Continue evaluating
@@ -9247,7 +10529,6 @@ fn process_continuation<C: EvalContext>(
                         // (more complex handling would evaluate each, but this matches heap engine)
                         work_stack.push(WorkItem::Resume {
                             result: (SmallVec::from_vec(continue_exprs), current_env),
-
                         });
                     }
                 }
@@ -9317,7 +10598,10 @@ fn process_continuation<C: EvalContext>(
             }
 
             if goal_results.iter().any(|(v, _)| v.is_error()) {
-                let error = goal_results.into_iter().find(|(v, _)| v.is_error()).unwrap();
+                let error = goal_results
+                    .into_iter()
+                    .find(|(v, _)| v.is_error())
+                    .unwrap();
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![error], result_env),
                 });
@@ -9346,7 +10630,9 @@ fn process_continuation<C: EvalContext>(
                 });
             } else {
                 // All goals evaluated - return last result
-                let final_result = accumulated_results.pop().unwrap_or_else(|| bv(ctx.factory().unit()));
+                let final_result = accumulated_results
+                    .pop()
+                    .unwrap_or_else(|| bv(ctx.factory().unit()));
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![final_result], result_env),
                 });
@@ -9412,7 +10698,10 @@ fn process_continuation<C: EvalContext>(
                             // Non-module spaces use SpaceHandle's generic collapse
                             let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                             atoms.iter().any(|atom| {
-                                crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, atom).is_some()
+                                crate::backend::eval::trampoline::unification::bidirectional_unify(
+                                    &pattern2, atom,
+                                )
+                                .is_some()
                             })
                         };
                         let result_value = ctx.factory().bool(exists);
@@ -9423,11 +10712,11 @@ fn process_continuation<C: EvalContext>(
                         // Full space matching with body evaluation
                         if handle.is_module_space() || handle.name == "self" {
                             // Module/self spaces use Environment's match_space
-                            let matches: Vec<(MettaValue, usize)> =
-                                result_env.match_space(&pattern2, &pattern2)
-                                    .into_iter()
-                                    .map(|m| (m.value, m.count))
-                                    .collect();
+                            let matches: Vec<(MettaValue, usize)> = result_env
+                                .match_space(&pattern2, &pattern2)
+                                .into_iter()
+                                .map(|m| (m.value, m.count))
+                                .collect();
 
                             if matches.is_empty() {
                                 // No matches - evaluate failure body
@@ -9672,27 +10961,35 @@ fn process_continuation<C: EvalContext>(
                     // Space unification for first value
                     if handle.is_module_space() || handle.name == "self" {
                         // Module/self spaces use Environment's match_space
-                        let matches: Vec<(MettaValue, usize)> =
-                            result_env.match_space(&pattern2, &pattern2)
-                                .into_iter()
-                                .map(|m| (m.value, m.count))
-                                .collect();
+                        let matches: Vec<(MettaValue, usize)> = result_env
+                            .match_space(&pattern2, &pattern2)
+                            .into_iter()
+                            .map(|m| (m.value, m.count))
+                            .collect();
 
                         // Build bodies for matches - values already generic.
                         // Task #68 gap-fix: compose first_b (val1's bindings).
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for (generic_value, count) in &matches {
-                            if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, generic_value) {
+                            if let Some(bindings) =
+                                crate::backend::eval::trampoline::unification::bidirectional_unify(
+                                    &pattern2,
+                                    generic_value,
+                                )
+                            {
                                 found_match = true;
                                 let composed = if first_b.is_empty() {
                                     bindings
                                 } else {
                                     crate::backend::eval::bindings::compose_outer_inner_generic(
-                                        &first_b, &bindings, ctx.factory(),
+                                        &first_b,
+                                        &bindings,
+                                        ctx.factory(),
                                     )
                                 };
-                                let generic_body = apply_bindings(&success_body, &composed, ctx.factory());
+                                let generic_body =
+                                    apply_bindings(&success_body, &composed, ctx.factory());
                                 for _ in 0..*count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
@@ -9740,16 +11037,23 @@ fn process_continuation<C: EvalContext>(
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
-                            if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, &m.value) {
+                            if let Some(bindings) =
+                                crate::backend::eval::trampoline::unification::bidirectional_unify(
+                                    &pattern2, &m.value,
+                                )
+                            {
                                 found_match = true;
                                 let composed = if first_b.is_empty() {
                                     bindings
                                 } else {
                                     crate::backend::eval::bindings::compose_outer_inner_generic(
-                                        &first_b, &bindings, ctx.factory(),
+                                        &first_b,
+                                        &bindings,
+                                        ctx.factory(),
                                     )
                                 };
-                                let generic_body = apply_bindings(&success_body, &composed, ctx.factory());
+                                let generic_body =
+                                    apply_bindings(&success_body, &composed, ctx.factory());
                                 for _ in 0..m.count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
@@ -9864,7 +11168,10 @@ fn process_continuation<C: EvalContext>(
                         } else {
                             let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
                             atoms.iter().any(|atom| {
-                                crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern, atom).is_some()
+                                crate::backend::eval::trampoline::unification::bidirectional_unify(
+                                    &pattern, atom,
+                                )
+                                .is_some()
                             })
                         };
                         work_stack.push(WorkItem::Resume {
@@ -9879,7 +11186,10 @@ fn process_continuation<C: EvalContext>(
                                 env_after
                                     .match_space(&pattern, &pattern)
                                     .into_iter()
-                                    .map(|m| GenericMultiplicityMatch { value: m.value, count: m.count })
+                                    .map(|m| GenericMultiplicityMatch {
+                                        value: m.value,
+                                        count: m.count,
+                                    })
                                     .collect()
                             } else {
                                 // Non-module spaces - use collapse_with_multiplicity_generic
@@ -9892,13 +11202,19 @@ fn process_continuation<C: EvalContext>(
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
-                            if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern, &m.value) {
+                            if let Some(bindings) =
+                                crate::backend::eval::trampoline::unification::bidirectional_unify(
+                                    &pattern, &m.value,
+                                )
+                            {
                                 found_match = true;
                                 let composed = if val1_bindings.is_empty() {
                                     bindings
                                 } else {
                                     crate::backend::eval::bindings::compose_outer_inner_generic(
-                                        &val1_bindings, &bindings, ctx.factory(),
+                                        &val1_bindings,
+                                        &bindings,
+                                        ctx.factory(),
                                     )
                                 };
                                 let instantiated =
@@ -9988,7 +11304,6 @@ fn process_continuation<C: EvalContext>(
                 } else {
                     work_stack.push(WorkItem::Resume {
                         result: (SmallVec::from_vec(all_results), env_after),
-
                     });
                 }
             }
@@ -10020,7 +11335,11 @@ fn process_continuation<C: EvalContext>(
                 // on both sides, occurs check, and conflict detection.
                 let mut all_bindings = Vec::new();
                 for (p2_result, _b) in &pattern2_results {
-                    if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&val1, p2_result) {
+                    if let Some(bindings) =
+                        crate::backend::eval::trampoline::unification::bidirectional_unify(
+                            &val1, p2_result,
+                        )
+                    {
                         all_bindings.push(bindings);
                     }
                 }
@@ -10037,7 +11356,8 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else if all_bindings.len() == 1 {
                     // Apply bindings generically - NO conversion needed
-                    let instantiated = apply_bindings(&success_body, &all_bindings[0], ctx.factory());
+                    let instantiated =
+                        apply_bindings(&success_body, &all_bindings[0], ctx.factory());
 
                     work_stack.push(WorkItem::Eval {
                         value: instantiated,
@@ -10050,10 +11370,9 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     // Multiple bindings - pre-instantiate all bodies generically
-                    let bodies_vec: Vec<MettaValue> = all_bindings.iter()
-                        .map(|bindings| {
-                            apply_bindings(&success_body, bindings, ctx.factory())
-                        })
+                    let bodies_vec: Vec<MettaValue> = all_bindings
+                        .iter()
+                        .map(|bindings| apply_bindings(&success_body, bindings, ctx.factory()))
                         .collect();
                     let mut bodies_iter = bodies_vec.into_iter();
                     let first_body = bodies_iter.next().unwrap();
@@ -10110,7 +11429,6 @@ fn process_continuation<C: EvalContext>(
             } else {
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), env_after_body),
-
                 });
             }
         }
@@ -10153,14 +11471,18 @@ fn process_continuation<C: EvalContext>(
                 let metta_env = (*result_env).clone();
 
                 let evaluated = parallel_collapse_eval(
-                    metta_items, metta_env, par_budget, current_depth, depth,
+                    metta_items,
+                    metta_env,
+                    par_budget,
+                    current_depth,
+                    depth,
                 );
 
                 // Plain collapse: emit values only (bindings discarded, per
                 // collapse semantics which produces a value list).
-                let result_list = ctx.factory().sexpr(
-                    evaluated.into_iter().map(|(v, _)| v).collect()
-                );
+                let result_list = ctx
+                    .factory()
+                    .sexpr(evaluated.into_iter().map(|(v, _)| v).collect());
 
                 // Trace: collapse-result phase
                 #[cfg(feature = "trace")]
@@ -10189,7 +11511,8 @@ fn process_continuation<C: EvalContext>(
                 let remaining_vec: Vec<BoundValue> = expr_results.into_iter().collect();
                 let mut remaining_raw = remaining_vec.into_iter();
                 let collapse_capacity = remaining_raw.len(); // total before consuming first
-                let (first_raw, first_raw_b) = remaining_raw.next().expect("expr_results is non-empty");
+                let (first_raw, first_raw_b) =
+                    remaining_raw.next().expect("expr_results is non-empty");
 
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
@@ -10200,6 +11523,7 @@ fn process_continuation<C: EvalContext>(
                     depth,
                     // Plain `collapse` discards bindings — no projection needed.
                     tracked_vars_hint: None,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 // Option C (2026-05-06) — HE-faithful re-eval skip:
@@ -10291,39 +11615,43 @@ fn process_continuation<C: EvalContext>(
                 let metta_env = (*result_env).clone();
 
                 let evaluated = parallel_collapse_eval(
-                    metta_items, metta_env, par_budget, current_depth, depth,
+                    metta_items,
+                    metta_env,
+                    par_budget,
+                    current_depth,
+                    depth,
                 );
 
                 // Encode each (value, bindings) pair as (value (Bindings ...))
                 // mirroring the sequential path's encoding at lines ~9126-9157.
-                let pairs: Vec<MettaValue> = evaluated.into_iter().map(|(result_val, bindings)| {
-                    let mut resolved = bindings.clone();
-                    crate::backend::eval::bindings::apply_chain_generic(
-                        &mut resolved, ctx.factory(),
-                    );
-                    let projected = match &tracked_vars_for_sidecar {
-                        Some(tv) => {
-                            crate::backend::eval::bindings::project_bindings_generic(
-                                &resolved,
-                                tv.as_slice(),
+                let pairs: Vec<MettaValue> = evaluated
+                    .into_iter()
+                    .map(|(result_val, bindings)| {
+                        let tracked_slice =
+                            tracked_vars_for_sidecar.as_deref().map(|tv| tv.as_slice());
+                        let projected =
+                            crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+                                &bindings,
+                                &[&result_val],
+                                tracked_slice,
+                                ctx.factory(),
                             )
-                        }
-                        None => resolved,
-                    };
-                    let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
-                        let mut f = crate::backend::models::GenericBindings::new();
-                        for (name, val) in projected.iter() {
-                            if !name.starts_with("$__fr_") {
-                                f.insert_or_replace(name, val.clone());
+                            .unwrap_or_default();
+                        let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
+                            let mut f = crate::backend::models::GenericBindings::new();
+                            for (name, val) in projected.iter() {
+                                if !name.starts_with("$__fr_") {
+                                    f.insert_or_replace(name, val.clone());
+                                }
                             }
-                        }
-                        f
-                    } else {
-                        projected
-                    };
-                    let bindings_sexpr = encode_bindings_as_sexpr(&filtered, ctx.factory());
-                    ctx.factory().sexpr(vec![result_val, bindings_sexpr])
-                }).collect();
+                            f
+                        } else {
+                            projected
+                        };
+                        let bindings_sexpr = encode_bindings_as_sexpr(&filtered, ctx.factory());
+                        ctx.factory().sexpr(vec![result_val, bindings_sexpr])
+                    })
+                    .collect();
                 let result_list = ctx.factory().sexpr(pairs);
 
                 #[cfg(feature = "trace")]
@@ -10365,7 +11693,21 @@ fn process_continuation<C: EvalContext>(
                 // `$who=a` never reach the sidecar encoding at line
                 // ~8407 below. Matches HE's semantics where bindings flow
                 // hierarchically through collapse-bind re-interpretation.
-                let raw_bindings_for_eval = first_raw_bindings.clone();
+                let tracked_slice = tracked_vars_for_sidecar.as_deref().map(|tv| tv.as_slice());
+                let raw_bindings_for_eval = match project_owned_bindings_for_consumer(
+                    &first_raw_bindings,
+                    &first_raw,
+                    tracked_slice,
+                    ctx.factory(),
+                ) {
+                    Some(b) => b,
+                    None => {
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), result_env),
+                        });
+                        return;
+                    }
+                };
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
                     evaluated: Vec::with_capacity(collapse_capacity),
@@ -10377,6 +11719,7 @@ fn process_continuation<C: EvalContext>(
                     // sidecar encoding projects bindings at the observation
                     // point, not earlier during match composition.
                     tracked_vars_hint: tracked_vars_for_sidecar,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -10399,6 +11742,7 @@ fn process_continuation<C: EvalContext>(
             env: _,
             depth,
             tracked_vars_hint,
+            outer_carrying,
         } => {
             let (eval_results, result_env) = result;
 
@@ -10432,7 +11776,8 @@ fn process_continuation<C: EvalContext>(
             // tuple — that would be the actual spec violation.
             let carrying = (*current_raw_bindings).clone();
             evaluated.extend(
-                eval_results.into_iter()
+                eval_results
+                    .into_iter()
                     .filter(|(v, _)| !v.is_empty())
                     .filter_map(|(v, child_b)| {
                         let mut merged = carrying.clone();
@@ -10442,12 +11787,41 @@ fn process_continuation<C: EvalContext>(
                         } else {
                             Some((v, merged))
                         }
-                    })
+                    }),
             );
 
             if let Some((next_raw, next_raw_bindings)) = remaining_raw.next() {
                 // More results to evaluate — preserve state.
-                current_raw_bindings = std::sync::Arc::new(next_raw_bindings);
+                let tracked_slice = tracked_vars_hint.as_deref().map(|tv| tv.as_slice());
+                let projected_next_raw_bindings = if is_bind {
+                    match project_owned_bindings_for_consumer(
+                        &next_raw_bindings,
+                        &next_raw,
+                        tracked_slice,
+                        ctx.factory(),
+                    ) {
+                        Some(b) => b,
+                        None => {
+                            continuations.push(Continuation::ProcessCollapseEvalResults {
+                                remaining_raw,
+                                evaluated,
+                                is_bind,
+                                current_raw_bindings,
+                                env: result_env.clone(),
+                                depth,
+                                tracked_vars_hint,
+                                outer_carrying: outer_carrying.clone(),
+                            });
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), result_env),
+                            });
+                            return;
+                        }
+                    }
+                } else {
+                    next_raw_bindings
+                };
+                current_raw_bindings = std::sync::Arc::new(projected_next_raw_bindings);
                 let current_raw_bindings_for_eval = current_raw_bindings.clone();
                 continuations.push(Continuation::ProcessCollapseEvalResults {
                     remaining_raw,
@@ -10457,6 +11831,7 @@ fn process_continuation<C: EvalContext>(
                     env: result_env.clone(),
                     depth,
                     tracked_vars_hint,
+                    outer_carrying: outer_carrying.clone(),
                 });
 
                 // Option C (2026-05-06) — same HE-faithful re-eval skip
@@ -10467,6 +11842,11 @@ fn process_continuation<C: EvalContext>(
                         result: (smallvec![bv(next_raw)], result_env),
                     });
                 } else {
+                    let carrying_bindings = if is_bind {
+                        current_raw_bindings_for_eval
+                    } else {
+                        outer_carrying.clone()
+                    };
                     work_stack.push(WorkItem::Eval {
                         value: next_raw,
                         env: result_env,
@@ -10474,7 +11854,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: current_raw_bindings_for_eval,
+                        carrying_bindings,
                     });
                 }
             } else {
@@ -10497,43 +11877,38 @@ fn process_continuation<C: EvalContext>(
                     // This matches HE's `bindings.resolve(&var)` semantics in
                     // `interpreter.rs:624` where bindings are resolved before
                     // being surfaced to user code.
-                    let pairs: Vec<MettaValue> = evaluated.into_iter().map(|(result_val, bindings)| {
-                        let mut resolved = bindings.clone();
-                        crate::backend::eval::bindings::apply_chain_generic(
-                            &mut resolved, ctx.factory(),
-                        );
-                        // Layer A: project to the collapse-bind frame's
-                        // tracked variables. This is the observation point
-                        // that matches HE's `bindings.resolve(&var)` semantics
-                        // (interpreter.rs:624) — all user-named bindings
-                        // survive the evaluation pipeline, and only here do
-                        // we narrow to the set the caller actually asked for.
-                        let projected = match &tracked_vars_hint {
-                            Some(tv) => {
-                                crate::backend::eval::bindings::project_bindings_generic(
-                                    &resolved,
-                                    tv.as_slice(),
-                                )
-                            }
-                            None => resolved,
-                        };
-                        let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
-                            let mut f = crate::backend::models::GenericBindings::new();
-                            for (name, val) in projected.iter() {
-                                if !name.starts_with("$__fr_") {
-                                    f.insert_or_replace(name, val.clone());
+                    let pairs: Vec<MettaValue> = evaluated
+                        .into_iter()
+                        .map(|(result_val, bindings)| {
+                            let tracked_slice =
+                                tracked_vars_hint.as_deref().map(|tv| tv.as_slice());
+                            let projected = crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+                                &bindings,
+                                &[&result_val],
+                                tracked_slice,
+                                ctx.factory(),
+                            )
+                            .unwrap_or_default();
+                            let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_"))
+                            {
+                                let mut f = crate::backend::models::GenericBindings::new();
+                                for (name, val) in projected.iter() {
+                                    if !name.starts_with("$__fr_") {
+                                        f.insert_or_replace(name, val.clone());
+                                    }
                                 }
-                            }
-                            f
-                        } else {
-                            projected
-                        };
-                        let bindings_sexpr = encode_bindings_as_sexpr(&filtered, ctx.factory());
-                        ctx.factory().sexpr(vec![result_val, bindings_sexpr])
-                    }).collect();
+                                f
+                            } else {
+                                projected
+                            };
+                            let bindings_sexpr = encode_bindings_as_sexpr(&filtered, ctx.factory());
+                            ctx.factory().sexpr(vec![result_val, bindings_sexpr])
+                        })
+                        .collect();
                     ctx.factory().sexpr(pairs)
                 } else {
-                    ctx.factory().sexpr(evaluated.into_iter().map(|(v, _)| v).collect())
+                    ctx.factory()
+                        .sexpr(evaluated.into_iter().map(|(v, _)| v).collect())
                 };
 
                 // Trace: collapse-result phase
@@ -10547,7 +11922,8 @@ fn process_continuation<C: EvalContext>(
                             vec![],
                             None,
                             trace_format::TraceEventKind::SpecialForm {
-                                form_name: if is_bind { "collapse-bind" } else { "collapse" }.to_string(),
+                                form_name: if is_bind { "collapse-bind" } else { "collapse" }
+                                    .to_string(),
                                 phase: "collapse-result".to_string(),
                             },
                         );
@@ -10591,12 +11967,26 @@ fn process_continuation<C: EvalContext>(
                     } else if outer_carrying.is_empty() {
                         std::sync::Arc::new(alt_b)
                     } else {
-                        std::sync::Arc::new(crate::backend::eval::bindings::compose_outer_inner_generic(
-                            &*outer_carrying,
-                            &alt_b,
-                            ctx.factory(),
-                        ))
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                &alt_b,
+                                ctx.factory(),
+                            ),
+                        )
                     };
+                let tracked = active_tracked_vars();
+                let Some(alt_carrying) = project_carrying_for_consumer(
+                    &alt_carrying,
+                    &next_val,
+                    tracked.as_deref(),
+                    ctx.factory(),
+                ) else {
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), env),
+                    });
+                    return;
+                };
 
                 work_stack.push(WorkItem::Eval {
                     value: next_val,
@@ -10672,10 +12062,9 @@ fn process_continuation<C: EvalContext>(
             let (space_results, result_env) = result;
 
             if space_results.is_empty() {
-                let err = ctx.factory().error(
-                    "get-atoms: space evaluated to empty",
-                    space_ref,
-                );
+                let err = ctx
+                    .factory()
+                    .error("get-atoms: space evaluated to empty", space_ref);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], result_env),
                 });
@@ -10693,12 +12082,14 @@ fn process_continuation<C: EvalContext>(
                         // Return all atoms as separate results (superposition)
                         work_stack.push(WorkItem::Resume {
                             result: (atoms.into_iter().map(bv).collect(), result_env),
-
                         });
                     }
                 } else {
                     let err = ctx.factory().error(
-                        &format!("get-atoms: first argument must be a space, got {}", first.friendly_repr()),
+                        &format!(
+                            "get-atoms: first argument must be a space, got {}",
+                            first.friendly_repr()
+                        ),
                         first.clone(),
                     );
                     work_stack.push(WorkItem::Resume {
@@ -10719,10 +12110,9 @@ fn process_continuation<C: EvalContext>(
             let (space_results, env_after) = result;
 
             if space_results.is_empty() {
-                let err = ctx.factory().error(
-                    "match: space evaluated to empty",
-                    space_arg,
-                );
+                let err = ctx
+                    .factory()
+                    .error("match: space evaluated to empty", space_arg);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -10743,9 +12133,11 @@ fn process_continuation<C: EvalContext>(
                                     if var.starts_with('$') {
                                         // Use type index: O(k) where k = atoms of matching type
                                         let matching_atoms = env.get_atoms_of_type(type_name);
-                                        let results: Vec<MettaValue> = matching_atoms.iter()
+                                        let results: Vec<MettaValue> = matching_atoms
+                                            .iter()
                                             .map(|name| {
-                                                let mut bindings = crate::backend::models::GenericBindings::new();
+                                                let mut bindings =
+                                                    crate::backend::models::GenericBindings::new();
                                                 bindings.insert(var, ctx.factory().atom(name));
                                                 apply_bindings(&template, &bindings, ctx.factory())
                                             })
@@ -10764,7 +12156,8 @@ fn process_continuation<C: EvalContext>(
                             None
                         };
 
-                        let generic_results: Vec<MettaValue> = if let Some(filtered) = type_filtered {
+                        let generic_results: Vec<MettaValue> = if let Some(filtered) = type_filtered
+                        {
                             filtered
                         } else {
                             // Standard path: match_space which handles serialization internally
@@ -10784,7 +12177,10 @@ fn process_continuation<C: EvalContext>(
                                     trace_format::TraceTier::TreeWalker,
                                     depth as u32,
                                     crate::backend::trace::trace_value_generic(&pattern),
-                                    generic_results.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                    generic_results
+                                        .iter()
+                                        .map(|v| crate::backend::trace::trace_value_generic(v))
+                                        .collect(),
                                     None,
                                     trace_format::TraceEventKind::SpecialForm {
                                         form_name: "match".to_string(),
@@ -10854,7 +12250,10 @@ fn process_continuation<C: EvalContext>(
                                     trace_format::TraceTier::TreeWalker,
                                     depth as u32,
                                     crate::backend::trace::trace_value_generic(&pattern),
-                                    instantiated_templates.iter().map(|v| crate::backend::trace::trace_value_generic(v)).collect(),
+                                    instantiated_templates
+                                        .iter()
+                                        .map(|v| crate::backend::trace::trace_value_generic(v))
+                                        .collect(),
                                     None,
                                     trace_format::TraceEventKind::SpecialForm {
                                         form_name: "match".to_string(),
@@ -10932,7 +12331,6 @@ fn process_continuation<C: EvalContext>(
             if remaining_templates.len() == 0 {
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(results), env),
-
                 });
             } else {
                 let next_template = remaining_templates.next().unwrap();
@@ -10967,10 +12365,9 @@ fn process_continuation<C: EvalContext>(
             let (space_results, mut env_after) = result;
 
             if space_results.is_empty() {
-                let err = ctx.factory().error(
-                    "add-atom: space evaluated to empty",
-                    space_ref,
-                );
+                let err = ctx
+                    .factory()
+                    .error("add-atom: space evaluated to empty", space_ref);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -11048,7 +12445,6 @@ fn process_continuation<C: EvalContext>(
         //         });
         //     }
         // }
-
         Continuation::ProcessRemoveAtomSpace {
             space_ref,
             atom,
@@ -11059,10 +12455,9 @@ fn process_continuation<C: EvalContext>(
             let (space_results, mut env_after) = result;
 
             if space_results.is_empty() {
-                let err = ctx.factory().error(
-                    "remove-atom: space evaluated to empty",
-                    space_ref,
-                );
+                let err = ctx
+                    .factory()
+                    .error("remove-atom: space evaluated to empty", space_ref);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -11138,7 +12533,6 @@ fn process_continuation<C: EvalContext>(
         //         });
         //     }
         // }
-
         Continuation::ProcessNewState {
             initial_value,
             env: _,
@@ -11148,10 +12542,9 @@ fn process_continuation<C: EvalContext>(
             let (init_results, mut env_after) = result;
 
             if init_results.is_empty() {
-                let err = ctx.factory().error(
-                    "new-state: initial value evaluated to empty",
-                    initial_value,
-                );
+                let err = ctx
+                    .factory()
+                    .error("new-state: initial value evaluated to empty", initial_value);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -11175,10 +12568,9 @@ fn process_continuation<C: EvalContext>(
             let (state_results, env_after) = result;
 
             if state_results.is_empty() {
-                let err = ctx.factory().error(
-                    "get-state: state reference evaluated to empty",
-                    state_ref,
-                );
+                let err = ctx
+                    .factory()
+                    .error("get-state: state reference evaluated to empty", state_ref);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -11276,10 +12668,9 @@ fn process_continuation<C: EvalContext>(
             let (value_results, mut env_after) = result;
 
             if value_results.is_empty() {
-                let err = ctx.factory().error(
-                    "change-state!: new value evaluated to empty",
-                    new_value,
-                );
+                let err = ctx
+                    .factory()
+                    .error("change-state!: new value evaluated to empty", new_value);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -11294,10 +12685,9 @@ fn process_continuation<C: EvalContext>(
                         result: (smallvec![bv(result_state)], env_after),
                     });
                 } else {
-                    let err = ctx.factory().error(
-                        "change-state!: expected state value",
-                        state_value,
-                    );
+                    let err = ctx
+                        .factory()
+                        .error("change-state!: expected state value", state_value);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -11335,10 +12725,9 @@ fn process_continuation<C: EvalContext>(
             let (format_results, env_after) = result;
 
             if format_results.is_empty() {
-                let err = ctx.factory().error(
-                    "format-args: format string evaluated to empty",
-                    format_arg,
-                );
+                let err = ctx
+                    .factory()
+                    .error("format-args: format string evaluated to empty", format_arg);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -11387,16 +12776,16 @@ fn process_continuation<C: EvalContext>(
             let (args_results, env_after) = result;
 
             if args_results.is_empty() {
-                let err = ctx.factory().error(
-                    "format-args: args evaluated to empty",
-                    args_arg,
-                );
+                let err = ctx
+                    .factory()
+                    .error("format-args: args evaluated to empty", args_arg);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
             } else {
                 // Get args as a list - use native generic values directly
-                let args_list: Vec<&MettaValue> = if let Some(items) = args_results[0].0.as_sexpr() {
+                let args_list: Vec<&MettaValue> = if let Some(items) = args_results[0].0.as_sexpr()
+                {
                     items.iter().collect()
                 } else {
                     args_results.iter().map(|(v, _)| v).collect()
@@ -11507,8 +12896,10 @@ fn process_continuation<C: EvalContext>(
                     MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
                     MettaValueInner::Atom(s) if is_variable_str(s) => "Variable",
                     MettaValueInner::Atom(_) => "Symbol",
-                    MettaValueInner::Bool(_) | MettaValueInner::Long(_)
-                    | MettaValueInner::Float(_) | MettaValueInner::String(_) => "Grounded",
+                    MettaValueInner::Bool(_)
+                    | MettaValueInner::Long(_)
+                    | MettaValueInner::Float(_)
+                    | MettaValueInner::String(_) => "Grounded",
                     MettaValueInner::Error(..) => "Error",
                     MettaValueInner::Spanned(..) => {
                         let stripped = first.strip_one_span();
@@ -11517,8 +12908,10 @@ fn process_continuation<C: EvalContext>(
                             MettaValueInner::Quoted(_) | MettaValueInner::SExpr(_) => "Expression",
                             MettaValueInner::Atom(s) if is_variable_str(s) => "Variable",
                             MettaValueInner::Atom(_) => "Symbol",
-                            MettaValueInner::Bool(_) | MettaValueInner::Long(_)
-                            | MettaValueInner::Float(_) | MettaValueInner::String(_) => "Grounded",
+                            MettaValueInner::Bool(_)
+                            | MettaValueInner::Long(_)
+                            | MettaValueInner::Float(_)
+                            | MettaValueInner::String(_) => "Grounded",
                             MettaValueInner::Error(..) => "Error",
                             _ => "Undefined",
                         }
@@ -11541,10 +12934,9 @@ fn process_continuation<C: EvalContext>(
             let (atom_results, mut env_after) = result;
 
             if atom_results.is_empty() {
-                let err = ctx.factory().error(
-                    "bind!: atom evaluated to empty",
-                    ctx.factory().atom(&token),
-                );
+                let err = ctx
+                    .factory()
+                    .error("bind!: atom evaluated to empty", ctx.factory().atom(&token));
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -11585,12 +12977,19 @@ fn process_continuation<C: EvalContext>(
             #[cfg(feature = "trace")]
             {
                 if let Some(tc) = ctx.trace_collector() {
-                    let phase = if is_irreducible { "irreducible" } else { "reduced" };
+                    let phase = if is_irreducible {
+                        "irreducible"
+                    } else {
+                        "reduced"
+                    };
                     tc.emit_converted(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
                         crate::backend::trace::trace_value_generic(&original_expr),
-                        eval_results.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                        eval_results
+                            .iter()
+                            .map(|(v, _)| crate::backend::trace::trace_value_generic(v))
+                            .collect(),
                         None,
                         trace_format::TraceEventKind::SpecialForm {
                             form_name: "if-reducible".to_string(),
@@ -11778,7 +13177,10 @@ fn process_continuation<C: EvalContext>(
                             });
                         } else if instantiated_templates.len() == 1 {
                             work_stack.push(WorkItem::Eval {
-                                value: instantiated_templates.into_iter().next().expect("non-empty"),
+                                value: instantiated_templates
+                                    .into_iter()
+                                    .next()
+                                    .expect("non-empty"),
                                 env: env_after,
                                 depth,
                                 is_tail_call: true,
@@ -11838,10 +13240,9 @@ fn process_continuation<C: EvalContext>(
             let (memo_results, env_after) = result;
 
             if memo_results.is_empty() {
-                let err = ctx.factory().error(
-                    "memo/memo!: memo reference evaluated to empty",
-                    memo_ref,
-                );
+                let err = ctx
+                    .factory()
+                    .error("memo/memo!: memo reference evaluated to empty", memo_ref);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -11901,9 +13302,15 @@ fn process_continuation<C: EvalContext>(
 
             // Cache the result using generic store
             if first_only && !expr_results.is_empty() {
-                let slice = &expr_results[..1]; let _vals: Vec<MettaValue> = slice.iter().map(|(v, _)| v.clone()).collect(); memo_handle.store_generic(&expr, &_vals);
+                let slice = &expr_results[..1];
+                let _vals: Vec<MettaValue> = slice.iter().map(|(v, _)| v.clone()).collect();
+                memo_handle.store_generic(&expr, &_vals);
             } else {
-                { let _vals: Vec<MettaValue> = expr_results.iter().map(|(v, _)| v.clone()).collect(); memo_handle.store_generic(&expr, &_vals); };
+                {
+                    let _vals: Vec<MettaValue> =
+                        expr_results.iter().map(|(v, _)| v.clone()).collect();
+                    memo_handle.store_generic(&expr, &_vals);
+                };
             }
 
             work_stack.push(WorkItem::Resume {
@@ -11921,10 +13328,9 @@ fn process_continuation<C: EvalContext>(
             let (name_results, env_after) = result;
 
             if name_results.is_empty() {
-                let err = ctx.factory().error(
-                    "new-memo: name evaluated to empty",
-                    name_arg,
-                );
+                let err = ctx
+                    .factory()
+                    .error("new-memo: name evaluated to empty", name_arg);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -11977,10 +13383,9 @@ fn process_continuation<C: EvalContext>(
             let (size_results, env_after) = result;
 
             if size_results.is_empty() {
-                let err = ctx.factory().error(
-                    "new-memo: size evaluated to empty",
-                    size_arg,
-                );
+                let err = ctx
+                    .factory()
+                    .error("new-memo: size evaluated to empty", size_arg);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -12004,7 +13409,11 @@ fn process_continuation<C: EvalContext>(
             let (memo_results, env_after) = result;
 
             if memo_results.is_empty() {
-                let op_name = if is_clear { "clear-memo!" } else { "memo-stats" };
+                let op_name = if is_clear {
+                    "clear-memo!"
+                } else {
+                    "memo-stats"
+                };
                 let err = ctx.factory().error(
                     &format!("{}: memo reference evaluated to empty", op_name),
                     memo_ref,
@@ -12038,18 +13447,23 @@ fn process_continuation<C: EvalContext>(
                         }
                         #[cfg(not(feature = "track-stats"))]
                         {
-                            let detail = ctx.factory().atom("Rebuild with: cargo build --features track-stats");
-                            let err = ctx.factory().error(
-                                "memo-stats requires track-stats feature",
-                                detail,
-                            );
+                            let detail = ctx
+                                .factory()
+                                .atom("Rebuild with: cargo build --features track-stats");
+                            let err = ctx
+                                .factory()
+                                .error("memo-stats requires track-stats feature", detail);
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(err)], env_after),
                             });
                         }
                     }
                 } else {
-                    let op_name = if is_clear { "clear-memo!" } else { "memo-stats" };
+                    let op_name = if is_clear {
+                        "clear-memo!"
+                    } else {
+                        "memo-stats"
+                    };
                     let err = ctx.factory().error(
                         &format!(
                             "{}: argument must be a memo table, got {}",
@@ -12085,7 +13499,13 @@ fn process_continuation<C: EvalContext>(
             // restricts caching to ground-input expressions, so cached
             // values are themselves ground.
             if mutation_epoch() == saved_epoch {
-                eval_memo_put(expr_hash, &result_values.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>());
+                eval_memo_put(
+                    expr_hash,
+                    &result_values
+                        .iter()
+                        .map(|(v, _)| v.clone())
+                        .collect::<Vec<_>>(),
+                );
             }
 
             work_stack.push(WorkItem::Resume {
@@ -12140,19 +13560,24 @@ fn process_continuation<C: EvalContext>(
                 // recursive body), causing downstream `if` conditions to see
                 // unbound freshened vars and return unreduced forms.
                 let (value, per_branch_bindings) = &result_values[0];
-                let composed_outer = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                    &*accumulated_bindings, per_branch_bindings, ctx.factory(),
-                ) {
-                    Some(b) => b,
-                    None => {
-                        // Binding conflict: per-branch bindings contradict accumulated.
-                        crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
-                        work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::new(), result_env),
-                        });
-                        return;
-                    }
-                };
+                let composed_outer =
+                    match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                        &*accumulated_bindings,
+                        per_branch_bindings,
+                        ctx.factory(),
+                    ) {
+                        Some(b) => b,
+                        None => {
+                            // Binding conflict: per-branch bindings contradict accumulated.
+                            crate::backend::eval::cesk::with_region_stack(|s| {
+                                s.exit();
+                            });
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), result_env),
+                            });
+                            return;
+                        }
+                    };
                 accumulated_bindings = std::sync::Arc::new(composed_outer);
 
                 if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
@@ -12166,36 +13591,61 @@ fn process_continuation<C: EvalContext>(
                     // Strict-compose still fires for any NON-shadow conflict
                     // (e.g., rule-match inner bindings on variables outside
                     // the current pattern), preserving ghost-branch pruning.
-                    let accumulated_prep = crate::backend::eval::bindings::prepare_letstar_accumulated(
-                        &*accumulated_bindings, &current_pattern, ctx.factory(),
-                    );
-                    let composed_pm = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                        &accumulated_prep, &pm_bindings, ctx.factory(),
-                    ) {
-                        Some(b) => b,
-                        None => {
-                            // PM bindings conflict with accumulated
-                            // (e.g. let* re-binds $x to a different value).
-                            crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
-                            work_stack.push(WorkItem::Resume {
-                                result: (SmallVec::new(), result_env),
-                            });
-                            return;
-                        }
-                    };
+                    let accumulated_prep =
+                        crate::backend::eval::bindings::prepare_letstar_accumulated(
+                            &*accumulated_bindings,
+                            &current_pattern,
+                            ctx.factory(),
+                        );
+                    let composed_pm =
+                        match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                            &accumulated_prep,
+                            &pm_bindings,
+                            ctx.factory(),
+                        ) {
+                            Some(b) => b,
+                            None => {
+                                // PM bindings conflict with accumulated
+                                // (e.g. let* re-binds $x to a different value).
+                                crate::backend::eval::cesk::with_region_stack(|s| {
+                                    s.exit();
+                                });
+                                work_stack.push(WorkItem::Resume {
+                                    result: (SmallVec::new(), result_env),
+                                });
+                                return;
+                            }
+                        };
                     accumulated_bindings = std::sync::Arc::new(composed_pm);
 
                     if remaining_pairs.is_empty() {
                         // I-5: Exit region — let* scope complete
-                        crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
+                        crate::backend::eval::cesk::with_region_stack(|s| {
+                            s.exit();
+                        });
                         // All bindings resolved — evaluate body with composed bindings.
                         // Also carry them as ambient `carrying_bindings` so nested
                         // chain/let/rule-match handlers can resolve variables bound
                         // in this let* chain.
-                        let ambient = accumulated_bindings.clone();
+                        let tracked = active_tracked_vars();
+                        let projected_accumulated = match project_owned_bindings_for_consumer(
+                            &*accumulated_bindings,
+                            &body,
+                            tracked.as_deref(),
+                            ctx.factory(),
+                        ) {
+                            Some(b) => std::sync::Arc::new(b),
+                            None => {
+                                work_stack.push(WorkItem::Resume {
+                                    result: (SmallVec::new(), result_env),
+                                });
+                                return;
+                            }
+                        };
+                        let ambient = projected_accumulated.clone();
                         work_stack.push(WorkItem::EvalWithBindings {
                             template: body,
-                            bindings: accumulated_bindings,
+                            bindings: projected_accumulated,
                             env: result_env,
                             depth,
                             is_tail_call,
@@ -12205,9 +13655,8 @@ fn process_continuation<C: EvalContext>(
                     } else {
                         // More pairs to process — pop next pair
                         let (next_pattern, next_value_expr) = remaining_pairs.remove(0);
-                        let materialized_value = apply_bindings(
-                            &next_value_expr, &accumulated_bindings, ctx.factory(),
-                        );
+                        let materialized_value =
+                            apply_bindings(&next_value_expr, &accumulated_bindings, ctx.factory());
 
                         // 2026-04-23: the earlier "scope barrier at iteration
                         // handoff" strip of `$__fr_*` was removed — it dropped
@@ -12216,7 +13665,21 @@ fn process_continuation<C: EvalContext>(
                         // PLN's `BestCandidate` and similar recursive rules
                         // whose let* body references caller-scope freshened
                         // names via the accumulated context.
-                        let ambient = accumulated_bindings.clone();
+                        let tracked = active_tracked_vars();
+                        let ambient = match project_carrying_for_consumer(
+                            &accumulated_bindings,
+                            &materialized_value,
+                            tracked.as_deref(),
+                            ctx.factory(),
+                        ) {
+                            Some(b) => b,
+                            None => {
+                                work_stack.push(WorkItem::Resume {
+                                    result: (SmallVec::new(), result_env),
+                                });
+                                return;
+                            }
+                        };
                         continuations.push(Continuation::ProcessLetStar {
                             current_pattern: next_pattern,
                             remaining_pairs,
@@ -12244,21 +13707,27 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     // Pattern match failed — let* produces empty (MeTTa HE semantics)
-                    crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); }); // I-5
+                    crate::backend::eval::cesk::with_region_stack(|s| {
+                        s.exit();
+                    }); // I-5
                     work_stack.push(WorkItem::Resume {
                         result: (SmallVec::new(), result_env),
                     });
                 }
             } else if result_values.is_empty() {
                 // Zero results — let* produces empty
-                crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); }); // I-5
+                crate::backend::eval::cesk::with_region_stack(|s| {
+                    s.exit();
+                }); // I-5
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::new(), result_env),
                 });
             } else {
                 // Multiple results — nondeterministic value expression.
                 // I-5: Exit region before fallback (region doesn't span materialized let forms)
-                crate::backend::eval::cesk::with_region_stack(|s| { s.exit(); });
+                crate::backend::eval::cesk::with_region_stack(|s| {
+                    s.exit();
+                });
                 // Fall back to standard `let` machinery for each result.
                 // Build nested let form for remaining pairs + body, then
                 // use ProcessAmb to handle each result.
@@ -12287,32 +13756,52 @@ fn process_continuation<C: EvalContext>(
                 // Pattern-keyed shadow is still applied via
                 // `prepare_letstar_accumulated` below so user-level var
                 // rebinding across let* pairs follows HE semantics.
-                let mut bound_bodies: Vec<(MettaValue, crate::backend::eval::trampoline::types::SharedBindings)> = Vec::new();
+                let mut bound_bodies: Vec<(
+                    MettaValue,
+                    crate::backend::eval::trampoline::types::SharedBindings,
+                )> = Vec::new();
                 for (value, per_branch) in result_values.iter() {
                     if let Some(pm_bindings) = pattern_match(&current_pattern, value) {
-                        let with_branch = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                            &*accumulated_bindings, per_branch, ctx.factory(),
-                        ) {
-                            Some(b) => b,
-                            None => continue, // conflict → drop this alternative
-                        };
+                        let with_branch =
+                            match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                                &*accumulated_bindings,
+                                per_branch,
+                                ctx.factory(),
+                            ) {
+                                Some(b) => b,
+                                None => continue, // conflict → drop this alternative
+                            };
                         // Pattern-keyed shadow: drop keys the pattern is about
                         // to bind so the pm wins. Matches HE's `let*` shadow
                         // semantics for user-level variable rebinding across
                         // pairs. Applied on `with_branch` (not on the source
                         // accumulated) because we want it to affect the pm
                         // merge, not the per-branch merge.
-                        let with_branch_shadow = crate::backend::eval::bindings::prepare_letstar_accumulated(
-                            &with_branch, &current_pattern, ctx.factory(),
-                        );
-                        let composed = match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                            &with_branch_shadow, &pm_bindings, ctx.factory(),
-                        ) {
-                            Some(b) => b,
-                            None => continue,
-                        };
+                        let with_branch_shadow =
+                            crate::backend::eval::bindings::prepare_letstar_accumulated(
+                                &with_branch,
+                                &current_pattern,
+                                ctx.factory(),
+                            );
+                        let composed =
+                            match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                                &with_branch_shadow,
+                                &pm_bindings,
+                                ctx.factory(),
+                            ) {
+                                Some(b) => b,
+                                None => continue,
+                            };
                         let materialized = apply_bindings(&let_body, &composed, ctx.factory());
-                        bound_bodies.push((materialized, std::sync::Arc::new(composed)));
+                        let tracked = active_tracked_vars();
+                        if let Some(projected) = project_owned_bindings_for_consumer(
+                            &composed,
+                            &materialized,
+                            tracked.as_deref(),
+                            ctx.factory(),
+                        ) {
+                            bound_bodies.push((materialized, std::sync::Arc::new(projected)));
+                        }
                     }
                 }
 
@@ -12321,10 +13810,8 @@ fn process_continuation<C: EvalContext>(
                         result: (SmallVec::new(), result_env),
                     });
                 } else if bound_bodies.len() == 1 {
-                    let (materialized, ambient) = bound_bodies
-                        .into_iter()
-                        .next()
-                        .expect("len == 1");
+                    let (materialized, ambient) =
+                        bound_bodies.into_iter().next().expect("len == 1");
                     work_stack.push(WorkItem::Eval {
                         value: materialized,
                         env: result_env,
@@ -12340,9 +13827,7 @@ fn process_continuation<C: EvalContext>(
                     // so the body's rule-matching sees the bound variables.
                     let mut iter = bound_bodies.into_iter();
                     let (first_val, first_ambient) = iter.next().expect("bodies non-empty");
-                    let rest: Vec<BoundValue> = iter
-                        .map(|(v, b)| (v, (*b).clone()))
-                        .collect();
+                    let rest: Vec<BoundValue> = iter.map(|(v, b)| (v, (*b).clone())).collect();
 
                     continuations.push(Continuation::ProcessAmb {
                         remaining_alts: rest.into_iter(),
@@ -12397,10 +13882,8 @@ fn process_continuation<C: EvalContext>(
                 // `query_generation` cannot prevent. See
                 // tests/ghost_branch_regression.rs::
                 // within_query_cache_isolation_contract for enforcement.
-                let cached: smallvec::SmallVec<[MettaValue; 2]> = result_values
-                    .iter()
-                    .map(|(v, _b)| v.clone())
-                    .collect();
+                let cached: smallvec::SmallVec<[MettaValue; 2]> =
+                    result_values.iter().map(|(v, _b)| v.clone()).collect();
                 crate::backend::eval::cesk::with_subgoal_table(|t| {
                     t.complete(expr_hash, cached);
                 });
@@ -12413,9 +13896,15 @@ fn process_continuation<C: EvalContext>(
                         trace_format::TraceTier::TreeWalker,
                         depth as u32,
                         crate::backend::trace::trace_value_generic(
-                            &result_values.first().map(|(v, _)| v.clone()).unwrap_or_else(|| ctx.factory().unit())
+                            &result_values
+                                .first()
+                                .map(|(v, _)| v.clone())
+                                .unwrap_or_else(|| ctx.factory().unit()),
                         ),
-                        result_values.iter().map(|(v, _)| crate::backend::trace::trace_value_generic(v)).collect(),
+                        result_values
+                            .iter()
+                            .map(|(v, _)| crate::backend::trace::trace_value_generic(v))
+                            .collect(),
                         None,
                         trace_format::TraceEventKind::TablingDecision {
                             expr_hash,
@@ -12521,7 +14010,14 @@ fn process_continuation<C: EvalContext>(
                         memoize_normal_form(&tuple);
                         let cb = &*outer_carrying;
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![if cb.is_empty() { bv(tuple) } else { bv_with(tuple, cb.clone()) }], result_env),
+                            result: (
+                                smallvec![if cb.is_empty() {
+                                    bv(tuple)
+                                } else {
+                                    bv_with(tuple, cb.clone())
+                                }],
+                                result_env,
+                            ),
                         });
                     } else {
                         // Cartesian product for nondeterministic args.
@@ -12535,7 +14031,11 @@ fn process_continuation<C: EvalContext>(
                             let tuple = ctx.factory().sexpr(combo_args);
                             memoize_normal_form(&tuple);
                             let cb = &*outer_carrying;
-                            sealed_results.push(if cb.is_empty() { bv(tuple) } else { bv_with(tuple, cb.clone()) });
+                            sealed_results.push(if cb.is_empty() {
+                                bv(tuple)
+                            } else {
+                                bv_with(tuple, cb.clone())
+                            });
 
                             let mut carry = true;
                             for i in (0..combo_indices.len()).rev() {
@@ -12548,7 +14048,9 @@ fn process_continuation<C: EvalContext>(
                                     }
                                 }
                             }
-                            if carry { break; }
+                            if carry {
+                                break;
+                            }
                         }
                         work_stack.push(WorkItem::Resume {
                             result: (sealed_results, result_env),
@@ -12575,10 +14077,11 @@ fn process_continuation<C: EvalContext>(
                 None
             };
             match pushed {
-                Some(WorkItem::Resume { result: (outputs, _) }) => {
+                Some(WorkItem::Resume {
+                    result: (outputs, _),
+                }) => {
                     let site = format!("eval_loop:{}", line!());
-                    let output_snaps =
-                        crate::backend::trace::convert::trace_bound_values(outputs);
+                    let output_snaps = crate::backend::trace::convert::trace_bound_values(outputs);
 
                     // Compute key-union diff.
                     let mut input_keys = std::collections::BTreeSet::<String>::new();
@@ -12593,10 +14096,8 @@ fn process_continuation<C: EvalContext>(
                             output_keys.insert(k.clone());
                         }
                     }
-                    let dropped_keys: Vec<String> = input_keys
-                        .difference(&output_keys)
-                        .cloned()
-                        .collect();
+                    let dropped_keys: Vec<String> =
+                        input_keys.difference(&output_keys).cloned().collect();
 
                     tc.emit_converted(
                         trace_format::TraceTier::TreeWalker,
@@ -12618,8 +14119,7 @@ fn process_continuation<C: EvalContext>(
                             Vec::with_capacity(dropped_keys.len());
                         for bv in inputs.iter() {
                             for (k, v) in bv.bindings.iter() {
-                                if dropped_keys.contains(k)
-                                    && !sample.iter().any(|(sk, _)| sk == k)
+                                if dropped_keys.contains(k) && !sample.iter().any(|(sk, _)| sk == k)
                                 {
                                     sample.push((k.clone(), v.clone()));
                                 }

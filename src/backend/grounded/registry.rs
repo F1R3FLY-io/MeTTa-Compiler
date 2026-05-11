@@ -36,14 +36,8 @@
 
 use std::collections::HashMap;
 
-use super::arithmetic::{
-    AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp,
-    MulOp, SafeDivOp, SubOp,
-};
-use super::comparison::{
-    EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp,
-    NotEqualOp,
-};
+use super::arithmetic::{AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp};
+use super::comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
 use super::logical::{AndOp, NotOp, OrOp, XorOp};
 use super::state::{GroundedState, GroundedWork};
 use super::traits::GroundedOperationTCO;
@@ -124,10 +118,24 @@ where
 pub fn has_grounded_op(name: &str) -> bool {
     matches!(
         name,
-        "+" | "-" | "*" | "/" | "%" | "min" | "max" |
-        "<" | "<=" | ">" | ">=" | "==" | "!=" |
-        "and" | "or" | "not" | "xor" |
-        "/safe" | "clamp"
+        "+" | "-"
+            | "*"
+            | "/"
+            | "%"
+            | "min"
+            | "max"
+            | "<"
+            | "<="
+            | ">"
+            | ">="
+            | "=="
+            | "!="
+            | "and"
+            | "or"
+            | "not"
+            | "xor"
+            | "/safe"
+            | "clamp"
     )
 }
 
@@ -396,10 +404,7 @@ mod tests {
     #[test]
     fn test_operation_not_found() {
         let registry = GroundedRegistry::with_standard_ops();
-        let mut state = GroundedState::new(
-            "nonexistent".to_string(),
-            vec![MettaValue::Long(1)],
-        );
+        let mut state = GroundedState::new("nonexistent".to_string(), vec![MettaValue::Long(1)]);
 
         let work = registry.execute_step_heap("nonexistent", &mut state);
         assert!(work.is_none());
@@ -521,10 +526,7 @@ mod tests {
         let factory = GcFactory::default();
 
         // Test 'not' with static dispatch
-        let mut state = GroundedState::new(
-            "not".to_string(),
-            vec![MettaValue::Bool(true)],
-        );
+        let mut state = GroundedState::new("not".to_string(), vec![MettaValue::Bool(true)]);
 
         // Run all steps
         execute_grounded_op("not", &mut state, &factory);
@@ -544,10 +546,7 @@ mod tests {
     #[test]
     fn test_execute_grounded_op_not_found() {
         let factory = GcFactory::default();
-        let mut state = GroundedState::new(
-            "nonexistent".to_string(),
-            vec![MettaValue::Long(1)],
-        );
+        let mut state = GroundedState::new("nonexistent".to_string(), vec![MettaValue::Long(1)]);
 
         let work = execute_grounded_op("nonexistent", &mut state, &factory);
         assert!(work.is_none());

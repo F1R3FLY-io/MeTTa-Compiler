@@ -22,7 +22,6 @@
 //! Uses Kahn's algorithm with level grouping (identical to `wavefront_schedule()`
 //! from MeTTaIL2Matrix).
 
-
 use super::cost_class::CostClass;
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -183,9 +182,7 @@ pub fn compute_wavefront(tasks: &[WavefrontTask]) -> WavefrontSchedule {
     // If not all tasks were processed, there's a dependency cycle.
     // Include remaining tasks in a final wave (conservative: run them all).
     if processed < n {
-        let remaining: Vec<usize> = (0..n)
-            .filter(|&i| in_degree[i] > 0)
-            .collect();
+        let remaining: Vec<usize> = (0..n).filter(|&i| in_degree[i] > 0).collect();
         if !remaining.is_empty() {
             waves.push(remaining);
         }

@@ -18,12 +18,20 @@ pub struct Position {
 
 impl Position {
     pub fn new(row: usize, column: usize, byte_offset: usize) -> Self {
-        Self { row, column, byte_offset }
+        Self {
+            row,
+            column,
+            byte_offset,
+        }
     }
 
     /// Create a zero position (used as default)
     pub fn zero() -> Self {
-        Self { row: 0, column: 0, byte_offset: 0 }
+        Self {
+            row: 0,
+            column: 0,
+            byte_offset: 0,
+        }
     }
 }
 

@@ -49,8 +49,7 @@ pub fn run(file: &str, top_n: usize, min_count: u64) -> Result<(), String> {
 
         // Only track RuleApplication and GroundedOp events
         match &event.kind {
-            TraceEventKind::RuleApplication { .. }
-            | TraceEventKind::GroundedOp { .. } => {}
+            TraceEventKind::RuleApplication { .. } | TraceEventKind::GroundedOp { .. } => {}
             _ => continue,
         }
 
@@ -88,14 +87,17 @@ pub fn run(file: &str, top_n: usize, min_count: u64) -> Result<(), String> {
                 input_display
             };
 
-            entries.insert(input_hash, ComputationEntry {
-                output_hash,
-                count: 1,
-                total_ns: duration,
-                head_symbol,
-                input_display,
-                last_access: access_counter,
-            });
+            entries.insert(
+                input_hash,
+                ComputationEntry {
+                    output_hash,
+                    count: 1,
+                    total_ns: duration,
+                    head_symbol,
+                    input_display,
+                    last_access: access_counter,
+                },
+            );
         }
     }
 
@@ -142,7 +144,11 @@ pub fn run(file: &str, top_n: usize, min_count: u64) -> Result<(), String> {
     println!("  {}", "-".repeat(78));
 
     for entry in candidates.iter().take(top_n) {
-        let mean_ns = if entry.count > 0 { entry.total_ns / entry.count } else { 0 };
+        let mean_ns = if entry.count > 0 {
+            entry.total_ns / entry.count
+        } else {
+            0
+        };
         let savings_ns = if entry.count > 1 {
             (entry.count - 1) * mean_ns
         } else {
@@ -166,13 +172,23 @@ pub fn run(file: &str, top_n: usize, min_count: u64) -> Result<(), String> {
     }
 
     // Summary
-    let total_savings: u64 = candidates.iter().map(|e| {
-        let mean_ns = if e.count > 0 { e.total_ns / e.count } else { 0 };
-        if e.count > 1 { (e.count - 1) * mean_ns } else { 0 }
-    }).sum();
+    let total_savings: u64 = candidates
+        .iter()
+        .map(|e| {
+            let mean_ns = if e.count > 0 { e.total_ns / e.count } else { 0 };
+            if e.count > 1 {
+                (e.count - 1) * mean_ns
+            } else {
+                0
+            }
+        })
+        .sum();
 
     println!();
-    println!("Total potential savings: {}", format_duration_ns(total_savings));
+    println!(
+        "Total potential savings: {}",
+        format_duration_ns(total_savings)
+    );
     if total_wall_ns > 0 {
         println!(
             "Savings as % of wall time: {:.1}%",

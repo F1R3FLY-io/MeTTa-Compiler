@@ -191,7 +191,10 @@ mod tests {
             normalize_frame("mettatron::backend::eval::eval_inner::h0123456789abcdef"),
             "eval_inner"
         );
-        assert_eq!(normalize_frame("HashMap<String, Vec<u64>>::insert"), "insert");
+        assert_eq!(
+            normalize_frame("HashMap<String, Vec<u64>>::insert"),
+            "insert"
+        );
         assert_eq!(normalize_frame("main"), "main");
     }
 

@@ -38,7 +38,9 @@ fn run_sync(src: &'static str) {
 async fn run_async(src: &'static str) {
     let state = compile(src).unwrap();
     let env = new_env();
-    let result_state = run_state_async(MettaState::from_env(env), &state).await.unwrap();
+    let result_state = run_state_async(MettaState::from_env(env), &state)
+        .await
+        .unwrap();
     black_box(result_state);
 }
 

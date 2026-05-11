@@ -29,12 +29,12 @@ use crate::util::extract_operator_name;
 fn categorize(name: &str) -> &'static str {
     match name {
         // Spec §6.3.6 — embedded kernel ops
-        "eval" | "evalc" | "chain" | "unify" | "cons-atom" | "decons-atom"
-        | "function" | "return" | "collapse-bind" | "superpose-bind"
-        | "metta" | "call-native" | "context-space" => "kernel-op",
+        "eval" | "evalc" | "chain" | "unify" | "cons-atom" | "decons-atom" | "function"
+        | "return" | "collapse-bind" | "superpose-bind" | "metta" | "call-native"
+        | "context-space" => "kernel-op",
         // Stdlib control flow / binding forms (spec §11)
-        "let" | "let*" | "if" | "case" | "switch" | "match" | "match-or"
-        | "match-atom" | "sealed" | "atom-subst" => "special-form",
+        "let" | "let*" | "if" | "case" | "switch" | "match" | "match-or" | "match-atom"
+        | "sealed" | "atom-subst" => "special-form",
         // Pseudo-events emitted by extract_operator_name
         s if s.starts_with('<') => "pseudo-event",
         // Everything else: grounded op, stdlib reducible, or user-defined rule head
@@ -102,7 +102,8 @@ pub fn run(file: &str, top_n: usize, show_graph: bool) -> Result<(), String> {
     // Print categories in a fixed sensible order
     for cat in &["kernel-op", "special-form", "operator", "pseudo-event"] {
         if let Some(entries) = by_category.get(*cat) {
-            println!("--- {} ({} ops, {} total invocations) ---",
+            println!(
+                "--- {} ({} ops, {} total invocations) ---",
                 cat,
                 entries.len(),
                 entries.iter().map(|(_, c)| *c).sum::<u64>()
@@ -120,7 +121,12 @@ pub fn run(file: &str, top_n: usize, show_graph: bool) -> Result<(), String> {
             let mut sorted: Vec<_> = children.iter().collect();
             sorted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
             let total: u64 = children.values().sum();
-            println!("{} ({} edges, {} total invocations):", parent, children.len(), total);
+            println!(
+                "{} ({} edges, {} total invocations):",
+                parent,
+                children.len(),
+                total
+            );
             for (child, count) in sorted.iter().take(top_n) {
                 println!("  → {:>10}× {}", count, child);
             }

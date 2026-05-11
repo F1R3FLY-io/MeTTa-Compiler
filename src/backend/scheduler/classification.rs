@@ -19,7 +19,7 @@ use crate::backend::models::adaptive_pool::Ema;
 use crate::backend::models::metta_value::{MettaValue, ValueView};
 
 use super::cost_class::{
-    AffinityHint, CostClass, SchedulingAction, TaskDescriptor, descriptor_flags,
+    descriptor_flags, AffinityHint, CostClass, SchedulingAction, TaskDescriptor,
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -28,35 +28,68 @@ use super::cost_class::{
 
 /// Grounded arithmetic/comparison operators.
 const GROUNDED_ARITH_OPS: &[&str] = &[
-    "+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!=",
-    "and", "or", "not", "xor", "nand",
-    "min-atom", "max-atom", "abs",
-    "mod", "pow", "sqrt", "log",
+    "+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!=", "and", "or", "not", "xor", "nand",
+    "min-atom", "max-atom", "abs", "mod", "pow", "sqrt", "log",
 ];
 
 /// Known impure (side-effecting) head symbols.
 const IMPURE_HEADS: &[&str] = &[
-    "add-atom", "remove-atom", "change-state!", "get-state",
-    "println!", "print!", "trace!", "sealed",
-    "import!", "include", "bind!", "pragma!",
-    "new-space", "new-state",
+    "add-atom",
+    "remove-atom",
+    "change-state!",
+    "get-state",
+    "println!",
+    "print!",
+    "trace!",
+    "sealed",
+    "import!",
+    "include",
+    "bind!",
+    "pragma!",
+    "new-space",
+    "new-state",
     "nop",
 ];
 
 /// Known pure head symbols (control flow and data manipulation).
 const PURE_HEADS: &[&str] = &[
-    "if", "case", "switch", "let", "let*",
-    "quote", "eval", "chain",
-    "cons-atom", "decons-atom", "car-atom", "cdr-atom",
-    "collapse", "superpose", "unique",
-    "get-type", "get-metatype", "check-type",
-    "match", "unify", "empty",
-    "Error", "error", "catch", "is-error",
-    "assertEqual", "assertEqualToResult",
-    "size-atom", "index-atom",
-    "subtraction", "intersection", "union",
-    "tuple-count", "tuple-concat",
-    "flip", "random-int", "random-float",
+    "if",
+    "case",
+    "switch",
+    "let",
+    "let*",
+    "quote",
+    "eval",
+    "chain",
+    "cons-atom",
+    "decons-atom",
+    "car-atom",
+    "cdr-atom",
+    "collapse",
+    "superpose",
+    "unique",
+    "get-type",
+    "get-metatype",
+    "check-type",
+    "match",
+    "unify",
+    "empty",
+    "Error",
+    "error",
+    "catch",
+    "is-error",
+    "assertEqual",
+    "assertEqualToResult",
+    "size-atom",
+    "index-atom",
+    "subtraction",
+    "intersection",
+    "union",
+    "tuple-count",
+    "tuple-concat",
+    "flip",
+    "random-int",
+    "random-float",
     "id",
 ];
 
@@ -195,7 +228,6 @@ const L1_TABLE_SIZE: usize = 65536;
 /// and weight EMAs use DashMap for lock-free concurrent updates.
 pub struct SchedulerAutomaton {
     // ── Layer 1: Expression → CostClass ──────────────────────────────────
-
     /// Level-1 table: head_hash → index into `l2_entries`.
     /// `None` means no entry for this head hash (use heuristic fallback).
     l1_table: Vec<Option<u32>>,
@@ -208,12 +240,10 @@ pub struct SchedulerAutomaton {
     l2_counts: Vec<u16>,
 
     // ── Layer 2: CostClass → SchedulingAction ────────────────────────────
-
     /// Transduction table: one SchedulingAction per CostClass.
     transduction_table: [SchedulingAction; CostClass::COUNT],
 
     // ── Online weight refinement ─────────────────────────────────────────
-
     /// Per-(head_hash, arity) EMA weight tracker.
     /// Updated after each task completion with actual runtime.
     weight_emas: DashMap<u32, Ema>,
@@ -222,7 +252,6 @@ pub struct SchedulerAutomaton {
     epoch: AtomicU64,
 
     // ── Layer 3: Context weights (WPDS) ──────────────────────────────────
-
     /// Precomputed context weights: hash(top_k_continuations) → multiplier.
     /// Populated by WPDS poststar computation per scheduling epoch.
     context_weights: DashMap<u64, f32>,
@@ -682,7 +711,10 @@ mod tests {
 
         // SymbolicModerate has base priority 5, with 2.0x context weight
         automaton.insert_context_weight(99, 2.0);
-        assert_eq!(automaton.effective_priority(CostClass::SymbolicModerate, 99), 10);
+        assert_eq!(
+            automaton.effective_priority(CostClass::SymbolicModerate, 99),
+            10
+        );
     }
 
     #[test]
@@ -701,11 +733,15 @@ mod tests {
         assert!(automaton.estimated_runtime(desc).is_none());
 
         automaton.update_weight(desc, 1000);
-        let est = automaton.estimated_runtime(desc).expect("should have estimate");
+        let est = automaton
+            .estimated_runtime(desc)
+            .expect("should have estimate");
         assert_eq!(est, 1000.0); // First sample = exact value
 
         automaton.update_weight(desc, 2000);
-        let est2 = automaton.estimated_runtime(desc).expect("should have estimate");
+        let est2 = automaton
+            .estimated_runtime(desc)
+            .expect("should have estimate");
         // EMA: 0.15 * 2000 + 0.85 * 1000 = 1150
         assert!((est2 - 1150.0).abs() < 1.0);
     }

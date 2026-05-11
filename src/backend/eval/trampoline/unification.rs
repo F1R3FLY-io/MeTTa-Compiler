@@ -29,9 +29,9 @@
 //! - Trail was unused (no choice-point backtracking within single unification)
 //! - Formally verified reference available in mettail-rust
 
-use crate::backend::models::MettaValue;
 use super::engine::Bindings;
 use crate::backend::eval::bindings::bidirectional_unify_generic;
+use crate::backend::models::MettaValue;
 
 // ============================================================================
 // Public API
@@ -61,7 +61,9 @@ pub fn bidirectional_unify(a: &MettaValue, b: &MettaValue) -> Option<Bindings> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{global_factory, init_global_allocator, MettaValue, MettaValueFactory};
+    use crate::backend::models::{
+        global_factory, init_global_allocator, MettaValue, MettaValueFactory,
+    };
 
     fn setup() {
         let _ = init_global_allocator();
@@ -192,7 +194,10 @@ mod tests {
         setup();
         // (2 $list) unify (2 (Cons a b)) → {$list → (Cons a b)}
         let lhs = sexpr(vec![long(2), atom("$list")]);
-        let rhs = sexpr(vec![long(2), sexpr(vec![atom("Cons"), atom("a"), atom("b")])]);
+        let rhs = sexpr(vec![
+            long(2),
+            sexpr(vec![atom("Cons"), atom("a"), atom("b")]),
+        ]);
         let result = bidirectional_unify(&lhs, &rhs).unwrap();
         let list = result.get("$list").unwrap();
         assert!(list.as_sexpr().is_some());

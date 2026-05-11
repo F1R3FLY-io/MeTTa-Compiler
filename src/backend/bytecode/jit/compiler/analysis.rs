@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::backend::bytecode::instruction::{fork_inline_targets, instruction_size};
 use crate::backend::bytecode::{BytecodeChunk, Opcode};
 
 use super::BlockInfo;
@@ -85,9 +86,7 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::IsInf => {}
 
             // Expression manipulation
-            Opcode::IndexAtom
-            | Opcode::MinAtom
-            | Opcode::MaxAtom => {}
+            Opcode::IndexAtom | Opcode::MinAtom | Opcode::MaxAtom => {}
 
             // Boolean
             Opcode::And | Opcode::Or | Opcode::Not | Opcode::Xor => {}
@@ -117,20 +116,13 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::StoreLocalWide => {}
 
             // Type-based jumps
-            Opcode::JumpIfUnit
-            | Opcode::JumpIfError
-            | Opcode::JumpIfNotBool => {}
+            Opcode::JumpIfUnit | Opcode::JumpIfError | Opcode::JumpIfNotBool => {}
 
             // Type predicates
-            Opcode::IsVariable
-            | Opcode::IsSExpr
-            | Opcode::IsSymbol => {}
+            Opcode::IsVariable | Opcode::IsSExpr | Opcode::IsSymbol => {}
 
             // Type operations
-            Opcode::GetType
-            | Opcode::CheckType
-            | Opcode::IsType
-            | Opcode::AssertType => {}
+            Opcode::GetType | Opcode::CheckType | Opcode::IsType | Opcode::AssertType => {}
 
             // Value creation
             Opcode::MakeSExpr
@@ -141,10 +133,7 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::MakeQuote => {}
 
             // Call operations
-            Opcode::Call
-            | Opcode::TailCall
-            | Opcode::CallN
-            | Opcode::TailCallN => {}
+            Opcode::Call | Opcode::TailCall | Opcode::CallN | Opcode::TailCallN => {}
 
             // Binding operations
             Opcode::LoadBinding
@@ -165,15 +154,11 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::Unify4 => {}
 
             // Space operations
-            Opcode::SpaceAdd
-            | Opcode::SpaceRemove
-            | Opcode::SpaceGetAtoms
-            | Opcode::SpaceMatch => {}
+            Opcode::SpaceAdd | Opcode::SpaceRemove | Opcode::SpaceGetAtoms | Opcode::SpaceMatch => {
+            }
 
             // State operations
-            Opcode::NewState
-            | Opcode::GetState
-            | Opcode::ChangeState => {}
+            Opcode::NewState | Opcode::GetState | Opcode::ChangeState => {}
 
             // Rule dispatch
             Opcode::DispatchRules
@@ -185,22 +170,24 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::ApplySubst
             | Opcode::DefineRule => {}
 
-            // Special forms
+            // Binding-sensitive special forms need provenance projection that
+            // currently lives in the tree-walker/VM tiers.
             Opcode::EvalIf
             | Opcode::EvalLet
             | Opcode::EvalLetStar
-            | Opcode::EvalMatch
             | Opcode::EvalCase
+            | Opcode::EvalCollapse
+            | Opcode::EvalMemo
+            | Opcode::EvalMemoFirst => return false,
+
+            // Special forms
+            Opcode::EvalMatch
             | Opcode::EvalChain
             | Opcode::EvalQuote
             | Opcode::EvalUnquote
             | Opcode::EvalEval
             | Opcode::EvalBind
             | Opcode::EvalNew
-            | Opcode::EvalCollapse
-            | Opcode::EvalSuperpose
-            | Opcode::EvalMemo
-            | Opcode::EvalMemoFirst
             | Opcode::EvalPragma
             | Opcode::EvalFunction
             | Opcode::EvalLambda
@@ -209,69 +196,49 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::CollapseEnd => {}
 
             // Advanced nondeterminism
-            Opcode::Cut
-            | Opcode::Guard
-            | Opcode::Amb
-            | Opcode::Commit
-            | Opcode::Backtrack => {}
+            Opcode::Cut | Opcode::Guard | Opcode::Amb | Opcode::Commit | Opcode::Backtrack => {}
 
             // Advanced calls
-            Opcode::CallNative
-            | Opcode::CallExternal
-            | Opcode::CallCached => {}
+            Opcode::CallNative | Opcode::CallExternal | Opcode::CallCached => {}
 
             // MORK bridge
-            Opcode::MorkLookup
-            | Opcode::MorkMatch
-            | Opcode::MorkInsert
-            | Opcode::MorkDelete => {}
+            Opcode::MorkLookup | Opcode::MorkMatch | Opcode::MorkInsert | Opcode::MorkDelete => {}
 
             // Debug/Meta
-            Opcode::Trace
-            | Opcode::Breakpoint => {}
+            Opcode::Trace | Opcode::Breakpoint => {}
 
             // Core nondeterminism markers
-            Opcode::Fail
-            | Opcode::BeginNondet
-            | Opcode::EndNondet => {}
+            Opcode::Fail | Opcode::BeginNondet | Opcode::EndNondet => {}
 
             // Multi-value return
-            Opcode::ReturnMulti
-            | Opcode::CollectN => {}
+            Opcode::ReturnMulti | Opcode::CollectN => {}
 
             // Multi-way branch
             Opcode::JumpTable => {}
 
             // Global/Space access
-            Opcode::LoadGlobal
-            | Opcode::StoreGlobal
-            | Opcode::LoadSpace => {}
+            Opcode::LoadGlobal | Opcode::StoreGlobal | Opcode::LoadSpace => {}
 
             // Closure support
             Opcode::LoadUpvalue => {}
 
             // Atom operations
-            Opcode::DeconsAtom
-            | Opcode::Repr => {}
+            Opcode::DeconsAtom | Opcode::Repr => {}
 
             // Higher-order operations
-            Opcode::MapAtom
-            | Opcode::FilterAtom
-            | Opcode::FoldlAtom => {}
+            Opcode::MapAtom | Opcode::FilterAtom | Opcode::FoldlAtom => {}
 
             // Meta-type
             Opcode::GetMetaType => {}
 
             // MORK and debug
-            Opcode::BloomCheck
-            | Opcode::Halt => {}
+            Opcode::BloomCheck | Opcode::Halt => {}
 
             // Anything else is not compilable
             _ => return false,
         }
 
-        // Advance by opcode size (1 byte) + operand size
-        offset += 1 + op.immediate_size();
+        offset += instruction_size(code, offset);
     }
 
     true
@@ -438,7 +405,7 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             | Opcode::CallN     // Phase 1.2: call with N args (stack-based head)
             | Opcode::TailCallN => {} // Phase 1.2: tail call with N args (stack-based head)
 
-            // NOTE: Fork/Yield/Collect are NOT compilable - they are detected
+            // NOTE: Fork/ForkInline/Yield/Collect are NOT compilable - they are detected
             // statically via has_nondeterminism() and routed to bytecode tier.
             // This avoids wasteful JIT compilation followed by immediate bailout.
 
@@ -481,22 +448,24 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             | Opcode::ApplySubst    // Phase C: apply substitution [expr] -> [result]
             | Opcode::DefineRule => {} // Phase C: define new rule [pattern, body] -> [Unit]
 
+            // Phase E binding-sensitive forms fall back until JIT has native
+            // provenance projection equivalent to tree-walker/VM.
+            Opcode::EvalIf
+            | Opcode::EvalLet
+            | Opcode::EvalLetStar
+            | Opcode::EvalCase
+            | Opcode::EvalCollapse
+            | Opcode::EvalMemo
+            | Opcode::EvalMemoFirst => return false,
+
             // Phase E: Special Forms (via runtime calls)
-            Opcode::EvalIf          // Phase E: if expression [cond, then, else] -> [result]
-            | Opcode::EvalLet       // Phase E: let binding [name, value] -> [Unit]
-            | Opcode::EvalLetStar   // Phase E: sequential let bindings
-            | Opcode::EvalMatch     // Phase E: match expression [value, pattern] -> [bool]
-            | Opcode::EvalCase      // Phase E: case expression [value] -> [case_index]
+            Opcode::EvalMatch       // Phase E: match expression [value, pattern] -> [bool]
             | Opcode::EvalChain     // Phase E: chain expression [first, second] -> [second]
             | Opcode::EvalQuote     // Phase E: quote expression [expr] -> [quoted]
             | Opcode::EvalUnquote   // Phase E: unquote expression [quoted] -> [result]
             | Opcode::EvalEval      // Phase E: eval expression [expr] -> [result]
             | Opcode::EvalBind      // Phase E: bind expression [name, value] -> [Unit]
             | Opcode::EvalNew       // Phase E: new space [] -> [space]
-            | Opcode::EvalCollapse  // Phase E: collapse [expr] -> [list]
-            | Opcode::EvalSuperpose // Phase E: superpose [list] -> [choice]
-            | Opcode::EvalMemo      // Phase E: memoized eval [expr] -> [result]
-            | Opcode::EvalMemoFirst // Phase E: memoize first [expr] -> [result]
             | Opcode::EvalPragma    // Phase E: pragma directive [directive] -> [Unit]
             | Opcode::EvalFunction  // Phase E: function definition [name, params, body] -> [Unit]
             | Opcode::EvalLambda    // Phase E: lambda expression [params, body] -> [closure]
@@ -569,8 +538,7 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             _ => return false,
         }
 
-        // Advance by opcode size (1 byte) + operand size
-        offset += 1 + op.immediate_size();
+        offset += instruction_size(code, offset);
     }
 
     true
@@ -608,10 +576,15 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
             break;
         };
 
-        let instr_size = 1 + op.immediate_size();
+        let instr_size = instruction_size(code, offset);
         let next_ip = offset + instr_size; // IP after instruction
 
         match op {
+            Opcode::ForkInline => {
+                for target in fork_inline_targets(code, offset) {
+                    add_target(target, code.len(), &mut targets, &mut predecessor_count);
+                }
+            }
             Opcode::Jump
             | Opcode::JumpIfFalse
             | Opcode::JumpIfTrue
@@ -676,7 +649,7 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
         let Some(op) = chunk.read_opcode(offset) else {
             break;
         };
-        let instr_size = 1 + op.immediate_size();
+        let instr_size = instruction_size(code, offset);
         let next_ip = offset + instr_size;
 
         // Instructions that don't fall through to next_ip
@@ -688,6 +661,7 @@ pub(super) fn find_block_info(chunk: &BytecodeChunk) -> BlockInfo {
                 | Opcode::Jump
                 | Opcode::JumpShort
                 | Opcode::JumpTable
+                | Opcode::ForkInline
                 | Opcode::JumpIfFalse
                 | Opcode::JumpIfTrue
                 | Opcode::JumpIfFalseShort

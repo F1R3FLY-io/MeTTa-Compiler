@@ -203,10 +203,7 @@ impl MettaEnvironment {
         let mut rz = space.btm.read_zipper();
 
         // Clear existing bloom filter
-        self.shared
-            .atom_space.head_arity_bloom
-            .write()
-                        .clear();
+        self.shared.atom_space.head_arity_bloom.write().clear();
 
         // Iterate through all values in the trie
         while rz.to_next_val() {
@@ -220,9 +217,10 @@ impl MettaEnvironment {
                 if let Some(head) = MettaValueTrait::get_head_symbol(&metta_value) {
                     let arity = MettaValueTrait::get_arity(&metta_value) as u8;
                     self.shared
-                        .atom_space.head_arity_bloom
+                        .atom_space
+                        .head_arity_bloom
                         .write()
-                                                .insert(head, arity);
+                        .insert(head, arity);
                 }
             }
         }

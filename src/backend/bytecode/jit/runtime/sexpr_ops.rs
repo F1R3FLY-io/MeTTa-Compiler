@@ -57,10 +57,7 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
     let jit_val = JitValue::from_raw(val);
 
     fn make_car_error(input_metta: &MettaValue) -> u64 {
-        let call = MettaValue::SExpr(vec![
-            MettaValue::Atom("car-atom"),
-            input_metta.clone(),
-        ]);
+        let call = MettaValue::SExpr(vec![MettaValue::Atom("car-atom"), input_metta.clone()]);
         let err = MettaValue::Error(
             "car-atom expects a non-empty expression as an argument",
             call,
@@ -114,10 +111,7 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
     let jit_val = JitValue::from_raw(val);
 
     fn make_cdr_error(input_metta: &MettaValue) -> u64 {
-        let call = MettaValue::SExpr(vec![
-            MettaValue::Atom("cdr-atom"),
-            input_metta.clone(),
-        ]);
+        let call = MettaValue::SExpr(vec![MettaValue::Atom("cdr-atom"), input_metta.clone()]);
         let err = MettaValue::Error(
             "cdr-atom expects a non-empty expression as an argument",
             call,
@@ -159,22 +153,19 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
 ///
 /// # Safety
 /// `ctx_ref.env_ptr` must point to a valid `MettaEnvironment` or be null.
-unsafe fn jit_maybe_pre_eval_structural(
-    ctx_ref: &JitContext,
-    v: MettaValue,
-) -> MettaValue {
-    use crate::backend::eval::{is_grounded_op, is_eager_special_form};
+unsafe fn jit_maybe_pre_eval_structural(ctx_ref: &JitContext, v: MettaValue) -> MettaValue {
     use crate::backend::eval::step::should_pre_eval_by_type;
     use crate::backend::eval::trampoline::dispatch_hints::is_embedded_kernel_op;
     use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
     use crate::backend::eval::trampoline::EvalContext;
+    use crate::backend::eval::{is_eager_special_form, is_grounded_op};
     use crate::backend::models::{global_factory, GcFactory};
 
     // Plan 3 hook H-2 (2026-05-06): cooperative GC safepoint before
     // JIT→trampoline re-entry. Same pattern as `jit_pre_eval_arg`.
     {
-        let is_worker = crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER
-            .with(|f| f.get());
+        let is_worker =
+            crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER.with(|f| f.get());
         if is_worker && crate::backend::models::gc_allocator::is_gc_requested() {
             let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
             roots.push(v.clone());
@@ -357,12 +348,20 @@ pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, 
     let metta_val = MettaValue::from_inner(&*inner_ptr);
     match metta_val.view() {
         ValueView::SExpr(items) => JitValue::from_long(items.len() as i64).to_bits(),
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
-        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
-            JitValue::from_long(0).to_bits()
-        }
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => JitValue::from_long(0).to_bits(),
     }
 }
 
@@ -411,9 +410,19 @@ pub unsafe extern "C" fn jit_runtime_get_element(
                 value_to_jit_generic(&items[idx]).to_bits()
             }
         }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
-        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => TAG_UNIT,
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => TAG_UNIT,
     }
 }

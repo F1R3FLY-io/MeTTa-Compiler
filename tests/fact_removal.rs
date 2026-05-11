@@ -120,8 +120,7 @@ fn test_operation_remove_via_direct_api() {
     env.add_to_space(&fact);
 
     // Verify it exists via match
-    let query_state =
-        compile("(match &self (temp foo) (temp foo))").expect("compile failed");
+    let query_state = compile("(match &self (temp foo) (temp foo))").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
@@ -159,8 +158,7 @@ fn test_remove_and_readd() {
     env.add_to_space(&fact);
 
     // Verify it exists
-    let query_state =
-        compile("(match &self (data test) (data test))").expect("compile failed");
+    let query_state = compile("(match &self (data test) (data test))").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
@@ -188,8 +186,7 @@ fn test_remove_multiple_identical_facts() {
     env.add_to_space(&fact);
 
     // Verify multiplicity is 2 (returns 2 copies)
-    let query_state =
-        compile("(match &self (foo bar) (foo bar))").expect("compile failed");
+    let query_state = compile("(match &self (foo bar) (foo bar))").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
@@ -207,8 +204,7 @@ fn test_remove_multiple_identical_facts() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results_after_first_remove, _) =
-        eval(expr, env.clone(), &query_state);
+    let (results_after_first_remove, _) = eval(expr, env.clone(), &query_state);
     assert_eq!(
         results_after_first_remove.len(),
         1,
@@ -222,8 +218,7 @@ fn test_remove_multiple_identical_facts() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results_after_second_remove, _) =
-        eval(expr, env.clone(), &query_state);
+    let (results_after_second_remove, _) = eval(expr, env.clone(), &query_state);
     assert_eq!(
         results_after_second_remove.len(),
         0,

@@ -39,18 +39,18 @@
 //! - `online_refinement` — EMA weight updates, P²-to-EMA transfer
 //! - `aam_builder` — Build scheduler automaton from DerivedAnalysis
 
-pub mod semiring;
-pub mod tree_automaton;
-pub mod cost_class;
-pub mod classification;
-pub mod transducer;
-pub mod wpds;
-pub mod context_weights;
-pub mod wavefront;
-pub mod online_refinement;
 pub mod aam_builder;
+pub mod classification;
+pub mod context_weights;
+pub mod cost_class;
+pub mod online_refinement;
+pub mod semiring;
+pub mod transducer;
+pub mod tree_automaton;
+pub mod wavefront;
+pub mod wpds;
 
 // Re-export key types for convenient access
+pub use classification::{global_scheduler, install_scheduler, SchedulerAutomaton};
 pub use cost_class::{AffinityHint, CostClass, SchedulingAction, TaskDescriptor};
-pub use classification::{SchedulerAutomaton, global_scheduler, install_scheduler};
-pub use semiring::{CountingWeight, Semiring, TropicalWeight, SchedulerWeight};
+pub use semiring::{CountingWeight, SchedulerWeight, Semiring, TropicalWeight};

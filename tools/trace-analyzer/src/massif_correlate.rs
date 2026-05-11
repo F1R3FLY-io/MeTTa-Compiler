@@ -10,7 +10,9 @@ use trace_format::TraceEventKind;
 use crate::function_map::{
     classify_rust_function, classify_trace_event, TraceCategory, ALL_CATEGORIES,
 };
-use crate::massif_parser::{format_bytes, parse_massif_output, walk_peak_allocations, MassifProfile};
+use crate::massif_parser::{
+    format_bytes, parse_massif_output, walk_peak_allocations, MassifProfile,
+};
 use crate::reader::TraceReader;
 use crate::util::{extract_operator_name, format_pct};
 
@@ -42,9 +44,8 @@ impl OperatorAllocProfile {
     fn finalize(&mut self) {
         // Weighted allocation proxy:
         //   gc_alloc_bytes (direct) + rule_applications * 128 (avg binding alloc) + forks * 256
-        self.alloc_estimate = self.gc_alloc_bytes
-            + self.rule_applications * 128
-            + self.nondeterministic_forks * 256;
+        self.alloc_estimate =
+            self.gc_alloc_bytes + self.rule_applications * 128 + self.nondeterministic_forks * 256;
     }
 }
 
@@ -120,10 +121,7 @@ pub fn run(file: &str, massif_path: &str, top_n: usize, json: bool) -> Result<()
                 total_gc_bytes += bytes;
 
                 // Attribute to current operator context
-                let attr_head = tracker
-                    .current_head()
-                    .unwrap_or(&head)
-                    .to_string();
+                let attr_head = tracker.current_head().unwrap_or(&head).to_string();
                 let profile = op_profiles
                     .entry(attr_head)
                     .or_insert_with(OperatorAllocProfile::new);
@@ -414,10 +412,7 @@ fn print_text(
         println!();
         println!("--- Memory Growth Timeline ---");
         println!();
-        println!(
-            "{:>4} {:>12} {:>12} {:>12}",
-            "#", "Time", "Heap", "Extra"
-        );
+        println!("{:>4} {:>12} {:>12} {:>12}", "#", "Time", "Heap", "Extra");
         println!("{}", "-".repeat(44));
 
         // Show at most 20 evenly-spaced snapshots

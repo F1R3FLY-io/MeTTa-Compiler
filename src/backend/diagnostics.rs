@@ -52,17 +52,15 @@ pub fn install_signal_handlers() {
         let sigusr1_flag = Arc::new(AtomicBool::new(false));
 
         // Register signal flags (async-signal-safe: only sets atomics)
-        if let Err(e) = signal_hook::flag::register(
-            signal_hook::consts::SIGTERM,
-            Arc::clone(&sigterm_flag),
-        ) {
+        if let Err(e) =
+            signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&sigterm_flag))
+        {
             eprintln!("[diagnostics] Failed to register SIGTERM handler: {}", e);
             return;
         }
-        if let Err(e) = signal_hook::flag::register(
-            signal_hook::consts::SIGUSR1,
-            Arc::clone(&sigusr1_flag),
-        ) {
+        if let Err(e) =
+            signal_hook::flag::register(signal_hook::consts::SIGUSR1, Arc::clone(&sigusr1_flag))
+        {
             eprintln!("[diagnostics] Failed to register SIGUSR1 handler: {}", e);
             return;
         }
@@ -81,10 +79,7 @@ pub fn install_signal_handlers() {}
 
 /// Watcher thread main loop. Polls signal flags every 50ms.
 #[cfg(unix)]
-fn signal_watcher_loop(
-    sigterm_flag: Arc<AtomicBool>,
-    sigusr1_flag: Arc<AtomicBool>,
-) {
+fn signal_watcher_loop(sigterm_flag: Arc<AtomicBool>, sigusr1_flag: Arc<AtomicBool>) {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
@@ -120,7 +115,10 @@ fn dump_diagnostics(signal_name: &str) {
     eprintln!("╔══════════════════════════════════════════════════════════════╗");
     eprintln!("║  METTATRON DIAGNOSTIC DUMP                                  ║");
     eprintln!("╠══════════════════════════════════════════════════════════════╣");
-    eprintln!("║  Signal: {:<10}  PID: {:<10}  Epoch: {:<14} ║", signal_name, pid, timestamp);
+    eprintln!(
+        "║  Signal: {:<10}  PID: {:<10}  Epoch: {:<14} ║",
+        signal_name, pid, timestamp
+    );
     eprintln!("╚══════════════════════════════════════════════════════════════╝");
     eprintln!();
 
@@ -154,10 +152,22 @@ fn dump_gc_state() {
     };
 
     eprintln!("── GC State ──────────────────────────────────────────────────");
-    eprintln!("  committed_bytes:    {:>12} ({:.1} MB)", committed, committed as f64 / (1024.0 * 1024.0));
-    eprintln!("  gc_threshold:       {:>12} ({:.1} MB)", threshold, threshold as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "  committed_bytes:    {:>12} ({:.1} MB)",
+        committed,
+        committed as f64 / (1024.0 * 1024.0)
+    );
+    eprintln!(
+        "  gc_threshold:       {:>12} ({:.1} MB)",
+        threshold,
+        threshold as f64 / (1024.0 * 1024.0)
+    );
     eprintln!("  commit/threshold:   {:>12.2}", ratio);
-    eprintln!("  backpressure_level: {:>12} (max={})", bp_level, gc_allocator::MAX_BACKPRESSURE);
+    eprintln!(
+        "  backpressure_level: {:>12} (max={})",
+        bp_level,
+        gc_allocator::MAX_BACKPRESSURE
+    );
     eprintln!("  gc_cycle_in_flight: {:>12}", in_flight);
     eprintln!("  gc_requested:       {:>12}", requested);
     eprintln!("  gc_disabled:        {:>12}", disabled);
@@ -180,9 +190,17 @@ fn dump_gc_state() {
     eprintln!("  total_live:         {:>12}", ps.total_live_slots);
     eprintln!("  dead (bumped-live): {:>12}", dead_slots);
     eprintln!("  occupancy:          {:>11.1}%", occupancy);
-    eprintln!("  value_committed:    {:>12} ({:.1} MB)", ps.value_committed_bytes, ps.value_committed_bytes as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "  value_committed:    {:>12} ({:.1} MB)",
+        ps.value_committed_bytes,
+        ps.value_committed_bytes as f64 / (1024.0 * 1024.0)
+    );
     eprintln!("  data_pages:         {:>12}", ps.data_page_count);
-    eprintln!("  data_committed:     {:>12} ({:.1} MB)", ps.data_committed_bytes, ps.data_committed_bytes as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "  data_committed:     {:>12} ({:.1} MB)",
+        ps.data_committed_bytes,
+        ps.data_committed_bytes as f64 / (1024.0 * 1024.0)
+    );
     eprintln!();
 
     // Session GC statistics (requires track-stats feature)
@@ -196,8 +214,14 @@ fn dump_gc_state() {
         eprintln!("  values_scanned:     {:>12}", sgc.values_scanned_total);
         eprintln!("  surviving_set_size: {:>12}", sgc.last_surviving_set_size);
         if sgc.releases_total > 0 {
-            eprintln!("  avg freed/release:  {:>12.0}", sgc.values_freed_total as f64 / sgc.releases_total as f64);
-            eprintln!("  avg promoted/rel:   {:>12.0}", sgc.values_promoted_total as f64 / sgc.releases_total as f64);
+            eprintln!(
+                "  avg freed/release:  {:>12.0}",
+                sgc.values_freed_total as f64 / sgc.releases_total as f64
+            );
+            eprintln!(
+                "  avg promoted/rel:   {:>12.0}",
+                sgc.values_promoted_total as f64 / sgc.releases_total as f64
+            );
             if sgc.values_freed_total == 0 {
                 eprintln!("  NOTE: 0 freed values is expected during sequential evaluation —");
                 eprintln!("        all values remain reachable from the live environment.");
@@ -223,8 +247,14 @@ fn dump_evaluator_state() {
 #[cfg(target_os = "linux")]
 fn dump_thread_info() {
     eprintln!("── Thread Table ──────────────────────────────────────────────");
-    eprintln!("  {:>7}  {:<24}  {:<12}  {}", "TID", "NAME", "STATE", "WCHAN");
-    eprintln!("  {:>7}  {:<24}  {:<12}  {}", "───────", "────────────────────────", "────────────", "──────────────────────");
+    eprintln!(
+        "  {:>7}  {:<24}  {:<12}  {}",
+        "TID", "NAME", "STATE", "WCHAN"
+    );
+    eprintln!(
+        "  {:>7}  {:<24}  {:<12}  {}",
+        "───────", "────────────────────────", "────────────", "──────────────────────"
+    );
 
     let task_dir = match std::fs::read_dir("/proc/self/task") {
         Ok(dir) => dir,
@@ -351,10 +381,22 @@ pub fn print_gc_stats() {
     eprintln!();
     eprintln!("── GC Statistics ─────────────────────────────────────────────");
     eprintln!("  total_allocations:  {:>12}", total_allocs);
-    eprintln!("  committed_bytes:    {:>12} ({:.1} MB)", committed, committed as f64 / (1024.0 * 1024.0));
-    eprintln!("  gc_threshold:       {:>12} ({:.1} MB)", threshold, threshold as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "  committed_bytes:    {:>12} ({:.1} MB)",
+        committed,
+        committed as f64 / (1024.0 * 1024.0)
+    );
+    eprintln!(
+        "  gc_threshold:       {:>12} ({:.1} MB)",
+        threshold,
+        threshold as f64 / (1024.0 * 1024.0)
+    );
     eprintln!("  commit/threshold:   {:>12.2}", ratio);
-    eprintln!("  backpressure_level: {:>12} (max={})", bp_level, gc_allocator::MAX_BACKPRESSURE);
+    eprintln!(
+        "  backpressure_level: {:>12} (max={})",
+        bp_level,
+        gc_allocator::MAX_BACKPRESSURE
+    );
     eprintln!("  gc_cycle_in_flight: {:>12}", in_flight);
     eprintln!("  gc_requested:       {:>12}", requested);
     eprintln!("  gc_disabled:        {:>12}", disabled);
@@ -376,9 +418,17 @@ pub fn print_gc_stats() {
     eprintln!("  total_live:         {:>12}", ps.total_live_slots);
     eprintln!("  dead (bumped-live): {:>12}", dead_slots);
     eprintln!("  occupancy:          {:>11.1}%", occupancy);
-    eprintln!("  value_committed:    {:>12} ({:.1} MB)", ps.value_committed_bytes, ps.value_committed_bytes as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "  value_committed:    {:>12} ({:.1} MB)",
+        ps.value_committed_bytes,
+        ps.value_committed_bytes as f64 / (1024.0 * 1024.0)
+    );
     eprintln!("  data_pages:         {:>12}", ps.data_page_count);
-    eprintln!("  data_committed:     {:>12} ({:.1} MB)", ps.data_committed_bytes, ps.data_committed_bytes as f64 / (1024.0 * 1024.0));
+    eprintln!(
+        "  data_committed:     {:>12} ({:.1} MB)",
+        ps.data_committed_bytes,
+        ps.data_committed_bytes as f64 / (1024.0 * 1024.0)
+    );
     eprintln!();
 
     // Session GC statistics (requires track-stats feature)
@@ -392,8 +442,14 @@ pub fn print_gc_stats() {
         eprintln!("  values_scanned:     {:>12}", sgc.values_scanned_total);
         eprintln!("  surviving_set_size: {:>12}", sgc.last_surviving_set_size);
         if sgc.releases_total > 0 {
-            eprintln!("  avg freed/release:  {:>12.0}", sgc.values_freed_total as f64 / sgc.releases_total as f64);
-            eprintln!("  avg promoted/rel:   {:>12.0}", sgc.values_promoted_total as f64 / sgc.releases_total as f64);
+            eprintln!(
+                "  avg freed/release:  {:>12.0}",
+                sgc.values_freed_total as f64 / sgc.releases_total as f64
+            );
+            eprintln!(
+                "  avg promoted/rel:   {:>12.0}",
+                sgc.values_promoted_total as f64 / sgc.releases_total as f64
+            );
             if sgc.values_freed_total == 0 {
                 eprintln!("  NOTE: 0 freed values is expected during sequential evaluation —");
                 eprintln!("        all values remain reachable from the live environment.");
@@ -433,29 +489,60 @@ pub fn print_tier_stats() {
     };
 
     eprintln!("── Execution Distribution ────────────────────────────────────");
-    eprintln!("  interpreter:         {:>12} ({:>5.1}%)", stats.interpreter_executions, pct(stats.interpreter_executions));
-    eprintln!("  bytecode VM:         {:>12} ({:>5.1}%)", stats.bytecode_executions, pct(stats.bytecode_executions));
-    eprintln!("  JIT stage 1:         {:>12} ({:>5.1}%)", stats.jit1_executions, pct(stats.jit1_executions));
-    eprintln!("  JIT stage 2:         {:>12} ({:>5.1}%)", stats.jit2_executions, pct(stats.jit2_executions));
+    eprintln!(
+        "  interpreter:         {:>12} ({:>5.1}%)",
+        stats.interpreter_executions,
+        pct(stats.interpreter_executions)
+    );
+    eprintln!(
+        "  bytecode VM:         {:>12} ({:>5.1}%)",
+        stats.bytecode_executions,
+        pct(stats.bytecode_executions)
+    );
+    eprintln!(
+        "  JIT stage 1:         {:>12} ({:>5.1}%)",
+        stats.jit1_executions,
+        pct(stats.jit1_executions)
+    );
+    eprintln!(
+        "  JIT stage 2:         {:>12} ({:>5.1}%)",
+        stats.jit2_executions,
+        pct(stats.jit2_executions)
+    );
     eprintln!("  total dispatched:    {:>12}", total_dispatched);
     eprintln!();
 
     // Compilation counts in a tabular grid
     eprintln!("── Compilation Counts ────────────────────────────────────────");
-    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "", "triggered", "completed", "failed");
-    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "────────────────", "──────────", "──────────", "──────────");
-    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "bytecode",
+    eprintln!(
+        "  {:>16}  {:>10}  {:>10}  {:>10}",
+        "", "triggered", "completed", "failed"
+    );
+    eprintln!(
+        "  {:>16}  {:>10}  {:>10}  {:>10}",
+        "────────────────", "──────────", "──────────", "──────────"
+    );
+    eprintln!(
+        "  {:>16}  {:>10}  {:>10}  {:>10}",
+        "bytecode",
         stats.bytecode_compilations_triggered,
         stats.bytecode_compilations_completed,
-        stats.bytecode_compilations_failed);
-    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "JIT stage 1",
+        stats.bytecode_compilations_failed
+    );
+    eprintln!(
+        "  {:>16}  {:>10}  {:>10}  {:>10}",
+        "JIT stage 1",
         stats.jit1_compilations_triggered,
         stats.jit1_compilations_completed,
-        stats.jit1_compilations_failed);
-    eprintln!("  {:>16}  {:>10}  {:>10}  {:>10}", "JIT stage 2",
+        stats.jit1_compilations_failed
+    );
+    eprintln!(
+        "  {:>16}  {:>10}  {:>10}  {:>10}",
+        "JIT stage 2",
         stats.jit2_compilations_triggered,
         stats.jit2_compilations_completed,
-        stats.jit2_compilations_failed);
+        stats.jit2_compilations_failed
+    );
     eprintln!();
 
     // JIT failure reason breakdown (only if any JIT failures exist)
@@ -470,39 +557,66 @@ pub fn print_tier_stats() {
 
     if total_jit1_failures > 0 {
         eprintln!("── JIT Stage 1 Failure Reasons ───────────────────────────────");
-        eprintln!("  nondeterminism:     {:>12}", stats.jit1_failures_nondeterminism);
-        eprintln!("  unsupported opcode: {:>12}", stats.jit1_failures_unsupported_opcode);
-        eprintln!("  compiler init:      {:>12}", stats.jit1_failures_compiler_init);
+        eprintln!(
+            "  nondeterminism:     {:>12}",
+            stats.jit1_failures_nondeterminism
+        );
+        eprintln!(
+            "  unsupported opcode: {:>12}",
+            stats.jit1_failures_unsupported_opcode
+        );
+        eprintln!(
+            "  compiler init:      {:>12}",
+            stats.jit1_failures_compiler_init
+        );
         eprintln!("  codegen error:      {:>12}", stats.jit1_failures_codegen);
         eprintln!();
     }
 
     if total_jit2_failures > 0 {
         eprintln!("── JIT Stage 2 Failure Reasons ───────────────────────────────");
-        eprintln!("  nondeterminism:     {:>12}", stats.jit2_failures_nondeterminism);
-        eprintln!("  unsupported opcode: {:>12}", stats.jit2_failures_unsupported_opcode);
-        eprintln!("  compiler init:      {:>12}", stats.jit2_failures_compiler_init);
+        eprintln!(
+            "  nondeterminism:     {:>12}",
+            stats.jit2_failures_nondeterminism
+        );
+        eprintln!(
+            "  unsupported opcode: {:>12}",
+            stats.jit2_failures_unsupported_opcode
+        );
+        eprintln!(
+            "  compiler init:      {:>12}",
+            stats.jit2_failures_compiler_init
+        );
         eprintln!("  codegen error:      {:>12}", stats.jit2_failures_codegen);
         eprintln!();
     }
 
     // Per-expression breakdown (top 20 by execution count)
-    let per_expr = crate::backend::bytecode::tiered_cache::global_tiered_cache()
-        .per_expression_stats();
+    let per_expr =
+        crate::backend::bytecode::tiered_cache::global_tiered_cache().per_expression_stats();
     if !per_expr.is_empty() {
         let limit = per_expr.len().min(20);
-        eprintln!("── Per-Expression Detail (top {} by exec count) ──────────────", limit);
-        eprintln!("  {:<18}  {:>8}  {:>10}  {:>10}  {:>10}",
-            "hash", "execs", "bytecode", "jit1", "jit2");
-        eprintln!("  {:<18}  {:>8}  {:>10}  {:>10}  {:>10}",
-            "──────────────────", "────────", "──────────", "──────────", "──────────");
+        eprintln!(
+            "── Per-Expression Detail (top {} by exec count) ──────────────",
+            limit
+        );
+        eprintln!(
+            "  {:<18}  {:>8}  {:>10}  {:>10}  {:>10}",
+            "hash", "execs", "bytecode", "jit1", "jit2"
+        );
+        eprintln!(
+            "  {:<18}  {:>8}  {:>10}  {:>10}  {:>10}",
+            "──────────────────", "────────", "──────────", "──────────", "──────────"
+        );
         for entry in per_expr.iter().take(limit) {
-            eprintln!("  {:<18}  {:>8}  {:>10}  {:>10}  {:>10}",
+            eprintln!(
+                "  {:<18}  {:>8}  {:>10}  {:>10}  {:>10}",
                 format!("0x{:016x}", entry.expr_hash),
                 entry.execution_count,
                 entry.bytecode_status,
                 entry.jit1_status,
-                entry.jit2_status);
+                entry.jit2_status
+            );
         }
         eprintln!();
     }
@@ -515,8 +629,10 @@ pub fn print_tier_stats() {
 /// Requires the `track-stats` feature.
 #[cfg(feature = "track-stats")]
 pub fn print_pool_stats() {
-    use crate::backend::models::work_pool::{global_eval_pool, global_compile_pool, work_eval_count};
     use crate::backend::models::gc_pool::global_gc_pool;
+    use crate::backend::models::work_pool::{
+        global_compile_pool, global_eval_pool, work_eval_count,
+    };
 
     // ── Eval Pool ──
     let ep = global_eval_pool();
@@ -537,7 +653,10 @@ pub fn print_pool_stats() {
     eprintln!("  parked_workers:     {:>12}", ep_parked);
     eprintln!("  queue_depth:        {:>12}", ep_queue);
     eprintln!("  parallel_branches:  {:>12}", ep_evals);
-    eprintln!("  p2_median_runtime:  {:>12.0} ns ({:.2} ms)", ep_median_ns, ep_median_ms);
+    eprintln!(
+        "  p2_median_runtime:  {:>12.0} ns ({:.2} ms)",
+        ep_median_ns, ep_median_ms
+    );
     eprintln!();
 
     // ── Compile Pool ──
@@ -547,10 +666,16 @@ pub fn print_pool_stats() {
     let cp_median_ns = cp.runtime_tracker().global_median();
     let cp_median_ms = cp_median_ns / 1_000_000.0;
 
-    eprintln!("── Compile Pool (fixed {} workers) ─────────────────────────────", cp.max_threads());
+    eprintln!(
+        "── Compile Pool (fixed {} workers) ─────────────────────────────",
+        cp.max_threads()
+    );
     eprintln!("  active_workers:     {:>12}", cp_active);
     eprintln!("  queue_depth:        {:>12}", cp_queue);
-    eprintln!("  p2_median_runtime:  {:>12.0} ns ({:.2} ms)", cp_median_ns, cp_median_ms);
+    eprintln!(
+        "  p2_median_runtime:  {:>12.0} ns ({:.2} ms)",
+        cp_median_ns, cp_median_ms
+    );
     eprintln!();
 
     // ── GC Pool ──
@@ -587,6 +712,9 @@ pub fn print_pool_stats() {
     eprintln!("  active_workers:     {:>12}", crp_active);
     eprintln!("  parked_workers:     {:>12}", crp_parked);
     eprintln!("  queue_depth:        {:>12}", crp_queue);
-    eprintln!("  p2_median_runtime:  {:>12.0} ns ({:.2} ms)", crp_median_ns, crp_median_ms);
+    eprintln!(
+        "  p2_median_runtime:  {:>12.0} ns ({:.2} ms)",
+        crp_median_ns, crp_median_ms
+    );
     eprintln!();
 }

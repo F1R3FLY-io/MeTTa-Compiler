@@ -21,7 +21,17 @@ fn test_leb128_roundtrip_small() {
 
 #[test]
 fn test_leb128_roundtrip_large() {
-    let values = [128, 255, 256, 1000, 0x3FFF, 0xFFFF, 0xFFFFFF, 0xFFFFFFFF, u64::MAX];
+    let values = [
+        128,
+        255,
+        256,
+        1000,
+        0x3FFF,
+        0xFFFF,
+        0xFFFFFF,
+        0xFFFFFFFF,
+        u64::MAX,
+    ];
     for n in values {
         let mut buf = Vec::new();
         encode_leb128(&mut buf, n);
@@ -435,8 +445,10 @@ fn test_extract_arity_match() {
     assert_eq!(result.len(), 1);
     // The binding should capture "hello" symbol
     let binding = &result[0];
-    assert_eq!(&data[binding.offset..binding.offset + binding.len],
-               &[TAG_SYMBOL_SIZE, 5, b'h', b'e', b'l', b'l', b'o']);
+    assert_eq!(
+        &data[binding.offset..binding.offset + binding.len],
+        &[TAG_SYMBOL_SIZE, 5, b'h', b'e', b'l', b'l', b'o']
+    );
 }
 
 #[test]
@@ -525,7 +537,10 @@ fn test_extract_varref_mismatch() {
     data.extend_from_slice(b"world");
 
     let result = wide_extract_data(&template, &data);
-    assert!(matches!(result, Err(WideExtractFailure::VarRefMismatch { var_idx: 0 })));
+    assert!(matches!(
+        result,
+        Err(WideExtractFailure::VarRefMismatch { var_idx: 0 })
+    ));
 }
 
 #[test]
@@ -597,14 +612,17 @@ fn test_extract_data_contains_variables() {
     let data = vec![TAG_NEWVAR];
 
     let result = wide_extract_data(&template, &data);
-    assert!(matches!(result, Err(WideExtractFailure::DataContainsVariables)));
+    assert!(matches!(
+        result,
+        Err(WideExtractFailure::DataContainsVariables)
+    ));
 }
 
 // ============================================================================
 // Decode round-trip tests (encode_wide_storage → wide_bytes_to_generic_value)
 // ============================================================================
 
-use crate::backend::models::{global_factory, MettaValue, MettaValueInner, GcFactory};
+use crate::backend::models::{global_factory, GcFactory, MettaValue, MettaValueInner};
 
 /// Helper: encode a value and decode it, returning the decoded value.
 fn roundtrip(val: &MettaValue) -> MettaValue {
@@ -841,7 +859,10 @@ fn test_wide_decode_debruijn_variables() {
                 other => panic!("Expected Atom, got {:?}", other),
             };
             assert_eq!(var_x, var_x2, "VarRef should produce same name as NewVar");
-            assert_ne!(var_x, var_y, "Different variables should have different names");
+            assert_ne!(
+                var_x, var_y,
+                "Different variables should have different names"
+            );
             assert!(var_x.starts_with('$'), "Variable should start with $");
             assert!(var_y.starts_with('$'), "Variable should start with $");
         }

@@ -22,6 +22,10 @@ crate-type = ["rlib"]
 name = "mettatron"
 path = "src/main.rs"
 
+[[bin]]
+name = "mtt-conformance"
+path = "src/bin/mtt_conformance.rs"
+
 [[bench]]
 name = "rule_matching"
 harness = false

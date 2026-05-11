@@ -83,8 +83,7 @@ fn metta_simple_error() -> impl Strategy<Value = MettaValue> {
     ];
 
     // Use only atoms as error details to avoid recursion
-    (error_messages, metta_atom())
-        .prop_map(|(msg, detail)| MettaValue::Error(msg, detail))
+    (error_messages, metta_atom()).prop_map(|(msg, detail)| MettaValue::Error(msg, detail))
 }
 
 fn metta_simple_type() -> impl Strategy<Value = MettaValue> {

@@ -70,8 +70,6 @@ impl<T> SpaceInit for T {
     }
 
     fn declare_space_funcs<M: Module>(module: &mut M) -> JitResult<SpaceFuncIds> {
-
-
         // space_add: fn(ctx, space, atom, ip) -> u64 (Bool)
         let mut space_add_sig = module.make_signature();
         space_add_sig.params.push(AbiParam::new(types::I64)); // ctx

@@ -833,7 +833,10 @@ mod tests {
     #[test]
     fn test_pop_timeout_returns_on_shutdown() {
         let tracker = Arc::new(RuntimeTracker::new());
-        let queue = Arc::new(PriorityQueue::new(Arc::clone(&tracker), SchedulerConfig::default()));
+        let queue = Arc::new(PriorityQueue::new(
+            Arc::clone(&tracker),
+            SchedulerConfig::default(),
+        ));
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let queue_clone = Arc::clone(&queue);

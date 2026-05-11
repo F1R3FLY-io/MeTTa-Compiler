@@ -512,9 +512,8 @@ impl HybridExecutor {
         // If we have an environment pointer, build the registry from its type assertions
         // and store it on the stack for the duration of JIT execution.
         let type_registry = if let Some(env_raw) = self.env {
-            let env_ref = unsafe {
-                &*(env_raw as *const crate::backend::bytecode::MettaEnvironment)
-            };
+            let env_ref =
+                unsafe { &*(env_raw as *const crate::backend::bytecode::MettaEnvironment) };
             Some(super::super::TypeSignatureRegistry::from_env(env_ref))
         } else {
             None

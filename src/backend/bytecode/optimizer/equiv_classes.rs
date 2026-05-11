@@ -123,8 +123,7 @@ mod tests {
         let swap = crate::backend::bytecode::opcodes::Opcode::Swap.to_byte();
         let lt = crate::backend::bytecode::opcodes::Opcode::Lt.to_byte();
         assert_ne!(
-            classes.byte_to_class[swap as usize],
-            classes.byte_to_class[lt as usize],
+            classes.byte_to_class[swap as usize], classes.byte_to_class[lt as usize],
             "Swap and Lt should be in different equivalence classes"
         );
     }

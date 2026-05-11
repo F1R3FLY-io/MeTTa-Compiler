@@ -123,8 +123,7 @@ use super::mork_encoding::{mork_bytes_to_generic_value, mork_expr_byte_len};
 // mork_bytes_to_generic_value for individual binding bytes.
 // use super::mork_encoding::mork_expr_to_generic_value;
 use super::multiplicity::{
-    decrement_multiplicity, get_multiplicity, increment_multiplicity,
-    Multiplicity,
+    decrement_multiplicity, get_multiplicity, increment_multiplicity, Multiplicity,
 };
 use super::{MettaEnvironment, MettaValue};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait, ValueView};
@@ -160,16 +159,13 @@ pub struct RuleMatchResult<V: MettaValueTrait + Clone> {
     pub instantiated_rhs: V,
     /// Original RHS template with original variable names (for bytecode compilation caching)
     pub rhs_template: V,
-    /// Named bindings ($x → value).
+    /// Caller-visible bindings ($query_var → value) that may escape as branch
+    /// provenance.
     ///
-    /// **P2 scope-tagged + Option D freshened**: rule-LHS keys are renamed
-    /// to `$__fr_<epoch>_<bare>` and live at `rule_scope`; caller-side keys
-    /// (introduced by bidirectional-unify fallbacks in slot equality checks)
-    /// may live at `ROOT_SCOPE`. The trampoline tier composes the full
-    /// scoped map with `outer_carrying` via the scope-aware
-    /// `compose_outer_inner_strict_generic`. **The bytecode VM tier MUST NOT
-    /// use this field** — its `compiled_rhs` opcodes reference original
-    /// names; use `original_bindings` instead.
+    /// Rule-local scratch keys (`$__fr_<epoch>_*` in `rule_scope`) are valid
+    /// only while instantiating the RHS and must not be stored here. **The
+    /// bytecode VM tier MUST NOT use this field** — its `compiled_rhs` opcodes
+    /// reference original rule variable names; use `original_bindings` instead.
     pub bindings: GenericBindings<V>,
     /// Pre-freshen, pre-scope-tag named bindings keyed on the rule's
     /// ORIGINAL LHS variable names (e.g. `$x`, `$y`).
@@ -348,7 +344,10 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
             Some(fah) => {
                 use crate::backend::models::gc_allocator::global_allocator;
                 let interned = global_allocator().alloc_str(fah);
-                self.by_first_arg_head.get(interned).map(|v| v.as_slice()).unwrap_or(&[])
+                self.by_first_arg_head
+                    .get(interned)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[])
             }
             None => &[], // No first-arg head known — only variable_first_arg rules apply
         };
@@ -368,19 +367,26 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
 
     /// Iterate over ALL rules in this group (for remove_rule, len, etc.)
     fn all_entries(&self) -> impl Iterator<Item = &RuleEntry<V>> {
-        self.by_first_arg_head.values().flat_map(|v| v.iter())
+        self.by_first_arg_head
+            .values()
+            .flat_map(|v| v.iter())
             .chain(self.variable_first_arg.iter())
     }
 
     /// Iterate over ALL rules mutably (for increment_multiplicity)
     fn all_entries_mut(&mut self) -> impl Iterator<Item = &mut RuleEntry<V>> {
-        self.by_first_arg_head.values_mut().flat_map(|v| v.iter_mut())
+        self.by_first_arg_head
+            .values_mut()
+            .flat_map(|v| v.iter_mut())
             .chain(self.variable_first_arg.iter_mut())
     }
 
     /// Total number of rules in this group.
     fn len(&self) -> usize {
-        self.by_first_arg_head.values().map(|v| v.len()).sum::<usize>()
+        self.by_first_arg_head
+            .values()
+            .map(|v| v.len())
+            .sum::<usize>()
             + self.variable_first_arg.len()
     }
 
@@ -403,7 +409,11 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
             }
         }
         // Search in variable-first-arg list
-        if let Some(pos) = self.variable_first_arg.iter().position(|e| &e.lhs == lhs && &e.rhs == rhs) {
+        if let Some(pos) = self
+            .variable_first_arg
+            .iter()
+            .position(|e| &e.lhs == lhs && &e.rhs == rhs)
+        {
             if self.variable_first_arg[pos].multiplicity > 1 {
                 self.variable_first_arg[pos].multiplicity -= 1;
                 return Some(false);
@@ -442,7 +452,11 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
             }
         }
         // Search variable-first-arg list
-        if let Some(pos) = self.variable_first_arg.iter().position(|e| e.full_debruijn == full_bytes) {
+        if let Some(pos) = self
+            .variable_first_arg
+            .iter()
+            .position(|e| e.full_debruijn == full_bytes)
+        {
             if self.variable_first_arg[pos].multiplicity > 1 {
                 self.variable_first_arg[pos].multiplicity -= 1;
                 return Some(false);
@@ -560,7 +574,8 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         match head {
             Some(h) => {
                 let interned: &'static str = global_allocator().alloc_str(h);
-                let group = self.by_head_arity
+                let group = self
+                    .by_head_arity
                     .entry((interned, arity))
                     .or_insert_with(RuleGroup::new);
 
@@ -571,11 +586,15 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                         #[cfg(feature = "trace")]
                         crate::backend::trace::with_trace_collector_ref(|tc| {
                             tc.emit_converted(
-                                trace_format::TraceTier::TreeWalker, 0,
+                                trace_format::TraceTier::TreeWalker,
+                                0,
                                 crate::backend::trace::convert::trace_value_generic(&entry.lhs),
-                                Vec::new(), None,
+                                Vec::new(),
+                                None,
                                 trace_format::TraceEventKind::RuleIndexInsert {
-                                    rule_lhs: crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                    rule_lhs: crate::backend::trace::convert::trace_value_generic(
+                                        &entry.lhs,
+                                    ),
                                     head: Some(h.to_string()),
                                     arity: arity as u32,
                                     first_arg_head: first_arg_head.map(|s| s.to_string()),
@@ -602,11 +621,15 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                     let global_idx = entry.global_rule_index;
                     crate::backend::trace::with_trace_collector_ref(|tc| {
                         tc.emit_converted(
-                            trace_format::TraceTier::TreeWalker, 0,
+                            trace_format::TraceTier::TreeWalker,
+                            0,
                             crate::backend::trace::convert::trace_value_generic(&entry.lhs),
-                            Vec::new(), None,
+                            Vec::new(),
+                            None,
                             trace_format::TraceEventKind::RuleIndexInsert {
-                                rule_lhs: crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                rule_lhs: crate::backend::trace::convert::trace_value_generic(
+                                    &entry.lhs,
+                                ),
                                 head: Some(h.to_string()),
                                 arity: arity as u32,
                                 first_arg_head: first_arg_head.map(|s| s.to_string()),
@@ -646,11 +669,15 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                         #[cfg(feature = "trace")]
                         crate::backend::trace::with_trace_collector_ref(|tc| {
                             tc.emit_converted(
-                                trace_format::TraceTier::TreeWalker, 0,
+                                trace_format::TraceTier::TreeWalker,
+                                0,
                                 crate::backend::trace::convert::trace_value_generic(&entry.lhs),
-                                Vec::new(), None,
+                                Vec::new(),
+                                None,
                                 trace_format::TraceEventKind::RuleIndexInsert {
-                                    rule_lhs: crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                    rule_lhs: crate::backend::trace::convert::trace_value_generic(
+                                        &entry.lhs,
+                                    ),
                                     head: None,
                                     arity: 0,
                                     first_arg_head: None,
@@ -673,11 +700,15 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                     let global_idx = entry.global_rule_index;
                     crate::backend::trace::with_trace_collector_ref(|tc| {
                         tc.emit_converted(
-                            trace_format::TraceTier::TreeWalker, 0,
+                            trace_format::TraceTier::TreeWalker,
+                            0,
                             crate::backend::trace::convert::trace_value_generic(&entry.lhs),
-                            Vec::new(), None,
+                            Vec::new(),
+                            None,
                             trace_format::TraceEventKind::RuleIndexInsert {
-                                rule_lhs: crate::backend::trace::convert::trace_value_generic(&entry.lhs),
+                                rule_lhs: crate::backend::trace::convert::trace_value_generic(
+                                    &entry.lhs,
+                                ),
                                 head: None,
                                 arity: 0,
                                 first_arg_head: None,
@@ -703,7 +734,11 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
             }
         }
         // Check wildcard
-        if let Some(pos) = self.wildcard.iter().position(|e| &e.lhs == lhs && &e.rhs == rhs) {
+        if let Some(pos) = self
+            .wildcard
+            .iter()
+            .position(|e| &e.lhs == lhs && &e.rhs == rhs)
+        {
             if self.wildcard[pos].multiplicity > 1 {
                 self.wildcard[pos].multiplicity -= 1;
                 return false;
@@ -748,7 +783,11 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
             }
         }
         // Search wildcard bucket
-        if let Some(pos) = self.wildcard.iter().position(|e| e.full_debruijn == full_bytes) {
+        if let Some(pos) = self
+            .wildcard
+            .iter()
+            .position(|e| e.full_debruijn == full_bytes)
+        {
             if self.wildcard[pos].multiplicity > 1 {
                 self.wildcard[pos].multiplicity -= 1;
                 return Some(false);
@@ -777,7 +816,8 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         use crate::backend::models::gc_allocator::global_allocator;
 
         let interned: &'static str = global_allocator().alloc_str(head);
-        let group_iter = self.by_head_arity
+        let group_iter = self
+            .by_head_arity
             .get(&(interned, arity))
             .map(|group| group.get_candidates(first_arg_head));
 
@@ -846,7 +886,8 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
 
     /// Get all rules (for no-head queries).
     pub fn get_all_rules(&self) -> impl Iterator<Item = &RuleEntry<V>> {
-        self.by_head_arity.values()
+        self.by_head_arity
+            .values()
             .flat_map(|group| group.all_entries())
             .chain(self.wildcard.iter())
     }
@@ -867,7 +908,10 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
     pub fn group_size(&self, head: &str, arity: usize) -> usize {
         use crate::backend::models::gc_allocator::global_allocator;
         let interned: &'static str = global_allocator().alloc_str(head);
-        self.by_head_arity.get(&(interned, arity)).map(|g| g.len()).unwrap_or(0)
+        self.by_head_arity
+            .get(&(interned, arity))
+            .map(|g| g.len())
+            .unwrap_or(0)
     }
 
     /// Get the number of rules in the index.
@@ -938,7 +982,9 @@ impl MatchPath {
     /// Convert this path to a `Vec<u16>` for serialization in trace events.
     #[inline]
     fn to_vec(&self) -> Vec<u16> {
-        (0..self.len as usize).map(|i| self.indices[i] as u16).collect()
+        (0..self.len as usize)
+            .map(|i| self.indices[i] as u16)
+            .collect()
     }
 
     /// Navigate from root to the node at this path.
@@ -962,23 +1008,20 @@ impl MatchPath {
     /// is also resolved.  Unbound variables are returned as-is (same as
     /// `apply_bindings_generic` behaviour — single-level, no transitivity).
     #[inline]
-    fn navigate_resolving<V>(
-        &self,
-        root: &V,
-        bindings: &GenericBindings<V>,
-    ) -> Option<V>
+    fn navigate_resolving<V>(&self, root: &V, bindings: &GenericBindings<V>) -> Option<V>
     where
         V: MettaValueTrait + Clone,
     {
         // Resolve a single node: if it is a bound variable, return the binding.
         #[inline(always)]
-        fn resolve_one<V: MettaValueTrait + Clone>(
-            val: &V,
-            bindings: &GenericBindings<V>,
-        ) -> V {
+        fn resolve_one<V: MettaValueTrait + Clone>(val: &V, bindings: &GenericBindings<V>) -> V {
             if let Some(name) = val.as_atom() {
                 if (name.starts_with('$')
-                    || (name.starts_with('&') && name != "&" && name != "&self" && name != "&kb" && name != "&stack")
+                    || (name.starts_with('&')
+                        && name != "&"
+                        && name != "&self"
+                        && name != "&kb"
+                        && name != "&stack")
                     || name.starts_with('\''))
                     && name.len() > 1
                 {
@@ -1008,10 +1051,7 @@ impl MatchPath {
 #[derive(Clone, Copy, Debug)]
 enum StructuralCheck {
     /// Check that the node at `path` is an S-expression with exactly `expected` children.
-    Arity {
-        path: MatchPath,
-        expected: u16,
-    },
+    Arity { path: MatchPath, expected: u16 },
     /// Check that the node at `path` is an atom equal to `expected`.
     /// Atom strings are interned (`&'static str`), so this is typically a pointer comparison.
     Atom {
@@ -1019,21 +1059,12 @@ enum StructuralCheck {
         expected: &'static str,
     },
     /// Check that the node at `path` is a Long integer equal to `expected`.
-    Long {
-        path: MatchPath,
-        expected: i64,
-    },
+    Long { path: MatchPath, expected: i64 },
     /// Check that the node at `path` is a Bool equal to `expected`.
-    Bool {
-        path: MatchPath,
-        expected: bool,
-    },
+    Bool { path: MatchPath, expected: bool },
     /// Check that the node at `path` is a Float with bits equal to `expected_bits`.
     /// Uses bitwise comparison to avoid NaN issues.
-    Float {
-        path: MatchPath,
-        expected_bits: u64,
-    },
+    Float { path: MatchPath, expected_bits: u64 },
     /// Check that the node at `path` is a String equal to `expected`.
     Str {
         path: MatchPath,
@@ -1045,17 +1076,11 @@ enum StructuralCheck {
 #[derive(Clone, Copy, Debug)]
 enum VarOp {
     /// Bind the value at `path` to the variable `name`.
-    Bind {
-        path: MatchPath,
-        name: &'static str,
-    },
+    Bind { path: MatchPath, name: &'static str },
     /// Check that the value at `path` equals the already-bound variable at `bind_index`.
     /// Used for repeated variables like `(f $x $x)` where the second occurrence must
     /// equal the first.
-    EqualCheck {
-        path: MatchPath,
-        bind_index: u8,
-    },
+    EqualCheck { path: MatchPath, bind_index: u8 },
 }
 
 /// Compiled structural matcher for direct MettaValue pattern matching.
@@ -1116,7 +1141,13 @@ impl StructuralMatcher {
         // Key: variable name, Value: index in var_ops of the first Bind.
         let mut seen_vars: SmallVec<[(&'static str, u8); 8]> = SmallVec::new();
 
-        if !Self::analyze_node(lhs, MatchPath::root(), &mut checks, &mut var_ops, &mut seen_vars) {
+        if !Self::analyze_node(
+            lhs,
+            MatchPath::root(),
+            &mut checks,
+            &mut var_ops,
+            &mut seen_vars,
+        ) {
             return None;
         }
 
@@ -1265,7 +1296,10 @@ impl StructuralMatcher {
                         return None;
                     }
                 }
-                StructuralCheck::Float { path, expected_bits } => {
+                StructuralCheck::Float {
+                    path,
+                    expected_bits,
+                } => {
                     let val = path.navigate(expr)?;
                     if val.as_float()?.to_bits() != *expected_bits {
                         return None;
@@ -1317,12 +1351,13 @@ impl StructuralMatcher {
                         // with `(Inheritance $1 (IntSet smokes))` from the
                         // implication. Structural equality fails because $1 ≠ Anna,
                         // but unification succeeds with $1 → Anna.
-                        let unify_bindings = match
-                            crate::backend::eval::bindings::bidirectional_unify_generic(bound, val)
-                        {
-                            Some(b) => b,
-                            None => return None,
-                        };
+                        let unify_bindings =
+                            match crate::backend::eval::bindings::bidirectional_unify_generic(
+                                bound, val,
+                            ) {
+                                Some(b) => b,
+                                None => return None,
+                            };
                         // Merge the new bindings into the existing ones. Conflicts
                         // would mean the same variable is bound to incompatible
                         // values across the two unification calls — bail out.
@@ -1374,21 +1409,25 @@ impl StructuralMatcher {
                 StructuralCheck::Arity { path, expected } => {
                     let val = match path.navigate(expr) {
                         Some(v) => v,
-                        None => return Err(DetailedFailure::PathNavigateFailed {
-                            path: path.to_vec(),
-                            var: None,
-                        }),
+                        None => {
+                            return Err(DetailedFailure::PathNavigateFailed {
+                                path: path.to_vec(),
+                                var: None,
+                            })
+                        }
                     };
                     let items = match val.as_sexpr() {
                         Some(items) => items,
-                        None => return Err(DetailedFailure::StructuralCheckFailed {
-                            check_index,
-                            check_kind: "arity",
-                            path: path.to_vec(),
-                            expected_arity: Some(*expected as usize),
-                            expected_atom: None,
-                            actual: Some(val.clone()),
-                        }),
+                        None => {
+                            return Err(DetailedFailure::StructuralCheckFailed {
+                                check_index,
+                                check_kind: "arity",
+                                path: path.to_vec(),
+                                expected_arity: Some(*expected as usize),
+                                expected_atom: None,
+                                actual: Some(val.clone()),
+                            })
+                        }
                     };
                     if items.len() != *expected as usize {
                         return Err(DetailedFailure::StructuralCheckFailed {
@@ -1404,21 +1443,25 @@ impl StructuralMatcher {
                 StructuralCheck::Atom { path, expected } => {
                     let val = match path.navigate(expr) {
                         Some(v) => v,
-                        None => return Err(DetailedFailure::PathNavigateFailed {
-                            path: path.to_vec(),
-                            var: None,
-                        }),
+                        None => {
+                            return Err(DetailedFailure::PathNavigateFailed {
+                                path: path.to_vec(),
+                                var: None,
+                            })
+                        }
                     };
                     let atom = match val.as_atom() {
                         Some(a) => a,
-                        None => return Err(DetailedFailure::StructuralCheckFailed {
-                            check_index,
-                            check_kind: "atom",
-                            path: path.to_vec(),
-                            expected_arity: None,
-                            expected_atom: Some(*expected),
-                            actual: Some(val.clone()),
-                        }),
+                        None => {
+                            return Err(DetailedFailure::StructuralCheckFailed {
+                                check_index,
+                                check_kind: "atom",
+                                path: path.to_vec(),
+                                expected_arity: None,
+                                expected_atom: Some((*expected).to_string()),
+                                actual: Some(val.clone()),
+                            })
+                        }
                     };
                     if atom != *expected {
                         return Err(DetailedFailure::StructuralCheckFailed {
@@ -1426,7 +1469,7 @@ impl StructuralMatcher {
                             check_kind: "atom",
                             path: path.to_vec(),
                             expected_arity: None,
-                            expected_atom: Some(*expected),
+                            expected_atom: Some((*expected).to_string()),
                             actual: Some(val.clone()),
                         });
                     }
@@ -1434,15 +1477,20 @@ impl StructuralMatcher {
                 StructuralCheck::Long { path, expected: _ } => {
                     let val = match path.navigate(expr) {
                         Some(v) => v,
-                        None => return Err(DetailedFailure::PathNavigateFailed {
-                            path: path.to_vec(),
-                            var: None,
-                        }),
+                        None => {
+                            return Err(DetailedFailure::PathNavigateFailed {
+                                path: path.to_vec(),
+                                var: None,
+                            })
+                        }
                     };
-                    if val.as_long().map(|n| n == match check {
-                        StructuralCheck::Long { expected, .. } => *expected,
-                        _ => unreachable!(),
-                    }) != Some(true) {
+                    if val.as_long().map(|n| {
+                        n == match check {
+                            StructuralCheck::Long { expected, .. } => *expected,
+                            _ => unreachable!(),
+                        }
+                    }) != Some(true)
+                    {
                         return Err(DetailedFailure::StructuralCheckFailed {
                             check_index,
                             check_kind: "long",
@@ -1456,10 +1504,12 @@ impl StructuralMatcher {
                 StructuralCheck::Bool { path, expected } => {
                     let val = match path.navigate(expr) {
                         Some(v) => v,
-                        None => return Err(DetailedFailure::PathNavigateFailed {
-                            path: path.to_vec(),
-                            var: None,
-                        }),
+                        None => {
+                            return Err(DetailedFailure::PathNavigateFailed {
+                                path: path.to_vec(),
+                                var: None,
+                            })
+                        }
                     };
                     if val.as_bool() != Some(*expected) {
                         return Err(DetailedFailure::StructuralCheckFailed {
@@ -1472,13 +1522,18 @@ impl StructuralMatcher {
                         });
                     }
                 }
-                StructuralCheck::Float { path, expected_bits } => {
+                StructuralCheck::Float {
+                    path,
+                    expected_bits,
+                } => {
                     let val = match path.navigate(expr) {
                         Some(v) => v,
-                        None => return Err(DetailedFailure::PathNavigateFailed {
-                            path: path.to_vec(),
-                            var: None,
-                        }),
+                        None => {
+                            return Err(DetailedFailure::PathNavigateFailed {
+                                path: path.to_vec(),
+                                var: None,
+                            })
+                        }
                     };
                     if val.as_float().map(|f| f.to_bits()) != Some(*expected_bits) {
                         return Err(DetailedFailure::StructuralCheckFailed {
@@ -1494,10 +1549,12 @@ impl StructuralMatcher {
                 StructuralCheck::Str { path, expected } => {
                     let val = match path.navigate(expr) {
                         Some(v) => v,
-                        None => return Err(DetailedFailure::PathNavigateFailed {
-                            path: path.to_vec(),
-                            var: None,
-                        }),
+                        None => {
+                            return Err(DetailedFailure::PathNavigateFailed {
+                                path: path.to_vec(),
+                                var: None,
+                            })
+                        }
                     };
                     if val.as_string() != Some(*expected) {
                         return Err(DetailedFailure::StructuralCheckFailed {
@@ -1522,10 +1579,12 @@ impl StructuralMatcher {
                 VarOp::Bind { path, name } => {
                     let val = match path.navigate(expr) {
                         Some(v) => v,
-                        None => return Err(DetailedFailure::PathNavigateFailed {
-                            path: path.to_vec(),
-                            var: Some(*name),
-                        }),
+                        None => {
+                            return Err(DetailedFailure::PathNavigateFailed {
+                                path: path.to_vec(),
+                                var: Some((*name).to_string()),
+                            })
+                        }
                     };
                     bound_values.push(val);
                     bindings.insert(*name, val.clone());
@@ -1533,30 +1592,35 @@ impl StructuralMatcher {
                 VarOp::EqualCheck { path, bind_index } => {
                     let val = match path.navigate(expr) {
                         Some(v) => v,
-                        None => return Err(DetailedFailure::PathNavigateFailed {
-                            path: path.to_vec(),
-                            var: None,
-                        }),
+                        None => {
+                            return Err(DetailedFailure::PathNavigateFailed {
+                                path: path.to_vec(),
+                                var: None,
+                            })
+                        }
                     };
                     let bound = bound_values[*bind_index as usize];
                     if val != bound {
                         // Bidirectional unification fallback (mirrors try_match).
-                        let unify_bindings = match
-                            crate::backend::eval::bindings::bidirectional_unify_generic(bound, val)
-                        {
-                            Some(b) => b,
-                            None => return Err(DetailedFailure::BidirectionalUnifyFailed {
-                                var: "<repeated>",
-                                bound: bound.clone(),
-                                candidate: val.clone(),
-                                reason: "unification-failed",
-                            }),
-                        };
+                        let unify_bindings =
+                            match crate::backend::eval::bindings::bidirectional_unify_generic(
+                                bound, val,
+                            ) {
+                                Some(b) => b,
+                                None => {
+                                    return Err(DetailedFailure::BidirectionalUnifyFailed {
+                                        var: "<repeated>".to_string(),
+                                        bound: bound.clone(),
+                                        candidate: val.clone(),
+                                        reason: "unification-failed",
+                                    })
+                                }
+                            };
                         for (var_name, var_val) in unify_bindings.iter() {
                             if let Some(existing) = bindings.get(var_name) {
                                 if existing != var_val {
                                     return Err(DetailedFailure::EqualCheckFailed {
-                                        var: var_name,
+                                        var: var_name.to_string(),
                                         first_value: existing.clone(),
                                         second_value: var_val.clone(),
                                     });
@@ -1625,7 +1689,10 @@ impl StructuralMatcher {
                         return None;
                     }
                 }
-                StructuralCheck::Float { path, expected_bits } => {
+                StructuralCheck::Float {
+                    path,
+                    expected_bits,
+                } => {
                     let val = path.navigate_resolving(template, outer_bindings)?;
                     if val.as_float()?.to_bits() != *expected_bits {
                         return None;
@@ -1661,12 +1728,13 @@ impl StructuralMatcher {
                         // variables — see the matching block in `try_match` for
                         // the full rationale (PLN Modus Ponens with free
                         // variables in implications).
-                        let unify_bindings = match
-                            crate::backend::eval::bindings::bidirectional_unify_generic(bound, &val)
-                        {
-                            Some(b) => b,
-                            None => return None,
-                        };
+                        let unify_bindings =
+                            match crate::backend::eval::bindings::bidirectional_unify_generic(
+                                bound, &val,
+                            ) {
+                                Some(b) => b,
+                                None => return None,
+                            };
                         for (var_name, var_val) in unify_bindings.iter() {
                             if let Some(existing) = bindings.get(var_name) {
                                 if existing != var_val {
@@ -1753,7 +1821,9 @@ fn count_newvar_tags(bytes: &[u8]) -> usize {
         return 0;
     }
     let mut count = 0;
-    let expr = Expr { ptr: bytes.as_ptr().cast_mut() };
+    let expr = Expr {
+        ptr: bytes.as_ptr().cast_mut(),
+    };
     let mut ez = ExprZipper::new(expr);
     loop {
         if ez.tag() == Tag::NewVar {
@@ -1797,26 +1867,75 @@ fn collect_variable_names_into<V: MettaValueTrait>(value: &V, out: &mut Vec<Stri
     }
 }
 
-/// Strip the `$__fr_<digits>_` prefix from a freshened variable name.
+/// Move a `GenericBindings<MettaValue>` into the generic `V` spelling after
+/// a `TypeId` guard has proved that `V == MettaValue`.
 ///
-/// Returns `Some("$<bare>")` if `name` matches the pattern
-/// `$__fr_<digits>_<bare>`, or `None` for non-freshened names. Used by the
-/// bidirectional-unify fallback in `match_rules_native` to recover rule-LHS
-/// original names from epoch-freshened bindings keys produced by
-/// `enumerate_rules_via_unification`.
-fn unfreshen_name(name: &str) -> Option<String> {
-    let stripped = name.strip_prefix("$__fr_")?;
-    let underscore_idx = stripped.find('_')?;
-    let (digits, rest) = stripped.split_at(underscore_idx);
-    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
+/// This must be a move, not `transmute_copy`: `GenericBindings` owns
+/// `BindingName::Ephemeral(Arc<str>)` keys, and bitwise-copying the container
+/// duplicates those `Arc` handles without incrementing their reference counts.
+unsafe fn move_metta_bindings_to_v_unchecked<V>(
+    bindings: GenericBindings<crate::backend::models::MettaValue>,
+) -> GenericBindings<V>
+where
+    V: MettaValueTrait + Clone + 'static,
+{
+    debug_assert_eq!(
+        std::any::TypeId::of::<V>(),
+        std::any::TypeId::of::<crate::backend::models::MettaValue>()
+    );
+    let bindings = std::mem::ManuallyDrop::new(bindings);
+    unsafe {
+        std::ptr::read(
+            (&*bindings as *const GenericBindings<crate::backend::models::MettaValue>)
+                .cast::<GenericBindings<V>>(),
+        )
     }
-    // rest starts with '_', skip it
-    let bare = &rest[1..];
-    let mut out = String::with_capacity(bare.len() + 1);
-    out.push('$');
-    out.push_str(bare);
-    Some(out)
+}
+
+#[inline]
+fn export_rule_match_bindings<V, F>(
+    scratch: &GenericBindings<V>,
+    query: &V,
+    current_rule_prefix: &str,
+    dispatch_scope: crate::backend::models::generic_bindings::ScopeId,
+    factory: &F,
+) -> Option<GenericBindings<V>>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    crate::backend::eval::bindings::export_query_bindings_generic(
+        scratch,
+        query,
+        current_rule_prefix,
+        &[
+            dispatch_scope,
+            crate::backend::models::generic_bindings::ROOT_SCOPE,
+        ],
+        factory,
+    )
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn move_metta_bindings_to_v_preserves_ephemeral_keys_without_copying_owner() {
+        let mut bindings = GenericBindings::<crate::backend::models::MettaValue>::new();
+        bindings.insert(
+            "$__fr_123_owned",
+            crate::backend::models::MettaValue::Atom("value".to_string()),
+        );
+
+        let moved: GenericBindings<crate::backend::models::MettaValue> =
+            unsafe { move_metta_bindings_to_v_unchecked(bindings) };
+
+        assert_eq!(
+            moved.get("$__fr_123_owned").and_then(|v| v.as_atom()),
+            Some("value")
+        );
+    }
 }
 
 /// H8 (2026-05-05): Detect whether a rule body would produce only empty
@@ -2020,9 +2139,7 @@ fn extract_bindings_from_wide_expr<V>(
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
 {
-    use crate::backend::wide_mork::encoding::{
-        WideTag, decode_leb128,
-    };
+    use crate::backend::wide_mork::encoding::{decode_leb128, WideTag};
 
     let mut bindings = GenericBindings::new();
     let mut offset = 0usize;
@@ -2226,7 +2343,11 @@ where
         let rhs_type = {
             use crate::backend::eval::types::infer_type_generic;
             let inferred = infer_type_generic(&rhs, &self.factory, self);
-            if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
+            if inferred.as_atom() == Some("%Undefined%") {
+                None
+            } else {
+                Some(inferred)
+            }
         };
 
         // Trace: RhsTypeComputed
@@ -2244,7 +2365,9 @@ where
                         arity: arity as u32,
                         lhs: crate::backend::trace::trace_value_generic(&lhs),
                         rhs: crate::backend::trace::trace_value_generic(&rhs),
-                        rhs_type: rhs_type.as_ref().map(crate::backend::trace::trace_value_generic),
+                        rhs_type: rhs_type
+                            .as_ref()
+                            .map(crate::backend::trace::trace_value_generic),
                     },
                 );
             });
@@ -2297,13 +2420,9 @@ where
             });
             if !has_declared_arrow {
                 use crate::backend::eval::types::infer_arrow_type_from_rule;
-                if let Some(arrow) = infer_arrow_type_from_rule(
-                    &lhs,
-                    &rhs,
-                    rhs_type.as_ref(),
-                    &self.factory,
-                    self,
-                ) {
+                if let Some(arrow) =
+                    infer_arrow_type_from_rule(&lhs, &rhs, rhs_type.as_ref(), &self.factory, self)
+                {
                     // PLN-fix 2026-04: gate against freshened-var leakage
                     // (same reasoning as the phase-10.1-rhs site above).
                     if !type_contains_freshened_var(&arrow) {
@@ -2312,20 +2431,23 @@ where
                         // Trace: InferredTypeRegistered (Phase 10.4)
                         #[cfg(feature = "trace")]
                         {
-                            crate::backend::trace::thread_local_sink::with_trace_collector_ref(|tc| {
-                                tc.emit_converted(
-                                    trace_format::TraceTier::TreeWalker,
-                                    0,
-                                    crate::backend::trace::trace_value_generic(&arrow),
-                                    vec![],
-                                    None,
-                                    trace_format::TraceEventKind::InferredTypeRegistered {
-                                        function_name: head.clone(),
-                                        registered_type: crate::backend::trace::trace_value_generic(&arrow),
-                                        source: "phase-10.4-arrow".to_string(),
-                                    },
-                                );
-                            });
+                            crate::backend::trace::thread_local_sink::with_trace_collector_ref(
+                                |tc| {
+                                    tc.emit_converted(
+                                        trace_format::TraceTier::TreeWalker,
+                                        0,
+                                        crate::backend::trace::trace_value_generic(&arrow),
+                                        vec![],
+                                        None,
+                                        trace_format::TraceEventKind::InferredTypeRegistered {
+                                            function_name: head.clone(),
+                                            registered_type:
+                                                crate::backend::trace::trace_value_generic(&arrow),
+                                            source: "phase-10.4-arrow".to_string(),
+                                        },
+                                    );
+                                },
+                            );
                         }
                     }
                 }
@@ -2338,11 +2460,9 @@ where
         }
 
         // Create rule s-expression: (= lhs rhs)
-        let rule_sexpr = self.factory.sexpr(vec![
-            self.factory.atom("="),
-            lhs.clone(),
-            rhs.clone(),
-        ]);
+        let rule_sexpr = self
+            .factory
+            .sexpr(vec![self.factory.atom("="), lhs.clone(), rhs.clone()]);
 
         // Convert to De Bruijn bytes and insert into PathMap + RuleIndex
         let rule_prefix_len = super::core::RULE_PREFIX_LEN;
@@ -2356,7 +2476,10 @@ where
                     let mut btm = self.shared.atom_space.btm.write();
                     super::multiplicity::add_atom(&mut btm, debruijn_bytes);
                 }
-                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_add(1, Ordering::Relaxed);
 
                 // 2. Split De Bruijn bytes into LHS and RHS ranges
                 // Layout: [Arity(3)] ["=" symbol bytes] [LHS bytes] [RHS bytes]
@@ -2384,14 +2507,18 @@ where
                     if lhs_start + lhs_byte_len > debruijn_bytes.len() {
                         panic!(
                             "LHS byte range {}..{} exceeds debruijn_bytes len {}",
-                            lhs_start, lhs_start + lhs_byte_len, debruijn_bytes.len()
+                            lhs_start,
+                            lhs_start + lhs_byte_len,
+                            debruijn_bytes.len()
                         );
                     }
                     let first_lhs_byte = debruijn_bytes[lhs_start];
                     if let Err(reserved) = maybe_byte_item(first_lhs_byte) {
                         panic!(
                             "LHS starts with reserved byte 0x{:02x} at offset {} in {:02x?}",
-                            reserved, lhs_start, &debruijn_bytes[..debruijn_bytes.len().min(32)]
+                            reserved,
+                            lhs_start,
+                            &debruijn_bytes[..debruijn_bytes.len().min(32)]
                         );
                     }
                 }
@@ -2400,7 +2527,8 @@ where
                 // See the comment on expr_bytes_owned in match_rules_native() for why
                 // padding is needed (ExprZipper::gnext reads one byte past the end).
                 let mut lhs_debruijn = Vec::with_capacity(lhs_byte_len + 1);
-                lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
+                lhs_debruijn
+                    .extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
                 lhs_debruijn.push(0x00); // Padding byte for ExprZipper read-past-end safety
 
                 // Also save the full rule De Bruijn bytes for alpha-equivalent
@@ -2418,10 +2546,14 @@ where
                              lhs_debruijn: {:02x?}\n\
                              full debruijn_bytes (first 64): {:02x?}\n\
                              rule_prefix_len: {}, lhs_start: {}, lhs_byte_len: {}",
-                            byte, off, lhs_debruijn.len(),
+                            byte,
+                            off,
+                            lhs_debruijn.len(),
                             &lhs_debruijn[..lhs_debruijn.len().min(32)],
                             &debruijn_bytes[..debruijn_bytes.len().min(64)],
-                            rule_prefix_len, lhs_start, lhs_byte_len
+                            rule_prefix_len,
+                            lhs_start,
+                            lhs_byte_len
                         );
                     }
                 }
@@ -2443,13 +2575,18 @@ where
                     None
                 };
                 let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
-                    if std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>() {
-                        let metta_rhs: &crate::backend::models::MettaValue =
-                            unsafe { &*(&rhs as *const V as *const crate::backend::models::MettaValue) };
+                    if std::any::TypeId::of::<V>()
+                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                    {
+                        let metta_rhs: &crate::backend::models::MettaValue = unsafe {
+                            &*(&rhs as *const V as *const crate::backend::models::MettaValue)
+                        };
                         if crate::backend::bytecode::can_compile_with_env(metta_rhs) {
                             crate::backend::bytecode::compile_bytecode_arc("rule_rhs", metta_rhs)
                                 .ok()
-                                .map(|chunk| chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                                .map(|chunk| {
+                                    chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>
+                                })
                         } else {
                             None
                         }
@@ -2476,7 +2613,7 @@ where
                     structural_matcher,
                     enhanced_matcher,
                     rule_index_in_group: 0, // Assigned by RuleIndex::add_rule
-                    global_rule_index: 0, // Assigned by RuleIndex::add_rule
+                    global_rule_index: 0,   // Assigned by RuleIndex::add_rule
                     compiled_rhs,
                     has_monadic_effect,
                     requires_non_empty_first_arg,
@@ -2507,26 +2644,35 @@ where
                 super::multiplicity::add_atom(&mut wbtm, &wide_key);
             }
 
-            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+            self.shared
+                .atom_space
+                .total_atoms
+                .fetch_add(1, Ordering::Relaxed);
 
             // Encode the LHS with Wide MORK De Bruijn encoding for byte-level matching.
             // This replaces the old structural fallback with O(n) byte-level matching.
             let mut wide_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
             let mut lhs_wide_debruijn = Vec::new();
             crate::backend::wide_mork::encoding::encode_wide_debruijn(
-                &lhs, &mut wide_ctx, &mut lhs_wide_debruijn,
+                &lhs,
+                &mut wide_ctx,
+                &mut lhs_wide_debruijn,
             );
 
             // Encode the full rule `(= lhs rhs)` with Wide MORK De Bruijn for
             // alpha-equivalent removal via remove_rule_by_debruijn. Uses a
             // separate fresh context so its variable indices are self-contained.
-            let mut full_wide_ctx = crate::backend::wide_mork::encoding::WideConversionContext::new();
+            let mut full_wide_ctx =
+                crate::backend::wide_mork::encoding::WideConversionContext::new();
             let mut full_debruijn = Vec::new();
             crate::backend::wide_mork::encoding::encode_wide_debruijn(
-                &rule_sexpr, &mut full_wide_ctx, &mut full_debruijn,
+                &rule_sexpr,
+                &mut full_wide_ctx,
+                &mut full_debruijn,
             );
 
-            let lhs_var_count = crate::backend::wide_mork::encoding::count_wide_newvar_tags(&lhs_wide_debruijn);
+            let lhs_var_count =
+                crate::backend::wide_mork::encoding::count_wide_newvar_tags(&lhs_wide_debruijn);
             let (var_names, wildcard_indices) =
                 build_var_names_and_wildcards(&wide_ctx.var_names, lhs_var_count);
 
@@ -2540,9 +2686,12 @@ where
                 None
             };
             let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
-                if std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>() {
-                    let metta_rhs: &crate::backend::models::MettaValue =
-                        unsafe { &*(&rhs as *const V as *const crate::backend::models::MettaValue) };
+                if std::any::TypeId::of::<V>()
+                    == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                {
+                    let metta_rhs: &crate::backend::models::MettaValue = unsafe {
+                        &*(&rhs as *const V as *const crate::backend::models::MettaValue)
+                    };
                     if crate::backend::bytecode::can_compile_with_env(metta_rhs) {
                         crate::backend::bytecode::compile_bytecode_arc("rule_rhs", metta_rhs)
                             .ok()
@@ -2572,7 +2721,7 @@ where
                 structural_matcher,
                 enhanced_matcher,
                 rule_index_in_group: 0, // Assigned by RuleIndex::add_rule
-                global_rule_index: 0, // Assigned by RuleIndex::add_rule
+                global_rule_index: 0,   // Assigned by RuleIndex::add_rule
                 compiled_rhs,
                 has_monadic_effect,
                 requires_non_empty_first_arg,
@@ -2593,13 +2742,15 @@ where
         if let Some(ref head) = head_owned {
             let arity_u8 = arity as u8;
             self.shared
-                .atom_space.head_arity_bloom
+                .atom_space
+                .head_arity_bloom
                 .write()
                 .insert(head, arity_u8);
             // Rule-only bloom: used by is_normal_form_bounded to distinguish
             // data constructors (add-atom) from rule heads (=).
             self.shared
-                .atom_space.rule_head_bloom
+                .atom_space
+                .rule_head_bloom
                 .write()
                 .insert(head, arity_u8);
 
@@ -2663,14 +2814,14 @@ where
         // Phase 3: Extract first argument's head symbol for second-level index narrowing
         let first_arg_head = get_first_arg_head(expr);
 
-
         // Bloom filter O(1) rejection: skip MORK serialization entirely when
         // the bloom filter says no head-specific rules exist for this head+arity
         // AND there are no wildcard rules (which match any head).
         if !head.is_empty() {
             let bloom_says_no = !self
                 .shared
-                .atom_space.head_arity_bloom
+                .atom_space
+                .head_arity_bloom
                 .read()
                 .may_contain(head, arity as u8);
             if bloom_says_no && !self.shared.rule_index.read().has_wildcard_rules() {
@@ -2707,7 +2858,11 @@ where
             // The filter is installed on the thread-local by `install_rule_filter()`.
             let candidates: SmallVec<[&RuleEntry<V>; 16]> = candidates
                 .into_iter()
-                .filter(|e| crate::backend::eval::cesk::continuation_compression::is_rule_live(e.global_rule_index))
+                .filter(|e| {
+                    crate::backend::eval::cesk::continuation_compression::is_rule_live(
+                        e.global_rule_index,
+                    )
+                })
                 .collect();
 
             if candidates.is_empty() {
@@ -2722,9 +2877,11 @@ where
                 let candidates_count = candidates.len() as u32;
                 crate::backend::trace::with_trace_collector_ref(|tc| {
                     tc.emit_converted(
-                        trace_format::TraceTier::TreeWalker, 0,
+                        trace_format::TraceTier::TreeWalker,
+                        0,
                         crate::backend::trace::convert::trace_value_generic(expr),
-                        vec![], None,
+                        vec![],
+                        None,
                         trace_format::TraceEventKind::RuleLookup {
                             head: head.to_string(),
                             arity: arity as u32,
@@ -2755,7 +2912,11 @@ where
                     h.finish()
                 };
                 let arg_heads: SmallVec<[Option<&str>; 4]> = if let Some(items) = expr.as_sexpr() {
-                    items.iter().skip(1).map(|item| item.get_head_symbol()).collect()
+                    items
+                        .iter()
+                        .skip(1)
+                        .map(|item| item.get_head_symbol())
+                        .collect()
                 } else {
                     SmallVec::new()
                 };
@@ -2769,14 +2930,17 @@ where
                 // Intern head as &'static str for the dependency record.
                 // Atom strings from MeTTa values are already slab-allocated ('static),
                 // but get_head_symbol() returns &str; re-intern is O(1) for existing strings.
-                let head_static: &'static str = crate::backend::models::gc_allocator::global_allocator().alloc_str(head);
+                let head_static: &'static str =
+                    crate::backend::models::gc_allocator::global_allocator().alloc_str(head);
                 crate::backend::eval::cesk::with_incremental_index(|idx| {
-                    idx.record_dependency(crate::backend::eval::cesk::rete_incremental::SubgoalDependency {
-                        subgoal_hash: expr_hash,
-                        consulted_groups: smallvec::smallvec![(head_static, arity)],
-                        matched_rules: smallvec::SmallVec::new(), // Populated after matching
-                        transitive_deps: smallvec::SmallVec::new(),
-                    });
+                    idx.record_dependency(
+                        crate::backend::eval::cesk::rete_incremental::SubgoalDependency {
+                            subgoal_hash: expr_hash,
+                            consulted_groups: smallvec::smallvec![(head_static, arity)],
+                            matched_rules: smallvec::SmallVec::new(), // Populated after matching
+                            transitive_deps: smallvec::SmallVec::new(),
+                        },
+                    );
                 });
             }
 
@@ -2802,7 +2966,8 @@ where
             if all_structural {
                 // I-10: Parallel speculative matching for large candidate sets
                 if crate::backend::eval::cesk::should_speculate(candidates.len())
-                    && std::any::TypeId::of::<V>() == std::any::TypeId::of::<crate::backend::models::MettaValue>()
+                    && std::any::TypeId::of::<V>()
+                        == std::any::TypeId::of::<crate::backend::models::MettaValue>()
                 {
                     // I-10: Parallel speculative matching — head matching is pure read-only.
                     // Only for MettaValue (GcFactory is Send+Sync).
@@ -2817,7 +2982,8 @@ where
                     // SAFETY: V is MettaValue (TypeId checked above). GcFactory is Send+Sync.
                     // We need to transmute the factory to a concrete Send+Sync type for
                     // std::thread::scope since the generic F doesn't promise Send.
-                    let factory_ptr = &self.factory as *const F as *const crate::backend::models::GcFactory;
+                    let factory_ptr =
+                        &self.factory as *const F as *const crate::backend::models::GcFactory;
                     let gc_factory: crate::backend::models::GcFactory = unsafe { *factory_ptr };
                     // Collect (rule_idx, result) pairs so we can canonicalize order
                     // after thread join. Chunks partition candidate range, so within
@@ -2885,6 +3051,7 @@ where
                                         };
                                         let body_local_epoch = allocate_epoch();
                                         let dispatch_scope = allocate_scope_id();
+                                        let prefix = format!("$__fr_{}_", body_local_epoch);
                                         // Option A: snapshot pre-freshen bindings for the
                                         // bytecode-VM frame, whose `compiled_rhs` opcodes
                                         // reference rule-LHS ORIGINAL names.
@@ -2905,6 +3072,23 @@ where
                                             ROOT_SCOPE,
                                             dispatch_scope,
                                         );
+                                        let scoped_bindings_mv: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
+                                            unsafe { &*(&scoped_bindings as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
+                                        let expr_mv: &crate::backend::models::MettaValue =
+                                            unsafe { &*(expr as *const V as *const crate::backend::models::MettaValue) };
+                                        let Some(exported_bindings_mv) =
+                                            crate::backend::eval::bindings::export_query_bindings_generic(
+                                                scoped_bindings_mv,
+                                                expr_mv,
+                                                &prefix,
+                                                &[dispatch_scope, ROOT_SCOPE],
+                                                &fac,
+                                            )
+                                        else {
+                                            continue;
+                                        };
+                                        let exported_bindings: GenericBindings<V> =
+                                            unsafe { move_metta_bindings_to_v_unchecked(exported_bindings_mv) };
                                         let instantiated_rhs = if entry.rhs_has_variables {
                                             // SAFETY: V is MettaValue, fac is GcFactory (TypeId checked at outer scope).
                                             let rhs_mv: &crate::backend::models::MettaValue =
@@ -2938,7 +3122,7 @@ where
                                             chunk_results.push((rule_idx, RuleMatchResult {
                                                 instantiated_rhs: instantiated_rhs.clone(),
                                                 rhs_template: entry.rhs.clone(),
-                                                bindings: scoped_bindings.clone(),
+                                                bindings: exported_bindings.clone(),
                                                 original_bindings: original_bindings.clone(),
                                                 rule_scope: dispatch_scope,
                                                 multiplicity,
@@ -2954,7 +3138,8 @@ where
                         }).collect();
 
                         for handle in handles {
-                            all_indexed.extend(handle.join().expect("speculative match thread panicked"));
+                            all_indexed
+                                .extend(handle.join().expect("speculative match thread panicked"));
                         }
                     });
 
@@ -3002,8 +3187,16 @@ where
                                         None,
                                         _rule_idx_u32,
                                         trace_format::RuleMatchOutcome::Success {
-                                            bindings: b.iter()
-                                                .map(|(k, v)| (k.to_string(), crate::backend::trace::trace_value_generic(v)))
+                                            bindings: b
+                                                .iter()
+                                                .map(|(k, v)| {
+                                                    (
+                                                        k.to_string(),
+                                                        crate::backend::trace::trace_value_generic(
+                                                            v,
+                                                        ),
+                                                    )
+                                                })
                                                 .collect(),
                                         },
                                         None,
@@ -3032,7 +3225,9 @@ where
                             matcher.try_match(expr)
                         }
                         #[cfg(not(feature = "trace"))]
-                        { matcher.try_match(expr) }
+                        {
+                            matcher.try_match(expr)
+                        }
                     } else if let Some(ref matcher) = entry.enhanced_matcher {
                         matcher.try_match(expr)
                     } else {
@@ -3093,6 +3288,7 @@ where
                         };
                         let body_local_epoch = allocate_epoch();
                         let dispatch_scope = allocate_scope_id();
+                        let prefix = format!("$__fr_{}_", body_local_epoch);
                         // Option A: snapshot pre-freshen bindings for the
                         // bytecode-VM frame.
                         let original_bindings = bindings.clone();
@@ -3106,12 +3302,22 @@ where
                             .iter()
                             .map(|n| intern_fresh_name(body_local_epoch, &n[1..]))
                             .collect();
-                        let scoped_bindings = crate::backend::eval::bindings::retag_rule_keys_at_scope(
-                            bindings,
-                            &renamed_var_names,
-                            ROOT_SCOPE,
+                        let scoped_bindings =
+                            crate::backend::eval::bindings::retag_rule_keys_at_scope(
+                                bindings,
+                                &renamed_var_names,
+                                ROOT_SCOPE,
+                                dispatch_scope,
+                            );
+                        let Some(exported_bindings) = export_rule_match_bindings(
+                            &scoped_bindings,
+                            expr,
+                            &prefix,
                             dispatch_scope,
-                        );
+                            &self.factory,
+                        ) else {
+                            continue;
+                        };
                         // Phase 3.2-B trace event: BindingsExtracted as before
                         // (legacy `iter()` shim drops scope; the trace event's
                         // contract is bare-name pairs).
@@ -3127,11 +3333,8 @@ where
                                         )
                                     })
                                     .collect();
-                            let var_names_tv: Vec<String> = entry
-                                .var_names
-                                .iter()
-                                .map(|s| s.to_string())
-                                .collect();
+                            let var_names_tv: Vec<String> =
+                                entry.var_names.iter().map(|s| s.to_string()).collect();
                             crate::backend::trace::thread_local_sink::with_trace_collector_ref(
                                 |tc| {
                                     tc.emit_converted(
@@ -3188,7 +3391,7 @@ where
                             results.push(RuleMatchResult {
                                 instantiated_rhs,
                                 rhs_template: entry.rhs.clone(),
-                                bindings: scoped_bindings,
+                                bindings: exported_bindings,
                                 original_bindings,
                                 rule_scope: dispatch_scope,
                                 multiplicity: 1,
@@ -3201,7 +3404,7 @@ where
                                 results.push(RuleMatchResult {
                                     instantiated_rhs: instantiated_rhs.clone(),
                                     rhs_template: entry.rhs.clone(),
-                                    bindings: scoped_bindings.clone(),
+                                    bindings: exported_bindings.clone(),
                                     original_bindings: original_bindings.clone(),
                                     rule_scope: dispatch_scope,
                                     multiplicity,
@@ -3340,6 +3543,7 @@ where
                             };
                             let body_local_epoch = allocate_epoch();
                             let dispatch_scope = allocate_scope_id();
+                            let prefix = format!("$__fr_{}_", body_local_epoch);
                             // Option A: snapshot pre-freshen bindings for VM frame.
                             let original_bindings = bindings.clone();
                             let bindings = freshen_bindings_keys_with_epoch(
@@ -3358,6 +3562,15 @@ where
                                 ROOT_SCOPE,
                                 dispatch_scope,
                             );
+                            let Some(exported_bindings) = export_rule_match_bindings(
+                                &scoped_bindings,
+                                expr,
+                                &prefix,
+                                dispatch_scope,
+                                &self.factory,
+                            ) else {
+                                continue;
+                            };
                             let instantiated_rhs = if entry.rhs_has_variables {
                                 let rhs_freshened = freshen_variables_with_epoch(
                                     &entry.rhs,
@@ -3382,7 +3595,7 @@ where
                                 results.push(RuleMatchResult {
                                     instantiated_rhs,
                                     rhs_template: entry.rhs.clone(),
-                                    bindings: scoped_bindings,
+                                    bindings: exported_bindings,
                                     original_bindings,
                                     rule_scope: dispatch_scope,
                                     multiplicity: 1,
@@ -3395,7 +3608,7 @@ where
                                     results.push(RuleMatchResult {
                                         instantiated_rhs: instantiated_rhs.clone(),
                                         rhs_template: entry.rhs.clone(),
-                                        bindings: scoped_bindings.clone(),
+                                        bindings: exported_bindings.clone(),
                                         original_bindings: original_bindings.clone(),
                                         rule_scope: dispatch_scope,
                                         multiplicity,
@@ -3445,6 +3658,7 @@ where
                         };
                         let body_local_epoch = allocate_epoch();
                         let dispatch_scope = allocate_scope_id();
+                        let prefix = format!("$__fr_{}_", body_local_epoch);
                         // Option A: snapshot pre-freshen bindings for VM frame.
                         let original_bindings = bindings.clone();
                         let bindings = freshen_bindings_keys_with_epoch(
@@ -3463,6 +3677,15 @@ where
                             ROOT_SCOPE,
                             dispatch_scope,
                         );
+                        let Some(exported_bindings) = export_rule_match_bindings(
+                            &scoped_bindings,
+                            expr,
+                            &prefix,
+                            dispatch_scope,
+                            &self.factory,
+                        ) else {
+                            continue;
+                        };
                         let instantiated_rhs = if entry.rhs_has_variables {
                             let rhs_freshened = freshen_variables_with_epoch(
                                 &entry.rhs,
@@ -3486,7 +3709,7 @@ where
                             results.push(RuleMatchResult {
                                 instantiated_rhs,
                                 rhs_template: entry.rhs.clone(),
-                                bindings: scoped_bindings,
+                                bindings: exported_bindings,
                                 original_bindings,
                                 rule_scope: dispatch_scope,
                                 multiplicity: 1,
@@ -3499,7 +3722,7 @@ where
                                 results.push(RuleMatchResult {
                                     instantiated_rhs: instantiated_rhs.clone(),
                                     rhs_template: entry.rhs.clone(),
-                                    bindings: scoped_bindings.clone(),
+                                    bindings: exported_bindings.clone(),
                                     original_bindings: original_bindings.clone(),
                                     rule_scope: dispatch_scope,
                                     multiplicity,
@@ -3696,6 +3919,7 @@ where
                 };
                 let body_local_epoch = allocate_epoch();
                 let dispatch_scope = allocate_scope_id();
+                let prefix = format!("$__fr_{}_", body_local_epoch);
                 // Option A: snapshot pre-freshen bindings for VM frame.
                 let original_bindings = bindings.clone();
                 let bindings = freshen_bindings_keys_with_epoch(
@@ -3714,6 +3938,15 @@ where
                     ROOT_SCOPE,
                     dispatch_scope,
                 );
+                let Some(exported_bindings) = export_rule_match_bindings(
+                    &scoped_bindings,
+                    expr,
+                    &prefix,
+                    dispatch_scope,
+                    &self.factory,
+                ) else {
+                    continue;
+                };
                 let instantiated_rhs = if entry.rhs_has_variables {
                     let rhs_freshened = freshen_variables_with_epoch(
                         &entry.rhs,
@@ -3741,7 +3974,7 @@ where
                     results.push(RuleMatchResult {
                         instantiated_rhs,
                         rhs_template: entry.rhs.clone(),
-                        bindings: scoped_bindings,
+                        bindings: exported_bindings,
                         original_bindings,
                         rule_scope: dispatch_scope,
                         multiplicity: 1,
@@ -3754,7 +3987,7 @@ where
                         results.push(RuleMatchResult {
                             instantiated_rhs: instantiated_rhs.clone(),
                             rhs_template: entry.rhs.clone(),
-                            bindings: scoped_bindings.clone(),
+                            bindings: exported_bindings.clone(),
                             original_bindings: original_bindings.clone(),
                             rule_scope: dispatch_scope,
                             multiplicity,
@@ -3811,13 +4044,14 @@ where
         let expr_mv: &crate::backend::models::MettaValue =
             unsafe { &*(expr as *const V as *const crate::backend::models::MettaValue) };
         let env_ref: &crate::backend::eval::trampoline::engine::Environment = unsafe {
-            &*(self as *const Self
-                as *const crate::backend::eval::trampoline::engine::Environment)
+            &*(self as *const Self as *const crate::backend::eval::trampoline::engine::Environment)
         };
 
         let unified =
-            crate::backend::eval::trampoline::engine::enumerate_rules_via_unification(
-                expr_mv, env_ref, &gc_factory,
+            crate::backend::eval::trampoline::engine::enumerate_rules_via_unification_detailed(
+                expr_mv,
+                env_ref,
+                &gc_factory,
             );
 
         if unified.is_empty() {
@@ -3825,47 +4059,12 @@ where
         }
 
         let mut results: Vec<RuleMatchResult<V>> = Vec::with_capacity(unified.len());
-        for (instantiated_rhs_mv, scoped_bindings_mv, rhs_type_mv) in unified {
-            // Phase 3 (Bug 3): reconstruct `original_bindings` to include BOTH:
-            //   1. Rule-side freshened keys ($__fr_<epoch>_x → bare name x)
-            //   2. Caller-side ROOT_SCOPE bare-name keys ($who, etc.) verbatim
-            //
-            // Previously caller-side keys were silently dropped, so user-typed
-            // queries like `(? (grandfather $who c))` couldn't project `$who → a`
-            // through the VM compiled-RHS BindingFrame. Pattern-match on
-            // (unfreshen_name, scope_is_root) — both kinds occupy textually
-            // disjoint namespaces (rule-side post-freshening is always
-            // `$__fr_<digits>_*`; caller-side is bare).
-            let mut original_bindings_mv = crate::backend::models::GenericBindings::<
-                crate::backend::models::MettaValue,
-            >::new();
-            let mut rule_scope = crate::backend::models::generic_bindings::ROOT_SCOPE;
-            let root_scope = crate::backend::models::generic_bindings::ROOT_SCOPE;
-            for (s, name, val) in scoped_bindings_mv.iter_full() {
-                match (unfreshen_name(name), s == root_scope) {
-                    (Some(bare), _) => {
-                        // Rule-side: strip `$__fr_<epoch>_` prefix, intern bare,
-                        // insert. `rule_scope` captures the dispatch scope so
-                        // downstream callers can locate the rule's binding frame.
-                        let interned: &'static str =
-                            crate::backend::models::gc_allocator::global_allocator()
-                                .alloc_str(&bare);
-                        original_bindings_mv.insert(interned, val.clone());
-                        rule_scope = s;
-                    }
-                    (None, true) => {
-                        // Caller-side ROOT_SCOPE: insert under original name.
-                        // The `name` is already a `&'static str` (interned at
-                        // parse time or from `intern_fresh_name`), reuse directly.
-                        original_bindings_mv.insert(name, val.clone());
-                    }
-                    (None, false) => {
-                        // Caller-side at non-ROOT scope: shouldn't occur for
-                        // `enumerate_rules_via_unification`'s output (rule-side
-                        // keys carry the prefix). Defensive skip.
-                    }
-                }
-            }
+        for unified_match in unified {
+            let instantiated_rhs_mv = unified_match.instantiated_rhs;
+            let exported_bindings_mv = unified_match.exported_bindings;
+            let original_bindings_mv = unified_match.original_bindings;
+            let rule_scope = unified_match.rule_scope;
+            let rhs_type_mv = unified_match.rhs_type;
 
             // SAFETY: V == MettaValue (TypeId checked at function entry).
             let instantiated_rhs: V = unsafe {
@@ -3873,18 +4072,10 @@ where
                     &instantiated_rhs_mv,
                 )
             };
-            let bindings: GenericBindings<V> = unsafe {
-                std::mem::transmute_copy::<
-                    crate::backend::models::GenericBindings<crate::backend::models::MettaValue>,
-                    GenericBindings<V>,
-                >(&scoped_bindings_mv)
-            };
-            let original_bindings: GenericBindings<V> = unsafe {
-                std::mem::transmute_copy::<
-                    crate::backend::models::GenericBindings<crate::backend::models::MettaValue>,
-                    GenericBindings<V>,
-                >(&original_bindings_mv)
-            };
+            let bindings: GenericBindings<V> =
+                unsafe { move_metta_bindings_to_v_unchecked(exported_bindings_mv) };
+            let original_bindings: GenericBindings<V> =
+                unsafe { move_metta_bindings_to_v_unchecked(original_bindings_mv) };
             let rhs_type: Option<V> = rhs_type_mv.map(|t| unsafe {
                 std::mem::transmute_copy::<crate::backend::models::MettaValue, V>(&t)
             });
@@ -3929,7 +4120,8 @@ where
         if !head.is_empty() {
             let bloom_says_no = !self
                 .shared
-                .atom_space.head_arity_bloom
+                .atom_space
+                .head_arity_bloom
                 .read()
                 .may_contain(head, arity as u8);
             if bloom_says_no && !self.shared.rule_index.read().has_wildcard_rules() {
@@ -3952,25 +4144,22 @@ where
                 &self.shared_mapping,
                 self.mork_cache_epoch,
             ) {
-                self.collect_rules_from_prefix(
-                    &space,
-                    &head_prefix,
-                    rule_prefix_len,
-                    &mut rules,
-                );
+                self.collect_rules_from_prefix(&space, &head_prefix, rule_prefix_len, &mut rules);
             }
         } else {
             // No head info — collect all rules under the rule prefix
-            self.collect_rules_from_prefix(
-                &space,
-                &rule_prefix,
-                rule_prefix_len,
-                &mut rules,
-            );
+            self.collect_rules_from_prefix(&space, &rule_prefix, rule_prefix_len, &mut rules);
         }
 
         // 2. Collect wildcard rules (LHS is atom/variable, not S-expression)
-        self.collect_wildcard_rules(&space, &rule_prefix, rule_prefix_len, head, arity, &mut rules);
+        self.collect_wildcard_rules(
+            &space,
+            &rule_prefix,
+            rule_prefix_len,
+            head,
+            arity,
+            &mut rules,
+        );
 
         rules
     }
@@ -4013,14 +4202,12 @@ where
             // De Bruijn encoding: NewVar is in LHS, VarRef in RHS references LHS vars.
             // Must deserialize the FULL rule (= lhs rhs) as a single unit to share
             // the variable context, then extract lhs and rhs from the result.
-            let full_rule = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                path,
-                space,
-                &self.factory,
-            ) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+            let full_rule =
+                match mork_bytes_to_generic_value::<V, F, Multiplicity>(path, space, &self.factory)
+                {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
             let (lhs, rhs) = match extract_rule_parts(&full_rule) {
                 Some(parts) => parts,
                 None => continue, // Not a valid rule — skip
@@ -4075,14 +4262,12 @@ where
             // De Bruijn encoding: deserialize full rule as single unit for shared var context.
             let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1).max(1);
 
-            let full_rule = match mork_bytes_to_generic_value::<V, F, Multiplicity>(
-                path,
-                space,
-                &self.factory,
-            ) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+            let full_rule =
+                match mork_bytes_to_generic_value::<V, F, Multiplicity>(path, space, &self.factory)
+                {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
             let (lhs, rhs) = match extract_rule_parts(&full_rule) {
                 Some(parts) => parts,
                 None => continue,
@@ -4091,8 +4276,7 @@ where
             // Filter by head+arity: variable LHS (no head) matches everything,
             // atom LHS with a specific head must match the query head+arity.
             let rule_head = lhs.get_head_symbol().unwrap_or("");
-            if !rule_head.is_empty()
-                && (rule_head != query_head || lhs.get_arity() != query_arity)
+            if !rule_head.is_empty() && (rule_head != query_head || lhs.get_arity() != query_arity)
             {
                 continue;
             }
@@ -4206,19 +4390,35 @@ impl MettaEnvironment {
         ]);
 
         let sm = self.shared_mapping.clone();
-        match with_mork_query_bytes(&rule_sexpr, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
-            let btm = self.shared.atom_space.btm.read();
-            let count = get_multiplicity(&btm, mork_bytes);
-            if count == 0 { 1 } else { count as usize }
-        }) {
+        match with_mork_query_bytes(
+            &rule_sexpr,
+            &sm,
+            self.mork_cache_epoch,
+            |mork_bytes, _ctx| {
+                let btm = self.shared.atom_space.btm.read();
+                let count = get_multiplicity(&btm, mork_bytes);
+                if count == 0 {
+                    1
+                } else {
+                    count as usize
+                }
+            },
+        ) {
             Ok(count) => count,
             Err(_) => {
                 // Wide expression (arity >= 64) — check wide_btm
                 let mut wide_key = Vec::new();
-                crate::backend::wide_mork::encoding::encode_wide_storage(&rule_sexpr, &mut wide_key);
+                crate::backend::wide_mork::encoding::encode_wide_storage(
+                    &rule_sexpr,
+                    &mut wide_key,
+                );
                 let wbtm = self.shared.atom_space.wide_btm.read();
                 let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
-                if count == 0 { 1 } else { count as usize }
+                if count == 0 {
+                    1
+                } else {
+                    count as usize
+                }
             }
         }
     }
@@ -4277,11 +4477,13 @@ impl MettaEnvironment {
                     if let Some(ref head) = head_owned {
                         self.shared.fuzzy_matcher.write().insert(head);
                         self.shared
-                            .atom_space.head_arity_bloom
+                            .atom_space
+                            .head_arity_bloom
                             .write()
                             .insert(head, arity as u8);
                         self.shared
-                            .atom_space.rule_head_bloom
+                            .atom_space
+                            .rule_head_bloom
                             .write()
                             .insert(head, arity as u8);
                         // Re-bump override bitset (matches add_rule's behavior).
@@ -4301,121 +4503,137 @@ impl MettaEnvironment {
                     ]);
 
                     let sm = self.shared_mapping.clone();
-                    let _ = with_mork_query_bytes(&rule_sexpr, &sm, self.mork_cache_epoch, |debruijn_bytes, ctx| {
-                        // Split De Bruijn bytes to get LHS range
-                        if debruijn_bytes.len() <= rule_prefix_len {
-                            return;
-                        }
-                        let lhs_start = rule_prefix_len;
-                        let lhs_byte_len = mork_expr_byte_len(&debruijn_bytes[lhs_start..]);
-                        // Pad with 0x00 for ExprZipper read-past-end safety
-                        let mut lhs_debruijn = Vec::with_capacity(lhs_byte_len + 1);
-                        lhs_debruijn.extend_from_slice(&debruijn_bytes[lhs_start..lhs_start + lhs_byte_len]);
-                        lhs_debruijn.push(0x00);
-
-                        // Save full rule bytes for alpha-equivalent removal via remove_rule_by_debruijn.
-                        let full_debruijn = debruijn_bytes.to_vec();
-
-                        let lhs_var_count = count_newvar_tags(&lhs_debruijn);
-                        let (var_names, wildcard_indices) =
-                            build_var_names_and_wildcards(&ctx.var_names, lhs_var_count);
-
-                        // Phase 8.1: Compute RHS type for branch pruning
-                        let rhs_type = {
-                            use crate::backend::eval::types::infer_type_generic;
-                            let inferred = infer_type_generic(&rhs, &self.factory, self);
-                            if inferred.as_atom() == Some("%Undefined%") { None } else { Some(inferred) }
-                        };
-
-                        // Phase 10.1: Register inferred return type (bulk path).
-                        // PLN-fix 2026-04: same freshened-var gate as the
-                        // single-rule path above.
-                        if let Some(ref rt) = rhs_type {
-                            if let Some(ref head) = head_owned {
-                                if !type_contains_freshened_var(rt) {
-                                    self.register_inferred_type(head, rt);
-                                }
+                    let _ = with_mork_query_bytes(
+                        &rule_sexpr,
+                        &sm,
+                        self.mork_cache_epoch,
+                        |debruijn_bytes, ctx| {
+                            // Split De Bruijn bytes to get LHS range
+                            if debruijn_bytes.len() <= rule_prefix_len {
+                                return;
                             }
-                        }
+                            let lhs_start = rule_prefix_len;
+                            let lhs_byte_len = mork_expr_byte_len(&debruijn_bytes[lhs_start..]);
+                            // Pad with 0x00 for ExprZipper read-past-end safety
+                            let mut lhs_debruijn = Vec::with_capacity(lhs_byte_len + 1);
+                            lhs_debruijn.extend_from_slice(
+                                &debruijn_bytes[lhs_start..lhs_start + lhs_byte_len],
+                            );
+                            lhs_debruijn.push(0x00);
 
-                        // Phase 10.4: Synthesize arrow type (bulk path).
-                        if let Some(ref head) = head_owned {
-                            let has_declared_arrow = self.get_types_generic(head).iter().any(|t| {
-                                t.as_sexpr()
-                                    .and_then(|items| items.first().and_then(|v| v.as_atom()))
-                                    == Some("->")
-                            });
-                            if !has_declared_arrow {
-                                use crate::backend::eval::types::infer_arrow_type_from_rule;
-                                if let Some(arrow) = infer_arrow_type_from_rule(
-                                    &lhs,
-                                    &rhs,
-                                    rhs_type.as_ref(),
-                                    &self.factory,
-                                    self,
-                                ) {
-                                    // PLN-fix 2026-04: same gate.
-                                    if !type_contains_freshened_var(&arrow) {
-                                        self.register_inferred_type(head, &arrow);
+                            // Save full rule bytes for alpha-equivalent removal via remove_rule_by_debruijn.
+                            let full_debruijn = debruijn_bytes.to_vec();
+
+                            let lhs_var_count = count_newvar_tags(&lhs_debruijn);
+                            let (var_names, wildcard_indices) =
+                                build_var_names_and_wildcards(&ctx.var_names, lhs_var_count);
+
+                            // Phase 8.1: Compute RHS type for branch pruning
+                            let rhs_type = {
+                                use crate::backend::eval::types::infer_type_generic;
+                                let inferred = infer_type_generic(&rhs, &self.factory, self);
+                                if inferred.as_atom() == Some("%Undefined%") {
+                                    None
+                                } else {
+                                    Some(inferred)
+                                }
+                            };
+
+                            // Phase 10.1: Register inferred return type (bulk path).
+                            // PLN-fix 2026-04: same freshened-var gate as the
+                            // single-rule path above.
+                            if let Some(ref rt) = rhs_type {
+                                if let Some(ref head) = head_owned {
+                                    if !type_contains_freshened_var(rt) {
+                                        self.register_inferred_type(head, rt);
                                     }
                                 }
                             }
-                        }
 
-                        let structural_matcher = StructuralMatcher::analyze(&lhs);
-                        let enhanced_matcher = if structural_matcher.is_none() {
-                            crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
-                        } else {
-                            None
-                        };
-                        let compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
-                            if crate::backend::bytecode::can_compile_with_env(&rhs) {
-                                crate::backend::bytecode::compile_bytecode_arc("rule_rhs", &rhs)
-                                    .ok()
-                                    .map(|chunk| chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+                            // Phase 10.4: Synthesize arrow type (bulk path).
+                            if let Some(ref head) = head_owned {
+                                let has_declared_arrow =
+                                    self.get_types_generic(head).iter().any(|t| {
+                                        t.as_sexpr().and_then(|items| {
+                                            items.first().and_then(|v| v.as_atom())
+                                        }) == Some("->")
+                                    });
+                                if !has_declared_arrow {
+                                    use crate::backend::eval::types::infer_arrow_type_from_rule;
+                                    if let Some(arrow) = infer_arrow_type_from_rule(
+                                        &lhs,
+                                        &rhs,
+                                        rhs_type.as_ref(),
+                                        &self.factory,
+                                        self,
+                                    ) {
+                                        // PLN-fix 2026-04: same gate.
+                                        if !type_contains_freshened_var(&arrow) {
+                                            self.register_inferred_type(head, &arrow);
+                                        }
+                                    }
+                                }
+                            }
+
+                            let structural_matcher = StructuralMatcher::analyze(&lhs);
+                            let enhanced_matcher = if structural_matcher.is_none() {
+                                crate::backend::eval::cesk::EnhancedMatcher::analyze(&lhs)
                             } else {
                                 None
                             };
-                        // Check if the inferred RHS type is monadic (IO, StateMonad, etc.)
-                        let has_monadic_effect = rhs_type.as_ref().map_or(false, |t| {
-                            t.is_monadic_type() || t.is_arrow_returning_monadic()
-                        });
-                        let requires_non_empty_first_arg = rule_requires_non_empty_first_arg(&lhs, &rhs);
-                        let entry = RuleEntry {
-                            lhs: lhs.clone(),
-                            rhs_has_variables: rhs.contains_variables(),
-                            rhs: rhs.clone(),
-                            lhs_debruijn,
-                            lhs_wide_debruijn: Vec::new(), // Bulk path uses MORK encoding
-                            full_debruijn,
-                            var_names,
-                            wildcard_indices,
-                            multiplicity,
-                            rhs_type,
-                            structural_matcher,
-                            enhanced_matcher,
-                            rule_index_in_group: 0,
-                            global_rule_index: 0, // Assigned by RuleIndex::add_rule
-                            compiled_rhs,
-                            has_monadic_effect,
-                            requires_non_empty_first_arg,
-                        };
+                            let compiled_rhs: Option<
+                                std::sync::Arc<dyn std::any::Any + Send + Sync>,
+                            > = if crate::backend::bytecode::can_compile_with_env(&rhs) {
+                                crate::backend::bytecode::compile_bytecode_arc("rule_rhs", &rhs)
+                                    .ok()
+                                    .map(|chunk| {
+                                        chunk as std::sync::Arc<dyn std::any::Any + Send + Sync>
+                                    })
+                            } else {
+                                None
+                            };
+                            // Check if the inferred RHS type is monadic (IO, StateMonad, etc.)
+                            let has_monadic_effect = rhs_type.as_ref().map_or(false, |t| {
+                                t.is_monadic_type() || t.is_arrow_returning_monadic()
+                            });
+                            let requires_non_empty_first_arg =
+                                rule_requires_non_empty_first_arg(&lhs, &rhs);
+                            let entry = RuleEntry {
+                                lhs: lhs.clone(),
+                                rhs_has_variables: rhs.contains_variables(),
+                                rhs: rhs.clone(),
+                                lhs_debruijn,
+                                lhs_wide_debruijn: Vec::new(), // Bulk path uses MORK encoding
+                                full_debruijn,
+                                var_names,
+                                wildcard_indices,
+                                multiplicity,
+                                rhs_type,
+                                structural_matcher,
+                                enhanced_matcher,
+                                rule_index_in_group: 0,
+                                global_rule_index: 0, // Assigned by RuleIndex::add_rule
+                                compiled_rhs,
+                                has_monadic_effect,
+                                requires_non_empty_first_arg,
+                            };
 
-                        // Phase 4a: Pre-seed tiered cache for bulk path
-                        crate::backend::bytecode::tiered_cache::global_tiered_cache()
-                            .preseed_for_immediate_compile(rhs.hash_value());
+                            // Phase 4a: Pre-seed tiered cache for bulk path
+                            crate::backend::bytecode::tiered_cache::global_tiered_cache()
+                                .preseed_for_immediate_compile(rhs.hash_value());
 
-                        // Set correct multiplicity (don't let add_rule deduplicate)
-                        let alloc = crate::backend::models::gc_allocator::global_allocator();
-                        let first_arg_head_interned: Option<&'static str> =
-                            get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
-                        self.shared.rule_index.write().add_rule(
-                            head_owned.as_deref(),
-                            arity,
-                            first_arg_head_interned,
-                            entry,
-                        );
-                    });
+                            // Set correct multiplicity (don't let add_rule deduplicate)
+                            let alloc = crate::backend::models::gc_allocator::global_allocator();
+                            let first_arg_head_interned: Option<&'static str> =
+                                get_first_arg_head(&lhs).map(|s| alloc.alloc_str(s));
+                            self.shared.rule_index.write().add_rule(
+                                head_owned.as_deref(),
+                                arity,
+                                first_arg_head_interned,
+                                entry,
+                            );
+                        },
+                    );
                 }
             }
         }
@@ -4438,15 +4656,23 @@ impl MettaEnvironment {
         self.make_owned();
 
         let sm = self.shared_mapping.clone();
-        match with_mork_query_bytes(rule_sexpr, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
-            let mut btm = self.shared.atom_space.btm.write();
-            let new_count = increment_multiplicity(&mut btm, mork_bytes);
-            drop(btm);
+        match with_mork_query_bytes(
+            rule_sexpr,
+            &sm,
+            self.mork_cache_epoch,
+            |mork_bytes, _ctx| {
+                let mut btm = self.shared.atom_space.btm.write();
+                let new_count = increment_multiplicity(&mut btm, mork_bytes);
+                drop(btm);
 
-            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
-            self.modified.store(true, Ordering::Release);
-            new_count as usize
-        }) {
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_add(1, Ordering::Relaxed);
+                self.modified.store(true, Ordering::Release);
+                new_count as usize
+            },
+        ) {
             Ok(count) => {
                 // Sync RuleIndex: increment the matching entry's multiplicity
                 if let Some((lhs, rhs)) = extract_rule_parts(rule_sexpr) {
@@ -4464,7 +4690,11 @@ impl MettaEnvironment {
                         }
                     }
                     if !found {
-                        if let Some(entry) = idx.wildcard.iter_mut().find(|e| e.lhs == lhs && e.rhs == rhs) {
+                        if let Some(entry) = idx
+                            .wildcard
+                            .iter_mut()
+                            .find(|e| e.lhs == lhs && e.rhs == rhs)
+                        {
                             entry.multiplicity += 1;
                         }
                     }
@@ -4493,25 +4723,33 @@ impl MettaEnvironment {
         self.make_owned();
 
         let sm = self.shared_mapping.clone();
-        match with_mork_query_bytes(rule_sexpr, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
-            let old_count = {
-                let btm = self.shared.atom_space.btm.read();
-                get_multiplicity(&btm, mork_bytes)
-            };
+        match with_mork_query_bytes(
+            rule_sexpr,
+            &sm,
+            self.mork_cache_epoch,
+            |mork_bytes, _ctx| {
+                let old_count = {
+                    let btm = self.shared.atom_space.btm.read();
+                    get_multiplicity(&btm, mork_bytes)
+                };
 
-            if old_count == 0 {
+                if old_count == 0 {
+                    self.modified.store(true, Ordering::Release);
+                    return 0;
+                }
+
+                let mut btm = self.shared.atom_space.btm.write();
+                let new_count = decrement_multiplicity(&mut btm, mork_bytes);
+                drop(btm);
+
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_sub(1, Ordering::Relaxed);
                 self.modified.store(true, Ordering::Release);
-                return 0;
-            }
-
-            let mut btm = self.shared.atom_space.btm.write();
-            let new_count = decrement_multiplicity(&mut btm, mork_bytes);
-            drop(btm);
-
-            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-            self.modified.store(true, Ordering::Release);
-            new_count as usize
-        }) {
+                new_count as usize
+            },
+        ) {
             Ok(count) => {
                 // Sync RuleIndex: decrement (or remove if multiplicity reaches 0)
                 if let Some((lhs, rhs)) = extract_rule_parts(rule_sexpr) {
@@ -4546,15 +4784,23 @@ impl MettaEnvironment {
     pub fn increment_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned();
 
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
-            let mut btm = self.shared.atom_space.btm.write();
-            let new_count = increment_multiplicity(&mut btm, mork_bytes);
-            drop(btm);
+        match with_mork_bytes(
+            value,
+            &self.shared_mapping,
+            self.mork_cache_epoch,
+            |mork_bytes| {
+                let mut btm = self.shared.atom_space.btm.write();
+                let new_count = increment_multiplicity(&mut btm, mork_bytes);
+                drop(btm);
 
-            self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
-            self.modified.store(true, Ordering::Release);
-            new_count as usize
-        }) {
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_add(1, Ordering::Relaxed);
+                self.modified.store(true, Ordering::Release);
+                new_count as usize
+            },
+        ) {
             Ok(count) => count,
             Err(_) => {
                 // Wide expression (arity >= 64) — use wide_btm
@@ -4565,7 +4811,10 @@ impl MettaEnvironment {
                 let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
                 drop(wbtm);
 
-                self.shared.atom_space.total_atoms.fetch_add(1, Ordering::Relaxed);
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_add(1, Ordering::Relaxed);
                 self.modified.store(true, Ordering::Release);
                 count as usize
             }
@@ -4576,24 +4825,32 @@ impl MettaEnvironment {
     pub fn decrement_atom_multiplicity(&mut self, value: &MettaValue) -> usize {
         self.make_owned();
 
-        match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
-            let old_count = {
-                let btm = self.shared.atom_space.btm.read();
-                get_multiplicity(&btm, mork_bytes)
-            };
+        match with_mork_bytes(
+            value,
+            &self.shared_mapping,
+            self.mork_cache_epoch,
+            |mork_bytes| {
+                let old_count = {
+                    let btm = self.shared.atom_space.btm.read();
+                    get_multiplicity(&btm, mork_bytes)
+                };
 
-            if old_count == 0 {
-                return 0;
-            }
+                if old_count == 0 {
+                    return 0;
+                }
 
-            let mut btm = self.shared.atom_space.btm.write();
-            let new_count = decrement_multiplicity(&mut btm, mork_bytes);
-            drop(btm);
+                let mut btm = self.shared.atom_space.btm.write();
+                let new_count = decrement_multiplicity(&mut btm, mork_bytes);
+                drop(btm);
 
-            self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
-            self.modified.store(true, Ordering::Release);
-            new_count as usize
-        }) {
+                self.shared
+                    .atom_space
+                    .total_atoms
+                    .fetch_sub(1, Ordering::Relaxed);
+                self.modified.store(true, Ordering::Release);
+                new_count as usize
+            },
+        ) {
             Ok(count) => count,
             Err(_) => {
                 // Wide expression (arity >= 64) — use wide_btm
@@ -4604,7 +4861,10 @@ impl MettaEnvironment {
                 if count > 0 {
                     super::multiplicity::remove_atom(&mut wbtm, &wide_key);
                     drop(wbtm);
-                    self.shared.atom_space.total_atoms.fetch_sub(1, Ordering::Relaxed);
+                    self.shared
+                        .atom_space
+                        .total_atoms
+                        .fetch_sub(1, Ordering::Relaxed);
                     self.modified.store(true, Ordering::Release);
                 }
                 count.saturating_sub(1) as usize
@@ -4620,7 +4880,11 @@ impl MettaEnvironment {
             match with_mork_query_bytes(value, &sm, self.mork_cache_epoch, |mork_bytes, _ctx| {
                 let btm = self.shared.atom_space.btm.read();
                 let count = get_multiplicity(&btm, mork_bytes);
-                if count == 0 { 1 } else { count as usize }
+                if count == 0 {
+                    1
+                } else {
+                    count as usize
+                }
             }) {
                 Ok(count) => count,
                 Err(_) => {
@@ -4629,15 +4893,28 @@ impl MettaEnvironment {
                     crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
                     let wbtm = self.shared.atom_space.wide_btm.read();
                     let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
-                    if count == 0 { 1 } else { count as usize }
+                    if count == 0 {
+                        1
+                    } else {
+                        count as usize
+                    }
                 }
             }
         } else {
-            match with_mork_bytes(value, &self.shared_mapping, self.mork_cache_epoch, |mork_bytes| {
-                let btm = self.shared.atom_space.btm.read();
-                let count = get_multiplicity(&btm, mork_bytes);
-                if count == 0 { 1 } else { count as usize }
-            }) {
+            match with_mork_bytes(
+                value,
+                &self.shared_mapping,
+                self.mork_cache_epoch,
+                |mork_bytes| {
+                    let btm = self.shared.atom_space.btm.read();
+                    let count = get_multiplicity(&btm, mork_bytes);
+                    if count == 0 {
+                        1
+                    } else {
+                        count as usize
+                    }
+                },
+            ) {
                 Ok(count) => count,
                 Err(_) => {
                     // Wide expression (arity >= 64) — check wide_btm
@@ -4645,7 +4922,11 @@ impl MettaEnvironment {
                     crate::backend::wide_mork::encoding::encode_wide_storage(value, &mut wide_key);
                     let wbtm = self.shared.atom_space.wide_btm.read();
                     let count = super::multiplicity::get_multiplicity(&wbtm, &wide_key);
-                    if count == 0 { 1 } else { count as usize }
+                    if count == 0 {
+                        1
+                    } else {
+                        count as usize
+                    }
                 }
             }
         }
@@ -4655,7 +4936,11 @@ impl MettaEnvironment {
     pub fn get_multiplicity_from_mork_bytes(&self, mork_bytes: &[u8]) -> usize {
         let btm = self.shared.atom_space.btm.read();
         let count = get_multiplicity(&btm, mork_bytes);
-        if count == 0 { 1 } else { count as usize }
+        if count == 0 {
+            1
+        } else {
+            count as usize
+        }
     }
 
     /// Get the count of distinct wide atoms (arity >= 64) stored in wide_btm.

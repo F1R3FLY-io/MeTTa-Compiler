@@ -428,7 +428,10 @@ mod tests {
         let stored = f.sexpr(vec![f.atom("foo"), f.long(42)]);
         let result = do_match(&pattern, &stored);
         assert!(result.is_some(), "Identical ground atoms should match");
-        assert!(result.expect("should match").is_empty(), "No bindings for ground match");
+        assert!(
+            result.expect("should match").is_empty(),
+            "No bindings for ground match"
+        );
     }
 
     #[test]
@@ -436,7 +439,10 @@ mod tests {
         let f = factory();
         let pattern = f.sexpr(vec![f.atom("foo"), f.long(42)]);
         let stored = f.sexpr(vec![f.atom("foo"), f.long(99)]);
-        assert!(do_match(&pattern, &stored).is_none(), "Different values should not match");
+        assert!(
+            do_match(&pattern, &stored).is_none(),
+            "Different values should not match"
+        );
     }
 
     #[test]
@@ -480,7 +486,11 @@ mod tests {
         let bound = result.get("$a").expect("$a should be bound");
         // Should be bound to the freshened variable name
         let bound_name = bound.as_atom().expect("should be an atom");
-        assert!(bound_name.starts_with("$__fr_"), "Should be freshened: {}", bound_name);
+        assert!(
+            bound_name.starts_with("$__fr_"),
+            "Should be freshened: {}",
+            bound_name
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -499,7 +509,11 @@ mod tests {
         assert_eq!(result.len(), 1);
         let bound = result.get("$a").expect("$a should be bound");
         let bound_name = bound.as_atom().expect("should be atom");
-        assert!(bound_name.starts_with("$__fr_"), "Should be freshened: {}", bound_name);
+        assert!(
+            bound_name.starts_with("$__fr_"),
+            "Should be freshened: {}",
+            bound_name
+        );
     }
 
     #[test]
@@ -517,7 +531,10 @@ mod tests {
         let stored = f.sexpr(vec![f.atom("pair"), f.atom("$x"), f.atom("$y")]);
         let result = do_match(&pattern, &stored);
         // This should succeed with chain resolution: $a → $__fr_N_y (resolved through chain)
-        assert!(result.is_some(), "(pair $a $a) should match (pair $x $y) via equating");
+        assert!(
+            result.is_some(),
+            "(pair $a $a) should match (pair $x $y) via equating"
+        );
     }
 
     #[test]
@@ -534,7 +551,10 @@ mod tests {
         let bound_a = result.get("$a").expect("$a should be bound");
         let bound_b = result.get("$b").expect("$b should be bound");
         // Both should be bound to the same freshened variable
-        assert_eq!(bound_a, bound_b, "$a and $b should be equal (same stored var)");
+        assert_eq!(
+            bound_a, bound_b,
+            "$a and $b should be equal (same stored var)"
+        );
     }
 
     #[test]
@@ -549,7 +569,11 @@ mod tests {
         let stored = f.sexpr(vec![f.atom("chain"), f.atom("$x"), f.atom("$x")]);
         let result = do_match(&pattern, &stored).expect("should match");
         let bound_a = result.get("$a").expect("$a should be bound");
-        assert_eq!(bound_a.as_long(), Some(42), "$a should resolve to 42 via chain");
+        assert_eq!(
+            bound_a.as_long(),
+            Some(42),
+            "$a should resolve to 42 via chain"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -582,7 +606,10 @@ mod tests {
         let f = factory();
         let pattern = f.sexpr(vec![f.atom("foo"), f.atom("$x")]);
         let stored = f.sexpr(vec![f.atom("foo"), f.long(1), f.long(2)]);
-        assert!(do_match(&pattern, &stored).is_none(), "Arity mismatch should fail");
+        assert!(
+            do_match(&pattern, &stored).is_none(),
+            "Arity mismatch should fail"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -604,7 +631,10 @@ mod tests {
         let result = do_match(&pattern, &stored).expect("should match");
         assert_eq!(result.len(), 1);
         let bound = result.get("$a").expect("$a should be bound");
-        assert!(bound.as_atom().expect("should be atom").starts_with("$__fr_"));
+        assert!(bound
+            .as_atom()
+            .expect("should be atom")
+            .starts_with("$__fr_"));
     }
 
     // -----------------------------------------------------------------------

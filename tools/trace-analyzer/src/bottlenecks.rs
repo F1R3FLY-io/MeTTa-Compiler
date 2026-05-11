@@ -39,8 +39,11 @@ pub fn run(
     let reader = TraceReader::open(file)?;
 
     if reader.format_version < 2 {
-        return Err("The 'bottlenecks' subcommand requires format v2 trace files with duration data. \
-                    Re-record the trace with the latest MeTTaTron build.".to_string());
+        return Err(
+            "The 'bottlenecks' subcommand requires format v2 trace files with duration data. \
+                    Re-record the trace with the latest MeTTaTron build."
+                .to_string(),
+        );
     }
 
     let conc_threshold = concurrency_threshold.unwrap_or(2);
@@ -81,7 +84,8 @@ pub fn run(
 
     // Sort boundaries
     boundaries.sort_by(|a, b| {
-        a.time_ns.cmp(&b.time_ns)
+        a.time_ns
+            .cmp(&b.time_ns)
             .then_with(|| a.is_start.cmp(&b.is_start))
     });
 
@@ -151,7 +155,10 @@ pub fn run(
     println!("=== Serialization Bottleneck Analysis ===");
     println!();
     println!("Concurrency threshold: < {} threads", conc_threshold);
-    println!("Duration threshold: >= {:.1}ms", dur_threshold_ns as f64 / 1e6);
+    println!(
+        "Duration threshold: >= {:.1}ms",
+        dur_threshold_ns as f64 / 1e6
+    );
     println!("Total bottlenecks found: {}", bottlenecks.len());
     println!();
 
@@ -161,22 +168,32 @@ pub fn run(
     }
 
     let total_bottleneck_ns: u64 = bottlenecks.iter().map(|b| b.end_ns - b.start_ns).sum();
-    println!("Total bottleneck time: {:.3}ms ({:.1}% of wall time)",
-             total_bottleneck_ns as f64 / 1e6,
-             if total_wall_ns > 0 { total_bottleneck_ns as f64 / total_wall_ns as f64 * 100.0 } else { 0.0 });
+    println!(
+        "Total bottleneck time: {:.3}ms ({:.1}% of wall time)",
+        total_bottleneck_ns as f64 / 1e6,
+        if total_wall_ns > 0 {
+            total_bottleneck_ns as f64 / total_wall_ns as f64 * 100.0
+        } else {
+            0.0
+        }
+    );
     println!();
 
     println!("--- Top {} Bottlenecks by Duration ---", top_n);
-    println!("  {:<12} {:<12} {:<12} {:<6} {}",
-             "Start (ms)", "End (ms)", "Duration", "MaxC", "Cause");
+    println!(
+        "  {:<12} {:<12} {:<12} {:<6} {}",
+        "Start (ms)", "End (ms)", "Duration", "MaxC", "Cause"
+    );
     for b in bottlenecks.iter().take(top_n) {
         let dur = b.end_ns - b.start_ns;
-        println!("  {:>10.3}  {:>10.3}  {:>8.3}ms  {:>4}  {}",
-                 b.start_ns as f64 / 1e6,
-                 b.end_ns as f64 / 1e6,
-                 dur as f64 / 1e6,
-                 b.max_concurrency,
-                 b.cause);
+        println!(
+            "  {:>10.3}  {:>10.3}  {:>8.3}ms  {:>4}  {}",
+            b.start_ns as f64 / 1e6,
+            b.end_ns as f64 / 1e6,
+            dur as f64 / 1e6,
+            b.max_concurrency,
+            b.cause
+        );
     }
 
     // Aggregate causes
@@ -194,8 +211,12 @@ pub fn run(
     }
     cause_totals.sort_by(|a, b| b.1.cmp(&a.1));
     for (cause, total_ns, count) in &cause_totals {
-        println!("  {:<30} {:>6} occurrences  {:>10.3}ms",
-                 cause, count, *total_ns as f64 / 1e6);
+        println!(
+            "  {:<30} {:>6} occurrences  {:>10.3}ms",
+            cause,
+            count,
+            *total_ns as f64 / 1e6
+        );
     }
 
     Ok(())
@@ -206,7 +227,9 @@ fn classify_event_kind(kind: &TraceEventKind) -> String {
         TraceEventKind::GcSafepoint { .. } => "gc-pause".to_string(),
         TraceEventKind::EvalStart | TraceEventKind::EvalEnd { .. } => "eval".to_string(),
         TraceEventKind::GroundedOp { .. } => "grounded-op".to_string(),
-        TraceEventKind::BranchStart { .. } | TraceEventKind::BranchEnd { .. } => "branching".to_string(),
+        TraceEventKind::BranchStart { .. } | TraceEventKind::BranchEnd { .. } => {
+            "branching".to_string()
+        }
         TraceEventKind::WorkPoolTaskCompleted { .. } => "workpool-task".to_string(),
         _ => "other".to_string(),
     }
@@ -214,7 +237,8 @@ fn classify_event_kind(kind: &TraceEventKind) -> String {
 
 fn classify_bottleneck(events: &[TimedEvent], start: u64, end: u64) -> String {
     // Find events that overlap with the bottleneck interval
-    let mut cause_durations: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    let mut cause_durations: std::collections::HashMap<&str, u64> =
+        std::collections::HashMap::new();
 
     for ev in events {
         // Check for overlap: event overlaps [start, end] if ev.start < end && ev.end > start
@@ -231,7 +255,8 @@ fn classify_bottleneck(events: &[TimedEvent], start: u64, end: u64) -> String {
     }
 
     // Return the cause with the longest overlap
-    cause_durations.into_iter()
+    cause_durations
+        .into_iter()
         .max_by_key(|&(_, d)| d)
         .map(|(cause, _)| cause.to_string())
         .unwrap_or_else(|| "unknown".to_string())

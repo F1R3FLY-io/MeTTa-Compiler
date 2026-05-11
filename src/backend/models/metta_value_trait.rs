@@ -97,7 +97,6 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// Check if this is a Unit variant
     fn is_unit(&self) -> bool;
 
-
     /// Check if this is a Memo variant
     fn is_memo(&self) -> bool;
 
@@ -424,10 +423,7 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
         };
 
         // Collector for $/&/' variable names (deduped).
-        fn push_var<V: MettaValueTrait>(
-            v: &V,
-            out: &mut smallvec::SmallVec<[&'static str; 4]>,
-        ) {
+        fn push_var<V: MettaValueTrait>(v: &V, out: &mut smallvec::SmallVec<[&'static str; 4]>) {
             if let Some(name) = v.as_atom() {
                 if name != "_"
                     && name != "&"
@@ -435,9 +431,7 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
                     && name != "&kb"
                     && name != "&stack"
                     && name.len() > 1
-                    && (name.starts_with('$')
-                        || name.starts_with('&')
-                        || name.starts_with('\''))
+                    && (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
                 {
                     if !out.contains(&name) {
                         out.push(name);
@@ -1001,8 +995,8 @@ impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
 
 #[cfg(test)]
 mod tests {
-    use crate::backend::models::{GcFactory, MettaValueFactory};
     use super::MettaValueTrait;
+    use crate::backend::models::{GcFactory, MettaValueFactory};
 
     #[test]
     fn test_structurally_equivalent_atoms() {

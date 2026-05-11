@@ -51,10 +51,20 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
                 items[idx as usize].clone()
             }
         }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
-        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
                 ctx_ref.bailout = true;
@@ -113,10 +123,20 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
                 None => JitValue::unit().to_bits(),
             }
         }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
-        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
                 ctx_ref.bailout = true;
@@ -173,10 +193,20 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
                 None => JitValue::unit().to_bits(),
             }
         }
-        ValueView::Float(_) | ValueView::Bool(_) | ValueView::Long(_) | ValueView::Unit
-        | ValueView::Empty | ValueView::Atom(_) | ValueView::String(_) | ValueView::Error(_, _)
-        | ValueView::Type(_) | ValueView::Conjunction(_) | ValueView::Space(_)
-        | ValueView::State(_) | ValueView::Memo(_) | ValueView::Quoted(_) => {
+        ValueView::Float(_)
+        | ValueView::Bool(_)
+        | ValueView::Long(_)
+        | ValueView::Unit
+        | ValueView::Empty
+        | ValueView::Atom(_)
+        | ValueView::String(_)
+        | ValueView::Error(_, _)
+        | ValueView::Type(_)
+        | ValueView::Conjunction(_)
+        | ValueView::Space(_)
+        | ValueView::State(_)
+        | ValueView::Memo(_)
+        | ValueView::Quoted(_) => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
                 ctx_ref.bailout = true;

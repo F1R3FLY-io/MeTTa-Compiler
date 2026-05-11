@@ -142,8 +142,6 @@ impl<T> SpecialFormsInit for T {
     }
 
     fn declare_special_forms_funcs<M: Module>(module: &mut M) -> JitResult<SpecialFormsFuncIds> {
-
-
         // eval_if: fn(ctx, condition, then_val, else_val, ip) -> result
         let mut eval_if_sig = module.make_signature();
         eval_if_sig.params.push(AbiParam::new(types::I64)); // ctx

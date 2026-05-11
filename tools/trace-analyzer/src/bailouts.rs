@@ -14,13 +14,24 @@ pub fn run(file: &str) -> Result<(), String> {
 
     for event in reader.events() {
         match &event.kind {
-            TraceEventKind::JitBailout { bailout_ip, reason, fallback_tier } => {
-                jit_bailouts.push((event.seq, *bailout_ip, reason.clone(), fallback_tier.clone()));
+            TraceEventKind::JitBailout {
+                bailout_ip,
+                reason,
+                fallback_tier,
+            } => {
+                jit_bailouts.push((
+                    event.seq,
+                    *bailout_ip,
+                    reason.clone(),
+                    fallback_tier.clone(),
+                ));
                 *bailout_reasons.entry(reason.clone()).or_default() += 1;
             }
             TraceEventKind::BytecodeHalt { ip, reason } => {
                 bytecode_halts.push((event.seq, *ip, reason.clone()));
-                *bailout_reasons.entry(format!("BytecodeHalt: {}", reason)).or_default() += 1;
+                *bailout_reasons
+                    .entry(format!("BytecodeHalt: {}", reason))
+                    .or_default() += 1;
             }
             _ => {}
         }
@@ -47,7 +58,10 @@ pub fn run(file: &str) -> Result<(), String> {
         println!();
         println!("--- JIT Bailouts ({}) ---", jit_bailouts.len());
         for (seq, ip, reason, fallback) in jit_bailouts.iter().take(50) {
-            println!("  [#{}] ip={}, reason: {}, fallback: {}", seq, ip, reason, fallback);
+            println!(
+                "  [#{}] ip={}, reason: {}, fallback: {}",
+                seq, ip, reason, fallback
+            );
         }
         if jit_bailouts.len() > 50 {
             println!("  ... and {} more", jit_bailouts.len() - 50);
@@ -67,6 +81,10 @@ pub fn run(file: &str) -> Result<(), String> {
     }
 
     println!();
-    println!("Total: {} JIT bailouts, {} bytecode halts", jit_bailouts.len(), bytecode_halts.len());
+    println!(
+        "Total: {} JIT bailouts, {} bytecode halts",
+        jit_bailouts.len(),
+        bytecode_halts.len()
+    );
     Ok(())
 }

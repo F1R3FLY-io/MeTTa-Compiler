@@ -84,7 +84,8 @@ impl ClassifiedBranch {
 /// Check if a head symbol is known to be pure (no side effects).
 #[inline]
 fn is_known_pure_head(name: &str) -> bool {
-    matches!(name,
+    matches!(
+        name,
         // Arithmetic
         "+" | "-" | "*" | "/" | "%" | "abs" | "pow"
         // Comparison
@@ -126,7 +127,8 @@ fn is_known_pure_head(name: &str) -> bool {
 /// Check if a head symbol is known to be impure (side effects).
 #[inline]
 fn is_known_impure_head(name: &str) -> bool {
-    matches!(name,
+    matches!(
+        name,
         // Space mutation
         "add-atom" | "remove-atom"
         // State mutation
@@ -164,8 +166,11 @@ pub fn analyze_branch_purity<V: MettaValueTrait>(expr: &V) -> BranchPurity {
     };
 
     // Ground values are always pure
-    if expr.is_ground_type() || expr.is_bool() || expr.is_long()
-        || expr.is_float() || expr.is_string()
+    if expr.is_ground_type()
+        || expr.is_bool()
+        || expr.is_long()
+        || expr.is_float()
+        || expr.is_string()
     {
         return BranchPurity::Pure;
     }
@@ -258,7 +263,7 @@ pub fn classify_branches<V: MettaValueTrait>(branches: &[V]) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{MettaValue, MettaValueFactory, global_factory};
+    use crate::backend::models::{global_factory, MettaValue, MettaValueFactory};
 
     fn f() -> crate::backend::models::GcFactory {
         global_factory()
@@ -303,11 +308,7 @@ mod tests {
         let expr = f().sexpr(vec![
             f().atom("if"),
             f().bool(true),
-            f().sexpr(vec![
-                f().atom("add-atom"),
-                f().atom("&self"),
-                f().atom("x"),
-            ]),
+            f().sexpr(vec![f().atom("add-atom"), f().atom("&self"), f().atom("x")]),
             f().long(0),
         ]);
         assert_eq!(analyze_branch_purity(&expr), BranchPurity::Impure);
@@ -337,9 +338,9 @@ mod tests {
     #[test]
     fn test_classify_branches() {
         let branches = vec![
-            f().sexpr(vec![f().atom("+"), f().long(1), f().long(2)]),     // Pure
+            f().sexpr(vec![f().atom("+"), f().long(1), f().long(2)]), // Pure
             f().sexpr(vec![f().atom("add-atom"), f().atom("&self"), f().atom("x")]), // Impure
-            f().sexpr(vec![f().atom("*"), f().long(3), f().long(4)]),     // Pure
+            f().sexpr(vec![f().atom("*"), f().long(3), f().long(4)]), // Pure
         ];
         let (pure, impure) = classify_branches(&branches);
         assert_eq!(pure, 2);

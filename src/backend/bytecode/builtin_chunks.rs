@@ -31,7 +31,12 @@ pub fn get_builtin_chunk(head: &str, arity: u8) -> Option<Arc<BytecodeChunk>> {
     let registry = BUILTIN_REGISTRY.get_or_init(build_registry);
     // Map runtime string to static string for HashMap lookup
     let static_head = intern_head(head)?;
-    registry.get(&BuiltinKey { head: static_head, arity }).cloned()
+    registry
+        .get(&BuiltinKey {
+            head: static_head,
+            arity,
+        })
+        .cloned()
 }
 
 /// Map runtime strings to static strings for HashMap lookup.
@@ -97,41 +102,173 @@ fn build_unary_op(name: &str, op: Opcode) -> Arc<BytecodeChunk> {
 }
 
 fn register_arithmetic(map: &mut HashMap<BuiltinKey, Arc<BytecodeChunk>>) {
-    map.insert(BuiltinKey { head: "+", arity: 2 }, build_binary_op("builtin_add", Opcode::Add));
-    map.insert(BuiltinKey { head: "-", arity: 2 }, build_binary_op("builtin_sub", Opcode::Sub));
-    map.insert(BuiltinKey { head: "*", arity: 2 }, build_binary_op("builtin_mul", Opcode::Mul));
-    map.insert(BuiltinKey { head: "/", arity: 2 }, build_binary_op("builtin_div", Opcode::Div));
-    map.insert(BuiltinKey { head: "%", arity: 2 }, build_binary_op("builtin_mod", Opcode::Mod));
+    map.insert(
+        BuiltinKey {
+            head: "+",
+            arity: 2,
+        },
+        build_binary_op("builtin_add", Opcode::Add),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "-",
+            arity: 2,
+        },
+        build_binary_op("builtin_sub", Opcode::Sub),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "*",
+            arity: 2,
+        },
+        build_binary_op("builtin_mul", Opcode::Mul),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "/",
+            arity: 2,
+        },
+        build_binary_op("builtin_div", Opcode::Div),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "%",
+            arity: 2,
+        },
+        build_binary_op("builtin_mod", Opcode::Mod),
+    );
 }
 
 fn register_comparison(map: &mut HashMap<BuiltinKey, Arc<BytecodeChunk>>) {
-    map.insert(BuiltinKey { head: "<", arity: 2 }, build_binary_op("builtin_lt", Opcode::Lt));
-    map.insert(BuiltinKey { head: ">", arity: 2 }, build_binary_op("builtin_gt", Opcode::Gt));
-    map.insert(BuiltinKey { head: "<=", arity: 2 }, build_binary_op("builtin_le", Opcode::Le));
-    map.insert(BuiltinKey { head: ">=", arity: 2 }, build_binary_op("builtin_ge", Opcode::Ge));
-    map.insert(BuiltinKey { head: "==", arity: 2 }, build_binary_op("builtin_eq", Opcode::Eq));
+    map.insert(
+        BuiltinKey {
+            head: "<",
+            arity: 2,
+        },
+        build_binary_op("builtin_lt", Opcode::Lt),
+    );
+    map.insert(
+        BuiltinKey {
+            head: ">",
+            arity: 2,
+        },
+        build_binary_op("builtin_gt", Opcode::Gt),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "<=",
+            arity: 2,
+        },
+        build_binary_op("builtin_le", Opcode::Le),
+    );
+    map.insert(
+        BuiltinKey {
+            head: ">=",
+            arity: 2,
+        },
+        build_binary_op("builtin_ge", Opcode::Ge),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "==",
+            arity: 2,
+        },
+        build_binary_op("builtin_eq", Opcode::Eq),
+    );
 }
 
 fn register_boolean(map: &mut HashMap<BuiltinKey, Arc<BytecodeChunk>>) {
-    map.insert(BuiltinKey { head: "and", arity: 2 }, build_binary_op("builtin_and", Opcode::And));
-    map.insert(BuiltinKey { head: "or", arity: 2 }, build_binary_op("builtin_or", Opcode::Or));
-    map.insert(BuiltinKey { head: "not", arity: 1 }, build_unary_op("builtin_not", Opcode::Not));
-    map.insert(BuiltinKey { head: "xor", arity: 2 }, build_binary_op("builtin_xor", Opcode::Xor));
+    map.insert(
+        BuiltinKey {
+            head: "and",
+            arity: 2,
+        },
+        build_binary_op("builtin_and", Opcode::And),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "or",
+            arity: 2,
+        },
+        build_binary_op("builtin_or", Opcode::Or),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "not",
+            arity: 1,
+        },
+        build_unary_op("builtin_not", Opcode::Not),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "xor",
+            arity: 2,
+        },
+        build_binary_op("builtin_xor", Opcode::Xor),
+    );
 }
 
 fn register_list_ops(map: &mut HashMap<BuiltinKey, Arc<BytecodeChunk>>) {
-    map.insert(BuiltinKey { head: "car-atom", arity: 1 }, build_unary_op("builtin_car", Opcode::GetHead));
-    map.insert(BuiltinKey { head: "cdr-atom", arity: 1 }, build_unary_op("builtin_cdr", Opcode::GetTail));
-    map.insert(BuiltinKey { head: "cons-atom", arity: 2 }, build_binary_op("builtin_cons", Opcode::ConsAtom));
-    map.insert(BuiltinKey { head: "size-atom", arity: 1 }, build_unary_op("builtin_size", Opcode::GetArity));
-    map.insert(BuiltinKey { head: "decons-atom", arity: 1 }, build_unary_op("builtin_decons", Opcode::DeconsAtom));
+    map.insert(
+        BuiltinKey {
+            head: "car-atom",
+            arity: 1,
+        },
+        build_unary_op("builtin_car", Opcode::GetHead),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "cdr-atom",
+            arity: 1,
+        },
+        build_unary_op("builtin_cdr", Opcode::GetTail),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "cons-atom",
+            arity: 2,
+        },
+        build_binary_op("builtin_cons", Opcode::ConsAtom),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "size-atom",
+            arity: 1,
+        },
+        build_unary_op("builtin_size", Opcode::GetArity),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "decons-atom",
+            arity: 1,
+        },
+        build_unary_op("builtin_decons", Opcode::DeconsAtom),
+    );
 }
 
 fn register_type_ops(map: &mut HashMap<BuiltinKey, Arc<BytecodeChunk>>) {
-    map.insert(BuiltinKey { head: "get-type", arity: 1 }, build_unary_op("builtin_get_type", Opcode::GetType));
-    map.insert(BuiltinKey { head: "get-metatype", arity: 1 }, build_unary_op("builtin_get_metatype", Opcode::GetMetaType));
+    map.insert(
+        BuiltinKey {
+            head: "get-type",
+            arity: 1,
+        },
+        build_unary_op("builtin_get_type", Opcode::GetType),
+    );
+    map.insert(
+        BuiltinKey {
+            head: "get-metatype",
+            arity: 1,
+        },
+        build_unary_op("builtin_get_metatype", Opcode::GetMetaType),
+    );
 }
 
 fn register_string_ops(map: &mut HashMap<BuiltinKey, Arc<BytecodeChunk>>) {
-    map.insert(BuiltinKey { head: "repr", arity: 1 }, build_unary_op("builtin_repr", Opcode::Repr));
+    map.insert(
+        BuiltinKey {
+            head: "repr",
+            arity: 1,
+        },
+        build_unary_op("builtin_repr", Opcode::Repr),
+    );
 }

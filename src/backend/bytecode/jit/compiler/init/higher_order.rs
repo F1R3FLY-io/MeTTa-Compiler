@@ -55,8 +55,6 @@ impl<T> HigherOrderInit for T {
     }
 
     fn declare_higher_order_funcs<M: Module>(module: &mut M) -> JitResult<HigherOrderFuncIds> {
-
-
         // map_atom: fn(ctx, list, func_chunk, ip) -> result
         let mut map_atom_sig = module.make_signature();
         map_atom_sig.params.push(AbiParam::new(types::I64)); // ctx

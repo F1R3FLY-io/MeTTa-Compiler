@@ -42,9 +42,7 @@
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use super::gc_allocator::{
-    GcResponse, GcSnapshot, mark_snapshot, sweep_snapshot,
-};
+use super::gc_allocator::{mark_snapshot, sweep_snapshot, GcResponse, GcSnapshot};
 
 // ============================================================================
 // GC Request / Response
@@ -174,10 +172,7 @@ impl Drop for GcThread {
 ///
 /// Receives owned GcSnapshots, performs mark-sweep, and sends GcResponses.
 /// Never accesses the live SlabAllocator — operates exclusively on snapshots.
-fn gc_thread_main(
-    request_rx: mpsc::Receiver<GcRequest>,
-    response_tx: mpsc::Sender<GcResponse>,
-) {
+fn gc_thread_main(request_rx: mpsc::Receiver<GcRequest>, response_tx: mpsc::Sender<GcResponse>) {
     loop {
         // Block waiting for the next request
         match request_rx.recv() {
@@ -210,9 +205,9 @@ fn gc_thread_main(
 mod tests {
     use std::time::Duration;
 
-    use super::*;
     use super::super::gc_allocator::{GcFactory, SlabAllocator};
     use super::super::metta_value_trait::MettaValueFactory;
+    use super::*;
 
     /// Helper to create a test allocator with 'static lifetime.
     fn test_alloc() -> &'static SlabAllocator {
@@ -241,12 +236,16 @@ mod tests {
         gc.request_gc(snapshot);
 
         // Wait for response
-        let response = gc.recv_response_blocking()
+        let response = gc
+            .recv_response_blocking()
             .expect("should receive response");
 
         // Should have collected the dead value
-        assert!(response.dead_values.len() >= 1,
-            "expected at least 1 dead value, got {}", response.dead_values.len());
+        assert!(
+            response.dead_values.len() >= 1,
+            "expected at least 1 dead value, got {}",
+            response.dead_values.len()
+        );
 
         gc.shutdown();
     }
@@ -266,7 +265,8 @@ mod tests {
             let snapshot = alloc.build_snapshot(vec![alive]);
             gc.request_gc(snapshot);
 
-            let response = gc.recv_response_blocking()
+            let response = gc
+                .recv_response_blocking()
                 .expect("should receive response");
             alloc.process_gc_response(&response);
         }
@@ -293,7 +293,10 @@ mod tests {
 
         // Should now have a response
         let response = gc.try_recv_response();
-        assert!(matches!(response, TryRecvGcResponse::Response(_)), "expected response after waiting");
+        assert!(
+            matches!(response, TryRecvGcResponse::Response(_)),
+            "expected response after waiting"
+        );
 
         gc.shutdown();
     }
@@ -308,13 +311,18 @@ mod tests {
         let root = factory.sexpr(vec![
             factory.atom("+"),
             factory.atom("one"),
-            factory.sexpr(vec![factory.atom("*"), factory.atom("two"), factory.atom("three")]),
+            factory.sexpr(vec![
+                factory.atom("*"),
+                factory.atom("two"),
+                factory.atom("three"),
+            ]),
         ]);
 
         let snapshot = alloc.build_snapshot(vec![root]);
         gc.request_gc(snapshot);
 
-        let response = gc.recv_response_blocking()
+        let response = gc
+            .recv_response_blocking()
             .expect("should receive response");
         alloc.process_gc_response(&response);
 
@@ -351,7 +359,9 @@ mod tests {
         let v1_ptr = v1.inner_ptr() as *mut u8;
 
         // Free v1 to put it on the free list
-        unsafe { alloc.free_value(v1_ptr); }
+        unsafe {
+            alloc.free_value(v1_ptr);
+        }
 
         // Build snapshot with empty roots BEFORE re-allocation
         // (simulates the TOCTOU scenario)
@@ -364,18 +374,25 @@ mod tests {
         assert_eq!(v1_ptr, v2_ptr, "should reuse the freed slot");
 
         // The slot epoch should be > snapshot epoch
-        assert!(alloc.is_realloc_after_epoch(v2_ptr as *const u8, snapshot_epoch),
-            "re-allocated slot should have epoch > snapshot epoch");
+        assert!(
+            alloc.is_realloc_after_epoch(v2_ptr as *const u8, snapshot_epoch),
+            "re-allocated slot should have epoch > snapshot epoch"
+        );
 
         gc.request_gc(snapshot);
-        let response = gc.recv_response_blocking()
+        let response = gc
+            .recv_response_blocking()
             .expect("should receive response");
 
         // process_gc_response should filter out the re-allocated slot
         alloc.process_gc_response(&response);
 
         // v2 should still be valid (not freed by GC)
-        assert_eq!(v2.as_atom(), Some("second"), "re-allocated value should survive GC");
+        assert_eq!(
+            v2.as_atom(),
+            Some("second"),
+            "re-allocated value should survive GC"
+        );
 
         gc.shutdown();
     }

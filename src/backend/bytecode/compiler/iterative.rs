@@ -220,6 +220,21 @@ impl Compiler {
                 )?;
             }
 
+            CompileWork::CompileDynamicCallArgs {
+                args,
+                arity,
+                saved_tail_position,
+                cont_id,
+            } => {
+                self.compile_dynamic_call_args_iterative(
+                    args,
+                    arity,
+                    saved_tail_position,
+                    cont_id,
+                    work_stack,
+                )?;
+            }
+
             CompileWork::CompileSExprElements {
                 items,
                 total_count,
@@ -341,6 +356,29 @@ impl Compiler {
                 )?;
             }
 
+            CompileWork::FinishCaseArm {
+                scrutinee,
+                cases,
+                mut end_jumps,
+                next_case,
+                parent_tail_position,
+                cont_id,
+            } => {
+                self.builder.emit(Opcode::PopBindingFrame);
+                let end_jump = self.builder.emit_jump(Opcode::Jump);
+                end_jumps.push(end_jump);
+                self.builder.patch_jump(next_case);
+                self.builder.emit(Opcode::PopBindingFrame);
+                work_stack.push(CompileWork::CompileCase {
+                    scrutinee,
+                    cases,
+                    end_jumps,
+                    parent_tail_position,
+                    state: CaseState::CompilingCase { index: 0 },
+                    cont_id,
+                });
+            }
+
             CompileWork::CompileChain {
                 expr,
                 var,
@@ -368,6 +406,17 @@ impl Compiler {
                 cont_id,
             } => {
                 self.compile_superpose_iterative(alternatives, state, cont_id, work_stack)?;
+            }
+
+            CompileWork::FinishCollapse {
+                jump_label,
+                saved_collapse_scope,
+                saved_tail_position,
+            } => {
+                self.in_collapse_scope = saved_collapse_scope;
+                self.in_tail_position = saved_tail_position;
+                self.builder.emit(Opcode::CollapseEnd);
+                self.builder.patch_jump(jump_label);
             }
 
             CompileWork::CompileQuoted { expr, cont_id } => {
@@ -421,11 +470,7 @@ impl Compiler {
                 )?;
             }
 
-            CompileWork::CompileHigherOrder {
-                op,
-                list,
-                state,
-            } => {
+            CompileWork::CompileHigherOrder { op, list, state } => {
                 self.compile_higher_order_iterative(op, list, state, work_stack)?;
             }
 
@@ -522,11 +567,6 @@ impl Compiler {
                     });
                 }
             }
-
-            CompileWork::PatchJump { jump_label } => {
-                self.builder.patch_jump(jump_label);
-            }
-
         }
 
         Ok(())
@@ -593,9 +633,7 @@ impl Compiler {
             }
 
             ValueView::Error(msg, details) => {
-                let idx = self
-                    .builder
-                    .add_constant(MettaValue::Error(msg, details));
+                let idx = self.builder.add_constant(MettaValue::Error(msg, details));
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
 
@@ -646,8 +684,13 @@ impl Compiler {
                 return Ok(());
             }
 
+            // Dynamic higher-order call: `($f arg...)`.
+            if op_name.starts_with('$') {
+                return self.compile_dynamic_call_iterative(head_value, args, cont_id, work_stack);
+            }
+
             // Not a builtin - check if it's a potential function call
-            if !op_name.starts_with('$') && !op_name.starts_with('&') {
+            if !op_name.starts_with('&') {
                 return self.compile_call_iterative(op_name, head_value, args, cont_id, work_stack);
             }
         }
@@ -705,6 +748,40 @@ impl Compiler {
         Ok(())
     }
 
+    /// Compile a call whose head is evaluated from the stack at runtime.
+    fn compile_dynamic_call_iterative(
+        &mut self,
+        head: MettaValue,
+        args: &[MettaValue],
+        cont_id: usize,
+        work_stack: &mut Vec<CompileWork>,
+    ) -> CompileResult<()> {
+        let arity = args.len();
+
+        if arity > 255 {
+            return Err(CompileError::InvalidArityRange {
+                op: head.as_atom().unwrap_or("<dynamic>").to_string(),
+                min: 0,
+                max: 255,
+                got: arity,
+            });
+        }
+
+        work_stack.push(CompileWork::CompileDynamicCallArgs {
+            args: args.iter().cloned().collect(),
+            arity,
+            saved_tail_position: self.in_tail_position,
+            cont_id,
+        });
+        work_stack.push(CompileWork::CompileExpr {
+            expr: head,
+            in_tail_position: false,
+            cont_id: 0,
+        });
+
+        Ok(())
+    }
+
     /// Compile call arguments iteratively
     fn compile_call_args_iterative(
         &mut self,
@@ -742,12 +819,10 @@ impl Compiler {
             // breaking HE semantics for heads with meta / inferred /
             // undefined parameter types.
             let use_literal = match arg.view() {
-                ValueView::SExpr(items) => {
-                    match items.first().and_then(|v| v.as_atom()) {
-                        Some(h) => !(is_grounded_op(h) || is_eager_special_form(h)),
-                        None => true,
-                    }
-                }
+                ValueView::SExpr(items) => match items.first().and_then(|v| v.as_atom()) {
+                    Some(h) => !(is_grounded_op(h) || is_eager_special_form(h)),
+                    None => true,
+                },
                 _ => false,
             };
             if use_literal {
@@ -776,6 +851,56 @@ impl Compiler {
                 self.builder.emit_u16(Opcode::Call, head_index);
             }
             self.builder.emit_raw(&[arity as u8]);
+        }
+
+        Ok(())
+    }
+
+    /// Compile arguments for a dynamic-head call. The head value is already on
+    /// the stack; after the args are pushed left-to-right, emit CallN/TailCallN.
+    fn compile_dynamic_call_args_iterative(
+        &mut self,
+        mut args: VecDeque<MettaValue>,
+        arity: usize,
+        saved_tail_position: bool,
+        _cont_id: usize,
+        work_stack: &mut Vec<CompileWork>,
+    ) -> CompileResult<()> {
+        if let Some(arg) = args.pop_front() {
+            self.in_tail_position = false;
+            work_stack.push(CompileWork::CompileDynamicCallArgs {
+                args,
+                arity,
+                saved_tail_position,
+                cont_id: 0,
+            });
+
+            let use_literal = match arg.view() {
+                ValueView::SExpr(items) => match items.first().and_then(|v| v.as_atom()) {
+                    Some(h) => !(is_grounded_op(h) || is_eager_special_form(h)),
+                    None => true,
+                },
+                _ => false,
+            };
+            if use_literal {
+                work_stack.push(CompileWork::CompileAsLiteralSExpr {
+                    expr: arg,
+                    cont_id: 0,
+                });
+            } else {
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: arg,
+                    in_tail_position: false,
+                    cont_id: 0,
+                });
+            }
+        } else {
+            self.in_tail_position = saved_tail_position;
+            if self.in_tail_position {
+                self.builder.emit_byte(Opcode::TailCallN, arity as u8);
+            } else {
+                self.builder.emit_byte(Opcode::CallN, arity as u8);
+            }
         }
 
         Ok(())
@@ -1498,25 +1623,55 @@ impl Compiler {
             // ================================================================
             "superpose" => {
                 self.check_arity("superpose", args.len(), 1)?;
-                let alternatives = match args[0].view() {
-                    ValueView::SExpr(items) => items.to_vec(),
-                    // Unit is the normalized form of SExpr([]) - empty alternatives
-                    ValueView::Unit => vec![],
-                    _ => vec![args[0].clone()],
-                };
-                work_stack.push(CompileWork::CompileSuperpose {
-                    alternatives: alternatives.into_iter().collect(),
-                    state: SuperposeState::Analyzing,
-                    cont_id,
-                });
+                match args[0].view() {
+                    ValueView::SExpr(items) => {
+                        work_stack.push(CompileWork::CompileSuperpose {
+                            alternatives: items.iter().cloned().collect(),
+                            state: SuperposeState::Analyzing,
+                            cont_id,
+                        });
+                    }
+                    // Unit is the normalized form of SExpr([]) - empty alternatives.
+                    ValueView::Unit => {
+                        work_stack.push(CompileWork::CompileSuperpose {
+                            alternatives: VecDeque::new(),
+                            state: SuperposeState::Analyzing,
+                            cont_id,
+                        });
+                    }
+                    _ => {
+                        if !self.in_collapse_scope {
+                            work_stack.push(CompileWork::EmitOpcode {
+                                opcode: Opcode::Yield,
+                            });
+                        }
+                        work_stack.push(CompileWork::EmitOpcode {
+                            opcode: Opcode::EvalSuperpose,
+                        });
+                        work_stack.push(CompileWork::CompileExpr {
+                            expr: args[0].clone(),
+                            in_tail_position: false,
+                            cont_id,
+                        });
+                    }
+                }
                 Ok(Some(()))
             }
             "collapse" => {
                 self.check_arity("collapse", args.len(), 1)?;
-                work_stack.push(CompileWork::CompileUnaryOp {
-                    op: UnaryOp::EvalCollapse,
-                    arg: args[0].clone(),
-                    folded: None,
+                let collapse_jump = self.builder.emit_jump(Opcode::CollapseBegin);
+                let saved_collapse = self.in_collapse_scope;
+                let saved_tail = self.in_tail_position;
+                self.in_collapse_scope = true;
+                self.in_tail_position = false;
+                work_stack.push(CompileWork::FinishCollapse {
+                    jump_label: collapse_jump,
+                    saved_collapse_scope: saved_collapse,
+                    saved_tail_position: saved_tail,
+                });
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: args[0].clone(),
+                    in_tail_position: false,
                     cont_id,
                 });
                 Ok(Some(()))
@@ -1833,11 +1988,13 @@ impl Compiler {
             // mirroring the tree-walker special-form handling.
             "progn" => {
                 if args.is_empty() {
-                    return Err(crate::backend::bytecode::compiler::CompileError::InvalidArity {
-                        op: "progn".to_string(),
-                        expected: 1,
-                        got: 0,
-                    });
+                    return Err(
+                        crate::backend::bytecode::compiler::CompileError::InvalidArity {
+                            op: "progn".to_string(),
+                            expected: 1,
+                            got: 0,
+                        },
+                    );
                 }
                 if args.len() == 1 {
                     work_stack.push(CompileWork::CompileExpr {
@@ -2778,12 +2935,15 @@ impl Compiler {
                     cont_id: 0,
                 });
             }
-            CaseState::CompilingCase { index } => {
+            CaseState::CompilingCase { index: _ } => {
                 if let Some((pattern, result)) = cases.pop_front() {
+                    self.builder.emit(Opcode::PushBindingFrame);
                     // Dup scrutinee for matching
                     self.builder.emit(Opcode::Dup);
                     // Compile pattern as quoted
                     self.compile_quoted(&pattern)?;
+                    // MatchBind expects [pattern, value] on the stack.
+                    self.builder.emit(Opcode::Swap);
                     // Try to match
                     self.builder.emit(Opcode::MatchBind);
                     // Jump to next case if no match
@@ -2792,33 +2952,28 @@ impl Compiler {
                     // Pop scrutinee (match succeeded)
                     self.builder.emit(Opcode::Pop);
 
-                    // Continue after result compilation
-                    work_stack.push(CompileWork::CompileCase {
+                    // Continue after result compilation by jumping over the
+                    // remaining arms/fallback, then patch the false branch to
+                    // the next arm.
+                    work_stack.push(CompileWork::FinishCaseArm {
                         scrutinee,
                         cases,
                         end_jumps,
+                        next_case,
                         parent_tail_position,
-                        state: CaseState::CompilingCase { index: index + 1 },
                         cont_id,
                     });
-                    // Patch next case jump after result
-                    work_stack.push(CompileWork::PatchJump {
-                        jump_label: next_case,
-                    });
-                    // Record end jump to patch later (we'll emit it after result)
-                    // We need a custom work item to emit the jump and record it
-                    // For now, inline this logic:
                     work_stack.push(CompileWork::CompileExpr {
                         expr: result,
                         in_tail_position: parent_tail_position,
                         cont_id: 0,
                     });
-
-                    // Note: We need to emit jump after result and record it
-                    // This is tricky with the current structure. Let's handle it differently.
-                    // Actually, we need to restructure this. Let me use a simpler approach.
                 } else {
-                    // No more cases, patch all end jumps
+                    // No matching arm: discard scrutinee and produce zero
+                    // results, matching core compiler/tree-walker case
+                    // semantics.
+                    self.builder.emit(Opcode::Pop);
+                    self.builder.emit(Opcode::Fail);
                     for jump in end_jumps {
                         self.builder.patch_jump(jump);
                     }
@@ -2912,7 +3067,11 @@ impl Compiler {
         let alts: Vec<MettaValue> = alternatives.into_iter().collect();
 
         if alts.is_empty() {
-            self.builder.emit(Opcode::PushEmpty);
+            if self.in_collapse_scope {
+                self.builder.emit(Opcode::PushUnit);
+            } else {
+                self.builder.emit(Opcode::Fail);
+            }
             return Ok(());
         }
 
@@ -2925,24 +3084,41 @@ impl Compiler {
             return Ok(());
         }
 
-        // Multiple alternatives - emit Fork opcode
-        let mut const_indices = Vec::with_capacity(alts.len());
-        for alt in &alts {
-            let idx = self.builder.add_constant(alt.clone());
-            const_indices.push(idx);
-        }
-
+        // Multiple alternatives: branch to inline compiled alternatives.
+        // This preserves locals/bindings for alternatives like `$x`, and lets
+        // failing alternatives backtrack before collapse collection.
         let count = alts.len() as u16;
-        self.builder.emit_u16(Opcode::Fork, count);
+        self.builder.emit_u16(Opcode::ForkInline, count);
 
-        for idx in const_indices {
-            self.builder.emit_raw(&idx.to_be_bytes());
+        let mut target_operands = Vec::with_capacity(alts.len());
+        for _ in &alts {
+            let operand_offset = self.builder.current_offset();
+            self.builder.emit_raw(&0u16.to_be_bytes());
+            target_operands.push(operand_offset);
         }
 
-        // Yield saves the current top-of-stack to results, then backtracks
-        // via op_fail to the choice point created by Fork, exploring all alternatives.
-        // Without this, only the first alternative would be returned.
-        self.builder.emit(Opcode::Yield);
+        let mut end_jumps = Vec::with_capacity(alts.len());
+        for (alt, operand_offset) in alts.iter().zip(target_operands.into_iter()) {
+            let target = self.builder.current_offset();
+            if target > u16::MAX as usize {
+                return Err(CompileError::InvalidExpression(
+                    "superpose branch target exceeds u16 bytecode address".to_string(),
+                ));
+            }
+            self.builder.patch_u16_at(operand_offset, target as u16);
+            self.compile(alt)?;
+            end_jumps.push(self.builder.emit_jump(Opcode::Jump));
+        }
+
+        for jump in end_jumps {
+            self.builder.patch_jump(jump);
+        }
+
+        // Outside collapse, Yield saves the current result and backtracks.
+        // Inside collapse, CollapseEnd drives collection through the choice point.
+        if !self.in_collapse_scope {
+            self.builder.emit(Opcode::Yield);
+        }
 
         Ok(())
     }

@@ -36,10 +36,12 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::mem;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::{Arc, OnceLock, Weak};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex, RwLock};
 use portable_atomic::AtomicU128;
@@ -157,6 +159,35 @@ thread_local! {
     /// Uses FxBuildHasher since keys are already well-distributed content hashes.
     static HASH_CONS_TABLE: Cell<Option<Box<HashMap<u64, MettaValue, crate::backend::hash_utils::FxBuildHasher>>>> =
         const { Cell::new(None) };
+
+    /// GC sweep epoch observed by this thread's hash-consing table.
+    ///
+    /// Work-pool threads are reused and may miss a safepoint while idle. The
+    /// epoch check lets them lazily clear stale slab-backed entries before the
+    /// next lookup dereferences a value from the table.
+    static HASH_CONS_EPOCH: Cell<u64> = const { Cell::new(0) };
+}
+
+#[inline]
+fn clear_hash_cons_table_local() {
+    HASH_CONS_TABLE.with(|cell| {
+        let maybe_map = cell.take();
+        if let Some(mut map) = maybe_map {
+            map.clear();
+            cell.set(Some(map)); // Reuse allocation
+        }
+    });
+}
+
+#[inline]
+fn ensure_hash_cons_epoch_current() {
+    let current_epoch = gc_sweep_epoch();
+    HASH_CONS_EPOCH.with(|epoch| {
+        if epoch.get() != current_epoch {
+            clear_hash_cons_table_local();
+            epoch.set(current_epoch);
+        }
+    });
 }
 
 /// Compute a content hash for an S-expression's children using their tagged pointer values.
@@ -178,6 +209,7 @@ fn hash_cons_key(items: &[MettaValue]) -> u64 {
 /// Returns `Some(existing)` if found with matching children, `None` otherwise.
 #[inline]
 fn hash_cons_lookup(key: u64, items: &[MettaValue]) -> Option<MettaValue> {
+    ensure_hash_cons_epoch_current();
     HASH_CONS_TABLE.with(|cell| {
         // SAFETY: We take the Option out, inspect it, and put it back.
         // No re-entrancy possible within this scope.
@@ -213,10 +245,14 @@ fn hash_cons_lookup(key: u64, items: &[MettaValue]) -> Option<MettaValue> {
 /// Insert a ground S-expression into the hash-consing table.
 #[inline]
 fn hash_cons_insert(key: u64, value: MettaValue) {
+    ensure_hash_cons_epoch_current();
     HASH_CONS_TABLE.with(|cell| {
         let mut maybe_map = cell.take();
         let map = maybe_map.get_or_insert_with(|| {
-            Box::new(HashMap::with_capacity_and_hasher(256, crate::backend::hash_utils::FxBuildHasher))
+            Box::new(HashMap::with_capacity_and_hasher(
+                256,
+                crate::backend::hash_utils::FxBuildHasher,
+            ))
         });
         // Cap table size to prevent unbounded growth
         if map.len() < 8192 {
@@ -228,13 +264,9 @@ fn hash_cons_insert(key: u64, value: MettaValue) {
 
 /// Clear the hash-consing table. Must be called at GC safepoints.
 pub fn clear_hash_cons_table() {
-    HASH_CONS_TABLE.with(|cell| {
-        let maybe_map = cell.take();
-        if let Some(mut map) = maybe_map {
-            map.clear();
-            cell.set(Some(map)); // Reuse allocation
-        }
-    })
+    clear_hash_cons_table_local();
+    let current_epoch = gc_sweep_epoch();
+    HASH_CONS_EPOCH.with(|epoch| epoch.set(current_epoch));
 }
 
 // ============================================================================
@@ -266,7 +298,8 @@ impl MmapPage {
         };
         assert!(
             !ptr.is_null() && ptr != libc::MAP_FAILED as *mut u8,
-            "mmap failed for {} bytes", size
+            "mmap failed for {} bytes",
+            size
         );
         Self { ptr, len: size }
     }
@@ -677,7 +710,9 @@ impl TreiberStack {
             // even though this store is not yet visible to other threads until
             // the CAS below publishes it).
             let node = ptr as *const FreeNode;
-            unsafe { (*node).next.store(old_head, Ordering::Release); }
+            unsafe {
+                (*node).next.store(old_head, Ordering::Release);
+            }
             // Pack with incremented counter for ABA prevention
             let old_counter = treiber_unpack_counter(old_head);
             let new_head = treiber_pack(ptr, old_counter.wrapping_add(1));
@@ -760,7 +795,8 @@ impl TreiberStack {
             debug_assert!(
                 !ptrs[i].is_null() && (ptrs[i] as usize) % SLOT_ALIGN == 0,
                 "TreiberStack::push_batch: invalid pointer {:?} at index {}",
-                ptrs[i], i,
+                ptrs[i],
+                i,
             );
             let node = ptrs[i] as *mut FreeNode;
             let next_packed = treiber_pack(ptrs[i + 1], 0);
@@ -772,8 +808,7 @@ impl TreiberStack {
         }
 
         debug_assert!(
-            !ptrs.last().unwrap().is_null()
-                && (*ptrs.last().unwrap() as usize) % SLOT_ALIGN == 0,
+            !ptrs.last().unwrap().is_null() && (*ptrs.last().unwrap() as usize) % SLOT_ALIGN == 0,
             "TreiberStack::push_batch: invalid last pointer {:?}",
             ptrs.last().unwrap(),
         );
@@ -790,8 +825,7 @@ impl TreiberStack {
                 (*last).next.store(old_head, Ordering::Release);
             }
             let old_counter = treiber_unpack_counter(old_head);
-            let new_head =
-                treiber_pack(first, old_counter.wrapping_add(ptrs.len() as u64));
+            let new_head = treiber_pack(first, old_counter.wrapping_add(ptrs.len() as u64));
             Self::validate_packed(new_head, "push_batch(new_head)");
             match self.head.compare_exchange_weak(
                 old_head,
@@ -975,7 +1009,9 @@ impl DataClassAllocator {
                     // Page still mapped — safe to reuse this slot
                     page.live_count.fetch_add(1, Ordering::Relaxed);
                     // ASAN: unpoison the slot before reuse
-                    unsafe { asan_unpoison_slab_slot(ptr, self.slot_size); }
+                    unsafe {
+                        asan_unpoison_slab_slot(ptr, self.slot_size);
+                    }
                     return ptr;
                 }
             }
@@ -1008,7 +1044,8 @@ impl DataClassAllocator {
             }
         }
         let page = Box::new(DataPage::new(self.slot_size));
-        let ptr = page.bump_alloc(self.slot_size)
+        let ptr = page
+            .bump_alloc(self.slot_size)
             .expect("fresh page should have room");
         // NOTE: page.live_count already incremented inside bump_alloc()
         let page_ptr = &*page as *const DataPage as *mut DataPage;
@@ -1050,14 +1087,18 @@ impl DataClassAllocator {
         // ASAN: poison the freed slot BEFORE push (skip FreeNode header used by Treiber stack).
         // Must poison before push to avoid race: another thread could pop() + unpoison()
         // between push and poison, then we'd poison an in-use slot.
-        unsafe { asan_poison_slab_slot(ptr, self.slot_size); }
+        unsafe {
+            asan_poison_slab_slot(ptr, self.slot_size);
+        }
         self.free_list.push(ptr);
     }
 
     /// Free a batch of slots with O(D log P) page lookups.
     /// Builds sorted page index once, amortizing across all pointers.
     fn free_batch(&self, ptrs: &[*mut u8]) {
-        if ptrs.is_empty() { return; }
+        if ptrs.is_empty() {
+            return;
+        }
         let pages = self.pages.read();
         let index = DataPageIndex::new(&pages);
         for &ptr in ptrs {
@@ -1065,7 +1106,9 @@ impl DataClassAllocator {
                 pages[page_idx].live_count.fetch_sub(1, Ordering::Relaxed);
             }
             // ASAN: poison the freed slot BEFORE push (skip FreeNode header used by Treiber stack).
-            unsafe { asan_poison_slab_slot(ptr, self.slot_size); }
+            unsafe {
+                asan_poison_slab_slot(ptr, self.slot_size);
+            }
             self.free_list.push(ptr);
         }
     }
@@ -1159,7 +1202,10 @@ impl DataClassAllocator {
         while i > 0 {
             i -= 1;
             let page_start = pages[i].data.as_ptr() as usize;
-            if release_ranges.binary_search_by_key(&page_start, |&(start, _)| start).is_ok() {
+            if release_ranges
+                .binary_search_by_key(&page_start, |&(start, _)| start)
+                .is_ok()
+            {
                 pages.swap_remove(i);
             }
         }
@@ -1473,7 +1519,9 @@ impl ValueAllocator {
                 page.set_slot_epoch(slot.slot_idx as usize, new_epoch);
                 page.set_context_id(slot.slot_idx as usize, ctx_id);
                 page.live_count.fetch_add(1, Ordering::Relaxed);
-                unsafe { asan_unpoison_slab_slot(slot.ptr, slot_size); }
+                unsafe {
+                    asan_unpoison_slab_slot(slot.ptr, slot_size);
+                }
                 return Some(slot.ptr);
             }
 
@@ -1533,7 +1581,9 @@ impl ValueAllocator {
                     page.set_slot_epoch(slot.slot_idx as usize, new_epoch);
                     page.set_context_id(slot.slot_idx as usize, ctx_id);
                     page.live_count.fetch_add(1, Ordering::Relaxed);
-                    unsafe { asan_unpoison_slab_slot(slot.ptr, slot_size); }
+                    unsafe {
+                        asan_unpoison_slab_slot(slot.ptr, slot_size);
+                    }
                     return Some(slot.ptr);
                 }
             }
@@ -1557,7 +1607,9 @@ impl ValueAllocator {
                     page.set_slot_epoch(idx, new_epoch);
                     page.set_context_id(idx, ctx_id);
                     page.live_count.fetch_add(1, Ordering::Relaxed);
-                    unsafe { asan_unpoison_slab_slot(ptr, slot_size); }
+                    unsafe {
+                        asan_unpoison_slab_slot(ptr, slot_size);
+                    }
                     return ptr;
                 }
             }
@@ -1590,7 +1642,8 @@ impl ValueAllocator {
             }
         }
         let page = Box::new(ValuePage::new(self.slot_size));
-        let (ptr, idx) = page.bump_alloc(self.slot_size)
+        let (ptr, idx) = page
+            .bump_alloc(self.slot_size)
             .expect("fresh page should have room");
         // NOTE: page.live_count already incremented inside bump_alloc()
         page.set_context_id(idx, ctx_id);
@@ -1628,7 +1681,9 @@ impl ValueAllocator {
             }
         }
         // ASAN: mark slot as inaccessible (detects use-after-free)
-        unsafe { asan_poison_slab_slot(ptr, self.slot_size); }
+        unsafe {
+            asan_poison_slab_slot(ptr, self.slot_size);
+        }
         self.free_list.push(ptr);
     }
 
@@ -1733,7 +1788,10 @@ impl ValueAllocator {
         while i > 0 {
             i -= 1;
             let page_start = pages[i].data.as_ptr() as usize;
-            if release_ranges.binary_search_by_key(&page_start, |&(start, _)| start).is_ok() {
+            if release_ranges
+                .binary_search_by_key(&page_start, |&(start, _)| start)
+                .is_ok()
+            {
                 pages.swap_remove(i);
             }
         }
@@ -1844,22 +1902,22 @@ impl SlabAllocator {
         if len >= header_size {
             // Read first 16 bytes from source, store atomically
             let first_chunk: u128 = ptr::read_unaligned(src as *const u128);
-            (*(dst as *const FreeNode)).next.store(first_chunk, Ordering::Release);
+            (*(dst as *const FreeNode))
+                .next
+                .store(first_chunk, Ordering::Release);
             // Non-atomically copy remaining bytes
             let remaining = len - header_size;
             if remaining > 0 {
-                ptr::copy_nonoverlapping(
-                    src.add(header_size),
-                    dst.add(header_size),
-                    remaining,
-                );
+                ptr::copy_nonoverlapping(src.add(header_size), dst.add(header_size), remaining);
             }
         } else if len > 0 {
             // Source is < 16 bytes: zero-pad to 16, store atomically
             let mut buf = [0u8; 16];
             ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), len);
             let chunk: u128 = u128::from_ne_bytes(buf);
-            (*(dst as *const FreeNode)).next.store(chunk, Ordering::Release);
+            (*(dst as *const FreeNode))
+                .next
+                .store(chunk, Ordering::Release);
         } else {
             // len == 0: just atomically zero the header
             (*(dst as *const FreeNode)).next.store(0, Ordering::Release);
@@ -1877,10 +1935,8 @@ impl SlabAllocator {
         self.alloc_count_atomic.fetch_add(1, Ordering::Relaxed);
         // Periodically update committed bytes (every 1024 allocs to avoid overhead)
         if self.alloc_count_atomic.load(Ordering::Relaxed) % 1024 == 0 {
-            self.committed_bytes_atomic.store(
-                self.committed_bytes(),
-                Ordering::Relaxed,
-            );
+            self.committed_bytes_atomic
+                .store(self.committed_bytes(), Ordering::Relaxed);
             // NOTE: We intentionally do NOT call request_gc() here. GC must only
             // be triggered at safe points (the trampoline's maybe_gc()) where the
             // root set is complete. The cron manager's threshold/rate checks handle
@@ -2022,7 +2078,9 @@ impl SlabAllocator {
                         for page in pages.iter() {
                             if page.contains(ptr as *const u8, class_size) {
                                 page.live_count.fetch_add(1, Ordering::Relaxed);
-                                unsafe { asan_unpoison_slab_slot(ptr, class_size); }
+                                unsafe {
+                                    asan_unpoison_slab_slot(ptr, class_size);
+                                }
                                 return Some(ptr);
                             }
                         }
@@ -2033,7 +2091,8 @@ impl SlabAllocator {
 
                     // Cache empty — batch-refill from global TreiberStack
                     let mut batch_len = 0usize;
-                    let mut batch: [*mut u8; DATA_CACHE_REFILL] = [ptr::null_mut(); DATA_CACHE_REFILL];
+                    let mut batch: [*mut u8; DATA_CACHE_REFILL] =
+                        [ptr::null_mut(); DATA_CACHE_REFILL];
                     for slot in batch.iter_mut() {
                         if let Some(ptr) = self.data_classes[i].free_list.pop() {
                             *slot = ptr;
@@ -2076,7 +2135,9 @@ impl SlabAllocator {
                             for page in pages.iter() {
                                 if page.contains(ptr as *const u8, class_size) {
                                     page.live_count.fetch_add(1, Ordering::Relaxed);
-                                    unsafe { asan_unpoison_slab_slot(ptr, class_size); }
+                                    unsafe {
+                                        asan_unpoison_slab_slot(ptr, class_size);
+                                    }
                                     return Some(ptr);
                                 }
                             }
@@ -2100,8 +2161,8 @@ impl SlabAllocator {
             }
         }
         // Large allocation: use system allocator
-        let layout = Layout::from_size_align(size, SLOT_ALIGN)
-            .expect("invalid layout for large allocation");
+        let layout =
+            Layout::from_size_align(size, SLOT_ALIGN).expect("invalid layout for large allocation");
         let ptr = unsafe { std::alloc::alloc(layout) };
         if ptr.is_null() {
             std::alloc::handle_alloc_error(layout);
@@ -2131,7 +2192,9 @@ impl SlabAllocator {
                     }
                 }
                 // ASAN: poison the freed slot
-                unsafe { asan_poison_slab_slot(ptr, class_size); }
+                unsafe {
+                    asan_poison_slab_slot(ptr, class_size);
+                }
 
                 // Try to cache in thread-local data cache
                 let cached = DATA_CACHES.try_with(|cell| {
@@ -2178,21 +2241,27 @@ impl SlabAllocator {
         let mut large = self.large_allocs.lock();
         if let Some(pos) = large.iter().position(|(p, _)| *p == ptr) {
             let (ptr, layout) = large.swap_remove(pos);
-            unsafe { std::alloc::dealloc(ptr, layout); }
+            unsafe {
+                std::alloc::dealloc(ptr, layout);
+            }
         }
     }
 
     /// Free a batch of data slots with O(D log P) page lookups per size class.
     /// Groups dead data by size class, then calls `free_batch` per class.
     fn free_data_slots_batch(&self, dead_data: Vec<(*mut u8, usize)>) {
-        if dead_data.is_empty() { return; }
+        if dead_data.is_empty() {
+            return;
+        }
 
         // Group by size class (9 classes + large)
         let mut by_class: [Vec<*mut u8>; 9] = Default::default();
         let mut large_ptrs: Vec<(*mut u8, usize)> = Vec::new();
 
         for (ptr, size) in dead_data {
-            if size == 0 { continue; }
+            if size == 0 {
+                continue;
+            }
             match DATA_SIZE_CLASSES.iter().position(|&cs| size <= cs) {
                 Some(i) => by_class[i].push(ptr),
                 None => large_ptrs.push((ptr, size)),
@@ -2210,7 +2279,9 @@ impl SlabAllocator {
             for (ptr, _) in large_ptrs {
                 if let Some(pos) = large.iter().position(|(p, _)| *p == ptr) {
                     let (ptr, layout) = large.swap_remove(pos);
-                    unsafe { std::alloc::dealloc(ptr, layout); }
+                    unsafe {
+                        std::alloc::dealloc(ptr, layout);
+                    }
                 }
             }
         }
@@ -2219,9 +2290,12 @@ impl SlabAllocator {
     /// Total committed bytes (all pages).
     pub fn committed_bytes(&self) -> usize {
         let value_bytes = self.values.committed_bytes();
-        let data_bytes: usize = self.data_classes.iter().map(|dc| dc.committed_bytes()).sum();
-        let large_bytes: usize = self.large_allocs.lock()
-            .iter().map(|(_, l)| l.size()).sum();
+        let data_bytes: usize = self
+            .data_classes
+            .iter()
+            .map(|dc| dc.committed_bytes())
+            .sum();
+        let large_bytes: usize = self.large_allocs.lock().iter().map(|(_, l)| l.size()).sum();
         value_bytes + data_bytes + large_bytes
     }
 
@@ -2381,7 +2455,9 @@ impl Drop for SlabAllocator {
         // Free large allocations
         let mut large = self.large_allocs.lock();
         for (ptr, layout) in large.drain(..) {
-            unsafe { std::alloc::dealloc(ptr, layout); }
+            unsafe {
+                std::alloc::dealloc(ptr, layout);
+            }
         }
         // MmapPages are dropped automatically via ValuePage/DataPage drop
     }
@@ -2689,8 +2765,7 @@ static GC_SWEEP_EPOCH: AtomicU64 = AtomicU64::new(0);
 /// `release_empty_pages()` → `MmapPage::Drop` → munmap, the first worker
 /// faults on an unmapped address. The RwLock ensures release_empty_pages
 /// waits for all in-flight mark/sweep operations to complete.
-pub(crate) static PAGE_LIFECYCLE_LOCK: parking_lot::RwLock<()> =
-    parking_lot::RwLock::new(());
+pub(crate) static PAGE_LIFECYCLE_LOCK: parking_lot::RwLock<()> = parking_lot::RwLock::new(());
 
 // ============================================================================
 // Session GC Statistics — counters for diagnosing memory growth
@@ -2924,6 +2999,42 @@ pub fn gc_cycle_in_flight() -> bool {
     GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
 }
 
+/// Wait until the asynchronous mark/sweep cycle has fully completed and its
+/// response has been processed.
+///
+/// Session release can free session-owned slots. It must not run while a
+/// snapshot response is outstanding, because that response's dead set was
+/// computed against the pre-release slot state and could otherwise free the
+/// same slot again. The caller must re-check `gc_cycle_in_flight()` after
+/// acquiring `GcInProgressGuard`, because another thread may start a cycle
+/// between this wait and the guard acquisition.
+pub(super) fn wait_for_gc_cycle_idle(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        if !GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+            return true;
+        }
+
+        let _ = maybe_process_gc_response();
+        if !GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+            return true;
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        let wait_for = remaining.min(Duration::from_millis(100));
+
+        let mut lock = GC_CYCLE_MUTEX.lock();
+        if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+            let _ = GC_CYCLE_CONDVAR.wait_for(&mut lock, wait_for);
+        }
+    }
+}
+
 /// Return the current GC sweep epoch.
 ///
 /// Thread-local caches compare their local epoch against this value to detect
@@ -2935,13 +3046,13 @@ pub fn gc_sweep_epoch() -> u64 {
 
 /// Increment the GC sweep epoch after dead slab slots have been freed.
 ///
-/// I-9: With deterministic GC always-on, the nursery collector keeps the state
-/// space garbage-free at every safepoint. Epoch-based invalidation is no longer
-/// needed — this function is unconditionally a no-op. The `GC_SWEEP_EPOCH`
-/// counter is kept for diagnostic/backward-compat purposes but never bumped.
+/// Thread-local caches that store or key by slab pointers compare their local
+/// epoch against this value and self-invalidate before the next lookup. This is
+/// required for work-pool threads that were idle or outside their own safepoint
+/// while another thread completed a GC sweep.
 #[inline]
 pub(super) fn bump_gc_sweep_epoch() {
-    // No-op: deterministic GC eliminates need for epoch-based cache invalidation.
+    GC_SWEEP_EPOCH.fetch_add(1, Ordering::AcqRel);
 }
 
 // ============================================================================
@@ -3262,11 +3373,18 @@ pub fn maybe_process_gc_response() -> bool {
             let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
             let threshold = alloc.gc_threshold_atomic().load(Ordering::Relaxed);
             let new_level = if threshold > 0 {
-                if committed >= threshold * 2 { 3 }
-                else if committed >= threshold * 3 / 2 { 2 }
-                else if committed >= threshold { 1 }
-                else { 0 }
-            } else { 0 };
+                if committed >= threshold * 2 {
+                    3
+                } else if committed >= threshold * 3 / 2 {
+                    2
+                } else if committed >= threshold {
+                    1
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
             set_backpressure_level(new_level);
 
             return true;
@@ -3414,26 +3532,26 @@ fn collect_all_roots_readonly() -> Vec<MettaValue> {
 // Before dropping the EvalGuard, the trampoline registers these values as
 // temporary roots so the GC can trace them and avoid freeing reachable objects.
 //
-// The registry is a global Mutex<Vec<Vec<MettaValue>>>. Each safepoint pushes
-// a root set and receives a SafepointRootHandle that clears it on drop.
-// collect_all_roots() drains these into the root set alongside environment roots.
+// The registry is a global Mutex<Vec<Option<Vec<MettaValue>>>>. Each safepoint
+// claims one slot and receives a SafepointRootHandle that releases it on drop.
+// collect_all_roots() copies active slots into the root set alongside
+// environment roots.
 
 /// Global registry for safepoint temporary roots.
 ///
-/// Each entry is a Vec<MettaValue> collected from one evaluator's trampoline
-/// state (work_stack + continuations). Entries are cleared (not removed) on
-/// drop to preserve indices for concurrent handles.
-static SAFEPOINT_ROOTS: OnceLock<Mutex<Vec<Vec<MettaValue>>>> = OnceLock::new();
+/// Each active entry is a Vec<MettaValue> collected from one evaluator's
+/// trampoline state (work_stack + continuations). `None` means the slot is
+/// free. This keeps an active empty root set distinct from a reusable slot.
+static SAFEPOINT_ROOTS: OnceLock<Mutex<Vec<Option<Vec<MettaValue>>>>> = OnceLock::new();
 
-fn safepoint_registry() -> &'static Mutex<Vec<Vec<MettaValue>>> {
+fn safepoint_registry() -> &'static Mutex<Vec<Option<Vec<MettaValue>>>> {
     SAFEPOINT_ROOTS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 /// RAII handle that unregisters safepoint roots when dropped.
 ///
-/// Created by `register_temporary_roots()`. On drop, clears the root set
-/// at the stored index (the Vec slot is zeroed, not removed, to avoid
-/// invalidating other handles' indices).
+/// Created by `register_temporary_roots()`. On drop, marks the stored slot as
+/// free without removing it, so other handles' indices stay valid.
 pub struct SafepointRootHandle {
     /// Index into SAFEPOINT_ROOTS where this handle's roots are stored
     idx: usize,
@@ -3444,7 +3562,7 @@ impl Drop for SafepointRootHandle {
         let registry = safepoint_registry();
         let mut guard = registry.lock();
         if self.idx < guard.len() {
-            guard[self.idx].clear();
+            guard[self.idx] = None;
         }
     }
 }
@@ -3463,16 +3581,16 @@ impl Drop for SafepointRootHandle {
 pub fn register_temporary_roots(roots: Vec<MettaValue>) -> SafepointRootHandle {
     let registry = safepoint_registry();
     let mut guard = registry.lock();
-    // Reuse an empty slot if available (from a previous handle that was dropped)
+    // Reuse a free slot if available. An active empty root set is still Some.
     for (idx, slot) in guard.iter_mut().enumerate() {
-        if slot.is_empty() {
-            *slot = roots;
+        if slot.is_none() {
+            *slot = Some(roots);
             return SafepointRootHandle { idx };
         }
     }
-    // No empty slot — append
+    // No free slot: append.
     let idx = guard.len();
-    guard.push(roots);
+    guard.push(Some(roots));
     SafepointRootHandle { idx }
 }
 
@@ -3483,7 +3601,7 @@ pub fn register_temporary_roots(roots: Vec<MettaValue>) -> SafepointRootHandle {
 fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
     if let Some(registry) = SAFEPOINT_ROOTS.get() {
         let guard = registry.lock();
-        for root_set in guard.iter() {
+        for root_set in guard.iter().flatten() {
             roots.extend(root_set.iter().copied());
         }
     }
@@ -3523,10 +3641,9 @@ fn collect_provider_roots_readonly() -> Option<Vec<MettaValue>> {
 
 /// Build the transitive closure of all currently registered safepoint roots.
 ///
-/// Returns `(Some(HashSet), env_complete)` where env_complete indicates whether
-/// environment roots were successfully included.
-/// Returns `(None, true)` if no safepoint roots are registered (fast path — no
-/// filtering needed).
+/// Returns `(Some(HashSet), env_complete)` while at least one safepoint root
+/// handle is active, even if that handle's root list is empty. Returns
+/// `(None, true)` only when no safepoint handles are active.
 ///
 /// This is used by `process_gc_response()` to guard against freeing values
 /// that are dead per a **previous** GC cycle's mark-sweep but are now live
@@ -3551,12 +3668,17 @@ pub(crate) fn trace_safepoint_live_set() -> (Option<PtrHashSet>, bool) {
     };
     let safepoint_roots: Vec<MettaValue> = {
         let guard = registry_ref.lock();
-        let total: usize = guard.iter().map(|s| s.len()).sum();
-        if total == 0 {
+        let active = guard.iter().filter(|slot| slot.is_some()).count();
+        if active == 0 {
             return (None, true);
         }
+        let total: usize = guard
+            .iter()
+            .filter_map(|slot| slot.as_ref())
+            .map(|roots| roots.len())
+            .sum();
         let mut roots = Vec::with_capacity(total);
-        for root_set in guard.iter() {
+        for root_set in guard.iter().flatten() {
             roots.extend(root_set.iter().copied());
         }
         roots
@@ -3695,7 +3817,10 @@ thread_local! {
 pub fn drop_eval_guard_for_safepoint() {
     EVAL_GUARD_DEPTH.with(|d| {
         let depth = d.get();
-        assert!(depth > 0, "drop_eval_guard_for_safepoint called without active guard");
+        assert!(
+            depth > 0,
+            "drop_eval_guard_for_safepoint called without active guard"
+        );
         d.set(depth - 1);
     });
 
@@ -3882,8 +4007,7 @@ pub fn safepoint_wait_for_quiescence() {
     let mut min_observed_active: u32 = initial_active;
     let mut cycle: u32 = 0;
     'convergence: loop {
-        let convergence_deadline =
-            std::time::Instant::now() + Duration::from_millis(250);
+        let convergence_deadline = std::time::Instant::now() + Duration::from_millis(250);
         while GC_REQUESTED.load(Ordering::Acquire)
             && !GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
             && ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0
@@ -3958,10 +4082,15 @@ pub fn safepoint_wait_for_quiescence() {
 ///
 /// This is called from `GenericEnvironment::new()`, `make_owned()`,
 /// `fork_for_nondeterminism()`, `union()`, and `union_all()`.
-pub fn try_register_env_roots<V>(shared: &Arc<crate::backend::environment::GenericEnvironmentShared<V>>)
-where
+pub fn try_register_env_roots<V>(
+    shared: &Arc<crate::backend::environment::GenericEnvironmentShared<V>>,
+) where
     V: crate::backend::models::metta_value_trait::MettaValueTrait
-        + Clone + Send + Sync + Unpin + 'static,
+        + Clone
+        + Send
+        + Sync
+        + Unpin
+        + 'static,
 {
     // Skip registration when GC is disabled.
     if is_gc_disabled() {
@@ -3976,7 +4105,9 @@ where
 
     // Clone the Arc and try to downcast to the concrete MettaValue type
     let any: Arc<dyn Any + Send + Sync> = shared.clone();
-    if let Ok(arena_shared) = any.downcast::<crate::backend::environment::GenericEnvironmentShared<MettaValue>>() {
+    if let Ok(arena_shared) =
+        any.downcast::<crate::backend::environment::GenericEnvironmentShared<MettaValue>>()
+    {
         // GenericEnvironmentShared<MettaValue> implements RootProvider
         let provider: Arc<dyn RootProvider> = arena_shared;
         register_root_provider(&provider);
@@ -4131,7 +4262,9 @@ struct PageIndex {
 impl PageIndex {
     /// Build sorted index from pages. O(P log P), done once per GC response.
     fn new(pages: &[Box<ValuePage>]) -> Self {
-        let mut sorted: Vec<(usize, usize)> = pages.iter().enumerate()
+        let mut sorted: Vec<(usize, usize)> = pages
+            .iter()
+            .enumerate()
             .map(|(i, page)| (page.data.as_ptr() as usize, i))
             .collect();
         sorted.sort_unstable_by_key(|&(start, _)| start);
@@ -4140,16 +4273,23 @@ impl PageIndex {
 
     /// Find (page_vec_index, slot_index) for a pointer. O(log P).
     #[inline]
-    fn find(&self, pages: &[Box<ValuePage>], ptr: *const u8, slot_size: usize)
-        -> Option<(usize, usize)>
-    {
+    fn find(
+        &self,
+        pages: &[Box<ValuePage>],
+        ptr: *const u8,
+        slot_size: usize,
+    ) -> Option<(usize, usize)> {
         let addr = ptr as usize;
         // partition_point returns the first index where start > addr,
         // so pos - 1 is the last page whose start <= addr.
         let pos = self.sorted.partition_point(|&(start, _)| start <= addr);
-        if pos == 0 { return None; }
+        if pos == 0 {
+            return None;
+        }
         let (_, page_idx) = self.sorted[pos - 1];
-        pages[page_idx].slot_index(ptr, slot_size).map(|slot_idx| (page_idx, slot_idx))
+        pages[page_idx]
+            .slot_index(ptr, slot_size)
+            .map(|slot_idx| (page_idx, slot_idx))
     }
 }
 
@@ -4163,7 +4303,9 @@ struct DataPageIndex {
 impl DataPageIndex {
     /// Build sorted index from data pages. O(P log P), done once per batch.
     fn new(pages: &[Box<DataPage>]) -> Self {
-        let mut sorted: Vec<(usize, usize)> = pages.iter().enumerate()
+        let mut sorted: Vec<(usize, usize)> = pages
+            .iter()
+            .enumerate()
             .map(|(i, page)| (page.data.as_ptr() as usize, i))
             .collect();
         sorted.sort_unstable_by_key(|&(start, _)| start);
@@ -4172,14 +4314,19 @@ impl DataPageIndex {
 
     /// Find the page index containing the given pointer. O(log P).
     #[inline]
-    fn find_page(&self, pages: &[Box<DataPage>], ptr: *const u8, slot_size: usize)
-        -> Option<usize>
-    {
+    fn find_page(
+        &self,
+        pages: &[Box<DataPage>],
+        ptr: *const u8,
+        slot_size: usize,
+    ) -> Option<usize> {
         let addr = ptr as usize;
         // partition_point returns the first index where start > addr,
         // so pos - 1 is the last page whose start <= addr.
         let pos = self.sorted.partition_point(|&(start, _)| start <= addr);
-        if pos == 0 { return None; }
+        if pos == 0 {
+            return None;
+        }
         let (_, page_idx) = self.sorted[pos - 1];
         if pages[page_idx].contains(ptr, slot_size) {
             Some(page_idx)
@@ -4203,31 +4350,37 @@ impl SlabAllocator {
         let pages = self.values.pages.read();
         let slot_size = self.values.slot_size;
 
-        let page_snapshots: Vec<PageSnapshot> = pages.iter().map(|page| {
-            let bump_count = page.bump_count.load(Ordering::Acquire);
-            // Snapshot per-slot epochs so the sweep can skip freed slots
-            // (epoch == u64::MAX sentinel). Only capture up to bump_count
-            // since slots beyond that haven't been allocated.
-            let epochs: Vec<u64> = (0..bump_count)
-                .map(|i| page.epochs[i].load(Ordering::Acquire))
-                .collect();
-            PageSnapshot {
-                data_ptr: page.data.as_ptr(),
-                bump_count,
-                capacity: page.capacity,
-                epochs,
-            }
-        }).collect();
+        let page_snapshots: Vec<PageSnapshot> = pages
+            .iter()
+            .map(|page| {
+                let bump_count = page.bump_count.load(Ordering::Acquire);
+                // Snapshot per-slot epochs so the sweep can skip freed slots
+                // (epoch == u64::MAX sentinel). Only capture up to bump_count
+                // since slots beyond that haven't been allocated.
+                let epochs: Vec<u64> = (0..bump_count)
+                    .map(|i| page.epochs[i].load(Ordering::Acquire))
+                    .collect();
+                PageSnapshot {
+                    data_ptr: page.data.as_ptr(),
+                    bump_count,
+                    capacity: page.capacity,
+                    epochs,
+                }
+            })
+            .collect();
 
         // free_set is no longer needed — the sweep now uses epoch snapshots
         // to skip freed slots (epoch == u64::MAX) instead of relying on a
         // drain of the Treiber stack.
         let free_set = PtrHashSet::with_hasher(PtrBuildHasher);
 
-        let marks: Vec<Vec<u64>> = page_snapshots.iter().map(|ps| {
-            let mark_words = (ps.capacity + 63) / 64;
-            vec![0u64; mark_words]
-        }).collect();
+        let marks: Vec<Vec<u64>> = page_snapshots
+            .iter()
+            .map(|ps| {
+                let mark_words = (ps.capacity + 63) / 64;
+                vec![0u64; mark_words]
+            })
+            .collect();
 
         GcSnapshot {
             page_snapshots,
@@ -4251,11 +4404,18 @@ impl SlabAllocator {
     ///
     /// Phases 1-3 share a single read lock on the page array.
     pub fn process_gc_response(&self, response: &GcResponse) {
-        let mut non_filtered_dead: Vec<ResolvedDead> = Vec::with_capacity(response.dead_values.len());
+        let mut non_filtered_dead: Vec<ResolvedDead> =
+            Vec::with_capacity(response.dead_values.len());
 
         // Declare outside the block so it outlives the read lock.
         // It's an owned Vec<(*mut u8, usize)> — no borrows on pages.
         let dead_data_to_free: Vec<(*mut u8, usize)>;
+
+        // Serialize against the periodic exec-counter sync. This covers the
+        // root snapshot/classification/free window, so a sync task cannot
+        // register a pending compile root for a slot after this GC has decided
+        // that slot is reclaimable.
+        let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();
 
         // === Phase 0: Build safepoint live set (if any safepoint roots exist) ===
         //
@@ -4292,9 +4452,9 @@ impl SlabAllocator {
             // (genuinely dead, safe to reclaim).
             let mut safepoint_rescued = 0u64;
             for &ptr in &response.dead_values {
-                if let Some((page_idx, slot_idx)) = page_index.find(
-                    &pages, ptr as *const u8, self.values.slot_size,
-                ) {
+                if let Some((page_idx, slot_idx)) =
+                    page_index.find(&pages, ptr as *const u8, self.values.slot_size)
+                {
                     if pages[page_idx].slot_epoch(slot_idx) > response.snapshot_epoch {
                         // Slot re-allocated after snapshot — skip (not genuinely dead)
                     } else if !env_roots_complete && safepoint_live.is_some() {
@@ -4302,14 +4462,19 @@ impl SlabAllocator {
                         // Cannot determine if value is reachable from environment.
                         // Conservatively rescue to prevent use-after-poison.
                         safepoint_rescued += 1;
-                    } else if safepoint_live.as_ref()
+                    } else if safepoint_live
+                        .as_ref()
                         .is_some_and(|live| live.contains(&(ptr as *const u8)))
                     {
                         // Value is dead per previous cycle but live in current
                         // safepoint/environment roots — skip to prevent use-after-poison.
                         safepoint_rescued += 1;
                     } else {
-                        non_filtered_dead.push(ResolvedDead { ptr, page_idx, slot_idx });
+                        non_filtered_dead.push(ResolvedDead {
+                            ptr,
+                            page_idx,
+                            slot_idx,
+                        });
                     }
                 }
                 // else: ptr not in any page (released in prior cycle) — skip
@@ -4346,14 +4511,12 @@ impl SlabAllocator {
             // and merge them into the global TieredCache. This ensures execution
             // data from short-lived hot expressions is not lost.
             //
-            // Acquires COUNTER_FLUSH_LOCK to block any in-progress periodic sync
-            // from reading dead slot content concurrently.
+            // The surrounding COUNTER_FLUSH_LOCK blocks any in-progress periodic
+            // sync from reading dead slot content or registering pending compile
+            // roots while this GC response is classifying/freeing slots.
             {
                 use crate::backend::bytecode::tiered_cache::global_tiered_cache;
                 use crate::backend::models::metta_value_trait::MettaValueTrait as _;
-                use super::gc_cron::COUNTER_FLUSH_LOCK;
-
-                let _flush_guard = COUNTER_FLUSH_LOCK.lock();
 
                 let cache = global_tiered_cache();
                 for entry in &non_filtered_dead {
@@ -4366,7 +4529,9 @@ impl SlabAllocator {
                             if let Some(state) = cache.entries.get(&cached_hash) {
                                 state.execution_count.fetch_add(count, Ordering::Relaxed);
                                 #[cfg(feature = "track-stats")]
-                                cache.total_executions.fetch_add(count as u64, Ordering::Relaxed);
+                                cache
+                                    .total_executions
+                                    .fetch_add(count as u64, Ordering::Relaxed);
                                 let new_count = state.execution_count.load(Ordering::Relaxed);
                                 cache.maybe_trigger_jit1(&state, new_count);
                                 cache.maybe_trigger_jit2(&state, new_count);
@@ -4385,14 +4550,21 @@ impl SlabAllocator {
 
                         // Slow path: compute hash, create state, cache hash
                         // SAFETY: slot content is still valid — not yet freed.
-                        let value = unsafe { MettaValue::from_inner_ptr(entry.ptr as *const MettaValueInner) };
+                        let value = unsafe {
+                            MettaValue::from_inner_ptr(entry.ptr as *const MettaValueInner)
+                        };
                         let state = cache.get_or_create_state(&value);
                         page.set_compilation_hash(entry.slot_idx, state.expr_hash);
                         state.execution_count.fetch_add(count, Ordering::Relaxed);
                         #[cfg(feature = "track-stats")]
-                        cache.total_executions.fetch_add(count as u64, Ordering::Relaxed);
+                        cache
+                            .total_executions
+                            .fetch_add(count as u64, Ordering::Relaxed);
                         let new_count = state.execution_count.load(Ordering::Relaxed);
-                        cache.maybe_trigger_bytecode(&value, &state, new_count);
+                        // Do not start bytecode compilation from a value that
+                        // has already been classified as dead. The next live
+                        // execution of the same expression will trigger compile
+                        // from a valid source root.
                         cache.maybe_trigger_jit1(&state, new_count);
                         cache.maybe_trigger_jit2(&state, new_count);
                     }
@@ -4439,7 +4611,9 @@ impl SlabAllocator {
                     // and add to quarantine list instead of free list. Any stale
                     // MettaValue reference reading the discriminant byte will trigger
                     // an ASAN heap-use-after-free report.
-                    unsafe { asan_poison_slab_slot_full(entry.ptr, self.values.slot_size); }
+                    unsafe {
+                        asan_poison_slab_slot_full(entry.ptr, self.values.slot_size);
+                    }
                     gc_quarantine().lock().push(QuarantineEntry {
                         ptr: entry.ptr,
                         slot_size: self.values.slot_size,
@@ -4450,7 +4624,9 @@ impl SlabAllocator {
                     });
                 } else {
                     // Standard mode: poison after FreeNode header, collect for batch push.
-                    unsafe { asan_poison_slab_slot(entry.ptr, self.values.slot_size); }
+                    unsafe {
+                        asan_poison_slab_slot(entry.ptr, self.values.slot_size);
+                    }
                     batch_ptrs.push(entry.ptr);
                 }
             }
@@ -4491,7 +4667,8 @@ impl SlabAllocator {
         }
 
         // Update committed bytes
-        self.committed_bytes_atomic.store(self.committed_bytes(), Ordering::Relaxed);
+        self.committed_bytes_atomic
+            .store(self.committed_bytes(), Ordering::Relaxed);
 
         // Drain quarantine entries older than max_age cycles back to free list.
         // For FlyingRaven diagnosis: use u64::MAX (never drain) since the
@@ -4546,6 +4723,7 @@ impl SlabAllocator {
         if context_id == 0 {
             return; // Never release persistent values
         }
+        let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();
         let surviving = self.trace_surviving_set();
         self.release_session_with_surviving(context_id, &surviving);
     }
@@ -4563,11 +4741,7 @@ impl SlabAllocator {
     /// 3. Free dead data slots in batch
     /// 4. Release empty pages
     /// 5. Update committed_bytes
-    pub fn release_session_with_surviving(
-        &self,
-        context_id: u32,
-        surviving: &PtrHashSet,
-    ) {
+    pub fn release_session_with_surviving(&self, context_id: u32, surviving: &PtrHashSet) {
         if context_id == 0 {
             return; // Never release persistent values
         }
@@ -4651,7 +4825,9 @@ impl SlabAllocator {
 
                 if quarantine {
                     // Quarantine mode: fully poison the slot (including FreeNode header)
-                    unsafe { asan_poison_slab_slot_full(entry.ptr, slot_size); }
+                    unsafe {
+                        asan_poison_slab_slot_full(entry.ptr, slot_size);
+                    }
                     gc_quarantine().lock().push(QuarantineEntry {
                         ptr: entry.ptr,
                         slot_size,
@@ -4662,7 +4838,9 @@ impl SlabAllocator {
                     });
                 } else {
                     // Standard mode: poison after FreeNode header, push to free list
-                    unsafe { asan_poison_slab_slot(entry.ptr, slot_size); }
+                    unsafe {
+                        asan_poison_slab_slot(entry.ptr, slot_size);
+                    }
                     self.values.free_list.push(entry.ptr);
                 }
             }
@@ -4694,7 +4872,8 @@ impl SlabAllocator {
         }
 
         // Phase 5: Update committed bytes
-        self.committed_bytes_atomic.store(self.committed_bytes(), Ordering::Relaxed);
+        self.committed_bytes_atomic
+            .store(self.committed_bytes(), Ordering::Relaxed);
 
         // Phase 6: Update session GC statistics
         #[cfg(feature = "track-stats")]
@@ -4726,9 +4905,7 @@ impl SlabAllocator {
         let pages = self.values.pages.read();
         let page_index = PageIndex::new(&pages);
 
-        let mut visited = PtrHashSet::with_capacity_and_hasher(
-            values.len() * 4, PtrBuildHasher,
-        );
+        let mut visited = PtrHashSet::with_capacity_and_hasher(values.len() * 4, PtrBuildHasher);
         let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(values.len() * 4);
 
         for value in values {
@@ -4740,9 +4917,8 @@ impl SlabAllocator {
 
         while let Some(ptr) = worklist.pop() {
             // Set context_id=0 (persistent) for this slot
-            if let Some((page_idx, slot_idx)) = page_index.find(
-                &pages, ptr as *const u8, slot_size,
-            ) {
+            if let Some((page_idx, slot_idx)) = page_index.find(&pages, ptr as *const u8, slot_size)
+            {
                 pages[page_idx].set_context_id(slot_idx, 0);
             }
 
@@ -4817,7 +4993,10 @@ impl SlabAllocator {
         // causing values to be missed and freed while still reachable.
         let roots = collect_all_roots_readonly();
         if trace {
-            eprintln!("[GC-TRACE] trace_surviving_set: {} root values collected", roots.len());
+            eprintln!(
+                "[GC-TRACE] trace_surviving_set: {} root values collected",
+                roots.len()
+            );
         }
         let mut surviving = PtrHashSet::with_capacity_and_hasher(roots.len() * 4, PtrBuildHasher);
         let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(1024);
@@ -4902,7 +5081,8 @@ impl SlabAllocator {
         let pages = self.values.pages.read();
         AllocationWatermark {
             value_page_count: pages.len(),
-            last_page_bump_count: pages.last()
+            last_page_bump_count: pages
+                .last()
                 .map(|p| p.bump_count.load(Ordering::Acquire))
                 .unwrap_or(0),
         }
@@ -4945,7 +5125,9 @@ impl SlabAllocator {
     /// Process a dead set.
     pub fn process_dead_set(&self, dead_set: &DeadSet) {
         for &ptr in &dead_set.dead_values {
-            unsafe { self.free_value(ptr); }
+            unsafe {
+                self.free_value(ptr);
+            }
         }
         for &(ptr, size) in &dead_set.dead_data {
             self.free_data_slot(ptr, size);
@@ -4990,7 +5172,8 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
 
     // Seed worklist with root inner pointers.
     // Skip inline NaN-boxed values (null inner_ptr) — they have no slab allocation.
-    let root_ptrs: Vec<*const MettaValueInner> = snapshot.roots
+    let root_ptrs: Vec<*const MettaValueInner> = snapshot
+        .roots
         .iter()
         .map(|root| root.inner_ptr())
         .filter(|ptr| !ptr.is_null())
@@ -5007,7 +5190,9 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
             MettaValueInner::SExpr(children) => {
                 for child in children.iter() {
                     let child_ptr = child.inner_ptr();
-                    if !child_ptr.is_null() && snapshot_mark_value(snapshot, child_ptr as *const u8, slot_size) {
+                    if !child_ptr.is_null()
+                        && snapshot_mark_value(snapshot, child_ptr as *const u8, slot_size)
+                    {
                         worklist.push(child_ptr);
                     }
                 }
@@ -5015,20 +5200,26 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
             MettaValueInner::Conjunction(goals) => {
                 for goal in goals.iter() {
                     let goal_ptr = goal.inner_ptr();
-                    if !goal_ptr.is_null() && snapshot_mark_value(snapshot, goal_ptr as *const u8, slot_size) {
+                    if !goal_ptr.is_null()
+                        && snapshot_mark_value(snapshot, goal_ptr as *const u8, slot_size)
+                    {
                         worklist.push(goal_ptr);
                     }
                 }
             }
             MettaValueInner::Error(_, details) => {
                 let details_ptr = details.inner_ptr();
-                if !details_ptr.is_null() && snapshot_mark_value(snapshot, details_ptr as *const u8, slot_size) {
+                if !details_ptr.is_null()
+                    && snapshot_mark_value(snapshot, details_ptr as *const u8, slot_size)
+                {
                     worklist.push(details_ptr);
                 }
             }
             MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
                 let inner_ptr = inner.inner_ptr();
-                if !inner_ptr.is_null() && snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size) {
+                if !inner_ptr.is_null()
+                    && snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size)
+                {
                     worklist.push(inner_ptr);
                 }
             }
@@ -5040,14 +5231,18 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
                 handle.collect_gc_values(&mut space_values);
                 for val in &space_values {
                     let val_ptr = val.inner_ptr();
-                    if !val_ptr.is_null() && snapshot_mark_value(snapshot, val_ptr as *const u8, slot_size) {
+                    if !val_ptr.is_null()
+                        && snapshot_mark_value(snapshot, val_ptr as *const u8, slot_size)
+                    {
                         worklist.push(val_ptr);
                     }
                 }
             }
             MettaValueInner::Spanned(v, _) => {
                 let inner_ptr = v.inner_ptr();
-                if !inner_ptr.is_null() && snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size) {
+                if !inner_ptr.is_null()
+                    && snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size)
+                {
                     worklist.push(inner_ptr);
                 }
             }
@@ -5147,10 +5342,7 @@ pub fn sweep_snapshot(snapshot: &GcSnapshot) -> GcResponse {
 }
 
 /// Legacy mark phase.
-pub fn mark_from_roots(
-    roots: impl Iterator<Item = MettaValue>,
-    alloc: &SlabAllocator,
-) {
+pub fn mark_from_roots(roots: impl Iterator<Item = MettaValue>, alloc: &SlabAllocator) {
     let mut worklist: Vec<*const MettaValueInner> = Vec::with_capacity(1024);
 
     // Skip inline NaN-boxed values (null inner_ptr) — they have no slab allocation.
@@ -5237,7 +5429,9 @@ pub fn sweep(alloc: &SlabAllocator, watermark: &AllocationWatermark) -> DeadSet 
         let sweep_limit = if page_idx < watermark.value_page_count.saturating_sub(1) {
             page.bump_count.load(Ordering::Acquire)
         } else if page_idx == watermark.value_page_count.saturating_sub(1) {
-            watermark.last_page_bump_count.min(page.bump_count.load(Ordering::Acquire))
+            watermark
+                .last_page_bump_count
+                .min(page.bump_count.load(Ordering::Acquire))
         } else {
             continue;
         };
@@ -5358,7 +5552,11 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
         let has_vars = super::metta_value::is_variable_str(s);
         let s = self.alloc.alloc_str(s);
         let inner = self.alloc.alloc_value(MettaValueInner::Atom(s));
-        let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        let flags = if has_vars {
+            super::metta_value::FLAG_HAS_VARIABLES as u8
+        } else {
+            0
+        };
         MettaValue::from_inner_tagged(inner, flags)
     }
 
@@ -5440,14 +5638,22 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     fn error(&self, msg: &str, details: MettaValue) -> MettaValue {
         let msg = self.alloc.alloc_str(msg);
         let inner = self.alloc.alloc_value(MettaValueInner::Error(msg, details));
-        let flags = if details.has_variables_fast() { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        let flags = if details.has_variables_fast() {
+            super::metta_value::FLAG_HAS_VARIABLES as u8
+        } else {
+            0
+        };
         MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]
     fn type_value(&self, value: MettaValue) -> MettaValue {
         let inner = self.alloc.alloc_value(MettaValueInner::Type(value));
-        let flags = if value.has_variables_fast() { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        let flags = if value.has_variables_fast() {
+            super::metta_value::FLAG_HAS_VARIABLES as u8
+        } else {
+            0
+        };
         MettaValue::from_inner_tagged(inner, flags)
     }
 
@@ -5461,7 +5667,11 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
         let has_vars = goals.iter().any(|g| g.has_variables_fast());
         let slice = self.alloc.alloc_slice_copy(goals);
         let inner = self.alloc.alloc_value(MettaValueInner::Conjunction(slice));
-        let flags = if has_vars { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        let flags = if has_vars {
+            super::metta_value::FLAG_HAS_VARIABLES as u8
+        } else {
+            0
+        };
         MettaValue::from_inner_tagged(inner, flags)
     }
 
@@ -5488,16 +5698,26 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     #[inline]
     fn quote(&self, value: MettaValue) -> MettaValue {
         let inner = self.alloc.alloc_value(MettaValueInner::Quoted(value));
-        let flags = if value.has_variables_fast() { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        let flags = if value.has_variables_fast() {
+            super::metta_value::FLAG_HAS_VARIABLES as u8
+        } else {
+            0
+        };
         MettaValue::from_inner_tagged(inner, flags)
     }
 
     #[inline]
     fn spanned(&self, value: MettaValue, span: crate::ir::Span) -> MettaValue {
         let span = self.alloc.alloc_span(span);
-        let inner = self.alloc.alloc_value(MettaValueInner::Spanned(value, span));
+        let inner = self
+            .alloc
+            .alloc_value(MettaValueInner::Spanned(value, span));
         // Propagate variable flag through Spanned wrapper
-        let flags = if value.has_variables_fast() { super::metta_value::FLAG_HAS_VARIABLES as u8 } else { 0 };
+        let flags = if value.has_variables_fast() {
+            super::metta_value::FLAG_HAS_VARIABLES as u8
+        } else {
+            0
+        };
         MettaValue::from_inner_tagged(inner, flags)
     }
 
@@ -5682,8 +5902,8 @@ fn deserialize_slab_value(
 mod tests {
     use std::sync::Barrier;
 
-    use super::*;
     use super::super::metta_value_trait::MettaValueFactory;
+    use super::*;
 
     #[test]
     fn test_slab_allocator_creation() {
@@ -5821,7 +6041,9 @@ mod tests {
         let alloc = SlabAllocator::new();
         let inner = alloc.alloc_value(MettaValueInner::Long(42));
         let ptr = inner as *const MettaValueInner as *mut u8;
-        unsafe { alloc.free_value(ptr); }
+        unsafe {
+            alloc.free_value(ptr);
+        }
 
         let inner2 = alloc.alloc_value(MettaValueInner::Long(99));
         let ptr2 = inner2 as *const MettaValueInner as *mut u8;
@@ -5878,8 +6100,11 @@ mod tests {
         }
 
         let pages = alloc.values.pages.read();
-        assert!(pages.len() >= 2,
-            "expected at least 2 pages, got {}", pages.len());
+        assert!(
+            pages.len() >= 2,
+            "expected at least 2 pages, got {}",
+            pages.len()
+        );
     }
 
     // ====================================================================
@@ -5887,9 +6112,7 @@ mod tests {
     // ====================================================================
 
     fn test_factory(alloc: &SlabAllocator) -> GcFactory {
-        let static_ref: &'static SlabAllocator = unsafe {
-            &*(alloc as *const SlabAllocator)
-        };
+        let static_ref: &'static SlabAllocator = unsafe { &*(alloc as *const SlabAllocator) };
         GcFactory::new(static_ref)
     }
 
@@ -6061,7 +6284,12 @@ mod tests {
             values.push(factory.long(i));
         }
         for (i, v) in values.iter().enumerate() {
-            assert_eq!(v.as_long(), Some(i as i64), "value at index {} corrupted", i);
+            assert_eq!(
+                v.as_long(),
+                Some(i as i64),
+                "value at index {} corrupted",
+                i
+            );
         }
     }
 
@@ -6123,8 +6351,10 @@ mod tests {
         assert!(wm.last_page_bump_count >= 2);
         let _v3 = factory.atom("w3");
         let wm2 = alloc.watermark();
-        assert!(wm2.last_page_bump_count > wm.last_page_bump_count
-            || wm2.value_page_count > wm.value_page_count);
+        assert!(
+            wm2.last_page_bump_count > wm.last_page_bump_count
+                || wm2.value_page_count > wm.value_page_count
+        );
     }
 
     #[test]
@@ -6187,8 +6417,11 @@ mod tests {
         let wm = alloc.watermark();
         mark_from_roots(std::iter::once(alive), &alloc);
         let dead_set = sweep(&alloc, &wm);
-        assert!(dead_set.dead_values.len() >= 2,
-            "expected at least 2 dead values, got {}", dead_set.dead_values.len());
+        assert!(
+            dead_set.dead_values.len() >= 2,
+            "expected at least 2 dead values, got {}",
+            dead_set.dead_values.len()
+        );
         assert_eq!(dead_set.live_values, 1);
         alloc.clear_marks();
     }
@@ -6203,8 +6436,11 @@ mod tests {
         let dead_set = sweep(&alloc, &wm);
         // v1 should be dead (unmarked), v2 is after watermark
         assert_eq!(dead_set.dead_values.len(), 1);
-        let dead_ptrs: std::collections::HashSet<*const u8> = dead_set.dead_values.iter()
-            .map(|&p| p as *const u8).collect();
+        let dead_ptrs: std::collections::HashSet<*const u8> = dead_set
+            .dead_values
+            .iter()
+            .map(|&p| p as *const u8)
+            .collect();
         assert!(dead_ptrs.contains(&(v1.inner_ptr() as *const u8)));
     }
 
@@ -6217,8 +6453,10 @@ mod tests {
         let wm = alloc.watermark();
         mark_from_roots(std::iter::once(alive), &alloc);
         let dead_set = sweep(&alloc, &wm);
-        assert!(!dead_set.dead_data.is_empty(),
-            "expected dead data for atom string");
+        assert!(
+            !dead_set.dead_data.is_empty(),
+            "expected dead data for atom string"
+        );
         alloc.clear_marks();
     }
 
@@ -6239,12 +6477,15 @@ mod tests {
         alloc.clear_marks();
     }
 
-
     #[test]
     fn test_full_gc_cycle() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let root1 = factory.sexpr(vec![factory.atom("+"), factory.atom("one"), factory.atom("two")]);
+        let root1 = factory.sexpr(vec![
+            factory.atom("+"),
+            factory.atom("one"),
+            factory.atom("two"),
+        ]);
         let root2 = factory.atom("keep-me");
         let _garbage1 = factory.atom("garbage1");
         let _garbage2 = factory.atom("throw-away");
@@ -6252,8 +6493,11 @@ mod tests {
         let wm = alloc.watermark();
         mark_from_roots(vec![root1, root2].into_iter(), &alloc);
         let dead_set = sweep(&alloc, &wm);
-        assert!(dead_set.dead_values.len() >= 3,
-            "expected at least 3 dead values, got {}", dead_set.dead_values.len());
+        assert!(
+            dead_set.dead_values.len() >= 3,
+            "expected at least 3 dead values, got {}",
+            dead_set.dead_values.len()
+        );
         alloc.process_dead_set(&dead_set);
         alloc.clear_marks();
         // Verify live values are still accessible after GC
@@ -6276,19 +6520,21 @@ mod tests {
         let alloc = Box::leak(Box::new(SlabAllocator::new()));
         let factory = GcFactory::new(alloc);
 
-        let handles: Vec<_> = (0..4).map(|t| {
-            let f = factory;
-            thread::spawn(move || {
-                let mut values = Vec::new();
-                for i in 0..1000 {
-                    values.push(f.long(t * 1000 + i));
-                }
-                // Verify all values
-                for (i, v) in values.iter().enumerate() {
-                    assert_eq!(v.as_long(), Some(t * 1000 + i as i64));
-                }
+        let handles: Vec<_> = (0..4)
+            .map(|t| {
+                let f = factory;
+                thread::spawn(move || {
+                    let mut values = Vec::new();
+                    for i in 0..1000 {
+                        values.push(f.long(t * 1000 + i));
+                    }
+                    // Verify all values
+                    for (i, v) in values.iter().enumerate() {
+                        assert_eq!(v.as_long(), Some(t * 1000 + i as i64));
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         for h in handles {
             h.join().expect("thread panicked");
@@ -6332,7 +6578,11 @@ mod tests {
         let slot_size = alloc.values.slot_size;
         for page in pages.iter() {
             if let Some(idx) = page.slot_index(v.inner_ptr() as *const u8, slot_size) {
-                assert_eq!(page.context_id(idx), 0, "persistent alloc should have context_id=0");
+                assert_eq!(
+                    page.context_id(idx),
+                    0,
+                    "persistent alloc should have context_id=0"
+                );
                 return;
             }
         }
@@ -6344,7 +6594,11 @@ mod tests {
         let guard = SessionGuard::enter();
         let ctx_id = guard.context_id();
         assert_ne!(ctx_id, 0, "session context ID should be non-zero");
-        assert_eq!(current_context_id(), ctx_id, "thread-local should match guard");
+        assert_eq!(
+            current_context_id(),
+            ctx_id,
+            "thread-local should match guard"
+        );
 
         // Allocate a value inside the session
         let factory = global_factory();
@@ -6354,10 +6608,17 @@ mod tests {
         let slot_size = alloc.values.slot_size;
         for page in pages.iter() {
             if let Some(idx) = page.slot_index(v.inner_ptr() as *const u8, slot_size) {
-                assert_eq!(page.context_id(idx), ctx_id,
-                    "value allocated inside session should have session's context_id");
+                assert_eq!(
+                    page.context_id(idx),
+                    ctx_id,
+                    "value allocated inside session should have session's context_id"
+                );
                 drop(guard);
-                assert_eq!(current_context_id(), 0, "thread-local should be cleared after drop");
+                assert_eq!(
+                    current_context_id(),
+                    0,
+                    "thread-local should be cleared after drop"
+                );
                 return;
             }
         }
@@ -6370,7 +6631,11 @@ mod tests {
             let _guard = SessionGuard::enter();
             assert_ne!(current_context_id(), 0);
         }
-        assert_eq!(current_context_id(), 0, "context ID should be 0 after guard drops");
+        assert_eq!(
+            current_context_id(),
+            0,
+            "context ID should be 0 after guard drops"
+        );
     }
 
     #[test]
@@ -6399,7 +6664,11 @@ mod tests {
         // invariant: every SessionGuard has context_id != 0.
         for _ in 0..100 {
             let guard = SessionGuard::enter();
-            assert_ne!(guard.context_id(), 0, "session context_id must never be 0 (persistent sentinel)");
+            assert_ne!(
+                guard.context_id(),
+                0,
+                "session context_id must never be 0 (persistent sentinel)"
+            );
             drop(guard);
         }
     }
@@ -6424,8 +6693,11 @@ mod tests {
             let mut found = false;
             for page in pages.iter() {
                 if let Some(idx) = page.slot_index(val.inner_ptr() as *const u8, slot_size) {
-                    assert_eq!(page.context_id(idx), ctx_id,
-                        "all values in session should share context_id");
+                    assert_eq!(
+                        page.context_id(idx),
+                        ctx_id,
+                        "all values in session should share context_id"
+                    );
                     found = true;
                     break;
                 }
@@ -6438,19 +6710,22 @@ mod tests {
     #[test]
     fn test_concurrent_sessions_different_ids() {
         let barrier = Arc::new(Barrier::new(4));
-        let handles: Vec<_> = (0..4).map(|_| {
-            let barrier = Arc::clone(&barrier);
-            thread::spawn(move || {
-                let guard = SessionGuard::enter();
-                let id = guard.context_id();
-                barrier.wait(); // All threads have their session IDs
-                assert_ne!(id, 0);
-                drop(guard);
-                id
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    let guard = SessionGuard::enter();
+                    let id = guard.context_id();
+                    barrier.wait(); // All threads have their session IDs
+                    assert_ne!(id, 0);
+                    drop(guard);
+                    id
+                })
             })
-        }).collect();
+            .collect();
 
-        let ids: Vec<u32> = handles.into_iter()
+        let ids: Vec<u32> = handles
+            .into_iter()
             .map(|h| h.join().expect("thread panicked"))
             .collect();
 
@@ -6458,7 +6733,11 @@ mod tests {
         let mut sorted = ids.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), ids.len(), "concurrent session IDs should be unique");
+        assert_eq!(
+            sorted.len(),
+            ids.len(),
+            "concurrent session IDs should be unique"
+        );
     }
 
     // ========================================================================
@@ -6509,8 +6788,10 @@ mod tests {
 
         // Persistent value should still be accessible
         assert_eq!(persistent.as_atom(), Some("persistent_value"));
-        assert!(alloc.contains_value(persistent_ptr),
-            "persistent value should still exist after session release");
+        assert!(
+            alloc.contains_value(persistent_ptr),
+            "persistent value should still exist after session release"
+        );
 
         mem::forget(guard);
     }
@@ -6594,8 +6875,13 @@ mod tests {
         // After drop, roots should no longer include our values
         // (other roots from environments may still be present)
         let roots_after = collect_all_roots();
-        let still_has_v2 = roots_after.iter().any(|r| r.as_atom() == Some("safepoint_test"));
-        assert!(!still_has_v2, "safepoint roots should be cleared after handle drop");
+        let still_has_v2 = roots_after
+            .iter()
+            .any(|r| r.as_atom() == Some("safepoint_test"));
+        assert!(
+            !still_has_v2,
+            "safepoint roots should be cleared after handle drop"
+        );
     }
 
     #[test]
@@ -6620,6 +6906,26 @@ mod tests {
         drop(handle2);
         let roots = collect_all_roots();
         assert!(!roots.iter().any(|r| r.as_long() == Some(1002)));
+    }
+
+    #[test]
+    fn test_register_temporary_roots_empty_active_handle_does_not_alias() {
+        let factory = global_factory();
+
+        let empty_handle = register_temporary_roots(Vec::new());
+        let live_handle = register_temporary_roots(vec![factory.atom("empty-active-root-live")]);
+
+        drop(empty_handle);
+
+        let roots = collect_all_roots();
+        assert!(
+            roots
+                .iter()
+                .any(|r| r.as_atom() == Some("empty-active-root-live")),
+            "dropping an active empty handle must not clear another active root set"
+        );
+
+        drop(live_handle);
     }
 
     #[test]
@@ -6666,14 +6972,19 @@ mod tests {
         // Drop for safepoint
         drop_eval_guard_for_safepoint();
         let depth_during = EVAL_GUARD_DEPTH.with(|d| d.get());
-        assert_eq!(depth_during, depth_before - 1,
-            "drop_eval_guard should decrement EVAL_GUARD_DEPTH");
+        assert_eq!(
+            depth_during,
+            depth_before - 1,
+            "drop_eval_guard should decrement EVAL_GUARD_DEPTH"
+        );
 
         // Re-acquire
         reacquire_eval_guard_after_safepoint();
         let depth_after = EVAL_GUARD_DEPTH.with(|d| d.get());
-        assert_eq!(depth_after, depth_before,
-            "reacquire should restore EVAL_GUARD_DEPTH");
+        assert_eq!(
+            depth_after, depth_before,
+            "reacquire should restore EVAL_GUARD_DEPTH"
+        );
 
         // _guard drops here. Since drop_eval_guard_for_safepoint() +
         // reacquire_eval_guard_after_safepoint() is a balanced pair (restores both

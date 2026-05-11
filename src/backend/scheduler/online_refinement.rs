@@ -117,9 +117,10 @@ impl OnlineRefinement {
         let key = descriptor.head_arity_key();
         self.total_updates.fetch_add(1, Ordering::Relaxed);
 
-        let mut entry = self.entries.entry(key).or_insert_with(|| {
-            WeightEntry::new(current_class)
-        });
+        let mut entry = self
+            .entries
+            .entry(key)
+            .or_insert_with(|| WeightEntry::new(current_class));
 
         entry.ema.update(actual_runtime_ns as f64);
         entry.total_observations += 1;
@@ -265,12 +266,18 @@ mod tests {
         // Record fast runtimes, but not enough to trigger reclassification
         for _ in 0..(RECLASSIFY_HYSTERESIS - 1) {
             let result = refinement.record_runtime(desc, 100, CostClass::SymbolicModerate);
-            assert!(result.is_none(), "should not reclassify before hysteresis threshold");
+            assert!(
+                result.is_none(),
+                "should not reclassify before hysteresis threshold"
+            );
         }
 
         // One more should trigger reclassification
         let result = refinement.record_runtime(desc, 100, CostClass::SymbolicModerate);
-        assert!(result.is_some(), "should reclassify after hysteresis threshold");
+        assert!(
+            result.is_some(),
+            "should reclassify after hysteresis threshold"
+        );
         assert_eq!(result.unwrap(), CostClass::SymbolicCheap);
     }
 

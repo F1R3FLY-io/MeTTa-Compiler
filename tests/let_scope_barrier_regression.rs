@@ -19,8 +19,8 @@
 //! Sanity tests guard against regressions at the top level and in nested
 //! let forms (which exercise multiple local slots).
 
-use mettatron::{compile, eval, new_env};
 use mettatron::backend::models::MettaValueTrait;
+use mettatron::{compile, eval, new_env};
 
 fn eval_last(source: &str) -> Vec<String> {
     let state = compile(source).expect("compile failed");
@@ -32,7 +32,10 @@ fn eval_last(source: &str) -> Vec<String> {
         let (results, env_after) = eval(expr, env, &state);
         env = env_after;
         if idx == expr_count - 1 {
-            last = results.iter().map(|r| format!("{}", r.friendly_repr())).collect();
+            last = results
+                .iter()
+                .map(|r| format!("{}", r.friendly_repr()))
+                .collect();
         }
     }
     last

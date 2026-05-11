@@ -180,11 +180,7 @@ fn output_terminal(locations: &[ClassifiedLocation], verbose: bool) {
             if priority_categories.contains(cat) {
                 continue;
             }
-            println!(
-                "\n=== {} ({}) ===",
-                category_str(cat).green(),
-                locs.len()
-            );
+            println!("\n=== {} ({}) ===", category_str(cat).green(), locs.len());
             for loc in locs {
                 let name = location_name(&loc.context);
                 let ty = location_ty(&loc.context);
@@ -257,9 +253,7 @@ fn output_markdown(locations: &[ClassifiedLocation], verbose: bool) {
         .filter(|l| {
             matches!(
                 l.category,
-                Category::PersistentUnregistered
-                    | Category::Unknown
-                    | Category::GcInfrastructure
+                Category::PersistentUnregistered | Category::Unknown | Category::GcInfrastructure
             )
         })
         .collect();

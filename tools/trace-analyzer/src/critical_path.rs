@@ -209,19 +209,36 @@ pub fn run(file: &str, worker_counts: &[usize]) -> Result<(), String> {
     println!("Source: {}", reader.header.source_file);
     println!("Total events: {total_events}");
     println!("Wall time: {}", format_duration_ns(total_wall_ns));
-    println!("Total compute time: {}", format_duration_ns(total_compute_ns));
-    println!("Longest thread time: {}", format_duration_ns(main_thread_time));
+    println!(
+        "Total compute time: {}",
+        format_duration_ns(total_compute_ns)
+    );
+    println!(
+        "Longest thread time: {}",
+        format_duration_ns(main_thread_time)
+    );
     println!("Active threads: {}", thread_times.len());
     println!();
 
     println!("--- Parallelization Potential ---");
-    println!("  Sequential fraction (S): {:.4} ({:.1}%)", sequential_fraction, sequential_fraction * 100.0);
-    println!("  Parallel fraction (P):   {:.4} ({:.1}%)", parallel_fraction, parallel_fraction * 100.0);
+    println!(
+        "  Sequential fraction (S): {:.4} ({:.1}%)",
+        sequential_fraction,
+        sequential_fraction * 100.0
+    );
+    println!(
+        "  Parallel fraction (P):   {:.4} ({:.1}%)",
+        parallel_fraction,
+        parallel_fraction * 100.0
+    );
     println!();
 
     // Amdahl's law: Speedup(N) = 1 / (S + P/N)
     println!("--- Amdahl's Law Speedup Predictions ---");
-    println!("  {:>8}  {:>10}  {:>10}", "Workers", "Speedup", "Efficiency");
+    println!(
+        "  {:>8}  {:>10}  {:>10}",
+        "Workers", "Speedup", "Efficiency"
+    );
     println!("  {}", "-".repeat(32));
 
     for &n in worker_counts {
@@ -241,7 +258,12 @@ pub fn run(file: &str, worker_counts: &[usize]) -> Result<(), String> {
         } else {
             0.0
         };
-        println!("  Thread {:>4}: {:>12}  ({:.1}%)", tid, format_duration_ns(*time), pct);
+        println!(
+            "  Thread {:>4}: {:>12}  ({:.1}%)",
+            tid,
+            format_duration_ns(*time),
+            pct
+        );
     }
     println!();
 

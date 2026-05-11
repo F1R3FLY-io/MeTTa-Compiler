@@ -127,8 +127,7 @@ mod tests {
         assert_eq!(nfa.states[nfa.start].epsilon.len(), patterns.len());
 
         // Total states: 1 (start) + sum(1 + pattern.bytes.len()) for each pattern
-        let expected_states: usize =
-            1 + patterns.iter().map(|p| 1 + p.bytes.len()).sum::<usize>();
+        let expected_states: usize = 1 + patterns.iter().map(|p| 1 + p.bytes.len()).sum::<usize>();
         assert_eq!(nfa.states.len(), expected_states);
     }
 

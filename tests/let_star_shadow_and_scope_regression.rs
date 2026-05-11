@@ -19,8 +19,9 @@
 //! The ghost-preservation guard tests confirm Fix 1 (shadow strip) does
 //! NOT reintroduce ghost branches at other compose sites.
 
-use mettatron::{compile, eval, new_env};
 use mettatron::backend::models::MettaValueTrait;
+use mettatron::backend::eval::eval_trampoline as eval_tree;
+use mettatron::{compile, eval, new_env};
 
 fn eval_last(source: &str) -> Vec<String> {
     let state = compile(source).expect("compile failed");
@@ -32,7 +33,29 @@ fn eval_last(source: &str) -> Vec<String> {
         let (results, env_after) = eval(expr, env, &state);
         env = env_after;
         if idx == expr_count - 1 {
-            last = results.iter().map(|r| format!("{}", r.friendly_repr())).collect();
+            last = results
+                .iter()
+                .map(|r| format!("{}", r.friendly_repr()))
+                .collect();
+        }
+    }
+    last
+}
+
+fn eval_last_tree(source: &str) -> Vec<String> {
+    let state = compile(source).expect("compile failed");
+    let mut env = new_env();
+    let mut last: Vec<String> = Vec::new();
+    let expr_count = state.source().len();
+    for (idx, expr) in state.source().iter().enumerate() {
+        let expr = *expr;
+        let (results, env_after) = eval_tree(expr, env, &state);
+        env = (*env_after).clone();
+        if idx == expr_count - 1 {
+            last = results
+                .iter()
+                .map(|r| format!("{}", r.0.friendly_repr()))
+                .collect();
         }
     }
     last
@@ -63,6 +86,12 @@ fn nested_let_inner_shadows_outer() {
     assert_eq!(output, vec!["2"]);
 }
 
+#[test]
+fn tree_walker_nested_let_inner_shadows_outer() {
+    let output = eval_last_tree("!(let $x 1 (let $x 2 $x))");
+    assert_eq!(output, vec!["2"]);
+}
+
 /// Value-derived shadow: pair 2's value expression uses pair 1's binding.
 /// `(let* (($x 1) ($x (+ $x 1))) $x) → 2`
 /// The outer `$x=1` is visible when computing pair 2's value `(+ $x 1)`
@@ -71,6 +100,32 @@ fn nested_let_inner_shadows_outer() {
 fn let_star_value_derived_shadow() {
     let output = eval_last("!(let* (($x 1) ($x (+ $x 1))) $x)");
     assert_eq!(output, vec!["2"]);
+}
+
+#[test]
+fn tree_walker_nested_let_star_patterns_shadow_outer_bindings() {
+    let source = r#"
+        !(let* (($head stale-head)
+                ($tail stale-tail))
+               (let* (($head (car-atom (a b)))
+                      ($tail (cdr-atom (a b))))
+                     $tail))
+    "#;
+    let output = eval_last_tree(source);
+    assert_eq!(output, vec!["(b)"]);
+}
+
+#[test]
+fn tiered_nested_let_star_patterns_shadow_outer_bindings() {
+    let source = r#"
+        !(let* (($head stale-head)
+                ($tail stale-tail))
+               (let* (($head (car-atom (a b)))
+                      ($tail (cdr-atom (a b))))
+                     $tail))
+    "#;
+    let output = eval_last(source);
+    assert_eq!(output, vec!["(b)"]);
 }
 
 // ============================================================================
@@ -128,11 +183,7 @@ fn rule_match_outer_carrying_conflict_still_drops() {
     // Pattern match fails (B ≠ A), so the rule doesn't fire. Result is
     // unreduced `(r B)` — not a ghost result claiming `matched`.
     for r in &output {
-        assert!(
-            !r.contains("matched"),
-            "ghost result appeared: {}",
-            r
-        );
+        assert!(!r.contains("matched"), "ghost result appeared: {}", r);
     }
 }
 

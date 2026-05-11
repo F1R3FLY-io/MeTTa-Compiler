@@ -19,10 +19,7 @@ use std::io::Write;
 use trace_format::{TraceEvent, TraceHeader, TRACE_MAGIC};
 
 /// Write the trace file header (magic + serialized TraceHeader).
-pub fn write_header<W: Write>(
-    writer: &mut W,
-    header: &TraceHeader,
-) -> std::io::Result<()> {
+pub fn write_header<W: Write>(writer: &mut W, header: &TraceHeader) -> std::io::Result<()> {
     // Magic bytes.
     writer.write_all(&TRACE_MAGIC)?;
 
@@ -38,10 +35,7 @@ pub fn write_header<W: Write>(
 }
 
 /// Write a single length-prefixed event.
-pub fn write_event<W: Write>(
-    writer: &mut W,
-    event: &TraceEvent,
-) -> std::io::Result<()> {
+pub fn write_event<W: Write>(writer: &mut W, event: &TraceEvent) -> std::io::Result<()> {
     let event_bytes = trace_format::serialize(event);
 
     let len = event_bytes.len() as u32;

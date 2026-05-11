@@ -45,11 +45,7 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     Done((smallvec::SmallVec<[V; 2]>, E)),
 
     /// Need to evaluate S-expression items (iteratively)
-    EvalSExpr {
-        items: Vec<V>,
-        env: E,
-        depth: usize,
-    },
+    EvalSExpr { items: Vec<V>, env: E, depth: usize },
 
     /// Start TCO grounded operation (e.g., +, -, and, or)
     /// This defers evaluation to the trampoline for proper tail call handling.
@@ -606,5 +602,3 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         depth: usize,
     },
 }
-
-

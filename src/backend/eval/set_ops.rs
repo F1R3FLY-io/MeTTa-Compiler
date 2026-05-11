@@ -52,7 +52,7 @@ use std::collections::HashMap;
 use smallvec::smallvec;
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
-use crate::backend::eval::trampoline::{MettaEnvironment, EvalContext};
+use crate::backend::eval::trampoline::{EvalContext, MettaEnvironment};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 
 use super::step::GenericEvalStep;
@@ -70,7 +70,9 @@ pub fn eval_set_op_generic<C: EvalContext>(
 where
     MettaValue: Clone,
 {
-    let op = items[0].as_atom().expect("set_ops dispatch: head must be atom");
+    let op = items[0]
+        .as_atom()
+        .expect("set_ops dispatch: head must be atom");
     match op {
         "unique-atom" => eval_unique_atom_generic(items, env, ctx),
         "alpha-unique-atom" => eval_alpha_unique_atom_generic(items, env, ctx),
@@ -144,10 +146,9 @@ where
     let list_items = match extract_list(&items[1]) {
         Ok(elems) => elems,
         Err(()) => {
-            let err = ctx.factory().error(
-                "unique-atom: argument must be a list",
-                items[1].clone(),
-            );
+            let err = ctx
+                .factory()
+                .error("unique-atom: argument must be a list", items[1].clone());
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -332,10 +333,9 @@ where
     let left = match extract_list(&items[1]) {
         Ok(elems) => elems,
         Err(()) => {
-            let err = ctx.factory().error(
-                "union-atom: left argument must be a list",
-                items[1].clone(),
-            );
+            let err = ctx
+                .factory()
+                .error("union-atom: left argument must be a list", items[1].clone());
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -407,7 +407,8 @@ where
 
     // Build count map from right list using hash_value() for keys
     // Maps hash → Vec<(value, remaining_count)> to handle hash collisions correctly
-    let mut right_by_hash: HashMap<u64, Vec<(MettaValue, usize)>> = HashMap::with_capacity(right.len());
+    let mut right_by_hash: HashMap<u64, Vec<(MettaValue, usize)>> =
+        HashMap::with_capacity(right.len());
 
     for item in right {
         let h = item.hash_value();
@@ -490,7 +491,8 @@ where
     };
 
     // Build count map from right list (same approach as intersection)
-    let mut right_by_hash: HashMap<u64, Vec<(MettaValue, usize)>> = HashMap::with_capacity(right.len());
+    let mut right_by_hash: HashMap<u64, Vec<(MettaValue, usize)>> =
+        HashMap::with_capacity(right.len());
     for item in right {
         let h = item.hash_value();
         let entry = right_by_hash.entry(h).or_default();
@@ -540,9 +542,7 @@ mod tests {
     // Helper: extract sexpr items from a result
     fn result_items(results: &[crate::backend::models::MettaValue]) -> Vec<String> {
         assert_eq!(results.len(), 1, "expected exactly 1 result");
-        let items = results[0]
-            .as_sexpr()
-            .expect("expected sexpr result");
+        let items = results[0].as_sexpr().expect("expected sexpr result");
         items.iter().map(|v| format!("{}", v)).collect()
     }
 
@@ -739,18 +739,8 @@ mod tests {
         // For ground (variable-free) inputs, alpha-unique-atom and
         // unique-atom must produce identical results.
         let f = global_factory();
-        let list_for_unique = f.sexpr(vec![
-            f.atom("a"),
-            f.atom("b"),
-            f.atom("a"),
-            f.atom("c"),
-        ]);
-        let list_for_alpha = f.sexpr(vec![
-            f.atom("a"),
-            f.atom("b"),
-            f.atom("a"),
-            f.atom("c"),
-        ]);
+        let list_for_unique = f.sexpr(vec![f.atom("a"), f.atom("b"), f.atom("a"), f.atom("c")]);
+        let list_for_alpha = f.sexpr(vec![f.atom("a"), f.atom("b"), f.atom("a"), f.atom("c")]);
 
         let ctx = StaticEvalContext::get();
 
@@ -826,12 +816,7 @@ mod tests {
     fn test_intersection_atom_multiset() {
         let f = global_factory();
         // (intersection-atom (a b c c) (b c c c d)) → (b c c)
-        let left = f.sexpr(vec![
-            f.atom("a"),
-            f.atom("b"),
-            f.atom("c"),
-            f.atom("c"),
-        ]);
+        let left = f.sexpr(vec![f.atom("a"), f.atom("b"), f.atom("c"), f.atom("c")]);
         let right = f.sexpr(vec![
             f.atom("b"),
             f.atom("c"),
@@ -880,18 +865,8 @@ mod tests {
     fn test_subtraction_atom_multiset() {
         let f = global_factory();
         // (subtraction-atom (a b b c) (b c c d)) → (a b)
-        let left = f.sexpr(vec![
-            f.atom("a"),
-            f.atom("b"),
-            f.atom("b"),
-            f.atom("c"),
-        ]);
-        let right = f.sexpr(vec![
-            f.atom("b"),
-            f.atom("c"),
-            f.atom("c"),
-            f.atom("d"),
-        ]);
+        let left = f.sexpr(vec![f.atom("a"), f.atom("b"), f.atom("b"), f.atom("c")]);
+        let right = f.sexpr(vec![f.atom("b"), f.atom("c"), f.atom("c"), f.atom("d")]);
         let items = vec![f.atom("subtraction-atom"), left, right];
 
         let ctx = StaticEvalContext::get();

@@ -58,11 +58,20 @@ pub unsafe extern "C" fn jit_runtime_eval_if(
     else_val: u64,
     _ip: u64,
 ) -> u64 {
-    use crate::backend::bytecode::jit::types::TAG_BOOL;
+    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_MASK, TAG_ERROR};
 
     // True is TAG_BOOL | 1, False is TAG_BOOL | 0
     let tag_bool_true = TAG_BOOL | 1;
     let tag_bool_false = TAG_BOOL;
+
+    // BUG T0-T2-008 (plan T2/T3.B): propagate Error condition through `if`.
+    // An `if` whose condition evaluates to (Error ...) yields the Error
+    // itself, matching HE's metta_call short-circuit (the Error never reaches
+    // the rule body). Without this check the JIT would fall through to the
+    // non-Bool else_val arm, returning the fallback branch unexpectedly.
+    if (condition & TAG_MASK) == TAG_ERROR {
+        return condition;
+    }
 
     // MeTTa HE: only True → then, False → else. Everything else is non-boolean.
     // Non-boolean conditions (including Unit) should return unreduced, but the

@@ -99,11 +99,9 @@ impl TraceReader {
             return Err(format!("File not found: {path}"));
         }
 
-        let file = std::fs::File::open(p)
-            .map_err(|e| format!("Failed to open file: {e}"))?;
+        let file = std::fs::File::open(p).map_err(|e| format!("Failed to open file: {e}"))?;
 
-        let mmap = unsafe { Mmap::map(&file) }
-            .map_err(|e| format!("Failed to mmap file: {e}"))?;
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| format!("Failed to mmap file: {e}"))?;
 
         if mmap.len() < 8 {
             return Err("File too small to contain trace header".to_string());
@@ -165,7 +163,8 @@ impl TraceReader {
 
     /// Resolve a file_id to a path string.
     pub fn resolve_file(&self, file_id: u16) -> &str {
-        self.file_table.get(file_id as usize)
+        self.file_table
+            .get(file_id as usize)
             .map(|s| s.as_str())
             .unwrap_or("<unknown>")
     }
@@ -304,7 +303,11 @@ mod tests {
         let (ft, events_end, truncated) = detect_footer(&buf, events_start);
         assert!(truncated, "file without footer should be truncated");
         assert!(ft.is_empty(), "truncated file should have empty file table");
-        assert_eq!(events_end, buf.len(), "events_end should be EOF for truncated file");
+        assert_eq!(
+            events_end,
+            buf.len(),
+            "events_end should be EOF for truncated file"
+        );
     }
 
     #[test]

@@ -166,9 +166,7 @@ pub enum WorkItem {
         carrying_bindings: SharedBindings,
     },
     /// Resume the continuation at stack top with a result
-    Resume {
-        result: EvalResult,
-    },
+    Resume { result: EvalResult },
 }
 
 /// Continuation representing what to do with an evaluation result.
@@ -473,6 +471,8 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+        /// Demand active before the condition was narrowed to `Exactly(1)`.
+        outer_demand: crate::backend::eval::cesk::coroutine::Demand,
     },
 
     /// Processing case atom
@@ -678,6 +678,10 @@ pub enum Continuation {
         /// the observation point, not earlier during match composition).
         /// None for plain `collapse` or when no free vars were tracked.
         tracked_vars_hint: Option<std::sync::Arc<smallvec::SmallVec<[&'static str; 4]>>>,
+        /// Caller bindings active around the collapse form. Plain collapse
+        /// re-evaluates raw results under this context; collapse-bind keeps it
+        /// rooted for continuation-state completeness.
+        outer_carrying: SharedBindings,
     },
 
     /// Processing amb
@@ -805,7 +809,6 @@ pub enum Continuation {
     //     depth: usize,
     //     parent_cont: usize,
     // },
-
     /// Processing remove-atom space
     ProcessRemoveAtomSpace {
         space_ref: MettaValue,
@@ -826,7 +829,6 @@ pub enum Continuation {
     //     depth: usize,
     //     parent_cont: usize,
     // },
-
     /// Processing new-state
     ProcessNewState {
         initial_value: MettaValue,
@@ -1184,7 +1186,12 @@ impl WorkItem {
     /// temporary roots before dropping the EvalGuard.
     pub fn collect_values(&self, out: &mut Vec<MettaValue>) {
         match self {
-            Self::Eval { value, expected_type, carrying_bindings, .. } => {
+            Self::Eval {
+                value,
+                expected_type,
+                carrying_bindings,
+                ..
+            } => {
                 out.push(*value);
                 if let Some(et) = expected_type {
                     out.push(*et);
@@ -1192,7 +1199,13 @@ impl WorkItem {
                 // H14 (2026-05-05): root-walk caller-scope bindings.
                 collect_bindings_values(carrying_bindings, out);
             }
-            Self::EvalWithBindings { template, bindings, expected_type, carrying_bindings, .. } => {
+            Self::EvalWithBindings {
+                template,
+                bindings,
+                expected_type,
+                carrying_bindings,
+                ..
+            } => {
                 out.push(*template);
                 collect_bindings_values(bindings, out);
                 if let Some(et) = expected_type {
@@ -1201,7 +1214,10 @@ impl WorkItem {
                 // H14 (2026-05-05): root-walk caller-scope bindings.
                 collect_bindings_values(carrying_bindings, out);
             }
-            Self::Resume { result: (values, _), .. } => {
+            Self::Resume {
+                result: (values, _),
+                ..
+            } => {
                 for (v, bindings) in values.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
@@ -1212,20 +1228,14 @@ impl WorkItem {
 }
 
 /// Helper: collect all MettaValue values from a GenericBindings into `out`.
-fn collect_bindings_values(
-    bindings: &GenericBindings<MettaValue>,
-    out: &mut Vec<MettaValue>,
-) {
-    for (_name, val) in bindings.iter() {
+fn collect_bindings_values(bindings: &GenericBindings<MettaValue>, out: &mut Vec<MettaValue>) {
+    for (_scope, _name, val) in bindings.iter_full() {
         out.push(*val);
     }
 }
 
 /// Helper: collect all MettaValue values from a GroundedState into `out`.
-fn collect_grounded_state_values(
-    state: &GroundedState<MettaValue>,
-    out: &mut Vec<MettaValue>,
-) {
+fn collect_grounded_state_values(state: &GroundedState<MettaValue>, out: &mut Vec<MettaValue>) {
     out.extend(state.args.iter().copied());
     for vals in state.evaluated_args.values() {
         out.extend(vals.iter().copied());
@@ -1259,7 +1269,12 @@ impl Continuation {
         match self {
             Self::Done => {}
 
-            Self::CollectSExpr { remaining, collected, outer_carrying, .. } => {
+            Self::CollectSExpr {
+                remaining,
+                collected,
+                outer_carrying,
+                ..
+            } => {
                 out.extend(remaining.as_slice().iter().copied());
                 for (vals, _env) in collected {
                     for (v, bindings) in vals.iter() {
@@ -1272,7 +1287,11 @@ impl Continuation {
             }
 
             Self::ProcessRuleMatches {
-                remaining_matches, results, current_branch_bindings, outer_carrying, ..
+                remaining_matches,
+                results,
+                current_branch_bindings,
+                outer_carrying,
+                ..
             } => {
                 for (rhs, bindings) in remaining_matches.as_slice() {
                     out.push(*rhs);
@@ -1287,7 +1306,11 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessGroundedOp { state, arg_bindings, .. } => {
+            Self::ProcessGroundedOp {
+                state,
+                arg_bindings,
+                ..
+            } => {
                 collect_grounded_state_values(state, out);
                 collect_bindings_values(arg_bindings, out);
             }
@@ -1312,7 +1335,11 @@ impl Continuation {
             }
 
             Self::ProcessCombinations {
-                combinations, results, pending_rule_matches, outer_carrying, ..
+                combinations,
+                results,
+                pending_rule_matches,
+                outer_carrying,
+                ..
             } => {
                 collect_cartesian_values(combinations, out);
                 for (v, bindings) in results.iter() {
@@ -1328,8 +1355,12 @@ impl Continuation {
             }
 
             Self::ProcessCombinationsBound {
-                combinations, results, pending_rule_matches, pending_combo_bindings,
-                outer_carrying, ..
+                combinations,
+                results,
+                pending_rule_matches,
+                pending_combo_bindings,
+                outer_carrying,
+                ..
             } => {
                 // Iterator inputs: each alternative carries value + bindings
                 // (both need GC tracking to survive mark-sweep).
@@ -1356,7 +1387,13 @@ impl Continuation {
             }
 
             Self::ProcessLet {
-                pending_values, pattern, body, outer_bindings, outer_carrying, results, ..
+                pending_values,
+                pattern,
+                body,
+                outer_bindings,
+                outer_carrying,
+                results,
+                ..
             } => {
                 if let Some(pending) = pending_values {
                     for (v, bindings) in pending.iter() {
@@ -1377,7 +1414,12 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::CollectGroundedArg { items, evaluated_results, outer_carrying, .. } => {
+            Self::CollectGroundedArg {
+                items,
+                evaluated_results,
+                outer_carrying,
+                ..
+            } => {
                 out.extend(items.iter().copied());
                 for result_vec in evaluated_results {
                     for (v, bindings) in result_vec.iter() {
@@ -1389,8 +1431,17 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::CollectApplicativeResults { remaining, results, outer_carrying, .. } => {
+            Self::CollectApplicativeResults {
+                remaining,
+                remaining_bindings,
+                results,
+                outer_carrying,
+                ..
+            } => {
                 out.extend(remaining.as_slice().iter().copied());
+                for bindings in remaining_bindings.iter() {
+                    collect_bindings_values(bindings, out);
+                }
                 for (v, bindings) in results.iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
@@ -1445,7 +1496,12 @@ impl Continuation {
                 collect_bindings_values(acc_bindings, out);
             }
 
-            Self::ProcessFoldlAtom { remaining_elements, operation, acc_bindings, .. } => {
+            Self::ProcessFoldlAtom {
+                remaining_elements,
+                operation,
+                acc_bindings,
+                ..
+            } => {
                 out.extend(remaining_elements.as_slice().iter().copied());
                 out.push(*operation);
                 // H14 (2026-05-05): root-walk accumulated fold bindings.
@@ -1453,7 +1509,12 @@ impl Continuation {
             }
 
             Self::ProcessIfCondition {
-                then_branch, else_branch, outer_bindings, outer_carrying, ..
+                then_branch,
+                else_branch,
+                outer_bindings,
+                outer_carrying,
+                outer_demand: _,
+                ..
             } => {
                 out.push(*then_branch);
                 out.push(*else_branch);
@@ -1464,7 +1525,12 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessCaseAtom { cases, outer_bindings, outer_carrying, .. } => {
+            Self::ProcessCaseAtom {
+                cases,
+                outer_bindings,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*cases);
                 if let Some(ref ob) = outer_bindings {
                     collect_bindings_values(ob, out);
@@ -1482,7 +1548,13 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessChainExpr { var, body, outer_bindings, outer_carrying, .. } => {
+            Self::ProcessChainExpr {
+                var,
+                body,
+                outer_bindings,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*var);
                 out.push(*body);
                 if let Some(ref ob) = outer_bindings {
@@ -1493,7 +1565,13 @@ impl Continuation {
             }
 
             Self::ProcessChainBody {
-                remaining_values, var, body, outer_bindings, outer_carrying, results, ..
+                remaining_values,
+                var,
+                body,
+                outer_bindings,
+                outer_carrying,
+                results,
+                ..
             } => {
                 for (v, bindings) in remaining_values.as_slice().iter() {
                     out.push(*v);
@@ -1521,14 +1599,21 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessCatch { default, outer_carrying, .. } => {
+            Self::ProcessCatch {
+                default,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*default);
                 // H14 (2026-05-05): root-walk caller-scope bindings.
                 collect_bindings_values(outer_carrying, out);
             }
 
             Self::ProcessConjunction {
-                remaining_goals, accumulated_results, outer_carrying, ..
+                remaining_goals,
+                accumulated_results,
+                outer_carrying,
+                ..
             } => {
                 out.extend(remaining_goals.as_slice().iter().copied());
                 for (v, bindings) in accumulated_results.iter() {
@@ -1540,7 +1625,11 @@ impl Continuation {
             }
 
             Self::ProcessUnifyPattern1 {
-                pattern2, success_body, failure_body, outer_carrying, ..
+                pattern2,
+                success_body,
+                failure_body,
+                outer_carrying,
+                ..
             } => {
                 out.push(*pattern2);
                 out.push(*success_body);
@@ -1549,8 +1638,13 @@ impl Continuation {
             }
 
             Self::ProcessUnifyPattern1Iter {
-                remaining_pattern1_results, pattern2, success_body, failure_body, all_results,
-                outer_carrying, ..
+                remaining_pattern1_results,
+                pattern2,
+                success_body,
+                failure_body,
+                all_results,
+                outer_carrying,
+                ..
             } => {
                 for (v, bindings) in remaining_pattern1_results.as_slice().iter() {
                     out.push(*v);
@@ -1567,7 +1661,12 @@ impl Continuation {
             }
 
             Self::ProcessUnifyPattern2 {
-                val1, pattern2, success_body, failure_body, outer_carrying, ..
+                val1,
+                pattern2,
+                success_body,
+                failure_body,
+                outer_carrying,
+                ..
             } => {
                 out.push(*val1);
                 out.push(*pattern2);
@@ -1576,7 +1675,12 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessUnifyBodies { remaining_bodies, results, outer_carrying, .. } => {
+            Self::ProcessUnifyBodies {
+                remaining_bodies,
+                results,
+                outer_carrying,
+                ..
+            } => {
                 out.extend(remaining_bodies.as_slice().iter().copied());
                 for (v, bindings) in results.iter() {
                     out.push(*v);
@@ -1593,7 +1697,11 @@ impl Continuation {
             }
 
             Self::ProcessCollapseEvalResults {
-                remaining_raw, evaluated, current_raw_bindings, ..
+                remaining_raw,
+                evaluated,
+                current_raw_bindings,
+                outer_carrying,
+                ..
             } => {
                 for (v, bindings) in remaining_raw.as_slice().iter() {
                     out.push(*v);
@@ -1605,9 +1713,15 @@ impl Continuation {
                 }
                 // H14 (2026-05-05): root-walk current iteration's bindings.
                 collect_bindings_values(current_raw_bindings, out);
+                collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessAmb { remaining_alts, results, outer_carrying, .. } => {
+            Self::ProcessAmb {
+                remaining_alts,
+                results,
+                outer_carrying,
+                ..
+            } => {
                 for (v, bindings) in remaining_alts.as_slice().iter() {
                     out.push(*v);
                     collect_bindings_values(bindings, out);
@@ -1623,23 +1737,41 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessGetAtoms { space_ref, outer_carrying, .. } => {
+            Self::ProcessGetAtoms {
+                space_ref,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*space_ref);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMemoTable { memo_ref, expr, outer_carrying, .. } => {
+            Self::ProcessMemoTable {
+                memo_ref,
+                expr,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*memo_ref);
                 out.push(*expr);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMemoExpr { expr, outer_carrying, .. } => {
+            Self::ProcessMemoExpr {
+                expr,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*expr);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessNewMemoName { name_arg, size_arg, outer_carrying, .. } => {
+            Self::ProcessNewMemoName {
+                name_arg,
+                size_arg,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*name_arg);
                 if let Some(size) = size_arg {
                     out.push(*size);
@@ -1647,17 +1779,31 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessNewMemoSize { size_arg, outer_carrying, .. } => {
+            Self::ProcessNewMemoSize {
+                size_arg,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*size_arg);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMemoOp { memo_ref, outer_carrying, .. } => {
+            Self::ProcessMemoOp {
+                memo_ref,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*memo_ref);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessMatchSpace { space_arg, pattern, template, outer_carrying, .. } => {
+            Self::ProcessMatchSpace {
+                space_arg,
+                pattern,
+                template,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*space_arg);
                 out.push(*pattern);
                 out.push(*template);
@@ -1665,7 +1811,10 @@ impl Continuation {
             }
 
             Self::ProcessMatchTemplates {
-                remaining_templates, results, outer_carrying, ..
+                remaining_templates,
+                results,
+                outer_carrying,
+                ..
             } => {
                 out.extend(remaining_templates.as_slice().iter().copied());
                 for (v, bindings) in results.iter() {
@@ -1675,73 +1824,131 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessAddAtomSpace { space_ref, atom, outer_carrying, .. } => {
+            Self::ProcessAddAtomSpace {
+                space_ref,
+                atom,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*space_ref);
                 out.push(*atom);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessRemoveAtomSpace { space_ref, atom, outer_carrying, .. } => {
+            Self::ProcessRemoveAtomSpace {
+                space_ref,
+                atom,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*space_ref);
                 out.push(*atom);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessNewState { initial_value, outer_carrying, .. } => {
+            Self::ProcessNewState {
+                initial_value,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*initial_value);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessGetState { state_ref, outer_carrying, .. } => {
+            Self::ProcessGetState {
+                state_ref,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*state_ref);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessChangeStateRef { state_ref, new_value, outer_carrying, .. } => {
+            Self::ProcessChangeStateRef {
+                state_ref,
+                new_value,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*state_ref);
                 out.push(*new_value);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessChangeStateValue { state_value, new_value, outer_carrying, .. } => {
+            Self::ProcessChangeStateValue {
+                state_value,
+                new_value,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*state_value);
                 out.push(*new_value);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessRepr { atom, outer_carrying, .. } => {
+            Self::ProcessRepr {
+                atom,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*atom);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessFormatArgsString { format_arg, args_arg, outer_carrying, .. } => {
+            Self::ProcessFormatArgsString {
+                format_arg,
+                args_arg,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*format_arg);
                 out.push(*args_arg);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessFormatArgsArgs { args_arg, outer_carrying, .. } => {
+            Self::ProcessFormatArgsArgs {
+                args_arg,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*args_arg);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessPrintln { atom, outer_carrying, .. } => {
+            Self::ProcessPrintln {
+                atom,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*atom);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessTraceMessage { message, value_expr, outer_carrying, .. } => {
+            Self::ProcessTraceMessage {
+                message,
+                value_expr,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*message);
                 out.push(*value_expr);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessTraceValue { value_expr, outer_carrying, .. } => {
+            Self::ProcessTraceValue {
+                value_expr,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*value_expr);
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessGetMetatype { atom, outer_carrying, .. } => {
+            Self::ProcessGetMetatype {
+                atom,
+                outer_carrying,
+                ..
+            } => {
                 out.push(*atom);
                 collect_bindings_values(outer_carrying, out);
             }
@@ -1751,7 +1958,11 @@ impl Continuation {
             }
 
             Self::ProcessIfReducible {
-                original_expr, then_branch, else_branch, outer_carrying, ..
+                original_expr,
+                then_branch,
+                else_branch,
+                outer_carrying,
+                ..
             } => {
                 out.push(*original_expr);
                 out.push(*then_branch);
@@ -1760,7 +1971,12 @@ impl Continuation {
             }
 
             Self::ProcessMatchOrSpace {
-                space_arg, pattern, default, template, outer_carrying, ..
+                space_arg,
+                pattern,
+                default,
+                template,
+                outer_carrying,
+                ..
             } => {
                 out.push(*space_arg);
                 out.push(*pattern);
@@ -1770,7 +1986,12 @@ impl Continuation {
             }
 
             Self::ProcessSortTuple {
-                sorted, unsorted, current, comparator, outer_carrying, ..
+                sorted,
+                unsorted,
+                current,
+                comparator,
+                outer_carrying,
+                ..
             } => {
                 out.extend(sorted.iter().copied());
                 out.extend(unsorted.iter().copied());
@@ -1779,17 +2000,29 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
-            Self::ProcessBestCandidate { best, remaining, current, rank_fn, .. } => {
+            Self::ProcessBestCandidate {
+                best,
+                remaining,
+                current,
+                rank_fn,
+                outer_carrying,
+                ..
+            } => {
                 if let Some(b) = best {
                     out.push(*b);
                 }
                 out.extend(remaining.as_slice().iter().copied());
                 out.push(*current);
                 out.push(*rank_fn);
+                collect_bindings_values(outer_carrying, out);
             }
 
             Self::ProcessCaseMultiResults {
-                remaining_atoms, cases, collected, outer_carrying, ..
+                remaining_atoms,
+                cases,
+                collected,
+                outer_carrying,
+                ..
             } => {
                 for (v, bindings) in remaining_atoms.as_slice().iter() {
                     out.push(*v);
@@ -1804,7 +2037,12 @@ impl Continuation {
             }
 
             Self::ProcessCaseEvalScrutineeResults {
-                remaining_raw, evaluated, cases, current_raw_bindings, outer_carrying, ..
+                remaining_raw,
+                evaluated,
+                cases,
+                current_raw_bindings,
+                outer_carrying,
+                ..
             } => {
                 for (v, bindings) in remaining_raw.as_slice().iter() {
                     out.push(*v);
@@ -1823,7 +2061,13 @@ impl Continuation {
                 // No MettaValue values to collect — only stores a u64 hash key.
             }
 
-            Self::ProcessLetStar { current_pattern, remaining_pairs, body, accumulated_bindings, .. } => {
+            Self::ProcessLetStar {
+                current_pattern,
+                remaining_pairs,
+                body,
+                accumulated_bindings,
+                ..
+            } => {
                 out.push(*current_pattern);
                 for (pattern, value_expr) in remaining_pairs {
                     out.push(*pattern);
@@ -1834,7 +2078,11 @@ impl Continuation {
             }
 
             Self::ProcessRuleMatchesLazy {
-                coroutine, results, current_branch_bindings, outer_carrying, ..
+                coroutine,
+                results,
+                current_branch_bindings,
+                outer_carrying,
+                ..
             } => {
                 coroutine.collect_values(out);
                 for (v, bindings) in results.iter() {
@@ -1853,7 +2101,12 @@ impl Continuation {
                 // No MettaValue values to collect — only stores a u64 hash key.
             }
 
-            Self::CollectFreezeArgs { args, evaluated_results, outer_carrying, .. } => {
+            Self::CollectFreezeArgs {
+                args,
+                evaluated_results,
+                outer_carrying,
+                ..
+            } => {
                 for v in args.iter() {
                     out.push(*v);
                 }
@@ -2027,8 +2280,8 @@ impl Continuation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::models::{global_factory, MettaValueFactory};
     use smallvec::smallvec;
-    use crate::backend::models::{MettaValueFactory, global_factory};
 
     fn factory() -> crate::backend::models::GcFactory {
         global_factory()
@@ -2110,6 +2363,7 @@ mod tests {
             env: env(),
             depth: 0,
             outer_carrying: empty_shared_bindings(),
+            outer_demand: crate::backend::eval::cesk::coroutine::Demand::All,
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);
@@ -2167,8 +2421,58 @@ mod tests {
     }
 
     #[test]
+    fn test_continuation_best_candidate_collects_outer_carrying() {
+        let f = factory();
+        let mut carrying = GenericBindings::new();
+        carrying.insert("$Tasks", f.atom("live-task-list"));
+        let cont = Continuation::ProcessBestCandidate {
+            best: Some(f.long(1)),
+            best_rank: Some(1.0),
+            remaining: vec![f.long(2), f.long(3)].into_iter(),
+            current: f.long(4),
+            var_name: "$x".to_string(),
+            rank_fn: f.atom("PriorityRank"),
+            env: env(),
+            depth: 0,
+            outer_carrying: std::sync::Arc::new(carrying),
+        };
+        let mut roots = Vec::new();
+        cont.collect_values(&mut roots);
+        assert!(
+            roots.iter().any(|v| v.as_atom() == Some("live-task-list")),
+            "ProcessBestCandidate must root values reachable through outer_carrying"
+        );
+    }
+
+    #[test]
+    fn test_collect_applicative_results_collects_remaining_bindings() {
+        let f = factory();
+        let mut pending = GenericBindings::new();
+        pending.insert("$X", f.atom("live-pending-binding"));
+        let cont = Continuation::CollectApplicativeResults {
+            remaining: vec![f.atom("next-combo")].into_iter(),
+            remaining_bindings: vec![pending],
+            results: Vec::new(),
+            env: env(),
+            depth: 0,
+            outer_carrying: empty_shared_bindings(),
+        };
+
+        let mut roots = Vec::new();
+        cont.collect_values(&mut roots);
+        assert!(
+            roots
+                .iter()
+                .any(|v| v.as_atom() == Some("live-pending-binding")),
+            "CollectApplicativeResults must root values held in remaining_bindings"
+        );
+    }
+
+    #[test]
     fn test_continuation_collapse_eval_results() {
         let f = factory();
+        let mut outer = GenericBindings::new();
+        outer.insert("$Outer", f.atom("live-collapse-outer"));
         let cont = Continuation::ProcessCollapseEvalResults {
             remaining_raw: vec![bv(f.long(1)), bv(f.long(2))].into_iter(),
             evaluated: vec![bv(f.long(3))],
@@ -2177,11 +2481,18 @@ mod tests {
             env: env(),
             depth: 0,
             tracked_vars_hint: None,
+            outer_carrying: std::sync::Arc::new(outer),
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);
-        // 2 remaining + 1 evaluated = 3
-        assert_eq!(roots.len(), 3);
+        // 2 remaining + 1 evaluated + 1 outer binding.
+        assert_eq!(roots.len(), 4);
+        assert!(
+            roots
+                .iter()
+                .any(|v| v.as_atom() == Some("live-collapse-outer")),
+            "ProcessCollapseEvalResults must root values reachable through outer_carrying"
+        );
     }
 
     #[test]

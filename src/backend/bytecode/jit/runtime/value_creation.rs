@@ -18,10 +18,9 @@
 
 use super::helpers::{jit_to_value_generic, value_to_jit_generic};
 use super::stack_ops::jit_runtime_load_constant;
-use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_PTR, TAG_MASK, TAG_UNIT};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_MASK, TAG_PTR, TAG_UNIT};
 use crate::backend::models::{
-    MettaValue, GcFactory, MettaValueFactory, MettaValueTrait,
-    SlabAllocator,
+    GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, SlabAllocator,
 };
 
 // =============================================================================
@@ -51,7 +50,11 @@ pub unsafe extern "C" fn jit_runtime_make_sexpr(
     count: u64,
     _ip: u64,
 ) -> u64 {
-    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let arena_ptr = if !ctx.is_null() {
+        (*ctx).arena_ptr()
+    } else {
+        std::ptr::null()
+    };
     let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
         &*(arena_ptr as *const SlabAllocator)
     } else {
@@ -83,7 +86,11 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
     tail: u64,
     _ip: u64,
 ) -> u64 {
-    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let arena_ptr = if !ctx.is_null() {
+        (*ctx).arena_ptr()
+    } else {
+        std::ptr::null()
+    };
     let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
         &*(arena_ptr as *const SlabAllocator)
     } else {
@@ -136,7 +143,11 @@ pub unsafe extern "C" fn jit_runtime_make_list(
     count: u64,
     _ip: u64,
 ) -> u64 {
-    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let arena_ptr = if !ctx.is_null() {
+        (*ctx).arena_ptr()
+    } else {
+        std::ptr::null()
+    };
     let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
         &*(arena_ptr as *const SlabAllocator)
     } else {
@@ -163,7 +174,11 @@ pub unsafe extern "C" fn jit_runtime_make_list(
 /// * val must be a valid NaN-boxed value
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_make_quote(ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
-    let arena_ptr = if !ctx.is_null() { (*ctx).arena_ptr() } else { std::ptr::null() };
+    let arena_ptr = if !ctx.is_null() {
+        (*ctx).arena_ptr()
+    } else {
+        std::ptr::null()
+    };
     let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
         &*(arena_ptr as *const SlabAllocator)
     } else {
@@ -265,11 +280,7 @@ where
 ///
 /// # Safety
 /// - `head` and `tail` must be valid NaN-boxed values
-pub unsafe fn cons_atom_generic<V, F>(
-    head: u64,
-    tail: u64,
-    factory: &F,
-) -> JitValue
+pub unsafe fn cons_atom_generic<V, F>(head: u64, tail: u64, factory: &F) -> JitValue
 where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
@@ -334,11 +345,7 @@ where
 ///
 /// # Safety
 /// - `values_ptr` must point to a valid array
-pub unsafe fn make_list_generic<V, F>(
-    values_ptr: *const u64,
-    count: usize,
-    factory: &F,
-) -> JitValue
+pub unsafe fn make_list_generic<V, F>(values_ptr: *const u64, count: usize, factory: &F) -> JitValue
 where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
@@ -420,4 +427,3 @@ where
 
     value_to_jit_generic(&quoted)
 }
-

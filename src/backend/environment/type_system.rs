@@ -67,7 +67,13 @@ where
         if !self.shared.atom_space.type_bloom.read().may_have_type(name) {
             return Vec::new();
         }
-        let mut types: Vec<V> = self.shared.types.read().get(name).cloned().unwrap_or_default();
+        let mut types: Vec<V> = self
+            .shared
+            .types
+            .read()
+            .get(name)
+            .cloned()
+            .unwrap_or_default();
 
         // HE parity: append transitive supertypes for each declared type.
         // Iterate over direct types (snapshot len), appending supertypes.
@@ -118,11 +124,11 @@ where
     /// match pattern is `(: $x SomeType)`, use this as a reverse index
     /// instead of scanning the entire MORK space.
     pub fn get_atoms_of_type(&self, type_name: &str) -> Vec<String> {
-        self.shared.types.read()
+        self.shared
+            .types
+            .read()
             .iter()
-            .filter(|(_, types)| types.iter().any(|t| {
-                t.as_atom() == Some(type_name)
-            }))
+            .filter(|(_, types)| types.iter().any(|t| t.as_atom() == Some(type_name)))
             .map(|(name, _)| name.clone())
             .collect()
     }
@@ -262,10 +268,7 @@ where
     /// False positives harmless (fall through to DashMap lookup).
     #[inline]
     pub fn has_inferred_type(&self, name: &str) -> bool {
-        self.shared
-            .atom_space
-            .inferred_type_bloom
-            .may_contain(name)
+        self.shared.atom_space.inferred_type_bloom.may_contain(name)
     }
 
     /// Get inferred return types for a function name (Phase 10.1).
@@ -292,17 +295,18 @@ where
     /// a fixpoint re-inference is needed at the next eval boundary.
     pub fn register_inferred_type(&self, name: &str, return_type: &V) {
         // DashMap index — lock-free per-shard write
-        let mut entry = self.shared.inferred_fn_types.entry(name.to_string()).or_default();
+        let mut entry = self
+            .shared
+            .inferred_fn_types
+            .entry(name.to_string())
+            .or_default();
         if !entry.value().contains(return_type) {
             entry.value_mut().push(return_type.clone());
         }
         drop(entry);
 
         // Atomic bloom filter — lock-free fetch_or insertion
-        self.shared
-            .atom_space
-            .inferred_type_bloom
-            .insert(name);
+        self.shared.atom_space.inferred_type_bloom.insert(name);
 
         // Phase 10.5: Increment generation counter to trigger fixpoint at next eval boundary.
         self.shared
@@ -894,7 +898,10 @@ mod tests {
         while rz.to_next_val() {
             count += 1;
         }
-        assert!(count > 0, "type_btm should have at least one entry after add");
+        assert!(
+            count > 0,
+            "type_btm should have at least one entry after add"
+        );
     }
 
     #[test]
@@ -916,7 +923,10 @@ mod tests {
                 has_positive = true;
             }
         }
-        assert!(!has_positive, "type_btm should have no positive-multiplicity entries after remove");
+        assert!(
+            !has_positive,
+            "type_btm should have no positive-multiplicity entries after remove"
+        );
     }
 
     #[test]
@@ -956,7 +966,10 @@ mod tests {
         while rz.to_next_val() {
             count += 1;
         }
-        assert!(count > 0, "subtype_btm should have entry after (:< Dog Animal)");
+        assert!(
+            count > 0,
+            "subtype_btm should have entry after (:< Dog Animal)"
+        );
 
         // Remove it
         drop(sub_btm);
@@ -1064,11 +1077,17 @@ mod tests {
 
         // get_type (MORK path) should pass bloom filter
         let types = e.get_type("z");
-        assert!(!types.is_empty(), "get_type('z') should find String via MORK path");
+        assert!(
+            !types.is_empty(),
+            "get_type('z') should find String via MORK path"
+        );
         assert!(types.iter().any(|t| t.as_atom() == Some("String")));
 
         // Untyped atom should be rejected by bloom filter before MORK trie traversal
         let empty = e.get_type("nonexistent");
-        assert!(empty.is_empty(), "bloom filter should reject nonexistent atom");
+        assert!(
+            empty.is_empty(),
+            "bloom filter should reject nonexistent atom"
+        );
     }
 }

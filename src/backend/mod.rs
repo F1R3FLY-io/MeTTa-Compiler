@@ -16,6 +16,7 @@ pub mod eval;
 pub mod fuzzy_match;
 pub mod grounded;
 pub(crate) mod hash_utils;
+pub mod interrupt;
 pub mod literal_classifier;
 pub mod models;
 pub mod modules;
@@ -32,26 +33,26 @@ pub mod trace;
 pub use builtin_signatures::{
     get_arg_types, get_return_type, get_signature, is_builtin, BuiltinSignature, TypeExpr,
 };
-pub use compile::{
-    compile, compile_generic, compile_with_path,
-};
-pub use environment::{GenericEnvironment, MettaEnvironment, ScopeTracker};
+pub use compile::{compile, compile_generic, compile_with_path};
 pub use environment::rule_management::activate_analysis;
-pub use eval::{eval, pattern_match};
+pub use environment::{GenericEnvironment, MettaEnvironment, ScopeTracker};
 #[cfg(feature = "trace")]
 pub use eval::eval_with_trace;
 pub use eval::trampoline::{
-    eval_trampoline, new_env, StaticEvalContext,
+    eval_trampoline,
     get_static_factory,
+    new_env,
     // Session-based evaluation context
     SessionContext,
+    StaticEvalContext,
 };
 pub use eval::EvalResult;
+pub use eval::{eval, pattern_match};
 pub use fuzzy_match::FuzzyMatcher;
 pub use grounded::ExecError;
 pub use models::*;
 pub use priority_scheduler::{
-    priority_levels, P2MedianEstimator,
-    PriorityPoolStats, PriorityQueue, RuntimeTracker, SchedulerConfig, TaskTypeId,
+    priority_levels, P2MedianEstimator, PriorityPoolStats, PriorityQueue, RuntimeTracker,
+    SchedulerConfig, TaskTypeId,
 };
 pub use symbol::{intern, intern_string, Symbol};

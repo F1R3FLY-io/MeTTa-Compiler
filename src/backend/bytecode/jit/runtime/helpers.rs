@@ -12,10 +12,10 @@
 //! inner data managed by the GC. No Box allocations are needed since the inner
 //! data has 'static lifetime.
 
-use crate::backend::bytecode::jit::types::{
-    JitValue, PAYLOAD_MASK, TAG_PTR, TAG_LONG,
+use crate::backend::bytecode::jit::types::{JitValue, PAYLOAD_MASK, TAG_LONG, TAG_PTR};
+use crate::backend::models::{
+    MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait, ValueView,
 };
-use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait, ValueView};
 
 // =============================================================================
 // NaN-Boxing Helpers
@@ -155,10 +155,7 @@ where
         TAG_EMPTY => factory.empty(),
         TAG_PTR => {
             let ptr = (jit_val.to_bits() & PAYLOAD_MASK) as *const MettaValueInner;
-            debug_assert!(
-                !ptr.is_null(),
-                "jit_to_value_generic: Null inner pointer"
-            );
+            debug_assert!(!ptr.is_null(), "jit_to_value_generic: Null inner pointer");
             // Reconstruct value from slab-allocated inner pointer
             V::from_inner_ptr(ptr)
         }
@@ -173,4 +170,3 @@ where
         }
     }
 }
-

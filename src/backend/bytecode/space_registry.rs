@@ -164,8 +164,7 @@ struct SpaceRegistryRoots;
 
 impl RootProvider for SpaceRegistryRoots {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        crate::backend::bytecode::global_space_registry()
-            .collect_all_gc_values(roots);
+        crate::backend::bytecode::global_space_registry().collect_all_gc_values(roots);
     }
 }
 

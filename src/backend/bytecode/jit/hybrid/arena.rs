@@ -26,15 +26,16 @@ use std::sync::Arc;
 
 use tracing::{debug, trace};
 
-use crate::backend::bytecode::{MettaEnvironment, GenericBytecodeChunk, VmError, VmResult};
 use crate::backend::bytecode::jit::runtime::arithmetic::check_and_clear_jit_type_error;
-use crate::backend::models::{MettaValue, MettaValueInner, GcFactory, MettaValueFactory, SlabAllocator};
+use crate::backend::bytecode::{GenericBytecodeChunk, MettaEnvironment, VmError, VmResult};
+use crate::backend::models::{
+    GcFactory, MettaValue, MettaValueFactory, MettaValueInner, SlabAllocator,
+};
 
 use super::super::{
     JitBindingFrame, JitChoicePoint, JitContext, JitValue, TypeSignatureRegistry,
-    MAX_STACK_SAVE_VALUES, STACK_SAVE_POOL_SIZE,
-    PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_PTR, TAG_LONG, TAG_MASK, TAG_UNIT,
-    TAG_VAR,
+    MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, STACK_SAVE_POOL_SIZE, TAG_ATOM, TAG_BOOL, TAG_ERROR,
+    TAG_LONG, TAG_MASK, TAG_PTR, TAG_UNIT, TAG_VAR,
 };
 use super::executor::HybridExecutor;
 
@@ -143,7 +144,10 @@ impl HybridExecutor {
         // Check for type error from JIT runtime functions (thread-local flag)
         if check_and_clear_jit_type_error() {
             self.stats.jit_bailouts += 1;
-            return Err(VmError::TypeError { expected: "number", got: "other" });
+            return Err(VmError::TypeError {
+                expected: "number",
+                got: "other",
+            });
         }
 
         // Check for bailout
@@ -160,9 +164,11 @@ impl HybridExecutor {
                 use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                 with_thread_trace_collector(|tc| {
                     tc.emit_converted(
-                        trace_format::TraceTier::JitStage1, 0,
+                        trace_format::TraceTier::JitStage1,
+                        0,
                         trace_format::TraceValue::Unit,
-                        vec![], None,
+                        vec![],
+                        None,
                         trace_format::TraceEventKind::JitBailout {
                             bailout_ip: ctx.bailout_ip as u32,
                             reason: format!("{:?}", ctx.bailout_reason),
@@ -172,9 +178,10 @@ impl HybridExecutor {
                 });
             }
 
-            // In arena mode, bailout means we need to fall back to tree-walker
-            // Return empty results and let the caller handle fallback
-            return Ok(vec![factory.unit()]);
+            return Err(VmError::Runtime(format!(
+                "JIT bailout at ip {}: {:?}",
+                ctx.bailout_ip, ctx.bailout_reason
+            )));
         }
 
         // Collect results and convert to MettaValue
@@ -309,7 +316,10 @@ impl HybridExecutor {
         // Check for type error from JIT runtime functions (thread-local flag)
         if check_and_clear_jit_type_error() {
             self.stats.jit_bailouts += 1;
-            return Err(VmError::TypeError { expected: "number", got: "other" });
+            return Err(VmError::TypeError {
+                expected: "number",
+                got: "other",
+            });
         }
 
         // Check for bailout
@@ -326,9 +336,11 @@ impl HybridExecutor {
                 use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
                 with_thread_trace_collector(|tc| {
                     tc.emit_converted(
-                        trace_format::TraceTier::JitStage1, 0,
+                        trace_format::TraceTier::JitStage1,
+                        0,
                         trace_format::TraceValue::Unit,
-                        vec![], None,
+                        vec![],
+                        None,
                         trace_format::TraceEventKind::JitBailout {
                             bailout_ip: ctx.bailout_ip as u32,
                             reason: format!("{:?}", ctx.bailout_reason),
@@ -338,10 +350,10 @@ impl HybridExecutor {
                 });
             }
 
-            // In arena mode, bailout means we need to fall back to tree-walker
-            // Return empty results and let the caller handle fallback
-            // Still return the (potentially modified) environment
-            return Ok((vec![factory.unit()], env));
+            return Err(VmError::Runtime(format!(
+                "JIT bailout at ip {}: {:?}",
+                ctx.bailout_ip, ctx.bailout_reason
+            )));
         }
 
         // Collect results and convert to MettaValue
@@ -404,10 +416,7 @@ impl HybridExecutor {
 /// # Arguments
 /// * `jit_val` - Raw NaN-boxed 64-bit value
 /// * `factory` - Factory for creating arena values
-fn jit_to_value(
-    jit_val: u64,
-    factory: &GcFactory,
-) -> MettaValue {
+fn jit_to_value(jit_val: u64, factory: &GcFactory) -> MettaValue {
     let tag = jit_val & TAG_MASK;
 
     match tag {

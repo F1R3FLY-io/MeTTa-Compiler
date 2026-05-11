@@ -386,13 +386,19 @@ mod tests {
     #[test]
     fn test_capture_to_color_operator_type() {
         let highlighter = QueryHighlighter::new().unwrap();
-        assert_eq!(highlighter.capture_to_color("operator.type"), colors::OPERATOR);
+        assert_eq!(
+            highlighter.capture_to_color("operator.type"),
+            colors::OPERATOR
+        );
     }
 
     #[test]
     fn test_capture_to_color_keyword_operator() {
         let highlighter = QueryHighlighter::new().unwrap();
-        assert_eq!(highlighter.capture_to_color("keyword.operator"), colors::KEYWORD);
+        assert_eq!(
+            highlighter.capture_to_color("keyword.operator"),
+            colors::KEYWORD
+        );
     }
 
     #[test]

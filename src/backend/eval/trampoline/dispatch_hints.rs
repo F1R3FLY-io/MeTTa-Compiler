@@ -1006,6 +1006,8 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "sin-math" | "asin-math" | "cos-math" | "acos-math"
         | "tan-math" | "atan-math"
         | "isnan-math" | "isinf-math"
+        // === String operations (Workstream X.5a) ===
+        | "stringToChars"
     )
 }
 

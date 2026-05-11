@@ -26,6 +26,7 @@ pub mod comparison;
 pub mod logical;
 pub mod registry;
 pub mod state;
+pub mod string;
 mod traits;
 
 use std::collections::HashMap;
@@ -39,6 +40,7 @@ pub use comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqual
 pub use logical::{AndOp, NotOp, OrOp, XorOp};
 pub use registry::{execute_grounded_op, get_grounded_registry, has_grounded_op, GroundedRegistry};
 pub use state::{find_error, friendly_type_name, GroundedState, GroundedWork};
+pub use string::StringToCharsOp;
 pub use traits::GroundedOperationTCO;
 
 /// Bindings from pattern matching (variable name -> value)

@@ -295,6 +295,13 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
             max_arity: 1,
             type_sig: arrow(vec![Number], Number),
         },
+        // String operations (Workstream X.5a — MTT-FN-STRINGTOCHARS)
+        BuiltinSignature {
+            name: "stringToChars",
+            min_arity: 1,
+            max_arity: 1,
+            type_sig: arrow(vec![String], Expression),
+        },
         // Binary math
         BuiltinSignature {
             name: "pow",

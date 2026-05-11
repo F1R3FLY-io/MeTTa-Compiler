@@ -145,6 +145,8 @@ pub fn is_grounded_op(name: &str) -> bool {
         // structural equality (matching PeTTa).
         | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom"
         | "intersection-atom" | "subtraction-atom"
+        // String operations (Workstream X.5a)
+        | "stringToChars"
     )
 }
 

@@ -40,6 +40,7 @@ use super::arithmetic::{AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeD
 use super::comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
 use super::logical::{AndOp, NotOp, OrOp, XorOp};
 use super::state::{GroundedState, GroundedWork};
+use super::string::StringToCharsOp;
 use super::traits::GroundedOperationTCO;
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
@@ -98,6 +99,8 @@ where
         // Safe arithmetic utilities
         "/safe" => Some(SafeDivOp.execute_step(state, factory)),
         "clamp" => Some(ClampOp.execute_step(state, factory)),
+        // String operations (Workstream X.5a)
+        "stringToChars" => Some(StringToCharsOp.execute_step(state, factory)),
         // Unknown operation - not a grounded op
         _ => None,
     }
@@ -136,6 +139,7 @@ pub fn has_grounded_op(name: &str) -> bool {
             | "xor"
             | "/safe"
             | "clamp"
+            | "stringToChars"
     )
 }
 

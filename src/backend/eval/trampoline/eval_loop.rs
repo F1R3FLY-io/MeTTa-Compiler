@@ -12070,8 +12070,18 @@ fn process_continuation<C: EvalContext>(
             } else {
                 let (first, _) = &space_results[0];
                 if let Some(handle) = first.as_space() {
-                    // GENERIC: Use collapse_generic to avoid heap conversion
-                    let atoms: Vec<MettaValue> = handle.collapse_generic(ctx.factory());
+                    // X.6 followup: for `&self` / module spaces, query the
+                    // environment's atom space (where add-atom &self routes
+                    // its writes per ProcessAddAtomSpace handler). The
+                    // SpaceHandle itself is a stub for these — its own
+                    // storage is empty. For external named spaces
+                    // (`(new-space)` results), use handle.collapse_generic.
+                    let atoms: Vec<MettaValue> =
+                        if handle.is_module_space() || handle.name == "self" {
+                            result_env.get_all_atoms()
+                        } else {
+                            handle.collapse_generic(ctx.factory())
+                        };
                     if atoms.is_empty() {
                         // Empty space returns empty results
                         work_stack.push(WorkItem::Resume {

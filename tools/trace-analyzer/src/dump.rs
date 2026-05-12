@@ -871,6 +871,18 @@ fn print_kind_details(kind: &TraceEventKind) {
                 format_trace_value(template_excerpt),
             );
         }
+        TraceEventKind::RuleMatchDispatchPath {
+            call_head,
+            call_arity,
+            path,
+            native_count,
+            unify_count,
+            expr_has_variables,
+        } => {
+            println!(
+                "  RuleMatchDispatchPath head={call_head}/{call_arity} path={path} native={native_count} unify={unify_count} has_vars={expr_has_variables}",
+            );
+        }
     }
 }
 

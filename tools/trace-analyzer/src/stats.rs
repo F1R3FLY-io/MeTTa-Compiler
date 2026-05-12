@@ -235,5 +235,6 @@ fn kind_label(kind: &TraceEventKind) -> &'static str {
         TraceEventKind::BindingsExtracted { .. } => "BindingsExtracted",
         TraceEventKind::BindingsFreshened { .. } => "BindingsFreshened",
         TraceEventKind::VariableLookupFailed { .. } => "VariableLookupFailed",
+        TraceEventKind::RuleMatchDispatchPath { .. } => "RuleMatchDispatchPath",
     }
 }

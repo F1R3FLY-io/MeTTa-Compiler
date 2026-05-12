@@ -2626,6 +2626,38 @@ where
     );
 
     if !all_matches.is_empty() {
+        // P1 trace event: native path produced matches; no unify ran.
+        #[cfg(feature = "trace")]
+        {
+            if let Some(tc) = ctx.trace_collector() {
+                let (call_head, call_arity) = match resolved_sexpr.as_sexpr() {
+                    Some(items) => {
+                        let head = items
+                            .first()
+                            .and_then(|v| v.as_atom())
+                            .unwrap_or("")
+                            .to_string();
+                        (head, items.len().saturating_sub(1) as u32)
+                    }
+                    None => (resolved_sexpr.as_atom().unwrap_or("").to_string(), 0u32),
+                };
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    depth as u32,
+                    crate::backend::trace::trace_value_generic(&resolved_sexpr),
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::RuleMatchDispatchPath {
+                        call_head,
+                        call_arity,
+                        path: "native".to_string(),
+                        native_count: all_matches.len() as u32,
+                        unify_count: 0,
+                        expr_has_variables: resolved_sexpr.has_variables_fast(),
+                    },
+                );
+            }
+        }
         // Trace: RuleMatchSet
         #[cfg(feature = "trace")]
         {
@@ -2690,6 +2722,42 @@ where
                 &env,
                 ctx.factory(),
             );
+        #[cfg(feature = "trace")]
+        {
+            if let Some(tc) = ctx.trace_collector() {
+                let (call_head, call_arity) = match resolved_sexpr.as_sexpr() {
+                    Some(items) => {
+                        let head = items
+                            .first()
+                            .and_then(|v| v.as_atom())
+                            .unwrap_or("")
+                            .to_string();
+                        (head, items.len().saturating_sub(1) as u32)
+                    }
+                    None => (resolved_sexpr.as_atom().unwrap_or("").to_string(), 0u32),
+                };
+                let path = if unified_matches.is_empty() {
+                    "neither"
+                } else {
+                    "unify"
+                };
+                tc.emit_converted(
+                    trace_format::TraceTier::TreeWalker,
+                    depth as u32,
+                    crate::backend::trace::trace_value_generic(&resolved_sexpr),
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::RuleMatchDispatchPath {
+                        call_head,
+                        call_arity,
+                        path: path.to_string(),
+                        native_count: 0,
+                        unify_count: unified_matches.len() as u32,
+                        expr_has_variables: true,
+                    },
+                );
+            }
+        }
         if !unified_matches.is_empty() {
             #[cfg(feature = "trace")]
             {

@@ -6520,15 +6520,69 @@ where
         // in the RHS template. Unify captures both sides' bindings.
         let mut matches =
             env.match_rules_native(&expr, apply_bindings_generic, &self.current_bindings);
-        if expr.has_variables_fast() {
+        let native_count = matches.len() as u32;
+        let mut unify_count: u32 = 0;
+        let mut dispatch_path = if matches.is_empty() {
+            "neither"
+        } else {
+            "native"
+        };
+        let expr_has_variables = expr.has_variables_fast();
+        if expr_has_variables {
             let unified = env.match_rules_via_unify(&expr);
+            unify_count = unified.len() as u32;
             if !unified.is_empty() {
+                // Y.5 current behavior: prefer unify when query has free
+                // vars. P2 will change this to "unify only when native is
+                // empty" once P3 fixes the native bindings export.
+                dispatch_path = if !matches.is_empty() {
+                    "native+unify-replaced"
+                } else {
+                    "unify"
+                };
                 // Prefer unify results when the query has free variables —
                 // they carry the bidirectional bindings (rule-side AND
                 // query-side) needed for repeated-var template substitution.
                 matches = unified;
             }
         }
+
+        // P1 trace event: record which dispatch path produced the matches.
+        // Feature-gated; no cost outside `trace`.
+        #[cfg(feature = "trace")]
+        {
+            use crate::backend::trace::thread_local_sink::with_thread_trace_collector;
+            use crate::backend::trace::trace_value_generic;
+            let (call_head, call_arity) = match expr.as_sexpr() {
+                Some(items) => {
+                    let head = items
+                        .first()
+                        .and_then(|v| v.as_atom())
+                        .unwrap_or("")
+                        .to_string();
+                    (head, items.len().saturating_sub(1) as u32)
+                }
+                None => (expr.as_atom().unwrap_or("").to_string(), 0u32),
+            };
+            with_thread_trace_collector(|tc| {
+                tc.emit_converted(
+                    trace_format::TraceTier::BytecodeVM,
+                    0,
+                    trace_value_generic(&expr),
+                    vec![],
+                    None,
+                    trace_format::TraceEventKind::RuleMatchDispatchPath {
+                        call_head: call_head.clone(),
+                        call_arity,
+                        path: dispatch_path.to_string(),
+                        native_count,
+                        unify_count,
+                        expr_has_variables,
+                    },
+                );
+            });
+        }
+        let _ = (native_count, unify_count, dispatch_path, expr_has_variables);
 
         // Phase 9.2/9.3: expected_type branch pruning — filter out rule matches
         // whose rhs_type is incompatible with the expected return type.

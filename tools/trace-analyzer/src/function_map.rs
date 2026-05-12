@@ -406,7 +406,8 @@ pub fn classify_trace_event(kind: &TraceEventKind) -> TraceCategory {
         | TraceEventKind::BindingsDropped { .. }
         | TraceEventKind::BindingsExtracted { .. }
         | TraceEventKind::BindingsFreshened { .. }
-        | TraceEventKind::VariableLookupFailed { .. } => TraceCategory::Other,
+        | TraceEventKind::VariableLookupFailed { .. }
+        | TraceEventKind::RuleMatchDispatchPath { .. } => TraceCategory::Other,
     }
 }
 

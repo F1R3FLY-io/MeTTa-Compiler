@@ -866,6 +866,32 @@ pub enum TraceEventKind {
         /// Short excerpt of the template containing the missing var.
         template_excerpt: TraceValue,
     },
+
+    /// Emitted by `op_dispatch_rules` and T0's Step 3 / Step 3.5 to record
+    /// which matching strategy produced the final candidate set. Lets the
+    /// analyzer quantify how often the unify-fallback runs (cost) vs how
+    /// often native suffices (fast path), and verify tier alignment
+    /// between T0 (`step/sexpr.rs:2618-2725`) and T1 (`vm/mod.rs:6521`).
+    RuleMatchDispatchPath {
+        /// Head atom of the call expression.
+        call_head: String,
+        /// Arity of the call expression.
+        call_arity: u32,
+        /// Which path produced the final match set:
+        /// `"native"` — native structural match succeeded; unify not run.
+        /// `"unify"` — native returned empty, unify produced matches.
+        /// `"neither"` — both returned empty (irreducible or no-rules case).
+        /// `"native+unify-replaced"` — Y.5-era behavior (only if not yet
+        ///   reverted): native succeeded but unify replaced it. Kept as a
+        ///   distinct label so before/after P2 traces are comparable.
+        path: String,
+        /// Match count returned by `match_rules_native`.
+        native_count: u32,
+        /// Match count returned by `match_rules_via_unify` (0 when not run).
+        unify_count: u32,
+        /// `expr.has_variables_fast()` at dispatch time.
+        expr_has_variables: bool,
+    },
 }
 
 /// One nondeterministic alternative at a Resume boundary: a value paired

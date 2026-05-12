@@ -213,6 +213,9 @@ fn event_name(kind: &TraceEventKind) -> String {
         TraceEventKind::VariableLookupFailed {
             context, var_name, ..
         } => format!("VariableLookupFailed:{context}:{var_name}"),
+        TraceEventKind::RuleMatchDispatchPath {
+            call_head, path, ..
+        } => format!("RuleMatchDispatchPath:{call_head}:{path}"),
     }
 }
 
@@ -271,5 +274,6 @@ fn event_category(kind: &TraceEventKind) -> &'static str {
         | TraceEventKind::BindingsExtracted { .. }
         | TraceEventKind::BindingsFreshened { .. }
         | TraceEventKind::VariableLookupFailed { .. } => "binding-flow",
+        TraceEventKind::RuleMatchDispatchPath { .. } => "rule-match",
     }
 }

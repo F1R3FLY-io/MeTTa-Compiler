@@ -453,8 +453,16 @@ where
                 // later $a vs f(1) must unify $x ↦ 1, not fail). Push the
                 // cloned (existing, val) onto the work stack so the outer
                 // iterative loop unifies them. Stack-safe (no recursion).
+                //
+                // Y.1 (2026-05-12): fast-path the trivially-identical case to
+                // avoid the work-stack re-push that infinite-loops when both
+                // existing and val are the SAME variable atom (e.g. stored
+                // fact contains free `$x`, query pattern also contains `$x`
+                // repeated — mork_removal_demo.metta hang).
                 if let Some(existing) = bindings.get(p_name) {
-                    work_stack.push((existing.clone(), val.clone()));
+                    if existing != val {
+                        work_stack.push((existing.clone(), val.clone()));
+                    }
                 } else {
                     // New variable - bind to value
                     bindings.insert(p_name, val.clone());

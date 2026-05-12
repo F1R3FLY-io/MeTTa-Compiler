@@ -96,9 +96,20 @@ pub(crate) fn pattern_match_impl(
                 // unbound variables — testing structural equality misses cases where
                 // they would still unify. Push (existing, val) onto the work stack so
                 // the outer iterative loop unifies them. Stack-safe: no recursion.
+                //
+                // Y.1 (2026-05-12): fast-path for the structurally-identical case
+                // (e.g. stored fact `$x` queried against pattern `$x`). Without it
+                // the unify work-stack push (existing, val) where existing == val
+                // re-enters this arm with same name, same value → infinite loop
+                // (mork_removal_demo.metta hang). PartialEq on MettaValue is cheap
+                // (Copy struct holding a 'static pointer).
                 if let Some((_, existing)) = bindings.iter().find(|(name, _)| *name == p) {
-                    work_stack.push((*existing, val));
-                    true
+                    if *existing == val {
+                        true
+                    } else {
+                        work_stack.push((*existing, val));
+                        true
+                    }
                 } else {
                     bindings.insert(p, val);
                     true

@@ -2337,20 +2337,23 @@ where
 
                 // Module operations - use generic implementations directly (zero-conversion)
                 // Passes full ctx (not just factory) so import/include can force-eval `!` expressions
-                //
-                // Z.A.6.c (2026-05-12): `register-module!` is HE's analog at
-                // `hyperon-experimental/lib/src/metta/runner/stdlib/package.rs:35-51`.
-                // It takes a filesystem-path argument and loads the module's contents.
-                // MeTTaTron's `include` has the same single-path signature and loads
-                // contents into the current scope; aliasing the two names lets
-                // HE-sourced MeTTa modules using `register-module!` resolve without
-                // rewrites. (HE's `register-module!` bypasses catalog search; MeTTaTron's
-                // `include` is similarly path-direct.)
-                "include" | "register-module!" => {
+                "include" => {
                     let (results, new_env) = eval_include_generic(items, env, ctx);
                     return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
                 }
-                "import!" => {
+                // Z.A.6.c (2026-05-12, revised): `register-module!` is HE's analog at
+                // `hyperon-experimental/lib/src/metta/runner/stdlib/package.rs:35-51`.
+                // Its `execute` calls `metta.load_module_at_path(path, None)`, which
+                // **loads the file as a module** (separately namespaced) rather than
+                // splicing contents into the current scope. The semantically correct
+                // MeTTaTron analog is `import!` (which loads a file as a named module
+                // and registers it in the module registry), NOT `include` (which is
+                // inline evaluation).
+                //
+                // We dispatch `register-module!` through `eval_import_generic` —
+                // import!'s 2-arg form `(import! <path>)` takes a single path argument
+                // and matches HE's `register-module!` signature/semantics precisely.
+                "import!" | "register-module!" => {
                     let (results, new_env) = eval_import_generic(items, env, ctx);
                     return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
                 }

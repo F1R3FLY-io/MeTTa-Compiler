@@ -138,10 +138,12 @@ fn capture_preserves_nondet_results() {
 }
 
 #[test]
-fn register_module_routes_via_include() {
-    // register-module! is HE's path-based module loader; MeTTaTron aliases
-    // to `include` for shared loading semantics. Nonexistent file returns
-    // an Error atom (matches HE's load failure behaviour).
+fn register_module_routes_via_import() {
+    // register-module! is HE's path-based module loader; MeTTaTron now
+    // aliases to `import!` (separately-namespaced module registration),
+    // matching HE's `metta.load_module_at_path(path, None)` semantics
+    // (NOT include — include splices contents into the current scope).
+    // Nonexistent file returns an Error atom.
     let r = run_one(r#"!(register-module! "this-file-does-not-exist.metta")"#);
     assert_eq!(r.len(), 1);
     assert!(

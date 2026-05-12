@@ -2760,7 +2760,15 @@ where
 {
     let mut items: Vec<V> = Vec::with_capacity(bindings.len() + 1);
     items.push(factory.atom("Bindings"));
-    for (name, value) in bindings.iter() {
+    // Y.6 (2026-05-12): collect & sort by variable name for deterministic
+    // output across tiers. The underlying SmallVec insertion order depends
+    // on the matcher's traversal sequence, which is not guaranteed to be
+    // stable across runs (e.g., parallel sub-evals in T1). T0 happened to
+    // emit alphabetical order due to source-code traversal order — sorting
+    // here makes every tier match deterministically.
+    let mut pairs: Vec<(&str, &V)> = bindings.iter().collect();
+    pairs.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, value) in pairs {
         items.push(factory.sexpr(vec![factory.atom(name), value.clone()]));
     }
     factory.sexpr(items)

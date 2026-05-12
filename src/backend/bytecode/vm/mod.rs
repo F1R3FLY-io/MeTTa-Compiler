@@ -7305,7 +7305,9 @@ where
         expr: V,
     ) -> VmResult<Vec<(V, crate::backend::models::GenericBindings<V>)>> {
         use crate::backend::eval::bindings::{apply_bindings_generic, compose_outer_inner_generic};
-        use crate::backend::eval::step::{extract_arg_types, is_meta_type};
+        use crate::backend::eval::step::{
+            extract_arg_types, find_grounded_arg_indices_generic, is_meta_type,
+        };
         use crate::backend::models::GenericBindings;
 
         let empty_b = GenericBindings::new();
@@ -7340,10 +7342,25 @@ where
                     .filter_map(|t| extract_arg_types(t))
                     .collect();
             }
-            if all_arg_types.is_empty() {
+        }
+
+        // Y.6 (2026-05-12): When no arg types are declared OR inferred for the
+        // head, fall back to the bloom-filter strategy used by T0's tree-walker
+        // (`step/sexpr.rs:2572`, `step/grounded.rs:126`). This handles cases
+        // like the syntactic conjunction head `,` whose args have rule-bearing
+        // sub-heads (e.g. `(, (father $a $b) (father $b c))` — `father` has
+        // rules even though `,` does not). Without this fallback, T1 returned
+        // the unreduced expression with empty bindings; the tree-walker
+        // returns the reduced expression with composed bindings.
+        let bloom_indices_opt: Option<Vec<usize>> = if all_arg_types.is_empty() {
+            let indices = find_grounded_arg_indices_generic(items, env);
+            if indices.is_empty() {
                 return Ok(vec![(expr, empty_b)]);
             }
-        }
+            Some(indices)
+        } else {
+            None
+        };
 
         // Per-argument results: one inner Vec<(V, bindings)> per arg
         // position. For args that are meta-typed or not S-exprs, the
@@ -7362,10 +7379,21 @@ where
         for i in 1..items.len() {
             let arg_idx = i - 1;
 
-            let all_meta = all_arg_types
-                .iter()
-                .all(|arg_types| arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx]));
-            if all_meta {
+            // Decide whether to pre-eval this argument. Two modes:
+            //   - Type-driven (all_arg_types non-empty): skip if meta-typed
+            //     in EVERY arrow type at this position.
+            //   - Bloom-fallback (all_arg_types empty): skip unless this
+            //     arg index appears in the bloom-filter result.
+            let should_pre_eval = match &bloom_indices_opt {
+                Some(bloom) => bloom.contains(&i),
+                None => {
+                    let all_meta = all_arg_types.iter().all(|arg_types| {
+                        arg_idx < arg_types.len() && is_meta_type(&arg_types[arg_idx])
+                    });
+                    !all_meta
+                }
+            };
+            if !should_pre_eval {
                 per_arg_results.push(vec![(items[i].clone(), empty_b.clone())]);
                 continue;
             }

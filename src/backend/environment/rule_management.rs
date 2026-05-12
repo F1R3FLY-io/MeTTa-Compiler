@@ -3296,9 +3296,38 @@ where
                         let body_local_epoch = allocate_epoch();
                         let dispatch_scope = allocate_scope_id();
                         let prefix = format!("$__fr_{}_", body_local_epoch);
-                        // Option A: snapshot pre-freshen bindings for the
-                        // bytecode-VM frame.
-                        let original_bindings = bindings.clone();
+                        // P3 (2026-05-12): the compiled-RHS path at
+                        // `vm/mod.rs:6826` populates BindingFrame from
+                        // `result.original_bindings` directly — its
+                        // `PushVariable` opcode pushes the bound value
+                        // verbatim with NO transitive substitution of
+                        // free variables inside that value. For
+                        // repeated-var rules where bidirectional unify
+                        // produces query-side bindings (e.g. modus
+                        // ponens: $B → `(Inheritance $1 (IntSet ...))`
+                        // and $1 → Anna), $1 inside $B's value never
+                        // resolves through the frame.
+                        //
+                        // Fix: pre-substitute the bindings transitively
+                        // BEFORE the snapshot, so $B's value becomes
+                        // `(Inheritance Anna (IntSet ...))` with the
+                        // query-side var already resolved. The trampoline
+                        // path's `apply_bindings_with_rename_scoped`
+                        // does this via Work::ProcessOwned recursion;
+                        // the compiled path needs the values pre-resolved.
+                        let original_bindings = {
+                            let mut resolved =
+                                crate::backend::models::GenericBindings::new();
+                            for (name, value) in bindings.iter() {
+                                let r = crate::backend::eval::bindings::apply_bindings_generic(
+                                    value,
+                                    &bindings,
+                                    &self.factory,
+                                );
+                                resolved.insert(name, r);
+                            }
+                            resolved
+                        };
                         let bindings = freshen_bindings_keys_with_epoch(
                             bindings,
                             body_local_epoch,

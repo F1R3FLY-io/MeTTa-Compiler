@@ -6508,44 +6508,41 @@ where
         // can resolve caller variables in captured rule bodies (e.g.
         // `(uncle $a $b)` substituted into `$C` via the `=>` template).
         //
-        // Y.5 (2026-05-12): when the query has free variables AND native
-        // produced no matches OR a match without the query-side bindings
-        // needed for substitution, also run `match_rules_via_unify` and
-        // prefer its richer bindings. Repeated-var rules like
-        // `(|- ($A ...) ((Implication $A $B) ...))` against a query whose
-        // second $A position carries a free var that must unify with the
-        // first $A occurrence's bound value are the canonical case: native
-        // structural matching may return a match that binds only $A but
-        // misses the query-side variable, so substitution leaves the var
-        // in the RHS template. Unify captures both sides' bindings.
-        let mut matches =
+        // P2 (2026-05-12): aligned with T0's `step/sexpr.rs:2618-2725`
+        // Step 3 + Step 3.5 semantics — try native structural matching
+        // first; fall back to `match_rules_via_unify` only when native
+        // returned ZERO matches AND the query has free variables. This is
+        // HE-faithful: `enumerate_rules_via_unification_detailed` is the
+        // EXACT analog of T0's Step 3.5 fallback. Repeated-var rules like
+        // PLN's modus ponens (`(|- ($A ...) ((Implication $A $B) ...))`)
+        // are already handled by native's `EqualCheck` arm at line 1337,
+        // which calls `bidirectional_unify_generic` and emits both
+        // rule-side AND query-side bindings — `export_rule_match_bindings`
+        // then threads both via the `[dispatch_scope, ROOT_SCOPE]` chain.
+        //
+        // Replaces Y.5's "always run both and prefer unify" — which paid
+        // 2× dispatch cost on every free-var query AND lost `compiled_rhs`
+        // by routing native-eligible RHS through the trampoline.
+        let matches =
             env.match_rules_native(&expr, apply_bindings_generic, &self.current_bindings);
         let native_count = matches.len() as u32;
-        let mut unify_count: u32 = 0;
-        let mut dispatch_path = if matches.is_empty() {
-            "neither"
-        } else {
-            "native"
-        };
         let expr_has_variables = expr.has_variables_fast();
-        if expr_has_variables {
+        let mut unify_count: u32 = 0;
+        let mut matches = matches;
+        let dispatch_path = if !matches.is_empty() {
+            "native"
+        } else if expr_has_variables {
             let unified = env.match_rules_via_unify(&expr);
             unify_count = unified.len() as u32;
             if !unified.is_empty() {
-                // Y.5 current behavior: prefer unify when query has free
-                // vars. P2 will change this to "unify only when native is
-                // empty" once P3 fixes the native bindings export.
-                dispatch_path = if !matches.is_empty() {
-                    "native+unify-replaced"
-                } else {
-                    "unify"
-                };
-                // Prefer unify results when the query has free variables —
-                // they carry the bidirectional bindings (rule-side AND
-                // query-side) needed for repeated-var template substitution.
                 matches = unified;
+                "unify"
+            } else {
+                "neither"
             }
-        }
+        } else {
+            "neither"
+        };
 
         // P1 trace event: record which dispatch path produced the matches.
         // Feature-gated; no cost outside `trace`.

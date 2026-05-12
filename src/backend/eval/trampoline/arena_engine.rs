@@ -66,9 +66,17 @@ pub fn get_static_factory() -> GcFactory {
 /// Create a new `MettaEnvironment` for session-based evaluation.
 ///
 /// The environment uses the global `GcFactory` for all allocations.
+/// Z.A.6a (2026-05-12): the new environment is pre-populated with
+/// HE-equivalent math constants `PI` and `EXP` registered as tokens
+/// that resolve to `Float(std::f64::consts::{PI, E})` respectively.
+/// HE registers these in `lib/src/metta/runner/stdlib/math.rs`.
 #[inline]
 pub fn new_env() -> MettaEnvironment {
-    MettaEnvironment::new(global_factory())
+    let mut env = MettaEnvironment::new(global_factory());
+    let f = global_factory();
+    env.register_token("PI", crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::PI));
+    env.register_token("EXP", crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::E));
+    env
 }
 
 #[cfg(test)]

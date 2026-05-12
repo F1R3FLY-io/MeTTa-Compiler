@@ -179,6 +179,7 @@ where
                         | "println!"
                         | "import!"
                         | "git-import!"
+                        | "git-module!"
                         | "include"
                         | "mod-space!"
                         | "print-mods!"
@@ -2288,10 +2289,16 @@ where
                     let (results, new_env) = eval_import_generic(items, env, ctx);
                     return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
                 }
-                "git-import!" => {
+                "git-import!" | "git-module!" => {
                     // PeTTa-compatible: clone a git repo and register its directory
                     // as a library search path. Pure side-effecting form: returns Unit
                     // on success or an error MettaValue on any failure (no panics).
+                    //
+                    // Z.A.6b (2026-05-12): `git-module!` is the HE-canonical name
+                    // (`hyperon-experimental/lib/src/metta/runner/stdlib/package.rs:117`).
+                    // MeTTaTron used `git-import!` historically; both names dispatch
+                    // to the same handler so HE-sourced MeTTa modules using
+                    // `git-module!` resolve correctly without rewrites.
                     let results = crate::backend::eval::git_import::eval_git_import_generic(
                         &items,
                         ctx.factory(),

@@ -19,10 +19,12 @@ use super::traits::GroundedOperationTCO;
 use super::ExecError;
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
-/// TCO Logical AND operation: (and a b)
+/// TCO Logical AND operation: (and a b ...) — variadic, Z.A.1 (2026-05-12).
 ///
-/// Short-circuit evaluation: if `a` evaluates to `False`, returns `False`
-/// without evaluating `b`.
+/// HE bisimilarity: `(and)` returns `True` (identity); `(and x)` returns
+/// `x` coerced to Bool; `(and x1 x2 ...)` left-folds with short-circuit
+/// on the first arg whose results are ALL False. Cartesian product
+/// semantics across nondeterministic operand results is preserved.
 pub struct AndOp;
 
 impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AndOp {
@@ -35,77 +37,16 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AndOp {
         state: &mut GroundedState<V>,
         factory: &F,
     ) -> GroundedWork<V> {
-        match state.step {
-            0 => {
-                if state.args.len() != 2 {
-                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
-                        "and requires 2 arguments, got {}",
-                        state.args.len()
-                    )));
-                }
-                state.step = 1;
-                GroundedWork::EvalArg {
-                    arg_idx: 0,
-                    state: state.clone(),
-                }
-            }
-            1 => {
-                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
-                if let Some(err) = find_error(a_results) {
-                    return GroundedWork::Done(vec![(err.clone(), None)]);
-                }
-
-                // Short-circuit: if any result is False, we might return False early
-                // But for Cartesian product semantics, we need to evaluate both args
-                // unless ALL results are False (then we can short-circuit)
-                let all_false = a_results.iter().all(|v| v.as_bool() == Some(false));
-                if all_false {
-                    // Short-circuit: all False, no need to evaluate b
-                    return GroundedWork::Done(vec![(factory.bool(false), None)]);
-                }
-
-                state.step = 2;
-                GroundedWork::EvalArg {
-                    arg_idx: 1,
-                    state: state.clone(),
-                }
-            }
-            2 => {
-                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
-                let b_results = state.get_arg(1).expect("arg 1 should be evaluated");
-
-                if let Some(err) = find_error(b_results) {
-                    return GroundedWork::Done(vec![(err.clone(), None)]);
-                }
-
-                let mut results = Vec::new();
-                for a in a_results {
-                    for b in b_results {
-                        match (a.as_bool(), b.as_bool()) {
-                            (Some(x), Some(y)) => {
-                                results.push((factory.bool(x && y), None));
-                            }
-                            _ => {
-                                return GroundedWork::Error(ExecError::Runtime(format!(
-                                    "Cannot perform 'and': expected Bool, got {} and {}",
-                                    a.friendly_type_name(),
-                                    b.friendly_type_name()
-                                )));
-                            }
-                        }
-                    }
-                }
-                GroundedWork::Done(results)
-            }
-            _ => unreachable!("Invalid step {} for and operation", state.step),
-        }
+        variadic_logical_step(state, factory, "and", LogicalKind::And)
     }
 }
 
-/// TCO Logical OR operation: (or a b)
+/// TCO Logical OR operation: (or a b ...) — variadic, Z.A.1 (2026-05-12).
 ///
-/// Short-circuit evaluation: if `a` evaluates to `True`, returns `True`
-/// without evaluating `b`.
+/// HE bisimilarity: `(or)` returns `False` (identity); `(or x)` returns
+/// `x` coerced to Bool; `(or x1 x2 ...)` left-folds with short-circuit
+/// on the first arg whose results are ALL True. Cartesian product
+/// semantics across nondeterministic operand results is preserved.
 pub struct OrOp;
 
 impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for OrOp {
@@ -118,69 +59,132 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for OrOp {
         state: &mut GroundedState<V>,
         factory: &F,
     ) -> GroundedWork<V> {
-        match state.step {
-            0 => {
-                if state.args.len() != 2 {
-                    return GroundedWork::Error(ExecError::IncorrectArgument(format!(
-                        "or requires 2 arguments, got {}",
-                        state.args.len()
-                    )));
-                }
-                state.step = 1;
-                GroundedWork::EvalArg {
-                    arg_idx: 0,
-                    state: state.clone(),
-                }
-            }
-            1 => {
-                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
-                if let Some(err) = find_error(a_results) {
-                    return GroundedWork::Done(vec![(err.clone(), None)]);
-                }
+        variadic_logical_step(state, factory, "or", LogicalKind::Or)
+    }
+}
 
-                // Short-circuit: if all results are True, return True early
-                let all_true = a_results.iter().all(|v| v.as_bool() == Some(true));
-                if all_true {
-                    // Short-circuit: all True, no need to evaluate b
-                    return GroundedWork::Done(vec![(factory.bool(true), None)]);
-                }
+/// Discriminator for the shared variadic logical step machine.
+#[derive(Clone, Copy)]
+enum LogicalKind {
+    And,
+    Or,
+}
 
-                state.step = 2;
-                GroundedWork::EvalArg {
-                    arg_idx: 1,
-                    state: state.clone(),
-                }
-            }
-            2 => {
-                let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
-                let b_results = state.get_arg(1).expect("arg 1 should be evaluated");
-
-                if let Some(err) = find_error(b_results) {
-                    return GroundedWork::Done(vec![(err.clone(), None)]);
-                }
-
-                let mut results = Vec::new();
-                for a in a_results {
-                    for b in b_results {
-                        match (a.as_bool(), b.as_bool()) {
-                            (Some(x), Some(y)) => {
-                                results.push((factory.bool(x || y), None));
-                            }
-                            _ => {
-                                return GroundedWork::Error(ExecError::Runtime(format!(
-                                    "Cannot perform 'or': expected Bool, got {} and {}",
-                                    a.friendly_type_name(),
-                                    b.friendly_type_name()
-                                )));
-                            }
-                        }
-                    }
-                }
-                GroundedWork::Done(results)
-            }
-            _ => unreachable!("Invalid step {} for or operation", state.step),
+impl LogicalKind {
+    /// Identity element for empty-args invocation.
+    fn identity(self) -> bool {
+        match self {
+            LogicalKind::And => true,
+            LogicalKind::Or => false,
         }
     }
+
+    /// Short-circuit sentinel: a result set of all `sentinel` halts the fold.
+    /// AND short-circuits on all-False; OR on all-True.
+    fn short_circuit_sentinel(self) -> bool {
+        match self {
+            LogicalKind::And => false,
+            LogicalKind::Or => true,
+        }
+    }
+
+    /// Step combinator for the Cartesian-product fold.
+    fn combine(self, a: bool, b: bool) -> bool {
+        match self {
+            LogicalKind::And => a && b,
+            LogicalKind::Or => a || b,
+        }
+    }
+}
+
+/// Shared variadic state machine for `and`/`or`.
+///
+/// Step semantics:
+/// - `state.step` is the index of the NEXT arg to evaluate (0..=N).
+/// - `step == 0` with `N == 0`: return identity (True for AND, False for OR).
+/// - Before issuing EvalArg(k), check args[0..k] for short-circuit:
+///   * Error in prev → propagate Error.
+///   * Non-Bool in prev → Runtime error.
+///   * All-sentinel in prev → short-circuit Done(sentinel).
+/// - `step == N`: Cartesian-product fold over all args, returning all bool combos.
+fn variadic_logical_step<V, F>(
+    state: &mut GroundedState<V>,
+    factory: &F,
+    op_name: &str,
+    kind: LogicalKind,
+) -> GroundedWork<V>
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    let n = state.args.len();
+
+    // Empty-args identity.
+    if state.step == 0 && n == 0 {
+        return GroundedWork::Done(vec![(factory.bool(kind.identity()), None)]);
+    }
+
+    // Inspect the most recently-evaluated arg (state.step is "next to eval";
+    // step > 0 means args[step - 1] is already evaluated).
+    if state.step > 0 {
+        let prev_idx = state.step - 1;
+        let prev_results = state.get_arg(prev_idx).expect("prev arg evaluated");
+
+        if let Some(err) = find_error(prev_results) {
+            return GroundedWork::Done(vec![(err.clone(), None)]);
+        }
+
+        // Type-check Bool.
+        for v in prev_results {
+            if v.as_bool().is_none() {
+                return GroundedWork::Error(ExecError::Runtime(format!(
+                    "Cannot perform '{}': expected Bool, got {}",
+                    op_name,
+                    v.friendly_type_name()
+                )));
+            }
+        }
+
+        // Short-circuit: every result equals the sentinel.
+        let sentinel = kind.short_circuit_sentinel();
+        let all_sentinel = prev_results
+            .iter()
+            .all(|v| v.as_bool() == Some(sentinel));
+        if all_sentinel {
+            return GroundedWork::Done(vec![(factory.bool(sentinel), None)]);
+        }
+    }
+
+    // Need more args? Eval the next.
+    if state.step < n {
+        let arg_idx = state.step;
+        state.step = arg_idx + 1;
+        return GroundedWork::EvalArg {
+            arg_idx,
+            state: state.clone(),
+        };
+    }
+
+    // All args evaluated; combine via Cartesian fold.
+    let mut combos: Vec<bool> = vec![kind.identity()];
+    for i in 0..n {
+        let arg_results = state.get_arg(i).expect("arg evaluated");
+        let mut new_combos: Vec<bool> = Vec::with_capacity(combos.len() * arg_results.len());
+        for prev in &combos {
+            for v in arg_results {
+                let b = v
+                    .as_bool()
+                    .expect("Bool already type-checked in short-circuit pass");
+                new_combos.push(kind.combine(*prev, b));
+            }
+        }
+        combos = new_combos;
+    }
+    let results: Vec<(V, Option<crate::backend::models::GenericBindings<V>>)> = combos
+        .into_iter()
+        .map(|b| (factory.bool(b), None))
+        .collect();
+    GroundedWork::Done(results)
 }
 
 /// TCO Logical NOT operation: (not a)

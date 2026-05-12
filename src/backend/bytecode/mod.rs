@@ -475,9 +475,14 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     "get-metatype" => true,
                     "let" | "let*" => true,
                     "chain" => return can_compile_chain_with_env(items),
-                    "map-atom" => return can_compile_map_atom_with_env(items),
-                    "filter-atom" => return can_compile_filter_atom_with_env(items),
-                    "foldl-atom" => return can_compile_foldl_atom_with_env(items),
+                    // Y.2 (2026-05-12): higher-order forms are not handled
+                    // by the GenericCompiler (used by `compile_bytecode_arc`).
+                    // The kernel-step opcodes Opcode::MapAtom etc. require
+                    // template-chunk infrastructure only the IterativeCompiler
+                    // emits. Until that path is exposed at the env-aware
+                    // entry, gate these out — T0 trampoline handles them
+                    // correctly with `[(2 3 4)]` etc.
+                    "map-atom" | "filter-atom" | "foldl-atom" => return false,
                     "case" => true,
                     "error" | "is-error" | "catch" => true,
                     "get-type" => true,
@@ -565,32 +570,11 @@ fn can_compile_chain_with_env(items: &[MettaValue]) -> bool {
     var_ok && can_compile_with_env(&items[1]) && can_compile_with_env(&items[3])
 }
 
-/// Check if a map-atom expression can be compiled with environment support
-fn can_compile_map_atom_with_env(items: &[MettaValue]) -> bool {
-    if items.len() != 4 {
-        return false;
-    }
-    let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
-    var_ok && can_compile_with_env(&items[1])
-}
-
-/// Check if a filter-atom expression can be compiled with environment support
-fn can_compile_filter_atom_with_env(items: &[MettaValue]) -> bool {
-    if items.len() != 4 {
-        return false;
-    }
-    let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
-    var_ok && can_compile_with_env(&items[1])
-}
-
-/// Check if a foldl-atom expression can be compiled with environment support
-fn can_compile_foldl_atom_with_env(items: &[MettaValue]) -> bool {
-    if items.len() != 5 {
-        return false;
-    }
-    let var_ok = matches!(items[3].view(), ValueView::Atom(s) if s.starts_with('$'));
-    var_ok && can_compile_with_env(&items[1]) && can_compile_with_env(&items[2])
-}
+// Y.2 (2026-05-12): can_compile_{map,filter,foldl}_atom_with_env predicates
+// were removed — the GenericCompiler (used by `compile_bytecode_arc`) lacks
+// the template-chunk infrastructure needed to compile these forms correctly.
+// The `_with_env` arm at line 478 above now returns `false` directly,
+// routing higher-order list ops to the T0 trampoline where they work.
 
 /// Check if a chain expression can be compiled
 /// (chain expr $var body) - expr and body must be compilable, $var must be a variable

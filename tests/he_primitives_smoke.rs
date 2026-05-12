@@ -98,17 +98,29 @@ fn git_module_is_alias_of_git_import() {
 }
 
 #[test]
-fn print_alternatives_is_alias_of_println() {
-    // Single-result variant: prints "5" to stdout, returns Unit.
-    let r = run_one(r#"!(print-alternatives! 5)"#);
+fn print_alternatives_takes_two_args_msg_and_expr_list() {
+    // HE-canonical: (print-alternatives! msg expr-list) prints
+    //   N msg:
+    //       child0
+    //       child1
+    //       ...
+    // and returns Unit. Distinct from println! (1-arg, prints atom).
+    let r = run_one(r#"!(print-alternatives! "fruits" (apple banana cherry))"#);
     assert_eq!(r, vec!["()"]);
 }
 
 #[test]
-fn print_alternatives_with_deterministic_arithmetic_arg() {
-    // Single-result computed arg: prints "3" to stdout, returns Unit.
-    let r = run_one(r#"!(print-alternatives! (+ 1 2))"#);
+fn print_alternatives_with_empty_list_prints_zero() {
+    let r = run_one(r#"!(print-alternatives! "none" ())"#);
     assert_eq!(r, vec!["()"]);
+}
+
+#[test]
+fn print_alternatives_rejects_wrong_arity() {
+    // Single-arg form is now an arity error (1 arg given, 2 required).
+    let r = run_one(r#"!(print-alternatives! 5)"#);
+    assert_eq!(r.len(), 1);
+    assert!(r[0].starts_with("(Error"), "expected Error, got: {}", r[0]);
 }
 
 #[test]

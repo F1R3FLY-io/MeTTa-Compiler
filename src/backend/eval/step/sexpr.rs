@@ -2192,22 +2192,12 @@ where
                 }
 
                 // I/O operations.
-                //
-                // Z.A.6.b (2026-05-12): `print-alternatives!` is HE's analog
-                // primitive at `hyperon-experimental/lib/src/metta/runner/stdlib/debug.rs:159`
-                // — it prints each nondeterministic alternative on its own line.
-                // MeTTaTron's `println!` already iterates `atom_results` and prints
-                // each (`eval_loop.rs:12873-12876`), so the behaviours coincide;
-                // aliasing the two forms is sound. HE-sourced MeTTa modules using
-                // `print-alternatives!` resolve correctly without rewrites.
-                "println!" | "print-alternatives!" => {
+                "println!" => {
                     if items.len() != 2 {
                         let err = ctx.factory().error(
                             &format!(
-                            "{} requires exactly 1 argument, got {}. Usage: ({} atom)",
-                            op,
-                            items.len() - 1,
-                            op
+                            "println! requires exactly 1 argument, got {}. Usage: (println! atom)",
+                            items.len() - 1
                         ),
                             ctx.factory().sexpr(items),
                         );
@@ -2218,6 +2208,42 @@ where
                         env,
                         depth,
                     };
+                }
+
+                // Z.A.6.b (2026-05-12, revised): `print-alternatives!` is HE's
+                // 2-arg debug primitive at `hyperon-experimental/lib/src/metta/
+                // runner/stdlib/debug.rs:159`. Signature differs from `println!`:
+                //   (print-alternatives! <msg-atom> <expr-list>)
+                // Prints "N <msg>:" then "    <child>" for each child of the
+                // expression list, returns Unit. Distinct from `println!`
+                // (1-arg, just renders the atom).
+                "print-alternatives!" => {
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
+                            &format!(
+                                "print-alternatives! requires exactly 2 arguments, got {}. Usage: (print-alternatives! msg expr-list)",
+                                items.len() - 1
+                            ),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let msg = match items[1].as_atom() {
+                        Some(s) => s.to_string(),
+                        None => match items[1].as_string() {
+                            Some(s) => s.to_string(),
+                            None => format!("{}", items[1]),
+                        },
+                    };
+                    let children: Vec<MettaValue> = match items[2].as_sexpr() {
+                        Some(items) => items.iter().cloned().collect(),
+                        None => vec![items[2].clone()],
+                    };
+                    println!("{} {}:", children.len(), msg);
+                    for child in &children {
+                        println!("    {}", child);
+                    }
+                    return GenericEvalStep::Done((smallvec![ctx.factory().unit()], env));
                 }
 
                 "trace!" => {

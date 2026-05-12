@@ -6507,10 +6507,27 @@ where
         // Phase 5 (Bug 1): thread caller-side bindings so `apply_bindings_with_rename_scoped`
         // can resolve caller variables in captured rule bodies (e.g.
         // `(uncle $a $b)` substituted into `$C` via the `=>` template).
+        //
+        // Y.5 (2026-05-12): when the query has free variables AND native
+        // produced no matches OR a match without the query-side bindings
+        // needed for substitution, also run `match_rules_via_unify` and
+        // prefer its richer bindings. Repeated-var rules like
+        // `(|- ($A ...) ((Implication $A $B) ...))` against a query whose
+        // second $A position carries a free var that must unify with the
+        // first $A occurrence's bound value are the canonical case: native
+        // structural matching may return a match that binds only $A but
+        // misses the query-side variable, so substitution leaves the var
+        // in the RHS template. Unify captures both sides' bindings.
         let mut matches =
             env.match_rules_native(&expr, apply_bindings_generic, &self.current_bindings);
-        if matches.is_empty() && expr.has_variables_fast() {
-            matches = env.match_rules_via_unify(&expr);
+        if expr.has_variables_fast() {
+            let unified = env.match_rules_via_unify(&expr);
+            if !unified.is_empty() {
+                // Prefer unify results when the query has free variables —
+                // they carry the bidirectional bindings (rule-side AND
+                // query-side) needed for repeated-var template substitution.
+                matches = unified;
+            }
         }
 
         // Phase 9.2/9.3: expected_type branch pruning — filter out rule matches

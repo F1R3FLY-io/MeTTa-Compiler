@@ -96,3 +96,45 @@ fn git_module_is_alias_of_git_import() {
         r[0]
     );
 }
+
+#[test]
+fn print_alternatives_is_alias_of_println() {
+    // Single-result variant: prints "5" to stdout, returns Unit.
+    let r = run_one(r#"!(print-alternatives! 5)"#);
+    assert_eq!(r, vec!["()"]);
+}
+
+#[test]
+fn print_alternatives_with_deterministic_arithmetic_arg() {
+    // Single-result computed arg: prints "3" to stdout, returns Unit.
+    let r = run_one(r#"!(print-alternatives! (+ 1 2))"#);
+    assert_eq!(r, vec!["()"]);
+}
+
+#[test]
+fn capture_evaluates_argument_like_eval() {
+    let r = run_one(r#"!(capture (+ 1 2))"#);
+    assert_eq!(r, vec!["3"]);
+}
+
+#[test]
+fn capture_preserves_nondet_results() {
+    let r = run_one(r#"!(capture (superpose (1 2 3)))"#);
+    let mut sorted = r.clone();
+    sorted.sort();
+    assert_eq!(sorted, vec!["1", "2", "3"]);
+}
+
+#[test]
+fn register_module_routes_via_include() {
+    // register-module! is HE's path-based module loader; MeTTaTron aliases
+    // to `include` for shared loading semantics. Nonexistent file returns
+    // an Error atom (matches HE's load failure behaviour).
+    let r = run_one(r#"!(register-module! "this-file-does-not-exist.metta")"#);
+    assert_eq!(r.len(), 1);
+    assert!(
+        r[0].starts_with("(Error"),
+        "register-module! on nonexistent file should return Error atom, got: {}",
+        r[0]
+    );
+}

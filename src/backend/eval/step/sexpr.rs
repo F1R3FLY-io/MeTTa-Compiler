@@ -153,6 +153,7 @@ where
                         | "is-error"
                         | "catch"
                         | "eval"
+                        | "capture"
                         | "chain"
                         | "let"
                         | "let*"
@@ -177,10 +178,12 @@ where
                         | "change-state!"
                         | "pragma!"
                         | "println!"
+                        | "print-alternatives!"
                         | "import!"
                         | "git-import!"
                         | "git-module!"
                         | "include"
+                        | "register-module!"
                         | "mod-space!"
                         | "print-mods!"
                         | "test"
@@ -439,12 +442,29 @@ where
                 }
 
                 // eval - defers evaluation to trampoline
-                "eval" => {
+                //
+                // Z.A.6.d (2026-05-12): `capture` is HE's analog at
+                // `hyperon-experimental/lib/src/metta/runner/stdlib/core.rs:224-254`.
+                // `CaptureOp::execute` calls `interpret(space, atom, settings)` —
+                // it evaluates the argument in the current space with the captured
+                // PragmaSettings, returning a Vec<Atom> of results.
+                //
+                // In MeTTaTron, PragmaSettings aren't a first-class value type
+                // (they live on the env via `pragma!` and propagate implicitly).
+                // The observation-equivalent operation is `eval`, which fully
+                // evaluates the argument in the current env and returns the
+                // result multiset. `capture` therefore aliases to `eval` —
+                // HE-sourced MeTTa modules using `(capture X)` resolve to a
+                // full evaluation of X, identical to HE behaviour given that
+                // MeTTaTron preserves the ambient pragma settings on the env.
+                "eval" | "capture" => {
                     if items.len() != 2 {
                         let err = ctx.factory().error(
                             &format!(
-                                "eval requires exactly 1 argument, got {}. Usage: (eval expr)",
-                                items.len() - 1
+                                "{} requires exactly 1 argument, got {}. Usage: ({} expr)",
+                                op,
+                                items.len() - 1,
+                                op
                             ),
                             ctx.factory().sexpr(items),
                         );
@@ -2171,13 +2191,23 @@ where
                     };
                 }
 
-                // I/O operations
-                "println!" => {
+                // I/O operations.
+                //
+                // Z.A.6.b (2026-05-12): `print-alternatives!` is HE's analog
+                // primitive at `hyperon-experimental/lib/src/metta/runner/stdlib/debug.rs:159`
+                // — it prints each nondeterministic alternative on its own line.
+                // MeTTaTron's `println!` already iterates `atom_results` and prints
+                // each (`eval_loop.rs:12873-12876`), so the behaviours coincide;
+                // aliasing the two forms is sound. HE-sourced MeTTa modules using
+                // `print-alternatives!` resolve correctly without rewrites.
+                "println!" | "print-alternatives!" => {
                     if items.len() != 2 {
                         let err = ctx.factory().error(
                             &format!(
-                            "println! requires exactly 1 argument, got {}. Usage: (println! atom)",
-                            items.len() - 1
+                            "{} requires exactly 1 argument, got {}. Usage: ({} atom)",
+                            op,
+                            items.len() - 1,
+                            op
                         ),
                             ctx.factory().sexpr(items),
                         );
@@ -2281,7 +2311,16 @@ where
 
                 // Module operations - use generic implementations directly (zero-conversion)
                 // Passes full ctx (not just factory) so import/include can force-eval `!` expressions
-                "include" => {
+                //
+                // Z.A.6.c (2026-05-12): `register-module!` is HE's analog at
+                // `hyperon-experimental/lib/src/metta/runner/stdlib/package.rs:35-51`.
+                // It takes a filesystem-path argument and loads the module's contents.
+                // MeTTaTron's `include` has the same single-path signature and loads
+                // contents into the current scope; aliasing the two names lets
+                // HE-sourced MeTTa modules using `register-module!` resolve without
+                // rewrites. (HE's `register-module!` bypasses catalog search; MeTTaTron's
+                // `include` is similarly path-direct.)
+                "include" | "register-module!" => {
                     let (results, new_env) = eval_include_generic(items, env, ctx);
                     return GenericEvalStep::Done((SmallVec::from_vec(results), new_env));
                 }

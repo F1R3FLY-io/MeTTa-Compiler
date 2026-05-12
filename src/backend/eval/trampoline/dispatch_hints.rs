@@ -338,8 +338,8 @@ fn is_impure_head(head: &str) -> bool {
         "add-atom" | "remove-atom" | "get-atoms"
             | "new-state" | "change-state!" | "get-state"
             | "match" | "match-or" | "unify"
-            | "import!" | "git-import!" | "git-module!" | "include"
-            | "println!" | "trace!" | "nop"
+            | "import!" | "git-import!" | "git-module!" | "include" | "register-module!"
+            | "println!" | "print-alternatives!" | "trace!" | "nop"
             | "new-space" | "mod-space!"
             | "bind!"
             | "new-memo" | "memo" | "clear-memo!" | "memo-stats"
@@ -537,7 +537,7 @@ pub fn should_memoize<V: MettaValueTrait>(value: &V) -> bool {
             if is_impure_head(head) {
                 return false;
             }
-            if (head == "!" || head == "eval") && items.len() == 2 {
+            if (head == "!" || head == "eval" || head == "capture") && items.len() == 2 {
                 return should_memoize(&items[1]);
             }
             true
@@ -900,7 +900,7 @@ pub(crate) fn is_embedded_kernel_op(head: &str) -> bool {
     matches!(
         head,
         // Spec §06.3.6 embedded kernel ops
-        "eval" | "evalc" | "chain" | "unify"
+        "eval" | "capture" | "evalc" | "chain" | "unify"
         | "cons-atom" | "decons-atom"
         | "function" | "return"
         | "collapse-bind" | "superpose-bind"
@@ -957,7 +957,7 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         "=" | "!" | "quote" | "unquote" | "noreduce"
         | "if" | "if-reducible" | "if-equal"
         | "error" | "Error" | "is-error" | "catch"
-        | "eval" | "reduce" | "progn" | "function" | "return" | "chain"
+        | "eval" | "capture" | "reduce" | "progn" | "function" | "return" | "chain"
         | "match" | "match-or" | "case"
         | "switch" | "switch-minimal" | "switch-internal"
         | "let" | "let*" | "unify" | "sealed" | "atom-subst"
@@ -980,10 +980,10 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "get-atoms"
         | "new-state" | "get-state" | "change-state!"
         | "new-memo" | "memo" | "memo-first" | "clear-memo!" | "memo-stats"
-        | "bind!" | "println!" | "trace!" | "nop"
+        | "bind!" | "println!" | "print-alternatives!" | "trace!" | "nop"
         | "repr" | "format-args"
         | "empty" | "get-metatype"
-        | "include" | "import!" | "git-import!" | "git-module!" | "mod-space!" | "print-mods!" | "get-modules"
+        | "include" | "register-module!" | "import!" | "git-import!" | "git-module!" | "mod-space!" | "print-mods!" | "get-modules"
         | "exec" | "coalg" | "lookup" | "rulify"
         | "=alpha"
         | "unique-atom" | "alpha-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
@@ -1230,6 +1230,7 @@ mod tests {
             "catch",
             "is-error",
             "eval",
+            "capture",
             "quote",
             "unquote",
             "collapse",
@@ -1242,6 +1243,7 @@ mod tests {
             "get-state",
             "change-state!",
             "println!",
+            "print-alternatives!",
             "trace!",
             "unique-atom",
             "union-atom",
@@ -1275,6 +1277,7 @@ mod tests {
             "sort-tuple",
             "best-candidate",
             "eval",
+            "capture",
             "unquote",
             "collapse",
             "collapse-bind",

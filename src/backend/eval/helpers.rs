@@ -37,13 +37,13 @@ pub fn needs_special_form_redispatch(op: &str) -> bool {
         // Error handling (special flow)
         | "catch" | "is-error"
         // Evaluation control
-        | "eval" | "quote" | "unquote"
+        | "eval" | "capture" | "quote" | "unquote"
         // Space operations that need special handling
         | "collapse" | "collapse-bind" | "amb" | "guard" | "ground-with-bindings" | "freeze-tuple"
         // State operations
         | "new-state" | "get-state" | "change-state!"
         // I/O operations
-        | "println!" | "trace!"
+        | "println!" | "print-alternatives!" | "trace!"
         // Set operations
         | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
         // Alpha equivalence
@@ -73,7 +73,7 @@ pub fn is_eager_special_form(op: &str) -> bool {
         // Higher-order tuple operations (produce values)
         | "sort-tuple" | "best-candidate"
         // Evaluation control that produces values
-        | "eval" | "reduce" | "unquote"
+        | "eval" | "capture" | "reduce" | "unquote"
         // Space operations that produce values
         | "collapse" | "collapse-bind" | "superpose"
         // State operations that produce values

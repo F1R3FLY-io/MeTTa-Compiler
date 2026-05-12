@@ -1181,7 +1181,6 @@ where
                 self.push(self.make_long(n));
             }
             Opcode::PushLong
-            | Opcode::PushAtom
             | Opcode::PushString
             | Opcode::PushUri
             | Opcode::PushConstant => {
@@ -1192,6 +1191,27 @@ where
                     .ok_or(VmError::InvalidConstant(index))?
                     .clone();
                 self.push(value);
+            }
+            Opcode::PushAtom => {
+                let index = self.read_u16()?;
+                let value = self
+                    .chunk
+                    .get_constant(index)
+                    .ok_or(VmError::InvalidConstant(index))?
+                    .clone();
+                // Y.4 (2026-05-12): if this atom is bound as a token in the
+                // environment (e.g. via `(bind! x-val 100)`), resolve to the
+                // bound value, mirroring T0's eval at `step/step.rs:130`.
+                // Variables starting with `$` are handled by PushVariable, so
+                // PushAtom always sees non-variable symbols here. Lookup miss
+                // returns None and we push the literal atom.
+                let to_push = match (self.env.as_ref(), value.as_atom()) {
+                    (Some(env), Some(name)) => env
+                        .lookup_token_generic(name, &self.factory)
+                        .unwrap_or(value),
+                    _ => value,
+                };
+                self.push(to_push);
             }
             Opcode::PushVariable => self.op_push_variable()?,
             Opcode::MakeSExpr => {

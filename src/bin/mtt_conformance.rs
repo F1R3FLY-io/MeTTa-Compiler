@@ -225,11 +225,22 @@ fn parse_expected_results(yaml_path: &Path) -> Option<Vec<Vec<String>>> {
     let content = fs::read_to_string(yaml_path).ok()?;
     let mut groups: Vec<Vec<String>> = Vec::new();
     let mut in_results = false;
+    let mut explicit_empty = false;
     let mut current_group: Option<Vec<String>> = None;
     for raw_line in content.lines() {
         let trimmed = raw_line.trim_end();
         let indent = trimmed.len() - trimmed.trim_start().len();
         let body = trimmed.trim_start();
+        // Inline empty list `results: []` at top level: explicitly asserts
+        // zero result groups (no `!` directives in the fixture). Strip
+        // trailing comments before comparing.
+        if indent == 0 {
+            let before_comment = body.split('#').next().unwrap_or("").trim_end();
+            if before_comment == "results: []" || before_comment == "results:[]" {
+                explicit_empty = true;
+                continue;
+            }
+        }
         // Top-level `results:` (indent 0) opens the block. Nested
         // `he_observation: results:` (indent > 0) is ignored — we only want
         // the canonical MTT expected output.
@@ -270,7 +281,7 @@ fn parse_expected_results(yaml_path: &Path) -> Option<Vec<Vec<String>>> {
     if let Some(g) = current_group {
         groups.push(g);
     }
-    if groups.is_empty() {
+    if groups.is_empty() && !explicit_empty {
         None
     } else {
         Some(groups)

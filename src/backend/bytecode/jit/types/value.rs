@@ -44,13 +44,57 @@ impl JitValue {
         JitValue(bits)
     }
 
-    /// Create a Long (integer) value
+    /// Create a Long (integer) value.
     ///
-    /// Note: Only 48-bit signed integers are supported directly.
-    /// Larger values should use heap allocation.
+    /// Z.A.2 (2026-05-12): for values outside the inline 48-bit signed
+    /// range `[INLINE_LONG_MIN, INLINE_LONG_MAX]`, the value is allocated
+    /// on the slab and returned as TAG_PTR. Eliminates silent truncation
+    /// (former code did `(n as u64) & PAYLOAD_MASK` without bounds check,
+    /// which corrupted Long arithmetic past 2^47).
+    ///
+    /// For `const` contexts (e.g. [`JitValue::ZERO`], [`JitValue::ONE`]),
+    /// use [`Self::from_long_inline_unchecked`] which preserves the
+    /// const-fn property but is only safe for values guaranteed in range
+    /// at compile time.
+    #[inline]
+    pub fn from_long(n: i64) -> Self {
+        if let Some(inline) = Self::try_from_long_inline(n) {
+            return inline;
+        }
+        // Heap fallback: allocate MettaValueInner::Long(n) on the slab
+        // and tag as PTR. The slab guarantees 'static lifetime.
+        let inner = crate::backend::models::gc_allocator::global_allocator()
+            .alloc_value(MettaValueInner::Long(n));
+        JitValue::from_inner_ptr(inner)
+    }
+
+    /// Maximum signed value representable as an inline 48-bit Long.
+    pub const INLINE_LONG_MAX: i64 = (1i64 << 47) - 1;
+
+    /// Minimum signed value representable as an inline 48-bit Long.
+    pub const INLINE_LONG_MIN: i64 = -(1i64 << 47);
+
+    /// Try to encode `n` inline as a 48-bit signed Long.
+    ///
+    /// Returns `None` if `|n|` exceeds `2^47 - 1` (positive) or `n < -2^47`
+    /// (negative). Use [`Self::from_long`] for the heap-fallback path.
+    #[inline]
+    pub const fn try_from_long_inline(n: i64) -> Option<Self> {
+        if n >= Self::INLINE_LONG_MIN && n <= Self::INLINE_LONG_MAX {
+            let payload = (n as u64) & PAYLOAD_MASK;
+            Some(JitValue(TAG_LONG | payload))
+        } else {
+            None
+        }
+    }
+
+    /// `const fn` variant of [`Self::from_long`] that does NOT range-check.
+    ///
+    /// **Only use for compile-time constants known to fit in 48 bits.**
+    /// At runtime, prefer [`Self::from_long`] which routes overflow to the
+    /// heap path. Z.A.2 retains this for [`Self::ZERO`] / [`Self::ONE`].
     #[inline(always)]
-    pub const fn from_long(n: i64) -> Self {
-        // Truncate to 48 bits (preserving sign in the truncated representation)
+    pub const fn from_long_inline_unchecked(n: i64) -> Self {
         let payload = (n as u64) & PAYLOAD_MASK;
         JitValue(TAG_LONG | payload)
     }
@@ -441,8 +485,8 @@ impl JitValue {
     pub const UNIT: JitValue = JitValue::unit();
 
     /// Constant for zero
-    pub const ZERO: JitValue = JitValue::from_long(0);
+    pub const ZERO: JitValue = JitValue::from_long_inline_unchecked(0);
 
     /// Constant for one
-    pub const ONE: JitValue = JitValue::from_long(1);
+    pub const ONE: JitValue = JitValue::from_long_inline_unchecked(1);
 }

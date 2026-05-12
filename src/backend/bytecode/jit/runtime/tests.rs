@@ -1268,16 +1268,41 @@ mod tests {
 
     #[test]
     fn test_jit_value_max_long() {
-        // Note: JitValue::from_long truncates to 48 bits
+        // Z.A.2 (2026-05-12): JitValue::from_long routes out-of-range
+        // values to the slab-allocated heap path tagged TAG_PTR, so
+        // `is_long()` (which checks TAG_LONG) returns false. The full
+        // i64::MAX is preserved via the MettaValueInner::Long round-trip.
         let max = JitValue::from_long(i64::MAX);
-        assert!(max.is_long());
+        assert!(!max.is_long(), "i64::MAX should be heap-allocated, not inline");
+        let metta = unsafe { max.to_metta() };
+        assert_eq!(metta.as_long(), Some(i64::MAX));
     }
 
     #[test]
     fn test_jit_value_min_long() {
-        // Note: JitValue::from_long truncates to 48 bits
+        // Z.A.2: see test_jit_value_max_long for rationale.
         let min = JitValue::from_long(i64::MIN);
-        assert!(min.is_long());
+        assert!(!min.is_long(), "i64::MIN should be heap-allocated, not inline");
+        let metta = unsafe { min.to_metta() };
+        assert_eq!(metta.as_long(), Some(i64::MIN));
+    }
+
+    #[test]
+    fn test_jit_value_inline_long_max_in_range() {
+        // 2^47 - 1 stays inline.
+        let v = JitValue::from_long(JitValue::INLINE_LONG_MAX);
+        assert!(v.is_long(), "INLINE_LONG_MAX should fit inline");
+        let metta = unsafe { v.to_metta() };
+        assert_eq!(metta.as_long(), Some(JitValue::INLINE_LONG_MAX));
+    }
+
+    #[test]
+    fn test_jit_value_inline_long_min_in_range() {
+        // -2^47 stays inline.
+        let v = JitValue::from_long(JitValue::INLINE_LONG_MIN);
+        assert!(v.is_long(), "INLINE_LONG_MIN should fit inline");
+        let metta = unsafe { v.to_metta() };
+        assert_eq!(metta.as_long(), Some(JitValue::INLINE_LONG_MIN));
     }
 
     // ==========================================================================

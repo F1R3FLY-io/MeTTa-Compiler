@@ -42,7 +42,7 @@ pub unsafe extern "C" fn jit_runtime_load_binding(
         None => return TAG_UNIT,
     };
 
-    let name_idx_u32 = name_idx as u32;
+    // Z.A.3: name_idx is the full 64-bit FNV-1a hash now (no truncation).
 
     // Search binding frames from innermost to outermost
     if ctx_ref.binding_frames_count > 0 && !ctx_ref.binding_frames.is_null() {
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn jit_runtime_load_binding(
             if frame.entries_count > 0 && !frame.entries.is_null() {
                 for entry_idx in 0..frame.entries_count {
                     let entry = &*frame.entries.add(entry_idx);
-                    if entry.name_idx == name_idx_u32 {
+                    if entry.name_idx == name_idx {
                         return entry.value.to_bits();
                     }
                 }
@@ -107,7 +107,7 @@ pub unsafe extern "C" fn jit_runtime_push_variable_with_fallback(
         None => return TAG_UNIT,
     };
 
-    let name_idx_u32 = name_idx as u32;
+    // Z.A.3: name_idx is the full 64-bit FNV-1a hash now (no truncation).
 
     // Search binding frames from innermost to outermost.
     // Convention: `name_idx` is the constant pool index, matching the
@@ -119,7 +119,7 @@ pub unsafe extern "C" fn jit_runtime_push_variable_with_fallback(
             if frame.entries_count > 0 && !frame.entries.is_null() {
                 for entry_idx in 0..frame.entries_count {
                     let entry = &*frame.entries.add(entry_idx);
-                    if entry.name_idx == name_idx_u32 {
+                    if entry.name_idx == name_idx {
                         return entry.value.to_bits();
                     }
                 }
@@ -164,7 +164,7 @@ pub unsafe extern "C" fn jit_runtime_store_binding(
         return -1; // No binding frames
     }
 
-    let name_idx_u32 = name_idx as u32;
+    // Z.A.3: name_idx is the full 64-bit FNV-1a hash now (no truncation).
     let jit_value = JitValue::from_raw(value);
 
     // Get the current (innermost) frame
@@ -174,7 +174,7 @@ pub unsafe extern "C" fn jit_runtime_store_binding(
     if frame.entries_count > 0 && !frame.entries.is_null() {
         for entry_idx in 0..frame.entries_count {
             let entry = &mut *frame.entries.add(entry_idx);
-            if entry.name_idx == name_idx_u32 {
+            if entry.name_idx == name_idx {
                 // Update existing binding
                 entry.value = jit_value;
                 return 0;
@@ -214,7 +214,7 @@ pub unsafe extern "C" fn jit_runtime_store_binding(
 
     // Add the new entry
     let entry = &mut *frame.entries.add(frame.entries_count);
-    entry.name_idx = name_idx_u32;
+    entry.name_idx = name_idx;
     entry.value = jit_value;
     frame.entries_count += 1;
 
@@ -239,7 +239,7 @@ pub unsafe extern "C" fn jit_runtime_has_binding(ctx: *const JitContext, name_id
         None => return TAG_BOOL, // false
     };
 
-    let name_idx_u32 = name_idx as u32;
+    // Z.A.3: name_idx is the full 64-bit FNV-1a hash now (no truncation).
 
     // Search binding frames from innermost to outermost
     if ctx_ref.binding_frames_count > 0 && !ctx_ref.binding_frames.is_null() {
@@ -249,7 +249,7 @@ pub unsafe extern "C" fn jit_runtime_has_binding(ctx: *const JitContext, name_id
             if frame.entries_count > 0 && !frame.entries.is_null() {
                 for entry_idx in 0..frame.entries_count {
                     let entry = &*frame.entries.add(entry_idx);
-                    if entry.name_idx == name_idx_u32 {
+                    if entry.name_idx == name_idx {
                         return TAG_BOOL | 1; // true
                     }
                 }

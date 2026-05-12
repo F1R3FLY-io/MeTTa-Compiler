@@ -219,7 +219,8 @@ pub unsafe extern "C" fn jit_runtime_eval_case(
 
                     for (name, val) in bindings.iter() {
                         if frame.entries_count < frame.entries_cap {
-                            let name_idx = hash_string(name) as u32;
+                            // Z.A.3: 64-bit FNV-1a hash, no truncation.
+                            let name_idx = hash_string(name);
                             let jit_value = metta_to_jit(val);
                             let entry_ptr = frame.entries.add(frame.entries_count);
                             *entry_ptr = JitBindingEntry::new(name_idx, jit_value);

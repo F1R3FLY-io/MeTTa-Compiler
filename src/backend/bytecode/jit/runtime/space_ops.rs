@@ -607,12 +607,12 @@ unsafe fn apply_bindings_to_saved(saved: *mut JitSavedBindings, bindings: &[(Str
     }
 
     // Add bindings as entries.
-    // BUG T0-T3-010 (plan T2/T3.D): use FNV-1a 64-bit (matches
-    // `pattern_matching::hash_var_name` for consistency). The previous DJB-31
-    // u32 hash had measurable collisions on long variable-name strings;
-    // FNV-1a 64-bit gives near-zero collision risk.
+    // T0-T3-010 / Z.A.3 (2026-05-12): full 64-bit FNV-1a hash, no u32
+    // truncation. Matches `pattern_matching::hash_var_name`. Eliminates
+    // ≥4× collision rate that the prior u32-truncation path produced
+    // on PLN's long freshened variable names (`$__fr_E_*`).
     for (name, value) in bindings {
-        let name_hash = {
+        let name_hash: u64 = {
             const FNV_OFFSET: u64 = 0xcbf29ce484222325;
             const FNV_PRIME: u64 = 0x100000001b3;
             let mut hash = FNV_OFFSET;
@@ -620,10 +620,7 @@ unsafe fn apply_bindings_to_saved(saved: *mut JitSavedBindings, bindings: &[(Str
                 hash ^= byte as u64;
                 hash = hash.wrapping_mul(FNV_PRIME);
             }
-            hash as u32 // JitBindingEntry.name_idx is u32; keep type compat
-                        // while using the strictly-better hash function.
-                        // Truncation to u32 still gives ≥4× collision improvement
-                        // over DJB-31 on typical variable-name strings.
+            hash
         };
 
         let entry_ptr = frame.entries.add(frame.entries_count);

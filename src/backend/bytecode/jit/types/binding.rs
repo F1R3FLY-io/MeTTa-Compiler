@@ -12,12 +12,18 @@ use super::value::JitValue;
 
 /// A single binding entry for pattern variables.
 ///
+/// Z.A.3 (2026-05-12): `name_idx` widened from u32 → u64 to hold a full
+/// 64-bit FNV-1a hash without truncation. Closes T0-T3-010 / MTT-TI-028:
+/// previous u32 truncation gave collisions on long variable-name strings
+/// (e.g. PLN's `$__fr_E_BestCandidate_Helper_*` family).
+///
 /// This is `#[repr(C)]` for FFI compatibility with JIT-generated code.
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct JitBindingEntry {
-    /// Index into the constant pool for the variable name
-    pub name_idx: u32,
+    /// 64-bit FNV-1a hash of the variable name (consistent with
+    /// `pattern_matching::hash_var_name`).
+    pub name_idx: u64,
     /// The bound value (NaN-boxed)
     pub value: JitValue,
 }
@@ -25,7 +31,7 @@ pub struct JitBindingEntry {
 impl JitBindingEntry {
     /// Create a new binding entry
     #[inline]
-    pub fn new(name_idx: u32, value: JitValue) -> Self {
+    pub fn new(name_idx: u64, value: JitValue) -> Self {
         Self { name_idx, value }
     }
 }

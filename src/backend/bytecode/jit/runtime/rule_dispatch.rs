@@ -138,10 +138,11 @@ pub unsafe extern "C" fn jit_runtime_try_rule(ctx: *mut JitContext, rule_idx: u6
             frame.entries_count = 0;
             frame.scope_depth = ctx_ref.binding_frames_count as u32;
 
-            // Install each binding
+            // Install each binding.
+            // Z.A.3 (2026-05-12): name_idx is the full 64-bit FNV-1a hash;
+            // no truncation. hash_string returns u64 (verified at call site).
             for (name, value) in rule.bindings.iter() {
-                // We need to store the variable name index - for now store as hash
-                let name_idx = hash_string(name) as u32;
+                let name_idx = hash_string(name);
                 let jit_value = metta_to_jit(value);
 
                 let entry_ptr = frame.entries.add(frame.entries_count);

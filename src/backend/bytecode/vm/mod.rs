@@ -3516,15 +3516,35 @@ where
             }
         };
 
+        // Y.2 (2026-05-12): set up the template chunk's locals frame.
+        // LoadLocal slot at `self.locals[locals_base + slot]` — template slot
+        // 0 holds the iter-var (e.g. `$x` for `(map-atom (1 2 3) $x ...)`).
+        // The prior implementation `push(binding)` wrote to value_stack which
+        // is not where LoadLocal reads → the template body saw $x as
+        // uninitialised → TypeError on `(+ $x 1)`.
+        let saved_locals_base = self.locals_base;
+        let saved_locals_len = self.locals.len();
+
         // Setup for template execution
         self.chunk = chunk;
         self.ip = 0;
-        self.push(binding); // Push bound value as local slot 0
+        self.locals_base = saved_locals_len;
+        let template_local_count = self.chunk.local_count() as usize;
+        let need = self.locals_base + template_local_count.max(1);
+        if self.locals.len() < need {
+            let pad = need - self.locals.len();
+            for _ in 0..pad {
+                let u = self.make_unit();
+                self.locals.push(u);
+            }
+        }
+        // Write binding into local slot 0.
+        self.locals[self.locals_base] = binding;
 
         // Execute until Return or end of chunk
-        loop {
+        let exec_result: VmResult<VmBoundValue<V>> = loop {
             if self.ip >= self.chunk.len() {
-                break;
+                break Ok((self.factory.unit(), GenericBindings::new()));
             }
             let opcode_byte = self
                 .chunk
@@ -3534,43 +3554,52 @@ where
                 Opcode::from_byte(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
 
             if opcode == Opcode::Return {
-                break;
+                break Ok((self.factory.unit(), GenericBindings::new()));
             }
 
             match self.step() {
                 Ok(ControlFlow::Continue(())) => {}
                 Ok(ControlFlow::Break(results)) => {
                     let template_bindings =
-                        std::mem::replace(&mut self.current_bindings, saved_current_bindings);
-                    self.ip = saved_ip;
-                    self.chunk = saved_chunk;
-                    self.value_stack.truncate(saved_stack_base);
+                        std::mem::replace(&mut self.current_bindings, saved_current_bindings.clone());
                     let value = results
                         .into_iter()
                         .next()
                         .unwrap_or_else(|| self.factory.unit());
-                    return Ok((value, template_bindings));
+                    break Ok((value, template_bindings));
                 }
                 Err(e) => {
-                    self.current_bindings = saved_current_bindings;
-                    self.ip = saved_ip;
-                    self.chunk = saved_chunk;
-                    self.value_stack.truncate(saved_stack_base);
-                    return Err(e);
+                    self.current_bindings = saved_current_bindings.clone();
+                    break Err(e);
                 }
             }
-        }
+        };
 
-        // Get result
-        let result = self.pop().unwrap_or_else(|_| self.factory.unit());
-        let template_bindings =
-            std::mem::replace(&mut self.current_bindings, saved_current_bindings);
+        // Get result from value-stack if we exited via Return / end-of-chunk
+        // with no early-Break result above.
+        let (result, template_bindings) = match exec_result {
+            Ok((v, b)) if !v.is_unit() || !b.is_empty() => (v, b),
+            Ok(_) => {
+                let v = self.pop().unwrap_or_else(|_| self.factory.unit());
+                let b = std::mem::replace(&mut self.current_bindings, saved_current_bindings);
+                (v, b)
+            }
+            Err(e) => {
+                // Restore locals frame before error return.
+                self.locals_base = saved_locals_base;
+                self.locals.truncate(saved_locals_len);
+                self.ip = saved_ip;
+                self.chunk = saved_chunk;
+                self.value_stack.truncate(saved_stack_base);
+                return Err(e);
+            }
+        };
 
-        // Restore state
+        // Restore locals frame, IP, chunk, and value-stack high water.
+        self.locals_base = saved_locals_base;
+        self.locals.truncate(saved_locals_len);
         self.ip = saved_ip;
         self.chunk = saved_chunk;
-
-        // Cleanup any remaining stack entries from template
         self.value_stack.truncate(saved_stack_base);
 
         Ok((result, template_bindings))
@@ -3620,16 +3649,32 @@ where
             }
         };
 
+        // Y.2 (2026-05-12): set up the template's locals frame. Slot 0 is
+        // the accumulator; slot 1 is the item. See execute_generic_template_
+        // with_binding for the full rationale.
+        let saved_locals_base = self.locals_base;
+        let saved_locals_len = self.locals.len();
+
         // Setup for template execution
         self.chunk = chunk;
         self.ip = 0;
-        self.push(acc); // Local slot 0: accumulator
-        self.push(item); // Local slot 1: item
+        self.locals_base = saved_locals_len;
+        let template_local_count = self.chunk.local_count() as usize;
+        let need = self.locals_base + template_local_count.max(2);
+        if self.locals.len() < need {
+            let pad = need - self.locals.len();
+            for _ in 0..pad {
+                let u = self.make_unit();
+                self.locals.push(u);
+            }
+        }
+        self.locals[self.locals_base] = acc;
+        self.locals[self.locals_base + 1] = item;
 
         // Execute until Return or end of chunk
-        loop {
+        let exec_result: VmResult<VmBoundValue<V>> = loop {
             if self.ip >= self.chunk.len() {
-                break;
+                break Ok((self.factory.unit(), GenericBindings::new()));
             }
             let opcode_byte = self
                 .chunk
@@ -3639,37 +3684,47 @@ where
                 Opcode::from_byte(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
 
             if opcode == Opcode::Return {
-                break;
+                break Ok((self.factory.unit(), GenericBindings::new()));
             }
 
             match self.step() {
                 Ok(ControlFlow::Continue(())) => {}
                 Ok(ControlFlow::Break(results)) => {
                     let template_bindings =
-                        std::mem::replace(&mut self.current_bindings, saved_current_bindings);
-                    self.ip = saved_ip;
-                    self.chunk = saved_chunk;
-                    self.value_stack.truncate(saved_stack_base);
+                        std::mem::replace(&mut self.current_bindings, saved_current_bindings.clone());
                     let value = results
                         .into_iter()
                         .next()
                         .unwrap_or_else(|| self.factory.unit());
-                    return Ok((value, template_bindings));
+                    break Ok((value, template_bindings));
                 }
                 Err(e) => {
-                    self.current_bindings = saved_current_bindings;
-                    self.ip = saved_ip;
-                    self.chunk = saved_chunk;
-                    self.value_stack.truncate(saved_stack_base);
-                    return Err(e);
+                    self.current_bindings = saved_current_bindings.clone();
+                    break Err(e);
                 }
             }
-        }
+        };
 
-        // Get result
-        let result = self.pop().unwrap_or_else(|_| self.factory.unit());
-        let template_bindings =
-            std::mem::replace(&mut self.current_bindings, saved_current_bindings);
+        // Resolve result from value-stack vs early-Break.
+        let (result, template_bindings) = match exec_result {
+            Ok((v, b)) if !v.is_unit() || !b.is_empty() => (v, b),
+            Ok(_) => {
+                let v = self.pop().unwrap_or_else(|_| self.factory.unit());
+                let b = std::mem::replace(&mut self.current_bindings, saved_current_bindings);
+                (v, b)
+            }
+            Err(e) => {
+                self.locals_base = saved_locals_base;
+                self.locals.truncate(saved_locals_len);
+                self.ip = saved_ip;
+                self.chunk = saved_chunk;
+                self.value_stack.truncate(saved_stack_base);
+                return Err(e);
+            }
+        };
+        // Restore locals frame.
+        self.locals_base = saved_locals_base;
+        self.locals.truncate(saved_locals_len);
 
         // Restore state
         self.ip = saved_ip;
@@ -6496,7 +6551,17 @@ where
             // `call_stack.is_empty()` means we're at the top-level query
             // (equivalent to the tree-walker's depth == 0): retain ADD-mode
             // behavior (push unreduced so the caller can add to space).
-            let has_any_rules = if !self.call_stack.is_empty() {
+            //
+            // Y.3 (2026-05-12): also treat "inside collapse / collapse-bind"
+            // as non-top-level. The body of `(collapse (f c))` runs without
+            // a call_stack frame (collapse opcodes use their own frames in
+            // collapse_frames/collapse_bind_frames), but semantically it IS
+            // nested — pattern-fail must produce empty so collapse-of-empty
+            // returns `()`, mirroring T0's HE-aligned behavior.
+            let inside_collapse =
+                !self.collapse_frames.is_empty() || !self.collapse_bind_frames.is_empty();
+            let nested = !self.call_stack.is_empty() || inside_collapse;
+            let has_any_rules = if nested {
                 if let Some(head) = expr
                     .as_sexpr()
                     .and_then(|items| items.first())

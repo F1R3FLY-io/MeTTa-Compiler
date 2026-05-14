@@ -409,7 +409,21 @@ pub(crate) fn is_variable_str(s: &str) -> bool {
 /// The actual value enum, allocated in the arena.
 ///
 /// This mirrors MettaValueInner but uses arena-allocated collections.
+///
+/// **CRITICAL**: `#[repr(align(16))]` is REQUIRED, not optional. `MettaValue`
+/// stores instances as tagged pointers where the lowest 4 bits carry flags;
+/// `MettaValue::inner_ptr()` masks with `PTR_MASK = !0xF` (line 355) and thus
+/// REQUIRES every `MettaValueInner` pointer — including the `INLINE_*` static
+/// singletons at lines 602-609 — to be 16-byte aligned. Without this attribute
+/// the enum is natural-aligned to 8, and the linker may place static
+/// singletons at addresses where `addr & 0xF == 0x8`. `inner_ptr()` then
+/// returns `addr - 8`, decodes adjacent `.data` memory, and produces
+/// arbitrary corrupt values (e.g. `MettaValueInner::Space(garbage)`).
+/// Layout is binary-specific (different binaries linking the same library
+/// can land the static at different alignments), making the bug appear as
+/// non-determinism across binaries / builds.
 #[derive(Debug)]
+#[repr(align(16))]
 pub enum MettaValueInner {
     /// An atom (symbol, variable, or literal) - string allocated in arena
     Atom(&'static str),

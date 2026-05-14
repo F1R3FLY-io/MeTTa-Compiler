@@ -342,6 +342,21 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         depth: usize,
     },
 
+    /// S5: Start superpose-bind evaluation — decomposes a collapse-bind-shaped
+    /// expression `((atom (Bindings ...)) (atom (Bindings ...)) ...)` into
+    /// bare nondet results, merging each result's saved bindings into the
+    /// caller's binding context.
+    ///
+    /// HE reference: `lib/src/metta/interpreter.rs:893-918`.
+    StartSuperposeBind {
+        /// The collapsed argument (already evaluated, shaped like collapse-bind output)
+        arg: V,
+        /// Environment for evaluation
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
     /// Start amb evaluation - evaluates each alternative and collects all results.
     StartAmb {
         /// Alternatives to evaluate

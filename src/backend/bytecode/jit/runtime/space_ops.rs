@@ -315,26 +315,33 @@ pub unsafe extern "C" fn jit_runtime_space_get_atoms(
     first_jit.to_bits()
 }
 
-/// Match a pattern against all atoms in a space
+/// Match a pattern against all atoms in a space.
 ///
-/// Stack: [space, pattern, template] -> [SExpr]
+/// Stack: [space, pattern, template] -> first matching atom (nondet)
+///
+/// S5: HE-bisimilar `match` returns bare nondet, NOT a tuple wrap.
+/// Mirrors `jit_runtime_space_get_atoms` fan-out pattern (L250-315).
+/// HE reference: hyperon-experimental/lib/src/metta/runner/stdlib/core.rs:155-167
+/// returns `Vec<(Atom, Option<Bindings>)>` bare.
 ///
 /// # Arguments
-/// * `ctx` - JIT context
+/// * `ctx` - JIT context (mutable for choice-point fan-out)
 /// * `space` - NaN-boxed space handle
 /// * `pattern` - NaN-boxed pattern to match
 /// * `_template` - NaN-boxed template (currently ignored, simplified impl)
-/// * `_ip` - Instruction pointer
+/// * `ip` - Instruction pointer for resumption
 ///
 /// # Returns
-/// NaN-boxed SExpr containing matching atoms
+/// - 0 matches: TAG_UNIT (HE: empty nondet)
+/// - 1 match: that single atom
+/// - N matches: first atom + N-1 choice points
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_space_match(
-    _ctx: *mut JitContext,
+    ctx: *mut JitContext,
     space: u64,
     pattern: u64,
     _template: u64,
-    _ip: u64,
+    ip: u64,
 ) -> u64 {
     let space_val = JitValue::from_raw(space);
     let pattern_val = JitValue::from_raw(pattern);
@@ -342,20 +349,9 @@ pub unsafe extern "C" fn jit_runtime_space_match(
     let space_metta = space_val.to_metta();
     let pattern_metta = pattern_val.to_metta();
 
-    match space_metta.view() {
-        ValueView::Space(handle) => {
-            let atoms = handle.collapse();
-            let mut results = Vec::new();
-
-            // Simple pattern matching against atoms
-            for atom in &atoms {
-                if pattern_matches_impl(&pattern_metta, atom) {
-                    results.push(atom.clone());
-                }
-            }
-
-            metta_to_jit(&MettaValue::SExpr(results)).to_bits()
-        }
+    // Validate we have a space
+    let handle = match space_metta.view() {
+        ValueView::Space(h) => h,
         ValueView::Float(_)
         | ValueView::Bool(_)
         | ValueView::Long(_)
@@ -371,10 +367,75 @@ pub unsafe extern "C" fn jit_runtime_space_match(
         | ValueView::State(_)
         | ValueView::Memo(_)
         | ValueView::Quoted(_) => {
-            // Type error - return empty S-expression
-            metta_to_jit(&MettaValue::SExpr(vec![])).to_bits()
+            // Type error - return empty (HE: empty nondet on non-space)
+            return TAG_UNIT;
+        }
+    };
+
+    let atoms = handle.collapse();
+    // Preallocate to atoms.len() — upper bound on matches.
+    let mut results: Vec<MettaValue> = Vec::with_capacity(atoms.len());
+
+    for atom in &atoms {
+        if pattern_matches_impl(&pattern_metta, atom) {
+            results.push(atom.clone());
         }
     }
+
+    // S5: fan out nondet results (no tuple wrap).
+    if results.is_empty() {
+        return TAG_UNIT;
+    }
+
+    let first_jit = metta_to_jit(&results[0]);
+    if results.len() == 1 {
+        return first_jit.to_bits();
+    }
+
+    // 2+ matches: first as return value, rest as Value choice points.
+    let ctx_ref = match ctx.as_mut() {
+        Some(c) => c,
+        None => return first_jit.to_bits(),
+    };
+
+    let alt_count = results.len() - 1;
+    if ctx_ref.choice_points.is_null() || ctx_ref.choice_point_count >= ctx_ref.choice_point_cap {
+        ctx_ref.bailout = true;
+        ctx_ref.bailout_reason = JitBailoutReason::NonDeterminism;
+        ctx_ref.bailout_ip = ip as usize;
+        return first_jit.to_bits();
+    }
+
+    if alt_count > MAX_ALTERNATIVES_INLINE {
+        // Mirror jit_runtime_space_get_atoms bailout pattern at L278-292.
+        // When the executor sees bailout, it discards `first_jit` and lets
+        // the VM tier re-enumerate from the same IP via native dispatch.
+        ctx_ref.bailout = true;
+        ctx_ref.bailout_reason = JitBailoutReason::NonDeterminism;
+        ctx_ref.bailout_ip = ip as usize;
+        return first_jit.to_bits();
+    }
+
+    let cp = &mut *ctx_ref.choice_points.add(ctx_ref.choice_point_count);
+    cp.saved_sp = ctx_ref.sp as u64;
+    cp.saved_ip = ip;
+    cp.saved_chunk = ctx_ref.current_chunk;
+    cp.saved_stack_pool_idx = -1;
+    cp.saved_stack_count = 0;
+    cp.alt_count = alt_count as u64;
+    cp.current_index = 0;
+    cp.fork_depth = ctx_ref.fork_depth;
+    cp.saved_binding_frames_count = ctx_ref.binding_frames_count;
+    cp.is_collect_boundary = false;
+
+    for (i, atom) in results[1..].iter().enumerate() {
+        cp.alternatives_inline[i] = JitAlternative::value(metta_to_jit(atom));
+    }
+
+    ctx_ref.choice_point_count += 1;
+    ctx_ref.in_nondet_mode = true;
+
+    first_jit.to_bits()
 }
 
 // =============================================================================

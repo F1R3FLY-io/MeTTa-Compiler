@@ -1372,12 +1372,29 @@ pub(crate) fn encode_bindings_as_sexpr(
 }
 
 /// Decode bindings from an S-expression `(Bindings ($var val) ...)` back to
-/// `GenericBindings<MettaValue>`. Used by `ground-with-bindings` and (future)
-/// `superpose-bind` to reconstruct bindings from their serialized form.
+/// `GenericBindings<MettaValue>`. Used by `ground-with-bindings` and
+/// `superpose-bind` (S5) to reconstruct bindings from their serialized form.
 pub fn decode_bindings_from_sexpr(
     sexpr: &MettaValue,
     factory: &crate::backend::models::gc_allocator::GcFactory,
 ) -> crate::backend::models::GenericBindings<MettaValue> {
+    decode_bindings_from_sexpr_generic(sexpr, factory)
+}
+
+/// Generic decoder for the `(Bindings ($var val) ...)` sidecar shape.
+///
+/// Shared across trampoline, bytecode-VM (S5 op_superpose_bind), and JIT
+/// (S5 jit_runtime_superpose_bind) tiers so all three reconstruct the same
+/// `GenericBindings<V>` map from the encoded sexpr produced by
+/// `encode_bindings_as_sexpr_generic`.
+pub fn decode_bindings_from_sexpr_generic<V, F>(
+    sexpr: &V,
+    factory: &F,
+) -> crate::backend::models::GenericBindings<V>
+where
+    V: crate::backend::models::MettaValueTrait + Clone,
+    F: crate::backend::models::MettaValueFactory<V>,
+{
     let mut bindings = crate::backend::models::GenericBindings::new();
     if let Some(items) = sexpr.as_sexpr() {
         // Skip head "Bindings" atom
@@ -1385,7 +1402,7 @@ pub fn decode_bindings_from_sexpr(
             if let Some(pair_items) = pair.as_sexpr() {
                 if pair_items.len() == 2 {
                     if let Some(name) = pair_items[0].as_atom() {
-                        bindings.insert(name, pair_items[1]);
+                        bindings.insert(name, pair_items[1].clone());
                     }
                 }
             }
@@ -4652,6 +4669,109 @@ fn eval_trampoline_inner<C: EvalContext>(
                             demand: Some(crate::backend::eval::cesk::coroutine::Demand::All),
                             carrying_bindings: carrying_bindings.clone(),
                         });
+                    }
+
+                    // S5: Start superpose-bind. Decompose a collapse-bind-shaped
+                    // argument `((atom (Bindings ...)) (atom (Bindings ...)) ...)`
+                    // into bare nondet results, merging each result's saved
+                    // bindings with the caller's `carrying_bindings`.
+                    //
+                    // HE reference: lib/src/metta/interpreter.rs:893-918
+                    //   collapsed.into_children().into_iter()
+                    //     .map(atom_into_atom_bindings)
+                    //     .flat_map(|(atom, b)| b.merge(&bindings) ...)
+                    GenericEvalStep::StartSuperposeBind {
+                        arg,
+                        env: step_env,
+                        depth,
+                    } => {
+                        let env: SharedEnv = Arc::new(step_env);
+
+                        // Decompose the collapsed arg. It should be an SExpr
+                        // whose children are `(atom (Bindings ...))` pairs.
+                        // Preallocate to children.len() to avoid reallocation.
+                        let pairs: Vec<BoundValue> = if let Some(children) = arg.as_sexpr() {
+                            let mut out: Vec<BoundValue> = Vec::with_capacity(children.len());
+                            for child in children.iter() {
+                                if let Some(items) = child.as_sexpr() {
+                                    match items.len() {
+                                        2 => {
+                                            // (atom (Bindings ...))
+                                            let atom = items[0].clone();
+                                            let bindings_sexpr = &items[1];
+                                            let bindings =
+                                                crate::backend::eval::trampoline::eval_loop::decode_bindings_from_sexpr(
+                                                    bindings_sexpr,
+                                                    ctx.factory(),
+                                                );
+                                            out.push(crate::backend::eval::trampoline::types::bv_with(
+                                                atom, bindings,
+                                            ));
+                                        }
+                                        _ => {
+                                            // Malformed pair — treat as raw atom
+                                            // with empty bindings (forgiving HE).
+                                            out.push(bv(child.clone()));
+                                        }
+                                    }
+                                } else {
+                                    out.push(bv(child.clone()));
+                                }
+                            }
+                            out
+                        } else {
+                            // Non-SExpr arg: treat as a single result with empty bindings.
+                            vec![bv(arg.clone())]
+                        };
+
+                        if pairs.is_empty() {
+                            // Empty collapse-bind: empty nondet output.
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), env),
+                            });
+                        } else {
+                            // Re-use ProcessAmb's per-branch dispatch machinery:
+                            // each (atom, bindings) pair becomes one alt with
+                            // its saved bindings composed onto outer_carrying.
+                            let amb_capacity = pairs.len();
+                            let mut alts_iter = pairs.into_iter();
+                            let (first_val, first_b) =
+                                alts_iter.next().expect("pairs is non-empty");
+
+                            continuations.push(Continuation::ProcessAmb {
+                                remaining_alts: alts_iter,
+                                results: Vec::with_capacity(amb_capacity),
+                                env: env.clone(),
+                                depth,
+                                outer_carrying: carrying_bindings.clone(),
+                            });
+
+                            // Compose outer_carrying with the first pair's
+                            // saved bindings, mirroring HE's b.merge(&bindings).
+                            let alt_carrying: SharedBindings = if first_b.is_empty() {
+                                carrying_bindings.clone()
+                            } else if carrying_bindings.is_empty() {
+                                std::sync::Arc::new(first_b)
+                            } else {
+                                std::sync::Arc::new(
+                                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                                        &*carrying_bindings,
+                                        &first_b,
+                                        ctx.factory(),
+                                    ),
+                                )
+                            };
+
+                            work_stack.push(WorkItem::Eval {
+                                value: first_val,
+                                env,
+                                depth: depth + 1,
+                                is_tail_call: false,
+                                expected_type: None,
+                                demand: None,
+                                carrying_bindings: alt_carrying,
+                            });
+                        }
                     }
 
                     // Start amb

@@ -2112,6 +2112,34 @@ where
                     };
                 }
 
+                // S5: superpose-bind — decompose a collapse-bind-shaped result
+                // `((atom (Bindings ...)) (atom (Bindings ...)) ...)` into bare
+                // nondet, merging each pair's saved bindings with caller's
+                // carrying_bindings. Used by PLN's flow
+                // `(chain (collapse-bind X) $bs (chain (superpose-bind $bs) ...))`.
+                // The arg is already a concrete value because `chain` substitutes
+                // the variable before dispatching the body.
+                //
+                // HE reference: hyperon-experimental/lib/src/metta/interpreter.rs:893-918
+                "superpose-bind" => {
+                    if items.len() != 2 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "superpose-bind requires exactly 1 argument, got {}. Usage: (superpose-bind collapsed)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartSuperposeBind {
+                        arg: items[1].clone(),
+                        env,
+                        depth,
+                    };
+                }
+
                 // superpose - HE-compatible: post-evaluate each element via StartAmb
                 "superpose" => {
                     if items.len() != 2 {

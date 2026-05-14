@@ -700,6 +700,20 @@ where
                 self.builder.emit(Opcode::CollapseBindEnd);
                 Ok(Some(()))
             }
+            // S5: native `(superpose-bind expr)` — fan out a collapse-bind-shaped
+            // tuple as bare nondet, merging saved bindings into current_bindings.
+            //
+            // Layout:
+            //   compile(expr)        ; evaluate the arg (typically a $bs var)
+            //   SuperposeBind        ; pop & fan out
+            //
+            // HE reference: lib/src/metta/interpreter.rs:893-918.
+            "superpose-bind" => {
+                self.check_arity("superpose-bind", args.len(), 1)?;
+                self.compile(&args[0])?;
+                self.builder.emit(Opcode::SuperposeBind);
+                Ok(Some(()))
+            }
 
             // Binding forms
             "let" => {

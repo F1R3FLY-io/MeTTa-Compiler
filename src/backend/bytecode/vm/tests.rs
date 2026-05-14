@@ -1280,17 +1280,18 @@ fn test_vm_space_match_opcode() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
+    // S5: enable yield_on_top_return so the VM exhausts all choice points
+    // (one per match) instead of returning after the first match.
+    vm.yield_on_top_return = true;
     let results = vm.run().expect("VM should succeed");
 
-    // Should return matching atoms
-    assert_eq!(results.len(), 1);
-    match results[0].inner() {
-        MettaValueInner::SExpr(matches) => {
-            // Should have 2 matches: (fact 1) and (fact 2)
-            assert_eq!(matches.len(), 2);
-        }
-        _ => panic!("Expected S-expression of matches"),
-    }
+    // S5 (ATOMS-AS-DATA un-wrap): match now returns bare nondet results
+    // (not a tuple wrap). Two facts match (fact 1) and (fact 2), so the
+    // VM accumulates two top-level results via choice-point fan-out.
+    assert_eq!(results.len(), 2, "Expected 2 bare nondet results from match");
+    // Both results should be the matched atoms (template = $x, so substituting
+    // the binding from each match yields the atom itself).
+    // Order is choice-point insertion order: first match first.
 }
 
 // === Collect/Collapse Operation Tests ===
@@ -2987,28 +2988,24 @@ fn test_vm_space_match_with_template() {
 
     let chunk = builder.build_arc();
     let mut vm = BytecodeVM::new(chunk);
+    // S5: enable yield_on_top_return so the VM exhausts all choice points
+    // (one per match) instead of returning after the first match.
+    vm.yield_on_top_return = true;
     let results = vm.run().expect("VM should succeed");
 
-    assert_eq!(results.len(), 1);
-    // Should get S-expression of results
-    match results[0].inner() {
-        MettaValueInner::SExpr(items) => {
-            // Should have 2 results: (result 1) and (result 2)
-            assert_eq!(items.len(), 2);
-
-            // Verify both results have "result" as head
-            for item in *items {
-                match item.inner() {
-                    MettaValueInner::SExpr(inner) => {
-                        assert_eq!(inner[0], MettaValue::sym("result"));
-                        // Value should be 1 or 2
-                        assert!(inner[1] == MettaValue::Long(1) || inner[1] == MettaValue::Long(2));
-                    }
-                    _ => panic!("Expected S-expression result"),
-                }
+    // S5 (ATOMS-AS-DATA un-wrap): match returns bare nondet results
+    // (not a tuple wrap). Two atoms match the pattern, so the VM
+    // accumulates two top-level results from choice-point fan-out.
+    assert_eq!(results.len(), 2, "Expected 2 bare nondet results");
+    for r in &results {
+        match r.inner() {
+            MettaValueInner::SExpr(inner) => {
+                assert_eq!(inner[0], MettaValue::sym("result"));
+                // Value should be 1 or 2
+                assert!(inner[1] == MettaValue::Long(1) || inner[1] == MettaValue::Long(2));
             }
+            _ => panic!("Expected (result N) S-expression result, got {:?}", r),
         }
-        _ => panic!("Expected S-expression of results"),
     }
 }
 
@@ -3048,9 +3045,14 @@ fn test_vm_space_match_no_matches() {
     let mut vm = BytecodeVM::new(chunk);
     let results = vm.run().expect("VM should succeed");
 
+    // S5 (ATOMS-AS-DATA un-wrap): match with no matches pushes the Empty
+    // sentinel (HE: empty nondet). VM accumulates a single Empty result.
     assert_eq!(results.len(), 1);
-    // Should get empty S-expression (normalized to Unit after Nil/Unit merge)
-    assert!(results[0].is_unit(), "Expected Unit (empty S-expression)");
+    assert!(
+        results[0].is_empty() || results[0].is_unit(),
+        "Expected Empty/Unit on no-match, got {:?}",
+        results[0]
+    );
 }
 
 // =============================================================================

@@ -172,6 +172,15 @@ pub enum Opcode {
     /// and pushes the result list.
     CollapseBindEnd = 0x2C,
 
+    /// S5: superpose-bind — decomposes a collapse-bind-shaped tuple
+    /// `((atom (Bindings ...)) ...)` into bare nondet results, merging
+    /// each result's saved bindings into the current bindings context.
+    ///
+    /// Stack: [collapsed_arg] -> first atom (rest as choice points)
+    ///
+    /// HE reference: lib/src/metta/interpreter.rs:893-918.
+    SuperposeBind = 0x2F,
+
     /// S1 TOPLEVEL (2026-05-13): enter HE INTERPRET runner mode.
     ///
     /// Emitted by the bytecode compiler at the start of a `(! expr)`
@@ -782,7 +791,8 @@ impl Opcode {
             | Self::MatchExternalOr
             | Self::CollapseBindEnd
             | Self::EnterInterpretMode
-            | Self::ExitInterpretMode => 0,
+            | Self::ExitInterpretMode
+            | Self::SuperposeBind => 0,
 
             // 1-byte immediate
             Self::PushLongSmall
@@ -964,6 +974,7 @@ impl Opcode {
             Self::CollapseBindEnd => "collapse_bind_end",
             Self::EnterInterpretMode => "enter_interpret_mode",
             Self::ExitInterpretMode => "exit_interpret_mode",
+            Self::SuperposeBind => "superpose_bind",
             Self::IsVariable => "is_variable",
             Self::IsSExpr => "is_sexpr",
             Self::IsSymbol => "is_symbol",
@@ -1207,6 +1218,8 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     // S1 TOPLEVEL (2026-05-13): HE runner-mode directives
     table[0x2D] = Some(Opcode::EnterInterpretMode);
     table[0x2E] = Some(Opcode::ExitInterpretMode);
+    // S5: HE-bisimilar superpose-bind decomposition + fan-out
+    table[0x2F] = Some(Opcode::SuperposeBind);
 
     // Variable operations
     table[0x30] = Some(Opcode::LoadLocal);
@@ -1477,8 +1490,10 @@ mod tests {
                                                     // opcodes (Unify4, MatchExternal, MatchExternalOr, CollapseBindBegin,
                                                     // CollapseBindEnd). 0x2D-0x2E = HE runner-mode directives
                                                     // (EnterInterpretMode, ExitInterpretMode — S1 TOPLEVEL 2026-05-13).
-                                                    // 0x2F is still free.
-        assert!(Opcode::from_byte(0x2F).is_none());
+                                                    // 0x2F = SuperposeBind (S5: HE-bisimilar nondet fan-out).
+                                                    // No free slots remain in 0x28-0x2F.
+        // 0x2F is now SuperposeBind (S5).
+        assert!(Opcode::from_byte(0x2F).is_some());
     }
 
     #[test]

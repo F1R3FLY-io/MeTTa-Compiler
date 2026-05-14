@@ -2072,6 +2072,9 @@ where
                     env.set_bang_body(false);
                 }
             }
+            // S5: HE-bisimilar superpose-bind — decompose collapse-bind tuple
+            // and fan out as bare nondet with merged bindings.
+            Opcode::SuperposeBind => self.op_superpose_bind()?,
             Opcode::OccursCheck => self.op_occurs_check()?,
             Opcode::MapAtom => self.op_map_atom()?,
             Opcode::FilterAtom => self.op_filter_atom()?,
@@ -4539,6 +4542,109 @@ where
         // Push the result list onto the (now-restored outer) value stack.
         self.push(self.make_sexpr(pairs));
         Ok(ControlFlow::Continue(()))
+    }
+
+    /// S5: HE-bisimilar `superpose-bind`.
+    ///
+    /// Pops a collapse-bind-shaped expression `((atom (Bindings ...)) ...)`
+    /// from the stack, decodes each pair, and fans out as bare nondet
+    /// alternatives. Each pair's saved bindings are merged into the
+    /// current_bindings context (composed via compose_outer_inner_generic).
+    ///
+    /// Stack: [collapsed_arg] -> [first_atom] + choice points for remaining
+    ///
+    /// HE reference: `lib/src/metta/interpreter.rs:893-918`.
+    fn op_superpose_bind(&mut self) -> VmResult<()> {
+        let collapsed = self.pop()?;
+
+        // Decompose: each child should be `(atom (Bindings ...))`.
+        // Preallocate to children.len() to avoid reallocation.
+        let pairs: Vec<(V, GenericBindings<V>)> = if let Some(children) = collapsed.as_sexpr() {
+            let mut out: Vec<(V, GenericBindings<V>)> = Vec::with_capacity(children.len());
+            for child in children.iter() {
+                if let Some(items) = child.as_sexpr() {
+                    match items.len() {
+                        2 => {
+                            // (atom (Bindings ...))
+                            let atom = items[0].clone();
+                            let bindings_sexpr = &items[1];
+                            let bindings =
+                                crate::backend::eval::trampoline::eval_loop::decode_bindings_from_sexpr_generic(
+                                    bindings_sexpr,
+                                    &self.factory,
+                                );
+                            out.push((atom, bindings));
+                        }
+                        _ => {
+                            // Malformed: treat as atom with empty bindings.
+                            out.push((child.clone(), GenericBindings::new()));
+                        }
+                    }
+                } else {
+                    out.push((child.clone(), GenericBindings::new()));
+                }
+            }
+            out
+        } else {
+            // Non-SExpr: treat as single result, no bindings.
+            vec![(collapsed.clone(), GenericBindings::new())]
+        };
+
+        // Empty: empty nondet output (HE: no result).
+        if pairs.is_empty() {
+            self.unreduced = true;
+            self.push(self.factory.empty());
+            return Ok(());
+        }
+
+        // Compose each pair's bindings with current_bindings. Mirrors HE's
+        // `b.merge(&bindings)` at lib/src/metta/interpreter.rs:909.
+        let outer = self.current_bindings.clone();
+        let mut composed_pairs: Vec<(V, GenericBindings<V>)> = Vec::with_capacity(pairs.len());
+        for (atom, b) in pairs {
+            let composed = if b.is_empty() {
+                outer.clone()
+            } else if outer.is_empty() {
+                b
+            } else {
+                crate::backend::eval::bindings::compose_outer_inner_generic(&outer, &b, &self.factory)
+            };
+            composed_pairs.push((atom, composed));
+        }
+
+        // Single result: bind composed bindings into current_bindings and push.
+        if composed_pairs.len() == 1 {
+            let (atom, bindings) = composed_pairs.into_iter().next().expect("non-empty");
+            self.current_bindings = bindings;
+            self.push(atom);
+            return Ok(());
+        }
+
+        // Multi: fan out. First alt's bindings replace current_bindings now;
+        // subsequent alts saved in BoundValue alternatives, restored on backtrack.
+        let mut iter = composed_pairs.into_iter();
+        let (first_atom, first_bindings) = iter.next().expect("non-empty");
+        let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = iter
+            .map(|(value, bindings)| GenericAlternative::BoundValue { value, bindings })
+            .collect();
+
+        self.choice_points.push(GenericChoicePoint {
+            ip: self.ip,
+            chunk: Arc::clone(&self.chunk),
+            value_stack_height: self.value_stack.len(),
+            call_stack_height: self.call_stack.len(),
+            bindings_stack_height: self.bindings_stack.len(),
+            alternatives,
+            saved_unreduced: self.unreduced,
+            trail_height: self.trail.len(),
+            saved_current_bindings: self.current_bindings.clone(),
+            locals_height: self.locals.len(),
+            locals_base_at_cp: self.locals_base,
+        });
+
+        self.current_bindings = first_bindings;
+        self.push(first_atom);
+        Ok(())
     }
 
     /// Phase C: backtrack within a `collapse-bind` scope, respecting its
@@ -8305,7 +8411,8 @@ where
         // `&space` to their SpaceHandle (mirror of resolve_to_state_id).
         if let Some(handle) = self.resolve_to_space_handle_owned(&space) {
             let atoms: Vec<V> = handle.collapse_generic(&self.factory);
-            let mut results = Vec::new();
+            // Preallocate to atoms.len() — upper bound on matches.
+            let mut results: Vec<V> = Vec::with_capacity(atoms.len());
 
             // Match pattern against each atom and instantiate template
             for atom in &atoms {
@@ -8316,8 +8423,38 @@ where
                 }
             }
 
-            // Return results as S-expression
-            self.push(self.make_sexpr(results));
+            // S5: HE-bisimilar `match` returns bare nondet results (NOT a
+            // tuple wrap). Mirrors `op_space_get_atoms` fan-out at L8266-8292.
+            // HE reference: hyperon-experimental/lib/src/metta/runner/stdlib/
+            // core.rs:155-167 returns Vec<(Atom, Option<Bindings>)> bare.
+            if results.is_empty() {
+                // No match: empty nondet result. Push Empty sentinel so
+                // downstream opcodes see a value (HE returns no results,
+                // which is the empty superposition).
+                self.unreduced = true;
+                self.push(self.factory.empty());
+            } else if results.len() == 1 {
+                self.push(results.into_iter().next().expect("results non-empty"));
+            } else {
+                let mut iter = results.into_iter();
+                let first = iter.next().expect("results non-empty");
+                let alternatives: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> =
+                    iter.map(GenericAlternative::Value).collect();
+                self.choice_points.push(GenericChoicePoint {
+                    ip: self.ip,
+                    chunk: Arc::clone(&self.chunk),
+                    value_stack_height: self.value_stack.len(),
+                    call_stack_height: self.call_stack.len(),
+                    bindings_stack_height: self.bindings_stack.len(),
+                    alternatives,
+                    saved_unreduced: self.unreduced,
+                    trail_height: self.trail.len(),
+                    saved_current_bindings: self.current_bindings.clone(),
+                    locals_height: self.locals.len(),
+                    locals_base_at_cp: self.locals_base,
+                });
+                self.push(first);
+            }
             Ok(())
         } else {
             // Per T1.A errors-as-values pattern: push an Error atom rather

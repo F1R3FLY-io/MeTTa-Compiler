@@ -132,6 +132,13 @@ where
             }
             vec![factory.atom("Empty")]
         }
+        MettaValueInner::NotReducible => {
+            #[cfg(feature = "trace")]
+            {
+                _trace_source = "literal-not-reducible";
+            }
+            vec![factory.atom("NotReducible")]
+        }
         MettaValueInner::Atom(name) => {
             // X-followup (2026-05-11): variable / sigil atoms ($x, &name, 'z)
             // have no declared concrete type in HE — return %Undefined% rather
@@ -1722,11 +1729,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            &format!(
+            factory.sexpr(items.to_vec()),
+            factory.string(&format!(
                 "get-type requires exactly 1 argument, got {}. Usage: (get-type expr)",
                 items.len() - 1
-            ),
-            factory.sexpr(items.to_vec()),
+            )),
         )];
     }
 
@@ -1750,11 +1757,11 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            &format!(
+            factory.sexpr(items.to_vec()),
+            factory.string(&format!(
                 "check-type requires exactly 2 arguments, got {}. Usage: (check-type expr type)",
                 items.len() - 1
-            ),
-            factory.sexpr(items.to_vec()),
+            )),
         )];
     }
 
@@ -1826,11 +1833,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            &format!(
+            factory.sexpr(items.to_vec()),
+            factory.string(&format!(
                 "validate-atom requires exactly 1 argument, got {}. Usage: (validate-atom expr)",
                 items.len() - 1
-            ),
-            factory.sexpr(items.to_vec()),
+            )),
         )];
     }
 
@@ -1862,11 +1869,11 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            &format!(
+            factory.sexpr(items.to_vec()),
+            factory.string(&format!(
                 "get-type-space requires exactly 2 arguments, got {}. Usage: (get-type-space space atom)",
                 items.len() - 1
-            ),
-            factory.sexpr(items.to_vec()),
+            )),
         )];
     }
 
@@ -1950,11 +1957,11 @@ where
 {
     if items.len() != 4 {
         return vec![factory.error(
-            &format!(
+            factory.sexpr(items.to_vec()),
+            factory.string(&format!(
                 "type-cast requires exactly 3 arguments, got {}. Usage: (type-cast atom type space)",
                 items.len() - 1
-            ),
-            factory.sexpr(items.to_vec()),
+            )),
         )];
     }
 

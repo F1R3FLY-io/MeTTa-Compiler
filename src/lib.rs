@@ -536,8 +536,8 @@ mod tests {
         let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        if let MettaValueInner::Error(msg, _) = results[0].inner() {
-            assert_eq!(*msg, "deep error");
+        if let MettaValueInner::Error(_, detail) = results[0].inner() {
+            assert_eq!(detail.as_string(), Some("deep error"));
         } else {
             panic!("Expected error propagation from nested expression");
         }
@@ -564,9 +564,9 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let MettaValueInner::Error(msg, details) = r.inner() {
-                assert_eq!(*msg, "negative value");
-                assert!(matches!(details.inner(), MettaValueInner::Long(-5)));
+            if let MettaValueInner::Error(offending, detail) = r.inner() {
+                assert_eq!(detail.as_string(), Some("negative value"));
+                assert!(matches!(offending.inner(), MettaValueInner::Long(-5)));
             } else {
                 panic!("Expected error from function call");
             }
@@ -599,8 +599,8 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let MettaValueInner::Error(msg, _) = r.inner() {
-                assert_eq!(*msg, "division by zero");
+            if let MettaValueInner::Error(_, detail) = r.inner() {
+                assert_eq!(detail.as_string(), Some("division by zero"));
             } else {
                 panic!("Expected error from recursive function");
             }
@@ -663,8 +663,8 @@ mod tests {
         let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        if let MettaValueInner::Error(msg, _) = results[0].inner() {
-            assert_eq!(*msg, "condition failed");
+        if let MettaValueInner::Error(_, detail) = results[0].inner() {
+            assert_eq!(detail.as_string(), Some("condition failed"));
         } else {
             panic!("Expected error from condition evaluation");
         }
@@ -753,8 +753,10 @@ mod tests {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(r) = expr_results.first() {
-                if let MettaValueInner::Error(msg, _) = r.inner() {
-                    errors.push(msg.to_string());
+                if let MettaValueInner::Error(_, detail) = r.inner() {
+                    if let Some(s) = detail.as_string() {
+                        errors.push(s.to_string());
+                    }
                 }
             }
         }
@@ -786,8 +788,8 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let MettaValueInner::Error(msg, _) = r.inner() {
-                assert_eq!(*msg, "first-error");
+            if let MettaValueInner::Error(_, detail) = r.inner() {
+                assert_eq!(detail.as_string(), Some("first-error"));
             } else {
                 panic!("Expected first error to propagate");
             }
@@ -806,9 +808,9 @@ mod tests {
         let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        if let MettaValueInner::Error(msg, details) = results[0].inner() {
-            assert_eq!(*msg, "complex");
-            assert!(matches!(details.inner(), MettaValueInner::SExpr(_)));
+        if let MettaValueInner::Error(offending, detail) = results[0].inner() {
+            assert_eq!(detail.as_string(), Some("complex"));
+            assert!(matches!(offending.inner(), MettaValueInner::SExpr(_)));
         } else {
             panic!("Expected error with complex details");
         }

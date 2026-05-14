@@ -30,6 +30,8 @@ mod tags {
     pub const MEMO: u8 = 0x0F;
     pub const EMPTY: u8 = 0x10;
     pub const QUOTED: u8 = 0x11;
+    /// Plan S0a (2026-05-13) — HE `NotReducible` sentinel tag.
+    pub const NOT_REDUCIBLE: u8 = 0x12;
 }
 
 /// Encode MettaValue to binary key with varint arity (no 63 limit)
@@ -62,6 +64,9 @@ fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
         ValueView::Empty => {
             buf.push(tags::EMPTY);
         }
+        ValueView::NotReducible => {
+            buf.push(tags::NOT_REDUCIBLE);
+        }
         ValueView::SExpr(items) => {
             buf.push(tags::SEXPR);
             encode_varint(buf, items.len() as u64);
@@ -77,10 +82,12 @@ fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
             buf.push(tags::STRING);
             encode_string(buf, s);
         }
-        ValueView::Error(msg, details) => {
+        ValueView::Error(offending, detail) => {
+            // HE-bisimilar `(offending, detail)`: both slots are full values,
+            // not raw strings. Encode each recursively.
             buf.push(tags::ERROR);
-            encode_string(buf, msg);
-            encode_metta(buf, &details);
+            encode_metta(buf, &offending);
+            encode_metta(buf, &detail);
         }
         ValueView::Type(inner) => {
             buf.push(tags::TYPE);
@@ -201,10 +208,11 @@ pub fn varint_key_to_metta(bytes: &[u8]) -> Option<(MettaValue, usize)> {
         tags::UNIT_LEGACY => Some((MettaValue::Unit(), offset)),
         tags::UNIT => Some((MettaValue::Unit(), offset)),
         tags::ERROR => {
-            let (msg, consumed1) = decode_string(&bytes[offset..])?;
+            // HE-bisimilar `(offending, detail)`: both slots are values.
+            let (offending, consumed1) = varint_key_to_metta(&bytes[offset..])?;
             offset += consumed1;
-            let (details, consumed2) = varint_key_to_metta(&bytes[offset..])?;
-            Some((MettaValue::Error(msg, details), offset + consumed2))
+            let (detail, consumed2) = varint_key_to_metta(&bytes[offset..])?;
+            Some((MettaValue::Error(offending, detail), offset + consumed2))
         }
         tags::TYPE => {
             let (inner, consumed) = varint_key_to_metta(&bytes[offset..])?;
@@ -300,6 +308,7 @@ fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
         }
         ValueView::Unit => buf.push(tags::UNIT),
         ValueView::Empty => buf.push(tags::EMPTY),
+        ValueView::NotReducible => buf.push(tags::NOT_REDUCIBLE),
         ValueView::SExpr(_) => {
             let items = value.as_sexpr().expect("matched SExpr");
             buf.push(tags::SEXPR);
@@ -324,11 +333,12 @@ fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
             buf.push(tags::STRING);
             encode_string(buf, s);
         }
-        ValueView::Error(msg, _) => {
-            let (_, details) = value.as_error().expect("matched Error");
+        ValueView::Error(_, _) => {
+            // HE-bisimilar `(offending, detail)`: both slots are full values.
+            let (offending, detail) = value.as_error().expect("matched Error");
             buf.push(tags::ERROR);
-            encode_string(buf, msg);
-            encode_value_generic(buf, details);
+            encode_value_generic(buf, offending);
+            encode_value_generic(buf, detail);
         }
         ValueView::Type(_) => {
             let inner = value.as_type().expect("matched Type");
@@ -457,7 +467,8 @@ mod tests {
 
     #[test]
     fn test_error_value() {
-        let error = MettaValue::Error("test error".to_string(), MettaValue::Long(42));
+        // HE-bisimilar Error(offending, detail).
+        let error = MettaValue::Error(MettaValue::Long(42), MettaValue::String("test error"));
 
         let key = metta_to_varint_key(&error);
         let (decoded, consumed) = varint_key_to_metta(&key).unwrap();

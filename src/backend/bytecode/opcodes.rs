@@ -172,6 +172,24 @@ pub enum Opcode {
     /// and pushes the result list.
     CollapseBindEnd = 0x2C,
 
+    /// S1 TOPLEVEL (2026-05-13): enter HE INTERPRET runner mode.
+    ///
+    /// Emitted by the bytecode compiler at the start of a `(! expr)`
+    /// directive. Sets `BytecodeVM::interpret_mode = true`, causing
+    /// `op_dispatch_rules` to emit observable results for bare S-exprs
+    /// instead of swallowing them under HE ADD-mode semantics.
+    ///
+    /// Paired with `ExitInterpretMode` after the directive body. Stateless
+    /// at the value-stack level (no push/pop).
+    EnterInterpretMode = 0x2D,
+
+    /// S1 TOPLEVEL (2026-05-13): exit HE INTERPRET runner mode.
+    ///
+    /// Emitted by the bytecode compiler at the end of a `(! expr)`
+    /// directive. Clears `BytecodeVM::interpret_mode` so the next
+    /// directive starts in HE ADD mode (the default).
+    ExitInterpretMode = 0x2E,
+
     // === Variable Operations (0x30-0x3F) ===
     /// Load value from local slot, index is next byte
     LoadLocal = 0x30,
@@ -762,7 +780,9 @@ impl Opcode {
             | Self::StructUniqueAtom
             | Self::MatchExternal
             | Self::MatchExternalOr
-            | Self::CollapseBindEnd => 0,
+            | Self::CollapseBindEnd
+            | Self::EnterInterpretMode
+            | Self::ExitInterpretMode => 0,
 
             // 1-byte immediate
             Self::PushLongSmall
@@ -942,6 +962,8 @@ impl Opcode {
             Self::MatchExternalOr => "match_external_or",
             Self::CollapseBindBegin => "collapse_bind_begin",
             Self::CollapseBindEnd => "collapse_bind_end",
+            Self::EnterInterpretMode => "enter_interpret_mode",
+            Self::ExitInterpretMode => "exit_interpret_mode",
             Self::IsVariable => "is_variable",
             Self::IsSExpr => "is_sexpr",
             Self::IsSymbol => "is_symbol",
@@ -1182,6 +1204,9 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0x2A] = Some(Opcode::MatchExternalOr);
     table[0x2B] = Some(Opcode::CollapseBindBegin);
     table[0x2C] = Some(Opcode::CollapseBindEnd);
+    // S1 TOPLEVEL (2026-05-13): HE runner-mode directives
+    table[0x2D] = Some(Opcode::EnterInterpretMode);
+    table[0x2E] = Some(Opcode::ExitInterpretMode);
 
     // Variable operations
     table[0x30] = Some(Opcode::LoadLocal);
@@ -1450,9 +1475,9 @@ mod tests {
         assert!(Opcode::from_byte(0x10).is_none()); // Gap between compiled unification and value creation
                                                     // 0x26 = Msort, 0x27 = StructUniqueAtom, 0x28-0x2C = native special-form
                                                     // opcodes (Unify4, MatchExternal, MatchExternalOr, CollapseBindBegin,
-                                                    // CollapseBindEnd). 0x2D-0x2F are still free.
-        assert!(Opcode::from_byte(0x2D).is_none());
-        assert!(Opcode::from_byte(0x2E).is_none());
+                                                    // CollapseBindEnd). 0x2D-0x2E = HE runner-mode directives
+                                                    // (EnterInterpretMode, ExitInterpretMode — S1 TOPLEVEL 2026-05-13).
+                                                    // 0x2F is still free.
         assert!(Opcode::from_byte(0x2F).is_none());
     }
 

@@ -2444,6 +2444,31 @@ impl JitCompiler {
             }
 
             // =====================================================================
+            // S1 TOPLEVEL (2026-05-13): HE runner-mode directives.
+            // Lowered to a single call to a tiny runtime helper that
+            // flips JitContext::interpret_mode. No value-stack effect.
+            // =====================================================================
+            Opcode::EnterInterpretMode => {
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.debug.enter_interpret_mode_func_id, codegen.builder.func);
+                let ctx_ptr = codegen.ctx_ptr();
+                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+                codegen.builder.ins().call(func_ref, &[ctx_ptr, ip_val]);
+                return Ok(());
+            }
+
+            Opcode::ExitInterpretMode => {
+                let func_ref = self
+                    .module
+                    .declare_func_in_func(self.debug.exit_interpret_mode_func_id, codegen.builder.func);
+                let ctx_ptr = codegen.ctx_ptr();
+                let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
+                codegen.builder.ins().call(func_ref, &[ctx_ptr, ip_val]);
+                return Ok(());
+            }
+
+            // =====================================================================
             // If-Reducible & Match-Or: not yet JIT-compiled, fall back to interpreter
             // =====================================================================
             Opcode::ValidateAtom | Opcode::GetTypeSpace => {

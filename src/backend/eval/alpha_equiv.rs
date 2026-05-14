@@ -126,9 +126,11 @@ fn alpha_equiv_inner<'a, V: MettaValueTrait>(
             .all(|(l, r)| alpha_equiv_inner(l, r, l2r, r2l));
     }
 
-    // Both errors?
-    if let (Some((lm, ld)), Some((rm, rd))) = (left.as_error(), right.as_error()) {
-        return lm == rm && alpha_equiv_inner(ld, rd, l2r, r2l);
+    // Both errors? HE-bisimilar shape: Error(offending, detail). Recurse
+    // into both slots — variable atoms in either position can rename.
+    if let (Some((l_off, l_det)), Some((r_off, r_det))) = (left.as_error(), right.as_error()) {
+        return alpha_equiv_inner(l_off, r_off, l2r, r2l)
+            && alpha_equiv_inner(l_det, r_det, l2r, r2l);
     }
 
     // Both types?
@@ -370,11 +372,14 @@ mod tests {
 
     #[test]
     fn test_errors() {
+        // HE-bisimilar Error(offending, detail). The offending slot holds the
+        // variable atom whose alpha-equivalent renaming is under test; the
+        // detail slot holds the message string.
         let f = global_factory();
-        let a = f.error("msg", f.atom("$x"));
-        let b = f.error("msg", f.atom("$y"));
+        let a = f.error(f.atom("$x"), f.string("msg"));
+        let b = f.error(f.atom("$y"), f.string("msg"));
         assert!(atoms_are_alpha_equivalent(&a, &b));
-        let c = f.error("other", f.atom("$y"));
+        let c = f.error(f.atom("$y"), f.string("other"));
         assert!(!atoms_are_alpha_equivalent(&a, &c));
     }
 

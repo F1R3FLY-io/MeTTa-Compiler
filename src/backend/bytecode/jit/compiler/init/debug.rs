@@ -24,6 +24,10 @@ pub struct DebugFuncIds {
     pub return_multi_func_id: FuncId,
     /// Collect up to N results
     pub collect_n_func_id: FuncId,
+    /// S1 TOPLEVEL (2026-05-13): enter HE INTERPRET runner mode
+    pub enter_interpret_mode_func_id: FuncId,
+    /// S1 TOPLEVEL (2026-05-13): exit HE INTERPRET runner mode
+    pub exit_interpret_mode_func_id: FuncId,
 }
 
 /// Trait for debug initialization - zero-cost static dispatch
@@ -57,6 +61,15 @@ impl<T> DebugInit for T {
         builder.symbol(
             "jit_runtime_collect_n",
             runtime::jit_runtime_collect_n as *const u8,
+        );
+        // S1 TOPLEVEL (2026-05-13): HE runner-mode directives
+        builder.symbol(
+            "jit_runtime_enter_interpret_mode",
+            runtime::jit_runtime_enter_interpret_mode as *const u8,
+        );
+        builder.symbol(
+            "jit_runtime_exit_interpret_mode",
+            runtime::jit_runtime_exit_interpret_mode as *const u8,
         );
     }
 
@@ -163,6 +176,39 @@ impl<T> DebugInit for T {
                 ))
             })?;
 
+        // S1 TOPLEVEL (2026-05-13): HE runner-mode directives.
+        // Signature: fn(ctx: *mut JitContext, ip: u64) -> u64 (always returns 0).
+        let mut interpret_mode_sig = module.make_signature();
+        interpret_mode_sig.params.push(AbiParam::new(types::I64)); // ctx
+        interpret_mode_sig.params.push(AbiParam::new(types::I64)); // ip
+        interpret_mode_sig.returns.push(AbiParam::new(types::I64)); // (unused; for ABI uniformity)
+
+        let enter_interpret_mode_func_id = module
+            .declare_function(
+                "jit_runtime_enter_interpret_mode",
+                Linkage::Import,
+                &interpret_mode_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_enter_interpret_mode: {}",
+                    e
+                ))
+            })?;
+
+        let exit_interpret_mode_func_id = module
+            .declare_function(
+                "jit_runtime_exit_interpret_mode",
+                Linkage::Import,
+                &interpret_mode_sig,
+            )
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_exit_interpret_mode: {}",
+                    e
+                ))
+            })?;
+
         Ok(DebugFuncIds {
             trace_func_id,
             breakpoint_func_id,
@@ -170,6 +216,8 @@ impl<T> DebugInit for T {
             bloom_check_func_id,
             return_multi_func_id,
             collect_n_func_id,
+            enter_interpret_mode_func_id,
+            exit_interpret_mode_func_id,
         })
     }
 }

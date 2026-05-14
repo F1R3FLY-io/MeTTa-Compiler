@@ -24,7 +24,11 @@ fn run_one(source: &str) -> Vec<String> {
 
 #[test]
 fn pi_constant_resolves_to_f64_pi() {
-    let r = run_one("!PI");
+    // S2 BANG-WORD (2026-05-13): `!PI` without whitespace parses as the
+    // atom `!PI` (HE §01.4.5 — `!` is a word character in atom position).
+    // Use `! PI` so the parser produces the bang sigil + atom token pair
+    // that the compile-time fold reconstructs into `(! PI)`.
+    let r = run_one("! PI");
     assert_eq!(r.len(), 1);
     let pi: f64 = r[0].parse().expect("PI should parse as f64");
     assert!(
@@ -36,7 +40,9 @@ fn pi_constant_resolves_to_f64_pi() {
 
 #[test]
 fn exp_constant_resolves_to_f64_e() {
-    let r = run_one("!EXP");
+    // S2 BANG-WORD (2026-05-13): `!EXP` parses as the atom `!EXP`; use
+    // `! EXP` for the eval-sigil form.
+    let r = run_one("! EXP");
     assert_eq!(r.len(), 1);
     let e: f64 = r[0].parse().expect("EXP should parse as f64");
     assert!(

@@ -34,6 +34,29 @@ pub use super::types::{Continuation, EvalResult, WorkItem};
 // Binding Application (Copy-optimized)
 // ============================================================================
 
+/// S0d.1: Apply class-aware bindings to a MettaValue.
+///
+/// Fast path: if the [`BindingsWithClasses`] has no class table, delegates
+/// straight to the entries-only [`apply_bindings`]. Only the user-facing
+/// `(unify ...)` form is expected to populate the class table.
+///
+/// When at least one class is present, lookup follows the
+/// [`crate::backend::eval::bindings::apply_bindings_with_classes_generic`]
+/// resolution order:
+/// 1. Ordinary entry takes precedence (HE invariant: one slot per name).
+/// 2. Class value: substituted in place.
+/// 3. Value-less class member: returned as the ORIGINAL atom name
+///    (preserves T03/004 strict alpha-distinct output).
+/// 4. Unbound: returned as-is.
+#[inline]
+pub fn apply_bindings_with_classes(
+    value: &MettaValue,
+    bindings: &crate::backend::models::BindingsWithClasses<MettaValue>,
+    factory: &GcFactory,
+) -> MettaValue {
+    crate::backend::eval::bindings::apply_bindings_with_classes_generic(value, bindings, factory)
+}
+
 /// Apply bindings to a MettaValue, substituting variables with bound values.
 ///
 /// Monomorphized for MettaValue (Copy, 8-byte tagged pointer).
@@ -105,11 +128,9 @@ fn apply_bindings_inner(
         BuildSExpr { count: usize, original: MettaValue },
         /// After processing `count` goals, build a new Conjunction.
         BuildConjunction { count: usize, original: MettaValue },
-        /// After processing 1 details value, build a new Error.
-        BuildError {
-            msg: &'static str,
-            original: MettaValue,
-        },
+        /// After processing 2 children (offending, detail) in that order on
+        /// result_stack, build a new Error. HE-bisimilar shape.
+        BuildError { original: MettaValue },
         /// After processing 1 inner value, re-wrap with the saved Span.
         BuildSpanned { span: Span, original: MettaValue },
     }
@@ -160,6 +181,13 @@ fn apply_bindings_inner(
                             // Transitive substitution: re-process the bound
                             // value via the work stack so any inner variables
                             // also get resolved. NO Rust call-stack growth.
+                            //
+                            // Note: HE's M-VAR-VAR-DISTINCT (spec §4.3.1) would
+                            // return the ORIGINAL variable when the chain ends
+                            // at an unbound variable. That requires an
+                            // Equivalence variant on `Bindings` to distinguish
+                            // unify-distinct (return original) from pattern-match
+                            // var-var (substitute chain terminus). Deferred to S11.
                             work_stack.push(Work::Process(*bound_value));
                             continue;
                         }
@@ -209,10 +237,14 @@ fn apply_bindings_inner(
                     continue;
                 }
 
-                // Error: process details, then rebuild with msg.
-                if let Some((msg, details)) = v.as_error() {
-                    work_stack.push(Work::BuildError { msg, original: v });
-                    work_stack.push(Work::Process(details));
+                // Error: process both offending and detail children, rebuild.
+                if let Some((offending, detail)) = v.as_error() {
+                    work_stack.push(Work::BuildError { original: v });
+                    // Pop order is detail-first (top), then offending second.
+                    // We want result_stack to contain [offending, detail] in
+                    // that order, so push offending last (LIFO).
+                    work_stack.push(Work::Process(detail));
+                    work_stack.push(Work::Process(offending));
                     continue;
                 }
 
@@ -254,15 +286,18 @@ fn apply_bindings_inner(
                     result_stack.push(new_val);
                 }
             }
-            Work::BuildError { msg, original } => {
-                let new_details = result_stack.pop().expect("BuildError needs details");
-                let (_orig_msg, orig_details) = original
+            Work::BuildError { original } => {
+                let new_detail = result_stack.pop().expect("BuildError needs detail");
+                let new_offending = result_stack.pop().expect("BuildError needs offending");
+                let (orig_offending, orig_detail) = original
                     .as_error()
                     .expect("BuildError original must be error");
-                if new_details.identity_eq(&orig_details) {
+                if new_offending.identity_eq(&orig_offending)
+                    && new_detail.identity_eq(&orig_detail)
+                {
                     result_stack.push(original);
                 } else {
-                    result_stack.push(factory.error(msg, new_details));
+                    result_stack.push(factory.error(new_offending, new_detail));
                 }
             }
             Work::BuildSpanned { span, original } => {
@@ -417,14 +452,30 @@ pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Binding
         return None;
     }
 
-    // Handle Error pattern
-    // NOTE: inherent as_error() returns (msg, MettaValue) by value (Copy).
-    if let Some((pattern_msg, pattern_details)) = pattern.as_error() {
-        if let Some((value_msg, value_details)) = value.as_error() {
-            if pattern_msg != value_msg {
-                return None;
+    // Handle Error pattern.
+    // HE-bisimilar: match both offending and detail sub-values structurally.
+    // NOTE: inherent as_error() returns (offending, detail) as MettaValue by
+    // value (Copy).
+    if let Some((pattern_offending, pattern_detail)) = pattern.as_error() {
+        if let Some((value_offending, value_detail)) = value.as_error() {
+            let mut combined = Bindings::new();
+            match pattern_match(&pattern_offending, &value_offending) {
+                Some(sub) => {
+                    if !combined.merge(&sub) {
+                        return None;
+                    }
+                }
+                None => return None,
             }
-            return pattern_match(&pattern_details, &value_details);
+            match pattern_match(&pattern_detail, &value_detail) {
+                Some(sub) => {
+                    if !combined.merge(&sub) {
+                        return None;
+                    }
+                }
+                None => return None,
+            }
+            return Some(combined);
         }
         return None;
     }
@@ -1583,11 +1634,11 @@ pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -
     // Cases must be an S-expression
     let Some(case_items) = cases.as_sexpr() else {
         let err = factory.error(
-            &format!(
+            *cases,
+            factory.string(&format!(
                 "switch-minimal expects expression as second argument, got: {}",
                 cases.friendly_type_name()
-            ),
-            *cases,
+            )),
         );
         return SwitchResult::Error(err);
     };
@@ -1602,8 +1653,8 @@ pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -
         // Each case must be an S-expression (pattern template)
         let Some(case_parts) = case.as_sexpr() else {
             let err = factory.error(
-                "switch case should be an expression (pattern-template pair)",
                 *case,
+                factory.string("switch case should be an expression (pattern-template pair)"),
             );
             return SwitchResult::Error(err);
         };
@@ -1611,12 +1662,12 @@ pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -
         // Each case must have exactly 2 elements: pattern and template
         if case_parts.len() != 2 {
             let err = factory.error(
-                &format!(
+                *case,
+                factory.string(&format!(
                     "switch case should be a pattern-template pair with exactly 2 elements, got {}. \
                     Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
                     case_parts.len()
-                ),
-                *case,
+                )),
             );
             return SwitchResult::Error(err);
         }

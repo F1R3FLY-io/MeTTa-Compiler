@@ -383,6 +383,15 @@ where
     }
 
     /// Try to compile a built-in operation
+    ///
+    /// MORK forms (`exec`/`coalg`/`lookup`/`rulify`) are intentionally NOT
+    /// matched here. They fall through to `compile_call` (line 216), which
+    /// emits `Opcode::Call`; the VM's `op_dispatch_rules` routes through
+    /// the unified rule-dispatch path, which in turn delegates the MORK
+    /// special-form semantics to the canonical T0 trampoline implementation
+    /// in `eval/mork_forms.rs`. M14-mork-forms conformance verifies that
+    /// T0 and T1 produce observationally-identical results
+    /// (T0-T1-005 / MTT-TI-020 — closed Z.A.5, 2026-05-12).
     fn try_compile_builtin(&mut self, op: &str, args: &[V]) -> CompileResult<Option<()>> {
         match op {
             // Arithmetic operations
@@ -724,7 +733,12 @@ where
             // Force evaluation
             "!" => {
                 self.check_arity("!", args.len(), 1)?;
+                // S1 TOPLEVEL (2026-05-13): wrap the body in HE INTERPRET
+                // mode so the VM's auto-add gate emits observable results
+                // instead of swallowing them under ADD-mode semantics.
+                self.builder.emit(Opcode::EnterInterpretMode);
                 self.compile(&args[0])?;
+                self.builder.emit(Opcode::ExitInterpretMode);
                 Ok(Some(()))
             }
 

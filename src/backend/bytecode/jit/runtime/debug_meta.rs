@@ -39,6 +39,54 @@ pub unsafe extern "C" fn jit_runtime_trace(
     trace!(target: "mettatron::jit::runtime::trace", ip, msg_idx, ?metta_val, "Trace");
 }
 
+// =============================================================================
+// S1 TOPLEVEL (2026-05-13): HE runner-mode helpers
+// =============================================================================
+
+/// Enter HE INTERPRET runner mode.
+///
+/// Set `JitContext::interpret_mode = true` so downstream call-support
+/// gates (`jit_runtime_dispatch_*`) emit observable results for bare
+/// S-exprs instead of swallowing them under HE ADD-mode semantics.
+///
+/// Lowered from `Opcode::EnterInterpretMode` (0x2D) emitted by the
+/// bytecode compiler at the start of a `(! expr)` directive body.
+///
+/// # Safety
+/// `ctx` must point to a live `JitContext` for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_enter_interpret_mode(
+    ctx: *mut JitContext,
+    _ip: u64,
+) -> u64 {
+    let ctx_ref = unsafe { &mut *ctx };
+    ctx_ref.interpret_mode = true;
+    // S2 BANG-WORD (2026-05-13): toggle bang_body in lockstep so JIT-side
+    // decl-atom handlers see the strict signal (= the `!` body is active).
+    ctx_ref.bang_body = true;
+    0
+}
+
+/// Exit HE INTERPRET runner mode.
+///
+/// Clear `JitContext::interpret_mode` so the next directive starts in
+/// HE ADD mode (the default). Lowered from `Opcode::ExitInterpretMode`
+/// (0x2E) emitted at the end of a `(! expr)` directive body.
+///
+/// # Safety
+/// `ctx` must point to a live `JitContext` for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_exit_interpret_mode(
+    ctx: *mut JitContext,
+    _ip: u64,
+) -> u64 {
+    let ctx_ref = unsafe { &mut *ctx };
+    ctx_ref.interpret_mode = false;
+    // S2 BANG-WORD (2026-05-13): clear bang_body in lockstep.
+    ctx_ref.bang_body = false;
+    0
+}
+
 /// Breakpoint for debugging
 ///
 /// # Arguments
@@ -94,6 +142,8 @@ pub unsafe extern "C" fn jit_runtime_get_metatype(
                 // Quoted is transparent to get-metatype: returns "Expression"
                 ValueView::Quoted(_) => "Expression",
                 ValueView::String(_) => "Grounded",
+                // NotReducible is a Symbol (HE-aligned via ValueView::metatype).
+                ValueView::NotReducible => "Symbol",
                 ValueView::Float(_)
                 | ValueView::Bool(_)
                 | ValueView::Long(_)

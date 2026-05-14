@@ -194,6 +194,8 @@ fn hash_value_cached_inner(value: &MettaValue, cache: &mut TieredHashCache) -> u
             return x ^ (x >> 32);
         }
         MettaValueInner::Empty => return 9u64.wrapping_mul(GOLDEN_RATIO),
+        // Plan S0a (2026-05-13) — fast path for NotReducible sentinel.
+        MettaValueInner::NotReducible => return 1u64.wrapping_mul(GOLDEN_RATIO),
         _ => {}
     }
 
@@ -287,6 +289,8 @@ fn hash_value_for_trait_inner<H: Hasher>(inner: &MettaValueInner, hasher: &mut H
         } // children not traversed here
         MettaValueInner::Error(..) => 8u8.hash(hasher),
         MettaValueInner::Empty => 9u8.hash(hasher),
+        // Plan S0a (2026-05-13) — unique tag 1u8 for NotReducible sentinel.
+        MettaValueInner::NotReducible => 1u8.hash(hasher),
         MettaValueInner::Quoted(_) => 10u8.hash(hasher),
         MettaValueInner::Spanned(_, _) => 11u8.hash(hasher),
         MettaValueInner::Space(handle) => {
@@ -419,8 +423,13 @@ pub enum MettaValueInner {
     String(&'static str),
     /// An s-expression (list of values) - slice allocated in arena
     SExpr(&'static [MettaValue]),
-    /// An error with message and details
-    Error(&'static str, MettaValue),
+    /// An error: `Error(offending_expr, detail)`.
+    ///
+    /// HE-bisimilar shape: stores the OFFENDING expression in slot 1 and the
+    /// DETAIL atom in slot 2. The detail is typically a `String` value carrying
+    /// the human message, or a structured atom like `BadType` /
+    /// `IncorrectNumberOfArguments`.
+    Error(MettaValue, MettaValue),
     /// A type (first-class types as atoms)
     Type(MettaValue),
     /// A conjunction of goals (MORK-style logical AND)
@@ -438,6 +447,17 @@ pub enum MettaValueInner {
     Quoted(MettaValue),
     /// Empty sentinel
     Empty,
+    /// `NotReducible` sentinel — Plan S0a (2026-05-13).
+    ///
+    /// HE bisimilarity: emitted by `eval` (S4) when the argument is a grounded
+    /// scalar at head, a variable-headed expression with no matching equations,
+    /// or a `query` with empty result set. See `hyperon-experimental/lib/src/
+    /// metta/mod.rs:29` (`NOT_REDUCIBLE_SYMBOL`) and `lib/src/metta/interpreter.rs:546-548, 634`.
+    ///
+    /// Zero-payload variant (like `Empty`/`Unit`). Single static instance
+    /// referenced via `INLINE_NOT_REDUCIBLE_INNER` for pointer-identity
+    /// comparison on the hot path.
+    NotReducible,
     /// Source-annotated value — transparent to evaluation, preserves location for LSP/diagnostics.
     /// Nesting is allowed: Spanned(Spanned(v, binding_span), template_span) gives full provenance.
     /// `inner()` auto-strips all Spanned layers, so existing pattern matches work unchanged.
@@ -500,11 +520,14 @@ pub enum ValueView {
     Long(i64),
     Unit,
     Empty,
+    /// HE `NotReducible` sentinel (Plan S0a, 2026-05-13).
+    NotReducible,
     // Slab-allocated types (Spanned layers are stripped by view())
     Atom(&'static str),
     String(&'static str),
     SExpr(&'static [MettaValue]),
-    Error(&'static str, MettaValue),
+    /// HE-bisimilar: `Error(offending, detail)`.
+    Error(MettaValue, MettaValue),
     Type(MettaValue),
     Conjunction(&'static [MettaValue]),
     Space(&'static SpaceHandle),
@@ -525,6 +548,9 @@ impl ValueView {
             ValueView::Long(_) | ValueView::Float(_) => "Number",
             ValueView::Unit => "Unit",
             ValueView::Empty => "Grounded",
+            // NotReducible is a sentinel symbol; HE classifies it as `Symbol`
+            // since it's an interned atom in the HE space. Plan S0a.
+            ValueView::NotReducible => "Symbol",
             ValueView::Quoted(_) | ValueView::SExpr(_) => "Expression",
             ValueView::Atom(s) if s.starts_with('$') => "Variable",
             ValueView::Atom(_) => "Symbol",
@@ -553,6 +579,10 @@ impl ValueView {
 
 static INLINE_UNIT_INNER: MettaValueInner = MettaValueInner::Unit;
 static INLINE_EMPTY_INNER: MettaValueInner = MettaValueInner::Empty;
+/// Singleton `MettaValueInner::NotReducible` (Plan S0a, 2026-05-13).
+/// Stable static address — `factory.not_reducible()` wraps a reference to
+/// this for pointer-identity comparison on the hot path.
+pub(crate) static INLINE_NOT_REDUCIBLE_INNER: MettaValueInner = MettaValueInner::NotReducible;
 static INLINE_TRUE_INNER: MettaValueInner = MettaValueInner::Bool(true);
 static INLINE_FALSE_INNER: MettaValueInner = MettaValueInner::Bool(false);
 
@@ -772,13 +802,14 @@ impl MettaValue {
             MettaValueInner::Atom(s) => ValueView::Atom(s),
             MettaValueInner::String(s) => ValueView::String(s),
             MettaValueInner::SExpr(items) => ValueView::SExpr(items),
-            MettaValueInner::Error(msg, details) => ValueView::Error(msg, *details),
+            MettaValueInner::Error(offending, details) => ValueView::Error(*offending, *details),
             MettaValueInner::Type(inner_val) => ValueView::Type(*inner_val),
             MettaValueInner::Conjunction(goals) => ValueView::Conjunction(goals),
             MettaValueInner::Space(handle) => ValueView::Space(handle),
             MettaValueInner::State(id) => ValueView::State(*id),
             MettaValueInner::Memo(handle) => ValueView::Memo(handle),
             MettaValueInner::Quoted(inner_val) => ValueView::Quoted(*inner_val),
+            MettaValueInner::NotReducible => ValueView::NotReducible,
             // Spanned is stripped by inner() — this is unreachable
             MettaValueInner::Spanned(..) => unreachable!("inner() strips Spanned"),
         }
@@ -1192,14 +1223,18 @@ impl MettaValue {
         }
     }
 
-    /// Try to extract as error (message, details) (transparent through Spanned)
+    /// Try to extract as error (offending, detail) (transparent through Spanned).
+    ///
+    /// HE-bisimilar shape: returns `(offending_expr, detail)`. The detail is
+    /// typically a `String` value carrying the human message, or a structured
+    /// atom like `BadType` / `IncorrectNumberOfArguments`.
     #[inline]
-    pub fn as_error(&self) -> Option<(&'static str, MettaValue)> {
+    pub fn as_error(&self) -> Option<(MettaValue, MettaValue)> {
         if self.is_inline() {
             return None;
         }
         match self.inner_ref() {
-            MettaValueInner::Error(msg, details) => Some((msg, *details)),
+            MettaValueInner::Error(offending, details) => Some((*offending, *details)),
             MettaValueInner::Spanned(v, _) => v.as_error(),
             _ => None,
         }
@@ -1324,6 +1359,7 @@ impl MettaValue {
             MettaValueInner::Quoted(_) => "Expression",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
+            MettaValueInner::NotReducible => "NotReducible",
             MettaValueInner::Spanned(v, _) => v.type_name(),
         }
     }
@@ -1382,10 +1418,14 @@ impl MettaValue {
     }
 
     /// Create an Error variant via global allocator.
+    ///
+    /// HE-bisimilar shape: `Error(offending_expr, detail)`. The detail is
+    /// typically a `String` value carrying the human message, or a structured
+    /// atom like `BadType` / `IncorrectNumberOfArguments`.
     #[allow(non_snake_case)]
     #[inline]
-    pub fn Error(msg: impl AsRef<str>, details: MettaValue) -> Self {
-        super::gc_allocator::global_factory().error(msg.as_ref(), details)
+    pub fn Error(offending: MettaValue, detail: MettaValue) -> Self {
+        super::gc_allocator::global_factory().error(offending, detail)
     }
 
     /// Create a Type variant via global allocator.
@@ -1435,6 +1475,13 @@ impl MettaValue {
     #[inline]
     pub fn Empty() -> Self {
         super::gc_allocator::global_factory().empty()
+    }
+
+    /// Create a `NotReducible` sentinel via global allocator — Plan S0a (2026-05-13).
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn NotReducible() -> Self {
+        super::gc_allocator::global_factory().not_reducible()
     }
 
     // ========================================================================
@@ -1510,11 +1557,11 @@ impl MettaValue {
                 format!("({})", inner)
             }
             MettaValueInner::Unit => "()".to_string(),
-            MettaValueInner::Error(msg, details) => {
+            MettaValueInner::Error(offending, detail) => {
                 format!(
-                    "(error \"{}\" {})",
-                    escape_metta_string(msg),
-                    details.to_metta_string()
+                    "(Error {} {})",
+                    offending.to_metta_string(),
+                    detail.to_metta_string()
                 )
             }
             MettaValueInner::Type(t) => t.to_metta_string(),
@@ -1535,6 +1582,7 @@ impl MettaValue {
             MettaValueInner::State(id) => format!("(State {})", id),
             MettaValueInner::Memo(h) => format!("(Memo {} \"{}\")", h.id, h.name),
             MettaValueInner::Empty => "Empty".to_string(),
+            MettaValueInner::NotReducible => "NotReducible".to_string(),
             MettaValueInner::Spanned(v, _) => v.to_metta_string(),
         }
     }
@@ -1566,8 +1614,12 @@ impl MettaValue {
                 format!("({})", inner)
             }
             MettaValueInner::Unit => "()".to_string(),
-            MettaValueInner::Error(msg, details) => {
-                format!("(error \"{}\" {})", msg, details.to_mork_string())
+            MettaValueInner::Error(offending, detail) => {
+                format!(
+                    "(Error {} {})",
+                    offending.to_mork_string(),
+                    detail.to_mork_string()
+                )
             }
             MettaValueInner::Type(t) => t.to_mork_string(),
             MettaValueInner::Conjunction(goals) => {
@@ -1583,6 +1635,7 @@ impl MettaValue {
             MettaValueInner::Quoted(inner) => format!("(quote {})", inner.to_mork_string()),
             MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
             MettaValueInner::Empty => "Empty".to_string(),
+            MettaValueInner::NotReducible => "NotReducible".to_string(),
             MettaValueInner::Spanned(v, _) => v.to_mork_string(),
         }
     }
@@ -1605,11 +1658,11 @@ impl MettaValue {
                     items.iter().map(|value| value.to_json_string()).collect();
                 format!(r#"{{"type":"sexpr","items":[{}]}}"#, items_json.join(","))
             }
-            MettaValueInner::Error(msg, details) => {
+            MettaValueInner::Error(offending, detail) => {
                 format!(
-                    r#"{{"type":"error","message":"{}","details":{}}}"#,
-                    escape_json(msg),
-                    details.to_json_string()
+                    r#"{{"type":"error","offending":{},"detail":{}}}"#,
+                    offending.to_json_string(),
+                    detail.to_json_string()
                 )
             }
             MettaValueInner::Type(t) => {
@@ -1644,6 +1697,7 @@ impl MettaValue {
                 format!(r#"{{"type":"quoted","value":{}}}"#, inner.to_json_string())
             }
             MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
+            MettaValueInner::NotReducible => r#"{"type":"not_reducible"}"#.to_string(),
             MettaValueInner::Spanned(v, _) => v.to_json_string(),
         }
     }
@@ -1774,7 +1828,9 @@ impl fmt::Display for MettaValue {
                 write!(f, ")")
             }
             MettaValueInner::Unit => write!(f, "()"),
-            MettaValueInner::Error(msg, details) => write!(f, "(Error {} {})", msg, details),
+            MettaValueInner::Error(offending, detail) => {
+                write!(f, "(Error {} {})", offending, detail)
+            }
             MettaValueInner::Type(inner) => write!(f, "(: {})", inner),
             MettaValueInner::Conjunction(goals) => {
                 write!(f, "(,")?;
@@ -1788,6 +1844,7 @@ impl fmt::Display for MettaValue {
             MettaValueInner::Quoted(inner) => write!(f, "(quote {})", inner),
             MettaValueInner::Memo(handle) => write!(f, "<Memo:{}>", handle.name),
             MettaValueInner::Empty => write!(f, "Empty"),
+            MettaValueInner::NotReducible => write!(f, "NotReducible"),
             MettaValueInner::Spanned(v, _) => write!(f, "{}", v),
         }
     }
@@ -1841,8 +1898,8 @@ impl PartialEq for MettaValueInner {
             (MettaValueInner::String(a), MettaValueInner::String(b)) => a == b,
             (MettaValueInner::SExpr(a), MettaValueInner::SExpr(b)) => a == b,
             (MettaValueInner::Unit, MettaValueInner::Unit) => true,
-            (MettaValueInner::Error(ma, da), MettaValueInner::Error(mb, db)) => {
-                ma == mb && da == db
+            (MettaValueInner::Error(oa, da), MettaValueInner::Error(ob, db)) => {
+                oa == ob && da == db
             }
             (MettaValueInner::Type(a), MettaValueInner::Type(b)) => a == b,
             (MettaValueInner::Conjunction(a), MettaValueInner::Conjunction(b)) => a == b,
@@ -1851,6 +1908,7 @@ impl PartialEq for MettaValueInner {
             (MettaValueInner::Quoted(a), MettaValueInner::Quoted(b)) => a == b,
             (MettaValueInner::Memo(a), MettaValueInner::Memo(b)) => a.id == b.id,
             (MettaValueInner::Empty, MettaValueInner::Empty) => true,
+            (MettaValueInner::NotReducible, MettaValueInner::NotReducible) => true,
             _ => false,
         }
     }
@@ -2104,12 +2162,12 @@ impl MettaValueTrait for MettaValue {
     }
 
     #[inline]
-    fn as_error(&self) -> Option<(&str, &Self)> {
+    fn as_error(&self) -> Option<(&Self, &Self)> {
         if self.is_inline() {
             return None;
         }
         match self.inner_ref() {
-            MettaValueInner::Error(msg, details) => Some((msg, details)),
+            MettaValueInner::Error(offending, details) => Some((offending, details)),
             MettaValueInner::Spanned(v, _) => <MettaValue as MettaValueTrait>::as_error(v),
             _ => None,
         }
@@ -2226,6 +2284,7 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::Quoted(_) => "Expression",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
+            MettaValueInner::NotReducible => "NotReducible",
             MettaValueInner::Spanned(v, _) => v.type_name(),
         }
     }
@@ -2256,6 +2315,7 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::State(_) => "State",
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
+            MettaValueInner::NotReducible => "NotReducible",
             MettaValueInner::Spanned(v, _) => v.friendly_type_name(),
         }
     }
@@ -2396,6 +2456,7 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
                         MettaValueInner::Unit => result_stack.push("()".to_string()),
                         MettaValueInner::Empty => result_stack.push("Empty".to_string()),
+                        MettaValueInner::NotReducible => result_stack.push("NotReducible".to_string()),
                         MettaValueInner::Space(handle) => {
                             result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
                         }
@@ -2405,8 +2466,15 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Memo(handle) => {
                             result_stack.push(format!("(Memo {} \"{}\")", handle.id, handle.name));
                         }
-                        MettaValueInner::Error(msg, _) => {
-                            result_stack.push(format!("(error \"{}\")", msg));
+                        MettaValueInner::Error(offending, detail) => {
+                            work_stack.push(ReprWork::Join {
+                                count: 2,
+                                prefix: "(Error ",
+                                suffix: ")",
+                                separator: " ",
+                            });
+                            work_stack.push(ReprWork::Process(detail));
+                            work_stack.push(ReprWork::Process(offending));
                         }
                         MettaValueInner::Type(t) => {
                             work_stack.push(ReprWork::Join {
@@ -2524,6 +2592,7 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
                         MettaValueInner::Unit => result_stack.push("()".to_string()),
                         MettaValueInner::Empty => result_stack.push("Empty".to_string()),
+                        MettaValueInner::NotReducible => result_stack.push("NotReducible".to_string()),
                         MettaValueInner::Space(handle) => {
                             result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
                         }
@@ -2533,8 +2602,15 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Memo(handle) => {
                             result_stack.push(format!("(Memo {} \"{}\")", handle.id, handle.name));
                         }
-                        MettaValueInner::Error(msg, _) => {
-                            result_stack.push(format!("(Error \"{}\")", msg));
+                        MettaValueInner::Error(offending, detail) => {
+                            work_stack.push(ReprWork::Join {
+                                count: 2,
+                                prefix: "(Error ",
+                                suffix: ")",
+                                separator: " ",
+                            });
+                            work_stack.push(ReprWork::Process(detail));
+                            work_stack.push(ReprWork::Process(offending));
                         }
                         MettaValueInner::Type(t) => {
                             work_stack.push(ReprWork::Join {
@@ -2628,6 +2704,8 @@ pub mod serialize_tags {
     pub const STATE: u8 = 0x0E;
     pub const MEMO: u8 = 0x0F;
     pub const QUOTED: u8 = 0x10;
+    /// Plan S0a (2026-05-13) — HE `NotReducible` sentinel tag.
+    pub const NOT_REDUCIBLE: u8 = 0x11;
 }
 
 /// Write a varint to buffer
@@ -2722,11 +2800,11 @@ fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
         MettaValueInner::Unit => {
             buf.push(UNIT_LEGACY);
         }
-        MettaValueInner::Error(msg, details) => {
+        MettaValueInner::Error(offending, detail) => {
             buf.push(ERROR);
-            write_varint(buf, msg.len());
-            buf.extend_from_slice(msg.as_bytes());
-            serialize_value(details, buf);
+            // HE-bisimilar: both offending and detail are serialized as full values.
+            serialize_value(offending, buf);
+            serialize_value(detail, buf);
         }
         MettaValueInner::Type(inner) => {
             buf.push(TYPE);
@@ -2763,6 +2841,9 @@ fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
         MettaValueInner::Memo(handle) => {
             buf.push(MEMO);
             buf.extend_from_slice(&handle.id.to_le_bytes());
+        }
+        MettaValueInner::NotReducible => {
+            buf.push(NOT_REDUCIBLE);
         }
         MettaValueInner::Spanned(v, _) => serialize_value(v, buf),
     }
@@ -2881,13 +2962,15 @@ mod tests {
 
     #[test]
     fn test_arena_error() {
+        // HE-bisimilar Error(offending, detail).
         let factory = global_factory();
-        let details = factory.atom("details");
-        let v = factory.error("test error", details);
+        let offending = factory.atom("details");
+        let detail = factory.string("test error");
+        let v = factory.error(offending, detail);
         assert!(v.is_error());
-        let (msg, det) = v.as_error().expect("should be error");
-        assert_eq!(msg, "test error");
-        assert_eq!(det.as_atom(), Some("details"));
+        let (off, det) = v.as_error().expect("should be error");
+        assert_eq!(off.as_atom(), Some("details"));
+        assert_eq!(det.as_string(), Some("test error"));
     }
 
     #[test]
@@ -3054,10 +3137,12 @@ mod tests {
     #[test]
     fn test_eq_error_error() {
         let factory = global_factory();
-        let d1 = factory.atom("d");
-        let d2 = factory.atom("d");
-        let v1 = factory.error("err", d1);
-        let v2 = factory.error("err", d2);
+        let off1 = factory.atom("d");
+        let off2 = factory.atom("d");
+        let det1 = factory.string("err");
+        let det2 = factory.string("err");
+        let v1 = factory.error(off1, det1);
+        let v2 = factory.error(off2, det2);
         assert_eq!(v1, v2);
     }
 
@@ -3192,8 +3277,9 @@ mod tests {
     #[test]
     fn test_type_name_error() {
         let factory = global_factory();
-        let d = factory.unit();
-        let v = factory.error("err", d);
+        let offending = factory.unit();
+        let detail = factory.string("err");
+        let v = factory.error(offending, detail);
         assert_eq!(v.type_name(), "Error");
     }
 
@@ -3304,10 +3390,12 @@ mod tests {
 
     #[test]
     fn test_display_error() {
+        // HE-bisimilar Error(offending, detail). Display emits `(Error <off> <det>)`.
         let factory = global_factory();
-        let d = factory.atom("details");
-        let v = factory.error("msg", d);
-        assert_eq!(format!("{}", v), "(Error msg details)");
+        let offending = factory.atom("details");
+        let detail = factory.string("msg");
+        let v = factory.error(offending, detail);
+        assert_eq!(format!("{}", v), "(Error details \"msg\")");
     }
 
     #[test]
@@ -3430,8 +3518,9 @@ mod tests {
     #[test]
     fn test_serialize_roundtrip_error() {
         let factory = global_factory();
-        let details = factory.atom("details");
-        let original = factory.error("test error", details);
+        let offending = factory.atom("details");
+        let detail = factory.string("test error");
+        let original = factory.error(offending, detail);
         let bytes = original.serialize();
         let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
         assert_eq!(original, decoded);

@@ -338,14 +338,14 @@ where
                 _ => unreachable!("only concrete types reach mismatch=true"),
             };
             return Some(factory.error(
-                &format!(
+                factory.atom("TypeError"),
+                factory.string(&format!(
                     "{}: argument {} expected {}, got {}",
                     op,
                     i + 1,
                     expected_name,
                     actual_type
-                ),
-                factory.atom("TypeError"),
+                )),
             ));
         }
     }

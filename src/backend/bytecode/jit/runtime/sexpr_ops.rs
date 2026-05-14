@@ -59,8 +59,8 @@ pub unsafe extern "C" fn jit_runtime_get_head(_ctx: *mut JitContext, val: u64, _
     fn make_car_error(input_metta: &MettaValue) -> u64 {
         let call = MettaValue::SExpr(vec![MettaValue::Atom("car-atom"), input_metta.clone()]);
         let err = MettaValue::Error(
-            "car-atom expects a non-empty expression as an argument",
             call,
+            MettaValue::String("car-atom expects a non-empty expression as an argument"),
         );
         metta_to_jit(&err).to_bits()
     }
@@ -113,8 +113,8 @@ pub unsafe extern "C" fn jit_runtime_get_tail(_ctx: *mut JitContext, val: u64, _
     fn make_cdr_error(input_metta: &MettaValue) -> u64 {
         let call = MettaValue::SExpr(vec![MettaValue::Atom("cdr-atom"), input_metta.clone()]);
         let err = MettaValue::Error(
-            "cdr-atom expects a non-empty expression as an argument",
             call,
+            MettaValue::String("cdr-atom expects a non-empty expression as an argument"),
         );
         metta_to_jit(&err).to_bits()
     }
@@ -353,6 +353,7 @@ pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, 
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::Error(_, _)
@@ -415,6 +416,7 @@ pub unsafe extern "C" fn jit_runtime_get_element(
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::Error(_, _)

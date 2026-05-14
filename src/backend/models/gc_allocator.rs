@@ -95,6 +95,7 @@ fn discriminant_name(inner: &MettaValueInner) -> &'static str {
         MettaValueInner::State(_) => "State",
         MettaValueInner::Memo(_) => "Memo",
         MettaValueInner::Empty => "Empty",
+        MettaValueInner::NotReducible => "NotReducible",
         MettaValueInner::Spanned(_, _) => "Spanned",
     }
 }
@@ -3735,10 +3736,14 @@ pub(crate) fn trace_safepoint_live_set() -> (Option<PtrHashSet>, bool) {
                     }
                 }
             }
-            MettaValueInner::Error(_, details) => {
-                let details_ptr = details.inner_ptr();
-                if !details_ptr.is_null() && live_set.insert(details_ptr as *const u8) {
-                    worklist.push(details_ptr);
+            MettaValueInner::Error(offending, detail) => {
+                // HE-bisimilar `(offending, detail)`: both slots are values
+                // that must be traced.
+                for child in [offending, detail] {
+                    let child_ptr = child.inner_ptr();
+                    if !child_ptr.is_null() && live_set.insert(child_ptr as *const u8) {
+                        worklist.push(child_ptr);
+                    }
                 }
             }
             MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
@@ -3770,6 +3775,7 @@ pub(crate) fn trace_safepoint_live_set() -> (Option<PtrHashSet>, bool) {
             | MettaValueInner::String(_)
             | MettaValueInner::Unit
             | MettaValueInner::Empty
+            | MettaValueInner::NotReducible
             | MettaValueInner::State(_)
             | MettaValueInner::Memo(_) => {}
         }
@@ -4940,10 +4946,12 @@ impl SlabAllocator {
                         }
                     }
                 }
-                MettaValueInner::Error(_, details) => {
-                    let dp = details.inner_ptr();
-                    if !dp.is_null() && visited.insert(dp as *const u8) {
-                        worklist.push(dp);
+                MettaValueInner::Error(offending, detail) => {
+                    for child in [offending, detail] {
+                        let cp = child.inner_ptr();
+                        if !cp.is_null() && visited.insert(cp as *const u8) {
+                            worklist.push(cp);
+                        }
                     }
                 }
                 MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
@@ -4975,6 +4983,7 @@ impl SlabAllocator {
                 | MettaValueInner::String(_)
                 | MettaValueInner::Unit
                 | MettaValueInner::Empty
+                | MettaValueInner::NotReducible
                 | MettaValueInner::State(_)
                 | MettaValueInner::Memo(_) => {}
             }
@@ -5029,10 +5038,12 @@ impl SlabAllocator {
                         }
                     }
                 }
-                MettaValueInner::Error(_, details) => {
-                    let details_ptr = details.inner_ptr();
-                    if !details_ptr.is_null() && surviving.insert(details_ptr as *const u8) {
-                        worklist.push(details_ptr);
+                MettaValueInner::Error(offending, detail) => {
+                    for child in [offending, detail] {
+                        let cp = child.inner_ptr();
+                        if !cp.is_null() && surviving.insert(cp as *const u8) {
+                            worklist.push(cp);
+                        }
                     }
                 }
                 MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
@@ -5064,6 +5075,7 @@ impl SlabAllocator {
                 | MettaValueInner::String(_)
                 | MettaValueInner::Unit
                 | MettaValueInner::Empty
+                | MettaValueInner::NotReducible
                 | MettaValueInner::State(_)
                 | MettaValueInner::Memo(_) => {}
             }
@@ -5207,12 +5219,14 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
                     }
                 }
             }
-            MettaValueInner::Error(_, details) => {
-                let details_ptr = details.inner_ptr();
-                if !details_ptr.is_null()
-                    && snapshot_mark_value(snapshot, details_ptr as *const u8, slot_size)
-                {
-                    worklist.push(details_ptr);
+            MettaValueInner::Error(offending, detail) => {
+                for child in [offending, detail] {
+                    let cp = child.inner_ptr();
+                    if !cp.is_null()
+                        && snapshot_mark_value(snapshot, cp as *const u8, slot_size)
+                    {
+                        worklist.push(cp);
+                    }
                 }
             }
             MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
@@ -5253,6 +5267,7 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
             | MettaValueInner::String(_)
             | MettaValueInner::Unit
             | MettaValueInner::Empty
+            | MettaValueInner::NotReducible
             | MettaValueInner::State(_)
             | MettaValueInner::Memo(_) => {}
         }
@@ -5371,10 +5386,12 @@ pub fn mark_from_roots(roots: impl Iterator<Item = MettaValue>, alloc: &SlabAllo
                     }
                 }
             }
-            MettaValueInner::Error(_, details) => {
-                let details_ptr = details.inner_ptr();
-                if !details_ptr.is_null() && alloc.mark_value(details_ptr as *const u8) {
-                    worklist.push(details_ptr);
+            MettaValueInner::Error(offending, detail) => {
+                for child in [offending, detail] {
+                    let cp = child.inner_ptr();
+                    if !cp.is_null() && alloc.mark_value(cp as *const u8) {
+                        worklist.push(cp);
+                    }
                 }
             }
             MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
@@ -5406,6 +5423,7 @@ pub fn mark_from_roots(roots: impl Iterator<Item = MettaValue>, alloc: &SlabAllo
             | MettaValueInner::String(_)
             | MettaValueInner::Unit
             | MettaValueInner::Empty
+            | MettaValueInner::NotReducible
             | MettaValueInner::State(_)
             | MettaValueInner::Memo(_) => {}
         }
@@ -5468,7 +5486,11 @@ fn data_size_of(inner: &MettaValueInner) -> usize {
         MettaValueInner::String(s) => s.len(),
         MettaValueInner::SExpr(children) => children.len() * mem::size_of::<MettaValue>(),
         MettaValueInner::Conjunction(goals) => goals.len() * mem::size_of::<MettaValue>(),
-        MettaValueInner::Error(msg, _) => msg.len(),
+        // HE-bisimilar `Error(offending, detail)`: both slots are MettaValue
+        // references with no inline payload at this node — the slab pages
+        // holding their inner data are tracked separately when those values
+        // are themselves traced. So the Error node has no variable-length data.
+        MettaValueInner::Error(_, _) => 0,
         MettaValueInner::Spanned(_, _) => mem::size_of::<crate::ir::Span>(),
         _ => 0,
     }
@@ -5491,9 +5513,10 @@ fn collect_dead_data(inner: &MettaValueInner, dead_data: &mut Vec<(*mut u8, usiz
             let byte_len = goals.len() * mem::size_of::<MettaValue>();
             dead_data.push((goals.as_ptr() as *mut u8, byte_len));
         }
-        MettaValueInner::Error(msg, _) if !msg.is_empty() => {
-            dead_data.push((msg.as_ptr() as *mut u8, msg.len()));
-        }
+        // HE-bisimilar `Error(offending, detail)`: both slots are MettaValue
+        // references; the slab pages holding their inner data are reclaimed
+        // when those values themselves become dead, not via the Error node.
+        MettaValueInner::Error(_, _) => {}
         MettaValueInner::Spanned(_, span) => {
             let span_size = mem::size_of::<crate::ir::Span>();
             dead_data.push((*span as *const crate::ir::Span as *mut u8, span_size));
@@ -5635,10 +5658,11 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     }
 
     #[inline]
-    fn error(&self, msg: &str, details: MettaValue) -> MettaValue {
-        let msg = self.alloc.alloc_str(msg);
-        let inner = self.alloc.alloc_value(MettaValueInner::Error(msg, details));
-        let flags = if details.has_variables_fast() {
+    fn error(&self, offending: MettaValue, detail: MettaValue) -> MettaValue {
+        let inner = self
+            .alloc
+            .alloc_value(MettaValueInner::Error(offending, detail));
+        let flags = if offending.has_variables_fast() || detail.has_variables_fast() {
             super::metta_value::FLAG_HAS_VARIABLES as u8
         } else {
             0
@@ -5724,6 +5748,25 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
     #[inline]
     fn empty(&self) -> MettaValue {
         MettaValue::inline_empty()
+    }
+
+    /// Memoized `NotReducible` atom — Plan S0a (2026-05-13).
+    ///
+    /// HE-bisimilarity: emitted by `eval` (S4) when the argument is a grounded
+    /// scalar at head, a variable-headed expression with no matching equations,
+    /// or a `query` with empty result set. See `hyperon-experimental/lib/src/
+    /// metta/interpreter.rs:546-548, 634` (`return_not_reducible`).
+    ///
+    /// Wraps the static `INLINE_NOT_REDUCIBLE_INNER` singleton — no slab
+    /// allocation, no `OnceLock` overhead. The variant has a unique tag in
+    /// `MettaValueInner` so consumers can use pointer-identity or `view()`
+    /// matching for fast NotReducible detection.
+    #[inline]
+    fn not_reducible(&self) -> MettaValue {
+        MettaValue::from_inner_tagged(
+            &crate::backend::models::metta_value::INLINE_NOT_REDUCIBLE_INNER,
+            0,
+        )
     }
 
     /// Zero-cost identity conversion: V = MettaValue, so no serialization needed.
@@ -5813,17 +5856,14 @@ fn deserialize_slab_value(
         }
         UNIT_LEGACY => Ok((factory.unit(), 1)),
         ERROR => {
-            let (msg_len, varint_size) = read_varint(rest)?;
-            let msg_start = varint_size;
-            let msg_end = msg_start + msg_len;
-            if rest.len() < msg_end {
-                return Err("unexpected end of error message".to_string());
-            }
-            let msg = std::str::from_utf8(&rest[msg_start..msg_end])
-                .map_err(|e| format!("invalid UTF-8 in error message: {}", e))?;
-            let (details, details_consumed) =
-                deserialize_slab_value(factory, &bytes[1 + msg_end..])?;
-            Ok((factory.error(msg, details), 1 + msg_end + details_consumed))
+            // HE-bisimilar: read offending expression then detail atom.
+            let (offending, offending_consumed) = deserialize_slab_value(factory, rest)?;
+            let (detail, detail_consumed) =
+                deserialize_slab_value(factory, &bytes[1 + offending_consumed..])?;
+            Ok((
+                factory.error(offending, detail),
+                1 + offending_consumed + detail_consumed,
+            ))
         }
         TYPE => {
             let (inner, consumed) = deserialize_slab_value(factory, rest)?;
@@ -5846,6 +5886,7 @@ fn deserialize_slab_value(
             Ok((factory.quote(inner), 1 + consumed))
         }
         EMPTY => Ok((factory.empty(), 1)),
+        NOT_REDUCIBLE => Ok((factory.not_reducible(), 1)),
         SPACE => {
             if rest.len() < 8 {
                 return Err("unexpected end of space id".to_string());
@@ -6221,12 +6262,13 @@ mod tests {
     fn test_gc_factory_error() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let details = factory.atom("bad-input");
-        let v = factory.error("oops", details);
+        let offending = factory.atom("bad-input");
+        let detail = factory.string("oops");
+        let v = factory.error(offending, detail);
         assert!(v.is_error());
-        let (msg, det) = v.as_error().expect("should be error");
-        assert_eq!(msg, "oops");
-        assert_eq!(det.as_atom(), Some("bad-input"));
+        let (off, det) = v.as_error().expect("should be error");
+        assert_eq!(off.as_atom(), Some("bad-input"));
+        assert_eq!(det.as_string(), Some("oops"));
     }
 
     #[test]
@@ -6389,11 +6431,14 @@ mod tests {
     fn test_mark_from_roots_error_traces_details() {
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let details = factory.atom("bad-input");
-        let err = factory.error("oops", details);
+        let offending = factory.atom("bad-input");
+        let detail = factory.string("oops");
+        let err = factory.error(offending, detail);
         mark_from_roots(std::iter::once(err), &alloc);
         assert!(alloc.is_value_marked(err.inner_ptr() as *const u8));
-        assert!(alloc.is_value_marked(details.inner_ptr() as *const u8));
+        // GC must trace BOTH slots; verify offending and detail are reachable.
+        assert!(alloc.is_value_marked(offending.inner_ptr() as *const u8));
+        assert!(alloc.is_value_marked(detail.inner_ptr() as *const u8));
     }
 
     #[test]

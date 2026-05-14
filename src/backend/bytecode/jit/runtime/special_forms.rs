@@ -734,11 +734,11 @@ pub unsafe extern "C" fn jit_runtime_eval_apply(
             if arg_count != param_count {
                 // Arity mismatch - return error or closure unchanged
                 let error = MettaValue::Error(
-                    format!(
+                    closure_val,
+                    MettaValue::String(&format!(
                         "Lambda arity mismatch: expected {} arguments, got {}",
                         param_count, arg_count
-                    ),
-                    closure_val,
+                    )),
                 );
                 return metta_to_jit(&error).to_bits();
             }

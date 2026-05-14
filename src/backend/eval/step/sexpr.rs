@@ -225,39 +225,88 @@ where
         // `crate::backend::environment::dispatch_overrides`.
         'special_forms: {
             match op {
-                // Rule definition - native generic implementation (zero-conversion)
+                // Rule definition - native generic implementation (zero-conversion).
+                //
+                // S2 BANG-WORD / decl-atom dispatch (2026-05-13): per HE
+                // §02.6 + fixtures T02/044, `(= lhs rhs)` is a DECLARATION
+                // ATOM, not a special form. It registers as a rule ONLY in
+                // ADD mode (bare top-level). When wrapped in `(! ...)` the
+                // runner is in INTERPRET mode and the form must evaluate to
+                // itself as unreduced data. The `interpret_mode` flag is set
+                // by the `!` arm above; here it gates the register-side
+                // effect so deep / interpret-mode evaluations return the
+                // S-expression unchanged.
                 "=" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "= requires exactly 2 arguments, got {}. Usage: (= pattern body)",
-                                items.len() - 1
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "= requires exactly 2 arguments, got {}. Usage: (= pattern body)",
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
 
-                    // Add rule directly - zero-conversion storage
+                    // Inside `(! ...)` body: return the form unreduced. The
+                    // rule is NOT registered because the form is being
+                    // evaluated (matches HE: `!(= a b)` yields `(= a b)` as
+                    // data, no side effect). The bang_body flag is the
+                    // strict signal (set only by the `!` arm), distinct from
+                    // interpret_mode which is also set by the programmatic
+                    // `eval()` entry point for return-value semantics.
+                    if env.in_bang_body() {
+                        let resolved =
+                            original_sexpr.unwrap_or_else(|| ctx.factory().sexpr(items));
+                        return GenericEvalStep::Done((smallvec![resolved], env));
+                    }
+
+                    // ADD mode (default top-level): register the rule.
+                    // Zero-conversion storage; `add_rule` populates both the
+                    // RuleIndex and the underlying PathMap.
                     let mut new_env = env.clone();
                     new_env.add_rule(items[1].clone(), items[2].clone());
 
-                    // Rule definitions return empty list
+                    // Rule definitions return empty list (no observable
+                    // output line in ADD mode — see processing/ops.rs).
                     return GenericEvalStep::Done((smallvec![], new_env));
                 }
 
                 // Force evaluation operator - defer to trampoline for TCO
                 "!" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "! requires exactly 1 argument, got {}. Usage: (! expr)",
-                                items.len() - 1
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "! requires exactly 1 argument, got {}. Usage: (! expr)",
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
+                    // S1 TOPLEVEL (2026-05-13): HE INTERPRET mode for (! expr).
+                    // Flag the environment so downstream ADD-mode gates in
+                    // process_single_combination_generic / _bound emit the
+                    // reduction result instead of swallowing it.
+                    //
+                    // Iterative trampoline: no explicit restore needed since
+                    // each top-level directive starts with a fresh env clone
+                    // from the runner loop, and nested `(! ...)` is a no-op
+                    // (already true). The flag is environment-scoped, not
+                    // task-scoped.
+                    //
+                    // S2 BANG-WORD (2026-05-13): also set `bang_body` so
+                    // decl-atom arms (`=`, `:`) inside the body return the
+                    // form unreduced rather than registering as rules/types.
+                    // `interpret_mode` alone is insufficient because the
+                    // programmatic `eval()` API also sets it (for return-
+                    // value semantics on bare top-level forms). `bang_body`
+                    // is the stricter signal — only the `!` arm sets it.
+                    let mut env = env;
+                    env.set_interpret_mode(true);
+                    env.set_bang_body(true);
                     // Defer evaluation to trampoline - this IS a tail call (TCO)
                     return GenericEvalStep::EvalIfBranch {
                         branch: items[1].clone(),
@@ -269,12 +318,13 @@ where
                 // Quote - wraps argument in Quoted variant (prevents evaluation)
                 "quote" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "quote requires exactly 1 argument, got {}. Usage: (quote expr)",
-                                items.len() - 1
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "quote requires exactly 1 argument, got {}. Usage: (quote expr)",
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -282,6 +332,28 @@ where
                         smallvec![ctx.factory().quote(items[1].clone())],
                         env,
                     ));
+                }
+
+                // S2/S12 NOEVAL (2026-05-13): per HE §11.5 + fixture T02/048,
+                // `(noeval X)` returns the bare argument `X` unevaluated.
+                // Unlike `noreduce` (which preserves the wrapper), `noeval`
+                // STRIPS itself, returning the inner form. HE behavior:
+                // `!(noeval (+ 1 2))` returns `(+ 1 2)`, not `(noeval (+ 1 2))`
+                // and not `3`. The argument is taken raw — no evaluation, no
+                // sub-step dispatch.
+                "noeval" => {
+                    if items.len() != 2 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "noeval requires exactly 1 argument, got {}. Usage: (noeval expr)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::Done((smallvec![items[1].clone()], env));
                 }
 
                 // noreduce - returns the entire S-expression unevaluated
@@ -299,12 +371,13 @@ where
                 // Unquote - unwraps Quoted variant, returns inner value
                 "unquote" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                            "unquote requires exactly 1 argument, got {}. Usage: (unquote expr)",
-                            items.len() - 1
-                        ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                            "unquote requires exactly 1 argument, got {}. Usage: (unquote expr)",
+                            arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -318,13 +391,14 @@ where
                 // Conditional - defers condition evaluation to trampoline
                 "if" => {
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "if requires exactly 3 arguments, got {}. Usage: (if condition then else)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "if requires exactly 3 arguments, got {}. Usage: (if condition then else)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::EvalIfCondition {
@@ -339,13 +413,14 @@ where
                 // if-reducible - evaluates expr, checks if it reduced, branches accordingly
                 "if-reducible" => {
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "if-reducible requires exactly 3 arguments, got {}. Usage: (if-reducible expr then else)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "if-reducible requires exactly 3 arguments, got {}. Usage: (if-reducible expr then else)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::EvalIfReducible {
@@ -357,47 +432,51 @@ where
                     };
                 }
 
-                // Error construction (NO conversion needed)
+                // Error construction (NO conversion needed).
+                //
+                // User-facing source form: `(error <message> <details>)`.
+                // Internal HE-bisimilar shape: `Error(offending, detail)` where
+                // we map `offending = <details>` (the atom-being-errored) and
+                // `detail = <message>` (the human string). MTT's old slot
+                // convention had message first; the new internal variant has
+                // it last, so we conceptually swap them here per the migration
+                // spec — preserving the legacy `(error MSG DETAILS)` source
+                // syntax while emitting HE-shaped values.
                 "error" => {
                     if items.len() < 2 {
                         return GenericEvalStep::Done((smallvec![], env));
                     }
-                    // Extract message from atom or string
-                    let msg = items[1]
-                        .as_string()
-                        .or_else(|| items[1].as_atom())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| format!("{:?}", items[1]));
-                    let details = if items.len() > 2 {
+                    let detail = items[1].clone();
+                    let offending = if items.len() > 2 {
                         items[2].clone()
                     } else {
                         ctx.factory().unit()
                     };
                     return GenericEvalStep::Done((
-                        smallvec![ctx.factory().error(&msg, details)],
+                        smallvec![ctx.factory().error(offending, detail)],
                         env,
                     ));
                 }
 
-                // HE-compatible Error form (NO conversion needed)
+                // HE-compatible Error form (NO conversion needed).
+                //
+                // HE source convention is `(Error <details> <message>)` — see
+                // `hyperon-experimental/lib/src/metta/runner/stdlib/atom.rs`'s
+                // `ErrorAtomOp`. The first user arg is the offending atom; the
+                // second is the message. Direct slot mapping for the internal
+                // Error variant.
                 "Error" => {
                     if items.len() < 2 {
                         return GenericEvalStep::Done((smallvec![], env));
                     }
-                    // HE format: (Error details msg)
-                    let (details, msg) = if items.len() == 2 {
-                        (items[1].clone(), String::new())
+                    let offending = items[1].clone();
+                    let detail = if items.len() > 2 {
+                        items[2].clone()
                     } else {
-                        let details = items[1].clone();
-                        let msg = items[2]
-                            .as_string()
-                            .or_else(|| items[2].as_atom())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| format!("{:?}", items[2]));
-                        (details, msg)
+                        ctx.factory().unit()
                     };
                     return GenericEvalStep::Done((
-                        smallvec![ctx.factory().error(&msg, details)],
+                        smallvec![ctx.factory().error(offending, detail)],
                         env,
                     ));
                 }
@@ -405,12 +484,13 @@ where
                 // is-error - defers evaluation to trampoline
                 "is-error" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                            "is-error requires exactly 1 argument, got {}. Usage: (is-error expr)",
-                            items.len() - 1
-                        ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                            "is-error requires exactly 1 argument, got {}. Usage: (is-error expr)",
+                            arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -424,13 +504,14 @@ where
                 // catch - defers evaluation to trampoline
                 "catch" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "catch requires exactly 2 arguments, got {}. Usage: (catch expr default)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "catch requires exactly 2 arguments, got {}. Usage: (catch expr default)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartCatch {
@@ -459,14 +540,15 @@ where
                 // MeTTaTron preserves the ambient pragma settings on the env.
                 "eval" | "capture" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
                                 "{} requires exactly 1 argument, got {}. Usage: ({} expr)",
                                 op,
-                                items.len() - 1,
+                                arg_count,
                                 op
-                            ),
-                            ctx.factory().sexpr(items),
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -483,12 +565,13 @@ where
                 // what `eval` does in MeTTaTron.
                 "reduce" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "reduce requires exactly 1 argument, got {}. Usage: (reduce expr)",
-                                items.len() - 1
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "reduce requires exactly 1 argument, got {}. Usage: (reduce expr)",
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -518,13 +601,14 @@ where
                 "progn" => {
                     let factory = ctx.factory();
                     if items.len() < 3 {
+                        let arg_count = items.len() - 1;
                         let err = factory.error(
-                            &format!(
+                            factory.sexpr(items),
+                            factory.string(&format!(
                                 "progn requires at least 2 arguments, got {}. \
                              Usage: (progn expr1 expr2 [...])",
-                                items.len() - 1
-                            ),
-                            factory.sexpr(items),
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -570,12 +654,13 @@ where
                 // function - defers evaluation to trampoline
                 "function" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                            "function requires exactly 1 argument, got {}. Usage: (function expr)",
-                            items.len() - 1
-                        ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                            "function requires exactly 1 argument, got {}. Usage: (function expr)",
+                            arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -589,12 +674,13 @@ where
                 // return - defers evaluation to trampoline
                 "return" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "return requires exactly 1 argument, got {}. Usage: (return value)",
-                                items.len() - 1
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "return requires exactly 1 argument, got {}. Usage: (return value)",
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -608,13 +694,14 @@ where
                 // chain - defers evaluation to trampoline
                 "chain" => {
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "chain requires exactly 3 arguments, got {}. Usage: (chain expr $var body)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "chain requires exactly 3 arguments, got {}. Usage: (chain expr $var body)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartChain {
@@ -631,13 +718,14 @@ where
                 //       or: (match & self pattern template) - 4 args (legacy, preprocessed to 3)
                 "match" => {
                     if !(items.len() == 4 || items.len() == 5) {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "match requires 3 or 4 arguments, got {}. Usage: (match space pattern template) or (match & self pattern template)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "match requires 3 or 4 arguments, got {}. Usage: (match space pattern template) or (match & self pattern template)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     // Handle both syntaxes
@@ -654,16 +742,17 @@ where
                         // Legacy syntax: (match & self pattern template)
                         // The & and self should have been preprocessed into &self
                         // If not, this is an error
+                        let head_repr = if let Some(atom) = items[1].as_atom() {
+                            atom.to_string()
+                        } else {
+                            "non-atom".to_string()
+                        };
                         let err = ctx.factory().error(
-                            &format!(
-                                "match requires & as first argument (legacy syntax), got: {}",
-                                if let Some(atom) = items[1].as_atom() {
-                                    atom.to_string()
-                                } else {
-                                    "non-atom".to_string()
-                                }
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "match requires & as first argument (legacy syntax), got: {}",
+                                head_repr
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -672,13 +761,14 @@ where
                 // match-or - like match but with a default fallback when no match found
                 "match-or" => {
                     if items.len() != 5 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "match-or requires exactly 4 arguments, got {}. Usage: (match-or space pattern default template)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "match-or requires exactly 4 arguments, got {}. Usage: (match-or space pattern default template)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartMatchOr {
@@ -694,13 +784,14 @@ where
                 // case - defers atom evaluation to trampoline
                 "case" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "case requires exactly 2 arguments, got {}. Usage: (case atom ((pattern template) ...))",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "case requires exactly 2 arguments, got {}. Usage: (case atom ((pattern template) ...))",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::EvalCaseAtom {
@@ -714,14 +805,13 @@ where
                 // switch - pattern matches atom WITHOUT evaluation (unlike case)
                 "switch" | "switch-minimal" | "switch-internal" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "{} requires exactly 2 arguments, got {}. Usage: ({} atom cases)",
-                                op,
-                                items.len() - 1,
-                                op
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "{} requires exactly 2 arguments, got {}. Usage: ({} atom cases)",
+                                op, arg_count, op
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -736,13 +826,14 @@ where
                 // let - defers value evaluation to trampoline
                 "let" => {
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "let requires exactly 3 arguments, got {}. Usage: (let pattern value body)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "let requires exactly 3 arguments, got {}. Usage: (let pattern value body)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartLetBinding {
@@ -759,9 +850,11 @@ where
                 "let*" => {
                     if items.len() < 3 {
                         let err = ctx.factory().error(
-                        "let* requires at least 2 arguments. Usage: (let* ((pat val) ...) body)",
-                        ctx.factory().sexpr(items),
-                    );
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(
+                                "let* requires at least 2 arguments. Usage: (let* ((pat val) ...) body)",
+                            ),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
 
@@ -781,9 +874,11 @@ where
                         }
                         None => {
                             let err = ctx.factory().error(
-                            "let* bindings must be a list. Usage: (let* ((pattern value) ...) body)",
-                            bindings_expr.clone(),
-                        );
+                                bindings_expr.clone(),
+                                ctx.factory().string(
+                                    "let* bindings must be a list. Usage: (let* ((pattern value) ...) body)",
+                                ),
+                            );
                             return GenericEvalStep::Done((smallvec![err], env));
                         }
                     };
@@ -816,16 +911,20 @@ where
                                 ]);
                             } else {
                                 let err = ctx.factory().error(
-                                "let* binding must be (pattern value) pair. Usage: (let* ((pattern value) ...) body)",
-                                binding.clone(),
-                            );
+                                    binding.clone(),
+                                    ctx.factory().string(
+                                        "let* binding must be (pattern value) pair. Usage: (let* ((pattern value) ...) body)",
+                                    ),
+                                );
                                 return GenericEvalStep::Done((smallvec![err], env));
                             }
                         } else {
                             let err = ctx.factory().error(
-                            "let* binding must be (pattern value) pair. Usage: (let* ((pattern value) ...) body)",
-                            binding.clone(),
-                        );
+                                binding.clone(),
+                                ctx.factory().string(
+                                    "let* binding must be (pattern value) pair. Usage: (let* ((pattern value) ...) body)",
+                                ),
+                            );
                             return GenericEvalStep::Done((smallvec![err], env));
                         }
                     }
@@ -841,13 +940,14 @@ where
                 // unify - defers pattern evaluation to trampoline
                 "unify" => {
                     if items.len() != 5 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "unify requires exactly 4 arguments, got {}. Usage: (unify pattern1 pattern2 success failure)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "unify requires exactly 4 arguments, got {}. Usage: (unify pattern1 pattern2 success failure)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartUnify {
@@ -877,13 +977,14 @@ where
                 // HE parity: this is a declaration form like (:), not evaluated as a rule.
                 ":<" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            ":< requires exactly 2 arguments, got {}. Usage: (:< SubType SuperType)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            ":< requires exactly 2 arguments, got {}. Usage: (:< SubType SuperType)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
 
@@ -892,8 +993,10 @@ where
                         Some(atom) => atom.to_string(),
                         None => {
                             let err = ctx.factory().error(
-                                ":< requires atom arguments. Usage: (:< SubType SuperType)",
                                 items[1].clone(),
+                                ctx.factory().string(
+                                    ":< requires atom arguments. Usage: (:< SubType SuperType)",
+                                ),
                             );
                             return GenericEvalStep::Done((smallvec![err], env));
                         }
@@ -902,8 +1005,10 @@ where
                         Some(atom) => atom.to_string(),
                         None => {
                             let err = ctx.factory().error(
-                                ":< requires atom arguments. Usage: (:< SubType SuperType)",
                                 items[2].clone(),
+                                ctx.factory().string(
+                                    ":< requires atom arguments. Usage: (:< SubType SuperType)",
+                                ),
                             );
                             return GenericEvalStep::Done((smallvec![err], env));
                         }
@@ -920,20 +1025,44 @@ where
                     return GenericEvalStep::Done((smallvec![], new_env));
                 }
 
-                // Type assertion - native generic implementation (zero-conversion)
+                // Type assertion - native generic implementation (zero-conversion).
+                //
+                // S2 BANG-WORD / decl-atom dispatch (2026-05-13): per HE
+                // §02.5 + fixture T02/043, `(: name type)` is a DECLARATION
+                // ATOM, not a special form. It registers as a type binding
+                // ONLY in ADD mode (bare top-level). When wrapped in
+                // `(! ...)` the runner is in INTERPRET mode and the form
+                // evaluates to itself as unreduced data. Matches HE:
+                // `!(: foo Bar)` yields `(: foo Bar)` as a single result
+                // atom with no side effect.
                 ":" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                ": requires exactly 2 arguments, got {}. Usage: (: expr type)",
-                                items.len() - 1
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                ": requires exactly 2 arguments, got {}. Usage: (: expr type)",
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
 
-                    // Extract name from expression (atom or first element of sexpr)
+                    // Inside `(! ...)` body: return the form unreduced. The
+                    // type binding is NOT registered (HE semantics —
+                    // declarations are observable data in INTERPRET-body,
+                    // side effects only in ADD mode at the runner level).
+                    // See the `=` arm above for the bang_body vs.
+                    // interpret_mode distinction.
+                    if env.in_bang_body() {
+                        let resolved =
+                            original_sexpr.unwrap_or_else(|| ctx.factory().sexpr(items));
+                        return GenericEvalStep::Done((smallvec![resolved], env));
+                    }
+
+                    // ADD mode (default top-level): register the type
+                    // binding. Extract name from expression (atom or first
+                    // element of sexpr).
                     let name = match (items[1].as_atom(), items[1].as_sexpr()) {
                         (Some(atom), _) => atom.to_string(),
                         (_, Some(expr_items)) => match expr_items.first().and_then(|f| f.as_atom())
@@ -987,13 +1116,14 @@ where
                 // is-function - check if a type is an arrow type (Phase G, HE parity)
                 "is-function" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "is-function requires exactly 1 argument, got {}. Usage: (is-function type)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "is-function requires exactly 1 argument, got {}. Usage: (is-function type)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     let typ = &items[1];
@@ -1008,13 +1138,14 @@ where
                 // type-cast - validate atom against expected type (Phase H, HE parity)
                 "type-cast" => {
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "type-cast requires exactly 3 arguments, got {}. Usage: (type-cast atom type space)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "type-cast requires exactly 3 arguments, got {}. Usage: (type-cast atom type space)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     let results = crate::backend::eval::types::eval_type_cast_generic(
@@ -1029,13 +1160,14 @@ where
                 // (metta atom type space) — evaluates atom with type constraint in space
                 "metta" => {
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "metta requires exactly 3 arguments, got {}. Usage: (metta atom type space)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "metta requires exactly 3 arguments, got {}. Usage: (metta atom type space)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
 
@@ -1111,13 +1243,14 @@ where
                 // match-types - structural type matching (HE stdlib parity)
                 "match-types" => {
                     if items.len() != 5 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "match-types requires 4 arguments, got {}. Usage: (match-types type1 type2 then else)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().atom("BadArity"),
-                    );
+                            ctx.factory().atom("BadArity"),
+                            ctx.factory().string(&format!(
+                                "match-types requires 4 arguments, got {}. Usage: (match-types type1 type2 then else)",
+                                arg_count
+                            )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     let type1 = &items[1];
@@ -1147,13 +1280,14 @@ where
                 // (match-type-or $folded $next $type) = (or $folded (match-types $next $type True False))
                 "match-type-or" => {
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "match-type-or requires 3 arguments, got {}. Usage: (match-type-or folded next type)",
-                            items.len() - 1
-                        ),
-                        ctx.factory().atom("BadArity"),
-                    );
+                            ctx.factory().atom("BadArity"),
+                            ctx.factory().string(&format!(
+                                "match-type-or requires 3 arguments, got {}. Usage: (match-type-or folded next type)",
+                                arg_count
+                            )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     let folded = &items[1];
@@ -1181,13 +1315,14 @@ where
                 // (first-from-pair ($first $second)) = $first
                 "first-from-pair" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "first-from-pair requires 1 argument, got {}. Usage: (first-from-pair pair)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "first-from-pair requires 1 argument, got {}. Usage: (first-from-pair pair)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     let pair = &items[1];
@@ -1197,11 +1332,12 @@ where
                         }
                     }
                     // Not a valid pair — return error per HE
-                    let err = ctx.factory().error(
-                        "incorrect pair format",
-                        ctx.factory()
-                            .sexpr(vec![ctx.factory().atom("first-from-pair"), pair.clone()]),
-                    );
+                    let offending = ctx
+                        .factory()
+                        .sexpr(vec![ctx.factory().atom("first-from-pair"), pair.clone()]);
+                    let err = ctx
+                        .factory()
+                        .error(offending, ctx.factory().string("incorrect pair format"));
                     return GenericEvalStep::Done((smallvec![err], env));
                 }
 
@@ -1216,13 +1352,14 @@ where
                         break 'special_forms;
                     }
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "map-atom requires exactly 3 arguments, got {}. Usage: (map-atom list $var template)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "map-atom requires exactly 3 arguments, got {}. Usage: (map-atom list $var template)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     // MeTTa HE applicative order: the list argument must be
@@ -1280,13 +1417,14 @@ where
                         break 'special_forms;
                     }
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "filter-atom requires exactly 3 arguments, got {}. Usage: (filter-atom list $var predicate)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "filter-atom requires exactly 3 arguments, got {}. Usage: (filter-atom list $var predicate)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
 
@@ -1469,13 +1607,13 @@ where
                         };
                     } else {
                         let err = ctx.factory().error(
-                        &format!(
-                            "foldl-atom requires either 3 args (PeTTa form: (foldl-atom list init f)) \
-                             or 5 args (MeTTaTron form: (foldl-atom list init $acc $x op)), got {}",
-                            arity
-                        ),
-                        ctx.factory().sexpr(items),
-                    );
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "foldl-atom requires either 3 args (PeTTa form: (foldl-atom list init f)) \
+                                 or 5 args (MeTTaTron form: (foldl-atom list init $acc $x op)), got {}",
+                                arity
+                            )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                 }
@@ -1622,13 +1760,14 @@ where
                 // (freeze-tuple arg1 arg2 ... argN) → (arg1 arg2 ... argN) [frozen]
                 "freeze-tuple" => {
                     if items.len() < 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
                                 "freeze-tuple requires at least 1 argument, got {}. \
                              Usage: (freeze-tuple expr1 expr2 ... exprN)",
-                                items.len() - 1
-                            ),
-                            ctx.factory().sexpr(items),
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -1652,13 +1791,14 @@ where
                 // Used by the ? macro to apply captured collapse-bind bindings.
                 "ground-with-bindings" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "ground-with-bindings requires 2 arguments, got {}. Usage: (ground-with-bindings template (Bindings ...))",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "ground-with-bindings requires 2 arguments, got {}. Usage: (ground-with-bindings template (Bindings ...))",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     let template = items[1].clone();
@@ -1701,13 +1841,14 @@ where
                         break 'special_forms;
                     }
                     if items.len() != 5 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "sort-tuple requires exactly 4 arguments, got {}. Usage: (sort-tuple tuple $var1 $var2 comparator)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "sort-tuple requires exactly 4 arguments, got {}. Usage: (sort-tuple tuple $var1 $var2 comparator)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
 
@@ -1775,13 +1916,14 @@ where
                         break 'special_forms;
                     }
                     if items.len() != 4 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "best-candidate requires exactly 3 arguments, got {}. Usage: (best-candidate tuple $var rank-fn)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "best-candidate requires exactly 3 arguments, got {}. Usage: (best-candidate tuple $var rank-fn)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
 
@@ -1835,12 +1977,12 @@ where
                             (Some(s), _) | (_, Some(s)) => s.to_string(),
                             _ => {
                                 let err = ctx.factory().error(
-                                &format!(
-                                    "new-space: optional name must be a string, got {:?}. Usage: (new-space) or (new-space \"name\")",
-                                    items[1]
-                                ),
-                                items[1].clone(),
-                            );
+                                    items[1].clone(),
+                                    ctx.factory().string(&format!(
+                                        "new-space: optional name must be a string, got {:?}. Usage: (new-space) or (new-space \"name\")",
+                                        items[1]
+                                    )),
+                                );
                                 return GenericEvalStep::Done((smallvec![err], env));
                             }
                         }
@@ -1859,13 +2001,14 @@ where
 
                 "add-atom" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "add-atom requires exactly 2 arguments, got {}. Usage: (add-atom space atom)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "add-atom requires exactly 2 arguments, got {}. Usage: (add-atom space atom)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartAddAtom {
@@ -1878,13 +2021,14 @@ where
 
                 "remove-atom" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "remove-atom requires exactly 2 arguments, got {}. Usage: (remove-atom space atom)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "remove-atom requires exactly 2 arguments, got {}. Usage: (remove-atom space atom)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartRemoveAtom {
@@ -1897,12 +2041,13 @@ where
 
                 "collapse" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                            "collapse requires exactly 1 argument, got {}. Usage: (collapse expr)",
-                            items.len() - 1
-                        ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                            "collapse requires exactly 1 argument, got {}. Usage: (collapse expr)",
+                            arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -1915,13 +2060,14 @@ where
 
                 "collapse-bind" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "collapse-bind requires exactly 1 argument, got {}. Usage: (collapse-bind expr)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "collapse-bind requires exactly 1 argument, got {}. Usage: (collapse-bind expr)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartCollapseBind {
@@ -1934,12 +2080,13 @@ where
                 // superpose - HE-compatible: post-evaluate each element via StartAmb
                 "superpose" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "superpose requires 1 argument, got {}. Usage: (superpose list)",
-                                items.len() - 1
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "superpose requires 1 argument, got {}. Usage: (superpose list)",
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -1985,12 +2132,13 @@ where
 
                 "guard" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                            "guard requires exactly 1 argument, got {}. Usage: (guard condition)",
-                            items.len() - 1
-                        ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                            "guard requires exactly 1 argument, got {}. Usage: (guard condition)",
+                            arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -2015,13 +2163,14 @@ where
 
                 "get-atoms" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "get-atoms requires exactly 1 argument, got {}. Usage: (get-atoms space)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "get-atoms requires exactly 1 argument, got {}. Usage: (get-atoms space)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartGetAtoms {
@@ -2034,13 +2183,14 @@ where
                 // State operations
                 "new-state" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "new-state requires exactly 1 argument, got {}. Usage: (new-state initial-value)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "new-state requires exactly 1 argument, got {}. Usage: (new-state initial-value)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartNewState {
@@ -2052,13 +2202,14 @@ where
 
                 "get-state" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "get-state requires exactly 1 argument, got {}. Usage: (get-state state)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "get-state requires exactly 1 argument, got {}. Usage: (get-state state)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartGetState {
@@ -2070,13 +2221,14 @@ where
 
                 "change-state!" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "change-state! requires exactly 2 arguments, got {}. Usage: (change-state! state new-value)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "change-state! requires exactly 2 arguments, got {}. Usage: (change-state! state new-value)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartChangeState {
@@ -2090,13 +2242,14 @@ where
                 // Memoization operations
                 "new-memo" => {
                     if items.len() < 2 || items.len() > 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "new-memo requires 1-2 arguments, got {}. Usage: (new-memo name [size])",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "new-memo requires 1-2 arguments, got {}. Usage: (new-memo name [size])",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     let size_arg = if items.len() == 3 {
@@ -2114,14 +2267,13 @@ where
 
                 "memo" | "memo-first" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                            "{} requires exactly 2 arguments, got {}. Usage: ({} memo-table expr)",
-                            op,
-                            items.len() - 1,
-                            op
-                        ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "{} requires exactly 2 arguments, got {}. Usage: ({} memo-table expr)",
+                                op, arg_count, op
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -2137,14 +2289,13 @@ where
 
                 "clear-memo!" | "memo-stats" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "{} requires exactly 1 argument, got {}. Usage: ({} memo-table)",
-                                op,
-                                items.len() - 1,
-                                op
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "{} requires exactly 1 argument, got {}. Usage: ({} memo-table)",
+                                op, arg_count, op
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -2164,12 +2315,13 @@ where
                 // Token binding
                 "bind!" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                            "bind! requires exactly 2 arguments, got {}. Usage: (bind! token atom)",
-                            items.len() - 1
-                        ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                            "bind! requires exactly 2 arguments, got {}. Usage: (bind! token atom)",
+                            arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -2177,8 +2329,10 @@ where
                         Some(t) => t.to_string(),
                         None => {
                             let err = ctx.factory().error(
-                                "bind! requires an atom as first argument",
                                 ctx.factory().sexpr(items),
+                                ctx.factory().string(
+                                    "bind! requires an atom as first argument",
+                                ),
                             );
                             return GenericEvalStep::Done((smallvec![err], env));
                         }
@@ -2194,12 +2348,13 @@ where
                 // I/O operations.
                 "println!" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                            "println! requires exactly 1 argument, got {}. Usage: (println! atom)",
-                            items.len() - 1
-                        ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                            "println! requires exactly 1 argument, got {}. Usage: (println! atom)",
+                            arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -2219,12 +2374,13 @@ where
                 // (1-arg, just renders the atom).
                 "print-alternatives!" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "print-alternatives! requires exactly 2 arguments, got {}. Usage: (print-alternatives! msg expr-list)",
-                                items.len() - 1
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "print-alternatives! requires exactly 2 arguments, got {}. Usage: (print-alternatives! msg expr-list)",
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -2248,13 +2404,14 @@ where
 
                 "trace!" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "trace! requires exactly 2 arguments, got {}. Usage: (trace! message value)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "trace! requires exactly 2 arguments, got {}. Usage: (trace! message value)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartTrace {
@@ -2273,12 +2430,13 @@ where
                 // String operations
                 "repr" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                            &format!(
-                                "repr requires exactly 1 argument, got {}. Usage: (repr atom)",
-                                items.len() - 1
-                            ),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "repr requires exactly 1 argument, got {}. Usage: (repr atom)",
+                                arg_count
+                            )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -2291,13 +2449,14 @@ where
 
                 "format-args" => {
                     if items.len() != 3 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "format-args requires exactly 2 arguments, got {}. Usage: (format-args format-string args)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "format-args requires exactly 2 arguments, got {}. Usage: (format-args format-string args)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartFormatArgs {
@@ -2319,13 +2478,14 @@ where
 
                 "get-metatype" => {
                     if items.len() != 2 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "get-metatype requires exactly 1 argument, got {}. Usage: (get-metatype atom)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "get-metatype requires exactly 1 argument, got {}. Usage: (get-metatype atom)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     return GenericEvalStep::StartGetMetatype {
@@ -2409,13 +2569,14 @@ where
                 // if-equal — alpha-equivalence with lazy branches (MeTTa HE compatible)
                 "if-equal" => {
                     if items.len() != 5 {
+                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        &format!(
-                            "if-equal requires exactly 4 arguments, got {}. Usage: (if-equal pred1 pred2 then else)",
-                            items.len() - 1
-                        ),
                         ctx.factory().sexpr(items),
-                    );
+                        ctx.factory().string(&format!(
+                            "if-equal requires exactly 4 arguments, got {}. Usage: (if-equal pred1 pred2 then else)",
+                            arg_count
+                        )),
+                        );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
                     // Alpha-equivalence comparison (matches MeTTa HE's atoms_are_equivalent)
@@ -2542,8 +2703,8 @@ where
                         })
                     {
                         let err = ctx.factory().error(
-                            &format!("All types for '{}' are errors", op),
                             ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!("All types for '{}' are errors", op)),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -3102,20 +3263,24 @@ where
                 ),
             };
             Err(GenericEvalStep::Done((
-                smallvec![ctx.factory().error(&msg, var_arg.clone())],
+                smallvec![ctx
+                    .factory()
+                    .error(var_arg.clone(), ctx.factory().string(&msg))],
                 env.clone(),
             )))
         }
-        None => Err(GenericEvalStep::Done((
-            smallvec![ctx.factory().error(
-                &format!(
-                    "{}: {} must be a variable (starting with $)",
-                    op_name, arg_position
-                ),
-                var_arg.clone(),
-            )],
-            env.clone(),
-        ))),
+        None => {
+            let msg = format!(
+                "{}: {} must be a variable (starting with $)",
+                op_name, arg_position
+            );
+            Err(GenericEvalStep::Done((
+                smallvec![ctx
+                    .factory()
+                    .error(var_arg.clone(), ctx.factory().string(&msg))],
+                env.clone(),
+            )))
+        }
     }
 }
 
@@ -3136,8 +3301,9 @@ where
         (_, Some(elems)) => Ok(elems.iter().cloned().collect()),
         _ => {
             let err = ctx.factory().error(
-                &format!("{} requires a list as first argument", op_name),
                 list_arg.clone(),
+                ctx.factory()
+                    .string(&format!("{} requires a list as first argument", op_name)),
             );
             Err(GenericEvalStep::Done((smallvec![err], env.clone())))
         }

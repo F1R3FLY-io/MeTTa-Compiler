@@ -133,12 +133,13 @@ where
     MettaValue: Clone,
 {
     if items.len() != 2 {
+        let arg_count = items.len() - 1;
         let err = ctx.factory().error(
-            &format!(
-                "unique-atom requires exactly 1 argument, got {}. Usage: (unique-atom list)",
-                items.len() - 1
-            ),
             ctx.factory().sexpr(items),
+            ctx.factory().string(&format!(
+                "unique-atom requires exactly 1 argument, got {}. Usage: (unique-atom list)",
+                arg_count
+            )),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -146,9 +147,10 @@ where
     let list_items = match extract_list(&items[1]) {
         Ok(elems) => elems,
         Err(()) => {
-            let err = ctx
-                .factory()
-                .error("unique-atom: argument must be a list", items[1].clone());
+            let err = ctx.factory().error(
+                items[1].clone(),
+                ctx.factory().string("unique-atom: argument must be a list"),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -198,13 +200,14 @@ where
     MettaValue: Clone,
 {
     if items.len() != 2 {
+        let arg_count = items.len() - 1;
         let err = ctx.factory().error(
-            &format!(
+            ctx.factory().sexpr(items),
+            ctx.factory().string(&format!(
                 "struct-unique-atom requires exactly 1 argument, got {}. \
                  Usage: (struct-unique-atom list)",
-                items.len() - 1
-            ),
-            ctx.factory().sexpr(items),
+                arg_count
+            )),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -213,8 +216,8 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                "struct-unique-atom: argument must be a list",
                 items[1].clone(),
+                ctx.factory().string("struct-unique-atom: argument must be a list"),
             );
             return GenericEvalStep::Done((smallvec![err], env));
         }
@@ -271,13 +274,14 @@ where
     MettaValue: Clone,
 {
     if items.len() != 2 {
+        let arg_count = items.len() - 1;
         let err = ctx.factory().error(
-            &format!(
+            ctx.factory().sexpr(items),
+            ctx.factory().string(&format!(
                 "alpha-unique-atom requires exactly 1 argument, got {}. \
                  Usage: (alpha-unique-atom list)",
-                items.len() - 1
-            ),
-            ctx.factory().sexpr(items),
+                arg_count
+            )),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -286,8 +290,8 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                "alpha-unique-atom: argument must be a list",
                 items[1].clone(),
+                ctx.factory().string("alpha-unique-atom: argument must be a list"),
             );
             return GenericEvalStep::Done((smallvec![err], env));
         }
@@ -320,12 +324,13 @@ where
     MettaValue: Clone,
 {
     if items.len() != 3 {
+        let arg_count = items.len() - 1;
         let err = ctx.factory().error(
-            &format!(
-                "union-atom requires exactly 2 arguments, got {}. Usage: (union-atom left right)",
-                items.len() - 1
-            ),
             ctx.factory().sexpr(items),
+            ctx.factory().string(&format!(
+                "union-atom requires exactly 2 arguments, got {}. Usage: (union-atom left right)",
+                arg_count
+            )),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -333,9 +338,10 @@ where
     let left = match extract_list(&items[1]) {
         Ok(elems) => elems,
         Err(()) => {
-            let err = ctx
-                .factory()
-                .error("union-atom: left argument must be a list", items[1].clone());
+            let err = ctx.factory().error(
+                items[1].clone(),
+                ctx.factory().string("union-atom: left argument must be a list"),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -344,8 +350,8 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                "union-atom: right argument must be a list",
                 items[2].clone(),
+                ctx.factory().string("union-atom: right argument must be a list"),
             );
             return GenericEvalStep::Done((smallvec![err], env));
         }
@@ -373,12 +379,13 @@ where
     MettaValue: Clone,
 {
     if items.len() != 3 {
+        let arg_count = items.len() - 1;
         let err = ctx.factory().error(
-            &format!(
-                "intersection-atom requires exactly 2 arguments, got {}. Usage: (intersection-atom left right)",
-                items.len() - 1
-            ),
             ctx.factory().sexpr(items),
+            ctx.factory().string(&format!(
+                "intersection-atom requires exactly 2 arguments, got {}. Usage: (intersection-atom left right)",
+                arg_count
+            )),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -387,8 +394,8 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                "intersection-atom: left argument must be a list",
                 items[1].clone(),
+                ctx.factory().string("intersection-atom: left argument must be a list"),
             );
             return GenericEvalStep::Done((smallvec![err], env));
         }
@@ -398,8 +405,8 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                "intersection-atom: right argument must be a list",
                 items[2].clone(),
+                ctx.factory().string("intersection-atom: right argument must be a list"),
             );
             return GenericEvalStep::Done((smallvec![err], env));
         }
@@ -458,12 +465,13 @@ where
     MettaValue: Clone,
 {
     if items.len() != 3 {
+        let arg_count = items.len() - 1;
         let err = ctx.factory().error(
-            &format!(
-                "subtraction-atom requires exactly 2 arguments, got {}. Usage: (subtraction-atom left right)",
-                items.len() - 1
-            ),
             ctx.factory().sexpr(items),
+            ctx.factory().string(&format!(
+                "subtraction-atom requires exactly 2 arguments, got {}. Usage: (subtraction-atom left right)",
+                arg_count
+            )),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -472,8 +480,8 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                "subtraction-atom: left argument must be a list",
                 items[1].clone(),
+                ctx.factory().string("subtraction-atom: left argument must be a list"),
             );
             return GenericEvalStep::Done((smallvec![err], env));
         }
@@ -483,8 +491,8 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                "subtraction-atom: right argument must be a list",
                 items[2].clone(),
+                ctx.factory().string("subtraction-atom: right argument must be a list"),
             );
             return GenericEvalStep::Done((smallvec![err], env));
         }

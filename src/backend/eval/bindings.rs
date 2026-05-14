@@ -253,13 +253,11 @@ where
     F: MettaValueFactory<V>,
 {
     if items.len() < 3 {
-        return vec![factory.error(
-            &format!(
-                "sealed requires 2 arguments, got {}. Usage: (sealed ignore-vars expr)",
-                items.len() - 1
-            ),
-            factory.sexpr(items.to_vec()),
-        )];
+        let arity_msg = format!(
+            "sealed requires 2 arguments, got {}. Usage: (sealed ignore-vars expr)",
+            items.len() - 1
+        );
+        return vec![factory.error(factory.sexpr(items.to_vec()), factory.string(&arity_msg))];
     }
 
     let ignore_vars = &items[1];
@@ -375,7 +373,7 @@ impl<V: MettaValueTrait + Clone> MettaValueFactory<V> for NoFactory<V> {
     fn sexpr_from_slice(&self, _items: &[V]) -> V {
         unreachable!("NoFactory::sexpr_from_slice invoked")
     }
-    fn error(&self, _msg: &str, _details: V) -> V { unreachable!("NoFactory::error invoked") }
+    fn error(&self, _offending: V, _detail: V) -> V { unreachable!("NoFactory::error invoked") }
     fn type_value(&self, _t: V) -> V { unreachable!("NoFactory::type_value invoked") }
     fn conjunction(&self, _goals: Vec<V>) -> V { unreachable!("NoFactory::conjunction invoked") }
     fn space(&self, _h: crate::backend::models::SpaceHandle) -> V {
@@ -598,13 +596,12 @@ where
             return false;
         }
 
-        // Errors: check message match, push details
-        if let Some((p_msg, p_details)) = pat.as_error() {
-            if let Some((v_msg, v_details)) = val.as_error() {
-                if p_msg != v_msg {
-                    return false;
-                }
-                work_stack.push((p_details.clone(), v_details.clone()));
+        // Errors: HE-bisimilar `Error(offending, detail)`. Recursively match
+        // both slots — both are arbitrary atoms that may contain variables.
+        if let Some((p_offending, p_detail)) = pat.as_error() {
+            if let Some((v_offending, v_detail)) = val.as_error() {
+                work_stack.push((p_detail.clone(), v_detail.clone()));
+                work_stack.push((p_offending.clone(), v_offending.clone()));
                 continue;
             }
             return false;
@@ -823,6 +820,12 @@ where
                             // Transitive substitution: push the bound value
                             // back to the work stack so any inner variables
                             // also get substituted.
+                            //
+                            // Note: HE's M-VAR-VAR-DISTINCT (spec §4.3.1) requires
+                            // returning the ORIGINAL variable when the chain ends
+                            // at an unbound variable. Implementing this without
+                            // breaking rule-LHS-var-to-query-var substitution
+                            // needs the Equivalence variant — deferred to S11.
                             work_stack.push(Work::ProcessOwned(bound.clone()));
                         } else {
                             // Phase 3.2-B: emit a `VariableLookupFailed`
@@ -957,6 +960,279 @@ where
                 // Identity-equality lazy-allocation: if every new child is
                 // pointer-equal to the corresponding original child, reuse
                 // `original` verbatim instead of allocating a new sexpr.
+                let items = original
+                    .as_sexpr()
+                    .expect("BuildSExpr original must be sexpr");
+                let changed = (0..count).any(|i| !result_stack[start + i].identity_eq(&items[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                } else {
+                    let result = factory.sexpr_from_slice(&result_stack[start..]);
+                    result_stack.truncate(start);
+                    result_stack.push(result);
+                }
+            }
+            Work::BuildConjunction { count, original } => {
+                let start = result_stack.len() - count;
+                let goals = original
+                    .as_conjunction()
+                    .expect("BuildConjunction original must be conjunction");
+                let changed = (0..count).any(|i| !result_stack[start + i].identity_eq(&goals[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                } else {
+                    let result = factory.conjunction_from_slice(&result_stack[start..]);
+                    result_stack.truncate(start);
+                    result_stack.push(result);
+                }
+            }
+        }
+    }
+
+    result_stack
+        .pop()
+        .expect("Result stack should not be empty")
+}
+
+// ============================================================================
+// S0d.1 — Class-aware apply_bindings
+// ============================================================================
+
+/// Apply class-aware bindings to `template`.
+///
+/// Fast path: if `bindings.is_empty_classes()`, delegates straight to the
+/// entries-only [`apply_bindings_generic`]. The class machinery is only
+/// invoked when at least one equivalence class has been formed (Unify mode
+/// var-var-distinct outcome).
+///
+/// When a class is consulted:
+/// 1. Ordinary entries (`bindings.entries.get(name)`) take precedence
+///    (HE invariant: one slot per name).
+/// 2. Class lookup: if value-bearing, return the class value; if value-less,
+///    return the ORIGINAL lookup-key as an Atom (preserves T03/004
+///    strict alpha-distinct output).
+/// 3. Unbound: emit `val` as-is.
+pub fn apply_bindings_with_classes_generic<V, F>(
+    template: &V,
+    bindings: &crate::backend::models::BindingsWithClasses<V>,
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    // Fast path: no equivalence classes formed — delegate to existing
+    // entries-only path. Bit-identical to pre-S0d behavior.
+    if bindings.is_empty_classes() {
+        return apply_bindings_generic(template, &bindings.entries, factory);
+    }
+
+    // Peel Spanned: process inner, re-wrap with same span
+    if let Some(span) = template.span() {
+        let span = *span;
+        let stripped = template.strip_one_span();
+        let result = apply_bindings_with_classes_generic(&stripped, bindings, factory);
+        if result.span().is_some() {
+            return result;
+        }
+        return factory.spanned(result, span);
+    }
+
+    apply_bindings_iterative_with_classes_generic(template, bindings, factory)
+}
+
+/// Iterative class-aware implementation. Mirrors
+/// [`apply_bindings_iterative_generic`] but lookups go through the
+/// `BindingsWithClasses` resolver.
+fn apply_bindings_iterative_with_classes_generic<V, F>(
+    template: &V,
+    bindings: &crate::backend::models::BindingsWithClasses<V>,
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V>,
+{
+    // Class-aware lookup: ordinary entry → class value → value-less class →
+    // None. For a value-less class, the caller emits the original lookup-key
+    // verbatim (handled by returning None here so the work-loop falls through
+    // to `result_stack.push(val.clone())`).
+    let lookup_entry = |name: &str| -> Option<V> { bindings.entries.get(name).cloned() };
+    let lookup_class_value = |name: &str| -> Option<V> {
+        let table = bindings.classes.as_ref()?;
+        let id = table.class_of(name)?;
+        table.class_value(id).cloned()
+    };
+    let is_in_class = |name: &str| -> bool {
+        bindings
+            .classes
+            .as_ref()
+            .and_then(|t| t.class_of(name))
+            .is_some()
+    };
+
+    enum Work<'a, V> {
+        Process(&'a V),
+        ProcessOwned(V),
+        BuildSExpr { count: usize, original: V },
+        BuildConjunction { count: usize, original: V },
+    }
+
+    let mut work_stack: SmallVec<[Work<V>; 16]> = SmallVec::new();
+    let mut result_stack: SmallVec<[V; 16]> = SmallVec::new();
+
+    work_stack.push(Work::Process(template));
+
+    while let Some(work) = work_stack.pop() {
+        match work {
+            Work::Process(val) => {
+                if !val.has_variables_fast() {
+                    result_stack.push(val.clone());
+                    continue;
+                }
+                if val.is_spanned() {
+                    let result = apply_bindings_with_classes_generic(val, bindings, factory);
+                    result_stack.push(result);
+                    continue;
+                }
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$') {
+                        // 1. Ordinary binding takes precedence.
+                        if let Some(bound) = lookup_entry(name) {
+                            if bound.as_atom() == Some(name) {
+                                result_stack.push(bound);
+                                continue;
+                            }
+                            work_stack.push(Work::ProcessOwned(bound));
+                            continue;
+                        }
+                        // 2. Class lookup.
+                        if let Some(v) = lookup_class_value(name) {
+                            // Value-bearing class: push for transitive process.
+                            if v.as_atom() == Some(name) {
+                                result_stack.push(v);
+                                continue;
+                            }
+                            work_stack.push(Work::ProcessOwned(v));
+                            continue;
+                        }
+                        if is_in_class(name) {
+                            // Value-less class: emit original lookup-key.
+                            // This is the T03/004 strict-alpha invariant —
+                            // class members preserve their original name,
+                            // they do NOT collapse to a canonical
+                            // representative.
+                            result_stack.push(val.clone());
+                            continue;
+                        }
+                        // 3. Unbound: emit as-is.
+                        result_stack.push(val.clone());
+                        continue;
+                    } else {
+                        result_stack.push(val.clone());
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(Work::BuildSExpr {
+                            count: items.len(),
+                            original: val.clone(),
+                        });
+                        for item in items.iter().rev() {
+                            work_stack.push(Work::Process(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(Work::BuildConjunction {
+                            count: goals.len(),
+                            original: val.clone(),
+                        });
+                        for goal in goals.iter().rev() {
+                            work_stack.push(Work::Process(goal));
+                        }
+                    }
+                } else {
+                    result_stack.push(val.clone());
+                }
+            }
+            Work::ProcessOwned(val) => {
+                if !val.has_variables_fast() {
+                    result_stack.push(val);
+                    continue;
+                }
+                if val.is_spanned() {
+                    let result = apply_bindings_with_classes_generic(&val, bindings, factory);
+                    result_stack.push(result);
+                    continue;
+                }
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$') {
+                        if let Some(bound) = lookup_entry(name) {
+                            if bound.as_atom() == Some(name) {
+                                result_stack.push(bound);
+                                continue;
+                            }
+                            work_stack.push(Work::ProcessOwned(bound));
+                            continue;
+                        }
+                        if let Some(v) = lookup_class_value(name) {
+                            if v.as_atom() == Some(name) {
+                                result_stack.push(v);
+                                continue;
+                            }
+                            work_stack.push(Work::ProcessOwned(v));
+                            continue;
+                        }
+                        if is_in_class(name) {
+                            // Value-less class: emit ORIGINAL atom.
+                            result_stack.push(val);
+                            continue;
+                        }
+                        result_stack.push(val);
+                        continue;
+                    } else {
+                        result_stack.push(val);
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        let len = items.len();
+                        let owned_children: Vec<V> = items.iter().cloned().collect();
+                        work_stack.push(Work::BuildSExpr {
+                            count: len,
+                            original: val,
+                        });
+                        for item in owned_children.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        let len = goals.len();
+                        let owned_goals: Vec<V> = goals.iter().cloned().collect();
+                        work_stack.push(Work::BuildConjunction {
+                            count: len,
+                            original: val,
+                        });
+                        for goal in owned_goals.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(goal));
+                        }
+                    }
+                } else {
+                    result_stack.push(val);
+                }
+            }
+            Work::BuildSExpr { count, original } => {
+                let start = result_stack.len() - count;
                 let items = original
                     .as_sexpr()
                     .expect("BuildSExpr original must be sexpr");
@@ -1378,8 +1654,11 @@ fn occurs_in_generic<V: MettaValueTrait + Clone>(
             continue;
         }
 
-        if let Some((_msg, details)) = current.as_error() {
-            work_stack.push(details.clone());
+        // HE-bisimilar Error(offending, detail): both slots are full values
+        // that may contain variables. Push both for traversal.
+        if let Some((offending, detail)) = current.as_error() {
+            work_stack.push(offending.clone());
+            work_stack.push(detail.clone());
             continue;
         }
 
@@ -1587,13 +1866,12 @@ fn bidirectional_unify_generic_impl<V: MettaValueTrait + Clone>(
             return false;
         }
 
-        // Errors: structural matching
-        if let Some((l_msg, l_details)) = lhs.as_error() {
-            if let Some((r_msg, r_details)) = rhs.as_error() {
-                if l_msg != r_msg {
-                    return false;
-                }
-                work_stack.push((l_details.clone(), r_details.clone()));
+        // Errors: HE-bisimilar `Error(offending, detail)`. Recurse into both
+        // slots so unification handles variables in either position.
+        if let Some((l_offending, l_detail)) = lhs.as_error() {
+            if let Some((r_offending, r_detail)) = rhs.as_error() {
+                work_stack.push((l_detail.clone(), r_detail.clone()));
+                work_stack.push((l_offending.clone(), r_offending.clone()));
                 continue;
             }
             return false;
@@ -1640,6 +1918,360 @@ fn bidirectional_unify_generic_impl<V: MettaValueTrait + Clone>(
     true // All equation pairs unified successfully
 }
 
+// ============================================================================
+// S0d.1 — Class-aware bidirectional unification (UnifyMode dispatch)
+// ============================================================================
+
+/// Bidirectional unification with explicit [`UnifyMode`].
+///
+/// - [`UnifyMode::Match`]: behaves identically to
+///   [`bidirectional_unify_generic`] — ordinary chain-terminus binding for
+///   var-var-distinct pairs. The returned [`BindingsWithClasses`] will have
+///   no class table (the `classes` field is `None`).
+///
+/// - [`UnifyMode::Unify`]: under var-var-distinct, creates an equivalence
+///   class via [`BindingsWithClasses::insert_equivalence`]. Honors HE's
+///   M-VAR-VAR-DISTINCT (spec §4.3.1).
+pub fn bidirectional_unify_generic_with_mode<V>(
+    a: &V,
+    b: &V,
+    mode: crate::backend::models::UnifyMode,
+) -> Option<crate::backend::models::BindingsWithClasses<V>>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+{
+    let mut bindings = crate::backend::models::BindingsWithClasses::<V>::new();
+    if bidirectional_unify_with_classes_impl(a, b, &mut bindings, mode) {
+        Some(bindings)
+    } else {
+        None
+    }
+}
+
+/// Class-aware internal unifier. Mirrors [`bidirectional_unify_generic_impl`]
+/// but routes value installation through [`BindingsWithClasses::insert_value`]
+/// (which respects existing equivalence classes) and creates equivalence
+/// classes for var-var-distinct pairs under [`UnifyMode::Unify`].
+fn bidirectional_unify_with_classes_impl<V>(
+    a: &V,
+    b: &V,
+    bindings: &mut crate::backend::models::BindingsWithClasses<V>,
+    mode: crate::backend::models::UnifyMode,
+) -> bool
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+{
+    use crate::backend::models::{MergeConflict, UnifyMode};
+
+    // Owned work stack — V is Copy for MettaValue so cloning is zero-cost.
+    let mut work_stack: Vec<(V, V)> = Vec::with_capacity(16);
+    work_stack.push((a.clone(), b.clone()));
+
+    while let Some((lhs_raw, rhs_raw)) = work_stack.pop() {
+        // Step 1: Dereference both sides through existing entries (transitive).
+        // We still deref through `entries` only; class lookup is checked when
+        // we encounter a fresh variable (handled below).
+        let lhs = deref_value_owned(&lhs_raw, &bindings.entries);
+        let rhs = deref_value_owned(&rhs_raw, &bindings.entries);
+
+        // Step 2: Trivial identity
+        if lhs == rhs {
+            continue;
+        }
+
+        // Step 3: Wildcards
+        if let Some(name) = lhs.as_atom() {
+            if is_wildcard_atom(name) {
+                continue;
+            }
+        }
+        if let Some(name) = rhs.as_atom() {
+            if is_wildcard_atom(name) {
+                continue;
+            }
+        }
+
+        // Step 4: Variable on LHS
+        if let Some(l_name) = lhs.as_atom() {
+            if is_unification_variable(l_name) {
+                // Already bound via ordinary entry? Push consistency check.
+                if let Some(existing) = bindings.entries.get(l_name) {
+                    let existing = existing.clone();
+                    work_stack.push((existing, rhs));
+                    continue;
+                }
+                // Already a class member with value? Push consistency check.
+                if let Some(table) = bindings.classes.as_ref() {
+                    if let Some(id) = table.class_of(l_name) {
+                        if let Some(v) = table.class_value(id) {
+                            let v = v.clone();
+                            work_stack.push((v, rhs));
+                            continue;
+                        }
+                        // Value-less class on LHS: under Unify mode, if rhs is
+                        // also a value-less variable, extend the class with it.
+                        if mode == UnifyMode::Unify {
+                            if let Some(r_name) = rhs.as_atom() {
+                                if is_unification_variable(r_name)
+                                    && bindings.entries.get(r_name).is_none()
+                                {
+                                    if bindings
+                                        .insert_equivalence(l_name.into(), r_name.into())
+                                        .is_err()
+                                    {
+                                        return false;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                        // Install value into the class.
+                        if occurs_in_generic(l_name, &rhs, &bindings.entries) {
+                            return false;
+                        }
+                        match bindings.insert_value(l_name.into(), rhs.clone()) {
+                            Ok(()) => continue,
+                            Err(MergeConflict::Incompatible) => return false,
+                            Err(MergeConflict::NeedsUnify(va, vb)) => {
+                                work_stack.push((va, vb));
+                                continue;
+                            }
+                        }
+                    }
+                }
+                // Occurs check
+                if occurs_in_generic(l_name, &rhs, &bindings.entries) {
+                    return false;
+                }
+                // Unify mode: var-var-distinct → equivalence class.
+                if mode == UnifyMode::Unify {
+                    if let Some(r_name) = rhs.as_atom() {
+                        if is_unification_variable(r_name)
+                            && bindings.entries.get(r_name).is_none()
+                        {
+                            // Class membership check on RHS (might be in a class
+                            // already; insert_equivalence handles all 4 cases).
+                            if bindings
+                                .insert_equivalence(l_name.into(), r_name.into())
+                                .is_err()
+                            {
+                                return false;
+                            }
+                            continue;
+                        }
+                    }
+                }
+                // Default: ordinary bind (Match mode OR Unify mode with non-var rhs).
+                match bindings.insert_value(l_name.into(), rhs) {
+                    Ok(()) => continue,
+                    Err(MergeConflict::Incompatible) => return false,
+                    Err(MergeConflict::NeedsUnify(va, vb)) => {
+                        work_stack.push((va, vb));
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Step 5: Variable on RHS (mirror)
+        if let Some(r_name) = rhs.as_atom() {
+            if is_unification_variable(r_name) {
+                if let Some(existing) = bindings.entries.get(r_name) {
+                    let existing = existing.clone();
+                    work_stack.push((existing, lhs));
+                    continue;
+                }
+                if let Some(table) = bindings.classes.as_ref() {
+                    if let Some(id) = table.class_of(r_name) {
+                        if let Some(v) = table.class_value(id) {
+                            let v = v.clone();
+                            work_stack.push((v, lhs));
+                            continue;
+                        }
+                        // Value-less class on RHS — LHS is already non-var
+                        // (we'd have caught LHS-var case above), so install
+                        // value into the class.
+                        if occurs_in_generic(r_name, &lhs, &bindings.entries) {
+                            return false;
+                        }
+                        match bindings.insert_value(r_name.into(), lhs.clone()) {
+                            Ok(()) => continue,
+                            Err(MergeConflict::Incompatible) => return false,
+                            Err(MergeConflict::NeedsUnify(va, vb)) => {
+                                work_stack.push((va, vb));
+                                continue;
+                            }
+                        }
+                    }
+                }
+                if occurs_in_generic(r_name, &lhs, &bindings.entries) {
+                    return false;
+                }
+                // Default: ordinary bind. (Var-var-distinct cases were
+                // handled in Step 4 when both sides were vars; reaching
+                // here means LHS is non-variable.)
+                match bindings.insert_value(r_name.into(), lhs) {
+                    Ok(()) => continue,
+                    Err(MergeConflict::Incompatible) => return false,
+                    Err(MergeConflict::NeedsUnify(va, vb)) => {
+                        work_stack.push((va, vb));
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Step 6: both non-variable — structural comparison (same logic as
+        // bidirectional_unify_generic_impl).
+
+        if let Some(l_name) = lhs.as_atom() {
+            if let Some(r_name) = rhs.as_atom() {
+                if l_name == r_name {
+                    continue;
+                }
+            }
+            if l_name == "Empty" && rhs.is_empty() {
+                continue;
+            }
+            return false;
+        }
+        if let Some(r_name) = rhs.as_atom() {
+            if r_name == "Empty" && lhs.is_empty() {
+                continue;
+            }
+            return false;
+        }
+
+        if let Some(l_bool) = lhs.as_bool() {
+            if let Some(r_bool) = rhs.as_bool() {
+                if l_bool == r_bool {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if let Some(l_long) = lhs.as_long() {
+            if let Some(r_long) = rhs.as_long() {
+                if l_long == r_long {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if let Some(l_float) = lhs.as_float() {
+            if let Some(r_float) = rhs.as_float() {
+                if l_float.to_bits() == r_float.to_bits() {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if let Some(l_str) = lhs.as_string() {
+            if let Some(r_str) = rhs.as_string() {
+                if l_str == r_str {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if lhs.is_unit() {
+            if rhs.is_unit() {
+                continue;
+            }
+            if let Some(r_items) = rhs.as_sexpr() {
+                if r_items.is_empty() {
+                    continue;
+                }
+            }
+            return false;
+        }
+        if rhs.is_unit() {
+            if let Some(l_items) = lhs.as_sexpr() {
+                if l_items.is_empty() {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if let Some(l_items) = lhs.as_sexpr() {
+            if let Some(r_items) = rhs.as_sexpr() {
+                if l_items.len() != r_items.len() {
+                    return false;
+                }
+                if l_items.is_empty() {
+                    continue;
+                }
+                for (l, r) in l_items.iter().zip(r_items.iter()).rev() {
+                    work_stack.push((l.clone(), r.clone()));
+                }
+                continue;
+            }
+            return false;
+        }
+
+        if let Some(l_goals) = lhs.as_conjunction() {
+            if let Some(r_goals) = rhs.as_conjunction() {
+                if l_goals.len() != r_goals.len() {
+                    return false;
+                }
+                for (l, r) in l_goals.iter().zip(r_goals.iter()).rev() {
+                    work_stack.push((l.clone(), r.clone()));
+                }
+                continue;
+            }
+            return false;
+        }
+
+        if let Some((l_offending, l_detail)) = lhs.as_error() {
+            if let Some((r_offending, r_detail)) = rhs.as_error() {
+                work_stack.push((l_detail.clone(), r_detail.clone()));
+                work_stack.push((l_offending.clone(), r_offending.clone()));
+                continue;
+            }
+            return false;
+        }
+
+        if let Some(l_handle) = lhs.as_space() {
+            if let Some(r_handle) = rhs.as_space() {
+                if l_handle.id == r_handle.id {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if let Some(l_id) = lhs.as_state() {
+            if let Some(r_id) = rhs.as_state() {
+                if l_id == r_id {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        if let Some(l_inner) = lhs.as_type() {
+            if let Some(r_inner) = rhs.as_type() {
+                work_stack.push((l_inner.clone(), r_inner.clone()));
+                continue;
+            }
+            return false;
+        }
+
+        if lhs.is_empty() && rhs.is_empty() {
+            continue;
+        }
+
+        return false;
+    }
+
+    true
+}
+
 /// Dereference a value through existing bindings transitively (owned version).
 ///
 /// Follows binding chains until reaching a non-variable or unbound variable.
@@ -1669,13 +2301,11 @@ where
     F: MettaValueFactory<V>,
 {
     if items.len() < 4 {
-        return vec![factory.error(
-            &format!(
-                "atom-subst requires 3 arguments, got {}. Usage: (atom-subst value $var template)",
-                items.len() - 1
-            ),
-            factory.sexpr(items.to_vec()),
-        )];
+        let arity_msg = format!(
+            "atom-subst requires 3 arguments, got {}. Usage: (atom-subst value $var template)",
+            items.len() - 1
+        );
+        return vec![factory.error(factory.sexpr(items.to_vec()), factory.string(&arity_msg))];
     }
 
     let value = &items[1];

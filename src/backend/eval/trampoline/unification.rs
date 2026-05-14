@@ -30,8 +30,10 @@
 //! - Formally verified reference available in mettail-rust
 
 use super::engine::Bindings;
-use crate::backend::eval::bindings::bidirectional_unify_generic;
-use crate::backend::models::MettaValue;
+use crate::backend::eval::bindings::{
+    bidirectional_unify_generic, bidirectional_unify_generic_with_mode,
+};
+use crate::backend::models::{BindingsWithClasses, MettaValue, UnifyMode};
 
 // ============================================================================
 // Public API
@@ -52,6 +54,23 @@ use crate::backend::models::MettaValue;
 /// ```
 pub fn bidirectional_unify(a: &MettaValue, b: &MettaValue) -> Option<Bindings> {
     bidirectional_unify_generic(a, b)
+}
+
+/// S0d.1: Bidirectional unification with explicit [`UnifyMode`].
+///
+/// - [`UnifyMode::Match`]: behaves identically to [`bidirectional_unify`] —
+///   var-var-distinct creates an ordinary chain-terminus binding. Returned
+///   [`BindingsWithClasses`] has no class table.
+/// - [`UnifyMode::Unify`]: for the user-facing `(unify ...)` form.
+///   Var-var-distinct creates an equivalence class via
+///   [`BindingsWithClasses::insert_equivalence`], preserving HE's
+///   M-VAR-VAR-DISTINCT semantics (spec §4.3.1).
+pub fn bidirectional_unify_with_mode(
+    a: &MettaValue,
+    b: &MettaValue,
+    mode: UnifyMode,
+) -> Option<BindingsWithClasses<MettaValue>> {
+    bidirectional_unify_generic_with_mode(a, b, mode)
 }
 
 // ============================================================================

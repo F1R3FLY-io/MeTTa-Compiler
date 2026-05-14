@@ -76,14 +76,18 @@ fn metta_simple_string() -> impl Strategy<Value = MettaValue> {
 }
 
 fn metta_simple_error() -> impl Strategy<Value = MettaValue> {
-    let error_messages = prop_oneof![
+    // HE-bisimilar Error(offending, detail): the detail slot typically carries
+    // a structured atom like `BadType` (Hyperon spec) or a message string. The
+    // offending slot is the atom that triggered the error.
+    let detail_atoms = prop_oneof![
         Just("BadType"),
         Just("IncorrectNumberOfArguments"),
         Just("TypeError"),
-    ];
+    ]
+    .prop_map(|s| MettaValue::Atom(s));
 
-    // Use only atoms as error details to avoid recursion
-    (error_messages, metta_atom()).prop_map(|(msg, detail)| MettaValue::Error(msg, detail))
+    (metta_atom(), detail_atoms)
+        .prop_map(|(offending, detail)| MettaValue::Error(offending, detail))
 }
 
 fn metta_simple_type() -> impl Strategy<Value = MettaValue> {

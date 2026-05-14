@@ -443,8 +443,8 @@ impl JitValue {
                 );
                 #[cfg(not(debug_assertions))]
                 MettaValue::Error(
-                    "JIT: Invalid JitValue tag".to_string(),
                     MettaValue::String(format!("{:#018x}", self.0)),
+                    MettaValue::String("JIT: Invalid JitValue tag"),
                 )
             }
         }

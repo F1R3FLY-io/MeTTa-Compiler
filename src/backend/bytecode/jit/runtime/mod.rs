@@ -244,7 +244,8 @@ pub use mork_ops::{
 
 // Debug and meta operations
 pub use debug_meta::{
-    jit_runtime_bloom_check, jit_runtime_breakpoint, jit_runtime_get_metatype, jit_runtime_trace,
+    jit_runtime_bloom_check, jit_runtime_breakpoint, jit_runtime_enter_interpret_mode,
+    jit_runtime_exit_interpret_mode, jit_runtime_get_metatype, jit_runtime_trace,
 };
 
 // Multi-value return

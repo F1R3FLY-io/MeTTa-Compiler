@@ -430,10 +430,12 @@ mod tests {
     // Error Handling
     // =========================================================================
 
+    // HE-bisimilar shape: source `(Error offending detail)` maps directly to
+    // internal Error(offending, detail). Display emits the same slot order.
     eval_test!(
         error_create,
         "!(Error test-msg details)",
-        &["(Error details test-msg)"]
+        &["(Error test-msg details)"]
     );
     eval_test!(is_error_normal, "!(is-error 42)", &["False"]);
     eval_test!(is_error_string, "!(is-error \"hello\")", &["False"]);
@@ -1543,23 +1545,27 @@ mod tests {
     );
 
     // No match → default value returned
+    // S1 TOPLEVEL (2026-05-13): bare top-level `(A B)` is now HE ADD-mode —
+    // silent side-effecting fact, no echo in result multiset. Only the
+    // bang directive contributes to the expected output.
     eval_test!(
         match_or_no_match,
         r#"
             (A B)
             !(match-or &self (C $x) default-val $x)
         "#,
-        &["(A B)", "default-val"]
+        &["default-val"]
     );
 
     // Default is evaluated (not just returned as data)
+    // S1 TOPLEVEL (2026-05-13): see match_or_no_match.
     eval_test!(
         match_or_default_eval,
         r#"
             (A B)
             !(match-or &self (C $x) (+ 1 2) $x)
         "#,
-        &["(A B)", "3"]
+        &["3"]
     );
 
     // Multiple matches: all returned (match-or is nondeterministic when matches exist)
@@ -1765,13 +1771,14 @@ mod tests {
         &["()", "red"]
     );
 
+    // S1 TOPLEVEL (2026-05-13): see match_or_no_match.
     eval_test!(
         match_or_with_if_reducible_default,
         r#"
             (A B)
             !(match-or &self (missing $x) (if-reducible (+ 1 1) computed-default raw-default) $x)
         "#,
-        &["(A B)", "computed-default"]
+        &["computed-default"]
     );
 
     // =========================================================================

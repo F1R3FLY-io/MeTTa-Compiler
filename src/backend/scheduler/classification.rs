@@ -318,7 +318,8 @@ impl SchedulerAutomaton {
             | ValueView::Float(_)
             | ValueView::Bool(_)
             | ValueView::Unit
-            | ValueView::Empty => CostClass::GroundCheap,
+            | ValueView::Empty
+            | ValueView::NotReducible => CostClass::GroundCheap,
 
             ValueView::String(_) => CostClass::GroundCheap,
 

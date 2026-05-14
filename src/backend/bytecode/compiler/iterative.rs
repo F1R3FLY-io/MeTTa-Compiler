@@ -604,6 +604,10 @@ impl Compiler {
                 let idx = self.builder.add_constant(MettaValue::Empty());
                 self.builder.emit_u16(Opcode::PushConstant, idx);
             }
+            ValueView::NotReducible => {
+                let idx = self.builder.add_constant(MettaValue::NotReducible());
+                self.builder.emit_u16(Opcode::PushConstant, idx);
+            }
 
             // ================================================================
             // Slab-backed types
@@ -1519,10 +1523,21 @@ impl Compiler {
             // ================================================================
             "!" => {
                 self.check_arity("!", args.len(), 1)?;
+                // S1 TOPLEVEL (2026-05-13): wrap body in HE INTERPRET mode.
+                // LIFO worklist — push in reverse emission order so the
+                // resulting bytecode is `EnterInterpretMode; <body>;
+                // ExitInterpretMode`. See compiler/core.rs for the eager
+                // (non-worklist) mirror.
+                work_stack.push(CompileWork::EmitOpcode {
+                    opcode: Opcode::ExitInterpretMode,
+                });
                 work_stack.push(CompileWork::CompileExpr {
                     expr: args[0].clone(),
                     in_tail_position: self.in_tail_position,
                     cont_id,
+                });
+                work_stack.push(CompileWork::EmitOpcode {
+                    opcode: Opcode::EnterInterpretMode,
                 });
                 Ok(Some(()))
             }
@@ -2307,15 +2322,16 @@ impl Compiler {
             // ================================================================
             "error" => {
                 self.check_arity("error", args.len(), 2)?;
-                // Construct MettaValue::Error at compile time, matching tree-walker semantics
-                // (error msg details) - arguments are NOT evaluated, taken as-is
-                let msg = match args[0].view() {
-                    ValueView::String(s) => s.to_string(),
-                    ValueView::Atom(s) => s.to_string(),
-                    _ => format!("{:?}", args[0]),
-                };
-                let details = args[1].clone();
-                let error_value = MettaValue::Error(msg, details);
+                // Construct MettaValue::Error at compile time, matching tree-walker semantics.
+                //
+                // User source form: `(error <message> <details>)` — same as the
+                // pre-migration legacy syntax. Internal HE-bisimilar shape:
+                // `Error(offending, detail)` with `offending = <details>` and
+                // `detail = <message>` (the human-readable string). MTT's old
+                // slot convention is conceptually swapped here.
+                let detail = args[0].clone();
+                let offending = args[1].clone();
+                let error_value = MettaValue::Error(offending, detail);
                 let idx = self.builder.add_constant(error_value);
                 self.builder.emit_u16(Opcode::PushConstant, idx);
                 Ok(Some(()))
@@ -3178,6 +3194,7 @@ impl Compiler {
             | ValueView::Long(_)
             | ValueView::Unit
             | ValueView::Empty
+            | ValueView::NotReducible
             | ValueView::String(_)
             | ValueView::Error(_, _)
             | ValueView::Type(_)
@@ -3312,6 +3329,7 @@ impl Compiler {
                     | ValueView::Long(_)
                     | ValueView::Unit
                     | ValueView::Empty
+                    | ValueView::NotReducible
                     | ValueView::String(_)
                     | ValueView::Error(_, _)
                     | ValueView::Type(_)

@@ -56,6 +56,7 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::Error(_, _)
@@ -128,6 +129,7 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::Error(_, _)
@@ -198,6 +200,7 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::Error(_, _)

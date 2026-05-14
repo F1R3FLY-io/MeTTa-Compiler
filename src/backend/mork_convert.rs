@@ -667,17 +667,25 @@ fn write_metta_value_inner(
             }
         }
 
-        MettaValueInner::Error(msg, details) => {
+        MettaValueInner::Error(offending, detail) => {
+            // HE-bisimilar `(error offending detail)`. Both slots are arbitrary
+            // atoms — recurse instead of treating either as a raw string.
             ez.write_arity(3);
             ez.loc += 1;
             write_symbol(b"error", pdp, ez, symbol_cache)?;
-            scratch.clear();
-            scratch.push(b'"');
-            scratch.extend_from_slice(msg.as_bytes());
-            scratch.push(b'"');
-            write_symbol(scratch, pdp, ez, symbol_cache)?;
             write_metta_value_inner(
-                details.inner_ref(),
+                offending.inner_ref(),
+                pdp,
+                ctx,
+                ez,
+                scratch,
+                symbol_cache,
+                ground_cache,
+                float_cache,
+                needs_gc_validation,
+            )?;
+            write_metta_value_inner(
+                detail.inner_ref(),
                 pdp,
                 ctx,
                 ez,
@@ -846,6 +854,13 @@ fn write_metta_value_inner(
             return Err(
                 "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
             );
+        }
+
+        MettaValueInner::NotReducible => {
+            // Plan S0a (2026-05-13) — HE `NotReducible` sentinel is an interned
+            // atom in the HE space. Write it as a symbol so MORK queries can
+            // match it like any other symbol.
+            write_symbol(b"NotReducible", pdp, ez, symbol_cache)?;
         }
 
         MettaValueInner::Spanned(v, _) => {
@@ -1061,17 +1076,25 @@ fn write_metta_value_debruijn_inner(
             }
         }
 
-        MettaValueInner::Error(msg, details) => {
+        MettaValueInner::Error(offending, detail) => {
+            // HE-bisimilar `(error offending detail)`. Both slots are arbitrary
+            // atoms — recurse instead of treating either as a raw string.
             ez.write_arity(3);
             ez.loc += 1;
             write_symbol(b"error", pdp, ez, symbol_cache)?;
-            scratch.clear();
-            scratch.push(b'"');
-            scratch.extend_from_slice(msg.as_bytes());
-            scratch.push(b'"');
-            write_symbol(scratch, pdp, ez, symbol_cache)?;
             write_metta_value_debruijn_inner(
-                details.inner_ref(),
+                offending.inner_ref(),
+                pdp,
+                ctx,
+                ez,
+                scratch,
+                symbol_cache,
+                ground_cache,
+                float_cache,
+                needs_gc_validation,
+            )?;
+            write_metta_value_debruijn_inner(
+                detail.inner_ref(),
                 pdp,
                 ctx,
                 ez,
@@ -1238,6 +1261,13 @@ fn write_metta_value_debruijn_inner(
             return Err(
                 "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
             );
+        }
+
+        MettaValueInner::NotReducible => {
+            // Plan S0a (2026-05-13) — HE `NotReducible` sentinel is an interned
+            // atom in the HE space. Write it as a symbol so MORK queries can
+            // match it like any other symbol.
+            write_symbol(b"NotReducible", pdp, ez, symbol_cache)?;
         }
 
         MettaValueInner::Spanned(v, _) => {
@@ -1559,13 +1589,14 @@ mod tests {
         let space = env.create_space();
         let epoch = env.mork_cache_epoch();
 
-        // (error "test error" (details here))
+        // HE-bisimilar Error(offending, detail): offending is the (details here)
+        // sexpr, detail is the message string.
         let error = MettaValue::Error(
-            "test error".to_string(),
             MettaValue::SExpr(vec![
-                MettaValue::Atom("details".to_string()),
-                MettaValue::Atom("here".to_string()),
+                MettaValue::Atom("details"),
+                MettaValue::Atom("here"),
             ]),
+            MettaValue::String("test error"),
         );
 
         let mut ctx = ConversionContext::new();

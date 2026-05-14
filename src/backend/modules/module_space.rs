@@ -97,12 +97,17 @@ impl ModuleSpace {
 
     /// Query the main space only (no dependencies).
     ///
-    /// This is useful when you want to check if something is defined
-    /// locally in this module, without considering imports.
-    pub fn query_local(&self, _pattern: &MettaValue) -> Vec<MettaValue> {
-        // For now, just return matching atoms
-        // TODO: Integrate with Environment's pattern matching
-        self.atoms.clone()
+    /// Uses `pattern_match_generic` (the canonical pattern matcher shared
+    /// with the trampoline) to filter `self.atoms` for atoms that unify
+    /// with `pattern`. Variables (`$x`, `&y`, `'z`) and wildcards (`_`)
+    /// are supported.
+    pub fn query_local(&self, pattern: &MettaValue) -> Vec<MettaValue> {
+        use crate::backend::eval::bindings::pattern_match_generic;
+        self.atoms
+            .iter()
+            .filter(|atom| pattern_match_generic(pattern, atom).is_some())
+            .cloned()
+            .collect()
     }
 
     /// Query the main space and all dependencies.

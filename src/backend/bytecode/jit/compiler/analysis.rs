@@ -234,6 +234,9 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             // MORK and debug
             Opcode::BloomCheck | Opcode::Halt => {}
 
+            // S1 TOPLEVEL (2026-05-13): HE runner-mode directives
+            Opcode::EnterInterpretMode | Opcode::ExitInterpretMode => {}
+
             // Anything else is not compilable
             _ => return false,
         }
@@ -530,6 +533,11 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             // Phase 1.10: MORK and Debug (via runtime calls)
             Opcode::BloomCheck      // Phase 1.10: bloom filter pre-check [key] -> [bool]
             | Opcode::Halt => {}    // Phase 1.10: halt execution (return HALT signal)
+
+            // S1 TOPLEVEL (2026-05-13): HE runner-mode directives.
+            // Lowered to a 1-byte store-immediate-to-context-field; no value-
+            // stack effect. See compile_enter_interpret_mode / _exit handlers.
+            Opcode::EnterInterpretMode | Opcode::ExitInterpretMode => {}
 
             // Stage 7: Stack operations and Negation (duplicates for completeness)
             // Stage 8: More arithmetic and stack operations (duplicates for completeness)

@@ -146,8 +146,12 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// Try to extract as sexpr items slice
     fn as_sexpr(&self) -> Option<&[Self]>;
 
-    /// Try to extract as error (message, details)
-    fn as_error(&self) -> Option<(&str, &Self)>;
+    /// Try to extract as error (offending, detail).
+    ///
+    /// HE-bisimilar shape: returns `(offending_expr, detail)`. The detail is
+    /// typically a `String` value carrying the human message, or a structured
+    /// atom like `BadType` / `IncorrectNumberOfArguments`.
+    fn as_error(&self) -> Option<(&Self, &Self)>;
 
     /// Try to extract as type inner value
     fn as_type(&self) -> Option<&Self>;
@@ -230,7 +234,7 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
             MettaValueInner::SExpr(items) => {
                 ValueView::SExpr(unsafe { &*((*items) as *const [MettaValue]) })
             }
-            MettaValueInner::Error(msg, details) => ValueView::Error(msg, *details),
+            MettaValueInner::Error(offending, details) => ValueView::Error(*offending, *details),
             MettaValueInner::Type(inner_val) => ValueView::Type(*inner_val),
             MettaValueInner::Conjunction(goals) => {
                 ValueView::Conjunction(unsafe { &*((*goals) as *const [MettaValue]) })
@@ -243,6 +247,7 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
                 ValueView::Memo(unsafe { &*(handle as *const MemoHandle) })
             }
             MettaValueInner::Quoted(inner_val) => ValueView::Quoted(*inner_val),
+            MettaValueInner::NotReducible => ValueView::NotReducible,
             MettaValueInner::Spanned(..) => unreachable!("Spanned stripped above"),
         }
     }
@@ -798,8 +803,12 @@ pub trait MettaValueFactory<V: MettaValueTrait> {
     /// Create an SExpr variant from a slice of values
     fn sexpr_from_slice(&self, items: &[V]) -> V;
 
-    /// Create an Error variant
-    fn error(&self, msg: &str, details: V) -> V;
+    /// Create an Error variant.
+    ///
+    /// HE-bisimilar shape: `Error(offending_expr, detail)`. The detail is
+    /// typically a `String` value carrying the human message, or a structured
+    /// atom like `BadType` / `IncorrectNumberOfArguments`.
+    fn error(&self, offending: V, detail: V) -> V;
 
     /// Create a Type variant
     fn type_value(&self, inner: V) -> V;
@@ -824,6 +833,21 @@ pub trait MettaValueFactory<V: MettaValueTrait> {
 
     /// Create an Empty variant
     fn empty(&self) -> V;
+
+    /// Create the canonical `NotReducible` atom.
+    ///
+    /// HE bisimilarity: emitted by `eval` (and the kernel one-step reducer) when
+    /// the argument is a grounded scalar at head position, a variable-headed
+    /// expression with no matching equations, or a `query` with empty result set.
+    /// See `hyperon-experimental/lib/src/metta/mod.rs:29` (`NOT_REDUCIBLE_SYMBOL`)
+    /// and `lib/src/metta/interpreter.rs:546-548, 634` (`return_not_reducible`).
+    ///
+    /// Default impl returns `self.atom("NotReducible")`; allocators may override
+    /// to memoize the interned atom for hot-path identity comparison.
+    #[inline]
+    fn not_reducible(&self) -> V {
+        self.atom("NotReducible")
+    }
 
     // =========================================================================
     // Convenience methods with default implementations
@@ -928,8 +952,8 @@ impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
     }
 
     #[inline]
-    fn error(&self, msg: &str, details: V) -> V {
-        (*self).error(msg, details)
+    fn error(&self, offending: V, detail: V) -> V {
+        (*self).error(offending, detail)
     }
 
     #[inline]
@@ -980,6 +1004,11 @@ impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
     #[inline]
     fn empty(&self) -> V {
         (*self).empty()
+    }
+
+    #[inline]
+    fn not_reducible(&self) -> V {
+        (*self).not_reducible()
     }
 
     #[inline]

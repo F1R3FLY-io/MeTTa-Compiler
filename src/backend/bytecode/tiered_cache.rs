@@ -1423,8 +1423,11 @@ impl TieredCache {
                 return;
             }
 
-            // Create JIT compiler and compile
-            // TODO: Add Stage 2-specific optimizations (more aggressive inlining, etc.)
+            // Create JIT compiler and compile. Stage 2 currently reuses the
+            // same Cranelift codegen path as Stage 1; tier promotion is driven
+            // by `TieredCache`'s hot-expression hit-count threshold, not by
+            // distinct codegen passes. Stage-2-specific aggressive inlining
+            // is future work tracked by the bytecode/jit perf roadmap.
             match JitCompiler::new() {
                 Ok(mut compiler) => match compiler.compile(&chunk) {
                     Ok(ptr) => {
@@ -1788,6 +1791,10 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
             // Use a distinct seed for Empty
             0x656d7074_79686173 // "empty_has" as bytes
         }
+        ValueView::NotReducible => {
+            // Plan S0a (2026-05-13) — distinct seed for NotReducible sentinel.
+            0x6e72_6564_7563_6962 // "nreducib" as bytes
+        }
         ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::SExpr(_)
@@ -1822,6 +1829,8 @@ fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H)
             f.to_bits().hash(hasher);
         }
         ValueView::Empty => 9u8.hash(hasher),
+        // Plan S0a (2026-05-13) — unique tag 1u8 for NotReducible sentinel.
+        ValueView::NotReducible => 1u8.hash(hasher),
         ValueView::String(s) => {
             5u8.hash(hasher);
             s.hash(hasher);

@@ -159,9 +159,14 @@ pub trait Store<V: MettaValueTrait>: Debug + Send + Sync {
     }
 
     /// Allocate an error value.
+    ///
+    /// HE-bisimilar shape: `Error(offending, detail)`. The msg parameter is
+    /// wrapped in a String value and passed as detail; the existing `details`
+    /// arg becomes the offending expression in slot 1.
     #[inline]
     fn alloc_error(&self, msg: &str, details: V, _hint: AllocHint) -> V {
-        self.factory().error(msg, details)
+        self.factory()
+            .error(details, self.factory().string(msg))
     }
 
     /// Allocate a unit value.

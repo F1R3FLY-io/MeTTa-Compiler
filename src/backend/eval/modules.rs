@@ -47,8 +47,8 @@ where
 
     if items.len() < 2 {
         let err = factory.error(
-            "include requires 1 argument: (include path)",
             factory.sexpr(items),
+            factory.string("include requires 1 argument: (include path)"),
         );
         return (vec![err], env);
     }
@@ -61,7 +61,10 @@ where
     } else if let Some(s) = path_arg.as_atom() {
         s.to_string()
     } else {
-        let err = factory.error("include: expected string or symbol path", path_arg.clone());
+        let err = factory.error(
+            path_arg.clone(),
+            factory.string("include: expected string or symbol path"),
+        );
         return (vec![err], env);
     };
 
@@ -87,12 +90,12 @@ where
         Err(e) => {
             env.unmark_module_loading(content_hash);
             let err = factory.error(
-                &format!(
+                factory.atom(&path_str),
+                factory.string(&format!(
                     "include: failed to read file '{}': {}",
                     resolved_path.display(),
                     e
-                ),
-                factory.atom(&path_str),
+                )),
             );
             return (vec![err], env);
         }
@@ -104,12 +107,12 @@ where
         Err(e) => {
             env.unmark_module_loading(content_hash);
             let err = factory.error(
-                &format!(
+                factory.atom(&path_str),
+                factory.string(&format!(
                     "include: failed to parse file '{}': {}",
                     resolved_path.display(),
                     e
-                ),
-                factory.atom(&path_str),
+                )),
             );
             return (vec![err], env);
         }
@@ -202,8 +205,8 @@ where
 
     if items.len() < 2 {
         let err = factory.error(
-            "import! requires at least 1 argument: (import! [space] module-path)",
             factory.sexpr(items),
+            factory.string("import! requires at least 1 argument: (import! [space] module-path)"),
         );
         return (vec![err], env);
     }
@@ -246,24 +249,30 @@ where
                 }
                 None => {
                     let err = factory.error(
+                        path_arg.clone(),
+                        factory.string(
                             "import!: (library ...) form did not resolve to an existing file. \
                              Check METTA_LIBRARY_PATH and that any required `git-import!` has been called.",
-                            path_arg.clone(),
-                        );
+                        ),
+                    );
                     return (vec![err], env);
                 }
             }
         } else {
             let err = factory.error(
-                "import!: expected string, symbol, or (library ...) S-expression for module path",
                 path_arg.clone(),
+                factory.string(
+                    "import!: expected string, symbol, or (library ...) S-expression for module path",
+                ),
             );
             return (vec![err], env);
         }
     } else {
         let err = factory.error(
-            "import!: expected string, symbol, or (library ...) S-expression for module path",
             path_arg.clone(),
+            factory.string(
+                "import!: expected string, symbol, or (library ...) S-expression for module path",
+            ),
         );
         return (vec![err], env);
     };
@@ -288,12 +297,12 @@ where
         Err(e) => {
             env.unmark_module_loading(content_hash);
             let err = factory.error(
-                &format!(
+                factory.atom(&path_str),
+                factory.string(&format!(
                     "import!: failed to read file '{}': {}",
                     resolved_path.display(),
                     e
-                ),
-                factory.atom(&path_str),
+                )),
             );
             return (vec![err], env);
         }
@@ -313,12 +322,12 @@ where
             env.set_current_module_path(prev_module_dir);
             env.unmark_module_loading(content_hash);
             let err = factory.error(
-                &format!(
+                factory.atom(&path_str),
+                factory.string(&format!(
                     "import!: failed to parse file '{}': {}",
                     resolved_path.display(),
                     e
-                ),
-                factory.atom(&path_str),
+                )),
             );
             return (vec![err], env);
         }
@@ -387,8 +396,8 @@ where
 {
     if items.len() < 2 {
         let err = factory.error(
-            "mod-space! requires 1 argument: (mod-space! module-name)",
             factory.sexpr(items),
+            factory.string("mod-space! requires 1 argument: (mod-space! module-name)"),
         );
         return (vec![err], env);
     }
@@ -398,8 +407,8 @@ where
         s.to_string()
     } else {
         let err = factory.error(
-            "mod-space!: expected symbol for module name",
             module_arg.clone(),
+            factory.string("mod-space!: expected symbol for module name"),
         );
         return (vec![err], env);
     };

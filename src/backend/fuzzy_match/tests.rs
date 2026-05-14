@@ -835,9 +835,10 @@ fn test_type_matches_nil() {
 #[test]
 fn test_type_matches_error() {
     let env = MettaEnvironment::default();
+    // HE-bisimilar Error(offending, detail).
     let error_val = MettaValue::Error(
-        "test error".to_string(),
-        MettaValue::String("error msg".to_string()),
+        MettaValue::Atom("test error"),
+        MettaValue::String("error msg"),
     );
     assert!(type_matches(&error_val, &TypeExpr::Error, &env));
     assert!(!type_matches(

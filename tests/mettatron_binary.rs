@@ -289,11 +289,14 @@ fn test_stdin_input() {
         .spawn()
         .expect("Failed to spawn binary");
 
-    // Write simple MeTTa expression to stdin
+    // Write simple MeTTa expression to stdin.
+    // S1 TOPLEVEL (2026-05-13): bare top-level S-exprs are silent ADD-mode
+    // facts under HE bisimilarity. Use `!(...)` to put the runner into
+    // INTERPRET mode so the reduction emits an observable result line.
     {
         let stdin = child.stdin.as_mut().expect("Failed to open stdin");
         stdin
-            .write_all(b"(+ 1 2)\n")
+            .write_all(b"!(+ 1 2)\n")
             .expect("Failed to write to stdin");
     }
 

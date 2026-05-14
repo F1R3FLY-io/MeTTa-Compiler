@@ -196,7 +196,8 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
         | MettaValueInner::Type(_)
         | MettaValueInner::Quoted(_)
         | MettaValueInner::Memo(_)
-        | MettaValueInner::Empty => return Cow::Borrowed(value),
+        | MettaValueInner::Empty
+        | MettaValueInner::NotReducible => return Cow::Borrowed(value),
         // Regular atoms (not variables)
         MettaValueInner::Atom(_) => return Cow::Borrowed(value),
         // Compound types need iterative processing
@@ -227,8 +228,9 @@ enum ApplyBindingsWork<'a> {
     BuildSExpr(usize, &'a MettaValue),
     /// Build a Conjunction from the last N results
     BuildConjunction(usize, &'a MettaValue),
-    /// Build an Error from the last result
-    BuildError(String, &'a MettaValue),
+    /// Build an Error from the last 2 results (offending, detail).
+    /// HE-bisimilar: slot 1 = offending expression, slot 2 = detail value.
+    BuildError(&'a MettaValue),
     /// Re-wrap the last result in Spanned with the given span
     BuildSpanned(&'static crate::ir::Span, &'a MettaValue),
 }
@@ -286,10 +288,15 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
                             }
                         }
                     }
-                    // Error: push build marker, then push details
-                    MettaValueInner::Error(msg, details) => {
-                        work_stack.push(ApplyBindingsWork::BuildError(msg.to_string(), val));
-                        work_stack.push(ApplyBindingsWork::Process(details));
+                    // Error: HE-bisimilar `(offending, detail)`. Push the
+                    // build marker, then process both children — Process is
+                    // LIFO, so push detail FIRST (popped second) and offending
+                    // LAST (popped first) to keep `offending` on top of the
+                    // result stack for BuildError's pop order.
+                    MettaValueInner::Error(offending, detail) => {
+                        work_stack.push(ApplyBindingsWork::BuildError(val));
+                        work_stack.push(ApplyBindingsWork::Process(detail));
+                        work_stack.push(ApplyBindingsWork::Process(offending));
                     }
                     // Spanned: process inner value and re-wrap with same span
                     MettaValueInner::Spanned(v, span) => {
@@ -327,14 +334,21 @@ fn apply_bindings_iterative<'a>(value: &'a MettaValue, bindings: &Bindings) -> C
                     result_stack.push((original.clone(), false));
                 }
             }
-            ApplyBindingsWork::BuildError(msg, original) => {
-                // Pop the details result
-                let (details, modified) = result_stack
+            ApplyBindingsWork::BuildError(original) => {
+                // Process order: offending pushed first onto work_stack
+                // (popped FIRST since work_stack is LIFO with offending on top),
+                // detail pushed second (popped second). So offending_result
+                // lands on result_stack first; detail_result is on top. Pop
+                // detail first to recover (offending, detail).
+                let (detail, detail_mod) = result_stack
                     .pop()
-                    .expect("BuildError should have details on result stack");
+                    .expect("BuildError should have detail on result stack");
+                let (offending, offending_mod) = result_stack
+                    .pop()
+                    .expect("BuildError should have offending on result stack");
 
-                if modified {
-                    result_stack.push((MettaValue::Error(msg, details), true));
+                if offending_mod || detail_mod {
+                    result_stack.push((MettaValue::Error(offending, detail), true));
                 } else {
                     result_stack.push((original.clone(), false));
                 }

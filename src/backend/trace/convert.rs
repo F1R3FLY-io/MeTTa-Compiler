@@ -137,11 +137,19 @@ pub fn trace_value(root: &MettaValue) -> TraceValue {
                                     continue;
                                 }
                             }
-                            MettaValueInner::Error(msg, details) => {
-                                conts.push(Cont::WrapError {
-                                    message: msg.to_string(),
-                                });
-                                work.push(details.inner() as *const MettaValueInner);
+                            MettaValueInner::Error(offending, detail) => {
+                                // HE-bisimilar `Error(offending, detail)`. The
+                                // serialized trace format keeps the old
+                                // `Error(String, Box<TraceValue>)` shape, so
+                                // we extract the human-readable message from
+                                // the detail slot (falling back to its Display)
+                                // and recurse into `offending` as the child.
+                                let message = detail
+                                    .as_string()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| format!("{}", detail));
+                                conts.push(Cont::WrapError { message });
+                                work.push(offending.inner() as *const MettaValueInner);
                                 continue;
                             }
                             MettaValueInner::Type(inner_v) => {
@@ -281,8 +289,15 @@ pub fn trace_value_generic<V: crate::backend::models::MettaValueTrait + 'static>
         TraceValue::Unit
     } else if v.is_empty() {
         TraceValue::Empty
-    } else if let Some((msg, details)) = v.as_error() {
-        TraceValue::Error(msg.to_string(), Box::new(trace_value_generic(details)))
+    } else if let Some((offending, detail)) = v.as_error() {
+        // HE-bisimilar Error(offending, detail). TraceValue::Error keeps the
+        // old `(String, Box<TraceValue>)` shape — we extract the message from
+        // the detail slot and recurse into offending as the child.
+        let message = detail
+            .as_string()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("{}", detail));
+        TraceValue::Error(message, Box::new(trace_value_generic(offending)))
     } else if let Some(items) = v.as_sexpr() {
         TraceValue::SExpr(items.iter().map(trace_value_generic).collect())
     } else if let Some(inner) = v.as_type() {
@@ -508,7 +523,10 @@ mod convert_tests {
 
     #[test]
     fn test_trace_value_error() {
-        let val = MettaValue::Error("oops", MettaValue::Unit());
+        // HE-bisimilar Error(offending=Unit, detail="oops"). The trace
+        // converter extracts the message string from the detail slot and
+        // keeps the offending value as the child.
+        let val = MettaValue::Error(MettaValue::Unit(), MettaValue::String("oops"));
         let tv = trace_value(&val);
         assert_eq!(
             tv,

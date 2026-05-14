@@ -1689,7 +1689,11 @@ fn test_vm_collect_filters_nil() {
 #[test]
 fn test_vm_call_no_rules() {
     // Test Call opcode with no matching rules - should return expression unchanged
-    let env = GenericEnvironment::new(GcFactory::default());
+    // S1 TOPLEVEL (2026-05-13): set interpret_mode=true to match the
+    // programmatic eval() contract — under ADD mode the VM emits empty
+    // for bare top-level S-exprs (silent side-effecting fact add).
+    let mut env = GenericEnvironment::new(GcFactory::default());
+    env.set_interpret_mode(true);
 
     // Build bytecode for (unknown 42)
     let mut builder = ChunkBuilder::new("test_call_no_rules");
@@ -1776,7 +1780,10 @@ fn test_vm_call_no_bridge() {
 #[test]
 fn test_vm_tail_call_no_rules() {
     // Test TailCall opcode with no matching rules
-    let env = GenericEnvironment::new(GcFactory::default());
+    // S1 TOPLEVEL (2026-05-13): see test_vm_call_no_rules — INTERPRET mode
+    // required so the VM emits the unchanged expression instead of empty.
+    let mut env = GenericEnvironment::new(GcFactory::default());
+    env.set_interpret_mode(true);
 
     // Build bytecode for (unknown 42) using TailCall
     let mut builder = ChunkBuilder::new("test_tail_call_no_rules");
@@ -2044,16 +2051,19 @@ fn test_vm_fork_nested_choice_points() {
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
-    // (outer) -> (inner) -> x or y
-    // Results are returned as separate values when choice points exhausted
-    // Note: Current implementation may only return first result for nested calls
-    // TODO: Full nested non-determinism requires additional work
+    // (outer) -> (inner) -> {x, y}: nested non-determinism must enumerate
+    // both choice-point alternatives across the call boundary. Post-Z.A.5
+    // (T1 multi-combo dispatch via `op_dispatch_rules`), T1 produces both
+    // alternatives via the choice-point stack drain.
     assert!(!results.is_empty(), "Should get at least one result");
-    // First result should be x (first matching rule for inner)
     assert!(
-        results.contains(&MettaValue::sym("x"))
-            || results.contains(&MettaValue::SExpr(vec![MettaValue::sym("inner")])),
-        "Should contain x or (inner): {:?}",
+        results.contains(&MettaValue::sym("x")),
+        "Nested non-determinism must include x: {:?}",
+        results
+    );
+    assert!(
+        results.contains(&MettaValue::sym("y")),
+        "Nested non-determinism must include y: {:?}",
         results
     );
 }
@@ -2063,7 +2073,9 @@ fn test_vm_alternative_rulematch() {
     // Test that Alternative::RuleMatch properly handles multiple matching rules
     // (= (pair $x) (cons $x $x))
     // (= (pair $x) (dup $x))
+    // S1 TOPLEVEL (2026-05-13): see test_vm_call_no_rules.
     let mut env = GenericEnvironment::new(GcFactory::default());
+    env.set_interpret_mode(true);
     env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("pair"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
@@ -2430,7 +2442,9 @@ fn test_vm_call_cached_cache_hit() {
 
     let chunk = builder.build_arc();
     let factory = crate::backend::models::global_factory();
-    let env = GenericEnvironment::new(factory);
+    // S1 TOPLEVEL (2026-05-13): see test_vm_call_no_rules.
+    let mut env = GenericEnvironment::new(factory);
+    env.set_interpret_mode(true);
     let isolated_cache = Arc::new(crate::backend::bytecode::memo_cache::MemoCache::default());
     let native_registry =
         Arc::new(crate::backend::bytecode::native_registry::GenericNativeRegistry::new());
@@ -2488,7 +2502,9 @@ fn test_vm_call_cached_different_args() {
 
     let chunk = builder.build_arc();
     let factory = crate::backend::models::global_factory();
-    let env = GenericEnvironment::new(factory);
+    // S1 TOPLEVEL (2026-05-13): see test_vm_call_no_rules.
+    let mut env = GenericEnvironment::new(factory);
+    env.set_interpret_mode(true);
     let isolated_cache = Arc::new(crate::backend::bytecode::memo_cache::MemoCache::default());
     let native_registry =
         Arc::new(crate::backend::bytecode::native_registry::GenericNativeRegistry::new());
@@ -5563,7 +5579,9 @@ fn test_vm_dispatch_rules_no_match() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    // S1 TOPLEVEL (2026-05-13): see test_vm_call_no_rules.
+    let mut env = GenericEnvironment::new(GcFactory::default());
+    env.set_interpret_mode(true);
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -6015,8 +6033,8 @@ fn test_vm_jump_if_error_with_error() {
 
     // Push an error value
     let err_val = builder.add_constant(MettaValue::Error(
-        "test error".to_string(),
         MettaValue::Unit(),
+        MettaValue::String("test error"),
     ));
     builder.emit_u16(Opcode::PushConstant, err_val);
 
@@ -6127,8 +6145,8 @@ fn test_vm_error_value_handling() {
 
     // Push an error value
     let err_val = builder.add_constant(MettaValue::Error(
-        "test error".to_string(),
         MettaValue::Unit(),
+        MettaValue::String("test error"),
     ));
     builder.emit_u16(Opcode::PushConstant, err_val);
 

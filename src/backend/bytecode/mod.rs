@@ -343,7 +343,8 @@ pub fn can_compile(expr: &MettaValue) -> bool {
         | ValueView::Bool(_)
         | ValueView::Long(_)
         | ValueView::Float(_)
-        | ValueView::Empty => true,
+        | ValueView::Empty
+        | ValueView::NotReducible => true,
 
         ValueView::String(_) => true,
 
@@ -444,7 +445,8 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
         | ValueView::Bool(_)
         | ValueView::Long(_)
         | ValueView::Float(_)
-        | ValueView::Empty => true,
+        | ValueView::Empty
+        | ValueView::NotReducible => true,
 
         ValueView::String(_) => true,
 
@@ -530,6 +532,14 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     // which keeps the spec K T0-T1-005 row satisfied without
                     // re-implementing ~600 LOC of PathMap-walking bytecode.
                     "exec" | "coalg" | "lookup" | "rulify" => false,
+                    // S2 NOEVAL (2026-05-13): `noeval` strips itself and
+                    // returns the bare argument unevaluated. Distinct from
+                    // `noreduce` (which preserves the wrapper). Bytecode
+                    // lacks the "skip evaluation, return raw arg" lowering,
+                    // so route to T0 which has the explicit arm in
+                    // `eval/step/sexpr.rs`. Similarly `noreduce` returns the
+                    // full wrapper unevaluated — also T0-only.
+                    "noeval" | "noreduce" => false,
                     // User-defined functions: compiled as Call opcodes.
                     // The VM dispatches via op_dispatch_rules → match_rules_native.
                     // eval_inner completes evaluation via trampoline re-eval.

@@ -134,9 +134,13 @@ fn get_child<'a, V: MettaValueTrait>(value: &'a V, idx: usize) -> Option<&'a V> 
     if let Some(goals) = value.as_conjunction() {
         return goals.get(idx);
     }
-    // Error: child 0 = details value (skip msg string — not a Value)
-    if let Some((_msg, details)) = value.as_error() {
-        return if idx == 0 { Some(details) } else { None };
+    // Error: child 0 = offending expression, child 1 = detail value
+    if let Some((offending, detail)) = value.as_error() {
+        return match idx {
+            0 => Some(offending),
+            1 => Some(detail),
+            _ => None,
+        };
     }
     None
 }
@@ -156,11 +160,11 @@ fn get_child_owned<V: MettaValueTrait + Clone>(value: &V, idx: usize) -> Option<
     if let Some(goals) = value.as_conjunction() {
         return goals.get(idx).cloned();
     }
-    if let Some((_msg, details)) = value.as_error() {
-        return if idx == 0 {
-            Some(details.clone())
-        } else {
-            None
+    if let Some((offending, detail)) = value.as_error() {
+        return match idx {
+            0 => Some(offending.clone()),
+            1 => Some(detail.clone()),
+            _ => None,
         };
     }
     None
@@ -505,7 +509,9 @@ impl EnhancedMatcher {
             ECheck::IsError { path, expected_msg } => path
                 .navigate(expr)
                 .and_then(|v| v.as_error())
-                .map_or(false, |(msg, _)| msg == *expected_msg),
+                .map_or(false, |(_, detail)| {
+                    detail.as_string().map_or(false, |s| s == *expected_msg)
+                }),
             ECheck::IsConjunction { path, expected_len } => path
                 .navigate(expr)
                 .and_then(|v| v.as_conjunction())
@@ -558,7 +564,10 @@ impl EnhancedMatcher {
                 .map_or(false, |v| v.is_quoted()),
             ECheck::IsError { path, expected_msg } => path
                 .navigate_resolving(template, bindings)
-                .and_then(|v| v.as_error().map(|(msg, _)| msg == *expected_msg))
+                .and_then(|v| {
+                    v.as_error()
+                        .and_then(|(_, detail)| detail.as_string().map(|s| s == *expected_msg))
+                })
                 .unwrap_or(false),
             ECheck::IsConjunction { path, expected_len } => path
                 .navigate_resolving(template, bindings)
@@ -771,17 +780,21 @@ impl EnhancedMatcher {
             return true;
         }
 
-        // Error: has message + details
-        if let Some((msg, details)) = value.as_error() {
+        // Error: HE-bisimilar shape `(offending, detail)`. Slot 1 is the
+        // offending expression (we navigate it as child 0); slot 2 is the
+        // detail atom, typically a String carrying the human message that we
+        // intern for the `IsError` literal-check.
+        if let Some((offending, detail)) = value.as_error() {
+            let detail_msg = detail.as_string().unwrap_or("");
             let interned_msg =
-                crate::backend::models::gc_allocator::global_allocator().alloc_str(msg);
+                crate::backend::models::gc_allocator::global_allocator().alloc_str(detail_msg);
             arity_checks.push(ECheck::IsError {
                 path: path.clone(),
                 expected_msg: interned_msg,
             });
-            // Recurse into the details value as child 0
+            // Recurse into the offending expression as child 0
             return Self::analyze_node(
-                details,
+                offending,
                 path.child(0),
                 arity_checks,
                 atom_checks,

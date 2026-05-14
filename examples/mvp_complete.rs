@@ -216,9 +216,9 @@ fn test_error_termination() {
     let safe_div_expr = expr.source()[0];
     let (result, _) = eval(safe_div_expr, env.clone(), &expr);
     match result[0].inner() {
-        MettaValueInner::Error(msg, _) => {
-            println!("(safe-div 10 0) = Error: {}", msg);
-            assert_eq!(*msg, "division by zero");
+        MettaValueInner::Error(_, detail) => {
+            println!("(safe-div 10 0) = Error: {}", detail);
+            assert_eq!(detail.as_string(), Some("division by zero"));
         }
         other => panic!("Expected error, got {:?}", other),
     }

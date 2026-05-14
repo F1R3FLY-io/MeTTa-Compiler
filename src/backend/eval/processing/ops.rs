@@ -221,7 +221,7 @@ pub fn process_collected_sexpr_generic(
 /// Operates on concrete `MettaValue` / `GcFactory` types.
 pub fn process_single_combination_generic(
     evaled_items: Vec<MettaValue>,
-    unified_env: MettaEnvironment,
+    mut unified_env: MettaEnvironment,
     depth: usize,
     factory: &GcFactory,
 ) -> GenericProcessedSExpr<MettaValue, GcFactory> {
@@ -246,7 +246,7 @@ pub fn process_single_combination_generic(
                         }
                         GroundedWork::Error(e) => {
                             let err =
-                                factory.error(&format!("{:?}", e), factory.atom("GroundedError"));
+                                factory.error(factory.atom("GroundedError"), factory.string(&format!("{:?}", e)));
                             return GenericProcessedSExpr::Done((smallvec![err], unified_env));
                         }
                     }
@@ -323,6 +323,28 @@ pub fn process_single_combination_generic(
     // duplicate match results (M04/002).
     //
     // Previously: `if depth == 0 { unified_env.add_to_space(&sexpr); }`
+
+    // S1 TOPLEVEL (2026-05-13): HE two-mode runner. Bare top-level
+    // (depth==0) S-exprs are ADD-mode candidates — silent side-effecting
+    // facts (HE `module.add_atom(atom)` per runner/mod.rs:1076-1083).
+    // Mirrors the T1 VM auto-add at vm/mod.rs:6751 — both tiers must
+    // perform the same fact insertion to keep `&self` consistent across
+    // tier-promoted vs T0-only execution.
+    //
+    // Regardless of interpret_mode, the fact is added to space (dedup'd
+    // via match_space_exists). The OUTPUT differs:
+    //   - !interpret_mode (HE ADD mode): emit NOTHING
+    //   - interpret_mode (HE INTERPRET): emit the unchanged data
+    //     constructor (the runner-level structural is-bang filter then
+    //     suppresses output lines from non-bang directives).
+    if depth == 0 {
+        if !unified_env.match_space_exists(&sexpr) {
+            unified_env.add_to_space(&sexpr);
+        }
+        if !unified_env.in_interpret_mode() {
+            return GenericProcessedSExpr::Done((SmallVec::new(), unified_env));
+        }
+    }
     GenericProcessedSExpr::Done((smallvec![sexpr], unified_env))
 }
 
@@ -645,7 +667,7 @@ pub fn process_collected_sexpr_bound_generic(
 pub fn process_single_combination_bound_generic(
     evaled_items: Vec<MettaValue>,
     combo_bindings: GenericBindings<MettaValue>,
-    unified_env: MettaEnvironment,
+    mut unified_env: MettaEnvironment,
     depth: usize,
     factory: &GcFactory,
 ) -> GenericProcessedSExprBound<MettaValue, GcFactory> {
@@ -672,7 +694,7 @@ pub fn process_single_combination_bound_generic(
                         }
                         GroundedWork::Error(e) => {
                             let err =
-                                factory.error(&format!("{:?}", e), factory.atom("GroundedError"));
+                                factory.error(factory.atom("GroundedError"), factory.string(&format!("{:?}", e)));
                             return GenericProcessedSExprBound::Done((
                                 smallvec![bv_with(err, combo_bindings)],
                                 unified_env,
@@ -742,6 +764,19 @@ pub fn process_single_combination_bound_generic(
 
     // X.6 MTT-TI-029: top-level auto-add removed (see comment above the
     // earlier process_single_combination_generic exit path).
+
+    // S1 TOPLEVEL (2026-05-13): mirror unbound path's add-then-gate logic.
+    // Bare top-level S-exprs are always added to space (regardless of
+    // interpret_mode); the output gate then suppresses emission only
+    // when !interpret_mode.
+    if depth == 0 {
+        if !unified_env.match_space_exists(&sexpr) {
+            unified_env.add_to_space(&sexpr);
+        }
+        if !unified_env.in_interpret_mode() {
+            return GenericProcessedSExprBound::Done((SmallVec::new(), unified_env));
+        }
+    }
     GenericProcessedSExprBound::Done((smallvec![bv_with(sexpr, combo_bindings)], unified_env))
 }
 

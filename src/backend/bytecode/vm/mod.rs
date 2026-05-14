@@ -323,6 +323,40 @@ where
     /// Monotonic id used to order nested failure barriers when their
     /// choice-point floors are equal.
     next_barrier_id: u64,
+
+    /// HE runner-mode flag — Plan S0c (2026-05-13).
+    ///
+    /// `false` (default) = HE `MettaRunnerMode::ADD` — bare top-level S-exprs
+    /// are silent side-effecting facts; the VM emits empty result lists.
+    ///
+    /// `true` = HE `MettaRunnerMode::INTERPRET` — set when compiled bytecode
+    /// for a `(! expr)` directive emits `Opcode::EnterInterpretMode` and
+    /// cleared on `Opcode::ExitInterpretMode`. Threaded through from the
+    /// environment per tier-locality. See spec §S0c.
+    pub(crate) interpret_mode: bool,
+
+    /// S2 BANG-WORD / decl-atom dispatch (2026-05-13): true when we're
+    /// executing the BODY of a `(! ...)` directive in this VM. Set when
+    /// `Opcode::EnterInterpretMode` fires, cleared by
+    /// `Opcode::ExitInterpretMode`. Used by `op_define_rule` (and the
+    /// future `op_define_type` equivalent for the `:` decl-atom path) to
+    /// skip the registration side-effect and push the form's data instead.
+    /// See `eval/step/sexpr.rs` for the T0 mirror via
+    /// `MettaEnvironment::in_bang_body()`.
+    pub(crate) bang_body: bool,
+
+    /// Equivalence-class table — Plan S0d.2 (2026-05-13).
+    ///
+    /// Lazily allocated when the first user `(unify ...)` form creates a
+    /// var-var-distinct equivalence (HE M-VAR-VAR-DISTINCT, spec §4.3.1).
+    /// Shared via `Arc` so cross-tier (JIT) reads can pin the table for the
+    /// duration of their span (see S0d.3).
+    ///
+    /// Cleared on `run()` entry to give each top-level invocation a fresh
+    /// table. Consulted by `op_push_variable` after ordinary frame-stack
+    /// lookup fails — value-less class members yield the original
+    /// lookup-key; value-bearing classes yield the class value.
+    pub(crate) class_table: Option<std::sync::Arc<crate::backend::models::ClassTable<V>>>,
 }
 
 /// Frame for case scrutinee fail barriers.
@@ -410,6 +444,13 @@ where
             case_barrier_frames: Vec::new(),
             next_barrier_id: 0,
             current_bindings: GenericBindings::new(),
+            interpret_mode: false,
+            // S2 BANG-WORD (2026-05-13): bang_body defaults false; toggled
+            // by EnterInterpretMode/ExitInterpretMode opcodes.
+            bang_body: false,
+            // S0d.2 (2026-05-13): class table lazily allocated on first
+            // user `(unify ...)` form that creates an equivalence.
+            class_table: None,
         }
     }
 
@@ -419,6 +460,18 @@ where
         env: GenericEnvironment<V, F>,
         factory: F,
     ) -> Self {
+        // S1 TOPLEVEL (2026-05-13): inherit HE INTERPRET mode from env.
+        // When a tier-promoted VM spawns from a trampoline thread that's
+        // already inside `(! expr)`, the env carries interpret_mode=true.
+        // Without this propagation, the VM's op_dispatch_rules would
+        // swallow the rule's reduction under ADD-mode semantics.
+        //
+        // S2 BANG-WORD (2026-05-13): same propagation for bang_body so
+        // op_define_rule sees the correct mode if a tier-promoted VM
+        // enters the body of `(! ...)` via env inheritance rather than
+        // via the EnterInterpretMode opcode.
+        let env_interpret_mode = env.in_interpret_mode();
+        let env_bang_body = env.in_bang_body();
         Self {
             value_stack: Vec::with_capacity(256),
             locals: Vec::new(),
@@ -451,6 +504,10 @@ where
             case_barrier_frames: Vec::new(),
             next_barrier_id: 0,
             current_bindings: GenericBindings::new(),
+            interpret_mode: env_interpret_mode,
+            bang_body: env_bang_body,
+            // S0d.2 (2026-05-13): see field doc on GenericBytecodeVM.
+            class_table: None,
         }
     }
 
@@ -463,6 +520,11 @@ where
         external_registry: Arc<super::external_registry::GenericExternalRegistry<V, F>>,
         memo_cache: Arc<super::memo_cache::MemoCache<V>>,
     ) -> Self {
+        // S1 TOPLEVEL (2026-05-13): inherit HE INTERPRET mode from env.
+        // S2 BANG-WORD (2026-05-13): also inherit bang_body for tier-promoted
+        // VMs spawning into the middle of a `(! ...)` body.
+        let env_interpret_mode = env.in_interpret_mode();
+        let env_bang_body = env.in_bang_body();
         Self {
             value_stack: Vec::with_capacity(256),
             locals: Vec::new(),
@@ -493,6 +555,10 @@ where
             case_barrier_frames: Vec::new(),
             next_barrier_id: 0,
             current_bindings: GenericBindings::new(),
+            interpret_mode: env_interpret_mode,
+            bang_body: env_bang_body,
+            // S0d.2 (2026-05-13): see field doc on GenericBytecodeVM.
+            class_table: None,
         }
     }
 
@@ -802,9 +868,12 @@ where
     }
 
     /// Create an error value using the factory.
+    ///
+    /// HE-bisimilar shape: the `msg` becomes a `String` detail; the `offending`
+    /// value sits in the first slot of `Error(offending, detail)`.
     #[inline]
-    pub fn make_error(&self, msg: &str, details: V) -> V {
-        self.factory.error(msg, details)
+    pub fn make_error(&self, msg: &str, offending: V) -> V {
+        self.factory.error(offending, self.factory.string(msg))
     }
 
     // === Binding Operations ===
@@ -824,6 +893,17 @@ where
         if let Some(frame) = self.bindings_stack.last_mut() {
             frame.set(name, value);
         }
+    }
+
+    // === Equivalence-Class Operations (S0d.2, 2026-05-13) ===
+
+    /// True iff the class table is empty (or absent). Hot-path fast skip for
+    /// the ~95% of expressions that never form an equivalence class.
+    #[inline]
+    pub(crate) fn class_table_is_empty(&self) -> bool {
+        self.class_table
+            .as_ref()
+            .map_or(true, |t| t.is_empty())
     }
 
     /// Push a new binding frame.
@@ -1056,8 +1136,8 @@ where
     /// loop's error interceptor.
     fn materialize_runtime_error_atom(&self, err: &VmError) -> V {
         let (msg, kind) = err.as_error_strings();
-        let details = self.factory.atom(kind);
-        self.factory.error(&msg, details)
+        let offending = self.factory.atom(kind);
+        self.factory.error(offending, self.factory.string(&msg))
     }
 
     /// Run the VM to completion, returning all results.
@@ -1074,6 +1154,12 @@ where
         // that nested `run()` re-entries (if any) and the initial chunk both
         // correctly reserve only the slots they need, at the right offset.
         self.ensure_locals_for_current_chunk();
+
+        // S0d.2 (2026-05-13): give each top-level invocation a fresh
+        // equivalence-class table. The table is populated by user
+        // `(unify ...)` forms (op_unify_bind / op_unify_deep /
+        // op_unify_deep_bind) and consulted by op_push_variable.
+        self.class_table = None;
 
         // Plan 2 (2026-05-06): periodic cooperative GC safepoint for parallel-
         // branch workers in the bytecode VM tier. Every 256 instructions, check
@@ -1966,6 +2052,26 @@ where
             Opcode::MatchExternalOr => self.op_match_external_or()?,
             Opcode::CollapseBindBegin => self.op_collapse_bind_begin()?,
             Opcode::CollapseBindEnd => return self.op_collapse_bind_end(),
+            // S1 TOPLEVEL (2026-05-13): HE runner-mode directives. Inline
+            // handlers — flip the flag, no value-stack effect.
+            //
+            // S2 BANG-WORD (2026-05-13): also toggle `bang_body` so
+            // op_define_rule (and any future `:` decl-atom opcode) skips
+            // registration inside `(! ...)` directives.
+            Opcode::EnterInterpretMode => {
+                self.interpret_mode = true;
+                self.bang_body = true;
+                if let Some(env) = self.env.as_mut() {
+                    env.set_bang_body(true);
+                }
+            }
+            Opcode::ExitInterpretMode => {
+                self.interpret_mode = false;
+                self.bang_body = false;
+                if let Some(env) = self.env.as_mut() {
+                    env.set_bang_body(false);
+                }
+            }
             Opcode::OccursCheck => self.op_occurs_check()?,
             Opcode::MapAtom => self.op_map_atom()?,
             Opcode::FilterAtom => self.op_filter_atom()?,
@@ -2334,11 +2440,31 @@ where
         // Check if it's a pattern variable that should be resolved from bindings
         if let Some(name) = var.as_atom() {
             if name.starts_with('$') {
-                // Search bindings from innermost to outermost
+                // Step 1: ordinary frame-stack binding takes precedence
+                // (HE invariant: one slot per name; class lookup is a
+                // fallback when no entry exists).
                 for frame in self.bindings_stack.iter().rev() {
                     if let Some(value) = frame.get(name) {
                         self.push(value.clone());
                         return Ok(());
+                    }
+                }
+                // Step 2: S0d.2 (2026-05-13) class-aware lookup. If the
+                // variable is a member of an equivalence class created by
+                // a prior `(unify ...)` form, return the class value
+                // (if any) or the ORIGINAL lookup-key (preserves T03/004
+                // distinct-vars semantics — HE M-VAR-VAR-DISTINCT).
+                if !self.class_table_is_empty() {
+                    if let Some(table) = self.class_table.as_ref() {
+                        if let Some(cid) = table.class_of(name) {
+                            if let Some(v) = table.class_value(cid) {
+                                self.push(v.clone());
+                                return Ok(());
+                            }
+                            // Value-less class → push ORIGINAL lookup-key.
+                            self.push(var);
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -3023,14 +3149,38 @@ where
         let b = self.pop()?;
         let a = self.pop()?;
 
-        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&a, &b)
-        {
-            for (name, val) in bindings.iter() {
-                self.set_binding(name.to_string(), val.clone());
+        // S0d.2 (2026-05-13): user-facing `(unify ...)` form uses
+        // `UnifyMode::Unify` so var-var-distinct creates an equivalence class
+        // (HE M-VAR-VAR-DISTINCT, spec §4.3.1). Class memberships are merged
+        // into the VM's `class_table` so subsequent `op_push_variable` for a
+        // value-less class member yields the original lookup-key, preserving
+        // T03/004 distinct-vars semantics under strict alpha.
+        use crate::backend::models::UnifyMode;
+        match crate::backend::eval::bindings::bidirectional_unify_generic_with_mode(
+            &a,
+            &b,
+            UnifyMode::Unify,
+        ) {
+            Some(bindings) => {
+                // Install ordinary entries into the current VM frame.
+                for (name, val) in bindings.entries.iter() {
+                    self.set_binding(name.to_string(), val.clone());
+                }
+                // Adopt any new class table produced by this unify call.
+                // The unifier returns an isolated table (it does not see the
+                // VM's prior classes) — for the single-form usage `(unify a b
+                // body fail)` this is correct because each form's classes
+                // are scoped to its body. If a future S0d.x step needs
+                // cross-form class accumulation, switch to a class-aware
+                // unifier seeded with `self.class_table`.
+                if bindings.classes.is_some() {
+                    self.class_table = bindings.classes;
+                }
+                self.push(self.make_bool(true));
             }
-            self.push(self.make_bool(true));
-        } else {
-            self.push(self.make_bool(false));
+            None => {
+                self.push(self.make_bool(false));
+            }
         }
         Ok(())
     }
@@ -3040,28 +3190,43 @@ where
     // =========================================================================
 
     /// UnifyDeep: Full bidirectional M-M unification with fail-offset jump.
+    ///
+    /// S0d.2 (2026-05-13): uses `UnifyMode::Unify` so var-var-distinct pairs
+    /// form equivalence classes. Class memberships are merged into the VM's
+    /// `class_table` for downstream `op_push_variable` lookups.
     fn op_unify_deep(&mut self) -> VmResult<()> {
         let offset = self.read_i16()?;
         let b = self.pop()?;
         let a = self.pop()?;
 
-        if let Some(bindings) = crate::backend::eval::bindings::bidirectional_unify_generic(&a, &b)
-        {
-            // Trail all new bindings
-            let frame_index = self.bindings_stack.len().saturating_sub(1);
-            for (name, _val) in bindings.iter() {
-                self.trail.push(TrailEntry::NewBinding {
-                    frame_index,
-                    name: name.to_string(),
-                });
+        use crate::backend::models::UnifyMode;
+        match crate::backend::eval::bindings::bidirectional_unify_generic_with_mode(
+            &a,
+            &b,
+            UnifyMode::Unify,
+        ) {
+            Some(bindings) => {
+                // Trail all new bindings for backtrack undo.
+                let frame_index = self.bindings_stack.len().saturating_sub(1);
+                for (name, _val) in bindings.entries.iter() {
+                    self.trail.push(TrailEntry::NewBinding {
+                        frame_index,
+                        name: name.to_string(),
+                    });
+                }
+                // Install bindings in current frame.
+                for (name, val) in bindings.entries.iter() {
+                    self.set_binding(name.to_string(), val.clone());
+                }
+                // Adopt any new class table produced by this unify call.
+                if bindings.classes.is_some() {
+                    self.class_table = bindings.classes;
+                }
             }
-            // Install bindings in current frame
-            for (name, val) in bindings.iter() {
-                self.set_binding(name.to_string(), val.clone());
+            None => {
+                let jump_from = self.ip;
+                self.ip = (jump_from as isize + offset as isize) as usize;
             }
-        } else {
-            let jump_from = self.ip;
-            self.ip = (jump_from as isize + offset as isize) as usize;
         }
         Ok(())
     }
@@ -3988,28 +4153,44 @@ where
         let pattern2 = self.pop()?;
         let val1 = self.pop()?;
 
-        // Non-space native path: bidirectional unify val1 ↔ pattern2.
-        if let Some(bindings) =
-            crate::backend::eval::bindings::bidirectional_unify_generic(&val1, &pattern2)
-        {
-            // Trail all new bindings so backtracking can restore state.
-            let frame_index = self.bindings_stack.len().saturating_sub(1);
-            for (name, _val) in bindings.iter() {
-                self.trail.push(TrailEntry::NewBinding {
-                    frame_index,
-                    name: name.to_string(),
-                });
+        // S0d.2 (2026-05-13): user-facing 4-arg `(unify val1 pattern2 body
+        // fail)` form. Use `UnifyMode::Unify` so var-var-distinct creates an
+        // equivalence class (HE M-VAR-VAR-DISTINCT, spec §4.3.1). Class
+        // memberships are merged into the VM's `class_table` so the success
+        // body's `op_push_variable` for a value-less class member yields the
+        // ORIGINAL lookup-key, preserving T03/004 distinct-vars semantics.
+        use crate::backend::models::UnifyMode;
+        match crate::backend::eval::bindings::bidirectional_unify_generic_with_mode(
+            &val1,
+            &pattern2,
+            UnifyMode::Unify,
+        ) {
+            Some(bindings) => {
+                // Trail all new bindings so backtracking can restore state.
+                let frame_index = self.bindings_stack.len().saturating_sub(1);
+                for (name, _val) in bindings.entries.iter() {
+                    self.trail.push(TrailEntry::NewBinding {
+                        frame_index,
+                        name: name.to_string(),
+                    });
+                }
+                // Install ordinary bindings in current frame.
+                for (name, val) in bindings.entries.iter() {
+                    self.set_binding(name.to_string(), val.clone());
+                }
+                // Adopt the class table produced by this unify call (if any).
+                // Cleared on `run()` entry, so each top-level invocation
+                // starts fresh.
+                if bindings.classes.is_some() {
+                    self.class_table = bindings.classes;
+                }
+                // Fall through to success body.
             }
-            // Install bindings in current frame; success body's LoadBinding ops
-            // will resolve via frame lookup.
-            for (name, val) in bindings.iter() {
-                self.set_binding(name.to_string(), val.clone());
+            None => {
+                // No match: jump to failure body.
+                let jump_from = self.ip;
+                self.ip = (jump_from as isize + offset as isize) as usize;
             }
-            // Fall through to success body (next bytecode after Unify4's operand).
-        } else {
-            // No match: jump to failure body.
-            let jump_from = self.ip;
-            self.ip = (jump_from as isize + offset as isize) as usize;
         }
         Ok(())
     }
@@ -6225,6 +6406,23 @@ where
             )
         })?;
 
+        // S2 BANG-WORD (2026-05-13): when called inside `(! ...)` body, the
+        // `(= lhs rhs)` form is data (not a rule definition). Reconstruct the
+        // S-expression and push it as the result instead of registering.
+        // Mirrors the T0 `=` arm in `eval/step/sexpr.rs`. The compiler emits
+        // `DefineRule + Pop` (matching tree-walker "rule defs return empty");
+        // we push a sacrificial Unit AFTER the datum so the subsequent Pop
+        // eats the Unit and leaves the datum on the stack for the outer
+        // `op_return` / output gate.
+        if self.bang_body {
+            let factory = env.factory().clone();
+            let eq_atom = factory.atom("=");
+            let sexpr = factory.sexpr(vec![eq_atom, pattern, body]);
+            self.push(sexpr);
+            self.push(self.make_unit());
+            return Ok(());
+        }
+
         // Add the rule (lhs=pattern, rhs=body)
         env.add_rule(pattern, body);
         crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
@@ -6394,9 +6592,10 @@ where
                             })
                         })
                     {
-                        let err = self
-                            .factory
-                            .error(&format!("All types for '{}' are errors", head), expr);
+                        let err = self.factory.error(
+                            expr,
+                            self.factory.string(&format!("All types for '{}' are errors", head)),
+                        );
                         self.push(err);
                         return Ok(());
                     }
@@ -6720,6 +6919,14 @@ where
                         env_mut.add_to_space(&expr);
                         crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
                     }
+                }
+                // S1 TOPLEVEL (2026-05-13): HE ADD-mode emits NOTHING for
+                // bare top-level S-exprs. Side-effect (add-to-space) is
+                // already performed above. INTERPRET-mode (set by `(! ...)`)
+                // takes the unchanged-data path so observable output flows.
+                if !self.interpret_mode {
+                    self.push(self.factory.empty());
+                    return Ok(());
                 }
             }
             // No rules match and no rules exist for this head: this is a data
@@ -8087,8 +8294,8 @@ where
             // Per T1.A errors-as-values pattern: push an Error atom rather
             // than returning VmError, so downstream opcodes can short-circuit.
             let err = self.factory.error(
-                "match: first argument must be a space",
                 space,
+                self.factory.string("match: first argument must be a space"),
             );
             self.push(err);
             Ok(())

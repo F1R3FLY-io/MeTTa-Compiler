@@ -19,6 +19,127 @@ use crate::tree_sitter_parser::SyntaxError;
 use tracing::{debug, error, info, instrument};
 
 // ============================================================================
+// S2 BANG-WORD: top-level `(Atom("!"), SExpr(...))` pair folding
+// ============================================================================
+
+/// S2 BANG-WORD (2026-05-13): fold consecutive top-level `Atom("!")` followed
+/// by any S-expression into a single `(! sexpr)` form. Mirrors HE's runner
+/// directive semantics: `!` is a runner-level eval sigil, NOT a parser unary
+/// operator. Per the new parser behavior (S2 Part A), `!(expr)` produces two
+/// separate top-level tokens `Atom("!")` and `SExpr(...)`; this fold pairs
+/// them in compile order.
+///
+/// Operates only at the TOP LEVEL of the parsed source. Nested occurrences
+/// of `!` inside lists are unaffected (e.g., `(!bar)` parses as a 1-element
+/// list `[Atom("!bar")]` directly from the parser; `(! foo)` with whitespace
+/// parses as `[Atom("!"), Atom("foo")]` and stays that way — the fold does
+/// not descend into S-expressions).
+///
+/// The constructed `(! body)` wrapper preserves source spans for IDE /
+/// debugger support: the outer wrapper's span covers from the `!` atom's
+/// start through the body's end. Without this, downstream `is_spanned()`
+/// queries (`backend/compile.rs::test_compile_span_on_prefix_operator`,
+/// language-server hover, error messages) would silently lose location
+/// information when the parser-level `!` is paired with its body.
+///
+/// Type parameters mirror the rest of the compile pipeline:
+/// - `V`: any value type implementing `MettaValueTrait`
+/// - `F`: factory for constructing the wrapping `(! sexpr)`
+pub fn fold_bang_pairs_generic<V, F>(values: Vec<V>, factory: &F) -> Vec<V>
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    if values.len() < 2 {
+        return values;
+    }
+
+    // Preallocate at worst-case capacity (no pairs fold). When pairs do fold,
+    // the vec will be smaller than capacity — acceptable trade-off vs. a two
+    // pass approach (one to count, one to fold).
+    let mut out: Vec<V> = Vec::with_capacity(values.len());
+    let mut iter = values.into_iter().peekable();
+    while let Some(v) = iter.next() {
+        // Match a bare `Atom("!")` followed by ANY value. Per S2, the
+        // adjacency rule pairs `!` with the next token regardless of its
+        // kind so that `! 42` and `! "x"` (degenerate but legal forms) still
+        // get the same INTERPRET-mode wrapping as `!(expr)`. HE behaves the
+        // same: any token immediately following a bare `!` is treated as
+        // the directive's body.
+        let is_bare_bang = v.as_atom() == Some("!");
+        if is_bare_bang && iter.peek().is_some() {
+            // Capture the `!` atom's span before consuming the body so the
+            // wrapper can synthesize a covering span.
+            let bang_span = v.span().copied();
+            let body = iter.next().expect("peek().is_some() guarantees next()");
+            let body_span = body.span().copied();
+            // Construct `(! body)` as an SExpr with two items. Reuse `v`
+            // for the head (it already carries the `!` atom's span via the
+            // emit_atom call in the parser).
+            let wrapped_inner = factory.sexpr(vec![v, body]);
+            // Synthesize the wrapper span from the bang start through the
+            // body end. If either side lacks a span (degenerate factory
+            // construction), fall back to no span on the wrapper.
+            let wrapped = match (bang_span, body_span) {
+                (Some(bs), Some(es)) => factory.spanned(
+                    wrapped_inner,
+                    crate::ir::Span::new(bs.start, es.end),
+                ),
+                _ => wrapped_inner,
+            };
+            out.push(wrapped);
+        } else {
+            // HE-faithful: top-level atoms starting with `!` (e.g. `!foo`)
+            // are single symbols per HE's parser word-rule. The runner
+            // (eval mode dispatch) uses EXACT-equality `atom == EXEC_SYMBOL`
+            // — `!foo` does NOT trigger force-eval, it stays as a stored
+            // symbol in ADD mode. See `hyperon-experimental/lib/src/metta/
+            // text.rs:638` and `runner/mod.rs:1072`. Do NOT split here.
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// MettaExpr variant of `fold_bang_pairs_generic` for the IR cold path.
+///
+/// The IR uses `MettaExpr::Atom(String, _)` and `MettaExpr::List(Vec<_>, _)`
+/// instead of factory-backed values; we re-implement the same fold rather
+/// than generalize over the emitter (the trait would need an introspection
+/// method, which would force a public API expansion). The two implementations
+/// are kept in lock-step by the parser unit-tests and by `parse_to_ir`'s
+/// integration test coverage.
+///
+/// Preserves source spans: when both `!` and body carry spans, the wrapper
+/// list's span covers `bang.start..body.end`.
+pub fn fold_bang_pairs_expr(exprs: Vec<MettaExpr>) -> Vec<MettaExpr> {
+    if exprs.len() < 2 {
+        return exprs;
+    }
+    let mut out: Vec<MettaExpr> = Vec::with_capacity(exprs.len());
+    let mut iter = exprs.into_iter().peekable();
+    while let Some(e) = iter.next() {
+        let is_bare_bang = matches!(&e, MettaExpr::Atom(s, _) if s == "!");
+        if is_bare_bang && iter.peek().is_some() {
+            let bang_span = e.span();
+            let body = iter.next().expect("peek().is_some() guarantees next()");
+            let body_span = body.span();
+            // Wrap span covers `(!` through end of body when available.
+            let wrapper_span = match (bang_span, body_span) {
+                (Some(bs), Some(es)) => Some(crate::ir::Span::new(bs.start, es.end)),
+                _ => None,
+            };
+            out.push(MettaExpr::List(vec![e, body], wrapper_span));
+        } else {
+            // HE-faithful: do NOT split `!`-prefixed atoms. See note in
+            // fold_bang_pairs_generic above.
+            out.push(e);
+        }
+    }
+    out
+}
+
+// ============================================================================
 // Generic Compilation - Zero-Conversion Support
 // ============================================================================
 
@@ -136,6 +257,12 @@ where
         e
     })?;
 
+    // S2 BANG-WORD (2026-05-13): pair top-level bare `!` atoms with their
+    // following S-expression argument. The parser emits them as separate
+    // tokens (HE word-vs-sigil semantics); the runner directive form
+    // `(! expr)` is reconstructed here for downstream INTERPRET-mode dispatch.
+    let values = fold_bang_pairs_generic(values, factory);
+
     info!(expr_count = values.len(), "Generic compilation successful");
 
     Ok(values)
@@ -219,6 +346,11 @@ pub fn compile(src: &str) -> Result<MettaState, SyntaxError> {
         e
     })?;
 
+    // S2 BANG-WORD (2026-05-13): pair top-level bare `!` atoms with their
+    // following S-expression argument. See `fold_bang_pairs_generic` for the
+    // full HE-bisimilarity rationale.
+    let values = fold_bang_pairs_generic(values, &factory);
+
     info!(
         expr_count = values.len(),
         "MettaState compilation successful"
@@ -241,9 +373,13 @@ pub fn compile_with_path(src: &str, file_path: Option<&str>) -> Result<MettaStat
     })
 }
 
-/// Helper function to create an error value
-pub fn make_error(msg: &str, details: MettaValue) -> MettaValue {
-    MettaValue::Error(msg.to_string(), details)
+/// Helper function to create an error value.
+///
+/// HE-bisimilar shape: `Error(offending_expr, "msg")`. The message is wrapped
+/// as a `String` value; the offending expression is the first slot.
+pub fn make_error(msg: &str, offending: MettaValue) -> MettaValue {
+    let factory = crate::backend::models::global_factory();
+    MettaValue::Error(offending, factory.string(msg))
 }
 
 #[cfg(test)]
@@ -637,8 +773,12 @@ mod tests {
         );
 
         assert_eq!(results.len(), 1);
-        if let MettaValueInner::Error(msg, _) = results[0].inner() {
-            assert_eq!(*msg, "failure-code");
+        // HE-bisimilar shape: source `(error <message-atom> <offending>)`
+        // maps to internal Error(offending=42, detail=failure-code-atom).
+        // The (error) special form preserves atom-vs-string distinction —
+        // the user passed an atom, so detail stays an atom.
+        if let MettaValueInner::Error(_, detail) = results[0].inner() {
+            assert_eq!(detail.as_atom(), Some("failure-code"));
         } else {
             panic!("Expected error, got: {:?}", results[0]);
         }

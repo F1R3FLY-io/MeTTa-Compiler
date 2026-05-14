@@ -188,18 +188,15 @@ fn encode_wide_storage_inner<V: MettaValueTrait>(value: &V, buf: &mut Vec<u8>) {
             encode_leb128(buf, 0);
         }
 
-        MettaValueInner::Error(msg, _) => {
-            let (_, details) = value.as_error().expect("matched Error");
-            // (error "msg" details)
+        MettaValueInner::Error(_, _) => {
+            let (offending, detail) = value.as_error().expect("matched Error");
+            // (error offending detail) — HE-bisimilar 3-element form. Both
+            // operands are arbitrary atoms, so encode each recursively.
             buf.push(TAG_ARITY);
             encode_leb128(buf, 3);
             write_wide_symbol(buf, b"error");
-            let mut scratch = Vec::with_capacity(msg.len() + 2);
-            scratch.push(b'"');
-            scratch.extend_from_slice(msg.as_bytes());
-            scratch.push(b'"');
-            write_wide_symbol(buf, &scratch);
-            encode_wide_storage_inner(details, buf);
+            encode_wide_storage_inner(offending, buf);
+            encode_wide_storage_inner(detail, buf);
         }
 
         MettaValueInner::Type(_) => {
@@ -266,6 +263,13 @@ fn encode_wide_storage_inner<V: MettaValueTrait>(value: &V, buf: &mut Vec<u8>) {
         MettaValueInner::Empty => {
             // Empty sentinel — encode as atom for storage completeness
             write_wide_symbol(buf, b"%Empty%");
+        }
+
+        MettaValueInner::NotReducible => {
+            // Plan S0a (2026-05-13) — HE `NotReducible` sentinel encoded as
+            // its interned atom name. MORK queries can match it like any
+            // other symbol.
+            write_wide_symbol(buf, b"NotReducible");
         }
 
         MettaValueInner::Spanned(..) => {
@@ -362,17 +366,13 @@ fn encode_wide_debruijn_inner<V: MettaValueTrait>(
             }
         }
 
-        MettaValueInner::Error(msg, _) => {
-            let (_, details) = value.as_error().expect("matched Error");
+        MettaValueInner::Error(_, _) => {
+            let (offending, detail) = value.as_error().expect("matched Error");
             buf.push(TAG_ARITY);
             encode_leb128(buf, 3);
             write_wide_symbol(buf, b"error");
-            let mut scratch = Vec::with_capacity(msg.len() + 2);
-            scratch.push(b'"');
-            scratch.extend_from_slice(msg.as_bytes());
-            scratch.push(b'"');
-            write_wide_symbol(buf, &scratch);
-            encode_wide_debruijn_inner(details, ctx, buf);
+            encode_wide_debruijn_inner(offending, ctx, buf);
+            encode_wide_debruijn_inner(detail, ctx, buf);
         }
 
         MettaValueInner::Type(_) => {
@@ -433,6 +433,11 @@ fn encode_wide_debruijn_inner<V: MettaValueTrait>(
 
         MettaValueInner::Empty => {
             write_wide_symbol(buf, b"%Empty%");
+        }
+
+        MettaValueInner::NotReducible => {
+            // Plan S0a (2026-05-13) — HE `NotReducible` sentinel symbol.
+            write_wide_symbol(buf, b"NotReducible");
         }
 
         MettaValueInner::Spanned(..) => {

@@ -269,6 +269,7 @@ pub unsafe extern "C" fn jit_runtime_call(
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::String(_)
         | ValueView::SExpr(_)
         | ValueView::Error(_, _)
@@ -307,7 +308,7 @@ pub unsafe extern "C" fn jit_runtime_call(
                 items.push(JitValue::from_raw(*args_ptr.add(i)).to_metta());
             }
             let call_expr = MettaValue::SExpr(items);
-            let err = factory.error(&format!("All types for '{}' are errors", head), call_expr);
+            let err = factory.error(call_expr, factory.string(&format!("All types for '{}' are errors", head)));
             return value_to_jit_generic(&err).to_bits();
         }
     }
@@ -374,6 +375,14 @@ pub unsafe extern "C" fn jit_runtime_call(
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
+            // S1 TOPLEVEL (2026-05-13): HE ADD-mode emits NOTHING at the
+            // top level (call_depth==0, !interpret_mode). The T1 path is
+            // the single source of truth for add-to-space side-effects;
+            // T2/T3 JIT skips that and only contributes to observable
+            // output when in INTERPRET mode.
+            if ctx_ref.call_depth == 0 && !ctx_ref.interpret_mode {
+                return JitValue::empty().to_bits();
+            }
             // This is a major optimization: no bailout needed!
             return value_to_jit_generic(&expr).to_bits();
         }
@@ -528,6 +537,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::String(_)
         | ValueView::SExpr(_)
         | ValueView::Error(_, _)
@@ -603,6 +613,10 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
+            // S1 TOPLEVEL (2026-05-13): HE ADD-mode emits NOTHING.
+            if ctx_ref.call_depth == 0 && !ctx_ref.interpret_mode {
+                return JitValue::empty().to_bits();
+            }
             // This is a major optimization: no bailout needed!
             return value_to_jit_generic(&expr).to_bits();
         }
@@ -717,6 +731,10 @@ pub unsafe extern "C" fn jit_runtime_call_n(
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
+            // S1 TOPLEVEL (2026-05-13): HE ADD-mode emits NOTHING.
+            if ctx_ref.call_depth == 0 && !ctx_ref.interpret_mode {
+                return JitValue::empty().to_bits();
+            }
             return value_to_jit_generic(&expr).to_bits();
         }
 
@@ -825,6 +843,10 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
+            // S1 TOPLEVEL (2026-05-13): HE ADD-mode emits NOTHING.
+            if ctx_ref.call_depth == 0 && !ctx_ref.interpret_mode {
+                return JitValue::empty().to_bits();
+            }
             return value_to_jit_generic(&expr).to_bits();
         }
 

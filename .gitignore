@@ -44,3 +44,5 @@ Makefile.conf
 repos/
 
 ._*
+
+.mettatron-*

@@ -3494,17 +3494,18 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         }
                                         _ => {
                                             let error_value = match e {
-                                                ExecError::Runtime(msg) => ctx
-                                                    .factory()
-                                                    .error(&msg, ctx.factory().atom("TypeError")),
+                                                ExecError::Runtime(msg) => ctx.factory().error(
+                                                    ctx.factory().atom("TypeError"),
+                                                    ctx.factory().string(&msg),
+                                                ),
                                                 ExecError::Arithmetic(msg) => ctx.factory().error(
-                                                    &msg,
                                                     ctx.factory().atom("ArithmeticError"),
+                                                    ctx.factory().string(&msg),
                                                 ),
                                                 ExecError::IncorrectArgument(msg) => {
                                                     ctx.factory().error(
-                                                        &msg,
                                                         ctx.factory().atom("IncorrectArgument"),
+                                                        ctx.factory().string(&msg),
                                                     )
                                                 }
                                                 ExecError::NoReduce => unreachable!(),
@@ -3522,11 +3523,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // generic registry. Custom operations should be added there, not to the
                             // legacy registry.
                             let error_value = ctx.factory().error(
-                                &format!(
+                                ctx.factory().atom("OperationNotFoundError"),
+                                ctx.factory().string(&format!(
                                     "Grounded operation '{}' not found in generic registry",
                                     op_name
-                                ),
-                                ctx.factory().atom("OperationNotFoundError"),
+                                )),
                             );
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(error_value)], env),
@@ -5255,8 +5256,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                         crate::backend::eval::cesk::ThunkLookup::Blackhole => {
                             // Infinite recursion detected — return error
                             let error_val = ctx.factory().error(
-                                "blackhole",
                                 ctx.factory().atom("infinite recursion in EvalWithBindings"),
+                                ctx.factory().string("blackhole"),
                             );
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(error_val)], env),
@@ -6852,15 +6853,18 @@ fn process_continuation<C: EvalContext>(
                             }
                             _ => {
                                 let error_value = match e {
-                                    ExecError::Runtime(msg) => {
-                                        ctx.factory().error(&msg, ctx.factory().atom("TypeError"))
-                                    }
-                                    ExecError::Arithmetic(msg) => ctx
-                                        .factory()
-                                        .error(&msg, ctx.factory().atom("ArithmeticError")),
-                                    ExecError::IncorrectArgument(msg) => ctx
-                                        .factory()
-                                        .error(&msg, ctx.factory().atom("IncorrectArgument")),
+                                    ExecError::Runtime(msg) => ctx.factory().error(
+                                        ctx.factory().atom("TypeError"),
+                                        ctx.factory().string(&msg),
+                                    ),
+                                    ExecError::Arithmetic(msg) => ctx.factory().error(
+                                        ctx.factory().atom("ArithmeticError"),
+                                        ctx.factory().string(&msg),
+                                    ),
+                                    ExecError::IncorrectArgument(msg) => ctx.factory().error(
+                                        ctx.factory().atom("IncorrectArgument"),
+                                        ctx.factory().string(&msg),
+                                    ),
                                     ExecError::NoReduce => unreachable!(),
                                 };
                                 work_stack.push(WorkItem::Resume {
@@ -6872,11 +6876,11 @@ fn process_continuation<C: EvalContext>(
                 }
             } else {
                 let error_value = ctx.factory().error(
-                    &format!(
+                    ctx.factory().atom("OperationNotFoundError"),
+                    ctx.factory().string(&format!(
                         "Grounded operation '{}' not found in generic registry",
                         state.op_name
-                    ),
-                    ctx.factory().atom("OperationNotFoundError"),
+                    )),
                 );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(error_value)], result_env),
@@ -7003,15 +7007,18 @@ fn process_continuation<C: EvalContext>(
                                 }
                                 _ => {
                                     let error_value = match e {
-                                        ExecError::Runtime(msg) => ctx
-                                            .factory()
-                                            .error(&msg, ctx.factory().atom("TypeError")),
-                                        ExecError::Arithmetic(msg) => ctx
-                                            .factory()
-                                            .error(&msg, ctx.factory().atom("ArithmeticError")),
-                                        ExecError::IncorrectArgument(msg) => ctx
-                                            .factory()
-                                            .error(&msg, ctx.factory().atom("IncorrectArgument")),
+                                        ExecError::Runtime(msg) => ctx.factory().error(
+                                            ctx.factory().atom("TypeError"),
+                                            ctx.factory().string(&msg),
+                                        ),
+                                        ExecError::Arithmetic(msg) => ctx.factory().error(
+                                            ctx.factory().atom("ArithmeticError"),
+                                            ctx.factory().string(&msg),
+                                        ),
+                                        ExecError::IncorrectArgument(msg) => ctx.factory().error(
+                                            ctx.factory().atom("IncorrectArgument"),
+                                            ctx.factory().string(&msg),
+                                        ),
                                         ExecError::NoReduce => unreachable!(),
                                     };
                                     work_stack.push(WorkItem::Resume {
@@ -7023,11 +7030,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let error_value = ctx.factory().error(
-                        &format!(
+                        ctx.factory().atom("OperationNotFoundError"),
+                        ctx.factory().string(&format!(
                             "Grounded operation '{}' not found in generic registry",
                             state_i.op_name
-                        ),
-                        ctx.factory().atom("OperationNotFoundError"),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(error_value)], result_env),
@@ -10774,19 +10781,37 @@ fn process_continuation<C: EvalContext>(
                                 // unification bindings so variables bound by the pattern1
                                 // source expression (e.g. $who from rule match) flow into
                                 // the success_body, not just pattern2's unification vars.
+                                // S0d.1: use UnifyMode::Unify so var-var-distinct
+                                // creates equivalence classes (HE M-VAR-VAR-DISTINCT).
                                 let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for (generic_value, count) in &matches {
-                                    if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, generic_value) {
+                                    if let Some(uni_bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify_with_mode(&pattern2, generic_value, crate::backend::models::UnifyMode::Unify) {
                                         found_match = true;
-                                        let composed = if val1_bindings.is_empty() {
-                                            bindings
+                                        // Fast path: no classes formed → legacy compose+apply.
+                                        // Class path: apply outer first, then class bindings.
+                                        let generic_body = if uni_bindings.is_empty_classes() {
+                                            let bindings = uni_bindings.into_entries();
+                                            let composed = if val1_bindings.is_empty() {
+                                                bindings
+                                            } else {
+                                                crate::backend::eval::bindings::compose_outer_inner_generic(
+                                                    &val1_bindings, &bindings, ctx.factory(),
+                                                )
+                                            };
+                                            apply_bindings(&success_body, &composed, ctx.factory())
                                         } else {
-                                            crate::backend::eval::bindings::compose_outer_inner_generic(
-                                                &val1_bindings, &bindings, ctx.factory(),
+                                            // Apply outer first; class machinery preserves
+                                            // value-less class members as ORIGINAL atoms.
+                                            let after_outer = if val1_bindings.is_empty() {
+                                                success_body
+                                            } else {
+                                                apply_bindings(&success_body, &val1_bindings, ctx.factory())
+                                            };
+                                            crate::backend::eval::trampoline::engine::apply_bindings_with_classes(
+                                                &after_outer, &uni_bindings, ctx.factory(),
                                             )
                                         };
-                                        let generic_body = apply_bindings(&success_body, &composed, ctx.factory());
                                         for _ in 0..*count {
                                             bodies_to_eval.push(generic_body.clone());
                                         }
@@ -10862,21 +10887,32 @@ fn process_continuation<C: EvalContext>(
                                     carrying_bindings: outer_carrying.clone(),
                                 });
                             } else {
-                                // Build bodies to evaluate for each match - NO conversion needed.
-                                // Task #68 gap-fix: compose val1_bindings with unify bindings.
+                                // S0d.1: use UnifyMode::Unify (HE M-VAR-VAR-DISTINCT).
                                 let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                                 let mut found_match = false;
                                 for m in &matches {
-                                    if let Some(bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify(&pattern2, &m.value) {
+                                    if let Some(uni_bindings) = crate::backend::eval::trampoline::unification::bidirectional_unify_with_mode(&pattern2, &m.value, crate::backend::models::UnifyMode::Unify) {
                                         found_match = true;
-                                        let composed = if val1_bindings.is_empty() {
-                                            bindings
+                                        let generic_body = if uni_bindings.is_empty_classes() {
+                                            let bindings = uni_bindings.into_entries();
+                                            let composed = if val1_bindings.is_empty() {
+                                                bindings
+                                            } else {
+                                                crate::backend::eval::bindings::compose_outer_inner_generic(
+                                                    &val1_bindings, &bindings, ctx.factory(),
+                                                )
+                                            };
+                                            apply_bindings(&success_body, &composed, ctx.factory())
                                         } else {
-                                            crate::backend::eval::bindings::compose_outer_inner_generic(
-                                                &val1_bindings, &bindings, ctx.factory(),
+                                            let after_outer = if val1_bindings.is_empty() {
+                                                success_body
+                                            } else {
+                                                apply_bindings(&success_body, &val1_bindings, ctx.factory())
+                                            };
+                                            crate::backend::eval::trampoline::engine::apply_bindings_with_classes(
+                                                &after_outer, &uni_bindings, ctx.factory(),
                                             )
                                         };
-                                        let generic_body = apply_bindings(&success_body, &composed, ctx.factory());
                                         for _ in 0..m.count {
                                             bodies_to_eval.push(generic_body.clone());
                                         }
@@ -11006,29 +11042,40 @@ fn process_continuation<C: EvalContext>(
                             .map(|m| (m.value, m.count))
                             .collect();
 
-                        // Build bodies for matches - values already generic.
-                        // Task #68 gap-fix: compose first_b (val1's bindings).
+                        // S0d.1: UnifyMode::Unify.
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for (generic_value, count) in &matches {
-                            if let Some(bindings) =
-                                crate::backend::eval::trampoline::unification::bidirectional_unify(
+                            if let Some(uni_bindings) =
+                                crate::backend::eval::trampoline::unification::bidirectional_unify_with_mode(
                                     &pattern2,
                                     generic_value,
+                                    crate::backend::models::UnifyMode::Unify,
                                 )
                             {
                                 found_match = true;
-                                let composed = if first_b.is_empty() {
-                                    bindings
+                                let generic_body = if uni_bindings.is_empty_classes() {
+                                    let bindings = uni_bindings.into_entries();
+                                    let composed = if first_b.is_empty() {
+                                        bindings
+                                    } else {
+                                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                                            &first_b,
+                                            &bindings,
+                                            ctx.factory(),
+                                        )
+                                    };
+                                    apply_bindings(&success_body, &composed, ctx.factory())
                                 } else {
-                                    crate::backend::eval::bindings::compose_outer_inner_generic(
-                                        &first_b,
-                                        &bindings,
-                                        ctx.factory(),
+                                    let after_outer = if first_b.is_empty() {
+                                        success_body
+                                    } else {
+                                        apply_bindings(&success_body, &first_b, ctx.factory())
+                                    };
+                                    crate::backend::eval::trampoline::engine::apply_bindings_with_classes(
+                                        &after_outer, &uni_bindings, ctx.factory(),
                                     )
                                 };
-                                let generic_body =
-                                    apply_bindings(&success_body, &composed, ctx.factory());
                                 for _ in 0..*count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
@@ -11071,28 +11118,38 @@ fn process_continuation<C: EvalContext>(
                         let matches: Vec<GenericMultiplicityMatch<MettaValue>> =
                             handle.collapse_with_multiplicity_generic(ctx.factory());
 
-                        // Build bodies for matches - NO conversion needed.
-                        // Task #68 gap-fix: compose first_b (val1's bindings).
+                        // S0d.1: UnifyMode::Unify.
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
-                            if let Some(bindings) =
-                                crate::backend::eval::trampoline::unification::bidirectional_unify(
-                                    &pattern2, &m.value,
+                            if let Some(uni_bindings) =
+                                crate::backend::eval::trampoline::unification::bidirectional_unify_with_mode(
+                                    &pattern2, &m.value, crate::backend::models::UnifyMode::Unify,
                                 )
                             {
                                 found_match = true;
-                                let composed = if first_b.is_empty() {
-                                    bindings
+                                let generic_body = if uni_bindings.is_empty_classes() {
+                                    let bindings = uni_bindings.into_entries();
+                                    let composed = if first_b.is_empty() {
+                                        bindings
+                                    } else {
+                                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                                            &first_b,
+                                            &bindings,
+                                            ctx.factory(),
+                                        )
+                                    };
+                                    apply_bindings(&success_body, &composed, ctx.factory())
                                 } else {
-                                    crate::backend::eval::bindings::compose_outer_inner_generic(
-                                        &first_b,
-                                        &bindings,
-                                        ctx.factory(),
+                                    let after_outer = if first_b.is_empty() {
+                                        success_body
+                                    } else {
+                                        apply_bindings(&success_body, &first_b, ctx.factory())
+                                    };
+                                    crate::backend::eval::trampoline::engine::apply_bindings_with_classes(
+                                        &after_outer, &uni_bindings, ctx.factory(),
                                     )
                                 };
-                                let generic_body =
-                                    apply_bindings(&success_body, &composed, ctx.factory());
                                 for _ in 0..m.count {
                                     bodies_to_eval.push(generic_body.clone());
                                 }
@@ -11235,29 +11292,38 @@ fn process_continuation<C: EvalContext>(
                                 handle.collapse_with_multiplicity_generic(ctx.factory())
                             };
 
-                        // Task #68 gap-fix: compose val1_bindings with each
-                        // match's unification bindings before applying to
-                        // success_body.
+                        // S0d.1: UnifyMode::Unify.
                         let mut bodies_to_eval: Vec<MettaValue> = Vec::new();
                         let mut found_match = false;
                         for m in &matches {
-                            if let Some(bindings) =
-                                crate::backend::eval::trampoline::unification::bidirectional_unify(
-                                    &pattern, &m.value,
+                            if let Some(uni_bindings) =
+                                crate::backend::eval::trampoline::unification::bidirectional_unify_with_mode(
+                                    &pattern, &m.value, crate::backend::models::UnifyMode::Unify,
                                 )
                             {
                                 found_match = true;
-                                let composed = if val1_bindings.is_empty() {
-                                    bindings
+                                let instantiated = if uni_bindings.is_empty_classes() {
+                                    let bindings = uni_bindings.into_entries();
+                                    let composed = if val1_bindings.is_empty() {
+                                        bindings
+                                    } else {
+                                        crate::backend::eval::bindings::compose_outer_inner_generic(
+                                            &val1_bindings,
+                                            &bindings,
+                                            ctx.factory(),
+                                        )
+                                    };
+                                    apply_bindings(&success_body, &composed, ctx.factory())
                                 } else {
-                                    crate::backend::eval::bindings::compose_outer_inner_generic(
-                                        &val1_bindings,
-                                        &bindings,
-                                        ctx.factory(),
+                                    let after_outer = if val1_bindings.is_empty() {
+                                        success_body
+                                    } else {
+                                        apply_bindings(&success_body, &val1_bindings, ctx.factory())
+                                    };
+                                    crate::backend::eval::trampoline::engine::apply_bindings_with_classes(
+                                        &after_outer, &uni_bindings, ctx.factory(),
                                     )
                                 };
-                                let instantiated =
-                                    apply_bindings(&success_body, &composed, ctx.factory());
                                 for _ in 0..m.count {
                                     bodies_to_eval.push(instantiated.clone());
                                 }
@@ -11370,13 +11436,19 @@ fn process_continuation<C: EvalContext>(
                     carrying_bindings: outer_carrying.clone(),
                 });
             } else {
-                // WAM union-find bidirectional unification: handles variables
-                // on both sides, occurs check, and conflict detection.
-                let mut all_bindings = Vec::new();
+                // S0d.1: user-facing `(unify ...)` form uses UnifyMode::Unify
+                // so var-var-distinct creates an equivalence class. Class-aware
+                // apply_bindings preserves the original lookup-key for value-less
+                // class members (HE M-VAR-VAR-DISTINCT, spec §4.3.1).
+                use crate::backend::eval::trampoline::engine::apply_bindings_with_classes;
+                use crate::backend::models::UnifyMode;
+                let mut all_bindings: Vec<
+                    crate::backend::models::BindingsWithClasses<MettaValue>,
+                > = Vec::new();
                 for (p2_result, _b) in &pattern2_results {
                     if let Some(bindings) =
-                        crate::backend::eval::trampoline::unification::bidirectional_unify(
-                            &val1, p2_result,
+                        crate::backend::eval::trampoline::unification::bidirectional_unify_with_mode(
+                            &val1, p2_result, UnifyMode::Unify,
                         )
                     {
                         all_bindings.push(bindings);
@@ -11394,9 +11466,11 @@ fn process_continuation<C: EvalContext>(
                         carrying_bindings: outer_carrying.clone(),
                     });
                 } else if all_bindings.len() == 1 {
-                    // Apply bindings generically - NO conversion needed
-                    let instantiated =
-                        apply_bindings(&success_body, &all_bindings[0], ctx.factory());
+                    let instantiated = apply_bindings_with_classes(
+                        &success_body,
+                        &all_bindings[0],
+                        ctx.factory(),
+                    );
 
                     work_stack.push(WorkItem::Eval {
                         value: instantiated,
@@ -11408,10 +11482,11 @@ fn process_continuation<C: EvalContext>(
                         carrying_bindings: outer_carrying.clone(),
                     });
                 } else {
-                    // Multiple bindings - pre-instantiate all bodies generically
                     let bodies_vec: Vec<MettaValue> = all_bindings
                         .iter()
-                        .map(|bindings| apply_bindings(&success_body, bindings, ctx.factory()))
+                        .map(|bindings| {
+                            apply_bindings_with_classes(&success_body, bindings, ctx.factory())
+                        })
                         .collect();
                     let mut bodies_iter = bodies_vec.into_iter();
                     let first_body = bodies_iter.next().unwrap();
@@ -12073,11 +12148,11 @@ fn process_continuation<C: EvalContext>(
                 Some((v, _)) => {
                     // Type error - condition must be Bool
                     let err = ctx.factory().error(
-                        &format!(
+                        v.clone(),
+                        ctx.factory().string(&format!(
                             "guard: condition must evaluate to Bool, got {}",
                             v.friendly_repr()
-                        ),
-                        v.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], result_env),
@@ -12101,9 +12176,10 @@ fn process_continuation<C: EvalContext>(
             let (space_results, mut result_env) = result;
 
             if space_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("get-atoms: space evaluated to empty", space_ref);
+                let err = ctx.factory().error(
+                    space_ref,
+                    ctx.factory().string("get-atoms: space evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], result_env),
                 });
@@ -12137,11 +12213,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "get-atoms: first argument must be a space, got {}",
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], result_env),
@@ -12161,9 +12237,10 @@ fn process_continuation<C: EvalContext>(
             let (space_results, mut env_after) = result;
 
             if space_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("match: space evaluated to empty", space_arg);
+                let err = ctx.factory().error(
+                    space_arg,
+                    ctx.factory().string("match: space evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -12358,11 +12435,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "match: first argument must be a space, got {}. Usage: (match space pattern template)",
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
@@ -12418,9 +12495,10 @@ fn process_continuation<C: EvalContext>(
             let (space_results, mut env_after) = result;
 
             if space_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("add-atom: space evaluated to empty", space_ref);
+                let err = ctx.factory().error(
+                    space_ref,
+                    ctx.factory().string("add-atom: space evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -12457,11 +12535,11 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "add-atom: first argument must be a space reference, got {}. Usage: (add-atom space atom)",
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
@@ -12510,9 +12588,10 @@ fn process_continuation<C: EvalContext>(
             let (space_results, mut env_after) = result;
 
             if space_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("remove-atom: space evaluated to empty", space_ref);
+                let err = ctx.factory().error(
+                    space_ref,
+                    ctx.factory().string("remove-atom: space evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -12545,11 +12624,11 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "remove-atom: first argument must be a space reference, got {}. Usage: (remove-atom space atom)",
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
@@ -12599,9 +12678,10 @@ fn process_continuation<C: EvalContext>(
             let (init_results, mut env_after) = result;
 
             if init_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("new-state: initial value evaluated to empty", initial_value);
+                let err = ctx.factory().error(
+                    initial_value,
+                    ctx.factory().string("new-state: initial value evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -12625,9 +12705,10 @@ fn process_continuation<C: EvalContext>(
             let (state_results, env_after) = result;
 
             if state_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("get-state: state reference evaluated to empty", state_ref);
+                let err = ctx.factory().error(
+                    state_ref,
+                    ctx.factory().string("get-state: state reference evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -12641,8 +12722,11 @@ fn process_continuation<C: EvalContext>(
                         });
                     } else {
                         let err = ctx.factory().error(
-                            &format!("get-state: state {} not found", state_id),
                             first.clone(),
+                            ctx.factory().string(&format!(
+                                "get-state: state {} not found",
+                                state_id
+                            )),
                         );
                         work_stack.push(WorkItem::Resume {
                             result: (smallvec![bv(err)], env_after),
@@ -12650,11 +12734,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "get-state: argument must be a state reference, got {}",
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
@@ -12674,8 +12758,8 @@ fn process_continuation<C: EvalContext>(
 
             if state_results.is_empty() {
                 let err = ctx.factory().error(
-                    "change-state!: state reference evaluated to empty",
                     state_ref,
+                    ctx.factory().string("change-state!: state reference evaluated to empty"),
                 );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
@@ -12702,11 +12786,11 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "change-state!: first argument must be a state reference, got {}",
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
@@ -12725,9 +12809,10 @@ fn process_continuation<C: EvalContext>(
             let (value_results, mut env_after) = result;
 
             if value_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("change-state!: new value evaluated to empty", new_value);
+                let err = ctx.factory().error(
+                    new_value,
+                    ctx.factory().string("change-state!: new value evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -12742,9 +12827,10 @@ fn process_continuation<C: EvalContext>(
                         result: (smallvec![bv(result_state)], env_after),
                     });
                 } else {
-                    let err = ctx
-                        .factory()
-                        .error("change-state!: expected state value", state_value);
+                    let err = ctx.factory().error(
+                        state_value,
+                        ctx.factory().string("change-state!: expected state value"),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -12782,9 +12868,10 @@ fn process_continuation<C: EvalContext>(
             let (format_results, env_after) = result;
 
             if format_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("format-args: format string evaluated to empty", format_arg);
+                let err = ctx.factory().error(
+                    format_arg,
+                    ctx.factory().string("format-args: format string evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -12810,11 +12897,11 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "format-args: first argument must be a string, got {}",
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
@@ -12833,9 +12920,10 @@ fn process_continuation<C: EvalContext>(
             let (args_results, env_after) = result;
 
             if args_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("format-args: args evaluated to empty", args_arg);
+                let err = ctx.factory().error(
+                    args_arg,
+                    ctx.factory().string("format-args: args evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -12967,9 +13055,10 @@ fn process_continuation<C: EvalContext>(
             let (atom_results, mut env_after) = result;
 
             if atom_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("bind!: atom evaluated to empty", ctx.factory().atom(&token));
+                let err = ctx.factory().error(
+                    ctx.factory().atom(&token),
+                    ctx.factory().string("bind!: atom evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -13248,11 +13337,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "match-or: first argument must be a space, got {}",
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
@@ -13273,9 +13362,10 @@ fn process_continuation<C: EvalContext>(
             let (memo_results, env_after) = result;
 
             if memo_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("memo/memo!: memo reference evaluated to empty", memo_ref);
+                let err = ctx.factory().error(
+                    memo_ref,
+                    ctx.factory().string("memo/memo!: memo reference evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -13310,11 +13400,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "memo/memo!: first argument must be a memo table, got {}",
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
@@ -13361,9 +13451,10 @@ fn process_continuation<C: EvalContext>(
             let (name_results, env_after) = result;
 
             if name_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("new-memo: name evaluated to empty", name_arg);
+                let err = ctx.factory().error(
+                    name_arg,
+                    ctx.factory().string("new-memo: name evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -13416,9 +13507,10 @@ fn process_continuation<C: EvalContext>(
             let (size_results, env_after) = result;
 
             if size_results.is_empty() {
-                let err = ctx
-                    .factory()
-                    .error("new-memo: size evaluated to empty", size_arg);
+                let err = ctx.factory().error(
+                    size_arg,
+                    ctx.factory().string("new-memo: size evaluated to empty"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -13448,8 +13540,11 @@ fn process_continuation<C: EvalContext>(
                     "memo-stats"
                 };
                 let err = ctx.factory().error(
-                    &format!("{}: memo reference evaluated to empty", op_name),
                     memo_ref,
+                    ctx.factory().string(&format!(
+                        "{}: memo reference evaluated to empty",
+                        op_name
+                    )),
                 );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
@@ -13480,12 +13575,13 @@ fn process_continuation<C: EvalContext>(
                         }
                         #[cfg(not(feature = "track-stats"))]
                         {
-                            let detail = ctx
+                            let detail_atom = ctx
                                 .factory()
                                 .atom("Rebuild with: cargo build --features track-stats");
-                            let err = ctx
-                                .factory()
-                                .error("memo-stats requires track-stats feature", detail);
+                            let err = ctx.factory().error(
+                                detail_atom,
+                                ctx.factory().string("memo-stats requires track-stats feature"),
+                            );
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(err)], env_after),
                             });
@@ -13498,12 +13594,12 @@ fn process_continuation<C: EvalContext>(
                         "memo-stats"
                     };
                     let err = ctx.factory().error(
-                        &format!(
+                        first.clone(),
+                        ctx.factory().string(&format!(
                             "{}: argument must be a memo table, got {}",
                             op_name,
                             first.friendly_repr()
-                        ),
-                        first.clone(),
+                        )),
                     );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),

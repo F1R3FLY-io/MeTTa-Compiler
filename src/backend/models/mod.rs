@@ -27,8 +27,9 @@ pub use gc_allocator::{
 };
 pub use gc_cron::{CronHandle, GcCronSingleton};
 pub use generic_bindings::{
-    allocate_scope_id, BindingName, GenericBindings, GenericBindingsFullIter, GenericBindingsIter,
-    ScopeId, ROOT_SCOPE,
+    allocate_scope_id, BindingName, BindingsWithClasses, ClassData, ClassId, ClassTable,
+    GenericBindings, GenericBindingsFullIter, GenericBindingsIter, MergeConflict, ScopeId,
+    UnifyMode, ROOT_SCOPE,
 };
 pub use memo_handle::MemoHandle;
 pub use metta_state::MettaState;

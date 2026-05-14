@@ -49,9 +49,9 @@ pub fn has_variables_generic<V: MettaValueTrait>(value: &V) -> bool {
         return goals.iter().any(has_variables_generic);
     }
 
-    // Check error details
-    if let Some((_, details)) = value.as_error() {
-        return has_variables_generic(details);
+    // HE-bisimilar Error(offending, detail): both slots are full values.
+    if let Some((offending, detail)) = value.as_error() {
+        return has_variables_generic(offending) || has_variables_generic(detail);
     }
 
     false
@@ -75,8 +75,9 @@ pub fn has_pattern_variables<V: MettaValueTrait>(value: &V) -> bool {
     if let Some(goals) = value.as_conjunction() {
         return goals.iter().any(has_pattern_variables);
     }
-    if let Some((_, details)) = value.as_error() {
-        return has_pattern_variables(details);
+    // HE-bisimilar Error(offending, detail): both slots are full values.
+    if let Some((offending, detail)) = value.as_error() {
+        return has_pattern_variables(offending) || has_pattern_variables(detail);
     }
     false
 }
@@ -158,8 +159,8 @@ where
 
     if args.len() < 3 {
         let err = factory.error(
-            "exec requires 3 arguments: priority, antecedent, and consequent",
             factory.sexpr(args.to_vec()),
+            factory.string("exec requires 3 arguments: priority, antecedent, and consequent"),
         );
         return (vec![err], env);
     }
@@ -179,8 +180,8 @@ where
         Some(goals) => goals,
         None => {
             let err = factory.error(
-                "exec antecedent must be a conjunction (,)",
                 antecedent.clone(),
+                factory.string("exec antecedent must be a conjunction (,)"),
             );
             return (vec![err], env);
         }
@@ -221,15 +222,15 @@ where
                 final_env = op_env;
             } else {
                 let err = factory.error(
-                    "exec consequent must be a conjunction or operation (O ...)",
                     instantiated_consequent.clone(),
+                    factory.string("exec consequent must be a conjunction or operation (O ...)"),
                 );
                 all_results.push(err);
             }
         } else {
             let err = factory.error(
-                "exec consequent must be a conjunction or operation (O ...)",
                 instantiated_consequent.clone(),
+                factory.string("exec consequent must be a conjunction or operation (O ...)"),
             );
             all_results.push(err);
         }
@@ -506,8 +507,8 @@ where
 
     if args.len() < 2 {
         let err = factory.error(
-            "coalg requires 2 arguments: pattern and templates",
             factory.sexpr(args.to_vec()),
+            factory.string("coalg requires 2 arguments: pattern and templates"),
         );
         return (vec![err], env);
     }
@@ -520,8 +521,8 @@ where
         Some(temps) => temps.to_vec(),
         None => {
             let err = factory.error(
-                "coalg templates must be a conjunction (,)",
                 templates.clone(),
+                factory.string("coalg templates must be a conjunction (,)"),
             );
             return (vec![err], env);
         }
@@ -567,8 +568,10 @@ where
 
     if args.len() < 3 {
         let err = factory.error(
-            "lookup requires 3 arguments: pattern, success-goals, and failure-goals",
             factory.sexpr(args.to_vec()),
+            factory.string(
+                "lookup requires 3 arguments: pattern, success-goals, and failure-goals",
+            ),
         );
         return (vec![err], env);
     }
@@ -580,16 +583,16 @@ where
     // Validate branches are conjunctions
     if success_goals.as_conjunction().is_none() {
         let err = factory.error(
-            "lookup success branch must be a conjunction (,)",
             success_goals.clone(),
+            factory.string("lookup success branch must be a conjunction (,)"),
         );
         return (vec![err], env);
     }
 
     if failure_goals.as_conjunction().is_none() {
         let err = factory.error(
-            "lookup failure branch must be a conjunction (,)",
             failure_goals.clone(),
+            factory.string("lookup failure branch must be a conjunction (,)"),
         );
         return (vec![err], env);
     }
@@ -730,8 +733,10 @@ where
 
     if args.len() < 5 {
         let err = factory.error(
-            "rulify requires 5 arguments: name, pattern, templates, antecedent, consequent",
             factory.sexpr(args.to_vec()),
+            factory.string(
+                "rulify requires 5 arguments: name, pattern, templates, antecedent, consequent",
+            ),
         );
         return (vec![err], env);
     }
@@ -747,8 +752,8 @@ where
         Some(ps) if ps.len() == 1 => ps[0].clone(),
         _ => {
             let err = factory.error(
-                "rulify pattern must be a unary conjunction (, $p0)",
                 pattern_conj.clone(),
+                factory.string("rulify pattern must be a unary conjunction (, $p0)"),
             );
             return (vec![err], env);
         }
@@ -759,8 +764,8 @@ where
         Some(ts) => ts.to_vec(),
         None => {
             let err = factory.error(
-                "rulify templates must be a conjunction (, $t0 ...)",
                 templates_conj.clone(),
+                factory.string("rulify templates must be a conjunction (, $t0 ...)"),
             );
             return (vec![err], env);
         }
@@ -1228,12 +1233,18 @@ mod tests {
 
     #[test]
     fn test_has_variables_error() {
-        // Test has_variables_generic with Error variant
-        let err_with_var =
-            MettaValue::Error("test".to_string(), MettaValue::Atom("$x".to_string()));
+        // HE-bisimilar Error(offending, detail). A variable in either slot
+        // must make the whole Error report having variables.
+        let err_with_var = MettaValue::Error(
+            MettaValue::Atom("$x"),
+            MettaValue::String("test"),
+        );
         assert!(has_variables_generic(&err_with_var));
 
-        let err_no_var = MettaValue::Error("test".to_string(), MettaValue::Atom("foo".to_string()));
+        let err_no_var = MettaValue::Error(
+            MettaValue::Atom("foo"),
+            MettaValue::String("test"),
+        );
         assert!(!has_variables_generic(&err_no_var));
     }
 

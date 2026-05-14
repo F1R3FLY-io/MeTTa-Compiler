@@ -108,8 +108,9 @@ enum SubstituteWorkGeneric<V> {
     BuildSExpr(usize),
     /// Build a Conjunction from the last N results
     BuildConjunction(usize),
-    /// Build an Error from the last result
-    BuildError(String),
+    /// Build an Error from the last 2 results (offending, detail).
+    /// HE-bisimilar: slot 1 = offending expression, slot 2 = detail value.
+    BuildError,
 }
 
 /// Iterative implementation of substitute_variable_generic using explicit work stack.
@@ -169,10 +170,13 @@ where
                     continue;
                 }
 
-                // Handle error
-                if let Some((msg, details)) = val.as_error() {
-                    work_stack.push(SubstituteWorkGeneric::BuildError(msg.to_string()));
-                    work_stack.push(SubstituteWorkGeneric::Process(details.clone()));
+                // Handle error: HE-bisimilar `(offending, detail)`. Process is
+                // LIFO — push detail first (popped second), offending last
+                // (popped first) so BuildError pops them in the same order.
+                if let Some((offending, detail)) = val.as_error() {
+                    work_stack.push(SubstituteWorkGeneric::BuildError);
+                    work_stack.push(SubstituteWorkGeneric::Process(detail.clone()));
+                    work_stack.push(SubstituteWorkGeneric::Process(offending.clone()));
                     continue;
                 }
 
@@ -192,11 +196,18 @@ where
                 result_stack.push(factory.conjunction(children));
             }
 
-            SubstituteWorkGeneric::BuildError(msg) => {
-                let details = result_stack
+            SubstituteWorkGeneric::BuildError => {
+                // Order on result_stack: [offending_result, detail_result]
+                // (offending pushed first via earlier work, detail pushed
+                // second since it was at the top of work_stack at push time).
+                // Pop in reverse to recover (offending, detail).
+                let detail = result_stack
                     .pop()
-                    .expect("BuildError should have details on result stack");
-                result_stack.push(factory.error(&msg, details));
+                    .expect("BuildError should have detail on result stack");
+                let offending = result_stack
+                    .pop()
+                    .expect("BuildError should have offending on result stack");
+                result_stack.push(factory.error(offending, detail));
             }
         }
     }
@@ -305,14 +316,19 @@ mod tests {
     #[test]
     fn test_substitute_variable_generic_error() {
         let factory = GcFactory::default();
-        let expr = MettaValue::Error("test error".to_string(), MettaValue::Atom("$x".to_string()));
+        // HE-bisimilar: Error(offending, detail). Put `$x` in the offending slot
+        // so substitution rewrites it, and `"test error"` in the detail slot.
+        let expr = MettaValue::Error(
+            MettaValue::Atom("$x"),
+            MettaValue::String("test error"),
+        );
         let value = MettaValue::Long(42);
 
         let result = substitute_variable_generic(&expr, "$x", &value, &factory);
         assert!(result.is_error());
-        let (msg, details) = result.as_error().expect("should be error");
-        assert_eq!(msg, "test error");
-        assert_eq!(details.as_long(), Some(42));
+        let (offending, detail) = result.as_error().expect("should be error");
+        assert_eq!(offending.as_long(), Some(42));
+        assert_eq!(detail.as_string(), Some("test error"));
     }
 
     #[test]

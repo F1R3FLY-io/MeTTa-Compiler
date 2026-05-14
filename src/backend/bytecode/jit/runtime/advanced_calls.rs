@@ -184,8 +184,8 @@ pub unsafe extern "C" fn jit_runtime_call_external(
             // External call failed - return error
             warn!(target: "mettatron::jit::runtime::call", func_name, error = %e, "External call failed");
             let error = MettaValue::Error(
-                format!("external-call-failed: {}", e),
                 MettaValue::Atom(func_name.to_string()),
+                MettaValue::String(&format!("external-call-failed: {}", e)),
             );
             value_to_jit_generic(&error).to_bits()
         }

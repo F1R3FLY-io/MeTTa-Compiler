@@ -40,6 +40,8 @@ static TYPE_NAME_SPACE: &str = "Space";
 static TYPE_NAME_STATE: &str = "State";
 static TYPE_NAME_MEMO: &str = "Memo";
 static TYPE_NAME_EMPTY: &str = "Empty";
+/// Plan S0a (2026-05-13) — HE `NotReducible` sentinel type name.
+static TYPE_NAME_NOT_REDUCIBLE: &str = "NotReducible";
 static TYPE_NAME_UNKNOWN: &str = "Unknown";
 
 /// Get the type name of a NaN-boxed value.
@@ -291,6 +293,7 @@ where
                     MettaValueInner::State(_) => TYPE_NAME_STATE,
                     MettaValueInner::Memo(_) => TYPE_NAME_MEMO,
                     MettaValueInner::Empty => TYPE_NAME_EMPTY,
+                    MettaValueInner::NotReducible => TYPE_NAME_NOT_REDUCIBLE,
                     MettaValueInner::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
                     MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
                     MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
@@ -311,6 +314,7 @@ where
                             MettaValueInner::State(_) => TYPE_NAME_STATE,
                             MettaValueInner::Memo(_) => TYPE_NAME_MEMO,
                             MettaValueInner::Empty => TYPE_NAME_EMPTY,
+                            MettaValueInner::NotReducible => TYPE_NAME_NOT_REDUCIBLE,
                             MettaValueInner::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
                             MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
                             MettaValueInner::Bool(_) => TYPE_NAME_BOOL,
@@ -377,6 +381,7 @@ unsafe fn get_type_name(val: u64) -> &'static str {
                 MettaValueInner::State(_) => TYPE_NAME_STATE,
                 MettaValueInner::Memo(_) => TYPE_NAME_MEMO,
                 MettaValueInner::Empty => TYPE_NAME_EMPTY,
+                MettaValueInner::NotReducible => TYPE_NAME_NOT_REDUCIBLE,
                 MettaValueInner::Atom(s) if s.starts_with('$') => TYPE_NAME_VARIABLE,
                 MettaValueInner::Atom(_) => TYPE_NAME_SYMBOL,
                 MettaValueInner::Bool(_) => TYPE_NAME_BOOL,

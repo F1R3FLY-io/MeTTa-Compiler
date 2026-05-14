@@ -185,6 +185,7 @@ fn format_value(v: &MettaValue) -> String {
         ValueView::Float(f) => format!("{}", f),
         ValueView::Unit => "()".to_string(),
         ValueView::Empty => "Empty".to_string(),
+        ValueView::NotReducible => "NotReducible".to_string(),
         ValueView::Atom(s) => s.to_string(),
         ValueView::String(s) => format!("\"{}\"", s),
         ValueView::Error(msg, details) => {
@@ -345,7 +346,19 @@ fn run_fixture(metta_path: &Path, yaml_path: &Path) -> Result<FixtureOutcome, St
             }
         };
         env = new_env;
-        if expr.is_sexpr() {
+        // S1 TOPLEVEL (2026-05-13): defence-in-depth structural bang gate.
+        // Mirror HE's MettaRunnerMode::INTERPRET selector: only `(! expr)`
+        // directives contribute to the observable result multiset. The
+        // env-side gate in process_single_combination_generic /
+        // op_dispatch_rules / call_support already emits `[]` for bare
+        // ADD-mode S-exprs at every tier, but this structural check
+        // catches any tier regression that lags behind.
+        let is_bang = expr
+            .as_sexpr()
+            .and_then(|items| items.first())
+            .and_then(|h| h.as_atom())
+            .is_some_and(|s| s == "!");
+        if is_bang {
             all.extend(results.into_iter().filter(|v| !v.is_empty()));
         }
     }

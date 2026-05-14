@@ -374,6 +374,36 @@ pub struct JitContext {
     /// Built at JIT entry from environment type assertions.
     /// Null if no type signatures are available.
     pub type_registry_ptr: *const TypeSignatureRegistry,
+
+    // -------------------------------------------------------------------------
+    // HE runner-mode flag — Plan S0c (2026-05-13)
+    // -------------------------------------------------------------------------
+    /// HE `MettaRunnerMode` flag.
+    ///
+    /// `false` (default) = ADD mode — bare top-level S-exprs are silent
+    /// side-effecting facts; emit nothing.
+    ///
+    /// `true` = INTERPRET mode — set when JIT-compiled bytecode for a
+    /// `(! expr)` directive lowers `EnterInterpretMode` and cleared on
+    /// `ExitInterpretMode`. Threaded from `BytecodeVM::interpret_mode`
+    /// at JIT entry per tier-locality. See spec §S0c.
+    pub interpret_mode: bool,
+
+    /// S2 BANG-WORD / decl-atom dispatch (2026-05-13): true when we're
+    /// executing the BODY of a `(! ...)` directive in this JIT context.
+    /// Mirrors `BytecodeVM::bang_body` and `MettaEnvironment::bang_body`;
+    /// used by JIT-side decl-atom lowerings (currently piggy-backs on
+    /// `jit_runtime_enter_interpret_mode` / `..._exit` since both flags
+    /// toggle in lockstep at this level).
+    pub bang_body: bool,
+
+    /// Current call/dispatch depth — Plan S0c (2026-05-13).
+    ///
+    /// `0` at the top-level directive; incremented on each call/dispatch
+    /// boundary. The TOPLEVEL fix (S1) gates ADD-vs-INTERPRET behavior
+    /// only at `call_depth == 0 && !interpret_mode`. Mirror of the
+    /// `depth` argument used by `processing/ops.rs::process_single_combination_generic`.
+    pub call_depth: u32,
 }
 
 impl JitContext {
@@ -456,6 +486,12 @@ impl JitContext {
             arena: std::ptr::null(),
             // Type-driven applicative evaluation
             type_registry_ptr: std::ptr::null(),
+            // HE runner-mode flag (Plan S0c, 2026-05-13)
+            interpret_mode: false,
+            // S2 BANG-WORD (2026-05-13): toggled in lockstep with
+            // interpret_mode by JIT runtime mode handlers.
+            bang_body: false,
+            call_depth: 0,
         }
     }
 
@@ -540,6 +576,12 @@ impl JitContext {
             arena: std::ptr::null(),
             // Type-driven applicative evaluation
             type_registry_ptr: std::ptr::null(),
+            // HE runner-mode flag (Plan S0c, 2026-05-13)
+            interpret_mode: false,
+            // S2 BANG-WORD (2026-05-13): toggled in lockstep with
+            // interpret_mode by JIT runtime mode handlers.
+            bang_body: false,
+            call_depth: 0,
         }
     }
 

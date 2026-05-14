@@ -436,6 +436,7 @@ pub unsafe extern "C" fn jit_runtime_match_arity(
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::Error(_, _)
@@ -497,6 +498,7 @@ pub unsafe extern "C" fn jit_runtime_match_head(
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::Error(_, _)

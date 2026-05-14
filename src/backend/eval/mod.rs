@@ -200,6 +200,31 @@ pub fn eval(
 ) -> EvalResult {
     use crate::backend::models::EvalGuard;
 
+    // S1 TOPLEVEL (2026-05-13): the programmatic `eval()` API is HE
+    // INTERPRET mode by contract. Callers (Rust tests, REPL programmatic
+    // entry, Rholang integration) explicitly ASK for reduction and expect
+    // results back. The ADD/INTERPRET distinction is a *source-level*
+    // concept (bare top-level S-expr vs `(! ...)` directive) handled by
+    // the per-directive runner loop in `main.rs` / `mtt_conformance.rs`;
+    // the library API bypasses it. Without this flag set, programmatic
+    // `eval(query, env)` calls would return `[]` under the new ADD-mode
+    // gate in `process_single_combination_generic`.
+    //
+    // The runner is responsible for selectively clearing interpret_mode
+    // before non-bang directives — see `main.rs` source-eval loop.
+    //
+    // S2 BANG-WORD (2026-05-13): reset `bang_body` to false at the start
+    // of each `eval()` call. The flag is set only by the `!` arm and is
+    // strictly per-directive; without this reset it would leak across
+    // directives via the propagated env (e.g., a `!` directive followed
+    // by a bare `(= foo bar)` would see bang_body=true left over and
+    // skip rule registration). The runner threads the env between
+    // directives, so the env reaches eval() with whatever bang_body it
+    // had at the end of the previous directive — that value is stale.
+    let mut env = env;
+    env.set_interpret_mode(true);
+    env.set_bang_body(false);
+
     // Scope the EvalGuard so it drops after eval completes.
     let result = {
         let _guard = EvalGuard::enter();
@@ -252,6 +277,14 @@ pub fn eval_with_trace(
     collector: &std::sync::Arc<crate::backend::trace::TraceCollector>,
 ) -> EvalResult {
     use crate::backend::models::EvalGuard;
+
+    // S1 TOPLEVEL (2026-05-13): programmatic API is HE INTERPRET mode.
+    // See `eval()` for rationale.
+    //
+    // S2 BANG-WORD (2026-05-13): reset bang_body per directive (see `eval()`).
+    let mut env = env;
+    env.set_interpret_mode(true);
+    env.set_bang_body(false);
 
     // Wire the trace collector into the work pool so worker threads can emit
     // trace events (WorkPoolTaskEnqueued, WorkPoolScaleEvent, etc.).
@@ -540,9 +573,24 @@ fn eval_inner_with_trace(
             if !unreduced && !has_choices {
                 #[cfg(feature = "track-stats")]
                 global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
+
+                // S2 BANG-WORD (2026-05-13): set bang_body=true on the
+                // post-VM trampoline env when the original expression was a
+                // `(! ...)` directive — so decl-atom results from the VM
+                // (e.g. `(= foo bar)`) flow through T0 as data, not as
+                // registration. See `eval_inner` for the detailed rationale.
+                let is_bang_directive = value
+                    .as_sexpr()
+                    .and_then(|items| items.first())
+                    .and_then(|h| h.as_atom())
+                    .is_some_and(|s| s == "!");
+
                 // Complete evaluation via trampoline (see eval_inner for rationale).
                 let mut final_results = SmallVec::with_capacity(results.len());
                 let mut final_env = new_env;
+                if is_bang_directive {
+                    final_env.set_bang_body(true);
+                }
                 for result in results {
                     clear_thread_trace_collector();
                     let (sub_results, sub_env) =
@@ -551,6 +599,12 @@ fn eval_inner_with_trace(
                     final_results.extend(sub_results.into_iter().map(|(v, _)| v));
                     final_env =
                         std::sync::Arc::try_unwrap(sub_env).unwrap_or_else(|arc| (*arc).clone());
+                    if is_bang_directive {
+                        final_env.set_bang_body(true);
+                    }
+                }
+                if is_bang_directive {
+                    final_env.set_bang_body(false);
                 }
                 clear_thread_trace_collector();
                 return (final_results, final_env);
@@ -772,14 +826,50 @@ fn eval_inner(
             if !unreduced && !has_choices {
                 #[cfg(feature = "track-stats")]
                 global_tiered_cache().record_tier_execution(ExecutionTier::Bytecode);
+
+                // S2 BANG-WORD (2026-05-13): when the original expression is
+                // a `(! ...)` directive, the bytecode VM has already done a
+                // full INTERPRET-mode evaluation (EnterInterpretMode +
+                // ExitInterpretMode bracket the body). The post-VM trampoline
+                // still runs to finish reducing non-normal-form results
+                // (e.g., `(first-from-pair (a b))` returned unreduced by the
+                // bytecode tier needs T0 to dispatch the special-form arm),
+                // BUT it must run with `bang_body=true` set on the env so
+                // the T0 `=` / `:` arms recognize they're still inside the
+                // `!` body and treat decl-atoms as data instead of
+                // registering them. Otherwise `(! (= foo bar))` → VM
+                // returns `(= foo bar)` → post-VM T0 runs with bang_body=
+                // false (cleared by ExitInterpretMode) → `=` arm registers
+                // the rule and emits `[]`.
+                let is_bang_directive = value
+                    .as_sexpr()
+                    .and_then(|items| items.first())
+                    .and_then(|h| h.as_atom())
+                    .is_some_and(|s| s == "!");
+
                 // Complete evaluation via trampoline (returns immediately for
                 // normal forms via O(1) bloom filter check).
                 let mut final_results = SmallVec::with_capacity(results.len());
                 let mut final_env = new_env;
+                if is_bang_directive {
+                    final_env.set_bang_body(true);
+                }
                 for result in results {
                     let (sub_results, sub_env) = eval_trampoline(result, final_env, state);
                     final_results.extend(sub_results.into_iter().map(|(v, _)| v));
                     final_env = (*sub_env).clone();
+                    // Re-assert bang_body across trampoline iterations — the
+                    // trampoline may propagate a cleared flag back via env
+                    // cloning paths that pre-date S2.
+                    if is_bang_directive {
+                        final_env.set_bang_body(true);
+                    }
+                }
+                if is_bang_directive {
+                    // Clear bang_body before returning so the runner's next
+                    // directive starts with a clean slate (mirrors `eval()`'s
+                    // per-directive reset).
+                    final_env.set_bang_body(false);
                 }
                 return (final_results, final_env);
             }

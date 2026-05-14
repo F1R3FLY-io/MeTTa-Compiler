@@ -196,7 +196,24 @@ impl<'src> MettaParser<'src> {
         }
     }
 
-    /// Parse a prefix operator: `!expr`, `?expr`, `'expr`
+    /// Parse a prefix operator: `!expr`, `?expr`, `'expr`.
+    ///
+    /// S2 BANG-WORD (2026-05-13): `!` is no longer an unconditional unary
+    /// prefix operator. Per HE §01.4.5 (and conformance fixtures T01/022,
+    /// T01/034, T02/037), `!` is a WORD character — only a STANDALONE `!`
+    /// token (followed by a delimiter or opening paren) is the runner-level
+    /// eval sigil. Followed by any other non-delimiter character, `!`
+    /// continues as part of a word atom (e.g., `!foo` parses as the atom
+    /// `!foo`, `!bar` inside `(!bar)` parses as `[Atom("!bar")]`).
+    ///
+    /// Standalone `!` followed by `(`/`[`/`{` produces an `Atom("!")` token;
+    /// the subsequent S-expr is parsed as a separate top-level item. The
+    /// compile-time `fold_bang_pairs` walker pairs them into `(! sexpr)` per
+    /// HE runner directive semantics.
+    ///
+    /// `?` and `'` sigils retain pure prefix semantics — they always consume
+    /// the next expression as their argument (`?query` -> `(? query)`,
+    /// `'expr` -> `(quote expr)`).
     fn parse_prefix<E: ParseEmitter>(
         &mut self,
         emitter: &mut E,
@@ -216,13 +233,15 @@ impl<'src> MettaParser<'src> {
         self.advance(1);
 
         // Check if next byte means this is a bare atom (no argument follows).
-        // A prefix operator becomes a bare atom only when followed by:
-        // - EOF
-        // - whitespace (space, tab, newline, etc.)
-        // - comment (`;`)
-        // - closing delimiters (`)`, `]`, `}`)
-        // Opening delimiters (`(`, `[`, `{`) and quote (`"`) start the argument
-        // expression (prefix form).
+        //
+        // For `!` (S2 BANG-WORD): standalone when followed by ANY delimiter
+        // (whitespace, semicolons, opening or closing parens/brackets/braces,
+        // quote, or EOF). The fold-pass in compile pairs `!` + adjacent
+        // S-expr into `(! sexpr)`.
+        //
+        // For `?` and `'`: standalone only when followed by whitespace, EOF,
+        // semicolon, or closing delimiter — `?` and `'` retain unary-prefix
+        // semantics over opening delimiters and non-delimiter atom chars.
         if self.pos >= self.src.len() {
             let span = Span::new(
                 Position::new(start_line, start_col, start_byte),
@@ -232,12 +251,26 @@ impl<'src> MettaParser<'src> {
         }
 
         let next_class = CHAR_CLASS[self.src[self.pos] as usize];
-        if next_class == CLS_SPACE
-            || next_class == CLS_SEMI
-            || next_class == CLS_CLOSE
-            || next_class == CLS_CLOSE_SQ
-            || next_class == CLS_CLOSE_BR
-        {
+        let is_standalone_for_op = match op {
+            "!" => matches!(
+                next_class,
+                CLS_SPACE
+                    | CLS_SEMI
+                    | CLS_CLOSE
+                    | CLS_CLOSE_SQ
+                    | CLS_CLOSE_BR
+                    | CLS_OPEN
+                    | CLS_OPEN_SQ
+                    | CLS_OPEN_BR
+                    | CLS_QUOTE
+            ),
+            // `?` and `'`: only delimiter-followed standalone forms.
+            _ => matches!(
+                next_class,
+                CLS_SPACE | CLS_SEMI | CLS_CLOSE | CLS_CLOSE_SQ | CLS_CLOSE_BR
+            ),
+        };
+        if is_standalone_for_op {
             let span = Span::new(
                 Position::new(start_line, start_col, start_byte),
                 Position::new(self.line, self.col, self.pos),
@@ -245,18 +278,14 @@ impl<'src> MettaParser<'src> {
             return Ok(emitter.emit_atom(op, span));
         }
 
-        // X.5f / MTT-FN-NEQ-PARSER: disambiguate `!=` (single atom — MeTTa
-        // comparison operator) from `!(expr)` / `!$var` / `!atom` (force-eval
-        // prefix). `!` is overloaded — it's both the force-eval prefix and
-        // the leading char of `!=`. The only multi-char `!`-prefixed atom
-        // name in standard MeTTa is `!=`; restrict the single-atom path to
-        // exactly `!=` and `!=`-prefixed variants (e.g. `!==`) by checking
-        // the byte immediately after `!`. Other `!`-prefixed forms (`!$x`,
-        // `!atom`, `!(expr)`) retain pure prefix semantics.
+        // S2 BANG-WORD (2026-05-13): `!` followed by a non-delimiter
+        // character is a WORD continuation — scan the whole token as a
+        // single atom. This covers `!foo` (atom `!foo`), `!bar` (atom
+        // `!bar`), and `!=` / `!==` (the legacy comparison operator atoms
+        // previously handled by a special-case branch).
         //
-        // `?` and `'` sigils never participate in this disambiguation;
-        // they always parse as pure prefixes (`?query` -> `(? query)`).
-        if op == "!" && self.src[self.pos] == b'=' {
+        // `?` and `'` keep the legacy unary-prefix semantics below.
+        if op == "!" {
             let atom_start = start_byte;
             while self.pos < self.src.len() && !is_delimiter(self.src[self.pos]) {
                 if self.src[self.pos] & 0xC0 != 0x80 {
@@ -276,7 +305,7 @@ impl<'src> MettaParser<'src> {
         }
 
         // Parse the argument expression (CLS_OPEN/CLS_OPEN_SQ/CLS_OPEN_BR/CLS_QUOTE
-        // for `!`, or any non-delimiter for `?`/`'` retaining old behavior)
+        // for `?`/`'`, or any non-delimiter for `?`/`'` retaining old behavior)
         let arg = self.parse_expr(emitter)?;
 
         let full_span = Span::new(
@@ -522,10 +551,17 @@ impl<'src> MettaParser<'src> {
 // ============================================================================
 
 /// Parse MeTTa source to IR (`Vec<MettaExpr>`) using the custom parser.
+///
+/// S2 BANG-WORD (2026-05-13): applies `fold_bang_pairs_expr` after parsing so
+/// `!(expr)` is reconstructed as a 2-element list `[!, (expr)]` (a runner
+/// directive), matching the legacy `--sexpr` output. The parser itself emits
+/// `!` as a standalone atom (HE word-vs-sigil discipline); the fold restores
+/// the directive grouping that downstream consumers expect.
 pub fn parse_to_ir(src: &str) -> Result<Vec<crate::ir::MettaExpr>, SyntaxError> {
     let mut parser = MettaParser::new(src);
     let mut emitter = IrEmitter::new();
-    parser.parse_all(&mut emitter)
+    let exprs = parser.parse_all(&mut emitter)?;
+    Ok(crate::backend::compile::fold_bang_pairs_expr(exprs))
 }
 
 #[cfg(test)]
@@ -1263,12 +1299,15 @@ mod tests {
             strip_all(&result)
         }
 
-        /// Parse with custom parser
+        /// Parse with custom parser. Applies the S2 bang-pair fold so the
+        /// output matches `parse_to_ir` and (after S2) the tree-sitter
+        /// parser's `(! expr)` shape for differential testing.
         fn custom_parse(src: &str) -> Vec<MettaExpr> {
             let mut parser = MettaParser::new(src);
             let mut emitter = IrEmitter::new();
             let result = parser.parse_all(&mut emitter).expect("custom parse");
-            strip_all(&result)
+            let folded = crate::backend::compile::fold_bang_pairs_expr(result);
+            strip_all(&folded)
         }
 
         /// Compare both parsers on the same input

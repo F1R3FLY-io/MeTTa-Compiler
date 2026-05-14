@@ -954,7 +954,7 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
     matches!(
         head,
         // === Special forms (eval_sexpr_step_generic match arms) ===
-        "=" | "!" | "quote" | "unquote" | "noreduce"
+        "=" | "!" | "quote" | "unquote" | "noreduce" | "noeval"
         | "if" | "if-reducible" | "if-equal"
         | "error" | "Error" | "is-error" | "catch"
         | "eval" | "capture" | "reduce" | "progn" | "function" | "return" | "chain"

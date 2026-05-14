@@ -361,6 +361,7 @@ pub unsafe extern "C" fn jit_runtime_space_match(
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::SExpr(_)
@@ -439,6 +440,7 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
         | ValueView::Long(_)
         | ValueView::Unit
         | ValueView::Empty
+        | ValueView::NotReducible
         | ValueView::Atom(_)
         | ValueView::String(_)
         | ValueView::SExpr(_)

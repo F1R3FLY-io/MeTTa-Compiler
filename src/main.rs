@@ -276,6 +276,7 @@ fn format_result(value: &MettaValue) -> String {
         ValueView::Float(f) => float_canonical(f),
         ValueView::Unit => "()".to_string(),
         ValueView::Empty => "Empty".to_string(),
+        ValueView::NotReducible => "NotReducible".to_string(),
         ValueView::Atom(s) => s.to_string(),
         ValueView::String(s) => format!("\"{}\"", s),
         ValueView::Error(msg, details) => {
@@ -565,8 +566,18 @@ fn eval_metta(
     // so. Initialized to false; only `run_cross_tier_check` may set it.
     let mut cross_tier_mismatch_detected = false;
     for expr in source_exprs {
-        // Only output results for S-expressions, not atoms or ground types
-        let should_output = expr.is_sexpr();
+        // S1 TOPLEVEL (2026-05-13): HE two-mode runner — only `(! expr)`
+        // directives emit observable output lines. Bare top-level
+        // S-exprs are ADD-mode silent side-effects (HE
+        // MettaRunnerMode::ADD). Mirrors mtt_conformance.rs runner so
+        // the CLI shows the same multiset that conformance fixtures
+        // verify. See spec §S1.
+        let is_bang = expr
+            .as_sexpr()
+            .and_then(|items| items.first())
+            .and_then(|h| h.as_atom())
+            .is_some_and(|s| s == "!");
+        let should_output = is_bang;
 
         let guard = SessionGuard::enter();
         // Hold ACTIVE_EVALUATORS > 0 across eval+format to prevent
@@ -658,6 +669,17 @@ fn eval_metta(
             None
         };
 
+        // S2 BANG-WORD (2026-05-13): emit one observable line ONLY for
+        // `!` directives. Bare top-level S-exprs are HE ADD-mode silent
+        // side-effecting facts — they produce no `[...]` line at all per
+        // HE's runner semantics (`hyperon-experimental/lib/src/metta/runner/
+        // mod.rs:1076-1109` — INTERPRET mode emits, ADD mode does not).
+        //
+        // The conformance harness (verification/conformance_harness/
+        // runner.py:71-95) counts `[...]` lines as per-directive results.
+        // Emitting `[]` for ADD-mode directives inflates the directive
+        // count and breaks `len(cleaned_directives) == len(expected_results)`
+        // for fixtures like T01/005 where the source mixes ADD and `!`.
         if should_output {
             output.push_str(&format!("{}\n", format_results(&filtered_results)));
         }

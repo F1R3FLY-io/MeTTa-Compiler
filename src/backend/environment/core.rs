@@ -351,6 +351,38 @@ where
     /// the ABA problem where a dropped `SharedMapping` has its heap address
     /// recycled by a new allocation.
     pub(crate) mork_cache_epoch: u64,
+
+    /// HE runner-mode flag — Plan S0c (2026-05-13).
+    ///
+    /// `false` (default) = HE `MettaRunnerMode::ADD` — bare top-level S-exprs
+    /// are silent side-effecting facts; the runner emits `[]` per directive.
+    ///
+    /// `true` = HE `MettaRunnerMode::INTERPRET` — set when a `(! expr)`
+    /// directive is dispatched; the reduction's results flow into the
+    /// observable output multiset. Auto-cleared after the directive completes.
+    ///
+    /// See `hyperon-experimental/lib/src/metta/runner/mod.rs:1076-1109`
+    /// (`MettaRunnerMode { ADD, INTERPRET, TERMINATE }`).
+    /// Threaded through to `BytecodeVM::interpret_mode` and
+    /// `JitContext::interpret_mode` for tier-locality.
+    pub(crate) interpret_mode: bool,
+
+    /// S2 BANG-WORD / decl-atom dispatch (2026-05-13): true when we are
+    /// CURRENTLY EVALUATING THE BODY of a `(! expr)` directive (the `!` arm
+    /// at `eval/step/sexpr.rs` sets it, eval() resets it per directive).
+    ///
+    /// Distinct from `interpret_mode` because `interpret_mode` is the
+    /// runner-mode coalesce flag (true even for programmatic `eval()` so
+    /// bare top-level expressions return values rather than being swallowed
+    /// by the ADD-mode gate). `bang_body` is the STRICTER signal — only the
+    /// `!` arm sets it — used by decl-atom arms (`=`, `:`) to differentiate
+    /// "register as rule/type" (ADD, bang_body=false) from "evaluate to
+    /// itself as inert data" (INTERPRET-body, bang_body=true).
+    ///
+    /// Cleared at the start of every `eval()` call so each top-level
+    /// directive starts with a clean slate (otherwise it would leak across
+    /// directives via the propagated env).
+    pub(crate) bang_body: bool,
 }
 
 impl<V, F> GenericEnvironment<V, F>
@@ -437,6 +469,8 @@ where
             modified: AtomicBool::new(false),
             current_module_path: None,
             mork_cache_epoch,
+            interpret_mode: false,
+            bang_body: false,
         }
     }
 
@@ -444,6 +478,48 @@ where
     #[inline]
     pub fn factory(&self) -> &F {
         &self.factory
+    }
+
+    /// S1 TOPLEVEL (2026-05-13): HE two-mode runner accessor.
+    ///
+    /// Returns `true` when the environment is in HE INTERPRET mode (set by
+    /// `(! expr)` directives). Returns `false` in default ADD mode where
+    /// bare top-level S-exprs are silent side-effecting facts.
+    #[inline]
+    pub fn in_interpret_mode(&self) -> bool {
+        self.interpret_mode
+    }
+
+    /// S1 TOPLEVEL (2026-05-13): set the HE runner-mode flag.
+    ///
+    /// The bang dispatch site saves the previous value, sets `true` to
+    /// enter INTERPRET mode for the duration of the body evaluation, then
+    /// restores on completion. See `eval/step/sexpr.rs` `"!"` arm.
+    #[inline]
+    pub fn set_interpret_mode(&mut self, mode: bool) {
+        self.interpret_mode = mode;
+    }
+
+    /// S2 BANG-WORD (2026-05-13): true when we are currently evaluating
+    /// the BODY of a `(! ...)` directive. Used by decl-atom arms
+    /// (`=`, `:`) in `eval/step/sexpr.rs` to differentiate register-mode
+    /// vs data-mode evaluation per HE §02.5 / §02.6.
+    #[inline]
+    pub fn in_bang_body(&self) -> bool {
+        self.bang_body
+    }
+
+    /// S2 BANG-WORD (2026-05-13): set the bang_body marker.
+    ///
+    /// The `!` arm in `eval/step/sexpr.rs` flips this true before
+    /// dispatching the body. `eval()` resets it false at the start of
+    /// each per-directive evaluation so the flag never leaks across
+    /// directives (the env is propagated between directives by the
+    /// runner; without this reset, a prior `!` directive would taint
+    /// subsequent ADD-mode directives).
+    #[inline]
+    pub fn set_bang_body(&mut self, mode: bool) {
+        self.bang_body = mode;
     }
 
     /// Get the per-environment override bitset for grounded helpers.
@@ -669,6 +745,16 @@ where
             current_module_path: self.current_module_path.clone(),
 
             mork_cache_epoch: self.mork_cache_epoch,
+
+            // S1 TOPLEVEL (2026-05-13): preserve HE INTERPRET mode through
+            // fork_for_nondeterminism. Each parallel branch must see the
+            // same runner mode as the caller, otherwise downstream gates
+            // would behave inconsistently between branches.
+            interpret_mode: self.interpret_mode,
+            // S2 BANG-WORD (2026-05-13): propagate bang_body to forks so
+            // decl-atom arms (`=`/`:`) preserve the data-vs-register
+            // semantics across parallel branches of `(! ...)` evaluation.
+            bang_body: self.bang_body,
         }
     }
 
@@ -691,6 +777,19 @@ where
     pub fn union(&self, other: &Self) -> Self {
         trace!(target: "mettatron::generic_environment::union", "Unioning environments");
 
+        // S1 TOPLEVEL (2026-05-13): union preserves HE INTERPRET mode if
+        // EITHER input env was in interpret mode. Symmetric semantics —
+        // unioning a bang-flagged env with a non-bang env should yield
+        // a bang-flagged env so downstream evaluation in the merged context
+        // still emits observable output.
+        let merged_interpret_mode = self.interpret_mode || other.interpret_mode;
+
+        // S2 BANG-WORD (2026-05-13): same merge rule for bang_body — if
+        // EITHER side was the body of a `(! ...)` directive, the union is
+        // too. Decl-atom arms downstream check this to decide register vs
+        // return-as-data.
+        let merged_bang_body = self.bang_body || other.bang_body;
+
         // Fast path: same underlying data
         if Arc::ptr_eq(&self.shared, &other.shared) {
             return GenericEnvironment {
@@ -702,6 +801,9 @@ where
                 current_module_path: self.current_module_path.clone(),
 
                 mork_cache_epoch: self.mork_cache_epoch,
+
+                interpret_mode: merged_interpret_mode,
+                bang_body: merged_bang_body,
             };
         }
 
@@ -719,6 +821,9 @@ where
                 current_module_path: self.current_module_path.clone(),
 
                 mork_cache_epoch: self.mork_cache_epoch,
+
+                interpret_mode: merged_interpret_mode,
+                bang_body: merged_bang_body,
             };
         }
 
@@ -733,6 +838,9 @@ where
                 current_module_path: self.current_module_path.clone(),
 
                 mork_cache_epoch: self.mork_cache_epoch,
+
+                interpret_mode: merged_interpret_mode,
+                bang_body: merged_bang_body,
             };
         }
 
@@ -747,6 +855,9 @@ where
                 current_module_path: other.current_module_path.clone(),
 
                 mork_cache_epoch: other.mork_cache_epoch,
+
+                interpret_mode: merged_interpret_mode,
+                bang_body: merged_bang_body,
             };
         }
 
@@ -1029,6 +1140,12 @@ where
                 .or_else(|| self.current_module_path.clone()),
 
             mork_cache_epoch: self.mork_cache_epoch,
+
+            // S1 TOPLEVEL (2026-05-13): preserve HE INTERPRET mode through
+            // the binary union merge (both-modified path).
+            interpret_mode: merged_interpret_mode,
+            // S2 BANG-WORD: same merge rule for bang_body.
+            bang_body: merged_bang_body,
         }
     }
 
@@ -1135,6 +1252,11 @@ where
             current_module_path: self.current_module_path.clone(),
 
             mork_cache_epoch: self.mork_cache_epoch,
+
+            // S1 TOPLEVEL (2026-05-13): preserve HE INTERPRET mode.
+            interpret_mode: self.interpret_mode,
+            // S2 BANG-WORD (2026-05-13): preserve bang_body.
+            bang_body: self.bang_body,
         }
     }
 
@@ -1485,6 +1607,15 @@ where
                 .or_else(|| self.current_module_path.clone()),
 
             mork_cache_epoch: self.mork_cache_epoch,
+
+            // S1 TOPLEVEL (2026-05-13): preserve HE INTERPRET mode across
+            // batch merges. If any contributing env was in interpret mode,
+            // the merged env stays in interpret mode (matches the binary
+            // union semantics).
+            interpret_mode: self.interpret_mode
+                || others.iter().any(|e| e.interpret_mode),
+            // S2 BANG-WORD (2026-05-13): same merge for bang_body.
+            bang_body: self.bang_body || others.iter().any(|e| e.bang_body),
         }
     }
 
@@ -1566,6 +1697,18 @@ where
             current_module_path: self.current_module_path.clone(),
 
             mork_cache_epoch: self.mork_cache_epoch,
+
+            // S1 TOPLEVEL (2026-05-13): preserve HE INTERPRET mode across
+            // clones. The bang dispatch in `eval/step/sexpr.rs` flips this
+            // flag, and downstream evaluation steps clone the env to pass
+            // through the trampoline — if we reset to false here, the gate
+            // in process_single_combination_generic would fire even inside
+            // `(! expr)` bodies, swallowing the reduction's result.
+            interpret_mode: self.interpret_mode,
+            // S2 BANG-WORD (2026-05-13): preserve bang_body across clones
+            // for the same reason — the decl-atom arms check this flag and
+            // expect it to follow through trampoline-driven cloning.
+            bang_body: self.bang_body,
         }
     }
 }

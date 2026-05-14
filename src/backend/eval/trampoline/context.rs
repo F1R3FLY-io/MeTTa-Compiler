@@ -465,8 +465,8 @@ mod tests {
     use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
     fn generic_create_error<C: EvalContext>(ctx: &C, msg: &str) -> MettaValue {
-        let details = ctx.factory().atom("details");
-        ctx.factory().error(msg, details)
+        let offending = ctx.factory().atom("details");
+        ctx.factory().error(offending, ctx.factory().string(msg))
     }
 
     #[test]

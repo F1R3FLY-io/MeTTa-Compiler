@@ -167,12 +167,38 @@ impl PatternHistory {
         self.next_index = 0;
     }
 
-    /// Get entries that match a structural pattern
-    /// For example, "(= $x $y)" matches all rule definitions
-    pub fn search_structural_pattern(&self, _pattern: &str) -> Vec<&HistoryEntry> {
-        // TODO: Implement full pattern matching with variables
-        // For now, return empty vector
-        Vec::new()
+    /// Get entries that match a structural pattern.
+    ///
+    /// The pattern is parsed as MeTTa and unified against every parsed
+    /// entry via the canonical pattern matcher. Variables (`$x`, `&y`,
+    /// `'z`) and wildcards (`_`) are supported via the shared
+    /// `pattern_match_generic` helper from `crate::backend::eval::bindings`.
+    ///
+    /// Example: `(= $x $y)` matches all rule definitions.
+    pub fn search_structural_pattern(&self, pattern: &str) -> Vec<&HistoryEntry> {
+        use crate::backend::eval::bindings::pattern_match_generic;
+
+        let Ok(pattern_state) = compile(pattern) else {
+            return Vec::new();
+        };
+        let pattern_values = pattern_state.source().clone();
+
+        let mut matches = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            let Some(parsed) = entry.parsed.as_ref() else {
+                continue;
+            };
+            for pat in &pattern_values {
+                if parsed
+                    .iter()
+                    .any(|v| pattern_match_generic(pat, v).is_some())
+                {
+                    matches.push(entry);
+                    break;
+                }
+            }
+        }
+        matches
     }
 }
 

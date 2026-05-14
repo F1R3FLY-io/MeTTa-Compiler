@@ -71,7 +71,7 @@ pub fn metta_to_jit(val: &MettaValue) -> JitValue {
 ///
 /// Creates a slab-allocated Error value and returns it as a NaN-boxed TAG_PTR.
 pub fn make_jit_error(msg: &str) -> u64 {
-    let error_val = MettaValue::Error(msg.to_string(), MettaValue::Unit());
+    let error_val = MettaValue::Error(MettaValue::Unit(), MettaValue::String(msg));
     TAG_PTR | (error_val.inner_ptr() as u64 & PAYLOAD_MASK)
 }
 
@@ -79,7 +79,7 @@ pub fn make_jit_error(msg: &str) -> u64 {
 ///
 /// Creates a slab-allocated Error value and returns it as a NaN-boxed TAG_PTR.
 pub fn make_jit_error_with_details(msg: &str, details: &str) -> u64 {
-    let error_val = MettaValue::Error(msg.to_string(), MettaValue::Atom(details.to_string()));
+    let error_val = MettaValue::Error(MettaValue::Atom(details), MettaValue::String(msg));
     TAG_PTR | (error_val.inner_ptr() as u64 & PAYLOAD_MASK)
 }
 

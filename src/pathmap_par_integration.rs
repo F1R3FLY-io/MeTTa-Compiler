@@ -71,15 +71,16 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
-        MettaValueInner::Error(msg, details) => {
-            // Represent errors as lists: ["error", msg, details]
+        MettaValueInner::Error(offending, detail) => {
+            // HE-bisimilar Error(offending, detail). Represent as a tagged list
+            // ["error", offending, detail] where both slots are full values.
             let tag_par = create_string_par("error".to_string());
-            let msg_par = create_string_par(msg.to_string());
-            let details_par = metta_value_to_par(details);
+            let offending_par = metta_value_to_par(offending);
+            let detail_par = metta_value_to_par(detail);
 
             Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::EListBody(EList {
-                    ps: vec![tag_par, msg_par, details_par],
+                    ps: vec![tag_par, offending_par, detail_par],
                     locally_free: Vec::new(),
                     connective_used: false,
                     remainder: None,
@@ -451,8 +452,10 @@ pub fn metta_state_to_pathmap_par(state: &MettaState) -> Par {
 /// Convert MettaState to a Rholang Par for error cases
 /// Returns a PathMap containing the error (to maintain consistent type)
 pub fn metta_error_to_par(error_msg: &str) -> Par {
-    // Create an error MettaValue
-    let error_value = MettaValue::Error(error_msg.to_string(), MettaValue::Unit());
+    // HE-bisimilar Error(offending, detail). For a context-less error wrap,
+    // the offending slot is Unit (no specific atom to blame) and the detail
+    // slot carries the human-readable message string.
+    let error_value = MettaValue::Error(MettaValue::Unit(), MettaValue::String(error_msg));
 
     // Create a MettaState with the error in output
     let error_state = MettaState::new_accumulated(MettaEnvironment::default(), vec![error_value]);
@@ -500,15 +503,14 @@ pub fn par_to_metta_value(par: &Par) -> Result<MettaValue, String> {
                         if tag.starts_with('"') {
                             match tag.as_str() {
                                 "error" => {
-                                    // Error list: [tag, msg, details]
+                                    // HE-bisimilar Error(offending, detail).
+                                    // Tagged Par list shape we emit is
+                                    // [tag, offending, detail]; decode the
+                                    // same way.
                                     if list.ps.len() >= 3 {
-                                        let msg = par_to_metta_value(&list.ps[1])?;
-                                        let details = par_to_metta_value(&list.ps[2])?;
-                                        if let MettaValueInner::String(msg_str) = msg.inner() {
-                                            Ok(MettaValue::Error(msg_str, details))
-                                        } else {
-                                            Err("Error message must be a string".to_string())
-                                        }
+                                        let offending = par_to_metta_value(&list.ps[1])?;
+                                        let detail = par_to_metta_value(&list.ps[2])?;
+                                        Ok(MettaValue::Error(offending, detail))
                                     } else {
                                         Err("Error list must have 3 elements".to_string())
                                     }

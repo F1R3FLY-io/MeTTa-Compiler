@@ -34,8 +34,14 @@ impl MettaValueTestExt for MettaValue {
                 let inner: Vec<String> = exprs.iter().map(|e| e.to_display_string()).collect();
                 format!("({})", inner.join(" "))
             }
-            MettaValueInner::Error(msg, details) => {
-                format!("(error \"{}\" {})", msg, details.to_display_string())
+            MettaValueInner::Error(offending, detail) => {
+                // HE-bisimilar `(error offending detail)`. Both slots are
+                // full values — recurse into both for display.
+                format!(
+                    "(error {} {})",
+                    offending.to_display_string(),
+                    detail.to_display_string()
+                )
             }
             MettaValueInner::Unit => "()".to_string(),
             MettaValueInner::Type(t) => format!("Type({})", t.to_display_string()),
@@ -48,6 +54,7 @@ impl MettaValueTestExt for MettaValue {
             MettaValueInner::Quoted(inner) => format!("(quote {})", inner.to_display_string()),
             MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
             MettaValueInner::Empty => "Empty".to_string(),
+            MettaValueInner::NotReducible => "NotReducible".to_string(),
             MettaValueInner::Spanned(_, _) => unreachable!("inner() strips Spanned"),
         }
     }

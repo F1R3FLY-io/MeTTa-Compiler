@@ -57,12 +57,12 @@ where
 {
     if items.len() < 2 || items.len() > 3 {
         return vec![factory.error(
-            &format!(
+            factory.sexpr(items.to_vec()),
+            factory.string(&format!(
                 "git-import! requires 1 or 2 arguments, got {}. \
                  Usage: (git-import! \"url\" [\"build_cmd\"])",
                 items.len() - 1
-            ),
-            factory.sexpr(items.to_vec()),
+            )),
         )];
     }
 
@@ -74,15 +74,18 @@ where
             Some(s) => s.to_string(),
             None => {
                 return vec![factory.error(
-                    "git-import!: first argument must be a URL string",
                     items[1].clone(),
+                    factory.string("git-import!: first argument must be a URL string"),
                 )];
             }
         },
     };
 
     if url.is_empty() {
-        return vec![factory.error("git-import!: URL string is empty", items[1].clone())];
+        return vec![factory.error(
+            items[1].clone(),
+            factory.string("git-import!: URL string is empty"),
+        )];
     }
 
     // Optional second arg: build command, also accepted as String or atom.
@@ -107,11 +110,11 @@ where
         Some(n) => n.to_string(),
         None => {
             return vec![factory.error(
-                &format!(
+                items[1].clone(),
+                factory.string(&format!(
                     "git-import!: could not extract repo name from URL '{}'",
                     url
-                ),
-                items[1].clone(),
+                )),
             )];
         }
     };
@@ -123,12 +126,12 @@ where
         // Ensure the parent cache directory exists.
         if let Err(e) = std::fs::create_dir_all(&cache_dir) {
             return vec![factory.error(
-                &format!(
+                items[1].clone(),
+                factory.string(&format!(
                     "git-import!: failed to create cache directory '{}': {}",
                     cache_dir.display(),
                     e
-                ),
-                items[1].clone(),
+                )),
             )];
         }
 
@@ -143,22 +146,22 @@ where
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 return vec![factory.error(
-                    &format!(
+                    items[1].clone(),
+                    factory.string(&format!(
                         "git-import!: 'git clone {}' failed (exit {}): {}",
                         url,
                         o.status.code().unwrap_or(-1),
                         stderr.trim()
-                    ),
-                    items[1].clone(),
+                    )),
                 )];
             }
             Err(e) => {
                 return vec![factory.error(
-                    &format!(
+                    items[1].clone(),
+                    factory.string(&format!(
                         "git-import!: failed to invoke 'git' (is it installed and on PATH?): {}",
                         e
-                    ),
-                    items[1].clone(),
+                    )),
                 )];
             }
         }
@@ -175,23 +178,23 @@ where
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr);
                     return vec![factory.error(
-                        &format!(
+                        items[2].clone(),
+                        factory.string(&format!(
                             "git-import!: build step '{}' failed (exit {}) in '{}': {}",
                             cmd,
                             o.status.code().unwrap_or(-1),
                             local.display(),
                             stderr.trim()
-                        ),
-                        items[2].clone(),
+                        )),
                     )];
                 }
                 Err(e) => {
                     return vec![factory.error(
-                        &format!(
+                        items[2].clone(),
+                        factory.string(&format!(
                             "git-import!: failed to spawn build shell for '{}': {}",
                             cmd, e
-                        ),
-                        items[2].clone(),
+                        )),
                     )];
                 }
             }

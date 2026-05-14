@@ -329,12 +329,13 @@ where
         }
 
         // --- Errors ---
-        if let Some((p_msg, p_details)) = pat.as_error() {
-            if let Some((s_msg, s_details)) = sto.as_error() {
-                if p_msg != s_msg {
-                    return None;
-                }
-                work_stack.push((p_details, s_details));
+        // HE-bisimilar shape: `Error(offending, detail)`. Match both slots
+        // structurally — pattern's offending must unify with store's offending,
+        // and same for detail.
+        if let Some((p_offending, p_detail)) = pat.as_error() {
+            if let Some((s_offending, s_detail)) = sto.as_error() {
+                work_stack.push((p_detail, s_detail));
+                work_stack.push((p_offending, s_offending));
                 continue;
             }
             return None;

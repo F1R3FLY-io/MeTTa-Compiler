@@ -7,10 +7,8 @@
 //! - bloom_check - Fast bloom filter check before MORK lookup
 
 use super::helpers::metta_to_jit;
-use crate::backend::bytecode::jit::types::{
-    JitContext, JitValue, TAG_ATOM, TAG_BOOL, TAG_LONG, TAG_PTR, TAG_UNIT, TAG_VAR,
-};
-use crate::backend::models::{MettaValue, ValueView};
+use crate::backend::bytecode::jit::types::{JitContext, JitValue};
+use crate::backend::models::MettaValue;
 use tracing::{debug, trace};
 
 // =============================================================================
@@ -110,16 +108,19 @@ pub unsafe extern "C" fn jit_runtime_breakpoint(_ctx: *mut JitContext, bp_id: u6
 // Phase 1.9: Type Operations - GetMetaType
 // =============================================================================
 
-/// Phase 1.9: Get meta-level type of a value
+/// Phase 1.9: Get meta-level type of a value (HE 4-category vocabulary).
 ///
-/// Returns the meta-type of a value, which is one of:
-/// - "Expression" for S-expressions
-/// - "Symbol" for atoms/symbols
-/// - "Variable" for variables
-/// - "Grounded" for ground types (numbers, bools, strings)
+/// Plan S7 (RC-METATYPE-VOCAB, 2026-05-14): all four tiers (T0 trampoline,
+/// T1 VM, T2/T3 JIT) delegate to `ValueView::metatype()` — the single source
+/// of truth in `src/backend/models/metta_value.rs`. Returns one of:
+/// - "Expression" — S-expressions and Quoted wrappers
+/// - "Symbol"     — plain non-variable atoms
+/// - "Variable"   — `$`-prefixed atoms
+/// - "Grounded"   — primitives, errors, state, space, etc.
 ///
 /// # Safety
-/// - ctx must be a valid pointer to a JitContext
+/// - ctx must be a valid pointer to a JitContext (unused; reserved for future)
+/// - val must be a valid JIT-encoded NaN-boxed value
 ///
 /// # Returns
 /// NaN-boxed Atom string representing the meta-type
@@ -130,41 +131,10 @@ pub unsafe extern "C" fn jit_runtime_get_metatype(
     _ip: u64,
 ) -> u64 {
     let jit_val = JitValue::from_raw(val);
-
-    // Determine meta-type from tag
-    let tag = jit_val.tag();
-    let metatype = match tag {
-        t if t == TAG_PTR => {
-            // Could be SExpr, Quoted, or other heap type
-            let metta = jit_val.to_metta();
-            match metta.view() {
-                ValueView::SExpr(_) => "Expression",
-                // Quoted is transparent to get-metatype: returns "Expression"
-                ValueView::Quoted(_) => "Expression",
-                ValueView::String(_) => "Grounded",
-                // NotReducible is a Symbol (HE-aligned via ValueView::metatype).
-                ValueView::NotReducible => "Symbol",
-                ValueView::Float(_)
-                | ValueView::Bool(_)
-                | ValueView::Long(_)
-                | ValueView::Unit
-                | ValueView::Empty
-                | ValueView::Atom(_)
-                | ValueView::Error(_, _)
-                | ValueView::Type(_)
-                | ValueView::Conjunction(_)
-                | ValueView::Space(_)
-                | ValueView::State(_)
-                | ValueView::Memo(_) => "Expression",
-            }
-        }
-        t if t == TAG_ATOM => "Symbol",
-        t if t == TAG_VAR => "Variable",
-        t if t == TAG_LONG => "Grounded",
-        t if t == TAG_BOOL => "Grounded",
-        t if t == TAG_UNIT => "Grounded",
-        _ => "Unknown",
-    };
+    // Plan S7: delegate to ValueView::metatype() so the JIT, VM, and
+    // trampoline tiers share one HE-aligned 4-category vocabulary.
+    let metta = jit_val.to_metta();
+    let metatype = metta.view().metatype();
 
     let result = MettaValue::Atom(metatype.to_string());
     metta_to_jit(&result).to_bits()

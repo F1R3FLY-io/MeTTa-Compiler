@@ -1946,7 +1946,12 @@ proptest! {
 // =============================================================================
 
 proptest! {
-    /// get-metatype returns correct metatype for each value type
+    /// get-metatype returns correct metatype for each value type.
+    ///
+    /// Plan S7 (RC-METATYPE-VOCAB, 2026-05-14): HE 4-category vocabulary.
+    /// All primitive literals (Number/Bool/String/Unit/...) collapse to
+    /// "Grounded" matching HE `lib/src/metta/types.rs::get_meta_type`.
+    /// For fine-grained type information, use (get-type ...) instead.
     #[test]
     fn prop_get_metatype_long(x in any::<i64>()) {
         let mut builder = ChunkBuilder::new("test");
@@ -1957,7 +1962,7 @@ proptest! {
 
         let result = BytecodeVM::new(builder.build_arc()).run();
         prop_assert!(result.is_ok());
-        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Number"));
+        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Grounded"));
     }
 
     #[test]
@@ -1970,7 +1975,7 @@ proptest! {
 
         let result = BytecodeVM::new(builder.build_arc()).run();
         prop_assert!(result.is_ok());
-        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Number"));
+        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Grounded"));
     }
 
     #[test]
@@ -1983,7 +1988,7 @@ proptest! {
 
         let result = BytecodeVM::new(builder.build_arc()).run();
         prop_assert!(result.is_ok());
-        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Bool"));
+        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Grounded"));
     }
 
     #[test]
@@ -1996,7 +2001,7 @@ proptest! {
 
         let result = BytecodeVM::new(builder.build_arc()).run();
         prop_assert!(result.is_ok());
-        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("String"));
+        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Grounded"));
     }
 
     #[test]
@@ -2040,7 +2045,7 @@ proptest! {
 
     #[test]
     fn prop_get_metatype_nil(_unit: ()) {
-        // After Nil/Unit merge, Nil() returns Unit, so metatype is "Unit"
+        // Plan S7: Nil/Unit collapse to "Grounded" under HE 4-category.
         let mut builder = ChunkBuilder::new("test");
         let idx = builder.add_constant(MettaValue::Unit());
         builder.emit_u16(Opcode::PushConstant, idx);
@@ -2049,7 +2054,7 @@ proptest! {
 
         let result = BytecodeVM::new(builder.build_arc()).run();
         prop_assert!(result.is_ok());
-        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Unit"));
+        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Grounded"));
     }
 
     #[test]
@@ -2062,7 +2067,7 @@ proptest! {
 
         let result = BytecodeVM::new(builder.build_arc()).run();
         prop_assert!(result.is_ok());
-        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Unit"));
+        prop_assert_eq!(&result.unwrap()[0], &MettaValue::sym("Grounded"));
     }
 }
 

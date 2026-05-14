@@ -277,12 +277,14 @@ mod tests {
         &["Variable"]
     );
     eval_test!(metatype_symbol, "!(get-metatype foo)", &["Symbol"]);
-    // X.3 (2026-05-11): HE-aligned metatypes for typed literals — Bool/Number/String
-    // (was "Grounded" for all). Single source of truth: ValueView::metatype().
-    eval_test!(metatype_number_long, "!(get-metatype 42)", &["Number"]);
-    eval_test!(metatype_number_float, "!(get-metatype 3.14)", &["Number"]);
-    eval_test!(metatype_bool_true, "!(get-metatype True)", &["Bool"]);
-    eval_test!(metatype_string_lit, "!(get-metatype \"hi\")", &["String"]);
+    // Plan S7 (RC-METATYPE-VOCAB, 2026-05-14): HE 4-category vocabulary.
+    // All primitive literals (Number/Bool/String/...) collapse to "Grounded".
+    // For fine-grained type information, use (get-type ...) instead.
+    // Matches HE `lib/src/metta/types.rs::get_meta_type`.
+    eval_test!(metatype_number_long, "!(get-metatype 42)", &["Grounded"]);
+    eval_test!(metatype_number_float, "!(get-metatype 3.14)", &["Grounded"]);
+    eval_test!(metatype_bool_true, "!(get-metatype True)", &["Grounded"]);
+    eval_test!(metatype_string_lit, "!(get-metatype \"hi\")", &["Grounded"]);
 
     // Gap 2: dependent type reduction (structural)
     eval_test!(

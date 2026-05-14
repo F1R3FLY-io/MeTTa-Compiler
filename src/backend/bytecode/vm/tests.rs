@@ -5209,6 +5209,11 @@ fn test_vm_is_symbol_false() {
 
 // --- Get Metatype Tests ---
 
+// Plan S7 (RC-METATYPE-VOCAB, 2026-05-14): HE 4-category vocabulary.
+// `get-metatype` returns Grounded/Symbol/Variable/Expression — primitive
+// literals (Number/Bool/String) all collapse to "Grounded" matching
+// HE `lib/src/metta/types.rs::get_meta_type`.
+
 #[test]
 fn test_vm_get_metatype_number() {
     let mut builder = ChunkBuilder::new("test");
@@ -5221,7 +5226,7 @@ fn test_vm_get_metatype_number() {
     let result = vm.run().expect("VM should succeed");
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], MettaValue::sym("Number"));
+    assert_eq!(result[0], MettaValue::sym("Grounded"));
 }
 
 #[test]
@@ -5269,7 +5274,7 @@ fn test_vm_get_metatype_string() {
     let result = vm.run().expect("VM should succeed");
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], MettaValue::sym("String"));
+    assert_eq!(result[0], MettaValue::sym("Grounded"));
 }
 
 #[test]
@@ -5284,7 +5289,7 @@ fn test_vm_get_metatype_bool() {
     let result = vm.run().expect("VM should succeed");
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], MettaValue::sym("Bool"));
+    assert_eq!(result[0], MettaValue::sym("Grounded"));
 }
 
 // --- Repr Operation Tests ---

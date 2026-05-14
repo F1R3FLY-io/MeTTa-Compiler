@@ -541,26 +541,48 @@ impl ValueView {
     ///
     /// Single source of truth for `get-metatype` across T0 trampoline, T1
     /// bytecode VM, and T2/T3 JIT. Spanned layers are already stripped by
-    /// `view()`. Matches HE `lib/src/metta/types.rs::get_meta_type`.
+    /// `view()`. Matches HE `lib/src/metta/types.rs::get_meta_type`
+    /// (hyperon-experimental commit referenced in Plan S7).
+    ///
+    /// HE returns exactly 4 categories — Plan S7 (RC-METATYPE-VOCAB,
+    /// 2026-05-14) collapsed MTT's fine-grained vocabulary into HE's 4-set:
+    ///   - `Grounded`  — all primitive literals, errors, state, memo, space,
+    ///                   conjunctions, type-wrappers, units, empty results,
+    ///                   and the NotReducible sentinel
+    ///   - `Symbol`    — plain non-variable atoms
+    ///   - `Variable`  — `$`-prefixed atoms (MeTTa variable sigil)
+    ///   - `Expression`— S-expressions and quoted wrappers
+    ///
+    /// For HE-internal-dispatch sites that need to distinguish numbers from
+    /// strings from bools, match on `view()` directly with the typed variants
+    /// (`ValueView::Long`, `ValueView::Bool`, `ValueView::String`, etc.) —
+    /// do NOT branch on this string.
     pub fn metatype(&self) -> &'static str {
         match self {
-            ValueView::Bool(_) => "Bool",
-            ValueView::Long(_) | ValueView::Float(_) => "Number",
-            ValueView::Unit => "Unit",
-            ValueView::Empty => "Grounded",
-            // NotReducible is a sentinel symbol; HE classifies it as `Symbol`
-            // since it's an interned atom in the HE space. Plan S0a.
-            ValueView::NotReducible => "Symbol",
-            ValueView::Quoted(_) | ValueView::SExpr(_) => "Expression",
-            ValueView::Atom(s) if s.starts_with('$') => "Variable",
-            ValueView::Atom(_) => "Symbol",
-            ValueView::String(_) => "String",
-            ValueView::Error(..) => "Error",
-            ValueView::State(_) => "State",
-            ValueView::Type(_)
+            // Grounded: all primitive literals + grounded-object wrappers.
+            // Matches HE which classifies anything backed by a Rust-side
+            // grounded value (Number, Bool, String, Error, State, Space,
+            // Conjunction, Memo, Type, Unit, Empty, NotReducible) as Grounded.
+            ValueView::Bool(_)
+            | ValueView::Long(_)
+            | ValueView::Float(_)
+            | ValueView::String(_)
+            | ValueView::Unit
+            | ValueView::Empty
+            | ValueView::NotReducible
+            | ValueView::Error(..)
+            | ValueView::State(_)
+            | ValueView::Type(_)
             | ValueView::Conjunction(_)
             | ValueView::Space(_)
             | ValueView::Memo(_) => "Grounded",
+            // Variable: `$`-prefixed atom sigils
+            ValueView::Atom(s) if s.starts_with('$') => "Variable",
+            // Symbol: plain non-variable atoms
+            ValueView::Atom(_) => "Symbol",
+            // Expression: S-expressions and Quoted wrappers (Quoted is
+            // transparent at the metatype level)
+            ValueView::SExpr(_) | ValueView::Quoted(_) => "Expression",
         }
     }
 }

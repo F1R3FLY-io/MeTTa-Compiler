@@ -46,8 +46,18 @@ static TYPE_NAME_UNKNOWN: &str = "Unknown";
 
 /// Get the type name of a NaN-boxed value.
 ///
-/// Returns the type name as a NaN-boxed atom (TAG_ATOM with pointer to static string).
-/// Type names match MettaValue::type_name():
+/// S6 (RC-GET-TYPE-CONSULTS-ENV): HE parity. The dispatch order is:
+/// 1. If env is available, delegate to `infer_types_generic` — the shared
+///    helper that handles typed-primitives, atom symbol → space `(: name $T)`
+///    lookups, SExpr arrow-return types, and the `%Undefined%` fallback.
+/// 2. If no env, fall back to syntactic `get_type_generic` (legacy semantics
+///    for the no-environment case used by some tests).
+///
+/// For nondeterministic results (multiple `(: name $T)` assertions), the
+/// JIT FFI must return a single scalar, so we pick the first result. The
+/// T0 trampoline path handles full nondet enumeration via `eval_get_type_generic`.
+///
+/// Type names match MettaValue::type_name() in the syntactic fallback:
 /// - TAG_LONG → "Number"
 /// - TAG_BOOL → "Bool"
 /// - TAG_UNIT → "Unit"
@@ -60,6 +70,8 @@ static TYPE_NAME_UNKNOWN: &str = "Unknown";
 ///
 /// # Safety
 /// For pointer payloads, the referenced value must be valid.
+/// If `ctx->env_ptr` is set, it must point to a valid `MettaEnvironment`
+/// that outlives this call.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     let arena_ptr = if !ctx.is_null() {
@@ -73,6 +85,32 @@ pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _i
         crate::backend::models::global_allocator()
     };
     let factory = GcFactory::new(alloc);
+
+    // S6: consult environment for type assertions if available.
+    if !ctx.is_null() {
+        let env_ptr = (*ctx).env_ptr;
+        if !env_ptr.is_null() {
+            use super::helpers::jit_to_value_generic;
+            use crate::backend::bytecode::jit::types::JitValue;
+            use crate::backend::eval::types::infer_types_generic;
+            let env =
+                &*(env_ptr as *const crate::backend::bytecode::MettaEnvironment);
+            // Reconstruct MettaValue from NaN-boxed payload.
+            let value: MettaValue =
+                jit_to_value_generic::<MettaValue, GcFactory>(JitValue::from_raw(val), &factory);
+            let types = infer_types_generic(&value, &factory, env);
+            // HE parity: empty result → %Undefined%. Single representative
+            // for the JIT FFI; full nondet enumeration handled at T0.
+            let result = if types.is_empty() {
+                factory.atom("%Undefined%")
+            } else {
+                types[0].clone()
+            };
+            return value_to_jit_generic(&result).to_bits();
+        }
+    }
+
+    // Fallback: no env attached — use the legacy syntactic helper.
     get_type_generic::<MettaValue, GcFactory>(val, &factory)
 }
 

@@ -2836,8 +2836,37 @@ where
 
     fn op_get_type(&mut self) -> VmResult<()> {
         let value = self.pop()?;
-        let type_name = value.type_name();
-        self.push(self.make_atom(type_name));
+        // S6 (RC-GET-TYPE-CONSULTS-ENV): HE parity — get-type consults the
+        // environment for `(: name TypeName)` assertions before falling back
+        // to syntactic type. Delegates to the shared `infer_types_generic`
+        // helper used by T0 (single source of truth across tiers).
+        //
+        // HE dispatch order (lib/src/metta/types.rs `get_atom_types_internal`):
+        //   1. Typed primitives (Long/Float→Number, Bool→Bool, String→String)
+        //   2. Atom symbol → query_types(space, atom) for `(: atom $T)`
+        //   3. SExpr → arrow return type lookup via env
+        //   4. Fallback `%Undefined%` for untyped atoms
+        //
+        // For nondeterministic results (multiple type assertions), VM pushes
+        // the first; the T0 trampoline path handles full nondet enumeration.
+        if let Some(env) = self.env.as_ref() {
+            use crate::backend::eval::types::infer_types_generic;
+            let factory = self.factory.clone();
+            let types = infer_types_generic(&value, &factory, env);
+            // Push first result (deterministic representative).
+            // Empty results → %Undefined% (HE parity fallback).
+            let result = if types.is_empty() {
+                self.make_atom("%Undefined%")
+            } else {
+                types[0].clone()
+            };
+            self.push(result);
+        } else {
+            // No env attached — fall back to syntactic type_name() (legacy path
+            // for tests/utilities that construct a VM without an environment).
+            let type_name = value.type_name();
+            self.push(self.make_atom(type_name));
+        }
         Ok(())
     }
 

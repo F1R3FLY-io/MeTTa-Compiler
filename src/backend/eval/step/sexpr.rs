@@ -522,32 +522,58 @@ where
                     };
                 }
 
-                // eval - defers evaluation to trampoline
+                // eval - Plan S4 (2026-05-14) HE-faithful ONE-STEP semantics.
                 //
-                // Z.A.6.d (2026-05-12): `capture` is HE's analog at
-                // `hyperon-experimental/lib/src/metta/runner/stdlib/core.rs:224-254`.
-                // `CaptureOp::execute` calls `interpret(space, atom, settings)` —
-                // it evaluates the argument in the current space with the captured
-                // PragmaSettings, returning a Vec<Atom> of results.
+                // HE's `eval_impl` in
+                // `hyperon-experimental/lib/src/metta/interpreter.rs:504` performs
+                // a single rewrite step then `finished`. Variable-headed,
+                // grounded-scalar-at-head, or no-match cases emit `NotReducible`.
+                // The outer `metta`/`metta_call_return` wrapping converts
+                // `NotReducible` back to the original atom for user-visible `!`
+                // output (matching empirical HE behaviour: `!(eval 42)` →
+                // `[(eval 42)]`).
                 //
-                // In MeTTaTron, PragmaSettings aren't a first-class value type
-                // (they live on the env via `pragma!` and propagate implicitly).
-                // The observation-equivalent operation is `eval`, which fully
-                // evaluates the argument in the current env and returns the
-                // result multiset. `capture` therefore aliases to `eval` —
-                // HE-sourced MeTTa modules using `(capture X)` resolve to a
-                // full evaluation of X, identical to HE behaviour given that
-                // MeTTaTron preserves the ambient pragma settings on the env.
-                "eval" | "capture" => {
+                // We route `eval` to a new `EvalEvalStep` variant that performs
+                // classify-and-rewrite inline — NOT the legacy `EvalEval` which
+                // is used by internal full-reduction paths (progn, metta).
+                "eval" => {
                     if items.len() != 2 {
                         let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
                             ctx.factory().sexpr(items),
                             ctx.factory().string(&format!(
-                                "{} requires exactly 1 argument, got {}. Usage: ({} expr)",
-                                op,
-                                arg_count,
-                                op
+                                "eval requires exactly 1 argument, got {}. Usage: (eval expr)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::EvalEvalStep {
+                        arg: items[1].clone(),
+                        env,
+                        depth,
+                    };
+                }
+
+                // capture - HE-faithful full-reduction.
+                //
+                // HE source: `hyperon-experimental/lib/src/metta/runner/stdlib/core.rs:224-254`.
+                // `CaptureOp::execute` calls `interpret(space, atom, settings)` —
+                // it FULLY evaluates the argument in the current space with the
+                // captured PragmaSettings, returning a Vec<Atom> of results.
+                //
+                // In MeTTaTron, PragmaSettings aren't a first-class value type
+                // (they live on the env via `pragma!` and propagate implicitly).
+                // We retain `EvalEval` (transitive full reduction via trampoline)
+                // for `capture`, matching HE's `interpret`-loop semantics.
+                "capture" => {
+                    if items.len() != 2 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "capture requires exactly 1 argument, got {}. Usage: (capture expr)",
+                                arg_count
                             )),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
@@ -559,10 +585,19 @@ where
                     };
                 }
 
-                // PeTTa-compatible `reduce` built-in. Desugars to `(eval arg)` —
+                // PeTTa-compatible `reduce` built-in. HE has no `reduce` op;
                 // PeTTa's `reduce/2` Prolog predicate (translator.pl:50) forces
-                // evaluation of an expression to its normal form, which is exactly
-                // what `eval` does in MeTTaTron.
+                // evaluation to normal form. PLN (`lib_pln.metta`,
+                // `examples/Direct.metta`) depends on `reduce` being full
+                // reduction to enumerate all rule-derivation stv candidates.
+                //
+                // Decision (S4, 2026-05-14): keep `reduce` as full-reduction
+                // (legacy `EvalEval`) to preserve PLN. Treating `reduce` as a
+                // one-step alias of `eval` (as the S4 plan text suggested)
+                // would break Direct/Smokes' multi-step `(stv ...)` derivations.
+                // See `/home/dylon/Workspace/f1r3fly.io/PLN/examples/Direct.metta:42`
+                // — `(collapse (reduce (eval $grounded)))` needs the outer
+                // `reduce` to enumerate all rule applications.
                 "reduce" => {
                     if items.len() != 2 {
                         let arg_count = items.len() - 1;

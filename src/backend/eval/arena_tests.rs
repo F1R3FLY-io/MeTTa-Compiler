@@ -221,7 +221,15 @@ mod tests {
         &["(quote (+ (+ 1 2) 3))"]
     );
     eval_test!(eval_force_quoted, "!(eval (quote (* 6 7)))", &["42"]);
-    eval_test!(eval_on_value, "!(eval 42)", &["42"]);
+    // Plan S4 (2026-05-14): HE-faithful one-step `(eval X)` semantics.
+    // Grounded scalar at top level emits `NotReducible` per spec §06.4 /
+    // T04-kernel/069-eval-on-grounded.expected.yaml. HE's `eval_impl` line
+    // 504 classifies the resolved arg as a scalar with no equation match
+    // → `return_not_reducible()`. The outer `metta_call_return` wrapping at
+    // the user-visible `!` level converts `NotReducible` back to the
+    // original atom in HE's REPL, but MeTTaTron's `!` is unwrapped — so we
+    // observe the raw kernel-level sentinel.
+    eval_test!(eval_on_value, "!(eval 42)", &["NotReducible"]);
     eval_test!(
         quote_nested_structure,
         "!(quote ((+ 1 2) (* 3 4)))",

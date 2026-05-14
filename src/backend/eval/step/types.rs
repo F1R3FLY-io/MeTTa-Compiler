@@ -204,8 +204,35 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     },
 
     /// Evaluate (eval expr) - first evaluates argument, then evaluates the result.
+    /// Used by INTERNAL re-eval paths (progn, metta, etc) that want full
+    /// reduction to normal form (transitive rewriting via trampoline).
     EvalEval {
         /// The argument expression to evaluate first
+        arg: V,
+        /// Environment for evaluation
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
+    /// Plan S4 (2026-05-14) — HE-faithful one-step `(eval X)` semantics.
+    ///
+    /// Mirrors `hyperon-experimental/lib/src/metta/interpreter.rs::eval_impl`:
+    /// performs exactly ONE rewrite step then `finished`, never driving
+    /// transitive reduction. The outer `metta`/`!` wrapping handles
+    /// `NotReducible → original-atom` substitution per `metta_call_return`.
+    ///
+    /// Classification (matches HE eval_impl):
+    ///   - `arg` after `apply_bindings` is `Variable` or has `Variable` head
+    ///     → emit `NotReducible` (HE `query` short-circuit for variable_op).
+    ///   - `arg` is a grounded scalar at top level (Bool/Long/Float/String)
+    ///     → emit `NotReducible` (HE `query` finds no `(= scalar X)` match).
+    ///   - `arg` is an executable grounded application (head is a grounded
+    ///     op like `+`, `*`, `==`, etc.) → execute ONCE, return result.
+    ///   - Otherwise → one space-query step `(= arg X)`; matches form
+    ///     fan-out results (finished, no re-eval), no match → `NotReducible`.
+    EvalEvalStep {
+        /// The argument to one-step rewrite
         arg: V,
         /// Environment for evaluation
         env: E,

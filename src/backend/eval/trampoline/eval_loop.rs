@@ -4109,7 +4109,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                         }
                     }
 
-                    // Evaluate eval
+                    // Evaluate eval (internal full-reduction path — used by
+                    // progn, metta, capture, reduce).
                     GenericEvalStep::EvalEval {
                         arg,
                         env: step_env,
@@ -4124,6 +4125,171 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                         work_stack.push(WorkItem::Eval {
                             value: arg,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
+                        });
+                    }
+
+                    // Plan S4 (2026-05-14) — HE-faithful one-step `(eval X)`.
+                    //
+                    // Mirrors `hyperon-experimental/lib/src/metta/interpreter.rs::eval_impl`:
+                    //   1. Apply outer bindings to `arg`.
+                    //   2. If `arg` (post-binding) is a variable or scalar
+                    //      grounded value (Bool/Long/Float/String/Unit) → emit
+                    //      `NotReducible` finished sentinel. This matches spec
+                    //      tests 069 (`!(eval 42)` → `[NotReducible]`) and 070
+                    //      (`!(eval $x)` → unconstrained, NotReducible OK).
+                    //   3. If `arg` is an S-expression with a variable head →
+                    //      emit `NotReducible` (HE `is_variable_op` short-circuit
+                    //      at `eval_impl` line 606-611).
+                    //   4. Otherwise → defer to the same full-reduction flow as
+                    //      `EvalEval`. HE's eval_impl pushes the result back to
+                    //      the interpret-loop stack, which produces transitive
+                    //      reduction equivalent to MeTTaTron's trampoline-driven
+                    //      WorkItem::Eval recursion. Spec tests 003
+                    //      (`!(eval (+ 1 2))` → `[3]`) and 005
+                    //      (`!(eval (eval (+ 1 2)))` → `[3]`) rely on this
+                    //      transitive behavior.
+                    //
+                    // Risk mitigation: `NotReducible` is emitted ONLY from
+                    // variable/scalar/var-head branches, never from `if`
+                    // non-Bool, `case` default, or `collapse-bind` cardinality.
+                    // This is the precise scope per the S4 risk-mitigation
+                    // protocol (see /home/dylon/.claude/projects/.../memory/
+                    // feedback-pln-historical-memory.md re: 2026-04-26 OOM).
+                    GenericEvalStep::EvalEvalStep {
+                        arg,
+                        env: step_env,
+                        depth,
+                    } => {
+                        // Apply outer bindings (HE eval_impl line 505 parity).
+                        let resolved = if carrying_bindings.is_empty() {
+                            arg
+                        } else {
+                            apply_bindings(&arg, &*carrying_bindings, ctx.factory())
+                        };
+
+                        // Classify resolved argument.
+                        // Use ValueView for exhaustive, NaN-box-ready dispatch.
+                        let view = resolved.view();
+                        let immediate_not_reducible = match view {
+                            // Variable atoms → NotReducible (HE is_variable_op).
+                            crate::backend::models::metta_value::ValueView::Atom(name) => {
+                                name.starts_with('$')
+                            }
+                            // Grounded scalars → NotReducible (HE: no
+                            // `(= scalar X)` rule matches a scalar literal).
+                            crate::backend::models::metta_value::ValueView::Bool(_)
+                            | crate::backend::models::metta_value::ValueView::Long(_)
+                            | crate::backend::models::metta_value::ValueView::Float(_)
+                            | crate::backend::models::metta_value::ValueView::String(_)
+                            | crate::backend::models::metta_value::ValueView::Unit => true,
+                            // SExpr with variable head → NotReducible
+                            // (HE is_variable_op_expr at line 596-602).
+                            crate::backend::models::metta_value::ValueView::SExpr(items) => {
+                                items.first().map_or(false, |head| {
+                                    matches!(
+                                        head.view(),
+                                        crate::backend::models::metta_value::ValueView::Atom(n)
+                                            if n.starts_with('$')
+                                    )
+                                })
+                            }
+                            // NotReducible argument is itself NotReducible (idempotent).
+                            crate::backend::models::metta_value::ValueView::NotReducible => true,
+                            // Other variants (Error, Type, Conjunction, Space, etc.)
+                            // are passed through to the normal eval path.
+                            _ => false,
+                        };
+
+                        if immediate_not_reducible {
+                            let env: SharedEnv = Arc::new(step_env);
+                            work_stack.push(WorkItem::Resume {
+                                result: (smallvec![bv(ctx.factory().not_reducible())], env),
+                            });
+                            continue;
+                        }
+
+                        // Bare non-variable atom (Symbol): query rules
+                        // directly. HE's `eval_impl` falls through to
+                        // `query(space, ...)` for symbol atoms (line 555).
+                        // If no rule matches, HE's `query` returns
+                        // `NotReducible` (line 633-634).
+                        if let crate::backend::models::metta_value::ValueView::Atom(_) = view {
+                            // Non-variable atom (variable case handled above).
+                            // Use the trampoline's rule-match machinery via
+                            // the standard Eval path; we'll detect "no rule
+                            // matched and result == input" downstream in
+                            // ProcessEvalEval. For now, the cheapest correct
+                            // implementation: look up rules with arity 0.
+                            let matches = try_match_rules_with_bindings(
+                                &resolved,
+                                &*carrying_bindings,
+                                resolved.as_atom().expect("Atom view guarantees as_atom"),
+                                0,
+                                &step_env,
+                                ctx.factory(),
+                            );
+                            match matches {
+                                Some(ms) if ms.is_empty() => {
+                                    // No rule matched → NotReducible.
+                                    let env: SharedEnv = Arc::new(step_env);
+                                    work_stack.push(WorkItem::Resume {
+                                        result: (
+                                            smallvec![bv(ctx.factory().not_reducible())],
+                                            env,
+                                        ),
+                                    });
+                                    continue;
+                                }
+                                Some(ms) => {
+                                    // Matched — dispatch each RHS as a
+                                    // result. Use existing dispatch helper
+                                    // for non-det fan-out.
+                                    let env: SharedEnv = Arc::new(step_env);
+                                    continuations.push(Continuation::ProcessEvalEval {
+                                        env: env.clone(),
+                                        depth,
+                                        outer_carrying: carrying_bindings.clone(),
+                                    });
+                                    dispatch_rule_matches(
+                                        ms,
+                                        SmallVec::new(),
+                                        (*env).clone(),
+                                        depth + 1,
+                                        ctx,
+                                        &mut work_stack,
+                                        &mut continuations,
+                                        None,
+                                        &*carrying_bindings,
+                                    );
+                                    continue;
+                                }
+                                None => {
+                                    // Index inconclusive — fall through to
+                                    // standard eval path below.
+                                }
+                            }
+                        }
+
+                        // Otherwise → defer to standard full-reduction flow.
+                        // HE's interpret-loop produces transitive reduction
+                        // through repeated stack push/pop; MeTTaTron mirrors
+                        // this via WorkItem::Eval recursion driven by
+                        // dispatch_rule_matches' RHS push.
+                        let env: SharedEnv = Arc::new(step_env);
+                        continuations.push(Continuation::ProcessEvalEval {
+                            env: env.clone(),
+                            depth,
+                            outer_carrying: carrying_bindings.clone(),
+                        });
+
+                        work_stack.push(WorkItem::Eval {
+                            value: resolved,
                             env,
                             depth: depth + 1,
                             is_tail_call: false,

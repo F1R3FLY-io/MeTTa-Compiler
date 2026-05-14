@@ -224,6 +224,37 @@ pub(crate) fn pattern_match_impl(
                 true
             }
 
+            // S3 (ERROR-MATCH cross-shape): HE represents errors as the 3-element
+            // S-expression `(Error <offending> <detail>)`, but MeTTaTron stores
+            // them as a dedicated `Error(offending, detail)` variant. User patterns
+            // are parsed as SExpr-shaped `(Error $a $c)`, so we project the variant
+            // into the pseudo-SExpr shape and push the two child pairs onto the
+            // work stack. Matches HE's `error_atom() = Atom::expr([ERROR_SYMBOL, atom, err])`
+            // (hyperon-experimental/lib/src/metta/mod.rs:54-74; metta-specification/spec/C-errors.md:7-14).
+            (ValueView::SExpr(p_items), ValueView::Error(v_off, v_detail))
+                if p_items.len() == 3
+                    && matches!(p_items[0].view(), ValueView::Atom(s) if s == "Error") =>
+            {
+                // Push in reverse so detail child is processed after offending (LIFO).
+                work_stack.push((p_items[2], v_detail));
+                work_stack.push((p_items[1], v_off));
+                true
+            }
+
+            // S3 (symmetric): Error-variant pattern vs SExpr-shaped value
+            // (`(Error $a $c)` value reaching `(Error _ _)` variant pattern). This
+            // is less common but ensures bidirectional cross-shape unification so
+            // that data-borne errors flow through pattern_match identically to
+            // variant-borne errors.
+            (ValueView::Error(p_off, p_detail), ValueView::SExpr(v_items))
+                if v_items.len() == 3
+                    && matches!(v_items[0].view(), ValueView::Atom(s) if s == "Error") =>
+            {
+                work_stack.push((p_detail, v_items[2]));
+                work_stack.push((p_off, v_items[1]));
+                true
+            }
+
             _ => false,
         };
 
@@ -293,6 +324,32 @@ mod tests {
             "pattern ($x leaf2) vs (leaf0 leaf1) must fail; got: {:?}",
             bindings
         );
+    }
+
+    /// S3 (ERROR-MATCH cross-shape): `(Error $a $c)` SExpr-pattern must match
+    /// against the dedicated `Error(offending, detail)` variant.
+    #[test]
+    fn pattern_sexpr_error_matches_error_variant() {
+        let f = global_factory();
+        let pattern = f.sexpr(vec![f.atom("Error"), f.atom("$a"), f.atom("$c")]);
+        let value = f.error(f.atom("foo"), f.string("boom"));
+        let bindings = pattern_match(&pattern, &value);
+        assert!(
+            bindings.is_some(),
+            "(Error $a $c) must match Error(offending, detail), got {:?}",
+            bindings
+        );
+        let b = bindings.expect("Some");
+        let a = b
+            .iter()
+            .find(|(name, _)| *name == "$a")
+            .expect("$a is bound");
+        assert_eq!(a.1.as_atom(), Some("foo"));
+        let c = b
+            .iter()
+            .find(|(name, _)| *name == "$c")
+            .expect("$c is bound");
+        assert_eq!(c.1.as_string(), Some("boom"));
     }
 
     /// Regression for the generic matcher: `($x leaf2)` vs `(leaf1 leaf2)` MUST

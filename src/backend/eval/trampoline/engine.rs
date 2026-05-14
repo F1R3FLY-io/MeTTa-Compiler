@@ -426,6 +426,35 @@ pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Binding
             }
             return Some(combined_bindings);
         }
+
+        // S3 (ERROR-MATCH cross-shape): HE represents errors as the 3-element
+        // `(Error <offending> <detail>)` SExpr; MeTTaTron stores them as a
+        // dedicated `Error(offending, detail)` variant. When the value is an
+        // Error variant, project it into the pseudo-SExpr shape and recurse.
+        // See hyperon-experimental/lib/src/metta/mod.rs:54-74 and
+        // metta-specification/spec/C-errors.md:7-14 for the HE shape.
+        if let Some((value_off, value_detail)) = value.as_error() {
+            if pattern_items.len() == 3 && pattern_items[0].as_atom() == Some("Error") {
+                let mut combined = Bindings::new();
+                if let Some(sub) = pattern_match(&pattern_items[1], &value_off) {
+                    if !combined.merge(&sub) {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+                if let Some(sub) = pattern_match(&pattern_items[2], &value_detail) {
+                    if !combined.merge(&sub) {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+                return Some(combined);
+            }
+            return None;
+        }
+
         return None;
     }
 
@@ -476,6 +505,28 @@ pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Binding
                 None => return None,
             }
             return Some(combined);
+        }
+        // S3 symmetric cross-shape: Error-variant pattern vs SExpr-shaped
+        // value `(Error <offending> <detail>)`. Project SExpr into variant.
+        if let Some(value_items) = value.as_sexpr() {
+            if value_items.len() == 3 && value_items[0].as_atom() == Some("Error") {
+                let mut combined = Bindings::new();
+                if let Some(sub) = pattern_match(&pattern_offending, &value_items[1]) {
+                    if !combined.merge(&sub) {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+                if let Some(sub) = pattern_match(&pattern_detail, &value_items[2]) {
+                    if !combined.merge(&sub) {
+                        return None;
+                    }
+                } else {
+                    return None;
+                }
+                return Some(combined);
+            }
         }
         return None;
     }

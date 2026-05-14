@@ -546,6 +546,20 @@ where
                 return false;
             }
 
+            // S3 (ERROR-MATCH cross-shape): HE represents errors as the 3-element
+            // `(Error <offending> <detail>)` SExpr; MeTTaTron stores them as a
+            // dedicated `Error(offending, detail)` variant. When the value is an
+            // Error variant, project it into the pseudo-SExpr shape and recurse.
+            // hyperon-experimental/lib/src/metta/mod.rs:54-74; metta-specification/spec/C-errors.md:7-14.
+            if let Some((v_off, v_detail)) = val.as_error() {
+                if p_items.len() == 3 && p_items[0].as_atom() == Some("Error") {
+                    work_stack.push((p_items[2].clone(), v_detail.clone()));
+                    work_stack.push((p_items[1].clone(), v_off.clone()));
+                    continue;
+                }
+                return false;
+            }
+
             // Non-empty S-expr must match non-empty S-expr
             if let Some(v_items) = val.as_sexpr() {
                 // Dotted-pair pattern support (2026-05-11): `($x . $rest)` etc.
@@ -603,6 +617,15 @@ where
                 work_stack.push((p_detail.clone(), v_detail.clone()));
                 work_stack.push((p_offending.clone(), v_offending.clone()));
                 continue;
+            }
+            // S3 symmetric cross-shape: Error-variant pattern vs SExpr-shaped
+            // value `(Error ...)`. Project the SExpr into the variant shape.
+            if let Some(v_items) = val.as_sexpr() {
+                if v_items.len() == 3 && v_items[0].as_atom() == Some("Error") {
+                    work_stack.push((p_detail.clone(), v_items[2].clone()));
+                    work_stack.push((p_offending.clone(), v_items[1].clone()));
+                    continue;
+                }
             }
             return false;
         }

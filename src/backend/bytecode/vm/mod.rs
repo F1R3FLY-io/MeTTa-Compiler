@@ -8483,8 +8483,21 @@ where
         match pattern.view() {
             ValueView::Atom(s) if s.starts_with('$') || s == "_" || s == "$_" => true,
             ValueView::SExpr(_) => {
+                let p_items = pattern.as_sexpr().expect("matched SExpr");
+                // S3 (ERROR-MATCH cross-shape): HE represents errors as
+                // 3-element `(Error <offending> <detail>)` SExprs; MeTTaTron
+                // stores them as a dedicated Error variant. Project the
+                // variant into the pseudo-SExpr shape before matching.
+                if let Some((v_off, v_detail)) = value.as_error() {
+                    if p_items.len() == 3
+                        && matches!(p_items[0].view(), ValueView::Atom(s) if s == "Error")
+                    {
+                        return self.pattern_matches_generic(&p_items[1], v_off)
+                            && self.pattern_matches_generic(&p_items[2], v_detail);
+                    }
+                    return false;
+                }
                 if let Some(v_items) = value.as_sexpr() {
-                    let p_items = pattern.as_sexpr().expect("matched SExpr");
                     p_items.len() == v_items.len()
                         && p_items
                             .iter()
@@ -8493,6 +8506,20 @@ where
                 } else {
                     false
                 }
+            }
+            // S3 symmetric: Error-variant pattern vs SExpr-shaped value.
+            ValueView::Error(_, _) => {
+                if let Some((p_off, p_detail)) = pattern.as_error() {
+                    if let Some(v_items) = value.as_sexpr() {
+                        if v_items.len() == 3
+                            && matches!(v_items[0].view(), ValueView::Atom(s) if s == "Error")
+                        {
+                            return self.pattern_matches_generic(p_off, &v_items[1])
+                                && self.pattern_matches_generic(p_detail, &v_items[2]);
+                        }
+                    }
+                }
+                pattern.structurally_equivalent(value)
             }
             _ => pattern.structurally_equivalent(value),
         }
@@ -8523,8 +8550,18 @@ where
                 true
             }
             ValueView::SExpr(_) => {
+                let p_items = pattern.as_sexpr().expect("matched SExpr");
+                // S3 (ERROR-MATCH cross-shape): variant→SExpr projection.
+                if let Some((v_off, v_detail)) = value.as_error() {
+                    if p_items.len() == 3
+                        && matches!(p_items[0].view(), ValueView::Atom(s) if s == "Error")
+                    {
+                        return self.pattern_match_bind_recursive(&p_items[1], v_off, bindings)
+                            && self.pattern_match_bind_recursive(&p_items[2], v_detail, bindings);
+                    }
+                    return false;
+                }
                 if let Some(v_items) = value.as_sexpr() {
-                    let p_items = pattern.as_sexpr().expect("matched SExpr");
                     if p_items.len() != v_items.len() {
                         return false;
                     }
@@ -8537,6 +8574,24 @@ where
                 } else {
                     false
                 }
+            }
+            // S3 symmetric: Error-variant pattern vs SExpr-shaped value.
+            ValueView::Error(_, _) => {
+                if let Some((p_off, p_detail)) = pattern.as_error() {
+                    if let Some(v_items) = value.as_sexpr() {
+                        if v_items.len() == 3
+                            && matches!(v_items[0].view(), ValueView::Atom(s) if s == "Error")
+                        {
+                            return self.pattern_match_bind_recursive(p_off, &v_items[1], bindings)
+                                && self.pattern_match_bind_recursive(
+                                    p_detail,
+                                    &v_items[2],
+                                    bindings,
+                                );
+                        }
+                    }
+                }
+                pattern.structurally_equivalent(value)
             }
             _ => pattern.structurally_equivalent(value),
         }
@@ -8571,8 +8626,18 @@ where
         // Dispatch on a's variant
         match a.view() {
             ValueView::SExpr(_) => {
+                let a_items = a.as_sexpr().expect("matched SExpr");
+                // S3 (ERROR-MATCH cross-shape): unify SExpr-shaped a vs Error variant b.
+                if let Some((b_off, b_detail)) = b.as_error() {
+                    if a_items.len() == 3
+                        && matches!(a_items[0].view(), ValueView::Atom(s) if s == "Error")
+                    {
+                        return self.unify_recursive(&a_items[1], b_off, bindings)
+                            && self.unify_recursive(&a_items[2], b_detail, bindings);
+                    }
+                    return false;
+                }
                 if let Some(b_items) = b.as_sexpr() {
-                    let a_items = a.as_sexpr().expect("matched SExpr");
                     if a_items.len() != b_items.len() {
                         return false;
                     }
@@ -8585,6 +8650,20 @@ where
                 } else {
                     false
                 }
+            }
+            // S3 symmetric: Error-variant a vs SExpr-shaped b.
+            ValueView::Error(_, _) => {
+                if let Some((a_off, a_detail)) = a.as_error() {
+                    if let Some(b_items) = b.as_sexpr() {
+                        if b_items.len() == 3
+                            && matches!(b_items[0].view(), ValueView::Atom(s) if s == "Error")
+                        {
+                            return self.unify_recursive(a_off, &b_items[1], bindings)
+                                && self.unify_recursive(a_detail, &b_items[2], bindings);
+                        }
+                    }
+                }
+                a.structurally_equivalent(b)
             }
             _ => a.structurally_equivalent(b),
         }

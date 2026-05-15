@@ -590,6 +590,19 @@ fn eval_metta(
         // MettaRunnerMode::ADD). Mirrors mtt_conformance.rs runner so
         // the CLI shows the same multiset that conformance fixtures
         // verify. See spec §S1.
+        //
+        // S16 (2026-05-15): HE empirical behavior — confirmed via
+        // decomposed metta-repl probes against HE commit 3f76dc46
+        // (`hyperon-experimental/lib/src/metta/runner/mod.rs:1028-1117`,
+        // `RunContext::step()`) — emits exactly ONE bracketed `[…]`
+        // line per `!` directive. Non-`!` top-level forms (decls like
+        // `(= …)` / `(: …)`, side-effect ops like `(pragma! …)`,
+        // bare ground atoms) run in ADD mode and emit NOTHING.
+        // MTT matches HE-actual. Spec-side fixture inconsistencies
+        // (46 fixtures that encoded an aspirational "decl emits []"
+        // style) were resolved lockstep in metta-specification
+        // (2026-05-15) by removing the spurious `- atoms: []`
+        // entries — HE-Kernel +15, HE-Core +31, HE-Full +38.
         let is_bang = expr
             .as_sexpr()
             .and_then(|items| items.first())

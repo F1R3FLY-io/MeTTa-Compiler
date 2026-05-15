@@ -172,6 +172,22 @@ fn canonicalize(results: &[MettaValue]) -> Vec<String> {
     s
 }
 
+/// S15a parse-string-escape (2026-05-15): mirror main.rs::format_string_escaped.
+/// Round-trips through the lexer by escaping `\\` and `\"` per HE §A.5.
+fn format_string_escaped(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn format_value(v: &MettaValue) -> String {
     match v.view() {
         ValueView::Bool(b) => {
@@ -187,7 +203,7 @@ fn format_value(v: &MettaValue) -> String {
         ValueView::Empty => "Empty".to_string(),
         ValueView::NotReducible => "NotReducible".to_string(),
         ValueView::Atom(s) => s.to_string(),
-        ValueView::String(s) => format!("\"{}\"", s),
+        ValueView::String(s) => format_string_escaped(s),
         ValueView::Error(msg, details) => {
             format!("(Error {} {})", msg, format_value(&details))
         }

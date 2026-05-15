@@ -1541,6 +1541,23 @@ where
         let bindings = &args[0];
         let body = &args[1];
 
+        // S15b let-decons (2026-05-15): bytecode lockstep with treewalker
+        // step/sexpr.rs:913. When bindings is neither an SExpr nor Unit
+        // (e.g., `(let* 1 done)`), HE raises an Error atom. Emitting the
+        // Error as a constant makes `case` recognise it via `(Error $a $c)`
+        // and the fixture's "caught" branch fires.
+        if bindings.as_sexpr().is_none() && !bindings.is_unit() {
+            let err = self.factory.error(
+                bindings.clone(),
+                self.factory.string(
+                    "let* bindings must be a list. Usage: (let* ((pattern value) ...) body)",
+                ),
+            );
+            let idx = self.builder.add_constant(err);
+            self.builder.emit_u16(Opcode::PushConstant, idx);
+            return Ok(());
+        }
+
         self.context.begin_scope();
 
         // Process bindings

@@ -262,6 +262,24 @@ fn write_output(output: Option<&str>, content: &str) -> Result<(), String> {
     }
 }
 
+/// S15a parse-string-escape (2026-05-15): re-escape a raw string literal's
+/// inner content so the printed form round-trips through the lexer's
+/// `parse_string`. HE only escapes `\\` and `\"` (other control characters
+/// are emitted verbatim per §A.5); we mirror that subset.
+fn format_string_escaped(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// Format an MettaValue result for display.
 fn format_result(value: &MettaValue) -> String {
     match value.view() {
@@ -278,7 +296,7 @@ fn format_result(value: &MettaValue) -> String {
         ValueView::Empty => "Empty".to_string(),
         ValueView::NotReducible => "NotReducible".to_string(),
         ValueView::Atom(s) => s.to_string(),
-        ValueView::String(s) => format!("\"{}\"", s),
+        ValueView::String(s) => format_string_escaped(s),
         ValueView::Error(msg, details) => {
             format!("(Error {} {})", msg, format_result(&details))
         }

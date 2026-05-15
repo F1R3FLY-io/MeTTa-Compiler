@@ -390,6 +390,12 @@ impl<'src> MettaParser<'src> {
     /// - Float numbers: `3.14`, `1e10`, `1.0e-3`
     /// - Boolean atoms: `True`, `False`
     /// - General atoms: identifiers, variables, operators, etc.
+    ///
+    /// S15f parser word/var boundary (2026-05-15): variables (`$...`) treat
+    /// `;` as an ordinary body char per HE §01.4.3 / §A.4. Word atoms keep
+    /// `;` as a comment-introducing delimiter. HE reference:
+    /// `hyperon-experimental/lib/src/metta/text.rs:638` (parse_word) vs
+    /// `:654` (parse_variable).
     fn parse_atom_or_number<E: ParseEmitter>(
         &mut self,
         emitter: &mut E,
@@ -402,8 +408,31 @@ impl<'src> MettaParser<'src> {
         // Increment col only on UTF-8 lead bytes (not continuation bytes 10xxxxxx)
         // to count characters rather than bytes.
         let atom_start = self.pos;
-        while self.pos < self.src.len() && !is_delimiter(self.src[self.pos]) {
-            if self.src[self.pos] & 0xC0 != 0x80 {
+        let is_variable = self.pos < self.src.len() && self.src[self.pos] == b'$';
+        while self.pos < self.src.len() {
+            let b = self.src[self.pos];
+            // Variable body: only whitespace/parens/brackets/braces/quote
+            // terminate. In particular, `;` and `'` are ordinary chars.
+            // Word body: keep `;` as a comment delimiter (HE-faithful).
+            let is_break = if is_variable {
+                matches!(
+                    CHAR_CLASS[b as usize],
+                    CLS_SPACE
+                        | CLS_OPEN
+                        | CLS_CLOSE
+                        | CLS_OPEN_SQ
+                        | CLS_CLOSE_SQ
+                        | CLS_OPEN_BR
+                        | CLS_CLOSE_BR
+                        | CLS_QUOTE
+                )
+            } else {
+                is_delimiter(b)
+            };
+            if is_break {
+                break;
+            }
+            if b & 0xC0 != 0x80 {
                 self.col += 1;
             }
             self.pos += 1;

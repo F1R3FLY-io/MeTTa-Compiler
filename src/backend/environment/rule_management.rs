@@ -2771,14 +2771,16 @@ where
 
         // Rules are stored as (= lhs rhs) atoms in the PathMap. For
         // match_space() queries with (= ...) patterns to pass the bloom
-        // filter, we must also insert ("=", 3). Without this, add_rule()
+        // filter, we must also insert ("=", 2). Without this, add_rule()
         // only inserts the LHS head (e.g., "father") and match &self
         // with (= ...) patterns is incorrectly rejected by the bloom.
+        // S13: Arity convention is `pattern.get_arity()` = `items.len() - 1`
+        // (excludes head). So `(= $a $b)` has arity 2, not 3.
         self.shared
             .atom_space
             .head_arity_bloom
             .write()
-            .insert("=", 3);
+            .insert("=", 2);
 
         self.modified.store(true, Ordering::Release);
     }

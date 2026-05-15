@@ -511,6 +511,14 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     "sealed" | "atom-subst" => false,
                     "remove-atom" | "get-atoms" => true,
                     "add-atom" => true,
+                    // S9 PRAGMA-RET (2026-05-14): `add-reduct`/`add-reducts`/
+                    // `add-atoms` are HE stdlib.metta rules whose semantics are
+                    // implemented in T0 (sexpr.rs) as compile-time rewrites to
+                    // (chain ... (add-atom ...)) / (foldl-atom ...). Route to
+                    // T0 explicitly so the bytecode tier doesn't compile them
+                    // as user-defined Call opcodes. Compile-time tier-selection
+                    // routing — no runtime downgrade.
+                    "add-reduct" | "add-reducts" | "add-atoms" => false,
                     // State/space operations: compiler emits opcodes with
                     // VM handlers (op_new_state, op_get_state, etc.)
                     "new-space" | "new-state" | "get-state" | "change-state!" => true,

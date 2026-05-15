@@ -170,6 +170,9 @@ where
                         | "filter-atom"
                         | "foldl-atom"
                         | "add-atom"
+                        | "add-reduct"
+                        | "add-reducts"
+                        | "add-atoms"
                         | "remove-atom"
                         | "get-atoms"
                         | "new-space"
@@ -2403,6 +2406,203 @@ where
                     return GenericEvalStep::StartBind {
                         token,
                         atom_expr: items[2].clone(),
+                        env,
+                        depth,
+                    };
+                }
+
+                // S9 PRAGMA-RET (2026-05-14): HE-bisimilar `pragma!`.
+                //
+                // HE source: hyperon-experimental/lib/src/metta/runner/stdlib/
+                // core.rs:21-53 — `PragmaOp::execute`. Validates the key (atom),
+                // validates the value for `max-stack-depth` (must be unsigned
+                // int), then stores `(key, value)` in `settings` and returns
+                // `unit_result()`.
+                //
+                // MeTTaTron currently has no first-class `PragmaSettings`;
+                // pragmas are no-ops semantically. The HE-bisimilar return
+                // value is Unit. Validation for `max-stack-depth` is preserved
+                // because the conformance fixtures (T06-stdlib/102) assert the
+                // exact `UnsignedIntegerIsExpected` Error wording.
+                "pragma!" => {
+                    if items.len() != 3 {
+                        return GenericEvalStep::Done((
+                            smallvec![ctx.factory().error(
+                                ctx.factory().sexpr(items),
+                                ctx.factory().string(
+                                    "pragma! expects key and value as arguments",
+                                ),
+                            )],
+                            env,
+                        ));
+                    }
+                    let key = match items[1].as_atom() {
+                        Some(k) => k,
+                        None => {
+                            return GenericEvalStep::Done((
+                                smallvec![ctx.factory().error(
+                                    ctx.factory().sexpr(items),
+                                    ctx.factory().string(
+                                        "pragma! expects symbol atom as a key",
+                                    ),
+                                )],
+                                env,
+                            ));
+                        }
+                    };
+                    if key == "max-stack-depth" {
+                        // HE: parse value as usize. Negative or non-integer -> Error.
+                        let value_ok = match items[2].as_long() {
+                            Some(n) if n >= 0 => true,
+                            _ => false,
+                        };
+                        if !value_ok {
+                            return GenericEvalStep::Done((
+                                smallvec![ctx.factory().error(
+                                    ctx.factory().sexpr(items),
+                                    ctx.factory().atom("UnsignedIntegerIsExpected"),
+                                )],
+                                env,
+                            ));
+                        }
+                    }
+                    // Side-effect: store pragma setting. MTT has no
+                    // PragmaSettings field yet, so this is a no-op. Per HE
+                    // semantics the return value is Unit regardless.
+                    return GenericEvalStep::Done((smallvec![ctx.factory().unit()], env));
+                }
+
+                // S9 PRAGMA-RET (2026-05-14): HE-bisimilar `add-reduct`.
+                //
+                // HE source: hyperon-experimental/lib/src/metta/runner/stdlib/
+                // stdlib.metta:567-568. Rule body: `(add-atom $dst $atom)`,
+                // where `$atom` is reduced because it's a normal rule arg.
+                //
+                // Lower to `(chain $atom $r (add-atom $space $r))`: `chain`
+                // evaluates the atom expression first and binds the reduced
+                // result to a synthetic variable, then routes through the
+                // existing `add-atom` special form (which evaluates the space
+                // arg and performs the side effect). Returns Unit.
+                "add-reduct" => {
+                    if items.len() != 3 {
+                        return GenericEvalStep::Done((
+                            smallvec![ctx.factory().error(
+                                ctx.factory().sexpr(items),
+                                ctx.factory().atom("IncorrectNumberOfArguments"),
+                            )],
+                            env,
+                        ));
+                    }
+                    let r_var = ctx.factory().atom("$__add_reduct_r__");
+                    let add_atom_expr = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("add-atom"),
+                        items[1].clone(),
+                        r_var.clone(),
+                    ]);
+                    let chain_expr = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("chain"),
+                        items[2].clone(),
+                        r_var,
+                        add_atom_expr,
+                    ]);
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: chain_expr,
+                        env,
+                        depth,
+                    };
+                }
+
+                // S9 PRAGMA-RET (2026-05-14): HE-bisimilar `add-reducts`.
+                //
+                // HE source: hyperon-experimental/lib/src/metta/runner/stdlib/
+                // stdlib.metta:671-673. Rule body:
+                //   `(foldl-atom $tuple () $a $b (add-atom $space $b))`
+                // The `add-reducts` type signature declares the second arg as
+                // `%Undefined%`, which means each tuple element is reduced
+                // before iteration. We model that by wrapping `$b` in a
+                // `chain` so the element is evaluated before `add-atom`.
+                //
+                // The foldl result IS the return value: Unit on success
+                // (init is `()` and each add-atom returns Unit), Error if
+                // `$tuple` is not a list (foldl-atom errors).
+                "add-reducts" => {
+                    if items.len() != 3 {
+                        return GenericEvalStep::Done((
+                            smallvec![ctx.factory().error(
+                                ctx.factory().sexpr(items),
+                                ctx.factory().atom("IncorrectNumberOfArguments"),
+                            )],
+                            env,
+                        ));
+                    }
+                    let space = items[1].clone();
+                    let tuple = items[2].clone();
+                    let acc_var = ctx.factory().atom("$__add_reducts_a__");
+                    let item_var = ctx.factory().atom("$__add_reducts_b__");
+                    let r_var = ctx.factory().atom("$__add_reducts_r__");
+                    let inner = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("add-atom"),
+                        space,
+                        r_var.clone(),
+                    ]);
+                    let body = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("chain"),
+                        item_var.clone(),
+                        r_var,
+                        inner,
+                    ]);
+                    let foldl_expr = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("foldl-atom"),
+                        tuple,
+                        ctx.factory().unit(),
+                        acc_var,
+                        item_var,
+                        body,
+                    ]);
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: foldl_expr,
+                        env,
+                        depth,
+                    };
+                }
+
+                // S9 PRAGMA-RET (2026-05-14): HE-bisimilar `add-atoms`.
+                //
+                // HE source: hyperon-experimental/lib/src/metta/runner/stdlib/
+                // stdlib.metta:681-683. Same rule body as `add-reducts` but
+                // the type signature declares the second arg as `Expression`,
+                // preventing arg reduction. So each `$b` is added AS-IS without
+                // evaluation. As with `add-reducts`, the foldl result is the
+                // return value (Unit / Error).
+                "add-atoms" => {
+                    if items.len() != 3 {
+                        return GenericEvalStep::Done((
+                            smallvec![ctx.factory().error(
+                                ctx.factory().sexpr(items),
+                                ctx.factory().atom("IncorrectNumberOfArguments"),
+                            )],
+                            env,
+                        ));
+                    }
+                    let space = items[1].clone();
+                    let tuple = items[2].clone();
+                    let acc_var = ctx.factory().atom("$__add_atoms_a__");
+                    let item_var = ctx.factory().atom("$__add_atoms_b__");
+                    let body = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("add-atom"),
+                        space,
+                        item_var.clone(),
+                    ]);
+                    let foldl_expr = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("foldl-atom"),
+                        tuple,
+                        ctx.factory().unit(),
+                        acc_var,
+                        item_var,
+                        body,
+                    ]);
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: foldl_expr,
                         env,
                         depth,
                     };

@@ -548,6 +548,11 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     // `eval/step/sexpr.rs`. Similarly `noreduce` returns the
                     // full wrapper unevaluated — also T0-only.
                     "noeval" | "noreduce" => false,
+                    // S14b/e (2026-05-14): `format-args` (dyn-fmt semantics)
+                    // and `context-space` (current-space accessor) live only
+                    // in T0 trampoline. Route from T1 to T0 — compile-time
+                    // tier selection, no runtime down-bail.
+                    "format-args" | "context-space" => false,
                     // User-defined functions: compiled as Call opcodes.
                     // The VM dispatches via op_dispatch_rules → match_rules_native.
                     // eval_inner completes evaluation via trampoline re-eval.

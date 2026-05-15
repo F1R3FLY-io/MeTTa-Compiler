@@ -2739,6 +2739,28 @@ where
                     return GenericEvalStep::Done((smallvec![], env));
                 }
 
+                // S14e (2026-05-14): `(context-space)` returns the current evaluation
+                // context's space, mirroring HE's `context_space` in
+                // `hyperon-experimental/lib/src/metta/interpreter.rs:954`. Equivalent
+                // to evaluating the `&self` atom: both yield `factory.space(env.self_space())`.
+                // Arity > 0 raises the HE-shaped error per K T04-kernel/029.
+                "context-space" => {
+                    if items.len() != 1 {
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items.clone()),
+                            ctx.factory().string(&format!(
+                                "expected: (context-space), found: {}",
+                                ctx.factory().sexpr(items).friendly_repr()
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::Done((
+                        smallvec![ctx.factory().space(env.self_space())],
+                        env,
+                    ));
+                }
+
                 "get-metatype" => {
                     if items.len() != 2 {
                         let arg_count = items.len() - 1;

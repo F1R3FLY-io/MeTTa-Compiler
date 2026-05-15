@@ -470,6 +470,38 @@ fn filter_fold_propagating_bindings(
     out
 }
 
+/// S14b (2026-05-14): HE-compatible format-args via dyn-fmt semantics.
+/// `{}` consumed sequentially; `{N}` indexed for back-compat;
+/// `{{` / `}}` escape literal braces; strings stripped of surrounding
+/// quotes via `to_display_string` (matches HE's `atom_to_string`).
+fn format_args_he(fmt: &str, args: &[&MettaValue]) -> String {
+    let mut out = String::with_capacity(fmt.len());
+    let mut iter = fmt.chars().peekable();
+    let mut next_pos = 0usize;
+    while let Some(c) = iter.next() {
+        match c {
+            '{' if iter.peek() == Some(&'{') => { iter.next(); out.push('{'); }
+            '}' if iter.peek() == Some(&'}') => { iter.next(); out.push('}'); }
+            '{' => {
+                let mut idx_str = String::new();
+                let mut closed = false;
+                for nc in iter.by_ref() {
+                    if nc == '}' { closed = true; break; }
+                    idx_str.push(nc);
+                }
+                if !closed { out.push('{'); out.push_str(&idx_str); continue; }
+                let idx = if idx_str.is_empty() {
+                    let i = next_pos; next_pos += 1; i
+                } else if let Ok(n) = idx_str.parse::<usize>() { n }
+                else { out.push('{'); out.push_str(&idx_str); out.push('}'); continue; };
+                if let Some(a) = args.get(idx) { out.push_str(&a.to_display_string()); }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 #[inline]
 fn project_carrying_for_consumer(
     bindings: &SharedBindings,
@@ -13222,13 +13254,11 @@ fn process_continuation<C: EvalContext>(
                     args_results.iter().map(|(v, _)| v).collect()
                 };
 
-                // Simple format string substitution using friendly_repr
-                let mut result_str = format_str.clone();
-                for (i, arg) in args_list.iter().enumerate() {
-                    let placeholder = format!("{{{}}}", i);
-                    let repr = arg.friendly_repr();
-                    result_str = result_str.replace(&placeholder, &repr);
-                }
+                // S14b (2026-05-14): HE-compatible format-args via dyn-fmt semantics.
+                // `{}` consumed sequentially (also `{N}` indexed for back-compat);
+                // `{{` / `}}` escape literal braces; strings stripped of surrounding
+                // quotes via to_display_string (matches HE's `atom_to_string`).
+                let result_str = format_args_he(&format_str, &args_list);
 
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(ctx.factory().string(&result_str))], env_after),

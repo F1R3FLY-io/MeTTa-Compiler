@@ -1534,7 +1534,21 @@ where
                     self.push(self.factory.empty());
                 } else {
                 match (a.as_long(), b.as_long()) {
-                    (Some(_), Some(0)) => return Err(VmError::DivisionByZero),
+                    (Some(_), Some(0)) => {
+                        // ERR-shape align (2026-05-16): push HE-aligned
+                        // `(Error (/ a b) DivisionByZero)` and continue VM.
+                        // Previously returned `Err(DivisionByZero)` whose
+                        // shape via `materialize_runtime_error_atom` was
+                        // inverted (`(Error DivisionByZero "Division by
+                        // zero")`).
+                        let call = self.make_sexpr(vec![
+                            self.make_atom("/"),
+                            a.clone(),
+                            b.clone(),
+                        ]);
+                        let err = self.factory.error(call, self.make_atom("DivisionByZero"));
+                        self.push(err);
+                    }
                     (Some(x), Some(y)) => self.push(self.make_long(x.wrapping_div(y))),
                     _ => match (a.as_float(), b.as_float()) {
                         (Some(x), Some(y)) => self.push(self.make_float(x / y)),
@@ -1571,7 +1585,17 @@ where
                     self.push(self.factory.empty());
                 } else {
                     match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
-                        (Some(_), _, Some(0), _) => return Err(VmError::DivisionByZero),
+                        (Some(_), _, Some(0), _) => {
+                            // ERR-shape align (2026-05-16): same HE shape
+                            // as `/` — `(Error (% a b) DivisionByZero)`.
+                            let call = self.make_sexpr(vec![
+                                self.make_atom("%"),
+                                a.clone(),
+                                b.clone(),
+                            ]);
+                            let err = self.factory.error(call, self.make_atom("DivisionByZero"));
+                            self.push(err);
+                        }
                         (Some(x), _, Some(y), _) => self.push(self.make_long(x.wrapping_rem(y))),
                         (_, Some(x), _, Some(y)) => self.push(self.make_float(x % y)),
                         (Some(x), _, _, Some(y)) => self.push(self.make_float(x as f64 % y)),
@@ -1621,8 +1645,23 @@ where
                 // in both debug and release builds.
                 let b = self.pop()?;
                 let a = self.pop()?;
+                // ERR-shape align (2026-05-16): closure to push the HE
+                // `(Error (// a b) DivisionByZero)` form. Inlined to keep
+                // the operand context intact across all four 0-divisor
+                // arms.
+                let push_div_by_zero = |vm: &mut Self| {
+                    let call = vm.make_sexpr(vec![
+                        vm.make_atom("//"),
+                        a.clone(),
+                        b.clone(),
+                    ]);
+                    let err = vm.factory.error(call, vm.make_atom("DivisionByZero"));
+                    vm.push(err);
+                };
                 match (a.as_long(), b.as_long()) {
-                    (Some(_), Some(0)) => return Err(VmError::DivisionByZero),
+                    (Some(_), Some(0)) => {
+                        push_div_by_zero(self);
+                    }
                     (Some(x), Some(y)) => {
                         self.push(self.make_long(x.wrapping_div_euclid(y)));
                     }
@@ -1630,22 +1669,30 @@ where
                         (Some(x), Some(y)) if y != 0.0 => {
                             self.push(self.make_long((x / y).floor() as i64));
                         }
-                        (Some(_), Some(_)) => return Err(VmError::DivisionByZero),
+                        (Some(_), Some(_)) => {
+                            push_div_by_zero(self);
+                        }
                         _ => {
                             // Mixed Long/Float type promotion
                             match (a.as_long(), b.as_float()) {
                                 (Some(x), Some(y)) => {
                                     if y == 0.0 {
-                                        return Err(VmError::DivisionByZero);
+                                        push_div_by_zero(self);
+                                    } else {
+                                        self.push(
+                                            self.make_long((x as f64 / y).floor() as i64),
+                                        );
                                     }
-                                    self.push(self.make_long((x as f64 / y).floor() as i64));
                                 }
                                 _ => match (a.as_float(), b.as_long()) {
                                     (Some(x), Some(y)) => {
                                         if y == 0 {
-                                            return Err(VmError::DivisionByZero);
+                                            push_div_by_zero(self);
+                                        } else {
+                                            self.push(
+                                                self.make_long((x / y as f64).floor() as i64),
+                                            );
                                         }
-                                        self.push(self.make_long((x / y as f64).floor() as i64));
                                     }
                                     _ => {
                                         return Err(VmError::TypeError {
@@ -3341,6 +3388,10 @@ where
     fn op_decons_atom(&mut self) -> VmResult<()> {
         // H3 (2026-05-05) hard-cut: empty/non-expr → push HE Error atom,
         // do NOT halt VM.
+        // ERR-shape align (2026-05-16): HE empirical detail is `"expected:
+        // (decons-atom (: <expr> Expression)), found: <call>"` where
+        // `<call>` is the canonical print of the full `(decons-atom <arg>)`
+        // form. Matches conformance T04-kernel/019-decons-empty.
         let value = self.pop()?;
         if let Some(items) = value.as_sexpr() {
             if !items.is_empty() {
@@ -3351,10 +3402,11 @@ where
             }
         }
         let call = self.make_sexpr(vec![self.make_atom("decons-atom"), value.clone()]);
-        let err = self.make_error(
-            "expected: (decons-atom (: <expr> Expression)), found: empty or non-expression",
-            call,
+        let detail = format!(
+            "expected: (decons-atom (: <expr> Expression)), found: {}",
+            call.friendly_repr()
         );
+        let err = self.make_error(&detail, call);
         self.push(err);
         Ok(())
     }

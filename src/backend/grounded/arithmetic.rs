@@ -363,9 +363,12 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for DivOp {
                                 // Long / Long: integer divide-by-zero is a hard error
                                 // (spec §13.2 line 86); i64::MIN / -1 wraps to i64::MIN
                                 // (spec §13.2 wrap clause + §C.7g).
+                                // HE-aligned Error shape: detail is the bare atom
+                                // `DivisionByZero` (matches HE's
+                                // `interpret/error.rs` DIV_BY_ZERO atom).
                                 if y == 0 {
-                                    return GroundedWork::Error(ExecError::Arithmetic(
-                                        "Division by zero".to_string(),
+                                    return GroundedWork::Error(ExecError::Tagged(
+                                        "DivisionByZero",
                                     ));
                                 }
                                 results.push((factory.long(x.wrapping_div(y)), None));
@@ -455,9 +458,11 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for ModOp {
                             (Some(x), _, Some(y), _) => {
                                 // Long % Long: integer mod-by-zero is a hard error
                                 // (spec §13.2 line 105); i64::MIN % -1 wraps to 0.
+                                // HE-aligned Error shape: detail atom is
+                                // `DivisionByZero` (HE shares the tag with `/`).
                                 if y == 0 {
-                                    return GroundedWork::Error(ExecError::Arithmetic(
-                                        "Modulo by zero".to_string(),
+                                    return GroundedWork::Error(ExecError::Tagged(
+                                        "DivisionByZero",
                                     ));
                                 }
                                 results.push((factory.long(x.wrapping_rem(y)), None));
@@ -1171,9 +1176,11 @@ mod tests {
         state.step = 2;
 
         let work = op.execute_step(&mut state, &factory);
+        // HE-aligned (2026-05-16): detail tag `DivisionByZero`, not free-form
+        // string. Matches `(Error (/ 5 0) DivisionByZero)` from HE empirics.
         assert!(matches!(
             work,
-            GroundedWork::Error(ExecError::Arithmetic(_))
+            GroundedWork::Error(ExecError::Tagged("DivisionByZero"))
         ));
     }
 

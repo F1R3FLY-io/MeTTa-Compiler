@@ -65,6 +65,22 @@ pub enum ExecError {
 
     /// Incorrect argument type or arity
     IncorrectArgument(String),
+
+    /// HE-empirical tag-atom error (e.g. `DivisionByZero`,
+    /// `IncorrectNumberOfArguments`). Produces the canonical Error shape
+    /// `(Error <call> <tag>)` with the tag-atom as the detail, matching HE
+    /// reference output for `!(/ 5 0)` → `(Error (/ 5 0) DivisionByZero)`.
+    Tagged(&'static str),
+
+    /// Type-mismatch with 1-indexed position. Produces the canonical Error
+    /// shape `(Error <call> (BadType <position> <expected> <got>))` matching
+    /// HE `metta/runner/stdlib/atom.rs` BadType reporting.
+    BadArgType {
+        /// 1-indexed argument position (matches HE convention)
+        pos: usize,
+        expected: &'static str,
+        got: String,
+    },
 }
 
 impl fmt::Display for ExecError {
@@ -74,8 +90,65 @@ impl fmt::Display for ExecError {
             ExecError::Runtime(msg) => write!(f, "Runtime error: {}", msg),
             ExecError::Arithmetic(msg) => write!(f, "Arithmetic error: {}", msg),
             ExecError::IncorrectArgument(msg) => write!(f, "Incorrect argument: {}", msg),
+            ExecError::Tagged(tag) => write!(f, "{}", tag),
+            ExecError::BadArgType { pos, expected, got } => {
+                write!(f, "BadType arg {}: expected {}, got {}", pos, expected, got)
+            }
         }
     }
 }
 
 impl std::error::Error for ExecError {}
+
+/// Convert an `ExecError` into the canonical HE-aligned Error atom value
+/// `(Error <call_form> <detail>)`.
+///
+/// This is the single source-of-truth for the Error shape produced by grounded
+/// operations and is consumed by both the trampoline tier and (via thin
+/// wrappers) the bytecode/JIT tiers. The exact shape mirrors HE's
+/// `metta/runner/stdlib/*.rs` emitters:
+///
+/// * `Tagged(tag)` → `(Error <call> <tag>)` — detail is a bare atom such as
+///   `DivisionByZero`. Matches `!(/ 5 0)` → `(Error (/ 5 0) DivisionByZero)`.
+/// * `BadArgType { pos, expected, got }` → `(Error <call> (BadType <pos>
+///   <expected> <got>))`.
+/// * `Runtime(msg)`, `Arithmetic(msg)`, `IncorrectArgument(msg)` →
+///   `(Error <call> <msg_string>)` for back-compat string-message paths.
+/// * `NoReduce` is a non-error signal; callers should never invoke this for
+///   `NoReduce` (the assertion enforces this).
+///
+/// Note: this function does NOT consume the `ExecError` (uses `&ExecError`),
+/// so callers may inspect the variant for tracing before converting.
+pub fn exec_error_to_value<V, F>(err: &ExecError, call_form: V, factory: &F) -> V
+where
+    V: crate::backend::models::MettaValueTrait + Clone,
+    F: crate::backend::models::MettaValueFactory<V>,
+{
+    match err {
+        ExecError::NoReduce => {
+            // Per Plan: callers must short-circuit NoReduce before reaching
+            // this function. NoReduce represents "operation not applicable",
+            // not an Error atom; the trampoline returns the unreduced form.
+            // We still produce a sensible fallback rather than panic to keep
+            // production robust.
+            factory.error(call_form, factory.atom("NoReduce"))
+        }
+        ExecError::Tagged(tag) => factory.error(call_form, factory.atom(tag)),
+        ExecError::BadArgType {
+            pos,
+            expected,
+            got,
+        } => {
+            let detail = factory.sexpr(vec![
+                factory.atom("BadType"),
+                factory.long(*pos as i64),
+                factory.atom(expected),
+                factory.atom(got),
+            ]);
+            factory.error(call_form, detail)
+        }
+        ExecError::Runtime(msg) => factory.error(call_form, factory.string(msg)),
+        ExecError::Arithmetic(msg) => factory.error(call_form, factory.string(msg)),
+        ExecError::IncorrectArgument(msg) => factory.error(call_form, factory.string(msg)),
+    }
+}

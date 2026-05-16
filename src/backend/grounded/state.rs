@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::backend::grounded::ExecError;
-use crate::backend::models::{GenericBindings, MettaValueTrait};
+use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
 
 /// Work returned by grounded operations for TCO.
 ///
@@ -103,6 +103,19 @@ impl<V: MettaValueTrait + Clone> GroundedState<V> {
     /// Get evaluated arg results, or None if not yet evaluated
     pub fn get_arg(&self, idx: usize) -> Option<&Vec<V>> {
         self.evaluated_args.get(&idx)
+    }
+
+    /// Build the originating call form `(op_name arg0 arg1 ...)` from the
+    /// operation's name and stored args. Used by the HE-aligned Error-atom
+    /// shape `(Error <call> <detail>)` (spec §10.6, HE
+    /// `metta/runner/stdlib/atom.rs` decons_atom emit pattern).
+    pub fn call_form<F: MettaValueFactory<V>>(&self, factory: &F) -> V {
+        let mut parts = Vec::with_capacity(1 + self.args.len());
+        parts.push(factory.atom(&self.op_name));
+        for arg in self.args.iter() {
+            parts.push(arg.clone());
+        }
+        factory.sexpr(parts)
     }
 
     /// Set evaluated arg results

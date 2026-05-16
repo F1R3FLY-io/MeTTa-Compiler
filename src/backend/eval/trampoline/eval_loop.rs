@@ -205,7 +205,7 @@ use crate::backend::eval::types::{
     extract_type_constraint, get_ground_type, infer_type_generic, is_pattern_type_compatible,
     types_match_generic, types_match_with_subtypes,
 };
-use crate::backend::grounded::{execute_grounded_op, ExecError, GroundedWork};
+use crate::backend::grounded::{exec_error_to_value, execute_grounded_op, ExecError, GroundedWork};
 use crate::backend::models::metta_value::is_variable_str;
 use crate::backend::models::work_pool::global_eval_pool;
 use crate::backend::models::{
@@ -3339,6 +3339,16 @@ fn eval_trampoline_inner<C: EvalContext>(
                                                 ExecError::IncorrectArgument(msg) => {
                                                     ("IncorrectArgument", msg.clone())
                                                 }
+                                                ExecError::Tagged(tag) => {
+                                                    ("Tagged", tag.to_string())
+                                                }
+                                                ExecError::BadArgType { pos, expected, got } => (
+                                                    "BadArgType",
+                                                    format!(
+                                                        "arg {} expected {} got {}",
+                                                        pos, expected, got
+                                                    ),
+                                                ),
                                             };
                                             let input = crate::backend::trace::trace_value_generic(
                                                 &ctx.factory().sexpr({
@@ -3381,23 +3391,18 @@ fn eval_trampoline_inner<C: EvalContext>(
                                             });
                                         }
                                         _ => {
-                                            let error_value = match e {
-                                                ExecError::Runtime(msg) => ctx.factory().error(
-                                                    ctx.factory().atom("TypeError"),
-                                                    ctx.factory().string(&msg),
-                                                ),
-                                                ExecError::Arithmetic(msg) => ctx.factory().error(
-                                                    ctx.factory().atom("ArithmeticError"),
-                                                    ctx.factory().string(&msg),
-                                                ),
-                                                ExecError::IncorrectArgument(msg) => {
-                                                    ctx.factory().error(
-                                                        ctx.factory().atom("IncorrectArgument"),
-                                                        ctx.factory().string(&msg),
-                                                    )
-                                                }
-                                                ExecError::NoReduce => unreachable!(),
-                                            };
+                                            // ERR-shape align (2026-05-16):
+                                            // route through the centralized
+                                            // `exec_error_to_value` so the
+                                            // call form is the offending
+                                            // operand (HE shape `(Error
+                                            // <call> <detail>)`). The
+                                            // previous inverted shape
+                                            // `(Error ArithmeticError msg)`
+                                            // is gone.
+                                            let call_form = state.call_form(ctx.factory());
+                                            let error_value =
+                                                exec_error_to_value(&e, call_form, ctx.factory());
                                             work_stack.push(WorkItem::Resume {
                                                 result: (smallvec![bv(error_value)], env),
                                             });
@@ -7053,21 +7058,11 @@ fn process_continuation<C: EvalContext>(
                                 });
                             }
                             _ => {
-                                let error_value = match e {
-                                    ExecError::Runtime(msg) => ctx.factory().error(
-                                        ctx.factory().atom("TypeError"),
-                                        ctx.factory().string(&msg),
-                                    ),
-                                    ExecError::Arithmetic(msg) => ctx.factory().error(
-                                        ctx.factory().atom("ArithmeticError"),
-                                        ctx.factory().string(&msg),
-                                    ),
-                                    ExecError::IncorrectArgument(msg) => ctx.factory().error(
-                                        ctx.factory().atom("IncorrectArgument"),
-                                        ctx.factory().string(&msg),
-                                    ),
-                                    ExecError::NoReduce => unreachable!(),
-                                };
+                                // ERR-shape align (2026-05-16): centralized
+                                // converter, HE-aligned (Error <call> <detail>).
+                                let call_form = state.call_form(ctx.factory());
+                                let error_value =
+                                    exec_error_to_value(&e, call_form, ctx.factory());
                                 work_stack.push(WorkItem::Resume {
                                     result: (smallvec![(error_value, tag)], result_env),
                                 });
@@ -7207,21 +7202,12 @@ fn process_continuation<C: EvalContext>(
                                     });
                                 }
                                 _ => {
-                                    let error_value = match e {
-                                        ExecError::Runtime(msg) => ctx.factory().error(
-                                            ctx.factory().atom("TypeError"),
-                                            ctx.factory().string(&msg),
-                                        ),
-                                        ExecError::Arithmetic(msg) => ctx.factory().error(
-                                            ctx.factory().atom("ArithmeticError"),
-                                            ctx.factory().string(&msg),
-                                        ),
-                                        ExecError::IncorrectArgument(msg) => ctx.factory().error(
-                                            ctx.factory().atom("IncorrectArgument"),
-                                            ctx.factory().string(&msg),
-                                        ),
-                                        ExecError::NoReduce => unreachable!(),
-                                    };
+                                    // ERR-shape align (2026-05-16): centralized
+                                    // converter, HE-aligned (Error <call>
+                                    // <detail>).
+                                    let call_form = state_i.call_form(ctx.factory());
+                                    let error_value =
+                                        exec_error_to_value(&e, call_form, ctx.factory());
                                     work_stack.push(WorkItem::Resume {
                                         result: (smallvec![(error_value, tag)], result_env),
                                     });

@@ -177,27 +177,45 @@ where
             return vec![factory.sexpr(vec![head, tail])];
         }
         // H3 (2026-05-05) hard-cut: empty sexpr → HE-bisimilar Error atom.
-        // Per HE interpreter.rs:843-856 `decons_atom`: arg must be a
-        // non-empty Expression; otherwise emit:
-        //   (Error <call> "expected: (decons-atom (: <expr> Expression)), found: <call>")
+        // ERR-shape align (2026-05-16): per HE interpreter.rs:843-856 the
+        // detail string is `"expected: (decons-atom (: <expr> Expression)),
+        // found: <call>"` where `<call>` is the canonical print of the
+        // entire `(decons-atom <arg>)` form (NOT "empty expression").
+        // Conformance T04-kernel/019-decons-empty expects exactly
+        // `(Error (decons-atom ()) "expected: (decons-atom (: <expr>
+        // Expression)), found: (decons-atom ())")`.
+        let call_form = factory.sexpr(items.to_vec());
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
-            factory.string("expected: (decons-atom (: <expr> Expression)), found: empty expression"),
+            call_form.clone(),
+            factory.string(&format!(
+                "expected: (decons-atom (: <expr> Expression)), found: {}",
+                call_form.friendly_repr()
+            )),
         )];
     }
 
     if expr.is_unit() {
         // H3 hard-cut: Unit treated identically to empty sexpr.
+        // ERR-shape align (2026-05-16): same `found: <call>` HE format.
+        let call_form = factory.sexpr(items.to_vec());
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
-            factory.string("expected: (decons-atom (: <expr> Expression)), found: Unit"),
+            call_form.clone(),
+            factory.string(&format!(
+                "expected: (decons-atom (: <expr> Expression)), found: {}",
+                call_form.friendly_repr()
+            )),
         )];
     }
 
     // Not an expression — HE-bisimilar Error.
+    // ERR-shape align (2026-05-16): same `found: <call>` HE format.
+    let call_form = factory.sexpr(items.to_vec());
     vec![factory.error(
-        factory.sexpr(items.to_vec()),
-        factory.string("expected: (decons-atom (: <expr> Expression)), found: non-expression"),
+        call_form.clone(),
+        factory.string(&format!(
+            "expected: (decons-atom (: <expr> Expression)), found: {}",
+            call_form.friendly_repr()
+        )),
     )]
 }
 
@@ -414,18 +432,23 @@ where
     let expr = &items[1];
     let index_val = &items[2];
 
+    // ERR-shape align (2026-05-16): offending-call form is the full
+    // `(index-atom <expr> <idx>)`, NOT the bare index/expr operand.
+    // Detail strings match HE `interpret/atom.rs index_atom` emissions.
+    let call_form = factory.sexpr(items.to_vec());
+
     let index = match index_val.as_long() {
         Some(i) if i >= 0 => i as usize,
         Some(_) => {
             return vec![factory.error(
-    index_val.clone(),
-    factory.string("index-atom: index must be non-negative"),
+                call_form,
+                factory.string("Index is negative"),
             )];
         }
         None => {
             return vec![factory.error(
-    index_val.clone(),
-    factory.string("index-atom: index must be an integer"),
+                call_form,
+                factory.string("Index is not an integer"),
             )];
         }
     };
@@ -434,19 +457,19 @@ where
         if index < elements.len() {
             return vec![elements[index].clone()];
         }
+        // ERR-shape align (2026-05-16): HE empirical detail is exactly
+        // `"Index is out of bounds"` (no operand counts inlined). Conformance
+        // T06-stdlib/083 expects `(Error (index-atom (a b c) 10) "Index is
+        // out of bounds")`.
         return vec![factory.error(
-            expr.clone(),
-            factory.string(&format!(
-                "index-atom: index {} out of bounds for expression of size {}",
-                index,
-                elements.len()
-            )),
+            call_form,
+            factory.string("Index is out of bounds"),
         )];
     }
 
     vec![factory.error(
-        expr.clone(),
-        factory.string("index-atom: expected expression. Usage: (index-atom expr index)"),
+        call_form,
+        factory.string("First argument must be an expression"),
     )]
 }
 

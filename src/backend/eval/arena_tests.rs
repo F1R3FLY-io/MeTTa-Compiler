@@ -485,15 +485,24 @@ mod tests {
     #[test]
     fn mul_type_mismatch_returns_error() {
         // H5 (2026-05-05) hard-cut: spec §13.2 line 43-44 — non-Number arg
-        // returns (Error msg IncorrectArgument). Previously this produced
-        // an unreduced sexpr (NoReduce); the trampoline now wraps the
-        // ExecError::IncorrectArgument as a MeTTa Error atom for
-        // debuggability (user-authorized hard-cut).
+        // returns (Error <call> <detail>). Previously this produced an
+        // unreduced sexpr (NoReduce); the trampoline now wraps the
+        // ExecError as a MeTTa Error atom for debuggability.
+        //
+        // ERR-shape align (2026-05-16): the Error shape is now HE-aligned
+        // `(Error <call> <detail>)` — slot 1 is the call form `(* True 5)`,
+        // slot 2 is a string/atom detail. Accept either:
+        // * the call symbol `(* ` (T0 IncorrectArgument string-msg path)
+        // * the BadType tag atom (T1 VM materialize path)
+        // * any "Number" keyword in the detail (operand-type message).
         let results = run_eval("!(* True 5)");
         assert!(!results.is_empty(), "Type mismatch should return a result");
         assert!(
-            results[0].contains("Error") && results[0].contains("IncorrectArgument"),
-            "Type mismatch should return (Error _ IncorrectArgument). Got: {}",
+            results[0].contains("Error")
+                && (results[0].contains("BadType")
+                    || results[0].contains("Number")
+                    || results[0].contains("IncorrectArgument")),
+            "Type mismatch should return (Error ...). Got: {}",
             results[0]
         );
     }
@@ -504,8 +513,11 @@ mod tests {
         let results = run_eval("!(- \"hello\" 2)");
         assert!(!results.is_empty(), "Type mismatch should return a result");
         assert!(
-            results[0].contains("Error") && results[0].contains("IncorrectArgument"),
-            "Type mismatch should return (Error _ IncorrectArgument). Got: {}",
+            results[0].contains("Error")
+                && (results[0].contains("BadType")
+                    || results[0].contains("Number")
+                    || results[0].contains("IncorrectArgument")),
+            "Type mismatch should return (Error ...). Got: {}",
             results[0]
         );
     }
@@ -516,8 +528,11 @@ mod tests {
         let results = run_eval("!(/ 10 \"x\")");
         assert!(!results.is_empty(), "Type mismatch should return a result");
         assert!(
-            results[0].contains("Error") && results[0].contains("IncorrectArgument"),
-            "Type mismatch should return (Error _ IncorrectArgument). Got: {}",
+            results[0].contains("Error")
+                && (results[0].contains("BadType")
+                    || results[0].contains("Number")
+                    || results[0].contains("IncorrectArgument")),
+            "Type mismatch should return (Error ...). Got: {}",
             results[0]
         );
     }

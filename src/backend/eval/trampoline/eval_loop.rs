@@ -1003,9 +1003,12 @@ fn dispatch_rule_matches<C: EvalContext>(
         // **Stack-safety mandate (2026-05-15)**: dispatch is non-blocking;
         // the wait + merge happens in the trampolinized `WaitForParallel`
         // arm. See feedback-stack-safety-mandate in user memory.
-        let stable_branches_snapshot = std::sync::Arc::new(branches.clone());
+        // Phase 8: build the Arc once, share with both `parallel_dispatch`
+        // (for the per-dispatch RootProvider) and
+        // `stable_branches_snapshot` (for the continuation).
+        let stable_branches_snapshot = std::sync::Arc::new(branches);
         let handle = parallel_dispatch(
-            branches,
+            std::sync::Arc::clone(&stable_branches_snapshot),
             metta_env,
             actual_budget_acquired,
             current_depth,
@@ -1581,8 +1584,14 @@ unsafe fn collect_parallel_collapse_frame_roots(data: *const (), out: &mut Vec<M
 /// # Returns
 /// `ParallelDispatchHandle` carrying all shared state. The handle owns the
 /// frame_chain registration via `_root_guard`, popped on drop.
+/// `branches` is taken as `Arc<Vec<...>>` (not `Vec<...>`) so the same
+/// allocation can be shared between (a) the per-dispatch
+/// `ParallelDispatchRootProvider` registered with `ROOT_REGISTRY`
+/// (Phase 8 — closes the worker-INPUT vs GC-pool-walker race) AND
+/// (b) the caller's `WaitForParallel.stable_branches_snapshot` field.
+/// One allocation, one ref-count chain.
 fn parallel_dispatch(
-    branches: Vec<ParallelBranch>,
+    branches: std::sync::Arc<Vec<ParallelBranch>>,
     env: crate::backend::environment::core::MettaEnvironment,
     // `budget_acquired` is threaded through the call sites and stored in
     // `Continuation::WaitForParallel` so the WaitForParallel arm can release
@@ -1648,8 +1657,13 @@ fn parallel_dispatch(
     // stored in `handle._root_guard` so the registration outlives this
     // function and is popped only when the handle drops (i.e., when
     // WaitForParallel is consumed at completion).
+    //
+    // `branches` is now `Arc<Vec<...>>`; `(*branches).clone()` materializes
+    // a Vec for the root_frame (the frame_chain's
+    // `collect_parallel_branch_frame_roots` walker requires the heap-pinned
+    // Vec, not an Arc indirection, per the unsafe push_custom contract).
     let root_frame = Box::new(ParallelBranchRootFrame {
-        branches: branches.clone(),
+        branches: (*branches).clone(),
         results: Arc::clone(&results),
     });
     let root_frame_ptr =
@@ -1794,6 +1808,10 @@ fn parallel_dispatch(
     // and the Weak in ROOT_REGISTRY is auto-pruned on next root walk.
     let root_provider = Arc::new(crate::backend::eval::trampoline::types::ParallelDispatchRootProvider {
         results: Arc::clone(&results),
+        // Phase 8: share the SAME Arc the caller will use for
+        // `WaitForParallel.stable_branches_snapshot`. Single allocation,
+        // two strong refs — closes the worker-INPUT root-coverage gap.
+        branches: Arc::clone(&branches),
     });
     crate::backend::models::gc_allocator::register_root_provider(
         &(Arc::clone(&root_provider) as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
@@ -2042,8 +2060,13 @@ fn pump_parallel_collapse_wait(
 /// `ParallelCollapseDispatchHandle`. Caller pushes `WaitForParallelCollapse`
 /// to yield to the trampoline outer loop. Used by the ProcessCollapse and
 /// ProcessCollapseBind paths (Sites 4 and 5) in `process_continuation`.
+/// `items` is taken as `Arc<Vec<...>>` (not `Vec<...>`) so the same
+/// allocation can be shared between (a) the per-dispatch
+/// `ParallelCollapseRootProvider` registered with `ROOT_REGISTRY`
+/// (Phase 8 — input-root coverage) AND (b) the caller's
+/// `WaitForParallelCollapse.stable_items_snapshot` field.
 fn parallel_collapse_dispatch(
-    items: Vec<crate::backend::eval::trampoline::types::BoundValue>,
+    items: std::sync::Arc<Vec<crate::backend::eval::trampoline::types::BoundValue>>,
     env: crate::backend::environment::core::MettaEnvironment,
     _budget_acquired: u32,
     caller_depth: u32,
@@ -2070,8 +2093,11 @@ fn parallel_collapse_dispatch(
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
 
+    // `items` is now `Arc<Vec<...>>`; materialize a Vec for the
+    // root_frame's heap-pinned slot (frame_chain's collect walker
+    // requires a Vec, not an Arc indirection).
     let root_frame = Box::new(ParallelCollapseRootFrame {
-        items: items.clone(),
+        items: (*items).clone(),
         results: Arc::clone(&results),
     });
     let root_frame_ptr =
@@ -2199,6 +2225,9 @@ fn parallel_collapse_dispatch(
     // See `parallel_dispatch` for the rationale and lifetime invariants.
     let root_provider = Arc::new(crate::backend::eval::trampoline::types::ParallelCollapseRootProvider {
         results: Arc::clone(&results),
+        // Phase 8: share the Arc the caller will use for
+        // `WaitForParallelCollapse.stable_items_snapshot`.
+        items: Arc::clone(&items),
     });
     crate::backend::models::gc_allocator::register_root_provider(
         &(Arc::clone(&root_provider) as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
@@ -4683,10 +4712,11 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                                 // **Stack-safety mandate (2026-05-15)**:
                                 // trampolinized dispatch via WaitForParallel.
+                                // Phase 8: share Arc with RootProvider.
                                 let stable_branches_snapshot =
-                                    std::sync::Arc::new(branches.clone());
+                                    std::sync::Arc::new(branches);
                                 let handle = parallel_dispatch(
-                                    branches,
+                                    std::sync::Arc::clone(&stable_branches_snapshot),
                                     metta_env,
                                     par_budget,
                                     current_depth,
@@ -7763,10 +7793,11 @@ fn process_continuation<C: EvalContext>(
                         }
                         // **Stack-safety mandate (2026-05-15)**:
                         // trampolinized dispatch via WaitForParallel.
+                        // Phase 8: share Arc with RootProvider.
                         let stable_branches_snapshot =
-                            std::sync::Arc::new(branches.clone());
+                            std::sync::Arc::new(branches);
                         let handle = parallel_dispatch(
-                            branches,
+                            std::sync::Arc::clone(&stable_branches_snapshot),
                             metta_env,
                             par_budget,
                             current_depth,
@@ -11755,10 +11786,11 @@ fn process_continuation<C: EvalContext>(
                 // `WaitForParallelCollapse` arm of `process_continuation`.
                 let metta_items: Vec<crate::backend::eval::trampoline::types::BoundValue> =
                     expr_results.into_iter().collect();
-                let stable_items_snapshot = std::sync::Arc::new(metta_items.clone());
+                // Phase 8: share Arc with RootProvider.
+                let stable_items_snapshot = std::sync::Arc::new(metta_items);
                 let metta_env = (*result_env).clone();
                 let handle = parallel_collapse_dispatch(
-                    metta_items,
+                    std::sync::Arc::clone(&stable_items_snapshot),
                     metta_env,
                     par_budget,
                     current_depth,
@@ -11891,10 +11923,11 @@ fn process_continuation<C: EvalContext>(
                 // forward-compat once Stage-1e lifts the gate.
                 let metta_items: Vec<crate::backend::eval::trampoline::types::BoundValue> =
                     expr_results.into_iter().collect();
-                let stable_items_snapshot = std::sync::Arc::new(metta_items.clone());
+                // Phase 8: share Arc with RootProvider.
+                let stable_items_snapshot = std::sync::Arc::new(metta_items);
                 let metta_env = (*result_env).clone();
                 let handle = parallel_collapse_dispatch(
-                    metta_items,
+                    std::sync::Arc::clone(&stable_items_snapshot),
                     metta_env,
                     par_budget,
                     current_depth,
@@ -14349,7 +14382,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::CompleteSubgoal {
             expr_hash,
             env: _,
-            depth: _,
+            depth: _depth,
             start_epoch,
         } => {
             let (result_values, result_env) = result;
@@ -14389,7 +14422,7 @@ fn process_continuation<C: EvalContext>(
                 if let Some(tc) = ctx.trace_collector() {
                     tc.emit_converted(
                         trace_format::TraceTier::TreeWalker,
-                        depth as u32,
+                        _depth as u32,
                         crate::backend::trace::trace_value_generic(
                             &result_values
                                 .first()

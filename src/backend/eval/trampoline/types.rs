@@ -253,10 +253,44 @@ impl std::fmt::Debug for ParallelDispatchHandle {
 #[derive(Debug)]
 pub struct ParallelDispatchRootProvider {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
+    /// Stable snapshot of worker INPUTS for the dispatch lifetime.
+    /// Shares the same Arc as `WaitForParallel.stable_branches_snapshot`
+    /// (one allocation, two strong references). Closes the worker-INPUT
+    /// vs GC-pool-walker race documented in Phase 8 (Robot.metta SIGSEGV
+    /// at can_compile_with_env + MettaValue::serialize):
+    ///
+    /// - The worker closure (`eval_loop.rs:1704`) captures
+    ///   `branch_expr: MettaValue` by-move from this Vec's contents.
+    /// - The parent's `WaitForParallel.stable_branches_snapshot`
+    ///   references the same Arc, but is rooted only via thread-local
+    ///   `frame_chain` (invisible to GC pool workers) plus per-safepoint
+    ///   `register_temporary_roots` (only fires on gc_pending /
+    ///   delta_crossed). Between pump ticks, no global root references
+    ///   the inputs.
+    /// - Registering this provider with `ROOT_REGISTRY` makes the input
+    ///   branches globally visible to mark-sweep for the dispatch's
+    ///   full lifetime, closing the race.
+    ///
+    /// Walked without a lock — `Arc<Vec<…>>` is `Sync` when contents
+    /// are `Sync` (`ParallelBranch = (MettaValue, SharedBindings)` —
+    /// both Copy/Sync) and the Vec is immutable across the dispatch
+    /// (built once in `parallel_dispatch`, never mutated). Contrast
+    /// `results: Mutex<…>` which needs `try_lock` because workers
+    /// actively write.
+    pub(crate) branches: Arc<Vec<super::eval_loop::ParallelBranch>>,
 }
 
 impl crate::backend::models::gc_allocator::RootProvider for ParallelDispatchRootProvider {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        // INPUTS first — no Mutex, direct iter (immutable Arc).
+        for (value, bindings) in self.branches.iter() {
+            roots.push(*value);
+            for (_, bound) in bindings.iter() {
+                roots.push(*bound);
+            }
+        }
+        // OUTPUTS — try_lock; safe to skip if contended (worker holds
+        // EvalGuard while writing, inhibiting quiescent GC anyway).
         if let Ok(guard) = self.results.try_lock() {
             for slot in guard.iter().flatten() {
                 for (v, bindings) in slot.iter() {
@@ -309,10 +343,23 @@ impl std::fmt::Debug for ParallelCollapseDispatchHandle {
 #[derive(Debug)]
 pub struct ParallelCollapseRootProvider {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
+    /// Stable snapshot of worker INPUTS for the dispatch lifetime.
+    /// Shares the same Arc as `WaitForParallelCollapse.stable_items_snapshot`.
+    /// See `ParallelDispatchRootProvider::branches` for the full
+    /// rationale — collapse workers capture items by-move identically.
+    pub(crate) items: Arc<Vec<BoundValue>>,
 }
 
 impl crate::backend::models::gc_allocator::RootProvider for ParallelCollapseRootProvider {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        // INPUTS first — no Mutex, direct iter (immutable Arc).
+        for (value, bindings) in self.items.iter() {
+            roots.push(*value);
+            for (_, bound) in bindings.iter() {
+                roots.push(*bound);
+            }
+        }
+        // OUTPUTS — try_lock per Phase 6 rationale.
         if let Ok(guard) = self.results.try_lock() {
             for slot in guard.iter().flatten() {
                 for (v, bindings) in slot.iter() {

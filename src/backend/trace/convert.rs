@@ -111,6 +111,11 @@ pub fn trace_value(root: &MettaValue) -> TraceValue {
                             MettaValueInner::Empty => {
                                 result = Some(TraceValue::Empty);
                             }
+                            MettaValueInner::NotReducible => {
+                                // %Irreducible% / NotReducible marker — represent
+                                // as the canonical atom name for trace inspection.
+                                result = Some(TraceValue::Atom("%NotReducible%".into()));
+                            }
                             MettaValueInner::Space(_) => {
                                 result = Some(TraceValue::Atom("<space>".into()));
                             }
@@ -293,10 +298,13 @@ pub fn trace_value_generic<V: crate::backend::models::MettaValueTrait + 'static>
         // HE-bisimilar Error(offending, detail). TraceValue::Error keeps the
         // old `(String, Box<TraceValue>)` shape — we extract the message from
         // the detail slot and recurse into offending as the child.
+        // Use Debug formatting for non-String details: V's only universal
+        // bound is `MettaValueTrait + Debug`, not Display, so `format!("{}", detail)`
+        // doesn't compile for generic V. Debug is sufficient for trace output.
         let message = detail
             .as_string()
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("{}", detail));
+            .unwrap_or_else(|| format!("{:?}", detail));
         TraceValue::Error(message, Box::new(trace_value_generic(offending)))
     } else if let Some(items) = v.as_sexpr() {
         TraceValue::SExpr(items.iter().map(trace_value_generic).collect())

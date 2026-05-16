@@ -1,5 +1,64 @@
 --------------------------- MODULE SlabGC_Quiescent ---------------------------
 (*
+ * **Phase 9 deviation notice (2026-05-16)**: the Rust implementation has
+ * been refactored away from the quiescent-state precondition modeled here.
+ * Mark-sweep no longer requires `activeEvaluators = 0`; it fires
+ * asynchronously via `maybe_async_gc()` (gc_allocator.rs:`maybe_async_gc`)
+ * triggered by the cron monitor. Root coverage that previously depended
+ * on the trampoline's `safepoint_wait_for_quiescence` dance is now
+ * provided by:
+ *
+ *   - `ParallelDispatchRootProvider` (Phase 6 commit `429e798`) — worker
+ *     OUTPUTS via `handle.results: Arc<Mutex<...>>`.
+ *   - Same provider's `branches` / `items` field (Phase 8 commit
+ *     `b4e0ed7`) — worker INPUTS via `Arc<Vec<ParallelBranch>>`.
+ *   - `current_iter_root::CurrentIterRootProvider` (Phase 9.1) —
+ *     per-thread current-iteration value.
+ *   - `register_temporary_roots` for parent frame snapshots — already
+ *     modeled here.
+ *
+ * REQUIRED SPEC UPDATES (must land before re-running TLC):
+ *
+ *   1. Weaken `SnapshotCapturesAllRoots` from `gcInProgressFlag /\
+ *      (hasGcRequest \/ hasGcResponse) => \A t: stackRoots[t] = {}`
+ *      (effectively `activeEvaluators = 0` at snapshot) to
+ *      `... => \A t: stackRoots[t] \subseteq registeredRoots[t]`.
+ *      The new `CurrentIterRootProvider` makes the per-iteration
+ *      stack root a *registered* root, satisfying the weakened form.
+ *
+ *   2. Add action `TryAsyncGc_AcquireFlag(t)` mirroring
+ *      `TryQuiescentGc_AcquireFlag(t)` but without the
+ *      `activeEvaluators = 0` precondition. Keep
+ *      `~gcInProgressFlag /\ ~hasGcRequest /\ ~hasGcResponse /\ gcPhase
+ *      = "idle"` and the GcInProgressGuard CAS.
+ *
+ *   3. Add a "current-iter root" variable per thread; bound by
+ *      `currentIterRoot[t] \in {NULL} \cup registeredRoots[t]`.
+ *
+ *   4. Delete `EvalSafepoint` / `EvalSafepointResume_*` actions — the
+ *      Rust function `safepoint_wait_for_quiescence` is deleted in
+ *      Phase 9.7; the trampoline never drops EvalGuard to coordinate
+ *      with GC. The safepoint root registration (`register_temporary_roots`)
+ *      stays as `EvalSafepoint_RegisterRoots` (action: register without
+ *      dropping the guard).
+ *
+ *   5. Tier-1 backpressure: change action `ApplyBackpressureTier1` to
+ *      a no-op when `gcValuesFreedTotal` has advanced since the actor's
+ *      last visit (skip-when-progressing). Add a per-thread
+ *      `lastSeenFreedTotal` variable.
+ *
+ *   6. Tier-2 backpressure: delete `ApplyBackpressureTier2` action
+ *      entirely. The Rust function is now a no-op (Phase 9.6).
+ *
+ * The 22 safety invariants + 7 liveness properties verified in the
+ * pre-Phase-9 model are EXPECTED to still hold under the updated spec,
+ * but this is unproven until TLC is re-run (~1-2 days runtime per Plan
+ * Agent C's estimate at `NumEvalThreads=3, MaxSlots=8`).
+ *
+ * The file below is the PRE-PHASE-9 spec, retained verbatim for diff
+ * legibility against the Phase 9 changes. Do not extract this as
+ * proof-of-correctness for the post-Phase-9 implementation.
+ *
  * TLA+ Model of Multi-Thread Quiescent-State GC Coordination Protocol
  *
  * This specification models the COMPLETE end-to-end allocation and garbage

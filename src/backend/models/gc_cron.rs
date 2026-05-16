@@ -18,7 +18,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::adaptive_pool::{Ema, HillClimber, ScaleAction};
-use super::gc_allocator::{gc_values_freed_total, request_gc};
+use super::gc_allocator::{gc_values_freed_total, maybe_async_gc, request_gc};
 use super::gc_pool::global_gc_pool;
 use super::task_scheduler::TaskSchedulerSingleton;
 use super::work_pool::WorkPool;
@@ -314,7 +314,13 @@ fn execute_memory_monitor(
     super::gc_allocator::set_backpressure_level(bp_level);
 
     if should_gc {
+        // Phase 9: set the flag AND immediately attempt async GC from the
+        // cron thread. `maybe_async_gc` honors the purely-async mandate —
+        // it does NOT require `ACTIVE_EVALUATORS == 0`, so it can fire
+        // mid-eval. Eliminates the request/respond ping-pong where the
+        // trampoline would have to enter a safepoint to consume the flag.
         request_gc();
+        let _ = maybe_async_gc();
     }
 
     // Return whether GC was requested (used by unit tests to avoid TOCTOU

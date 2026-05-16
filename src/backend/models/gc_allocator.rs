@@ -3166,13 +3166,60 @@ pub fn gc_values_freed_total() -> u64 {
 /// At level 0, this is a no-op (zero overhead on the hot path).
 #[inline]
 pub fn apply_backpressure_tier1() {
-    // Only apply backpressure when GC is actively running. If no GC cycle
-    // is in flight, sleeping wastes time without benefit — there's nothing
-    // to wait for. Cost: one atomic load (~1-2 ns), but avoids the
-    // backpressure_level() load entirely when GC is idle (net win).
+    // Only apply backpressure when GC is actively running.
     if !gc_cycle_in_flight() {
         return;
     }
+
+    // Phase 9.5: skip-when-progressing. If the previous GC cycle has been
+    // freeing memory since this thread's last visit, GC is making forward
+    // progress — skip the sleep entirely so the mutator stays at full
+    // speed. Only block when GC is stuck (freed-total static).
+    //
+    // Threshold: 500ms of GC stagnation falls back to the level-2/3 sleep
+    // ladder so we don't burn CPU on a truly stuck GC. The check uses a
+    // thread-local last-seen counter, so reads are zero-contention.
+    use std::cell::Cell;
+    use std::time::Instant;
+    thread_local! {
+        static LAST_FREED_TOTAL: Cell<u64> = const { Cell::new(0) };
+        static LAST_PROGRESS_AT: Cell<Option<Instant>> = const { Cell::new(None) };
+    }
+
+    let current_freed = gc_values_freed_total();
+    let made_progress = LAST_FREED_TOTAL.with(|c| {
+        let last = c.get();
+        if current_freed > last {
+            c.set(current_freed);
+            LAST_PROGRESS_AT.with(|t| t.set(Some(Instant::now())));
+            true
+        } else {
+            false
+        }
+    });
+
+    if made_progress {
+        // GC is freeing memory — don't slow the mutator.
+        return;
+    }
+
+    // GC has not freed memory since our last check. If the stagnation is
+    // brief (< 500ms), still skip — the cycle is in flight and progress
+    // is imminent. Beyond 500ms, fall back to the level-based sleep
+    // ladder to avoid burning CPU on a truly stuck collector.
+    let stagnant = LAST_PROGRESS_AT.with(|t| match t.get() {
+        Some(instant) => instant.elapsed() > Duration::from_millis(500),
+        None => {
+            // First-call: seed the timestamp and skip the sleep this once.
+            t.set(Some(Instant::now()));
+            false
+        }
+    });
+
+    if !stagnant {
+        return;
+    }
+
     match backpressure_level() {
         0 => {} // No backpressure — hot path, zero overhead
         1 => thread::yield_now(),
@@ -3200,21 +3247,33 @@ pub fn apply_backpressure_tier1() {
 /// lost notifications).
 #[inline]
 pub fn apply_backpressure_tier2() {
-    if backpressure_level() >= MAX_BACKPRESSURE && gc_cycle_in_flight() {
-        let mut lock = GC_CYCLE_MUTEX.lock();
-        // Re-check under lock (double-checked locking pattern)
-        while backpressure_level() >= MAX_BACKPRESSURE && gc_cycle_in_flight() {
-            // Timeout prevents infinite wait if GC response notification is lost.
-            // 100ms matches cron monitor poll interval — at worst we retry at
-            // the same cadence as before.
-            GC_CYCLE_CONDVAR.wait_for(&mut lock, Duration::from_millis(100));
-        }
-    }
+    // Phase 9.6: by the purely-async GC mandate, the trampoline thread
+    // (and main thread between top-level expressions) must NOT block on
+    // GC progress. This function is now a no-op. The original condvar
+    // park at MAX backpressure is replaced by reliance on:
+    //   1. `apply_backpressure_tier1` (skip-when-progressing) for inline
+    //      slowdown on stuck collectors.
+    //   2. The memory-pressure workpool's USL/Lyapunov controller
+    //      (`[[memory-pressure-workpool]]`) for organic concurrency
+    //      scaling in response to memory pressure signals.
+    //   3. `maybe_async_gc()` triggered by the cron monitor for prompt
+    //      GC cycles.
+    //
+    // Robot.metta evaluates a single top-level `!` so this branch never
+    // fired anyway; the change is hygiene to prevent regressions in
+    // multi-expression workloads.
 }
 
 /// Trigger GC at a quiescent point (no active evaluators).
 ///
-/// Called from eval loops between top-level expressions. Only triggers if:
+/// **Phase 9 disposition**: this function is retained as a public entry
+/// point for tests and external callers that need strict quiescent-GC
+/// semantics. The trampoline NO LONGER uses it — eval paths use
+/// `maybe_async_gc` (no `ACTIVE_EVALUATORS == 0` gate, honors the
+/// purely-async GC mandate). The legacy `safepoint_wait_for_quiescence`
+/// caller has been deleted in Phase 9.3.
+///
+/// Conditions (unchanged):
 /// 1. GC is not disabled (`--no-gc`)
 /// 2. `GC_REQUESTED` is set (by cron monitor or manual request)
 /// 3. No GC cycle is already in flight (`GC_CYCLE_IN_FLIGHT == false`)
@@ -3223,10 +3282,6 @@ pub fn apply_backpressure_tier2() {
 /// Uses `GC_IN_PROGRESS` flag to prevent new evals from starting during
 /// the brief snapshot capture (sub-millisecond). The actual mark-sweep
 /// runs asynchronously on the GC thread.
-///
-/// The `GC_CYCLE_IN_FLIGHT` check (step 3) ensures at most one GC cycle
-/// is in flight at a time, aligning with TLA+ `~hasGcRequest /\ ~hasGcResponse
-/// /\ gcPhase = "idle"` preconditions on `TryQuiescentGc_AcquireFlag`.
 ///
 /// Returns `true` if a GC cycle was triggered.
 pub fn maybe_quiescent_gc() -> bool {
@@ -3289,6 +3344,85 @@ pub fn maybe_quiescent_gc() -> bool {
     // Safe: no evaluators active, build snapshot and submit to GC pool.
     let result = trigger_gc_cycle_via_pool();
 
+    drop(_gc_guard);
+    result
+}
+
+/// Trigger GC asynchronously — **without** waiting for evaluator quiescence.
+///
+/// This is the Phase 9 entry point that honors the purely-async GC mandate.
+/// Unlike `maybe_quiescent_gc`, it does NOT require `ACTIVE_EVALUATORS == 0`.
+/// The mark-sweep cycle runs on the GC pool against a snapshot of the slab
+/// state at the moment `trigger_gc_cycle_via_pool` is called; concurrent
+/// mutators do not interfere because:
+///
+/// - The brief `GC_IN_PROGRESS` window during `build_snapshot` parks *new*
+///   `EvalGuard::enter()` calls (`EvalGuard::enter` waits while
+///   `GC_IN_PROGRESS` is set). This is the only synchronous coupling and is
+///   bounded by snapshot cost (sub-millisecond per page; typical workloads
+///   complete in tens of microseconds).
+/// - Mutators already mid-eval keep their `EvalGuard` and continue running.
+///   They never block waiting for the cycle to complete.
+/// - The snapshot captures all reachable values via `collect_all_roots()`,
+///   which walks every registered `RootProvider` plus
+///   `register_temporary_roots` entries. Phase 6 + Phase 8 root providers
+///   cover parallel-dispatch INPUTS and OUTPUTS; per-thread current-iter
+///   roots (`current_iter_root::CurrentIterRootProvider`) cover the
+///   in-flight value on each evaluator thread. Together these are
+///   sufficient — no quiescence required.
+/// - Reclaim (`process_gc_response`) is gated by `GcInProgressGuard::try_enter()`
+///   for mutex with session-release, which still requires
+///   `ACTIVE_EVALUATORS == 0`. That gate is unchanged and remains the only
+///   path that legitimately waits for quiescence.
+///
+/// Returns `true` if a GC cycle was triggered.
+pub fn maybe_async_gc() -> bool {
+    // Signal that the GC lifecycle is reachable (for cron backpressure gating).
+    bump_gc_reachable();
+
+    if is_gc_disabled() {
+        GC_REQUESTED.store(false, Ordering::Relaxed);
+        return false;
+    }
+
+    if !GC_REQUESTED.load(Ordering::Acquire) {
+        return false;
+    }
+
+    // At-most-one cycle in flight (matches the existing TLA+ precondition
+    // `~hasGcRequest /\ ~hasGcResponse /\ gcPhase = "idle"`).
+    if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
+        return false;
+    }
+
+    // Consume the request.
+    if GC_REQUESTED
+        .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
+        .is_err()
+    {
+        return false;
+    }
+
+    // Acquire `GC_IN_PROGRESS` mutex (against session-release GC path).
+    // **No `ACTIVE_EVALUATORS == 0` gate**: snapshot construction parks
+    // *new* `EvalGuard::enter()` calls via the existing condvar logic, and
+    // mutators already mid-eval are safe because the snapshot reads
+    // `bump_count` / `epochs[i]` with `Acquire` and gets a consistent
+    // prefix view. Phase 9 TLA+ update: weakens the
+    // `TryQuiescentGc_AcquireFlag` precondition `activeEvaluators = 0`
+    // → just `~gcInProgressFlag /\ ~hasGcRequest /\ ~hasGcResponse /\
+    // gcPhase = "idle"`.
+    let _gc_guard = match GcInProgressGuard::try_enter() {
+        Some(guard) => guard,
+        None => {
+            // Session-release GC holds the flag — back off; cron will
+            // retry on its next tick.
+            GC_REQUESTED.store(true, Ordering::Release);
+            return false;
+        }
+    };
+
+    let result = trigger_gc_cycle_via_pool();
     drop(_gc_guard);
     result
 }
@@ -3941,145 +4075,25 @@ pub fn maybe_process_gc_response_fast() -> bool {
     maybe_process_gc_response()
 }
 
-pub fn safepoint_wait_for_quiescence() {
-    // Phase 1: Process any pending response from a previous GC cycle.
-    // This clears GC_CYCLE_IN_FLIGHT, enabling a new trigger below.
-    // Use fast version: skips expensive CAS+channel poll when GC is idle.
-    maybe_process_gc_response_fast();
-
-    // Phase 2: Trigger a new GC cycle (if quiescent and requested)
-    maybe_quiescent_gc();
-
-    // Phase 3: If a GC cycle was just triggered, wait briefly for the
-    // GC thread to complete mark+sweep and send a response.
-    if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-        // Try to process response immediately (mark+sweep is typically < 1ms
-        // for bounded live sets like PLN's task/belief queues)
-        if !maybe_process_gc_response() {
-            // Park on condvar — woken by maybe_process_gc_response() calling
-            // GC_CYCLE_CONDVAR.notify_all() when response arrives.
-            let mut lock = GC_CYCLE_MUTEX.lock();
-            if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-                let _result = GC_CYCLE_CONDVAR.wait_for(&mut lock, Duration::from_millis(50));
-            }
-            drop(lock);
-            maybe_process_gc_response();
-        }
-    }
-
-    // Convergence loop: as long as GC is still requested and quiescence
-    // is not yet reached, keep this evaluator parked at "guard dropped".
-    //
-    // ## Why a loop, not a single wait
-    //
-    // With nested parallel branches, multiple workers each hold one
-    // `EvalGuard`. Their `should_safepoint` cadences drift across tens of
-    // ms (4096 trampoline iters between checks). A staggered drop
-    // sequence (N→N-1→…→1→0) only fires `QUIESCENT_CONDVAR.notify_all`
-    // on the FINAL 1→0 transition; earlier arrivals must therefore stay
-    // parked through several drops, not just the first hint of progress.
-    // A single bounded wait followed by re-acquire causes earlier
-    // arrivals to leave their drop position before the slowest one
-    // drops, so `ACTIVE_EVALUATORS == 0` is never observed and
-    // `maybe_quiescent_gc` never CAS-wins the request.
-    //
-    // ## Loop exit conditions
-    //
-    //   - `maybe_quiescent_gc` fires (we won or someone else won; either
-    //     way `GC_CYCLE_IN_FLIGHT` becomes set), or
-    //   - `GC_REQUESTED` was cleared by another thread, or
-    //   - the convergence budget (250 ms) is exhausted (deadlock guard).
-    //
-    // The 250 ms cap is long enough for typical worker stagger (~tens
-    // of ms per gc_counter cycle) but small enough that throughput
-    // doesn't collapse if quiescence is genuinely unreachable in the
-    // current parallel-dispatch shape.
-    // Edit 3 (convergence-tightening): when ACTIVE_EVALUATORS is monotonically
-    // decreasing across the wait but hasn't yet reached 0 by the 250 ms
-    // deadline, extend by another 250 ms cycle, up to 4 cycles total
-    // (≤ 1 s wall clock). Without this extension, deep PLN inference
-    // workloads thrash: worker A times out at 250 ms, reacquires (+1),
-    // then worker B finally arrives at safepoint and sees ACTIVE = 1
-    // (worker A) + (parent outer) ≥ 2; B parks 250 ms, times out,
-    // reacquires; A may already be back at another should_safepoint.
-    // The extension keeps a safepoint-arriving worker parked while
-    // progress is still being made, breaking the rotation.
-    //
-    // The min-observed counter is local to this function frame (no new
-    // shared state). On stagnation (no observed decrease for the full
-    // 250 ms cycle), we exit and let the trampoline retry next cycle.
-    const MAX_EXTENSION_CYCLES: u32 = 4;
-    let initial_active = ACTIVE_EVALUATORS.load(Ordering::Acquire);
-    let mut min_observed_active: u32 = initial_active;
-    let mut cycle: u32 = 0;
-    'convergence: loop {
-        let convergence_deadline = std::time::Instant::now() + Duration::from_millis(250);
-        while GC_REQUESTED.load(Ordering::Acquire)
-            && !GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
-            && ACTIVE_EVALUATORS.load(Ordering::Acquire) > 0
-        {
-            if std::time::Instant::now() >= convergence_deadline {
-                break;
-            }
-            let mut lock = QUIESCENT_MUTEX.lock();
-            if !GC_REQUESTED.load(Ordering::Acquire)
-                || GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
-                || ACTIVE_EVALUATORS.load(Ordering::Acquire) == 0
-            {
-                drop(lock);
-                maybe_quiescent_gc();
-                break 'convergence;
-            }
-            let _result = QUIESCENT_CONDVAR.wait_for(&mut lock, Duration::from_millis(50));
-            drop(lock);
-            maybe_process_gc_response_fast();
-            maybe_quiescent_gc();
-            // Track convergence progress for the extension decision.
-            let now_active = ACTIVE_EVALUATORS.load(Ordering::Acquire);
-            if now_active < min_observed_active {
-                min_observed_active = now_active;
-            }
-        }
-
-        // Convergence-deadline expired (we're at the 250 ms boundary of
-        // this cycle). Decide whether to extend.
-        cycle += 1;
-        if cycle >= MAX_EXTENSION_CYCLES {
-            break 'convergence;
-        }
-        // Already exited the inner loop because GC was triggered or
-        // request cleared? Don't extend.
-        if !GC_REQUESTED.load(Ordering::Acquire)
-            || GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire)
-            || ACTIVE_EVALUATORS.load(Ordering::Acquire) == 0
-        {
-            break 'convergence;
-        }
-        // Did we make progress within this cycle (min_observed_active
-        // strictly less than where we started this cycle)?
-        let cycle_start_active = ACTIVE_EVALUATORS.load(Ordering::Acquire);
-        if min_observed_active < cycle_start_active {
-            // Progress observed — extend another cycle.
-            min_observed_active = cycle_start_active;
-            continue 'convergence;
-        }
-        // Stagnation — exit, let next safepoint retry.
-        break 'convergence;
-    }
-
-    // If a GC cycle is now in flight (we won the CAS or someone else did),
-    // wait for the response.
-    if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-        if !maybe_process_gc_response() {
-            let mut lock = GC_CYCLE_MUTEX.lock();
-            if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-                let _result = GC_CYCLE_CONDVAR.wait_for(&mut lock, Duration::from_millis(100));
-            }
-            drop(lock);
-            maybe_process_gc_response();
-        }
-    }
-}
+// `safepoint_wait_for_quiescence` (DELETED in Phase 9).
+//
+// Was: a synchronous convergence-extension loop (up to 4×250 ms = 1 s)
+// that parked the trampoline thread until `ACTIVE_EVALUATORS == 0` so a
+// quiescent GC could fire. That mechanism violated the purely-async GC
+// mandate — under deep parallel-dispatch nesting (Robot.metta PLN, 64+
+// worker tasks), the wait would routinely exhaust its 1 s budget,
+// producing ~1.3 s `gc-pause` events visible in `trace-analyzer`.
+//
+// Replaced by:
+//   - `ParallelDispatchRootProvider` / `ParallelCollapseRootProvider`
+//     (Phase 6 commit `429e798` + Phase 8 input coverage in `b4e0ed7`)
+//   - `current_iter_root::CurrentIterRootProvider` (Phase 9.1)
+//   - `register_temporary_roots` for parent frame snapshots
+//   - `refresh_thread_local_cache_roots` for worker thread-locals
+//   - `maybe_async_gc()` (Phase 9.2), cron-triggered, no ACTIVE_EVALUATORS gate.
+//
+// Together these keep all roots visible to async mark-sweep without
+// requiring the trampoline to ever wait on GC progress.
 
 /// Register an environment's shared state as a GC root provider.
 ///

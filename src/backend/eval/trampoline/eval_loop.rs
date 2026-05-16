@@ -129,10 +129,12 @@ pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
     roots.extend_from_slice(extra_roots);
 
     clear_aba_sensitive_caches();
+    // Phase 9: keep the temporary-root registration (the safepoint's
+    // legitimate effect — exposes parent-class roots to mark-sweep) but
+    // drop the EvalGuard dance. GC is purely async; the trampoline never
+    // waits on quiescence. The `_root_handle` keeps the roots registered
+    // until the caller's frame returns.
     let _root_handle = gc_allocator::register_temporary_roots(roots);
-    gc_allocator::drop_eval_guard_for_safepoint();
-    gc_allocator::safepoint_wait_for_quiescence();
-    gc_allocator::reacquire_eval_guard_after_safepoint();
 }
 
 /// Clear all caches whose keys are slab pointers, before a GC sweep can run.
@@ -1719,6 +1721,15 @@ fn parallel_dispatch(
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
             let _guard = EvalGuard::enter();
+            // Phase 9.1: register `branch_expr` as a per-thread current-iter
+            // GC root for the worker's lifetime. Drops on closure exit
+            // (normal OR panic-unwind) and clears the cell. Closes the
+            // worker-input UAF window that the Phase 9.3 deletion of
+            // `safepoint_wait_for_quiescence` would otherwise re-open
+            // between Phase 8 dispatch-input snapshots and per-pump-tick
+            // safepoint root registrations.
+            let _current_iter_scope =
+                super::current_iter_root::CurrentIterScope::enter(branch_expr);
             let _demand_scope = DemandScope::enter(demand);
             let _worker_marker = WorkerEvalScope::enter();
             // Cache-root refresh: branch workers evaluate arbitrary rule RHS
@@ -1932,12 +1943,14 @@ fn pump_parallel_wait(
                 }
             }
 
+            // Phase 9: purely-async GC — keep the temporary-root snapshot
+            // (covers the parent's `frame_chain` + `stable_branches` +
+            // `handle.results` for the duration of this pump frame) and
+            // signal GC if needed, but DO NOT block on quiescence. See
+            // `current_iter_root` module + Phase 9 plan.
             clear_aba_sensitive_caches();
             let _root_handle = crate::backend::models::register_temporary_roots(parent_roots);
-            crate::backend::models::drop_eval_guard_for_safepoint();
             crate::backend::models::request_gc();
-            crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
-            crate::backend::models::reacquire_eval_guard_after_safepoint();
         }
     }
 
@@ -2026,12 +2039,11 @@ fn pump_parallel_collapse_wait(
                 }
             }
 
+            // Phase 9: purely-async GC — same shape as pump_parallel_wait.
+            // Keep the temporary-root snapshot; signal GC; do NOT block.
             clear_aba_sensitive_caches();
             let _root_handle = crate::backend::models::register_temporary_roots(parent_roots);
-            crate::backend::models::drop_eval_guard_for_safepoint();
             crate::backend::models::request_gc();
-            crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
-            crate::backend::models::reacquire_eval_guard_after_safepoint();
         }
     }
 
@@ -2146,6 +2158,11 @@ fn parallel_collapse_dispatch(
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
             let _guard = EvalGuard::enter();
+            // Phase 9.1: register `item_expr` as a per-thread current-iter
+            // GC root for the worker's lifetime (mirrors branch worker at
+            // `:1730`). See `current_iter_root` module docs.
+            let _current_iter_scope =
+                super::current_iter_root::CurrentIterScope::enter(item_expr);
             let _demand_scope =
                 DemandScope::enter(crate::backend::eval::cesk::coroutine::Demand::All);
             let _worker_marker = WorkerEvalScope::enter();

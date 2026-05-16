@@ -13,10 +13,8 @@
 use std::cell::{Cell, RefCell};
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::gc_allocator::safepoint_wait_for_quiescence;
 use crate::backend::models::{
-    alloc_count_snapshot, drop_eval_guard_for_safepoint, global_factory,
-    reacquire_eval_guard_after_safepoint, register_temporary_roots, request_gc, GcFactory,
+    alloc_count_snapshot, global_factory, register_temporary_roots, request_gc, GcFactory,
     MettaValue,
 };
 
@@ -58,22 +56,20 @@ pub trait EvalContext {
 
     /// Perform a GC safepoint with the provided roots from trampoline state.
     ///
-    /// Default runs the canonical quiescent protocol:
+    /// Default runs the Phase 9 purely-async protocol:
     /// 1. Register `roots` as temporary GC roots (held until the function returns).
-    /// 2. Drop our `EvalGuard` so `ACTIVE_EVALUATORS` decrements toward 0.
-    /// 3. Set `gc_requested` so a quiescent GC fires once everyone parks.
-    /// 4. Park on the quiescence condvar (10ms timeout) until either the GC
-    ///    cycle completes or the timeout elapses.
-    /// 5. Re-acquire the `EvalGuard` (blocks if a GC cycle is in flight).
+    /// 2. Signal `gc_requested` so the cron monitor's next tick will fire
+    ///    `maybe_async_gc()` opportunistically.
     ///
-    /// Override only when a context needs additional steps (e.g. tracing,
-    /// cancellation observation, deferred-drop drain).
+    /// The trampoline thread NEVER waits on GC progress. Mark-sweep runs
+    /// asynchronously on the GC pool against a snapshot of root state at
+    /// snapshot time. Phase 8 root providers (parallel-dispatch
+    /// inputs/outputs) + per-thread current-iter root cell
+    /// (`current_iter_root`) + this temporary-root registration give the
+    /// snapshot a complete root view without requiring quiescence.
     fn perform_safepoint(&self, roots: Vec<MettaValue>) {
         let _root_handle = crate::backend::models::register_temporary_roots(roots);
-        crate::backend::models::drop_eval_guard_for_safepoint();
         crate::backend::models::request_gc();
-        crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
-        crate::backend::models::reacquire_eval_guard_after_safepoint();
     }
 
     /// Get the trace collector for emitting evaluation trace events.
@@ -430,14 +426,12 @@ impl EvalContext for ParallelBranchContext {
             .map_or(false, |t| t.is_satisfied());
 
         if parallel_gc_coop_enabled() {
-            // Clear pointer-keyed caches before GC may free slots — see
-            // `clear_aba_sensitive_caches` for the ABA hazard rationale.
+            // Phase 9 purely-async safepoint: keep ABA-sensitive cache
+            // clear + temporary root registration + GC signal, but DO NOT
+            // wait on quiescence. See module docs in `current_iter_root`.
             super::eval_loop::clear_aba_sensitive_caches();
             let _root_handle = register_temporary_roots(roots);
-            drop_eval_guard_for_safepoint();
             request_gc();
-            safepoint_wait_for_quiescence();
-            reacquire_eval_guard_after_safepoint();
         }
 
         if cancelled {

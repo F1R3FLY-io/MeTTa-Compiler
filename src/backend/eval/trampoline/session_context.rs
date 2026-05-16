@@ -21,10 +21,8 @@ use std::cell::Cell;
 #[cfg(feature = "trace")]
 use std::sync::Arc;
 
-use crate::backend::models::gc_allocator::safepoint_wait_for_quiescence;
 use crate::backend::models::{
-    alloc_count_snapshot, drop_eval_guard_for_safepoint, global_factory,
-    reacquire_eval_guard_after_safepoint, register_temporary_roots, request_gc, GcFactory,
+    alloc_count_snapshot, global_factory, register_temporary_roots, request_gc, GcFactory,
     MettaState, MettaValue,
 };
 
@@ -198,47 +196,25 @@ impl<'s> EvalContext for SessionContext<'s> {
         }
     }
 
-    /// Perform a GC safepoint: register trampoline roots, release EvalGuard,
-    /// trigger GC, re-acquire EvalGuard, unregister roots.
+    /// Phase 9 purely-async safepoint: register trampoline roots + signal
+    /// GC. Does NOT wait on quiescence; the trampoline never blocks for
+    /// GC progress. Mark-sweep runs concurrently via `maybe_async_gc()`
+    /// triggered by the cron monitor or any subsequent allocation.
     ///
-    /// # Critical Ordering Invariant
+    /// # Root visibility invariant (Phase 9)
     ///
-    /// 1. Register roots BEFORE dropping EvalGuard (prevents use-after-free)
-    /// 2. Drop EvalGuard → ACTIVE_EVALUATORS-- (may reach quiescent state)
-    /// 3. Trigger/process GC (collects safepoint roots + environment roots)
-    /// 4. Re-acquire EvalGuard → ACTIVE_EVALUATORS++ (blocks if GC in progress)
-    /// 5. Unregister roots (SafepointRootHandle drop)
-    ///
-    /// # Multi-Evaluator Coordination
-    ///
-    /// When multiple evaluators run concurrently, one evaluator reaching a
-    /// safepoint doesn't achieve quiescence if others are still active. This
-    /// method waits briefly (up to 10ms) for other evaluators to also reach
-    /// safepoints. If quiescence isn't achieved within the timeout, we
-    /// re-acquire the guard and continue — we'll try again next safepoint.
+    /// The roots passed here are registered with the global
+    /// `ROOT_REGISTRY` via `SafepointRootHandle`. They remain registered
+    /// until `_root_handle` drops at the end of this function. That
+    /// window is sufficient for any concurrent mark-sweep snapshot taken
+    /// during this function call to observe them. Subsequent snapshots
+    /// (after this function returns) rely on the per-thread current-iter
+    /// root cell + Phase 6/8 dispatch RootProviders to keep the
+    /// trampoline's reachable values visible.
     fn perform_safepoint(&self, roots: Vec<MettaValue>) {
-        // 1. Register roots BEFORE dropping guard
         let _root_handle = register_temporary_roots(roots);
-
-        // 2. Drop EvalGuard → ACTIVE_EVALUATORS--
-        drop_eval_guard_for_safepoint();
-
-        // 3. Ensure GC_REQUESTED is set so maybe_quiescent_gc() will fire.
-        //    The cron manager sets this periodically, but on the FIRST safepoint
-        //    the cron hasn't been spawned yet (it's lazily created inside
-        //    safepoint_wait_for_quiescence → maybe_process_gc_response).
         request_gc();
-
-        // 4. Wait for quiescence and trigger/process GC.
-        //    Uses condvar parking (NOT spin/yield) for instant wakeup
-        //    when other evaluators drop their guards. Times out after 10ms
-        //    if quiescence isn't reached.
-        safepoint_wait_for_quiescence();
-
-        // 4. Re-acquire EvalGuard → ACTIVE_EVALUATORS++
-        reacquire_eval_guard_after_safepoint();
-
-        // 5. _root_handle drops here → unregisters temporary roots
+        // _root_handle drops here → unregisters temporary roots.
     }
 
     #[cfg(feature = "trace")]

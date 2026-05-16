@@ -33,6 +33,7 @@
 
 mod arena_engine;
 mod context;
+pub(crate) mod current_iter_root;
 pub(crate) mod dispatch_hints;
 pub mod engine;
 pub(crate) mod eval_loop;

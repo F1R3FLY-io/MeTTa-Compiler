@@ -616,9 +616,9 @@ impl JitCompiler {
                 }
             };
 
-            // Create codegen context with error handler support
-            let mut codegen =
-                CodegenContext::with_error_handlers(&mut builder, ctx_ptr, error_func_refs);
+            // Create codegen context. `error_func_refs` is required at the
+            // type level — see `CodegenContext::new` for the rationale.
+            let mut codegen = CodegenContext::new(&mut builder, ctx_ptr, error_func_refs);
 
             // Stage 4: Initialize local variables
             codegen.init_locals(chunk.local_count() as usize);

@@ -224,6 +224,11 @@ libc = "0.2"
 
 # Signal handling for diagnostic dump (SIGTERM/SIGUSR1)
 signal-hook = "0.3"
+# Used directly for `register_signal_unchecked` (SIGILL handler). signal-hook
+# itself only re-exports the checked `register`, which refuses forbidden
+# signals like SIGILL. Already pulled in transitively by signal-hook;
+# naming it directly lets us call the unchecked variant.
+signal-hook-registry = "1.4"
 
 # portable-atomic - 128-bit atomics for lock-free Treiber stack (CMPXCHG16B / LL-SC)
 portable-atomic = { version = "1", features = ["fallback"] }

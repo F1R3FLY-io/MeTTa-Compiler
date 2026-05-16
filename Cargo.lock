@@ -2320,6 +2320,7 @@ dependencies = [
  "semver",
  "serde",
  "signal-hook",
+ "signal-hook-registry",
  "smallvec",
  "sysinfo",
  "target-lexicon",

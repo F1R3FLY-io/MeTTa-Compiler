@@ -29,15 +29,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Guard to ensure `install_signal_handlers()` runs at most once.
 static INSTALL_ONCE: Once = Once::new();
 
-/// Install SIGTERM and SIGUSR1 diagnostic handlers.
+/// Install SIGTERM, SIGUSR1, and SIGILL diagnostic handlers.
 ///
 /// Idempotent — repeated calls are a single atomic load after first init.
 /// Disabled when `METTATRON_NO_SIGNAL_DIAG=1` is set.
+///
+/// SIGILL is registered with a custom action (via `signal_hook::low_level`)
+/// that sets the flag AND restores `SIG_DFL` before returning, so the
+/// offending instruction re-executes once and terminates the process via
+/// the default disposition (producing a coredump if `RLIMIT_CORE` permits).
+/// The watcher thread polls every 50ms and dumps diagnostics if it sees
+/// the flag before coredump generation finishes. The flag-then-default
+/// chain is deliberate: SIGILL is unrecoverable, and any recover-and-resume
+/// approach would loop forever on the same `ud2` instruction.
 ///
 /// This is automatically called from `global_allocator()`, so every code path
 /// (binary, tests, benchmarks) gets coverage without explicit setup.
 #[cfg(unix)]
 pub fn install_signal_handlers() {
+    use std::sync::atomic::Ordering;
+
     INSTALL_ONCE.call_once(|| {
         // Check opt-out env var
         if std::env::var("METTATRON_NO_SIGNAL_DIAG")
@@ -50,6 +61,7 @@ pub fn install_signal_handlers() {
         // Create shared Arc<AtomicBool> flags for signal-hook
         let sigterm_flag = Arc::new(AtomicBool::new(false));
         let sigusr1_flag = Arc::new(AtomicBool::new(false));
+        let sigill_flag = Arc::new(AtomicBool::new(false));
 
         // Register signal flags (async-signal-safe: only sets atomics)
         if let Err(e) =
@@ -65,10 +77,35 @@ pub fn install_signal_handlers() {
             return;
         }
 
+        // Register SIGILL with custom handler. We can't use `flag::register`
+        // on its own because that would loop forever (the offending `ud2`
+        // instruction would re-execute after the handler returns, raising
+        // SIGILL again, etc). Instead, set the flag AND restore SIG_DFL so
+        // the next re-execution terminates the process normally.
+        //
+        // SIGILL is in signal-hook's FORBIDDEN list (the safe `register`
+        // refuses it), so we go through `register_signal_unchecked` to
+        // install our handler. SAFETY: the closure performs only
+        // async-signal-safe operations — an atomic store and `libc::signal`.
+        let sigill_flag_for_handler = Arc::clone(&sigill_flag);
+        let register_result = unsafe {
+            signal_hook_registry::register_signal_unchecked(
+                signal_hook::consts::SIGILL,
+                move || {
+                    sigill_flag_for_handler.store(true, Ordering::Release);
+                    libc::signal(libc::SIGILL, libc::SIG_DFL);
+                },
+            )
+        };
+        if let Err(e) = register_result {
+            eprintln!("[diagnostics] Failed to register SIGILL handler: {}", e);
+            return;
+        }
+
         // Spawn daemon watcher thread (won't prevent process exit)
         thread::Builder::new()
             .name("diag-watcher".to_string())
-            .spawn(move || signal_watcher_loop(sigterm_flag, sigusr1_flag))
+            .spawn(move || signal_watcher_loop(sigterm_flag, sigusr1_flag, sigill_flag))
             .expect("Failed to spawn diagnostic watcher thread");
     });
 }
@@ -79,7 +116,11 @@ pub fn install_signal_handlers() {}
 
 /// Watcher thread main loop. Polls signal flags every 50ms.
 #[cfg(unix)]
-fn signal_watcher_loop(sigterm_flag: Arc<AtomicBool>, sigusr1_flag: Arc<AtomicBool>) {
+fn signal_watcher_loop(
+    sigterm_flag: Arc<AtomicBool>,
+    sigusr1_flag: Arc<AtomicBool>,
+    sigill_flag: Arc<AtomicBool>,
+) {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
@@ -92,6 +133,16 @@ fn signal_watcher_loop(sigterm_flag: Arc<AtomicBool>, sigusr1_flag: Arc<AtomicBo
             dump_diagnostics("SIGTERM");
             reraise_sigterm();
             // Should not reach here, but break just in case
+            break;
+        }
+
+        if sigill_flag.swap(false, Ordering::AcqRel) {
+            // SIGILL is non-recoverable: the custom handler has already
+            // restored SIG_DFL, so the offending ud2 will re-execute and
+            // terminate the process shortly. Dump diagnostics while the
+            // kernel is generating the coredump. Do NOT re-raise — the
+            // default-disposition path already handles termination.
+            dump_diagnostics("SIGILL");
             break;
         }
 

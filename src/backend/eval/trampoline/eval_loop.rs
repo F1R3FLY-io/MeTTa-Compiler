@@ -1707,6 +1707,25 @@ fn parallel_dispatch(
             let _guard = EvalGuard::enter();
             let _demand_scope = DemandScope::enter(demand);
             let _worker_marker = WorkerEvalScope::enter();
+            // Cache-root refresh: branch workers evaluate arbitrary rule RHS
+            // values and populate thread-local `EVAL_MEMO` /
+            // `MATCH_RESULT_CACHE` entries (see `eval/mod.rs:107-119`) that
+            // the parent trampoline will re-enter on merge — typical of
+            // recursive PLN inference. Refreshing before `EvalGuard` drops
+            // snapshots those entries into the safepoint root registry so
+            // they survive between-worker GC. Also load-bearing under the
+            // `catch_unwind` path below (`:1713-1716`): a cancellation
+            // panic unwinds through this drop, ensuring cache-roots are
+            // refreshed even on the unwind exit (the closure tail never
+            // executes in that case).
+            //
+            // ASYMMETRY: `parallel_collapse_dispatch` worker at `:2107`
+            // intentionally has NO equivalent guard — see the explanatory
+            // comment there. Do not mirror this line into the collapse
+            // worker without first auditing
+            // `enumerate_rules_via_unification` cache-hit rates under PLN
+            // load — empirically it inflates compose's freshened-binding
+            // chain past the canary at `:6457`.
             let _cache_root_refresh = crate::backend::eval::CacheRootRefreshGuard::new();
 
             let cancel_outer = Arc::clone(&cancel_token);
@@ -2104,7 +2123,40 @@ fn parallel_collapse_dispatch(
             let _demand_scope =
                 DemandScope::enter(crate::backend::eval::cesk::coroutine::Demand::All);
             let _worker_marker = WorkerEvalScope::enter();
-
+            // Intentionally NO `CacheRootRefreshGuard` here (contrast the
+            // `parallel_dispatch` worker at `:1710`). Three reasons:
+            //
+            // (a) The `is_memoized_normal_form` short-circuit immediately
+            //     below skips eval entirely for the majority of collapse
+            //     items — no caches get populated in that case.
+            //
+            // (b) Eval-path items produce values fed straight into
+            //     `results[slot]`, which `ParallelCollapseRootProvider`
+            //     (registered at the construction site in `429e798`)
+            //     already covers for cross-thread GC visibility. The
+            //     parent's merge path drives results into
+            //     `ProcessCollapseEvalResults` /
+            //     `WaitForParallelCollapse`, which does NOT re-enter
+            //     unification — so persisting `MATCH_RESULT_CACHE`
+            //     entries past this worker boundary adds memory pressure
+            //     with no correctness benefit.
+            //
+            // (c) `Demand::All` + no `catch_unwind` plumbing means the
+            //     worker always exits through the closure tail. Unlike
+            //     the branch worker, there is no panic-unwind path that
+            //     would skip natural cache cleanup.
+            //
+            // Empirical confirmation: adding the guard here regresses
+            // Robot.metta from 40-85 SELECTED outputs to 19-21 AND trips
+            // the `freshened_count < 1024` canary at `:6457` (see
+            // commit `429e798` body and the Phase 7 investigation in
+            // memory `sigill-fix-2026-05-15.md`).
+            //
+            // Do not add it without first investigating
+            // `enumerate_rules_via_unification` cache-hit rates under
+            // PLN load — the asymmetry may be masking a latent bug there
+            // (Plan agent's optional Option A follow-up).
+            //
             // Option C: HE-faithful re-eval skip for normal-form items.
             let eval_results: smallvec::SmallVec<
                 [crate::backend::eval::trampoline::types::BoundValue; 2],
@@ -6447,7 +6499,13 @@ fn process_continuation<C: EvalContext>(
                         //
                         // Memory bound: Fix 1 caps freshened-binding count at
                         // per-rule var count (small constant). Debug-build
-                        // canary below catches regression.
+                        // canary below catches regression; release-build
+                        // companion canary (once-per-process, threshold 512)
+                        // surfaces the same class in stripped release builds
+                        // where the debug_assert is compiled out — caught
+                        // the original asymmetry regression that motivated
+                        // Phase 7 (see comment at
+                        // `parallel_collapse_dispatch` worker, `:2107`).
                         #[cfg(debug_assertions)]
                         {
                             let freshened_count = composed
@@ -6458,9 +6516,30 @@ fn process_continuation<C: EvalContext>(
                                 freshened_count < 1024,
                                 "ProcessRuleMatches compose produced {} freshened-binding keys; \
                              possible Fix 1 regression. Investigate \
-                             enumerate_rules_via_unification.",
+                             enumerate_rules_via_unification. \
+                             (See Phase 7 — parallel_collapse_dispatch \
+                             CacheRootRefreshGuard asymmetry at eval_loop.rs:2107.)",
                                 freshened_count
                             );
+                        }
+                        #[cfg(not(debug_assertions))]
+                        {
+                            use std::sync::Once;
+                            static WARN_ONCE: Once = Once::new();
+                            let freshened_count = composed
+                                .iter()
+                                .filter(|(k, _)| k.starts_with("$__fr_"))
+                                .count();
+                            if freshened_count >= 512 {
+                                WARN_ONCE.call_once(|| {
+                                    tracing::warn!(
+                                        freshened_count,
+                                        "ProcessRuleMatches compose: high freshened-binding count; \
+                                         see Phase 7 (parallel_collapse_dispatch asymmetry, \
+                                         eval_loop.rs:2107)"
+                                    );
+                                });
+                            }
                         }
                         (v, composed)
                     })

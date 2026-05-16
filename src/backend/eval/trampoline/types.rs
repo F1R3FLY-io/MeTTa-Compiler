@@ -12,9 +12,9 @@
 //! - Bindings use `GenericBindings<MettaValue>` (heap-allocated binding map)
 //! - Names retain the `Generic` prefix for now; renaming is a separate step
 
-use std::cell::Cell;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::Mutex;
 
 use smallvec::SmallVec;
 
@@ -156,11 +156,17 @@ pub struct StallState {
 /// freeing the `Box<ParallelBranchRootFrame>` whose raw pointer the guard
 /// held.
 ///
-/// **Thread-safety**: the handle stays on the trampoline thread that
-/// originated the dispatch. Cell fields are interior-mutable but not Sync;
-/// EvalFrameGuard pushes a thread-local frame-chain entry whose pop MUST
-/// happen on the same thread. Since the continuation stack is per-trampoline
-/// invocation and never moves across threads, this is sound.
+/// **Thread-safety**: the handle is `Send + Sync` so it can be wrapped in
+/// `Arc<ParallelDispatchHandle>` and registered with the global GC
+/// `ROOT_REGISTRY` as a `RootProvider`. This is REQUIRED for correctness:
+/// worker branches (running on the eval work-pool) write their results
+/// into `results[slot]` between parent pump-ticks. The parent's
+/// `frame_chain` registration is thread-local and invisible to GC pool
+/// workers running on different threads; without the global root provider,
+/// a GC cycle triggered while the parent is parked on `cvar.wait_timeout`
+/// would not see the worker writes → mark-sweep frees them → SIGSEGV /
+/// SIGBUS on next dereference. The Sync requirement is satisfied by using
+/// `AtomicU64` / `Mutex` for the previously-`Cell` fields.
 pub struct ParallelDispatchHandle {
     /// Per-branch result slots: `Arc<Mutex<Vec<Option<Vec<BoundValue>>>>>`.
     /// Each spawned branch closure writes its slot when complete.
@@ -197,9 +203,17 @@ pub struct ParallelDispatchHandle {
     /// Snapshot of the global allocation counter at the start of the
     /// last cooperative GC drop. Used by the WaitForParallel pump to gate
     /// periodic guard drops.
-    pub started_at_alloc_count: Cell<u64>,
-    /// Per-call stall-detection state.
-    pub stall_state: Cell<StallState>,
+    pub started_at_alloc_count: AtomicU64,
+    /// Per-call stall-detection state. Mutex contention is zero in
+    /// practice: only the pump-driver thread reads/writes this.
+    pub stall_state: Mutex<StallState>,
+    /// Strong reference to the GC root provider registered with the
+    /// global `ROOT_REGISTRY` at dispatch construction. Drops when the
+    /// handle drops (on the trampoline thread), at which point the
+    /// `Weak` in the registry is auto-pruned on the next root walk.
+    /// See `ParallelDispatchRootProvider`'s doc for the race this closes.
+    #[allow(dead_code)]
+    pub(crate) _root_provider_arc: Arc<ParallelDispatchRootProvider>,
 }
 
 impl std::fmt::Debug for ParallelDispatchHandle {
@@ -207,8 +221,52 @@ impl std::fmt::Debug for ParallelDispatchHandle {
         f.debug_struct("ParallelDispatchHandle")
             .field("num_branches", &self.num_branches)
             .field("remaining", &self.remaining.load(std::sync::atomic::Ordering::Relaxed))
-            .field("stall_state", &self.stall_state.get())
+            .field("stall_state", &self.stall_state.lock().ok().map(|g| *g))
             .finish()
+    }
+}
+
+/// GC root provider for an active parallel-dispatch.
+///
+/// Holds only the Send+Sync portion of `ParallelDispatchHandle` (the
+/// `results` Mutex). Registered with the global `ROOT_REGISTRY` at
+/// dispatch creation; kept alive by `WaitForParallel._root_provider`
+/// for the dispatch's lifetime.
+///
+/// **Why a separate struct instead of `impl RootProvider for
+/// ParallelDispatchHandle`**: `ParallelDispatchHandle` contains
+/// `_root_guard: EvalFrameGuard`, which is `!Sync` because it holds a
+/// raw pointer into the thread-local frame_chain that MUST be popped on
+/// the same thread that pushed it. Making the handle `Send + Sync` and
+/// wrapping it in `Arc` would let the GC pool worker (different thread)
+/// hold the last strong reference and run `Drop` cross-thread → wrong
+/// frame_chain popped → memory corruption. Separating the GC-visible
+/// data (`results` Arc — already Sync) keeps thread-bound state on the
+/// trampoline thread while still exposing roots to mark-sweep.
+///
+/// **Why `try_lock` (not `lock`)**: if a worker holds `results` while
+/// writing, the worker is by construction holding its `EvalGuard`, so
+/// `ACTIVE_EVALUATORS >= 1`, so quiescent mark-sweep GC cannot start.
+/// Roots skipped during that exact moment are guaranteed-safe to skip —
+/// the worker's `EvalGuard` already inhibits the collection that would
+/// otherwise observe a stale snapshot.
+#[derive(Debug)]
+pub struct ParallelDispatchRootProvider {
+    pub(crate) results: super::eval_loop::ParallelEvalResults,
+}
+
+impl crate::backend::models::gc_allocator::RootProvider for ParallelDispatchRootProvider {
+    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        if let Ok(guard) = self.results.try_lock() {
+            for slot in guard.iter().flatten() {
+                for (v, bindings) in slot.iter() {
+                    roots.push(*v);
+                    for (_, bound) in bindings.iter() {
+                        roots.push(*bound);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -228,8 +286,11 @@ pub struct ParallelCollapseDispatchHandle {
     #[allow(dead_code)]
     pub(crate) root_frame: Box<super::eval_loop::ParallelCollapseRootFrame>,
     pub _root_guard: Option<EvalFrameGuard>,
-    pub started_at_alloc_count: Cell<u64>,
-    pub stall_state: Cell<StallState>,
+    pub started_at_alloc_count: AtomicU64,
+    pub stall_state: Mutex<StallState>,
+    /// See `ParallelDispatchHandle::_root_provider_arc`.
+    #[allow(dead_code)]
+    pub(crate) _root_provider_arc: Arc<ParallelCollapseRootProvider>,
 }
 
 impl std::fmt::Debug for ParallelCollapseDispatchHandle {
@@ -237,8 +298,31 @@ impl std::fmt::Debug for ParallelCollapseDispatchHandle {
         f.debug_struct("ParallelCollapseDispatchHandle")
             .field("num_branches", &self.num_branches)
             .field("remaining", &self.remaining.load(std::sync::atomic::Ordering::Relaxed))
-            .field("stall_state", &self.stall_state.get())
+            .field("stall_state", &self.stall_state.lock().ok().map(|g| *g))
             .finish()
+    }
+}
+
+/// GC root provider for an active parallel-collapse dispatch. See
+/// `ParallelDispatchRootProvider` for the design rationale (the same
+/// reasoning applies — collapse handles also carry `EvalFrameGuard`).
+#[derive(Debug)]
+pub struct ParallelCollapseRootProvider {
+    pub(crate) results: super::eval_loop::ParallelEvalResults,
+}
+
+impl crate::backend::models::gc_allocator::RootProvider for ParallelCollapseRootProvider {
+    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        if let Ok(guard) = self.results.try_lock() {
+            for slot in guard.iter().flatten() {
+                for (v, bindings) in slot.iter() {
+                    roots.push(*v);
+                    for (_, bound) in bindings.iter() {
+                        roots.push(*bound);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -845,6 +929,9 @@ pub enum Continuation {
     /// no C-stack growth across ticks regardless of `MAX_PARALLEL_DEPTH`.
     WaitForParallel {
         /// Per-call state for the dispatch (shared via Arc with workers).
+        /// The handle's `_root_provider_arc` keeps a GC root provider
+        /// alive for the dispatch's lifetime; see
+        /// `ParallelDispatchRootProvider` for the race it closes.
         handle: ParallelDispatchHandle,
         /// How to merge per-branch results into `base_results`.
         merge_mode: ParallelMergeMode,
@@ -871,6 +958,9 @@ pub enum Continuation {
     /// **Stack-safety mandate (2026-05-15)**: wait state for a trampolinized
     /// parallel-collapse dispatch. Mirrors `WaitForParallel`.
     WaitForParallelCollapse {
+        /// The handle's `_root_provider_arc` keeps a GC root provider
+        /// alive for the dispatch's lifetime; see
+        /// `ParallelCollapseRootProvider`.
         handle: ParallelCollapseDispatchHandle,
         merge_mode: CollapseMergeMode,
         /// The original items being collapsed (preserved for safepoint roots

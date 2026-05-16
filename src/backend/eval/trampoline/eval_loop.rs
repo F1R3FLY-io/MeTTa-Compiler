@@ -21,7 +21,7 @@
 //! with arena-allocated `MettaValue` values.
 
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -1762,8 +1762,22 @@ fn parallel_dispatch(
         );
     }
 
-    let started_at_alloc_count = std::cell::Cell::new(
+    let started_at_alloc_count = AtomicU64::new(
         crate::backend::models::alloc_count_snapshot(),
+    );
+
+    // Register a GC root provider for this dispatch. Closes the
+    // worker-write vs GC-pool-walker race (workers write into
+    // `results[slot]` between parent pump-ticks; the parent's
+    // thread-local `frame_chain` is invisible to GC pool workers on
+    // other threads). The Arc stays alive while the handle does;
+    // dropping the handle on the trampoline thread frees the provider
+    // and the Weak in ROOT_REGISTRY is auto-pruned on next root walk.
+    let root_provider = Arc::new(crate::backend::eval::trampoline::types::ParallelDispatchRootProvider {
+        results: Arc::clone(&results),
+    });
+    crate::backend::models::gc_allocator::register_root_provider(
+        &(Arc::clone(&root_provider) as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
     );
 
     ParallelDispatchHandle {
@@ -1775,7 +1789,8 @@ fn parallel_dispatch(
         root_frame,
         _root_guard: Some(root_guard),
         started_at_alloc_count,
-        stall_state: std::cell::Cell::new(StallState::default()),
+        stall_state: Mutex::new(StallState::default()),
+        _root_provider_arc: root_provider,
     }
 }
 
@@ -1854,11 +1869,11 @@ fn pump_parallel_wait(
         && handle.remaining.load(Ordering::Acquire) > 0
     {
         let current_allocs = crate::backend::models::alloc_count_snapshot();
-        let last = handle.started_at_alloc_count.get();
+        let last = handle.started_at_alloc_count.load(Ordering::Relaxed);
         let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
         let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
         if gc_pending || delta_crossed {
-            handle.started_at_alloc_count.set(current_allocs);
+            handle.started_at_alloc_count.store(current_allocs, Ordering::Relaxed);
 
             let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
             crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
@@ -1891,7 +1906,7 @@ fn pump_parallel_wait(
 
     // (4) Stall detection + overflow spawn — state in `handle.stall_state`.
     let curr_remaining = handle.remaining.load(Ordering::Acquire);
-    let mut stall_state = handle.stall_state.get();
+    let mut stall_state = handle.stall_state.lock().expect("stall_state mutex poisoned");
     if curr_remaining > 0 && curr_remaining == stall_state.prev_remaining {
         stall_state.stall_count += 1;
         if stall_state.stall_count >= 20 && !stall_state.overflow_requested {
@@ -1908,7 +1923,6 @@ fn pump_parallel_wait(
         stall_state.stall_count = 0;
     }
     stall_state.prev_remaining = curr_remaining;
-    handle.stall_state.set(stall_state);
 }
 
 
@@ -1949,11 +1963,11 @@ fn pump_parallel_collapse_wait(
         && handle.remaining.load(Ordering::Acquire) > 0
     {
         let current_allocs = crate::backend::models::alloc_count_snapshot();
-        let last = handle.started_at_alloc_count.get();
+        let last = handle.started_at_alloc_count.load(Ordering::Relaxed);
         let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
         let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
         if gc_pending || delta_crossed {
-            handle.started_at_alloc_count.set(current_allocs);
+            handle.started_at_alloc_count.store(current_allocs, Ordering::Relaxed);
 
             let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
             crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
@@ -1986,7 +2000,7 @@ fn pump_parallel_collapse_wait(
 
     // (3) Stall detection + overflow.
     let curr_remaining = handle.remaining.load(Ordering::Acquire);
-    let mut stall_state = handle.stall_state.get();
+    let mut stall_state = handle.stall_state.lock().expect("stall_state mutex poisoned");
     if curr_remaining > 0 && curr_remaining == stall_state.prev_remaining {
         stall_state.stall_count += 1;
         if stall_state.stall_count >= 20 && !stall_state.overflow_requested {
@@ -2001,7 +2015,6 @@ fn pump_parallel_collapse_wait(
         stall_state.stall_count = 0;
     }
     stall_state.prev_remaining = curr_remaining;
-    handle.stall_state.set(stall_state);
 }
 
 /// **Stack-safety mandate (2026-05-15)**: non-blocking collapse-dispatch.
@@ -2130,6 +2143,15 @@ fn parallel_collapse_dispatch(
         );
     }
 
+    // Register a GC root provider for this dispatch.
+    // See `parallel_dispatch` for the rationale and lifetime invariants.
+    let root_provider = Arc::new(crate::backend::eval::trampoline::types::ParallelCollapseRootProvider {
+        results: Arc::clone(&results),
+    });
+    crate::backend::models::gc_allocator::register_root_provider(
+        &(Arc::clone(&root_provider) as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
+    );
+
     ParallelCollapseDispatchHandle {
         results,
         remaining,
@@ -2138,10 +2160,11 @@ fn parallel_collapse_dispatch(
         num_branches: num_items,
         root_frame,
         _root_guard: Some(root_guard),
-        started_at_alloc_count: std::cell::Cell::new(
+        started_at_alloc_count: AtomicU64::new(
             crate::backend::models::alloc_count_snapshot(),
         ),
-        stall_state: std::cell::Cell::new(StallState::default()),
+        stall_state: Mutex::new(StallState::default()),
+        _root_provider_arc: root_provider,
     }
 }
 

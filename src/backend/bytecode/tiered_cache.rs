@@ -30,7 +30,7 @@
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::backend::models::{register_root_provider, RootProvider};
 
@@ -56,6 +56,25 @@ static JIT_DEBUG: OnceLock<bool> = OnceLock::new();
 
 fn is_jit_debug() -> bool {
     *JIT_DEBUG.get_or_init(|| std::env::var("METTATRON_JIT_DEBUG").is_ok())
+}
+
+/// Process-persistent JIT compiler.
+///
+/// `JitCompiler` owns the `cranelift_jit::JITModule` whose mmap'd
+/// executable pages back every `NativeCode.ptr` stored in
+/// `ExprCompilationState::{jit1_code,jit2_code}`. Because those
+/// `NativeCode` entries live in `OnceLock` (write-once, never replaced)
+/// for the lifetime of the process, the compiler MUST outlive them — so
+/// it is process-static. Dropping it would call `JITModule::drop` →
+/// `munmap` the pages → every cached `NativeCode.ptr` would dangle →
+/// SIGILL on next dispatch.
+///
+/// `Mutex` is acceptable here: JIT compilation runs only on the
+/// background `global_compile_pool()` (not on the eval hot path) and
+/// is infrequent (hot-expression threshold).
+fn global_jit_compiler() -> &'static Mutex<Option<JitCompiler>> {
+    static COMPILER: OnceLock<Mutex<Option<JitCompiler>>> = OnceLock::new();
+    COMPILER.get_or_init(|| Mutex::new(None))
 }
 
 /// Threshold to trigger bytecode compilation (after 5 executions).
@@ -304,6 +323,16 @@ impl From<u8> for TierStatusKind {
 /// Native code representation for JIT-compiled functions
 ///
 /// Wraps a function pointer with size information for memory tracking.
+///
+/// SAFETY INVARIANT: `ptr` is only valid for the lifetime of the
+/// `JitCompiler` that produced it. The compiler owns the
+/// `cranelift_jit::JITModule` whose mmap'd executable pages `ptr`
+/// points into; dropping the compiler calls `JITModule::drop` which
+/// `munmap`s those pages, leaving `ptr` dangling. To uphold this
+/// invariant, every `NativeCode` stored in the tiered cache is
+/// produced by the process-static `global_jit_compiler()`, which is
+/// never dropped. Do NOT construct a `NativeCode` from a `JitCompiler`
+/// with a shorter lifetime.
 #[derive(Clone)]
 pub struct NativeCode {
     /// Pointer to JIT-compiled native code
@@ -312,8 +341,10 @@ pub struct NativeCode {
     pub code_size: usize,
 }
 
-// Safety: Native code pointers are safe to send between threads
-// as they point to read-only executable memory
+// SAFETY: `ptr` points into the mmap owned by the process-static
+// `global_jit_compiler()` (see SAFETY INVARIANT on `NativeCode`),
+// which never drops; therefore the pointer is valid for the process
+// lifetime and is safe to share across threads.
 unsafe impl Send for NativeCode {}
 unsafe impl Sync for NativeCode {}
 
@@ -1244,46 +1275,64 @@ impl TieredCache {
             // otherwise falls back to non-profiled compilation.
             let _profile = profile_snapshot; // Available for future JIT optimizations
 
-            // Create JIT compiler and compile
-            match JitCompiler::new() {
-                Ok(mut compiler) => match compiler.compile(&chunk) {
-                    Ok(ptr) => {
-                        let code = NativeCode {
-                            ptr,
-                            code_size: chunk.len() * 8, // Rough estimate
-                        };
-                        state_clone.set_jit1_ready(Arc::new(code));
-                        #[cfg(feature = "track-stats")]
-                        global_tiered_cache()
-                            .jit1_compilations_completed
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        if is_jit_debug() {
-                            eprintln!("[JIT1] Compile failed for '{}': {:?}", chunk.name(), e);
+            // Compile using the process-persistent JIT compiler. The
+            // compiler outlives every cached NativeCode.ptr; dropping
+            // it would munmap the executable pages and cause SIGILL on
+            // the next dispatch (see global_jit_compiler() doc).
+            let compile_result = {
+                let mut guard = global_jit_compiler()
+                    .lock()
+                    .expect("JIT compiler mutex poisoned");
+                let compiler = match guard.as_mut() {
+                    Some(c) => c,
+                    None => match JitCompiler::new() {
+                        Ok(c) => {
+                            *guard = Some(c);
+                            guard.as_mut().expect("just inserted")
                         }
-                        state_clone.set_jit1_failed();
-                        #[cfg(feature = "track-stats")]
-                        {
-                            let cache = global_tiered_cache();
-                            cache.jit1_failures_codegen.fetch_add(1, Ordering::Relaxed);
-                            cache
-                                .jit1_compilations_failed
-                                .fetch_add(1, Ordering::Relaxed);
+                        Err(e) => {
+                            if is_jit_debug() {
+                                eprintln!("[JIT1] Compiler init failed: {:?}", e);
+                            }
+                            state_clone.set_jit1_failed();
+                            #[cfg(feature = "track-stats")]
+                            {
+                                let cache = global_tiered_cache();
+                                cache
+                                    .jit1_failures_compiler_init
+                                    .fetch_add(1, Ordering::Relaxed);
+                                cache
+                                    .jit1_compilations_failed
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            return;
                         }
-                    }
-                },
+                    },
+                };
+                compiler.compile(&chunk)
+            };
+
+            match compile_result {
+                Ok(ptr) => {
+                    let code = NativeCode {
+                        ptr,
+                        code_size: chunk.len() * 8, // Rough estimate
+                    };
+                    state_clone.set_jit1_ready(Arc::new(code));
+                    #[cfg(feature = "track-stats")]
+                    global_tiered_cache()
+                        .jit1_compilations_completed
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 Err(e) => {
                     if is_jit_debug() {
-                        eprintln!("[JIT1] Compiler init failed: {:?}", e);
+                        eprintln!("[JIT1] Compile failed for '{}': {:?}", chunk.name(), e);
                     }
                     state_clone.set_jit1_failed();
                     #[cfg(feature = "track-stats")]
                     {
                         let cache = global_tiered_cache();
-                        cache
-                            .jit1_failures_compiler_init
-                            .fetch_add(1, Ordering::Relaxed);
+                        cache.jit1_failures_codegen.fetch_add(1, Ordering::Relaxed);
                         cache
                             .jit1_compilations_failed
                             .fetch_add(1, Ordering::Relaxed);
@@ -1423,50 +1472,69 @@ impl TieredCache {
                 return;
             }
 
-            // Create JIT compiler and compile. Stage 2 currently reuses the
-            // same Cranelift codegen path as Stage 1; tier promotion is driven
-            // by `TieredCache`'s hot-expression hit-count threshold, not by
-            // distinct codegen passes. Stage-2-specific aggressive inlining
-            // is future work tracked by the bytecode/jit perf roadmap.
-            match JitCompiler::new() {
-                Ok(mut compiler) => match compiler.compile(&chunk) {
-                    Ok(ptr) => {
-                        let code = NativeCode {
-                            ptr,
-                            code_size: chunk.len() * 10, // Stage 2 generates more code
-                        };
-                        state_clone.set_jit2_ready(Arc::new(code));
-                        #[cfg(feature = "track-stats")]
-                        global_tiered_cache()
-                            .jit2_compilations_completed
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        if is_jit_debug() {
-                            eprintln!("[JIT2] Compile failed for '{}': {:?}", chunk.name(), e);
+            // Compile using the process-persistent JIT compiler. The
+            // compiler outlives every cached NativeCode.ptr; dropping
+            // it would munmap the executable pages and cause SIGILL on
+            // the next dispatch (see global_jit_compiler() doc). Stage
+            // 2 currently reuses the same Cranelift codegen path as
+            // Stage 1; tier promotion is driven by `TieredCache`'s
+            // hot-expression hit-count threshold, not by distinct
+            // codegen passes. Stage-2-specific aggressive inlining is
+            // future work tracked by the bytecode/jit perf roadmap.
+            let compile_result = {
+                let mut guard = global_jit_compiler()
+                    .lock()
+                    .expect("JIT compiler mutex poisoned");
+                let compiler = match guard.as_mut() {
+                    Some(c) => c,
+                    None => match JitCompiler::new() {
+                        Ok(c) => {
+                            *guard = Some(c);
+                            guard.as_mut().expect("just inserted")
                         }
-                        state_clone.set_jit2_failed();
-                        #[cfg(feature = "track-stats")]
-                        {
-                            let cache = global_tiered_cache();
-                            cache.jit2_failures_codegen.fetch_add(1, Ordering::Relaxed);
-                            cache
-                                .jit2_compilations_failed
-                                .fetch_add(1, Ordering::Relaxed);
+                        Err(e) => {
+                            if is_jit_debug() {
+                                eprintln!("[JIT2] Compiler init failed: {:?}", e);
+                            }
+                            state_clone.set_jit2_failed();
+                            #[cfg(feature = "track-stats")]
+                            {
+                                let cache = global_tiered_cache();
+                                cache
+                                    .jit2_failures_compiler_init
+                                    .fetch_add(1, Ordering::Relaxed);
+                                cache
+                                    .jit2_compilations_failed
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            return;
                         }
-                    }
-                },
+                    },
+                };
+                compiler.compile(&chunk)
+            };
+
+            match compile_result {
+                Ok(ptr) => {
+                    let code = NativeCode {
+                        ptr,
+                        code_size: chunk.len() * 10, // Stage 2 generates more code
+                    };
+                    state_clone.set_jit2_ready(Arc::new(code));
+                    #[cfg(feature = "track-stats")]
+                    global_tiered_cache()
+                        .jit2_compilations_completed
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 Err(e) => {
                     if is_jit_debug() {
-                        eprintln!("[JIT2] Compiler init failed: {:?}", e);
+                        eprintln!("[JIT2] Compile failed for '{}': {:?}", chunk.name(), e);
                     }
                     state_clone.set_jit2_failed();
                     #[cfg(feature = "track-stats")]
                     {
                         let cache = global_tiered_cache();
-                        cache
-                            .jit2_failures_compiler_init
-                            .fetch_add(1, Ordering::Relaxed);
+                        cache.jit2_failures_codegen.fetch_add(1, Ordering::Relaxed);
                         cache
                             .jit2_compilations_failed
                             .fetch_add(1, Ordering::Relaxed);

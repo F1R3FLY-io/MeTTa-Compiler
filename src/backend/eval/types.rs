@@ -1220,27 +1220,6 @@ pub fn is_meta_type(name: &str) -> bool {
     )
 }
 
-/// Check if a type is an IO monad type: `(IO X)`.
-/// Delegates to `MettaValueTrait::is_io_type()` which uses the monad registry.
-#[inline]
-pub fn is_io_type<V: MettaValueTrait>(typ: &V) -> bool {
-    typ.is_io_type()
-}
-
-/// Check if a type is any monadic effect type: `(IO X)`, `(StateMonad X)`, etc.
-/// Delegates to `MettaValueTrait::is_monadic_type()` which uses the monad registry.
-#[inline]
-pub fn is_monadic_type<V: MettaValueTrait>(typ: &V) -> bool {
-    typ.is_monadic_type()
-}
-
-/// Check if a type is an arrow returning any monadic type: `(-> ... (IO X))`, `(-> ... (StateMonad X))`.
-/// Delegates to `MettaValueTrait::is_arrow_returning_monadic()` which uses the monad registry.
-#[inline]
-pub fn is_arrow_returning_monadic<V: MettaValueTrait>(typ: &V) -> bool {
-    typ.is_arrow_returning_monadic()
-}
-
 /// Wrap each type in `(IO ...)` unless already monadic-wrapped.
 fn wrap_types_in_io<V, F>(types: &[V], factory: &F) -> Vec<V>
 where
@@ -1257,23 +1236,6 @@ where
             }
         })
         .collect()
-}
-
-/// Check if a type is an arrow type returning IO: `(-> ... (IO X))`.
-/// Delegates to `MettaValueTrait::is_arrow_returning_monadic()` for IO specifically.
-#[inline]
-pub fn is_arrow_returning_io<V: MettaValueTrait>(typ: &V) -> bool {
-    // For backwards compatibility, check arrow returning specifically IO
-    if let Some(items) = typ.as_sexpr() {
-        if items.len() > 1 {
-            if let Some(head) = items[0].as_atom() {
-                if head == "->" {
-                    return items[items.len() - 1].is_io_type();
-                }
-            }
-        }
-    }
-    false
 }
 
 /// Bidirectional type matching with variable binding.
@@ -1471,47 +1433,84 @@ where
 /// - `(List $t)` → `(List Number)`
 /// - `(-> $t $u)` → `(-> Number Bool)`
 /// - Unbound variables remain as-is
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list.
+/// Audit item T2.4. Was recursive on SExpr children; deeply-nested type
+/// annotations (e.g., `(List (List (List $t)))` with 1000s of nesting levels)
+/// would overflow the stack.
 pub fn apply_type_bindings<V, F>(typ: &V, bindings: &HashMap<String, V>, factory: &F) -> V
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
-    // Variable atom: substitute if bound
-    if let Some(name) = typ.as_atom() {
-        if name.starts_with('$') {
-            if let Some(bound) = bindings.get(name) {
-                return bound.clone();
-            }
-        }
-        return typ.clone();
+    enum Work<V> {
+        Process(V),
+        BuildSExpr(usize),
     }
 
-    // Type wrapper: recurse into inner
-    if typ.is_type() {
-        if let Some(inner) = typ.as_type() {
-            if let Some(name) = inner.as_atom() {
-                if name.starts_with('$') {
-                    if let Some(bound) = bindings.get(name) {
-                        return bound.clone();
+    let mut work_stack: Vec<Work<V>> = Vec::with_capacity(8);
+    let mut result_stack: Vec<V> = Vec::with_capacity(8);
+
+    work_stack.push(Work::Process(typ.clone()));
+
+    while let Some(w) = work_stack.pop() {
+        match w {
+            Work::Process(t) => {
+                // Variable atom: substitute if bound.
+                if let Some(name) = t.as_atom() {
+                    if name.starts_with('$') {
+                        if let Some(bound) = bindings.get(name) {
+                            result_stack.push(bound.clone());
+                            continue;
+                        }
                     }
+                    result_stack.push(t);
+                    continue;
                 }
+
+                // Type wrapper: substitute inner variable atoms but don't
+                // recurse — original code didn't recurse into Type either.
+                if t.is_type() {
+                    if let Some(inner) = t.as_type() {
+                        if let Some(name) = inner.as_atom() {
+                            if name.starts_with('$') {
+                                if let Some(bound) = bindings.get(name) {
+                                    result_stack.push(bound.clone());
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    result_stack.push(t);
+                    continue;
+                }
+
+                // S-expression: process children, then BuildSExpr will
+                // collect them and call try_reduce_type_expr.
+                if let Some(items) = t.as_sexpr() {
+                    let len = items.len();
+                    work_stack.push(Work::BuildSExpr(len));
+                    for item in items.iter().rev() {
+                        work_stack.push(Work::Process(item.clone()));
+                    }
+                    continue;
+                }
+
+                // Ground types, errors, etc.: return as-is.
+                result_stack.push(t);
+            }
+            Work::BuildSExpr(count) => {
+                let start = result_stack.len() - count;
+                let parts: Vec<V> = result_stack.drain(start..).collect();
+                let result = factory.sexpr(parts);
+                let reduced = try_reduce_type_expr(&result, factory);
+                result_stack.push(reduced);
             }
         }
-        return typ.clone();
     }
 
-    // S-expression: recurse into all children, then try to reduce grounded ops
-    if let Some(items) = typ.as_sexpr() {
-        let substituted: Vec<V> = items
-            .iter()
-            .map(|item| apply_type_bindings(item, bindings, factory))
-            .collect();
-        let result = factory.sexpr(substituted);
-        return try_reduce_type_expr(&result, factory);
-    }
-
-    // Ground types, errors, etc.: return as-is
-    typ.clone()
+    result_stack
+        .pop()
+        .expect("apply_type_bindings: empty result stack")
 }
 
 /// Freshen type variables in a type expression to prevent cross-contamination.
@@ -1522,25 +1521,55 @@ where
 ///
 /// The double-underscore separator (`__`) avoids collisions with user-defined
 /// type variable names (which don't conventionally use `__`).
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list.
+/// Audit item T2.5.
 pub fn freshen_type_variables<V, F>(typ: &V, index: usize, factory: &F) -> V
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
-    if let Some(name) = typ.as_atom() {
-        if name.starts_with('$') {
-            return factory.atom(&format!("{}__{}", name, index));
+    enum Work<V> {
+        Process(V),
+        BuildSExpr(usize),
+    }
+
+    let mut work_stack: Vec<Work<V>> = Vec::with_capacity(8);
+    let mut result_stack: Vec<V> = Vec::with_capacity(8);
+
+    work_stack.push(Work::Process(typ.clone()));
+
+    while let Some(w) = work_stack.pop() {
+        match w {
+            Work::Process(t) => {
+                if let Some(name) = t.as_atom() {
+                    if name.starts_with('$') {
+                        result_stack.push(factory.atom(&format!("{}__{}", name, index)));
+                    } else {
+                        result_stack.push(t);
+                    }
+                    continue;
+                }
+                if let Some(items) = t.as_sexpr() {
+                    let len = items.len();
+                    work_stack.push(Work::BuildSExpr(len));
+                    for item in items.iter().rev() {
+                        work_stack.push(Work::Process(item.clone()));
+                    }
+                    continue;
+                }
+                result_stack.push(t);
+            }
+            Work::BuildSExpr(count) => {
+                let start = result_stack.len() - count;
+                let parts: Vec<V> = result_stack.drain(start..).collect();
+                result_stack.push(factory.sexpr(parts));
+            }
         }
-        return typ.clone();
     }
-    if let Some(items) = typ.as_sexpr() {
-        let freshened: Vec<V> = items
-            .iter()
-            .map(|item| freshen_type_variables(item, index, factory))
-            .collect();
-        return factory.sexpr(freshened);
-    }
-    typ.clone()
+
+    result_stack
+        .pop()
+        .expect("freshen_type_variables: empty result stack")
 }
 
 /// Infer an arrow type from a rule definition `(= (f params...) rhs)` (Phase 10.4).

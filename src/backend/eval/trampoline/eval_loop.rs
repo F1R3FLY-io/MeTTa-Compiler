@@ -194,7 +194,7 @@ use super::engine::{
     try_deferred_deterministic_chain, try_match_all_rules, DeferredChainResult, SwitchResult,
 };
 use super::types::{
-    bv, bv_with, bvs_from_values, empty_shared_bindings, values_of, BoundValue, Continuation,
+    bv, bv_with, empty_shared_bindings, values_of, BoundValue, Continuation,
     EvalResult, SharedBindings, WorkItem,
 };
 use crate::backend::models::gc_allocator::RootProvider;
@@ -218,7 +218,7 @@ use super::dispatch_hints::{
     clear_operator_cache, collect_eval_memo_roots, collect_match_result_roots,
     derive_arg_expected_type, enter_fork_scope, eval_memo_get, eval_memo_put,
     increment_mutation_epoch, is_memoized_normal_form, is_normal_form_bounded, leave_fork_scope,
-    memoize_normal_form, mutation_epoch, next_branch_scope, set_mutation_epoch, should_memoize,
+    memoize_normal_form, mutation_epoch, next_branch_scope, set_mutation_epoch,
     should_memoize_with_env,
 };
 use super::dispatch_hints::{is_embedded_kernel_op, is_reducible_head};
@@ -311,22 +311,43 @@ const DEPTH_QUOTA_PERCENTS: [u32; MAX_DEPTH_LEVELS] = [50, 30, 15, 5, 0, 0, 0, 0
 struct DepthBudgets {
     /// Budget counters per depth level. Index = min(depth, MAX_DEPTH_LEVELS-1).
     quotas: [AtomicU32; MAX_DEPTH_LEVELS],
-    /// Total budget across all levels (for diagnostics).
+    /// Total budget across all levels (kept for future diagnostics; not
+    /// currently consumed).
+    #[allow(dead_code)]
     total: u32,
 }
 
 static DEPTH_BUDGETS: OnceLock<DepthBudgets> = OnceLock::new();
 
-/// Maximum parallel nesting depth, cached from `METTATRON_MAX_PARALLEL_DEPTH`.
+/// CPU-fanout budget for nondeterministic branch dispatch.
 ///
-/// Default: 3. Set to 0 to disable parallel branching entirely.
+/// **Renamed 2026-05-15** from `MAX_PARALLEL_DEPTH` to clarify intent:
+/// after the stack-safety trampolinization (Phases 1-5 of the mandate plan),
+/// this cap bounds the **parallelism degree** of branch fan-out, NOT the
+/// stack. C-stack depth in the parallel-dispatch path is now bounded by a
+/// small constant independent of this knob.
+///
+/// Higher values increase potential CPU parallelism but contend for the
+/// work-pool's fixed thread count; default `3` is a reasonable balance for
+/// typical workloads. Set to `0` to disable parallel branching entirely
+/// (forces all dispatch sequential).
+///
+/// Cached from `METTATRON_PARALLEL_FANOUT_DEPTH` (preferred name) with
+/// fallback to `METTATRON_MAX_PARALLEL_DEPTH` for backwards compatibility.
 static MAX_PARALLEL_DEPTH: OnceLock<u32> = OnceLock::new();
 
 fn max_parallel_depth() -> u32 {
     *MAX_PARALLEL_DEPTH.get_or_init(|| {
-        std::env::var("METTATRON_MAX_PARALLEL_DEPTH")
+        // Preferred name (post-2026-05-15 stack-safety refactor).
+        std::env::var("METTATRON_PARALLEL_FANOUT_DEPTH")
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
+            // Backwards-compat alias.
+            .or_else(|| {
+                std::env::var("METTATRON_MAX_PARALLEL_DEPTH")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+            })
             .unwrap_or(3)
     })
 }
@@ -978,37 +999,35 @@ fn dispatch_rule_matches<C: EvalContext>(
             .into_iter()
             .map(|branch| (branch, empty_shared_bindings()))
             .collect();
-        let results = parallel_branch_eval(
+
+        // **Stack-safety mandate (2026-05-15)**: dispatch is non-blocking;
+        // the wait + merge happens in the trampolinized `WaitForParallel`
+        // arm. See feedback-stack-safety-mandate in user memory.
+        let stable_branches_snapshot = std::sync::Arc::new(branches.clone());
+        let handle = parallel_dispatch(
             branches,
             metta_env,
             actual_budget_acquired,
             current_depth,
             dispatch_demand,
         );
-
-        // Phase 2 Part A: results now carry per-branch bindings. Compose each
-        // with outer_carrying if present; otherwise use branch bindings as-is.
-        let mut merged = base_results;
-        if outer_carrying.is_empty() {
-            merged.extend(results.into_iter());
-        } else {
-            let oc = outer_carrying.clone();
-            merged.extend(results.into_iter().map(|(v, b)| {
-                if b.is_empty() {
-                    bv_with(v, oc.clone())
-                } else {
-                    let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
-                        &oc,
-                        &b,
-                        ctx.factory(),
-                    );
-                    bv_with(v, composed)
-                }
-            }));
-        }
-
+        let outer_carrying_arc: crate::backend::eval::trampoline::types::SharedBindings =
+            std::sync::Arc::new(outer_carrying.clone());
+        let env_for_resume = env.clone();
+        continuations.push(Continuation::WaitForParallel {
+            handle,
+            merge_mode: crate::backend::eval::trampoline::types::ParallelMergeMode::RuleMatch,
+            base_results,
+            outer_carrying: outer_carrying_arc,
+            env,
+            depth,
+            budget_acquired: actual_budget_acquired,
+            caller_depth: current_depth,
+            stable_branches_snapshot,
+        });
+        // Dummy Resume to fire the WaitForParallel arm on the next trampoline tick.
         work_stack.push(WorkItem::Resume {
-            result: (merged, env),
+            result: (SmallVec::new(), env_for_resume),
         });
     } else {
         // ── Sequential path: consume first match, push ProcessRuleMatches for rest ──
@@ -1297,7 +1316,9 @@ struct BindingCaptureFrame {
     /// Used to project match bindings to just the variables the caller
     /// cares about (keeps carried bindings small).
     tracked_vars: SmallVec<[&'static str; 4]>,
-    /// Fork depth at which the collapse-bind was entered.
+    /// Fork depth at which the collapse-bind was entered (kept for debug
+    /// and future depth-aware cancellation logic; not currently consumed).
+    #[allow(dead_code)]
     collapse_fork_depth: u32,
 }
 
@@ -1379,15 +1400,6 @@ fn capture_bindings_if_active(
     _match_bindings: &crate::backend::models::GenericBindings<MettaValue>,
 ) {
 }
-
-/// Stage 1b no-op: snapshots were replaced by BoundValue.1 propagation.
-#[inline]
-fn snapshot_bindings_for_results(_count: usize, _at_fork_depth: u32) {}
-
-/// Stage 1b no-op: branch-switch clearing was replaced by BoundValue.1
-/// propagation (each branch's bindings travel with its own result).
-#[inline]
-fn clear_current_bindings_for_new_branch() {}
 
 /// Encode bindings as an S-expression: `(Bindings ($var val) ...)`.
 /// Used by collapse-bind to pair each result with its captured bindings.
@@ -1495,17 +1507,18 @@ fn leave_fork() {
     });
 }
 
-type ParallelEvalResults = std::sync::Arc<std::sync::Mutex<Vec<Option<Vec<BoundValue>>>>>;
-type ParallelBranch = (MettaValue, SharedBindings);
+pub(crate) type ParallelEvalResults =
+    std::sync::Arc<std::sync::Mutex<Vec<Option<Vec<BoundValue>>>>>;
+pub(crate) type ParallelBranch = (MettaValue, SharedBindings);
 
-struct ParallelBranchRootFrame {
-    branches: Vec<ParallelBranch>,
-    results: ParallelEvalResults,
+pub(crate) struct ParallelBranchRootFrame {
+    pub(crate) branches: Vec<ParallelBranch>,
+    pub(crate) results: ParallelEvalResults,
 }
 
-struct ParallelCollapseRootFrame {
-    items: Vec<BoundValue>,
-    results: ParallelEvalResults,
+pub(crate) struct ParallelCollapseRootFrame {
+    pub(crate) items: Vec<BoundValue>,
+    pub(crate) results: ParallelEvalResults,
 }
 
 fn collect_bound_value_roots(out: &mut Vec<MettaValue>, value: &BoundValue) {
@@ -1544,45 +1557,54 @@ unsafe fn collect_parallel_collapse_frame_roots(data: *const (), out: &mut Vec<M
     collect_parallel_result_roots(&frame.results, out);
 }
 
-/// Evaluate nondeterministic branches in parallel via the work pool.
+/// **Stack-safety mandate (2026-05-15)**: Non-blocking parallel-dispatch.
 ///
-/// Uses scatter-gather: evaluate branch 0 locally, spawn branches 1..N
-/// to the eval pool, block-wait via condvar, merge results.
+/// Spawns all N branches to the work pool (NO inline branch-0) and returns
+/// immediately with a `ParallelDispatchHandle`. The caller pushes a
+/// `Continuation::WaitForParallel` to the heap-allocated continuation stack
+/// and yields to the trampoline outer loop, which pumps the wait one tick
+/// at a time without growing the C stack.
+///
+/// This replaces the old `parallel_branch_eval` synchronous wait + inline
+/// branch-0 + work-stealing-on-stack pattern that caused unbounded C-stack
+/// recursion (Robot.metta crash, PID 466461). See [[feedback-stack-safety-mandate]]
+/// in user memory.
 ///
 /// # Arguments
 /// - `branches`: Pre-instantiated RHS values (bindings already applied)
 /// - `env`: The evaluation environment (cloned per branch)
-/// - `budget_acquired`: Number of budget slots to release on completion
+/// - `budget_acquired`: Number of budget slots — released by the WaitForParallel
+///   arm on completion
+/// - `caller_depth`: Caller's `PARALLEL_BRANCH_DEPTH` snapshot (informational)
+/// - `demand`: Cancellation demand (e.g., `Exactly(1)` for `match-atom` fast-exit)
 ///
 /// # Returns
-/// Flat vector of all results from all branches, concatenated in branch order.
-/// Parallel evaluation of rule-match branches.
-///
-/// Phase 2 Part A fix (task #67): returns `Vec<BoundValue>` preserving
-/// per-branch bindings. Previously returned `Vec<MettaValue>` which
-/// dropped the evaluation-bindings from each branch — forcing callers to
-/// re-wrap everything with a single `outer_carrying` and losing the
-/// downstream binding-threading HE expects.
-fn parallel_branch_eval(
+/// `ParallelDispatchHandle` carrying all shared state. The handle owns the
+/// frame_chain registration via `_root_guard`, popped on drop.
+fn parallel_dispatch(
     branches: Vec<ParallelBranch>,
     env: crate::backend::environment::core::MettaEnvironment,
-    budget_acquired: u32,
+    // `budget_acquired` is threaded through the call sites and stored in
+    // `Continuation::WaitForParallel` so the WaitForParallel arm can release
+    // it on completion. The dispatch function itself doesn't use it (it's
+    // not the one releasing); keep the parameter for ABI consistency with
+    // the now-deleted `parallel_branch_eval`.
+    _budget_acquired: u32,
     caller_depth: u32,
     demand: crate::backend::eval::cesk::coroutine::Demand,
-) -> Vec<crate::backend::eval::trampoline::types::BoundValue> {
+) -> crate::backend::eval::trampoline::types::ParallelDispatchHandle {
     use std::sync::{Arc, Condvar, Mutex};
 
     use super::context::ParallelBranchContext;
-
-    type MettaValue = crate::backend::models::MettaValue;
+    use super::types::{ParallelDispatchHandle, StallState};
 
     let num_branches = branches.len();
     debug_assert!(
         num_branches >= 2,
-        "parallel_branch_eval requires at least 2 branches"
+        "parallel_dispatch requires at least 2 branches"
     );
 
-    // Trace: ParallelDispatch enter
+    // Trace: ParallelDispatch enter (lifted from parallel_branch_eval:1585-1607)
     #[cfg(feature = "trace")]
     {
         crate::backend::trace::with_trace_collector_ref(|tc| {
@@ -1607,19 +1629,13 @@ fn parallel_branch_eval(
         });
     }
 
-    // Pre-allocate result slots: Vec<Option<Vec<BoundValue>>>
-    // Phase 2 Part A: preserve per-branch evaluation bindings.
+    // **Stack-safety**: `remaining = num_branches` (all branches go to pool;
+    // no inline branch-0 means every spawned worker decrements). Previously
+    // `num_branches - 1` because branch-0 ran inline and didn't decrement.
     let results: ParallelEvalResults = Arc::new(Mutex::new(vec![None; num_branches]));
-    let remaining = Arc::new(AtomicU32::new((num_branches - 1) as u32));
+    let remaining = Arc::new(std::sync::atomic::AtomicU32::new(num_branches as u32));
     let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
 
-    // Cooperative-cancellation token. For `Demand::All`, this token never
-    // flips (`record_non_empty_branch` is a no-op early return), so the
-    // cancellation path is uniform across demand levels — no special-casing.
-    // For bounded demand (e.g. `Exactly(1)` from an outer `if` condition),
-    // the first non-empty branch flips `satisfied`; sibling workers observe
-    // it at their next safepoint via `ParallelBranchContext::should_safepoint`
-    // and bail by raising `BranchCancelled`.
     let cancel_token = Arc::new(crate::backend::eval::cesk::coroutine::CancelToken::new(
         demand,
     ));
@@ -1627,22 +1643,30 @@ fn parallel_branch_eval(
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
 
-    let parallel_root_frame = Box::new(ParallelBranchRootFrame {
+    // Allocate the root frame on the heap. The Box's address is registered
+    // with the frame_chain via push_custom; the resulting EvalFrameGuard is
+    // stored in `handle._root_guard` so the registration outlives this
+    // function and is popped only when the handle drops (i.e., when
+    // WaitForParallel is consumed at completion).
+    let root_frame = Box::new(ParallelBranchRootFrame {
         branches: branches.clone(),
         results: Arc::clone(&results),
     });
-    let _parallel_root_guard = unsafe {
+    let root_frame_ptr =
+        &*root_frame as *const ParallelBranchRootFrame as *const ();
+    // SAFETY: `root_frame` lives as long as the returned handle (stored
+    // inside it). The frame_chain entry is popped on `_root_guard` drop,
+    // which happens before `root_frame` (declaration order in the struct).
+    let root_guard = unsafe {
         crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
             crate::backend::eval::frame_chain::FrameLabel::Custom("parallel-branch"),
-            &*parallel_root_frame as *const ParallelBranchRootFrame as *const (),
+            root_frame_ptr,
             collect_parallel_branch_frame_roots,
         )
     };
 
-    // Spawn branches 1..N to the work pool via PriorityQueue.
-    // PriorityQueue provides instant condvar wakeup, priority levels, and
-    // adaptive worker scaling — purpose-built for MeTTaTron's scheduling.
-    for (slot, (branch_expr, branch_bindings)) in branches.iter().enumerate().skip(1) {
+    // Spawn ALL branches to the pool — including branch 0 (stack-safety mandate).
+    for (slot, (branch_expr, branch_bindings)) in branches.iter().enumerate() {
         let branch_expr = branch_expr.clone();
         let branch_bindings = branch_bindings.clone();
         let env = env.clone();
@@ -1651,8 +1675,7 @@ fn parallel_branch_eval(
         let done_pair = Arc::clone(&done_pair);
         let cancel_token = Arc::clone(&cancel_token);
 
-        // WFST classification: classify the branch expression for
-        // automata-based scheduling priority and weight tracking.
+        // WFST classification: same as the old parallel_branch_eval path.
         let scheduler = crate::backend::scheduler::global_scheduler();
         let (cost_class, _action) = scheduler.classify_and_transduce(&branch_expr);
         let head_str = match branch_expr.view() {
@@ -1675,36 +1698,17 @@ fn parallel_branch_eval(
         let descriptor =
             crate::backend::scheduler::TaskDescriptor::pack(head_hash, arity, depth_bucket, 0);
 
-        // WPDS Layer 3: compute effective priority using continuation context
         let ctx_hash = CONTINUATION_CONTEXT_HASH.with(|h| h.get());
         let effective_pri = scheduler.effective_priority(cost_class, ctx_hash);
 
         let closure = move || {
-            // Set depth for nested parallel branching. At depth >= MAX_PARALLEL_DEPTH,
-            // the gate falls through to sequential. Budget is scaled by 4^(-depth).
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
-
-            // I-8: Enter thread-local allocation region for contention-free allocation
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
-
-            // Track this parallel eval as active (prevents GC during evaluation)
             let _guard = EvalGuard::enter();
             let _demand_scope = DemandScope::enter(demand);
-
-            // H11 (2026-05-05): mark this thread as a parallel-branch worker
-            // so non-trampoline tiers (bytecode VM, JIT, grounded ops) can
-            // detect the context and surrender the EvalGuard cooperatively
-            // when GC is requested. MUST drop before _guard so the marker is
-            // cleared before the work-pool thread is reused for other tasks.
             let _worker_marker = WorkerEvalScope::enter();
             let _cache_root_refresh = crate::backend::eval::CacheRootRefreshGuard::new();
 
-            // catch_unwind boundary: cooperative cancellation arrives via
-            // `panic::resume_unwind(Box::new(BranchCancelled))` from
-            // `ParallelBranchContext::perform_safepoint` when a sibling
-            // worker satisfies the demand. We catch the marker here, leave
-            // `results[slot] = None`, decrement `remaining`, and exit
-            // cleanly. Other panic payloads bubble up to the work pool.
             let cancel_outer = Arc::clone(&cancel_token);
             let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let ctx = ParallelBranchContext::with_cancel(Arc::clone(&cancel_outer));
@@ -1713,11 +1717,6 @@ fn parallel_branch_eval(
 
             match unwind_result {
                 Ok((eval_results, _new_env)) => {
-                    // Eligibility predicate: a branch satisfies demand only
-                    // if it produced at least one non-empty result. Empty
-                    // results don't count under PLN's "if-not-empty"
-                    // pattern (`(if (not (== ... ())) ...)`). Calling
-                    // `record_non_empty_branch` is a no-op for `Demand::All`.
                     let any_non_empty = eval_results.iter().any(|bv| !bv.0.is_empty());
                     if any_non_empty {
                         cancel_token.record_non_empty_branch();
@@ -1726,16 +1725,10 @@ fn parallel_branch_eval(
                     guard[slot] = Some(eval_results.into_iter().collect());
                 }
                 Err(payload) => {
-                    // BranchCancelled marker → set slot to None and exit.
-                    // Any other panic is re-raised so the work pool reports
-                    // it (matches existing failure mode).
                     if payload
                         .downcast_ref::<crate::backend::eval::cesk::coroutine::BranchCancelled>()
                         .is_none()
                     {
-                        // Fold the result into a None slot before resuming
-                        // — sibling workers wait on `remaining`, so we
-                        // still need to decrement before unwinding.
                         let mut guard = results.lock().expect("results mutex poisoned");
                         guard[slot] = None;
                         drop(guard);
@@ -1747,13 +1740,11 @@ fn parallel_branch_eval(
                         }
                         std::panic::resume_unwind(payload);
                     }
-                    // Cancellation: leave slot None.
                     let mut guard = results.lock().expect("results mutex poisoned");
                     guard[slot] = None;
                 }
             }
 
-            // Decrement barrier; if last task, notify waiter
             if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
                 let (lock, cvar) = &*done_pair;
                 let mut done = lock.lock().expect("done mutex poisoned");
@@ -1771,383 +1762,299 @@ fn parallel_branch_eval(
         );
     }
 
-    // Evaluate branch 0 locally (avoids pool overhead for 1 task).
-    // Increment depth so any recursive MatchRules in this branch goes sequential.
-    // Wrap in catch_unwind so the local branch can also bail on cancellation.
-    let branch0_outcome: Option<
-        smallvec::SmallVec<[crate::backend::eval::trampoline::types::BoundValue; 2]>,
-    > = {
-        PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
-        let cancel_b0 = Arc::clone(&cancel_token);
-        let env_b0 = env.clone();
-        let branch0_expr = branches[0].0.clone();
-        let branch0_bindings = branches[0].1.clone();
-        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _demand_scope = DemandScope::enter(demand);
-            let ctx = ParallelBranchContext::with_cancel(Arc::clone(&cancel_b0));
-            eval_trampoline_with_carrying(branch0_expr, env_b0, &ctx, branch0_bindings)
-        }));
-        PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
-        match unwind {
-            Ok((eval_results, _new_env)) => {
-                let any_non_empty = eval_results.iter().any(|bv| !bv.0.is_empty());
-                if any_non_empty {
-                    cancel_token.record_non_empty_branch();
-                }
-                Some(eval_results)
-            }
-            Err(payload) => {
-                if payload
-                    .downcast_ref::<crate::backend::eval::cesk::coroutine::BranchCancelled>()
-                    .is_none()
-                {
-                    std::panic::resume_unwind(payload);
-                }
-                None
-            }
-        }
-    };
+    let started_at_alloc_count = std::cell::Cell::new(
+        crate::backend::models::alloc_count_snapshot(),
+    );
 
-    // Store branch 0 results (Phase 2 Part A: preserve bindings).
-    {
-        let mut guard = results.lock().expect("results mutex poisoned");
-        guard[0] = branch0_outcome.map(|r| r.into_iter().collect());
+    ParallelDispatchHandle {
+        results,
+        remaining,
+        done_pair,
+        cancel_token,
+        num_branches,
+        root_frame,
+        _root_guard: Some(root_guard),
+        started_at_alloc_count,
+        stall_state: std::cell::Cell::new(StallState::default()),
     }
-
-    // Trace: ParallelDispatch branch0-done
-    #[cfg(feature = "trace")]
-    {
-        crate::backend::trace::with_trace_collector_ref(|tc| {
-            tc.emit_converted(
-                trace_format::TraceTier::TreeWalker,
-                caller_depth,
-                trace_format::TraceValue::Unit,
-                vec![],
-                None,
-                trace_format::TraceEventKind::ParallelDispatch {
-                    branch_count: num_branches as u32,
-                    branch_exprs: vec![],
-                    parallel_depth: PARALLEL_BRANCH_DEPTH.with(|d| d.get()),
-                    phase: "branch0-done".to_string(),
-                },
-            );
-        });
-    }
-
-    // Wait for all spawned tasks to complete, with work-stealing.
-    //
-    // Instead of purely blocking on the condvar, the main thread alternates
-    // between:
-    // 1. A short condvar wait (1ms) — instant wakeup if workers finish
-    // 2. Stealing tasks from the pool queue — keeps the main thread productive
-    // 3. Cooperative GC drop — periodically drops the parent's outer
-    //    EvalGuard with parent-side roots registered so workers can
-    //    converge to ACTIVE_EVALUATORS == 0 and quiescent GC fires.
-    //
-    // This eliminates the idle gap where the main thread sits blocked while
-    // workers evaluate branches. The main thread effectively becomes a
-    // temporary worker, draining the queue alongside the pool workers.
-    //
-    // Falls back to stall detection + overflow if no progress is made.
-    {
-        let mut prev_remaining = remaining.load(Ordering::Acquire);
-        let mut stall_count = 0u32;
-        let mut overflow_requested = false;
-        let queue = pool.queue();
-
-        // Per-call alloc-count tracker for the parent's cooperative drop.
-        // Mirrors `ParallelBranchContext::should_safepoint` so the parent
-        // crosses its threshold around the same time as the workers — when
-        // they all drop simultaneously, `ACTIVE_EVALUATORS` reaches 0.
-        let parent_last_safepoint_allocs =
-            std::cell::Cell::new(crate::backend::models::alloc_count_snapshot());
-
-        // Edit 5 hoist: stable input-branches snapshot (immutable for whole
-        // wait), reused by the coop-drop and the stolen-task safepoint
-        // (Edit 1) to avoid re-cloning the input branches on every safepoint.
-        let stable_branches: Vec<ParallelBranch> = branches.clone();
-
-        let (lock, cvar) = &*done_pair;
-        let mut done = lock.lock().expect("done mutex poisoned");
-        while !*done {
-            // Cancellation observation: if a branch satisfied the demand,
-            // exit early. Sibling workers in flight will observe the same
-            // flag at their next safepoint and bail (`BranchCancelled`).
-            // We don't try to drain the priority queue here — pending
-            // tasks check the same flag at their first safepoint and
-            // short-circuit cheaply.
-            if cancel_token.is_satisfied() {
-                break;
-            }
-
-            // Short condvar wait: check for completion frequently
-            let result = cvar
-                .wait_timeout(done, std::time::Duration::from_millis(1))
-                .expect("done condvar wait failed");
-            done = result.0;
-            if *done {
-                break;
-            }
-            if cancel_token.is_satisfied() {
-                break;
-            }
-
-            // Work-stealing: try to pop and execute a task from the pool queue.
-            // This keeps the main thread productive while waiting for branches.
-            // Execute up to 4 stolen tasks per wake cycle to amortize lock overhead.
-            for _ in 0..4 {
-                if remaining.load(Ordering::Acquire) == 0 {
-                    break; // All branches done, stop stealing
-                }
-                if cancel_token.is_satisfied() {
-                    break; // Demand satisfied, no more work to steal
-                }
-                if let Some(task) = queue.try_pop() {
-                    // Drop the condvar lock before executing the stolen task
-                    drop(done);
-                    // Edit 1 — yield parent's outer EvalGuard around the
-                    // stolen task's execution if GC is requesting cooperation.
-                    //
-                    // Without this, the parent's outer eval()'s EvalGuard
-                    // (`mod.rs:180`) is pinned for the duration of
-                    // `task.execute()`. Inside that closure a worker's own
-                    // EvalGuard adds +1; safepoints inside the closure drop
-                    // only the topmost guard, so `ACTIVE_EVALUATORS` is
-                    // floored at 1 (parent's outer guard) for the entire
-                    // stolen-task window. Workers can never reach
-                    // quiescence and `maybe_quiescent_gc` cannot fire.
-                    //
-                    // Gate on `is_gc_requested()` so this is a no-op when
-                    // GC isn't pressing — keeps Smokes (no GC pressure)
-                    // on the existing fast path.
-                    let gc_pending_steal = crate::backend::models::gc_allocator::is_gc_requested();
-                    if gc_pending_steal {
-                        let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
-                        crate::backend::eval::frame_chain::collect_frame_chain_roots(
-                            &mut parent_roots,
-                        );
-                        for (value, bindings) in stable_branches.iter() {
-                            parent_roots.push(value.clone());
-                            for (_, bound) in bindings.iter() {
-                                parent_roots.push(bound.clone());
-                            }
-                        }
-                        {
-                            let g = results.lock().expect("results mutex poisoned");
-                            for slot in g.iter().flatten() {
-                                for (val, bindings) in slot.iter() {
-                                    parent_roots.push(val.clone());
-                                    for (_, v) in bindings.iter() {
-                                        parent_roots.push(v.clone());
-                                    }
-                                }
-                            }
-                        }
-                        clear_aba_sensitive_caches();
-                        let _root_handle =
-                            crate::backend::models::register_temporary_roots(parent_roots);
-                        crate::backend::models::drop_eval_guard_for_safepoint();
-                        task.execute();
-                        crate::backend::models::reacquire_eval_guard_after_safepoint();
-                        // _root_handle drops here, unregistering the roots.
-                    } else {
-                        task.execute();
-                    }
-                    // Re-acquire the condvar lock
-                    done = lock.lock().expect("done mutex poisoned");
-                    if *done {
-                        break;
-                    }
-                } else {
-                    break; // Queue empty, nothing to steal
-                }
-            }
-
-            // Cooperative GC drop: periodically check if the global
-            // alloc-count has crossed the threshold since this parent's
-            // last cooperative drop. If so, register parent-side roots
-            // (frame_chain, branches Vec, partial results), drop the
-            // parent's EvalGuard so quiescence is reachable, wait briefly,
-            // then re-acquire. Without this, the parent's outer guard
-            // pins ACTIVE_EVALUATORS ≥ 1 even when all 33 workers
-            // simultaneously safepoint — quiescence is unreachable and
-            // GC never runs.
-            if super::context::parallel_gc_coop_enabled() && remaining.load(Ordering::Acquire) > 0 {
-                // Drop our EvalGuard when EITHER:
-                //   1. GC has explicitly requested cooperation
-                //      (`is_gc_requested()`), regardless of our local
-                //      alloc-delta. This generalizes coop to workloads where
-                //      `committed_bytes` grows past `gc_threshold` driven by
-                //      worker allocations while the parent's own alloc-delta
-                //      stays below 500k (small-but-often allocations) —
-                //      otherwise GC starves indefinitely with all workers
-                //      already parked on quiescence.
-                //   2. Our local alloc-delta crossed 500k since last drop
-                //      (mirrors per-worker `should_safepoint` cadence).
-                let current_allocs = crate::backend::models::alloc_count_snapshot();
-                let last = parent_last_safepoint_allocs.get();
-                let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
-                let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
-                if gc_pending || delta_crossed {
-                    parent_last_safepoint_allocs.set(current_allocs);
-                    drop(done);
-
-                    // Collect parent-side roots:
-                    //   - frame_chain (caller-frame values held in Rust locals)
-                    //   - stable_branches (input branch expressions, hoisted)
-                    //   - partial results from completed workers (BoundValue
-                    //     pairs, including their bindings' values)
-                    let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
-                    crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
-                    for (value, bindings) in stable_branches.iter() {
-                        parent_roots.push(value.clone());
-                        for (_, bound) in bindings.iter() {
-                            parent_roots.push(bound.clone());
-                        }
-                    }
-                    {
-                        let g = results.lock().expect("results mutex poisoned");
-                        for slot in g.iter().flatten() {
-                            for (val, bindings) in slot.iter() {
-                                parent_roots.push(val.clone());
-                                for (_, v) in bindings.iter() {
-                                    parent_roots.push(v.clone());
-                                }
-                            }
-                        }
-                    }
-
-                    // Clear pointer-keyed caches before GC may free slots —
-                    // see `clear_aba_sensitive_caches` for the ABA hazard.
-                    clear_aba_sensitive_caches();
-
-                    let _root_handle =
-                        crate::backend::models::register_temporary_roots(parent_roots);
-                    crate::backend::models::drop_eval_guard_for_safepoint();
-                    crate::backend::models::request_gc();
-                    crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
-                    crate::backend::models::reacquire_eval_guard_after_safepoint();
-                    // _root_handle drops here, unregistering parent roots.
-
-                    done = lock.lock().expect("done mutex poisoned");
-                    if *done {
-                        break;
-                    }
-                }
-            }
-
-            if !*done {
-                let curr_remaining = remaining.load(Ordering::Acquire);
-                if curr_remaining > 0 && curr_remaining == prev_remaining {
-                    stall_count += 1;
-                    // After 20 consecutive stalls (~20ms with no progress), spawn overflow
-                    // workers. Threshold is higher than before (was 2) because the 1ms
-                    // condvar timeout makes stall detection more granular.
-                    if stall_count >= 20 && !overflow_requested {
-                        pool.spawn_overflow(curr_remaining as usize);
-                        overflow_requested = true;
-                        tracing::warn!(
-                            remaining = curr_remaining,
-                            active_workers = pool.active_workers(),
-                            overflow = pool.overflow_count(),
-                            "parallel_branch_eval: stall detected, spawned overflow workers"
-                        );
-                    }
-                } else {
-                    stall_count = 0;
-                }
-                prev_remaining = curr_remaining;
-            }
-        }
-    }
-
-    // Release budget slots back to the depth level they were acquired from
-    release_budget(budget_acquired, caller_depth);
-
-    // Merge results in branch order
-    let mut merged = Vec::new();
-    let guard = results.lock().expect("results mutex poisoned");
-    for slot_result in guard.iter() {
-        if let Some(ref branch_results) = slot_result {
-            merged.extend_from_slice(branch_results);
-        }
-    }
-
-    merged
 }
 
-/// Minimum number of collapse results to trigger parallel evaluation.
-/// Below this threshold, the sequential `ProcessCollapseEvalResults` path
-/// is cheaper due to lower overhead (no Arc, no Mutex, no condvar).
-const PARALLEL_COLLAPSE_THRESHOLD: usize = 16;
+/// **Stack-safety mandate (2026-05-15)**: one-tick wait pump for the
+/// trampolinized parallel-dispatch path.
+///
+/// Called once per `WaitForParallel` arm invocation by the trampoline outer
+/// loop. Each tick:
+///   1. Performs a short 1ms condvar wait for branch-completion notification.
+///   2. Steals up to 4 tasks from the global queue (with GC-cooperation
+///      drop/reacquire dance when `is_gc_requested()` is true).
+///   3. Optionally drops the EvalGuard for a cooperative GC quiescence
+///      window when `started_at_alloc_count` delta has crossed 500_000 or
+///      GC has been explicitly requested.
+///   4. Updates stall-detection state and spawns overflow workers if no
+///      progress is observed across ≥20 consecutive ticks.
+///
+/// Crucially, this function returns after one tick. The trampoline's outer
+/// `while let Some(work) = work_stack.pop()` loop pumps the continuation
+/// again. There is no C-stack recursion across ticks.
+fn pump_parallel_wait(
+    handle: &crate::backend::eval::trampoline::types::ParallelDispatchHandle,
+    stable_branches: &[ParallelBranch],
+) {
+    use std::time::Duration;
 
-/// Evaluate collapse results in parallel via the work pool.
+    let pool = global_eval_pool();
+
+    // (1) Short cv wait.
+    {
+        let (lock, cvar) = &*handle.done_pair;
+        let done_guard = lock.lock().expect("done mutex poisoned");
+        if *done_guard {
+            return;
+        }
+        let res = cvar
+            .wait_timeout(done_guard, Duration::from_millis(1))
+            .expect("done condvar wait failed");
+        if *res.0 {
+            return;
+        }
+    }
+
+    if handle.cancel_token.is_satisfied() {
+        return;
+    }
+
+    // **Stack-safety mandate (2026-05-15)**: NO work-stealing inside the
+    // pump. The old `parallel_branch_eval` wait loop stole tasks via
+    // `queue.try_pop() + task.execute()` to keep the calling thread
+    // productive, but `task.execute()` runs a worker closure that itself
+    // can dispatch parallel branches via `parallel_dispatch +
+    // WaitForParallel`, which re-enters this pump — adding C-stack frames
+    // per stolen task. With MAX_PARALLEL_DEPTH=3 the recursion was bounded
+    // to ~3 levels, but each level adds ~12 stack frames (`pump →
+    // task.execute → worker closure → eval_trampoline_with_carrying →
+    // eval_trampoline_inner → process_continuation → next pump`), and in
+    // debug builds frames are large enough that 3 levels overflow the
+    // 8 MB OS-default stack (Robot.metta repro 2026-05-15).
+    //
+    // The trampolinization mandate requires bounded C-stack regardless of
+    // `MAX_PARALLEL_DEPTH` (a user-tunable env var). Removing inline task
+    // execution means the calling thread parks briefly on the condvar;
+    // other workers handle the queue. With 64+ workers in the global
+    // pool, throughput remains high; the stall-detection branch below
+    // spawns overflow workers if all pool workers happen to be parked
+    // simultaneously (rare).
+    //
+    // `stable_branches` is still used below in the GC-drop path as a root
+    // source.
+
+    // (2) Periodic cooperative GC drop — gated by alloc-delta or explicit
+    //     gc-request. Mirrors the original wait loop's logic at
+    //     parallel_branch_eval:1975-2037.
+    if super::context::parallel_gc_coop_enabled()
+        && handle.remaining.load(Ordering::Acquire) > 0
+    {
+        let current_allocs = crate::backend::models::alloc_count_snapshot();
+        let last = handle.started_at_alloc_count.get();
+        let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
+        let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
+        if gc_pending || delta_crossed {
+            handle.started_at_alloc_count.set(current_allocs);
+
+            let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
+            crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
+            for (value, bindings) in stable_branches.iter() {
+                parent_roots.push(value.clone());
+                for (_, bound) in bindings.iter() {
+                    parent_roots.push(bound.clone());
+                }
+            }
+            {
+                let g = handle.results.lock().expect("results mutex poisoned");
+                for slot in g.iter().flatten() {
+                    for (val, bindings) in slot.iter() {
+                        parent_roots.push(val.clone());
+                        for (_, v) in bindings.iter() {
+                            parent_roots.push(v.clone());
+                        }
+                    }
+                }
+            }
+
+            clear_aba_sensitive_caches();
+            let _root_handle = crate::backend::models::register_temporary_roots(parent_roots);
+            crate::backend::models::drop_eval_guard_for_safepoint();
+            crate::backend::models::request_gc();
+            crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
+            crate::backend::models::reacquire_eval_guard_after_safepoint();
+        }
+    }
+
+    // (4) Stall detection + overflow spawn — state in `handle.stall_state`.
+    let curr_remaining = handle.remaining.load(Ordering::Acquire);
+    let mut stall_state = handle.stall_state.get();
+    if curr_remaining > 0 && curr_remaining == stall_state.prev_remaining {
+        stall_state.stall_count += 1;
+        if stall_state.stall_count >= 20 && !stall_state.overflow_requested {
+            pool.spawn_overflow(curr_remaining as usize);
+            stall_state.overflow_requested = true;
+            tracing::warn!(
+                remaining = curr_remaining,
+                active_workers = pool.active_workers(),
+                overflow = pool.overflow_count(),
+                "parallel_dispatch: stall detected, spawned overflow workers"
+            );
+        }
+    } else {
+        stall_state.stall_count = 0;
+    }
+    stall_state.prev_remaining = curr_remaining;
+    handle.stall_state.set(stall_state);
+}
+
+
+/// **Stack-safety mandate (2026-05-15)**: trampolinized one-tick pump for
+/// `parallel_collapse_dispatch`. Mirrors `pump_parallel_wait` but operates
+/// on a `ParallelCollapseDispatchHandle`. No work-stealing — workers handle
+/// the queue. Wired up by the `WaitForParallelCollapse` arm in
+/// `process_continuation`.
+fn pump_parallel_collapse_wait(
+    handle: &crate::backend::eval::trampoline::types::ParallelCollapseDispatchHandle,
+    stable_items: &[crate::backend::eval::trampoline::types::BoundValue],
+) {
+    use std::time::Duration;
+
+    let pool = global_eval_pool();
+
+    // (1) Short cv wait.
+    {
+        let (lock, cvar) = &*handle.done_pair;
+        let done_guard = lock.lock().expect("done mutex poisoned");
+        if *done_guard {
+            return;
+        }
+        let res = cvar
+            .wait_timeout(done_guard, Duration::from_millis(1))
+            .expect("done condvar wait failed");
+        if *res.0 {
+            return;
+        }
+    }
+
+    if handle.cancel_token.is_satisfied() {
+        return;
+    }
+
+    // (2) Periodic cooperative GC drop (no work-stealing per mandate).
+    if super::context::parallel_gc_coop_enabled()
+        && handle.remaining.load(Ordering::Acquire) > 0
+    {
+        let current_allocs = crate::backend::models::alloc_count_snapshot();
+        let last = handle.started_at_alloc_count.get();
+        let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
+        let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
+        if gc_pending || delta_crossed {
+            handle.started_at_alloc_count.set(current_allocs);
+
+            let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
+            crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
+            for (value, bindings) in stable_items.iter() {
+                parent_roots.push(value.clone());
+                for (_, bound) in bindings.iter() {
+                    parent_roots.push(bound.clone());
+                }
+            }
+            {
+                let g = handle.results.lock().expect("results mutex poisoned");
+                for slot in g.iter().flatten() {
+                    for (val, bindings) in slot.iter() {
+                        parent_roots.push(val.clone());
+                        for (_, v) in bindings.iter() {
+                            parent_roots.push(v.clone());
+                        }
+                    }
+                }
+            }
+
+            clear_aba_sensitive_caches();
+            let _root_handle = crate::backend::models::register_temporary_roots(parent_roots);
+            crate::backend::models::drop_eval_guard_for_safepoint();
+            crate::backend::models::request_gc();
+            crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
+            crate::backend::models::reacquire_eval_guard_after_safepoint();
+        }
+    }
+
+    // (3) Stall detection + overflow.
+    let curr_remaining = handle.remaining.load(Ordering::Acquire);
+    let mut stall_state = handle.stall_state.get();
+    if curr_remaining > 0 && curr_remaining == stall_state.prev_remaining {
+        stall_state.stall_count += 1;
+        if stall_state.stall_count >= 20 && !stall_state.overflow_requested {
+            pool.spawn_overflow(curr_remaining as usize);
+            stall_state.overflow_requested = true;
+            tracing::warn!(
+                remaining = curr_remaining,
+                "parallel_collapse_dispatch: stall detected, spawned overflow workers"
+            );
+        }
+    } else {
+        stall_state.stall_count = 0;
+    }
+    stall_state.prev_remaining = curr_remaining;
+    handle.stall_state.set(stall_state);
+}
+
+/// **Stack-safety mandate (2026-05-15)**: non-blocking collapse-dispatch.
 ///
-/// Structurally identical to `parallel_branch_eval`, but evaluates each item
-/// to normal form at depth+1 (matching `ProcessCollapseEvalResults` semantics)
-/// and filters out empty results.
-///
-/// # Arguments
-/// - `items`: Nondeterministic results from the inner expression of `collapse`
-/// - `env`: The evaluation environment (cloned per item)
-/// - `budget_acquired`: Number of budget slots to release on completion
-/// - `caller_depth`: Parallel nesting depth of the caller
-/// - `eval_depth`: The MeTTa evaluation depth (used as depth+1 for each item)
-///
-/// # Returns
-/// Vec of all evaluated results (empty values filtered out), in item order.
-/// Parallel evaluation of collapse/collapse-bind items.
-///
-/// Phase 2 Part A fix (task #66): returns `Vec<BoundValue>` so callers can
-/// access per-item bindings. Previously returned `Vec<MettaValue>` which
-/// silently dropped bindings — a correctness bug for `collapse-bind` whose
-/// output is `((value bindings) ...)` pairs.
-///
-/// Each worker seeds `carrying_bindings` from the item's own bindings
-/// (passed via the `items` Vec of `BoundValue`).
-fn parallel_collapse_eval(
+/// Spawns all N items to the work pool (NO inline item-0) and returns a
+/// `ParallelCollapseDispatchHandle`. Caller pushes `WaitForParallelCollapse`
+/// to yield to the trampoline outer loop. Used by the ProcessCollapse and
+/// ProcessCollapseBind paths (Sites 4 and 5) in `process_continuation`.
+fn parallel_collapse_dispatch(
     items: Vec<crate::backend::eval::trampoline::types::BoundValue>,
     env: crate::backend::environment::core::MettaEnvironment,
-    budget_acquired: u32,
+    _budget_acquired: u32,
     caller_depth: u32,
-    eval_depth: usize,
-) -> Vec<crate::backend::eval::trampoline::types::BoundValue> {
+    _eval_depth: usize,
+) -> crate::backend::eval::trampoline::types::ParallelCollapseDispatchHandle {
     use std::sync::{Arc, Condvar, Mutex};
 
     use super::context::ParallelBranchContext;
+    use super::types::{ParallelCollapseDispatchHandle, StallState};
 
     let num_items = items.len();
     debug_assert!(
         num_items >= 2,
-        "parallel_collapse_eval requires at least 2 items"
+        "parallel_collapse_dispatch requires at least 2 items"
     );
 
-    // Pre-allocate result slots: Vec<Option<Vec<BoundValue>>> so each
-    // item's per-result bindings are preserved through the barrier.
     let results: ParallelEvalResults = Arc::new(Mutex::new(vec![None; num_items]));
-    let remaining = Arc::new(AtomicU32::new((num_items - 1) as u32));
+    let remaining = Arc::new(std::sync::atomic::AtomicU32::new(num_items as u32));
     let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
+    let cancel_token = Arc::new(crate::backend::eval::cesk::coroutine::CancelToken::new(
+        crate::backend::eval::cesk::coroutine::Demand::All,
+    ));
 
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
 
-    let parallel_root_frame = Box::new(ParallelCollapseRootFrame {
+    let root_frame = Box::new(ParallelCollapseRootFrame {
         items: items.clone(),
         results: Arc::clone(&results),
     });
-    let _parallel_root_guard = unsafe {
+    let root_frame_ptr =
+        &*root_frame as *const ParallelCollapseRootFrame as *const ();
+    // SAFETY: see analogous block in `parallel_dispatch`.
+    let root_guard = unsafe {
         crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
             crate::backend::eval::frame_chain::FrameLabel::Custom("parallel-collapse"),
-            &*parallel_root_frame as *const ParallelCollapseRootFrame as *const (),
+            root_frame_ptr,
             collect_parallel_collapse_frame_roots,
         )
     };
 
-    // Spawn items 1..N to the work pool.
-    // Phase 2 Part A fix: each worker seeds with the item's own bindings
-    // (passed via `items` as BoundValue). The bindings also seed the worker
-    // re-evaluation, matching the sequential collapse path.
-    for (slot, (item_expr, item_bindings)) in items.iter().enumerate().skip(1) {
+    // Spawn ALL items to the pool — NO inline item-0 (stack-safety mandate).
+    for (slot, (item_expr, item_bindings)) in items.iter().enumerate() {
         let item_expr = item_expr.clone();
         let item_bindings = item_bindings.clone();
         let env = env.clone();
@@ -2155,7 +2062,6 @@ fn parallel_collapse_eval(
         let remaining = Arc::clone(&remaining);
         let done_pair = Arc::clone(&done_pair);
 
-        // WFST classification for collapse items
         let scheduler = crate::backend::scheduler::global_scheduler();
         let (cost_class, _action) = scheduler.classify_and_transduce(&item_expr);
         let head_str = match item_expr.view() {
@@ -2180,26 +2086,13 @@ fn parallel_collapse_eval(
 
         let closure = move || {
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
-
-            // I-8: Enter thread-local allocation region
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
-
             let _guard = EvalGuard::enter();
             let _demand_scope =
                 DemandScope::enter(crate::backend::eval::cesk::coroutine::Demand::All);
-            // H11 (2026-05-05): mark thread as parallel-branch worker.
             let _worker_marker = WorkerEvalScope::enter();
 
-            // Option C (2026-05-06) — Amendment 1 (parallel-path
-            // symmetry per second-opinion review). HE-faithful re-eval
-            // skip: when the item is already in normal form (memoized
-            // by freeze-tuple or recognized by the structural test),
-            // emit it verbatim instead of re-evaluating. This is the
-            // PARALLEL counterpart of the sequential gate at the
-            // StartCollapse handler. Critical for the Direct.metta
-            // test 2 flake fix because the parallel scheduler's
-            // non-determinism was the symptom-trigger for the
-            // freeze-tuple memo leak.
+            // Option C: HE-faithful re-eval skip for normal-form items.
             let eval_results: smallvec::SmallVec<
                 [crate::backend::eval::trampoline::types::BoundValue; 2],
             > = if crate::backend::eval::trampoline::is_memoized_normal_form(&item_expr) {
@@ -2215,13 +2108,11 @@ fn parallel_collapse_eval(
                 results
             };
 
-            // Store result in pre-allocated slot with bindings preserved.
             {
                 let mut guard = results.lock().expect("results mutex poisoned");
                 guard[slot] = Some(eval_results.into_iter().collect());
             }
 
-            // Decrement barrier; if last task, notify waiter
             if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
                 let (lock, cvar) = &*done_pair;
                 let mut done = lock.lock().expect("done mutex poisoned");
@@ -2239,199 +2130,26 @@ fn parallel_collapse_eval(
         );
     }
 
-    // Evaluate item 0 locally — Option C symmetry: skip re-eval when
-    // item is already in normal form (mirrors the worker closure logic).
-    let item0_results = {
-        if crate::backend::eval::trampoline::is_memoized_normal_form(&items[0].0) {
-            smallvec::smallvec![bv_with(items[0].0.clone(), items[0].1.clone())]
-        } else {
-            PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() + 1));
-            let _demand_scope =
-                DemandScope::enter(crate::backend::eval::cesk::coroutine::Demand::All);
-            let ctx = ParallelBranchContext::get();
-            let (eval_results, _new_env) = eval_trampoline_with_carrying(
-                items[0].0.clone(),
-                env.clone(),
-                &ctx,
-                std::sync::Arc::new(items[0].1.clone()),
-            );
-            PARALLEL_BRANCH_DEPTH.with(|d| d.set(d.get() - 1));
-            eval_results
-        }
-    };
-
-    // Store item 0 results with bindings preserved.
-    {
-        let mut guard = results.lock().expect("results mutex poisoned");
-        guard[0] = Some(item0_results.into_iter().collect());
+    ParallelCollapseDispatchHandle {
+        results,
+        remaining,
+        done_pair,
+        cancel_token,
+        num_branches: num_items,
+        root_frame,
+        _root_guard: Some(root_guard),
+        started_at_alloc_count: std::cell::Cell::new(
+            crate::backend::models::alloc_count_snapshot(),
+        ),
+        stall_state: std::cell::Cell::new(StallState::default()),
     }
-
-    // Wait for all spawned tasks to complete, with work-stealing.
-    // See `parallel_branch_eval`'s wait loop for the cooperative-GC-drop
-    // rationale; this is the analogous protocol for collapse items.
-    {
-        let mut prev_remaining = remaining.load(Ordering::Acquire);
-        let mut stall_count = 0u32;
-        let mut overflow_requested = false;
-        let queue = pool.queue();
-
-        let parent_last_safepoint_allocs =
-            std::cell::Cell::new(crate::backend::models::alloc_count_snapshot());
-
-        // Edit 5 hoist: stable input-items snapshot (immutable for whole
-        // wait), reused by the coop-drop and the stolen-task safepoint
-        // (Edit 1).
-        let stable_items: Vec<crate::backend::eval::trampoline::types::BoundValue> = items.clone();
-
-        let (lock, cvar) = &*done_pair;
-        let mut done = lock.lock().expect("done mutex poisoned");
-        while !*done {
-            let result = cvar
-                .wait_timeout(done, std::time::Duration::from_millis(1))
-                .expect("done condvar wait failed");
-            done = result.0;
-            if *done {
-                break;
-            }
-
-            // Work-stealing: up to 4 stolen tasks per wake cycle
-            for _ in 0..4 {
-                if remaining.load(Ordering::Acquire) == 0 {
-                    break;
-                }
-                if let Some(task) = queue.try_pop() {
-                    drop(done);
-                    // Edit 1 — yield parent's outer EvalGuard around
-                    // stolen-task execution if GC is requesting cooperation.
-                    // See parallel_branch_eval for the full rationale.
-                    let gc_pending_steal = crate::backend::models::gc_allocator::is_gc_requested();
-                    if gc_pending_steal {
-                        let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
-                        crate::backend::eval::frame_chain::collect_frame_chain_roots(
-                            &mut parent_roots,
-                        );
-                        for (val, bindings) in stable_items.iter() {
-                            parent_roots.push(val.clone());
-                            for (_, v) in bindings.iter() {
-                                parent_roots.push(v.clone());
-                            }
-                        }
-                        {
-                            let g = results.lock().expect("results mutex poisoned");
-                            for slot in g.iter().flatten() {
-                                for (val, bindings) in slot.iter() {
-                                    parent_roots.push(val.clone());
-                                    for (_, v) in bindings.iter() {
-                                        parent_roots.push(v.clone());
-                                    }
-                                }
-                            }
-                        }
-                        clear_aba_sensitive_caches();
-                        let _root_handle =
-                            crate::backend::models::register_temporary_roots(parent_roots);
-                        crate::backend::models::drop_eval_guard_for_safepoint();
-                        task.execute();
-                        crate::backend::models::reacquire_eval_guard_after_safepoint();
-                    } else {
-                        task.execute();
-                    }
-                    done = lock.lock().expect("done mutex poisoned");
-                    if *done {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-
-            // Cooperative GC drop — see parallel_branch_eval for rationale.
-            // Drops EvalGuard when EITHER the GC has explicitly requested
-            // cooperation OR our local alloc-delta crossed 500k (mirrors the
-            // worker-side `should_safepoint` pressure-driven path).
-            if super::context::parallel_gc_coop_enabled() && remaining.load(Ordering::Acquire) > 0 {
-                let current_allocs = crate::backend::models::alloc_count_snapshot();
-                let last = parent_last_safepoint_allocs.get();
-                let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
-                let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
-                if gc_pending || delta_crossed {
-                    parent_last_safepoint_allocs.set(current_allocs);
-                    drop(done);
-
-                    let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
-                    crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
-                    for (val, bindings) in stable_items.iter() {
-                        parent_roots.push(val.clone());
-                        for (_, v) in bindings.iter() {
-                            parent_roots.push(v.clone());
-                        }
-                    }
-                    {
-                        let g = results.lock().expect("results mutex poisoned");
-                        for slot in g.iter().flatten() {
-                            for (val, bindings) in slot.iter() {
-                                parent_roots.push(val.clone());
-                                for (_, v) in bindings.iter() {
-                                    parent_roots.push(v.clone());
-                                }
-                            }
-                        }
-                    }
-
-                    clear_aba_sensitive_caches();
-
-                    let _root_handle =
-                        crate::backend::models::register_temporary_roots(parent_roots);
-                    crate::backend::models::drop_eval_guard_for_safepoint();
-                    crate::backend::models::request_gc();
-                    crate::backend::models::gc_allocator::safepoint_wait_for_quiescence();
-                    crate::backend::models::reacquire_eval_guard_after_safepoint();
-
-                    done = lock.lock().expect("done mutex poisoned");
-                    if *done {
-                        break;
-                    }
-                }
-            }
-
-            if !*done {
-                let curr_remaining = remaining.load(Ordering::Acquire);
-                if curr_remaining > 0 && curr_remaining == prev_remaining {
-                    stall_count += 1;
-                    if stall_count >= 20 && !overflow_requested {
-                        pool.spawn_overflow(curr_remaining as usize);
-                        overflow_requested = true;
-                        tracing::warn!(
-                            remaining = curr_remaining,
-                            active_workers = pool.active_workers(),
-                            overflow = pool.overflow_count(),
-                            "parallel_collapse_eval: stall detected, spawned overflow workers"
-                        );
-                    }
-                } else {
-                    stall_count = 0;
-                }
-                prev_remaining = curr_remaining;
-            }
-        }
-    }
-
-    // Release budget slots back to the depth level they were acquired from
-    release_budget(budget_acquired, caller_depth);
-
-    // Merge results in item order, filtering empty values.
-    // Phase 2 Part A fix: merge BoundValue (preserves bindings).
-    let _ = eval_depth;
-    let mut merged: Vec<crate::backend::eval::trampoline::types::BoundValue> = Vec::new();
-    let guard = results.lock().expect("results mutex poisoned");
-    for slot_result in guard.iter() {
-        if let Some(ref item_results) = slot_result {
-            merged.extend(item_results.iter().filter(|(v, _)| !v.is_empty()).cloned());
-        }
-    }
-
-    merged
 }
+
+/// Minimum number of collapse results to trigger parallel evaluation.
+/// Below this threshold, the sequential `ProcessCollapseEvalResults` path
+/// is cheaper due to lower overhead (no Arc, no Mutex, no condvar).
+const PARALLEL_COLLAPSE_THRESHOLD: usize = 16;
+
 
 /// Generic trampoline evaluation entry point.
 ///
@@ -4887,17 +4605,33 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     .into_iter()
                                     .map(|alt| (alt, empty_shared_bindings()))
                                     .collect();
-                                let results = parallel_branch_eval(
+
+                                // **Stack-safety mandate (2026-05-15)**:
+                                // trampolinized dispatch via WaitForParallel.
+                                let stable_branches_snapshot =
+                                    std::sync::Arc::new(branches.clone());
+                                let handle = parallel_dispatch(
                                     branches,
                                     metta_env,
                                     par_budget,
                                     current_depth,
                                     amb_demand,
                                 );
-
-                                // Phase 2 Part A: results are BoundValue; extend directly.
+                                let env_for_resume = env.clone();
+                                continuations.push(Continuation::WaitForParallel {
+                                    handle,
+                                    merge_mode:
+                                        crate::backend::eval::trampoline::types::ParallelMergeMode::AmbConcat,
+                                    base_results: SmallVec::new(),
+                                    outer_carrying: carrying_bindings.clone(),
+                                    env,
+                                    depth,
+                                    budget_acquired: par_budget,
+                                    caller_depth: current_depth,
+                                    stable_branches_snapshot,
+                                });
                                 work_stack.push(WorkItem::Resume {
-                                    result: (results.into_iter().collect(), env),
+                                    result: (SmallVec::new(), env_for_resume),
                                 });
                             } else {
                                 // ── Sequential path (original) ──
@@ -7925,20 +7659,34 @@ fn process_continuation<C: EvalContext>(
                             });
                             return;
                         }
-                        let par_results = parallel_branch_eval(
+                        // **Stack-safety mandate (2026-05-15)**:
+                        // trampolinized dispatch via WaitForParallel.
+                        let stable_branches_snapshot =
+                            std::sync::Arc::new(branches.clone());
+                        let handle = parallel_dispatch(
                             branches,
                             metta_env,
                             par_budget,
                             current_depth,
                             crate::backend::eval::cesk::coroutine::Demand::All,
                         );
-
-                        // Phase 2 Part A: results are BoundValue; extend directly.
-                        let mut merged = results;
-                        merged.extend(par_results.into_iter());
-
+                        let base_results: SmallVec<[BoundValue; 2]> =
+                            SmallVec::from_vec(results);
+                        let env_for_resume = result_env.clone();
+                        continuations.push(Continuation::WaitForParallel {
+                            handle,
+                            merge_mode:
+                                crate::backend::eval::trampoline::types::ParallelMergeMode::AmbConcat,
+                            base_results,
+                            outer_carrying: shadowed_outer_carrying.clone(),
+                            env: result_env,
+                            depth,
+                            budget_acquired: par_budget,
+                            caller_depth: current_depth,
+                            stable_branches_snapshot,
+                        });
                         work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::from_vec(merged), result_env),
+                            result: (SmallVec::new(), env_for_resume),
                         });
                     } else {
                         // ── Sequential path: process bodies one at a time ──
@@ -10517,7 +10265,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::ProcessReturn {
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (arg_results, arg_env) = result;
 
@@ -10902,7 +10650,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::ProcessIsError {
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (expr_results, result_env) = result;
 
@@ -11897,45 +11645,37 @@ fn process_continuation<C: EvalContext>(
             };
 
             if par_budget > 0 {
-                // Phase 2 Part A fix: pass BoundValue (preserves bindings).
+                // **Stack-safety mandate (2026-05-15)**: trampolinized
+                // collapse-dispatch (Phase 4 follow-up). Non-blocking
+                // `parallel_collapse_dispatch` returns a handle; we push a
+                // `WaitForParallelCollapse` continuation and yield to the
+                // trampoline outer loop. The merge happens in the
+                // `WaitForParallelCollapse` arm of `process_continuation`.
                 let metta_items: Vec<crate::backend::eval::trampoline::types::BoundValue> =
                     expr_results.into_iter().collect();
+                let stable_items_snapshot = std::sync::Arc::new(metta_items.clone());
                 let metta_env = (*result_env).clone();
-
-                let evaluated = parallel_collapse_eval(
+                let handle = parallel_collapse_dispatch(
                     metta_items,
                     metta_env,
                     par_budget,
                     current_depth,
                     depth,
                 );
-
-                // Plain collapse: emit values only (bindings discarded, per
-                // collapse semantics which produces a value list).
-                let result_list = ctx
-                    .factory()
-                    .sexpr(evaluated.into_iter().map(|(v, _)| v).collect());
-
-                // Trace: collapse-result phase
-                #[cfg(feature = "trace")]
-                {
-                    if let Some(tc) = ctx.trace_collector() {
-                        tc.emit_converted(
-                            trace_format::TraceTier::TreeWalker,
-                            depth as u32,
-                            crate::backend::trace::trace_value_generic(&result_list),
-                            vec![],
-                            None,
-                            trace_format::TraceEventKind::SpecialForm {
-                                form_name: "collapse".to_string(),
-                                phase: "collapse-result-parallel".to_string(),
-                            },
-                        );
-                    }
-                }
-
+                let env_for_resume = result_env.clone();
+                continuations.push(Continuation::WaitForParallelCollapse {
+                    handle,
+                    merge_mode: crate::backend::eval::trampoline::types::CollapseMergeMode::Plain,
+                    stable_items_snapshot,
+                    outer_carrying: outer_carrying.clone(),
+                    tracked_vars_hint: None,  // Plain mode discards bindings
+                    env: result_env,
+                    depth,
+                    budget_acquired: par_budget,
+                    caller_depth: current_depth,
+                });
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(result_list)], result_env),
+                    result: (SmallVec::new(), env_for_resume),
                 });
             } else {
                 // ── Sequential path: evaluate one-at-a-time ──
@@ -12037,74 +11777,41 @@ fn process_continuation<C: EvalContext>(
             };
 
             if par_budget > 0 {
-                // Phase 2 Part A fix (task #66): pass BoundValue so the parallel
-                // path preserves per-item bindings through collapse-bind's
-                // sidecar encoding. Previously the parallel path dropped all
-                // bindings, silently breaking collapse-bind's core semantic
-                // of "capture per-branch bindings".
+                // **Stack-safety mandate (2026-05-15)**: trampolinized
+                // collapse-bind dispatch (Phase 4 follow-up). The Bind-mode
+                // sidecar encoding moves into the `WaitForParallelCollapse`
+                // arm of `process_continuation`.
+                //
+                // **Note**: `force_sequential` (`captured_frame.is_some()`)
+                // is checked above; when true, `par_budget == 0` and this
+                // branch doesn't fire, so `tracked_vars_for_sidecar` is
+                // typically `None` here. We still thread it through for
+                // forward-compat once Stage-1e lifts the gate.
                 let metta_items: Vec<crate::backend::eval::trampoline::types::BoundValue> =
                     expr_results.into_iter().collect();
+                let stable_items_snapshot = std::sync::Arc::new(metta_items.clone());
                 let metta_env = (*result_env).clone();
-
-                let evaluated = parallel_collapse_eval(
+                let handle = parallel_collapse_dispatch(
                     metta_items,
                     metta_env,
                     par_budget,
                     current_depth,
                     depth,
                 );
-
-                // Encode each (value, bindings) pair as (value (Bindings ...))
-                // mirroring the sequential path's encoding at lines ~9126-9157.
-                let pairs: Vec<MettaValue> = evaluated
-                    .into_iter()
-                    .map(|(result_val, bindings)| {
-                        let tracked_slice =
-                            tracked_vars_for_sidecar.as_deref().map(|tv| tv.as_slice());
-                        let projected =
-                            crate::backend::eval::bindings::project_bindings_for_consumer_generic(
-                                &bindings,
-                                &[&result_val],
-                                tracked_slice,
-                                ctx.factory(),
-                            )
-                            .unwrap_or_default();
-                        let filtered = if projected.iter().any(|(k, _)| k.starts_with("$__fr_")) {
-                            let mut f = crate::backend::models::GenericBindings::new();
-                            for (name, val) in projected.iter() {
-                                if !name.starts_with("$__fr_") {
-                                    f.insert_or_replace(name, val.clone());
-                                }
-                            }
-                            f
-                        } else {
-                            projected
-                        };
-                        let bindings_sexpr = encode_bindings_as_sexpr(&filtered, ctx.factory());
-                        ctx.factory().sexpr(vec![result_val, bindings_sexpr])
-                    })
-                    .collect();
-                let result_list = ctx.factory().sexpr(pairs);
-
-                #[cfg(feature = "trace")]
-                {
-                    if let Some(tc) = ctx.trace_collector() {
-                        tc.emit_converted(
-                            trace_format::TraceTier::TreeWalker,
-                            depth as u32,
-                            crate::backend::trace::trace_value_generic(&result_list),
-                            vec![],
-                            None,
-                            trace_format::TraceEventKind::SpecialForm {
-                                form_name: "collapse-bind".to_string(),
-                                phase: "collapse-result-parallel".to_string(),
-                            },
-                        );
-                    }
-                }
-
+                let env_for_resume = result_env.clone();
+                continuations.push(Continuation::WaitForParallelCollapse {
+                    handle,
+                    merge_mode: crate::backend::eval::trampoline::types::CollapseMergeMode::Bind,
+                    stable_items_snapshot,
+                    outer_carrying: outer_carrying.clone(),
+                    tracked_vars_hint: tracked_vars_for_sidecar.clone(),
+                    env: result_env,
+                    depth,
+                    budget_acquired: par_budget,
+                    caller_depth: current_depth,
+                });
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(result_list)], result_env),
+                    result: (SmallVec::new(), env_for_resume),
                 });
             } else {
                 // ── Sequential path ──
@@ -12436,10 +12143,251 @@ fn process_continuation<C: EvalContext>(
             }
         }
 
+        // **Stack-safety mandate (2026-05-15)**: trampolinized wait pump for
+        // `parallel_dispatch`. Each invocation does one tick of work; the
+        // trampoline outer loop iterates without growing the C stack. See
+        // `pump_parallel_wait` for tick semantics.
+        Continuation::WaitForParallel {
+            handle,
+            merge_mode,
+            base_results,
+            outer_carrying,
+            env,
+            depth: _,
+            budget_acquired,
+            caller_depth,
+            stable_branches_snapshot,
+        } => {
+            // (a) done check
+            let done_now = handle.remaining.load(Ordering::Acquire) == 0
+                || handle.cancel_token.is_satisfied();
+            if done_now {
+                // Trace: ParallelDispatch done (mirrors enter trace from parallel_dispatch).
+                #[cfg(feature = "trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            caller_depth,
+                            trace_format::TraceValue::Unit,
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::ParallelDispatch {
+                                branch_count: handle.num_branches as u32,
+                                branch_exprs: vec![],
+                                parallel_depth: PARALLEL_BRANCH_DEPTH.with(|d| d.get()),
+                                phase: "done".to_string(),
+                            },
+                        );
+                    }
+                }
+
+                release_budget(budget_acquired, caller_depth);
+
+                let mut merged = base_results;
+                let guard = handle.results.lock().expect("results mutex poisoned");
+                for slot in guard.iter() {
+                    if let Some(slot_results) = slot.as_ref() {
+                        match merge_mode {
+                            crate::backend::eval::trampoline::types::ParallelMergeMode::RuleMatch => {
+                                if outer_carrying.is_empty() {
+                                    merged.extend(slot_results.iter().cloned());
+                                } else {
+                                    let oc: &crate::backend::models::GenericBindings<MettaValue> =
+                                        &*outer_carrying;
+                                    merged.extend(slot_results.iter().map(|(v, b)| {
+                                        if b.is_empty() {
+                                            bv_with(v.clone(), oc.clone())
+                                        } else {
+                                            let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                                                oc,
+                                                b,
+                                                ctx.factory(),
+                                            );
+                                            bv_with(v.clone(), composed)
+                                        }
+                                    }));
+                                }
+                            }
+                            crate::backend::eval::trampoline::types::ParallelMergeMode::AmbConcat => {
+                                merged.extend(slot_results.iter().cloned());
+                            }
+                        }
+                    }
+                }
+                drop(guard);
+                // handle drops here → `_root_guard` pops the frame_chain LIFO
+                // entry → `root_frame` Box drops after, releasing its memory.
+
+                work_stack.push(WorkItem::Resume {
+                    result: (merged, env),
+                });
+                return;
+            }
+
+            // (b) one-step pump
+            pump_parallel_wait(&handle, &stable_branches_snapshot);
+
+            // (c) re-push the continuation (move handle; _root_guard is
+            //     not Clone so the variant must transfer ownership).
+            let env_clone_for_resume = env.clone();
+            continuations.push(Continuation::WaitForParallel {
+                handle,
+                merge_mode,
+                base_results,
+                outer_carrying,
+                env,
+                depth: 0,
+                budget_acquired,
+                caller_depth,
+                stable_branches_snapshot,
+            });
+            // Push a dummy `Resume` so the trampoline outer loop pops it,
+            // calls process_continuation, and re-enters our arm next tick.
+            work_stack.push(WorkItem::Resume {
+                result: (SmallVec::new(), env_clone_for_resume),
+            });
+        }
+
+        // **Stack-safety mandate (2026-05-15)**: trampolinized wait pump for
+        // `parallel_collapse_dispatch`. Mirrors `WaitForParallel` arm but
+        // operates on `ParallelCollapseDispatchHandle` and uses
+        // `CollapseMergeMode::{Plain, Bind}` for the result merge.
+        Continuation::WaitForParallelCollapse {
+            handle,
+            merge_mode,
+            stable_items_snapshot,
+            outer_carrying,
+            tracked_vars_hint,
+            env,
+            depth: _,
+            budget_acquired,
+            caller_depth,
+        } => {
+            // (a) done check
+            let done_now = handle.remaining.load(Ordering::Acquire) == 0
+                || handle.cancel_token.is_satisfied();
+            if done_now {
+                #[cfg(feature = "trace")]
+                {
+                    if let Some(tc) = ctx.trace_collector() {
+                        let form_name = match merge_mode {
+                            crate::backend::eval::trampoline::types::CollapseMergeMode::Plain => "collapse",
+                            crate::backend::eval::trampoline::types::CollapseMergeMode::Bind => "collapse-bind",
+                        };
+                        tc.emit_converted(
+                            trace_format::TraceTier::TreeWalker,
+                            caller_depth,
+                            trace_format::TraceValue::Unit,
+                            vec![],
+                            None,
+                            trace_format::TraceEventKind::SpecialForm {
+                                form_name: form_name.to_string(),
+                                phase: "collapse-result-parallel".to_string(),
+                            },
+                        );
+                    }
+                }
+
+                release_budget(budget_acquired, caller_depth);
+
+                // Drain results in slot order, filtering out empty values
+                // (matches parallel_collapse_eval merge semantics).
+                let mut evaluated: Vec<BoundValue> = Vec::new();
+                let guard = handle.results.lock().expect("results mutex poisoned");
+                for slot in guard.iter() {
+                    if let Some(slot_results) = slot.as_ref() {
+                        for bv_item in slot_results.iter() {
+                            if !bv_item.0.is_empty() {
+                                evaluated.push(bv_item.clone());
+                            }
+                        }
+                    }
+                }
+                drop(guard);
+
+                // Merge per mode.
+                let result_list = match merge_mode {
+                    crate::backend::eval::trampoline::types::CollapseMergeMode::Plain => {
+                        // Plain collapse: emit values only, bindings discarded.
+                        ctx.factory().sexpr(
+                            evaluated.into_iter().map(|(v, _)| v).collect()
+                        )
+                    }
+                    crate::backend::eval::trampoline::types::CollapseMergeMode::Bind => {
+                        // collapse-bind: per-result (value (Bindings ...)) sidecar.
+                        let tracked_slice =
+                            tracked_vars_hint.as_deref().map(|tv| tv.as_slice());
+                        let pairs: Vec<MettaValue> = evaluated
+                            .into_iter()
+                            .map(|(result_val, bindings)| {
+                                let projected =
+                                    crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+                                        &bindings,
+                                        &[&result_val],
+                                        tracked_slice,
+                                        ctx.factory(),
+                                    )
+                                    .unwrap_or_default();
+                                let filtered = if projected
+                                    .iter()
+                                    .any(|(k, _)| k.starts_with("$__fr_"))
+                                {
+                                    let mut f =
+                                        crate::backend::models::GenericBindings::new();
+                                    for (n, v) in projected.iter() {
+                                        if !n.starts_with("$__fr_") {
+                                            f.insert_or_replace(n, v.clone());
+                                        }
+                                    }
+                                    f
+                                } else {
+                                    projected
+                                };
+                                let bindings_sexpr =
+                                    encode_bindings_as_sexpr(&filtered, ctx.factory());
+                                ctx.factory().sexpr(vec![result_val, bindings_sexpr])
+                            })
+                            .collect();
+                        ctx.factory().sexpr(pairs)
+                    }
+                };
+
+                // handle drops here → _root_guard pops the frame_chain LIFO
+                // entry → root_frame Box drops after.
+                let _ = outer_carrying;
+                let _ = stable_items_snapshot;
+                work_stack.push(WorkItem::Resume {
+                    result: (smallvec![bv(result_list)], env),
+                });
+                return;
+            }
+
+            // (b) one-step pump
+            pump_parallel_collapse_wait(&handle, &stable_items_snapshot);
+
+            // (c) re-push (move handle; _root_guard is not Clone)
+            let env_for_resume = env.clone();
+            continuations.push(Continuation::WaitForParallelCollapse {
+                handle,
+                merge_mode,
+                stable_items_snapshot,
+                outer_carrying,
+                tracked_vars_hint,
+                env,
+                depth: 0,
+                budget_acquired,
+                caller_depth,
+            });
+            work_stack.push(WorkItem::Resume {
+                result: (SmallVec::new(), env_for_resume),
+            });
+        }
+
         Continuation::ProcessGuard {
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (cond_results, result_env) = result;
 
@@ -12489,7 +12437,7 @@ fn process_continuation<C: EvalContext>(
             space_ref,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (space_results, mut result_env) = result;
 
@@ -12808,7 +12756,7 @@ fn process_continuation<C: EvalContext>(
             atom,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (space_results, mut env_after) = result;
 
@@ -12901,7 +12849,7 @@ fn process_continuation<C: EvalContext>(
             atom,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (space_results, mut env_after) = result;
 
@@ -12991,7 +12939,7 @@ fn process_continuation<C: EvalContext>(
             initial_value,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (init_results, mut env_after) = result;
 
@@ -13018,7 +12966,7 @@ fn process_continuation<C: EvalContext>(
             state_ref,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (state_results, env_after) = result;
 
@@ -13122,7 +13070,7 @@ fn process_continuation<C: EvalContext>(
             new_value,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (value_results, mut env_after) = result;
 
@@ -13160,7 +13108,7 @@ fn process_continuation<C: EvalContext>(
             atom: _,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (atom_results, env_after) = result;
 
@@ -13233,7 +13181,7 @@ fn process_continuation<C: EvalContext>(
             args_arg,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (args_results, env_after) = result;
 
@@ -13270,7 +13218,7 @@ fn process_continuation<C: EvalContext>(
             atom: _,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (atom_results, env_after) = result;
 
@@ -13327,7 +13275,7 @@ fn process_continuation<C: EvalContext>(
             value_expr: _,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (value_results, env_after) = result;
 
@@ -13343,7 +13291,7 @@ fn process_continuation<C: EvalContext>(
             atom: _,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (atom_results, env_after) = result;
 
@@ -13366,7 +13314,7 @@ fn process_continuation<C: EvalContext>(
             token,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (atom_results, mut env_after) = result;
 
@@ -13735,7 +13683,7 @@ fn process_continuation<C: EvalContext>(
             first_only,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (expr_results, env_after) = result;
 
@@ -13818,7 +13766,7 @@ fn process_continuation<C: EvalContext>(
             size_arg,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (size_results, env_after) = result;
 
@@ -13845,7 +13793,7 @@ fn process_continuation<C: EvalContext>(
             is_clear,
             env: _,
             depth: _,
-            outer_carrying,
+            outer_carrying: _,
         } => {
             let (memo_results, env_after) = result;
 
@@ -14299,7 +14247,7 @@ fn process_continuation<C: EvalContext>(
         Continuation::CompleteSubgoal {
             expr_hash,
             env: _,
-            depth,
+            depth: _,
             start_epoch,
         } => {
             let (result_values, result_env) = result;

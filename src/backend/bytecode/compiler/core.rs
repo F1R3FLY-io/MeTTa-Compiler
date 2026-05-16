@@ -254,29 +254,50 @@ where
     ///   the VM pushes the bound value `(f a b)`, then `StructuralHead`
     ///   applies the pre-eval predicate on `(f a b)` — identical to
     ///   tree-walker behavior.
+    /// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list
+    /// (audit item T3.2). Was recursive on SExpr children — deeply-nested
+    /// literal forms would overflow.
     fn compile_as_literal_sexpr(&mut self, expr: &V) -> CompileResult<()> {
-        if let Some(items) = expr.as_sexpr() {
-            if items.is_empty() {
-                self.builder.emit(Opcode::PushEmpty);
-                return Ok(());
-            }
-            // Recursively compile each child as literal — never `compile_call`.
-            for item in items {
-                self.compile_as_literal_sexpr(item)?;
-            }
-            let arity = items.len();
-            if arity <= 255 {
-                self.builder.emit_byte(Opcode::MakeSExpr, arity as u8);
-            } else {
-                self.builder.emit_u16(Opcode::MakeSExprLarge, arity as u16);
-            }
-            return Ok(());
+        enum Work<V> {
+            Process(V),
+            EmitMakeSExpr(usize),
         }
-        // Non-sexpr (atoms, variables, primitives): normal compilation is
-        // correct — it resolves variables via LoadLocal, emits PushAtom for
-        // symbols, and pushes primitives verbatim. None of these paths emit
-        // `Call`, so variable bindings are preserved.
-        self.compile(expr)
+
+        let mut work: Vec<Work<V>> = Vec::with_capacity(8);
+        work.push(Work::Process(expr.clone()));
+
+        while let Some(w) = work.pop() {
+            match w {
+                Work::Process(e) => {
+                    if let Some(items) = e.as_sexpr() {
+                        if items.is_empty() {
+                            self.builder.emit(Opcode::PushEmpty);
+                            continue;
+                        }
+                        let len = items.len();
+                        work.push(Work::EmitMakeSExpr(len));
+                        for item in items.iter().rev() {
+                            work.push(Work::Process(item.clone()));
+                        }
+                        continue;
+                    }
+                    // Non-sexpr (atoms, variables, primitives): normal
+                    // compilation is correct — it resolves variables via
+                    // LoadLocal, emits PushAtom for symbols, and pushes
+                    // primitives verbatim. None of these paths emit `Call`,
+                    // so variable bindings are preserved.
+                    self.compile(&e)?;
+                }
+                Work::EmitMakeSExpr(arity) => {
+                    if arity <= 255 {
+                        self.builder.emit_byte(Opcode::MakeSExpr, arity as u8);
+                    } else {
+                        self.builder.emit_u16(Opcode::MakeSExprLarge, arity as u16);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Compile a single argument to a user-defined call.

@@ -248,15 +248,27 @@ impl RootProvider for BytecodeCacheRoots {
     }
 }
 
-/// Recursively collect all constants from a GenericBytecodeChunk and its
+/// Iteratively collect all constants from a GenericBytecodeChunk and its
 /// sub-chunks.
-pub fn collect_generic_chunk_constants<V>(chunk: &GenericBytecodeChunk<V>, roots: &mut Vec<V>)
-where
+///
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list.
+/// Audit item T#16. Was recursive on `chunk.sub_chunks()` — deeply-nested
+/// lambda forms (chunk hierarchies) would overflow.
+pub fn collect_generic_chunk_constants<'a, V>(
+    chunk: &'a GenericBytecodeChunk<V>,
+    roots: &mut Vec<V>,
+) where
     V: MettaValueTrait + Clone + Send + Sync + 'static,
 {
-    roots.extend(chunk.constants().iter().cloned());
-    for sub in chunk.sub_chunks() {
-        collect_generic_chunk_constants(sub, roots);
+    let mut work: Vec<&'a GenericBytecodeChunk<V>> = Vec::with_capacity(8);
+    work.push(chunk);
+    while let Some(c) = work.pop() {
+        roots.extend(c.constants().iter().cloned());
+        // sub_chunks() returns `&[Arc<GenericBytecodeChunk<V>>]`. Push in
+        // reverse so the first sub-chunk is processed first.
+        for sub in c.sub_chunks().iter().rev() {
+            work.push(sub.as_ref());
+        }
     }
 }
 

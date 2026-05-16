@@ -141,121 +141,193 @@ fn ensure_value_hash_cache_epoch_current() {
 /// For `SExpr`, children hashes are fetched from the cache (if available) and combined
 /// with golden-ratio mixing, avoiding full Xxh3 tree traversal. This turns O(tree_size)
 /// per call into O(arity) for cached children, and O(1) for fully-cached values.
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list.
+/// Audit item T#18. Was recursive on SExpr children (line 229 of pre-refactor),
+/// Quoted (line 238), Spanned (line 247). Memoization handles shared
+/// substructure; the iterative form handles deeply-nested unique structures.
 fn hash_value_cached_inner(value: &MettaValue, cache: &mut TieredHashCache) -> u64 {
-    // Golden ratio constants for primitive fast paths
     const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
     const LONG_SEED: u64 = 0x517cc1b727220a95;
     const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
     const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
     const UNIT_HASH: u64 = 0x756e6974_68617368;
 
-    // Fast path: inline NaN-boxed values — decode directly from tagged bits
-    if value.is_inline() {
-        return match value.inline_tag() {
-            NB_TAG_UNIT => UNIT_HASH,
-            NB_TAG_BOOL => {
-                if (value.tagged as u64 & 1) != 0 {
-                    BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
-                } else {
-                    BOOL_SEED
+    /// Fast-path scalar hash (no recursion). Returns Some(h) for inline /
+    /// primitive values, None for composite values that need traversal.
+    fn fast_path(value: &MettaValue) -> Option<u64> {
+        const GOLDEN_RATIO: u64 = 0x9e3779b97f4a7c15;
+        const LONG_SEED: u64 = 0x517cc1b727220a95;
+        const BOOL_SEED: u64 = 0x2d358dccaa6c78a5;
+        const FLOAT_SEED: u64 = 0x85ebca77c2b2ae63;
+        const UNIT_HASH: u64 = 0x756e6974_68617368;
+        if value.is_inline() {
+            return Some(match value.inline_tag() {
+                NB_TAG_UNIT => UNIT_HASH,
+                NB_TAG_BOOL => {
+                    if (value.tagged as u64 & 1) != 0 {
+                        BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
+                    } else {
+                        BOOL_SEED
+                    }
                 }
-            }
-            NB_TAG_LONG => {
-                let n = value.inline_long_value();
-                let x = (n as u64)
-                    .wrapping_add(LONG_SEED)
-                    .wrapping_mul(GOLDEN_RATIO);
-                x ^ (x >> 32)
-            }
-            NB_TAG_EMPTY => 9u64.wrapping_mul(GOLDEN_RATIO),
-            _ => UNIT_HASH,
-        };
-    }
-
-    // Primitives (slab-allocated): compute directly (no cache needed, O(1))
-    match value.inner_ref() {
-        MettaValueInner::Unit => return UNIT_HASH,
-        MettaValueInner::Bool(b) => {
-            return if *b {
+                NB_TAG_LONG => {
+                    let n = value.inline_long_value();
+                    let x = (n as u64)
+                        .wrapping_add(LONG_SEED)
+                        .wrapping_mul(GOLDEN_RATIO);
+                    x ^ (x >> 32)
+                }
+                NB_TAG_EMPTY => 9u64.wrapping_mul(GOLDEN_RATIO),
+                _ => UNIT_HASH,
+            });
+        }
+        match value.inner_ref() {
+            MettaValueInner::Unit => Some(UNIT_HASH),
+            MettaValueInner::Bool(b) => Some(if *b {
                 BOOL_SEED.wrapping_mul(GOLDEN_RATIO)
             } else {
                 BOOL_SEED
-            };
+            }),
+            MettaValueInner::Long(n) => {
+                let x = (*n as u64)
+                    .wrapping_add(LONG_SEED)
+                    .wrapping_mul(GOLDEN_RATIO);
+                Some(x ^ (x >> 32))
+            }
+            MettaValueInner::Float(f) => {
+                let bits = f.to_bits();
+                let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
+                Some(x ^ (x >> 32))
+            }
+            MettaValueInner::Empty => Some(9u64.wrapping_mul(GOLDEN_RATIO)),
+            MettaValueInner::NotReducible => Some(1u64.wrapping_mul(GOLDEN_RATIO)),
+            _ => None,
         }
-        MettaValueInner::Long(n) => {
-            let x = (*n as u64)
-                .wrapping_add(LONG_SEED)
-                .wrapping_mul(GOLDEN_RATIO);
-            return x ^ (x >> 32);
-        }
-        MettaValueInner::Float(f) => {
-            let bits = f.to_bits();
-            let x = bits.wrapping_add(FLOAT_SEED).wrapping_mul(GOLDEN_RATIO);
-            return x ^ (x >> 32);
-        }
-        MettaValueInner::Empty => return 9u64.wrapping_mul(GOLDEN_RATIO),
-        // Plan S0a (2026-05-13) — fast path for NotReducible sentinel.
-        MettaValueInner::NotReducible => return 1u64.wrapping_mul(GOLDEN_RATIO),
-        _ => {}
     }
 
-    // Cache lookup by slab pointer (L1 direct-mapped → L2 HashMap)
+    // Fast path for the input.
+    if let Some(h) = fast_path(value) {
+        return h;
+    }
+    // Cache lookup.
     let key = value.inner_ptr() as usize;
     if let Some(h) = cache.get(key) {
         return h;
     }
 
-    // Cache miss: compute hash
-    let h = match value.inner_ref() {
-        MettaValueInner::Atom(s) => {
-            let mut hasher = Xxh3::new();
-            6u8.hash(&mut hasher);
-            s.hash(&mut hasher);
-            hasher.finish()
-        }
-        MettaValueInner::String(s) => {
-            let mut hasher = Xxh3::new();
-            5u8.hash(&mut hasher);
-            s.hash(&mut hasher);
-            hasher.finish()
-        }
-        MettaValueInner::SExpr(items) => {
-            // Combine children hashes using Boost-style hash_combine.
-            // Non-commutative, non-self-cancelling (unlike multiply-XOR which
-            // self-cancels for recursive structures like (S (S Z))).
-            // O(arity) when children are cached.
-            let mut combined: u64 = 7u64 ^ items.len() as u64;
-            for item in items.iter() {
-                let child_hash = hash_value_cached_inner(item, cache);
-                combined ^= child_hash
-                    .wrapping_add(HASH_GOLDEN_RATIO)
-                    .wrapping_add(combined << 6)
-                    .wrapping_add(combined >> 2);
+    // Iterative descent for composite values.
+    enum Work {
+        Process { val: MettaValue, key: usize },
+        // Combine children. `key` is the parent's slab pointer for cache insert.
+        // `tag`: 7 = SExpr, 10 = Quoted. `count` is number of child hashes
+        // pending on the result stack.
+        Combine {
+            key: usize,
+            tag: u64,
+            count: usize,
+        },
+    }
+    let mut work: Vec<Work> = Vec::with_capacity(8);
+    let mut hashes: Vec<u64> = Vec::with_capacity(8);
+    work.push(Work::Process {
+        val: value.clone(),
+        key,
+    });
+    while let Some(w) = work.pop() {
+        match w {
+            Work::Process { val, key } => {
+                if let Some(h) = fast_path(&val) {
+                    hashes.push(h);
+                    continue;
+                }
+                if let Some(h) = cache.get(key) {
+                    hashes.push(h);
+                    continue;
+                }
+                match val.inner_ref() {
+                    MettaValueInner::Atom(s) => {
+                        let mut hasher = Xxh3::new();
+                        6u8.hash(&mut hasher);
+                        s.hash(&mut hasher);
+                        let h = hasher.finish();
+                        cache.insert(key, h);
+                        hashes.push(h);
+                    }
+                    MettaValueInner::String(s) => {
+                        let mut hasher = Xxh3::new();
+                        5u8.hash(&mut hasher);
+                        s.hash(&mut hasher);
+                        let h = hasher.finish();
+                        cache.insert(key, h);
+                        hashes.push(h);
+                    }
+                    MettaValueInner::SExpr(items) => {
+                        let len = items.len();
+                        work.push(Work::Combine {
+                            key,
+                            tag: 7u64 ^ len as u64,
+                            count: len,
+                        });
+                        for item in items.iter().rev() {
+                            let ck = item.inner_ptr() as usize;
+                            work.push(Work::Process {
+                                val: item.clone(),
+                                key: ck,
+                            });
+                        }
+                    }
+                    MettaValueInner::Quoted(inner) => {
+                        work.push(Work::Combine {
+                            key,
+                            tag: 10u64,
+                            count: 1,
+                        });
+                        let ck = inner.inner_ptr() as usize;
+                        work.push(Work::Process {
+                            val: *inner,
+                            key: ck,
+                        });
+                    }
+                    MettaValueInner::Spanned(inner, _span) => {
+                        // Spanned hash == inner hash, no combine.
+                        let ck = inner.inner_ptr() as usize;
+                        work.push(Work::Process {
+                            val: *inner,
+                            key: ck,
+                        });
+                    }
+                    MettaValueInner::Error(..) => {
+                        let h = 8u64.wrapping_mul(HASH_GOLDEN_RATIO);
+                        cache.insert(key, h);
+                        hashes.push(h);
+                    }
+                    other => {
+                        let mut hasher = Xxh3::new();
+                        hash_value_for_trait_inner(other, &mut hasher);
+                        let h = hasher.finish();
+                        cache.insert(key, h);
+                        hashes.push(h);
+                    }
+                }
             }
-            combined
+            Work::Combine { key, tag, count } => {
+                let start = hashes.len() - count;
+                let children: Vec<u64> = hashes.drain(start..).collect();
+                let mut combined: u64 = tag;
+                for child_hash in children.iter() {
+                    combined ^= child_hash
+                        .wrapping_add(HASH_GOLDEN_RATIO)
+                        .wrapping_add(combined << 6)
+                        .wrapping_add(combined >> 2);
+                }
+                cache.insert(key, combined);
+                hashes.push(combined);
+            }
         }
-        MettaValueInner::Quoted(inner) => {
-            let inner_hash = hash_value_cached_inner(inner, cache);
-            let mut combined = 10u64;
-            combined ^= inner_hash
-                .wrapping_add(HASH_GOLDEN_RATIO)
-                .wrapping_add(combined << 6)
-                .wrapping_add(combined >> 2);
-            combined
-        }
-        MettaValueInner::Spanned(inner, _span) => {
-            return hash_value_cached_inner(inner, cache);
-        }
-        MettaValueInner::Error(..) => 8u64.wrapping_mul(HASH_GOLDEN_RATIO),
-        // Type, Conjunction, Space, State, Memo — rare, use Xxh3 slow path
-        other => {
-            let mut hasher = Xxh3::new();
-            hash_value_for_trait_inner(other, &mut hasher);
-            hasher.finish()
-        }
-    };
-
-    cache.insert(key, h);
+    }
+    let h = hashes.pop().expect("hash_value_cached_inner: empty result");
+    // Silence unused-binding warnings for the original closure-local constants.
+    let _ = (GOLDEN_RATIO, LONG_SEED, BOOL_SEED, FLOAT_SEED, UNIT_HASH);
     h
 }
 
@@ -1572,108 +1644,27 @@ impl MettaValue {
     // Methods formerly only on heap MettaValue
     // ========================================================================
 
+    // (helpers for iterative+memoized formatters; defined below)
+
     /// Convert to canonical MeTTa string representation.
     /// Produces syntax that can be round-trip parsed by the MeTTa parser.
     /// Guarantees: parse(to_metta_string(value)) == value
+    /// **Stack-safety + memory-safety fix (2026-05-15)**: iterative + memoized.
+    /// Was recursive and exponentially vulnerable; now uses a heap work-list
+    /// and memo keyed by slab pointer. See `to_display_string` for rationale.
     pub fn to_metta_string(&self) -> String {
-        match self.inner_ref() {
-            MettaValueInner::Atom(s) => s.to_string(),
-            MettaValueInner::Bool(true) => "True".to_string(),
-            MettaValueInner::Bool(false) => "False".to_string(),
-            MettaValueInner::Long(n) => n.to_string(),
-            // Spec §02: canonical float form. Single source of truth.
-            MettaValueInner::Float(f) => float_canonical(*f),
-            MettaValueInner::String(s) => format!("\"{}\"", escape_metta_string(s)),
-            MettaValueInner::SExpr(items) => {
-                let inner = items
-                    .iter()
-                    .map(|v| v.to_metta_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("({})", inner)
-            }
-            MettaValueInner::Unit => "()".to_string(),
-            MettaValueInner::Error(offending, detail) => {
-                format!(
-                    "(Error {} {})",
-                    offending.to_metta_string(),
-                    detail.to_metta_string()
-                )
-            }
-            MettaValueInner::Type(t) => t.to_metta_string(),
-            MettaValueInner::Conjunction(goals) => {
-                if goals.is_empty() {
-                    "(,)".to_string()
-                } else {
-                    let inner = goals
-                        .iter()
-                        .map(|v| v.to_metta_string())
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    format!("(, {})", inner)
-                }
-            }
-            MettaValueInner::Quoted(inner) => format!("(quote {})", inner.to_metta_string()),
-            MettaValueInner::Space(h) => format!("(Space {} \"{}\")", h.id, h.name),
-            MettaValueInner::State(id) => format!("(State {})", id),
-            MettaValueInner::Memo(h) => format!("(Memo {} \"{}\")", h.id, h.name),
-            MettaValueInner::Empty => "Empty".to_string(),
-            MettaValueInner::NotReducible => "NotReducible".to_string(),
-            MettaValueInner::Spanned(v, _) => v.to_metta_string(),
-        }
+        format_value_iterative(
+            self,
+            FormatStyle::MettaString,
+        )
     }
 
-    /// Convert to MORK s-expression string format.
+    /// **Stack-safety + memory-safety fix (2026-05-15)**: iterative + memoized.
     pub fn to_mork_string(&self) -> String {
-        match self.inner_ref() {
-            MettaValueInner::Atom(s) => {
-                if *s == "&" || *s == "&self" || *s == "&kb" || *s == "&stack" {
-                    s.to_string()
-                } else if s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') {
-                    format!("${}", &s[1..])
-                } else if *s == "_" {
-                    "$".to_string()
-                } else {
-                    s.to_string()
-                }
-            }
-            MettaValueInner::Bool(b) => b.to_string(),
-            MettaValueInner::Long(n) => n.to_string(),
-            MettaValueInner::Float(f) => f.to_string(),
-            MettaValueInner::String(s) => format!("\"{}\"", s),
-            MettaValueInner::SExpr(items) => {
-                let inner = items
-                    .iter()
-                    .map(|v| v.to_mork_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("({})", inner)
-            }
-            MettaValueInner::Unit => "()".to_string(),
-            MettaValueInner::Error(offending, detail) => {
-                format!(
-                    "(Error {} {})",
-                    offending.to_mork_string(),
-                    detail.to_mork_string()
-                )
-            }
-            MettaValueInner::Type(t) => t.to_mork_string(),
-            MettaValueInner::Conjunction(goals) => {
-                let inner = goals
-                    .iter()
-                    .map(|v| v.to_mork_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("(, {})", inner)
-            }
-            MettaValueInner::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
-            MettaValueInner::State(id) => format!("(State {})", id),
-            MettaValueInner::Quoted(inner) => format!("(quote {})", inner.to_mork_string()),
-            MettaValueInner::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
-            MettaValueInner::Empty => "Empty".to_string(),
-            MettaValueInner::NotReducible => "NotReducible".to_string(),
-            MettaValueInner::Spanned(v, _) => v.to_mork_string(),
-        }
+        format_value_iterative(
+            self,
+            FormatStyle::MorkString,
+        )
     }
 
     /// Convert to a JSON-like string representation.
@@ -1737,6 +1728,257 @@ impl MettaValue {
             MettaValueInner::Spanned(v, _) => v.to_json_string(),
         }
     }
+}
+
+/// **Stack-safety + memory-safety helper (2026-05-15)**: format style for
+/// `format_value_iterative`. Each style controls how atoms, strings,
+/// floats, and the special sentinels are rendered. Composite types
+/// (SExpr/Conjunction/Error/Type/Quoted) use the same iterative work-list
+/// shape regardless of style.
+#[derive(Clone, Copy)]
+pub(crate) enum FormatStyle {
+    /// `to_metta_string` style: quoted strings, canonical floats,
+    /// `True`/`False` for booleans, parser-roundtrip-safe.
+    MettaString,
+    /// `to_mork_string` style: variable renaming (`$x`, `&x`, `_` → `$`),
+    /// unquoted strings (legacy), default Rust float formatting.
+    MorkString,
+    /// `Display for MettaValue` style: same as MettaString except
+    /// Space/State/Memo are rendered as `<Space:NAME>` / `<State:ID>` /
+    /// `<Memo:NAME>` (human-friendly, NOT parser-roundtrip).
+    Display,
+}
+
+/// **Stack-safety + memory-safety fix (2026-05-15)**: shared iterative
+/// formatter for `to_metta_string` and `to_mork_string`.
+///
+/// Replaces the recursive variants (which were both stack-unsafe AND
+/// exponentially vulnerable to shared substructure). Uses a heap work-list
+/// (`Vec<FmtWork>`) plus a memo (`HashMap<*const MettaValueInner, String>`)
+/// keyed by slab pointer to cache each unique subtree's rendered string —
+/// so multiple occurrences of a shared subtree are O(string_len) instead
+/// of O(full re-expansion).
+///
+/// See `to_display_string` for the same pattern.
+pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> String {
+    enum FmtWork<'a> {
+        Process(&'a MettaValue),
+        Join {
+            count: usize,
+            prefix: &'static str,
+            suffix: &'static str,
+            separator: &'static str,
+            memo_key: Option<usize>,
+        },
+    }
+
+    let mut work_stack: Vec<FmtWork<'_>> = Vec::with_capacity(16);
+    let mut result_stack: Vec<String> = Vec::with_capacity(16);
+    let mut memo: std::collections::HashMap<usize, String> =
+        std::collections::HashMap::with_capacity(64);
+
+    work_stack.push(FmtWork::Process(root));
+
+    while let Some(work) = work_stack.pop() {
+        match work {
+            FmtWork::Process(val) => {
+                if val.is_inline() {
+                    result_stack.push(match val.inline_tag() {
+                        NB_TAG_LONG => val.inline_long_value().to_string(),
+                        NB_TAG_BOOL => match style {
+                            FormatStyle::MettaString | FormatStyle::Display => {
+                                if (val.tagged as u64 & 1) != 0 {
+                                    "True"
+                                } else {
+                                    "False"
+                                }
+                                .to_string()
+                            }
+                            FormatStyle::MorkString => {
+                                ((val.tagged as u64 & 1) != 0).to_string()
+                            }
+                        },
+                        NB_TAG_UNIT => "()".to_string(),
+                        NB_TAG_EMPTY => "Empty".to_string(),
+                        _ => "()".to_string(),
+                    });
+                    continue;
+                }
+                let memo_key = val.inner_ptr() as usize;
+                if let Some(cached) = memo.get(&memo_key) {
+                    result_stack.push(cached.clone());
+                    continue;
+                }
+                match val.inner_ref() {
+                    MettaValueInner::Long(n) => result_stack.push(n.to_string()),
+                    MettaValueInner::Float(f) => result_stack.push(match style {
+                        FormatStyle::MettaString | FormatStyle::Display => float_canonical(*f),
+                        FormatStyle::MorkString => f.to_string(),
+                    }),
+                    MettaValueInner::Bool(b) => result_stack.push(match style {
+                        FormatStyle::MettaString | FormatStyle::Display => {
+                            if *b { "True" } else { "False" }.to_string()
+                        }
+                        FormatStyle::MorkString => b.to_string(),
+                    }),
+                    MettaValueInner::String(s) => result_stack.push(match style {
+                        FormatStyle::MettaString | FormatStyle::Display => {
+                            // Display impl uses the same canonical escapes
+                            // (`\\`, `\"`, `\n`, `\t`, `\r`) as to_metta_string.
+                            format!("\"{}\"", escape_metta_string(s))
+                        }
+                        FormatStyle::MorkString => format!("\"{}\"", s),
+                    }),
+                    MettaValueInner::Atom(a) => result_stack.push(match style {
+                        FormatStyle::MettaString | FormatStyle::Display => a.to_string(),
+                        FormatStyle::MorkString => {
+                            if *a == "&" || *a == "&self" || *a == "&kb" || *a == "&stack" {
+                                a.to_string()
+                            } else if a.starts_with('$')
+                                || a.starts_with('&')
+                                || a.starts_with('\'')
+                            {
+                                format!("${}", &a[1..])
+                            } else if *a == "_" {
+                                "$".to_string()
+                            } else {
+                                a.to_string()
+                            }
+                        }
+                    }),
+                    MettaValueInner::Unit => result_stack.push("()".to_string()),
+                    MettaValueInner::Empty => result_stack.push("Empty".to_string()),
+                    MettaValueInner::NotReducible => {
+                        result_stack.push("NotReducible".to_string());
+                    }
+                    MettaValueInner::Space(handle) => {
+                        result_stack.push(match style {
+                            FormatStyle::Display => format!("<Space:{}>", handle.name),
+                            FormatStyle::MettaString | FormatStyle::MorkString => {
+                                format!("(Space {} \"{}\")", handle.id, handle.name)
+                            }
+                        });
+                    }
+                    MettaValueInner::State(id) => {
+                        result_stack.push(match style {
+                            FormatStyle::Display => format!("<State:{}>", id),
+                            FormatStyle::MettaString | FormatStyle::MorkString => {
+                                format!("(State {})", id)
+                            }
+                        });
+                    }
+                    MettaValueInner::Memo(handle) => {
+                        result_stack.push(match style {
+                            FormatStyle::Display => format!("<Memo:{}>", handle.name),
+                            FormatStyle::MettaString | FormatStyle::MorkString => {
+                                format!("(Memo {} \"{}\")", handle.id, handle.name)
+                            }
+                        });
+                    }
+                    MettaValueInner::Error(offending, detail) => {
+                        work_stack.push(FmtWork::Join {
+                            count: 2,
+                            prefix: "(Error ",
+                            suffix: ")",
+                            separator: " ",
+                            memo_key: Some(memo_key),
+                        });
+                        work_stack.push(FmtWork::Process(detail));
+                        work_stack.push(FmtWork::Process(offending));
+                    }
+                    MettaValueInner::Type(t) => match style {
+                        FormatStyle::Display => {
+                            // Display wraps as `(: inner)` per the original
+                            // `impl fmt::Display for MettaValue`.
+                            work_stack.push(FmtWork::Join {
+                                count: 1,
+                                prefix: "(: ",
+                                suffix: ")",
+                                separator: "",
+                                memo_key: Some(memo_key),
+                            });
+                            work_stack.push(FmtWork::Process(t));
+                        }
+                        FormatStyle::MettaString | FormatStyle::MorkString => {
+                            // to_metta_string / to_mork_string format Type(t)
+                            // as just t (NOT wrapped). Preserve that behavior
+                            // — pass through the inner.
+                            work_stack.push(FmtWork::Process(t));
+                        }
+                    },
+                    MettaValueInner::Quoted(inner) => {
+                        work_stack.push(FmtWork::Join {
+                            count: 1,
+                            prefix: "(quote ",
+                            suffix: ")",
+                            separator: "",
+                            memo_key: Some(memo_key),
+                        });
+                        work_stack.push(FmtWork::Process(inner));
+                    }
+                    MettaValueInner::SExpr(items) => {
+                        if items.is_empty() {
+                            let s = "()".to_string();
+                            memo.insert(memo_key, s.clone());
+                            result_stack.push(s);
+                        } else {
+                            work_stack.push(FmtWork::Join {
+                                count: items.len(),
+                                prefix: "(",
+                                suffix: ")",
+                                separator: " ",
+                                memo_key: Some(memo_key),
+                            });
+                            for item in items.iter().rev() {
+                                work_stack.push(FmtWork::Process(item));
+                            }
+                        }
+                    }
+                    MettaValueInner::Conjunction(goals) => {
+                        if goals.is_empty() {
+                            // to_metta_string had `(,)` for empty; to_mork_string
+                            // had `(, )` (per its inner=join logic). Use `(,)`
+                            // for both — the difference was incidental.
+                            let s = "(,)".to_string();
+                            memo.insert(memo_key, s.clone());
+                            result_stack.push(s);
+                        } else {
+                            work_stack.push(FmtWork::Join {
+                                count: goals.len(),
+                                prefix: "(, ",
+                                suffix: ")",
+                                separator: " ",
+                                memo_key: Some(memo_key),
+                            });
+                            for goal in goals.iter().rev() {
+                                work_stack.push(FmtWork::Process(goal));
+                            }
+                        }
+                    }
+                    MettaValueInner::Spanned(v, _) => {
+                        work_stack.push(FmtWork::Process(v));
+                    }
+                }
+            }
+            FmtWork::Join {
+                count,
+                prefix,
+                suffix,
+                separator,
+                memo_key,
+            } => {
+                let start = result_stack.len() - count;
+                let parts: Vec<String> = result_stack.drain(start..).collect();
+                let formatted = format!("{}{}{}", prefix, parts.join(separator), suffix);
+                if let Some(key) = memo_key {
+                    memo.insert(key, formatted.clone());
+                }
+                result_stack.push(formatted);
+            }
+        }
+    }
+
+    result_stack.pop().unwrap_or_default()
 }
 
 /// Escape special characters in a string for JSON encoding.
@@ -1818,71 +2060,13 @@ impl fmt::Debug for MettaValue {
 }
 
 impl fmt::Display for MettaValue {
+    /// **Stack-safety + memory-safety fix (2026-05-15)**: delegates to the
+    /// iterative + memoized `format_value_iterative` with `FormatStyle::Display`.
+    /// Was recursive (Display on children via `write!`) and exponentially
+    /// vulnerable to shared substructure — same defect class as the 6.7 PB
+    /// `to_display_string` bug.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Inline values: format directly without slab deref
-        if self.is_inline() {
-            return match self.view() {
-                ValueView::Bool(b) => write!(f, "{}", if b { "True" } else { "False" }),
-                ValueView::Long(n) => write!(f, "{}", n),
-                ValueView::Unit => write!(f, "()"),
-                ValueView::Empty => write!(f, "Empty"),
-                _ => write!(f, "()"),
-            };
-        }
-        // Display is span-transparent: Spanned delegates to inner value
-        match self.inner_ref() {
-            MettaValueInner::Atom(s) => write!(f, "{}", s),
-            MettaValueInner::Bool(b) => write!(f, "{}", if *b { "True" } else { "False" }),
-            MettaValueInner::Long(n) => write!(f, "{}", n),
-            // Spec §02: canonical float form preserves `.0` for whole-number
-            // floats (e.g., `1500.0`, not `1500`) so parser round-trip yields
-            // Float, not Long. Single source of truth: `float_canonical`.
-            MettaValueInner::Float(v) => write!(f, "{}", float_canonical(*v)),
-            // Spec §01.2: strings canonical-escape `\n`, `\t`, `\r`, `\\`, `\"`.
-            MettaValueInner::String(s) => {
-                write!(f, "\"")?;
-                for c in s.chars() {
-                    match c {
-                        '\\' => write!(f, "\\\\")?,
-                        '"' => write!(f, "\\\"")?,
-                        '\n' => write!(f, "\\n")?,
-                        '\t' => write!(f, "\\t")?,
-                        '\r' => write!(f, "\\r")?,
-                        _ => write!(f, "{}", c)?,
-                    }
-                }
-                write!(f, "\"")
-            }
-            MettaValueInner::SExpr(items) => {
-                write!(f, "(")?;
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", item)?;
-                }
-                write!(f, ")")
-            }
-            MettaValueInner::Unit => write!(f, "()"),
-            MettaValueInner::Error(offending, detail) => {
-                write!(f, "(Error {} {})", offending, detail)
-            }
-            MettaValueInner::Type(inner) => write!(f, "(: {})", inner),
-            MettaValueInner::Conjunction(goals) => {
-                write!(f, "(,")?;
-                for goal in goals.iter() {
-                    write!(f, " {}", goal)?;
-                }
-                write!(f, ")")
-            }
-            MettaValueInner::Space(handle) => write!(f, "<Space:{}>", handle.name),
-            MettaValueInner::State(id) => write!(f, "<State:{}>", id),
-            MettaValueInner::Quoted(inner) => write!(f, "(quote {})", inner),
-            MettaValueInner::Memo(handle) => write!(f, "<Memo:{}>", handle.name),
-            MettaValueInner::Empty => write!(f, "Empty"),
-            MettaValueInner::NotReducible => write!(f, "NotReducible"),
-            MettaValueInner::Spanned(v, _) => write!(f, "{}", v),
-        }
+        f.write_str(&format_value_iterative(self, FormatStyle::Display))
     }
 }
 
@@ -2582,8 +2766,21 @@ impl MettaValueTrait for MettaValue {
     }
 
     fn to_display_string(&self) -> std::string::String {
-        // Stack-based implementation to avoid recursion on deeply nested structures
-        // Similar to friendly_repr but strings are printed WITHOUT quotes
+        // **Memory-safety fix (2026-05-15)**: per-call memoization keyed by
+        // slab pointer. PLN produces deeply shared substructure (e.g.,
+        // `(Implication X X)` where X is itself deep); without memoization
+        // each occurrence of a shared subtree triggers fresh full expansion
+        // via the work-list, causing exponential blowup in result_stack /
+        // work_stack. Robot.metta repro 2026-05-15 hit `memory allocation
+        // of 6738207434563584 bytes failed` (~6.7 PB) in Vec<String>::grow_one
+        // from this function (coredump 832730 frame 14).
+        //
+        // The memo caches each unique slab pointer's formatted string once;
+        // subsequent occurrences clone the cached String (O(string_len))
+        // instead of re-expanding the subtree (O(2^depth) in worst case).
+        //
+        // Stack-based implementation to avoid recursion on deeply nested structures.
+        // Similar to friendly_repr but strings are printed WITHOUT quotes.
         enum ReprWork<'a> {
             Process(&'a MettaValue),
             Join {
@@ -2591,11 +2788,17 @@ impl MettaValueTrait for MettaValue {
                 prefix: &'static str,
                 suffix: &'static str,
                 separator: &'static str,
+                /// Memo key: slab pointer of the value being rendered, or
+                /// `None` for synthetic Joins that don't correspond to a
+                /// single unique value.
+                memo_key: Option<usize>,
             },
         }
 
         let mut work_stack: Vec<ReprWork<'_>> = Vec::with_capacity(16);
         let mut result_stack: Vec<std::string::String> = Vec::with_capacity(16);
+        let mut memo: std::collections::HashMap<usize, std::string::String> =
+            std::collections::HashMap::with_capacity(64);
 
         work_stack.push(ReprWork::Process(self));
 
@@ -2615,6 +2818,12 @@ impl MettaValueTrait for MettaValue {
                             NB_TAG_EMPTY => "Empty".to_string(),
                             _ => "()".to_string(),
                         });
+                        continue;
+                    }
+                    // Memo lookup: O(1) by slab pointer.
+                    let memo_key = val.inner_ptr() as usize;
+                    if let Some(cached) = memo.get(&memo_key) {
+                        result_stack.push(cached.clone());
                         continue;
                     }
                     match val.inner_ref() {
@@ -2644,6 +2853,7 @@ impl MettaValueTrait for MettaValue {
                                 prefix: "(Error ",
                                 suffix: ")",
                                 separator: " ",
+                                memo_key: Some(memo_key),
                             });
                             work_stack.push(ReprWork::Process(detail));
                             work_stack.push(ReprWork::Process(offending));
@@ -2654,6 +2864,7 @@ impl MettaValueTrait for MettaValue {
                                 prefix: "(: ",
                                 suffix: ")",
                                 separator: "",
+                                memo_key: Some(memo_key),
                             });
                             work_stack.push(ReprWork::Process(t));
                         }
@@ -2663,18 +2874,22 @@ impl MettaValueTrait for MettaValue {
                                 prefix: "(quote ",
                                 suffix: ")",
                                 separator: "",
+                                memo_key: Some(memo_key),
                             });
                             work_stack.push(ReprWork::Process(inner));
                         }
                         MettaValueInner::SExpr(items) => {
                             if items.is_empty() {
-                                result_stack.push("()".to_string());
+                                let s = "()".to_string();
+                                memo.insert(memo_key, s.clone());
+                                result_stack.push(s);
                             } else {
                                 work_stack.push(ReprWork::Join {
                                     count: items.len(),
                                     prefix: "(",
                                     suffix: ")",
                                     separator: " ",
+                                    memo_key: Some(memo_key),
                                 });
                                 for item in items.iter().rev() {
                                     work_stack.push(ReprWork::Process(item));
@@ -2683,13 +2898,16 @@ impl MettaValueTrait for MettaValue {
                         }
                         MettaValueInner::Conjunction(goals) => {
                             if goals.is_empty() {
-                                result_stack.push("(,)".to_string());
+                                let s = "(,)".to_string();
+                                memo.insert(memo_key, s.clone());
+                                result_stack.push(s);
                             } else {
                                 work_stack.push(ReprWork::Join {
                                     count: goals.len(),
                                     prefix: "(, ",
                                     suffix: ")",
                                     separator: " ",
+                                    memo_key: Some(memo_key),
                                 });
                                 for goal in goals.iter().rev() {
                                     work_stack.push(ReprWork::Process(goal));
@@ -2697,6 +2915,8 @@ impl MettaValueTrait for MettaValue {
                             }
                         }
                         MettaValueInner::Spanned(v, _) => {
+                            // Spanned wrappers don't get their own memo entry;
+                            // the inner value is what shares.
                             work_stack.push(ReprWork::Process(v));
                         }
                     }
@@ -2706,10 +2926,15 @@ impl MettaValueTrait for MettaValue {
                     prefix,
                     suffix,
                     separator,
+                    memo_key,
                 } => {
                     let start = result_stack.len() - count;
                     let parts: Vec<std::string::String> = result_stack.drain(start..).collect();
-                    result_stack.push(format!("{}{}{}", prefix, parts.join(separator), suffix));
+                    let formatted = format!("{}{}{}", prefix, parts.join(separator), suffix);
+                    if let Some(key) = memo_key {
+                        memo.insert(key, formatted.clone());
+                    }
+                    result_stack.push(formatted);
                 }
             }
         }
@@ -2778,110 +3003,123 @@ pub(crate) fn read_varint(bytes: &[u8]) -> Result<(usize, usize), std::string::S
 // hash_value_for_trait removed — replaced by hash_value_cached_inner + hash_value_for_trait_inner
 // which use pointer-keyed thread-local caching + Boost hash_combine for O(1) amortized hashing.
 
-/// Serialize an MettaValue to bytes
+/// Serialize an MettaValue to bytes.
+///
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list.
+/// Audit item T#21. Was recursive on SExpr / Error / Type / Conjunction /
+/// Quoted / Spanned children — deeply-nested values would overflow. No
+/// memoization needed: serialization is sequential byte-writing, and shared
+/// substructure must still produce identical byte sequences for each
+/// occurrence (the parser-side reconstructs separate values for each).
 fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
-    // Inline fast path: avoid slab deref for NaN-boxed types
-    if value.is_inline() {
-        match value.inline_tag() {
-            NB_TAG_BOOL => {
+    let mut work: Vec<MettaValue> = Vec::with_capacity(8);
+    work.push(value.clone());
+    while let Some(val) = work.pop() {
+        if val.is_inline() {
+            match val.inline_tag() {
+                NB_TAG_BOOL => {
+                    buf.push(BOOL);
+                    buf.push(if (val.tagged as u64 & 1) != 0 { 1 } else { 0 });
+                }
+                NB_TAG_LONG => {
+                    buf.push(LONG);
+                    buf.extend_from_slice(&val.inline_long_value().to_le_bytes());
+                }
+                NB_TAG_UNIT => {
+                    buf.push(UNIT);
+                }
+                NB_TAG_EMPTY => {
+                    buf.push(EMPTY);
+                }
+                _ => {
+                    buf.push(UNIT);
+                }
+            }
+            continue;
+        }
+        match val.inner_ref() {
+            MettaValueInner::Atom(s) => {
+                buf.push(ATOM);
+                write_varint(buf, s.len());
+                buf.extend_from_slice(s.as_bytes());
+            }
+            MettaValueInner::Bool(b) => {
                 buf.push(BOOL);
-                buf.push(if (value.tagged as u64 & 1) != 0 { 1 } else { 0 });
+                buf.push(if *b { 1 } else { 0 });
             }
-            NB_TAG_LONG => {
+            MettaValueInner::Long(n) => {
                 buf.push(LONG);
-                buf.extend_from_slice(&value.inline_long_value().to_le_bytes());
+                buf.extend_from_slice(&n.to_le_bytes());
             }
-            NB_TAG_UNIT => {
-                buf.push(UNIT);
+            MettaValueInner::Float(f) => {
+                buf.push(FLOAT);
+                buf.extend_from_slice(&f.to_le_bytes());
             }
-            NB_TAG_EMPTY => {
+            MettaValueInner::String(s) => {
+                buf.push(STRING);
+                write_varint(buf, s.len());
+                buf.extend_from_slice(s.as_bytes());
+            }
+            MettaValueInner::SExpr(items) => {
+                buf.push(SEXPR);
+                write_varint(buf, items.len());
+                // Push children in reverse so first child is serialized first.
+                for item in items.iter().rev() {
+                    work.push(item.clone());
+                }
+            }
+            MettaValueInner::Unit => {
+                buf.push(UNIT_LEGACY);
+            }
+            MettaValueInner::Error(offending, detail) => {
+                buf.push(ERROR);
+                // Push detail then offending so offending is serialized first
+                // (reverse stack order).
+                work.push(detail.clone());
+                work.push(offending.clone());
+            }
+            MettaValueInner::Type(inner) => {
+                buf.push(TYPE);
+                work.push(inner.clone());
+            }
+            MettaValueInner::Conjunction(goals) => {
+                buf.push(CONJUNCTION);
+                write_varint(buf, goals.len());
+                for goal in goals.iter().rev() {
+                    work.push(goal.clone());
+                }
+            }
+            MettaValueInner::Empty => {
                 buf.push(EMPTY);
             }
-            _ => {
-                buf.push(UNIT);
+            MettaValueInner::Space(handle) => {
+                buf.push(SPACE);
+                buf.extend_from_slice(&handle.id.to_le_bytes());
+                let name_bytes = handle.name.as_bytes();
+                write_varint(buf, name_bytes.len());
+                buf.extend_from_slice(name_bytes);
+                buf.push(if handle.is_module_space() { 1 } else { 0 });
+            }
+            MettaValueInner::State(id) => {
+                buf.push(STATE);
+                buf.extend_from_slice(&id.to_le_bytes());
+            }
+            MettaValueInner::Quoted(inner) => {
+                buf.push(QUOTED);
+                work.push(inner.clone());
+            }
+            MettaValueInner::Memo(handle) => {
+                buf.push(MEMO);
+                buf.extend_from_slice(&handle.id.to_le_bytes());
+            }
+            MettaValueInner::NotReducible => {
+                buf.push(NOT_REDUCIBLE);
+            }
+            MettaValueInner::Spanned(v, _) => {
+                // Spanned is span-transparent for serialization.
+                work.push(v.clone());
             }
         }
-        return;
-    }
-    match value.inner_ref() {
-        MettaValueInner::Atom(s) => {
-            buf.push(ATOM);
-            write_varint(buf, s.len());
-            buf.extend_from_slice(s.as_bytes());
-        }
-        MettaValueInner::Bool(b) => {
-            buf.push(BOOL);
-            buf.push(if *b { 1 } else { 0 });
-        }
-        MettaValueInner::Long(n) => {
-            buf.push(LONG);
-            buf.extend_from_slice(&n.to_le_bytes());
-        }
-        MettaValueInner::Float(f) => {
-            buf.push(FLOAT);
-            buf.extend_from_slice(&f.to_le_bytes());
-        }
-        MettaValueInner::String(s) => {
-            buf.push(STRING);
-            write_varint(buf, s.len());
-            buf.extend_from_slice(s.as_bytes());
-        }
-        MettaValueInner::SExpr(items) => {
-            buf.push(SEXPR);
-            write_varint(buf, items.len());
-            for item in items.iter() {
-                serialize_value(item, buf);
-            }
-        }
-        MettaValueInner::Unit => {
-            buf.push(UNIT_LEGACY);
-        }
-        MettaValueInner::Error(offending, detail) => {
-            buf.push(ERROR);
-            // HE-bisimilar: both offending and detail are serialized as full values.
-            serialize_value(offending, buf);
-            serialize_value(detail, buf);
-        }
-        MettaValueInner::Type(inner) => {
-            buf.push(TYPE);
-            serialize_value(inner, buf);
-        }
-        MettaValueInner::Conjunction(goals) => {
-            buf.push(CONJUNCTION);
-            write_varint(buf, goals.len());
-            for goal in goals.iter() {
-                serialize_value(goal, buf);
-            }
-        }
-        MettaValueInner::Empty => {
-            buf.push(EMPTY);
-        }
-        MettaValueInner::Space(handle) => {
-            buf.push(SPACE);
-            buf.extend_from_slice(&handle.id.to_le_bytes());
-            // Serialize name length and name bytes
-            let name_bytes = handle.name.as_bytes();
-            write_varint(buf, name_bytes.len());
-            buf.extend_from_slice(name_bytes);
-            // Serialize is_module_space flag
-            buf.push(if handle.is_module_space() { 1 } else { 0 });
-        }
-        MettaValueInner::State(id) => {
-            buf.push(STATE);
-            buf.extend_from_slice(&id.to_le_bytes());
-        }
-        MettaValueInner::Quoted(inner) => {
-            buf.push(QUOTED);
-            serialize_value(inner, buf);
-        }
-        MettaValueInner::Memo(handle) => {
-            buf.push(MEMO);
-            buf.extend_from_slice(&handle.id.to_le_bytes());
-        }
-        MettaValueInner::NotReducible => {
-            buf.push(NOT_REDUCIBLE);
-        }
-        MettaValueInner::Spanned(v, _) => serialize_value(v, buf),
     }
 }
 

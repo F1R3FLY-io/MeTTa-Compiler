@@ -188,39 +188,152 @@ fn format_string_escaped(s: &str) -> String {
     out
 }
 
+/// **Stack-safety + memory-safety fix (2026-05-15)**: iterative + memoized.
+/// Was recursive on SExpr/Conjunction/Error/Type/Quoted children and
+/// exponentially vulnerable to shared substructure (same defect class as
+/// the 6.7 PB `to_display_string` bug). Format remains unchanged
+/// (parser-roundtrip + Type(_) wrapping); only the implementation paradigm
+/// switches to a heap work-list + per-call memo keyed by slab pointer.
 fn format_value(v: &MettaValue) -> String {
-    match v.view() {
-        ValueView::Bool(b) => {
-            if b {
-                "True".to_string()
-            } else {
-                "False".to_string()
+    enum Work {
+        Process(MettaValue),
+        Join {
+            count: usize,
+            prefix: &'static str,
+            suffix: &'static str,
+            separator: &'static str,
+            memo_key: Option<usize>,
+        },
+    }
+    let mut work: Vec<Work> = Vec::with_capacity(16);
+    let mut result: Vec<String> = Vec::with_capacity(16);
+    let mut memo: std::collections::HashMap<usize, String> =
+        std::collections::HashMap::with_capacity(64);
+    work.push(Work::Process(v.clone()));
+    while let Some(w) = work.pop() {
+        match w {
+            Work::Process(val) => {
+                // Memo key = slab pointer (or inline-pseudo pointer for
+                // tagged values — distinct inline bit patterns produce
+                // distinct pseudo-pointers, so collision is impossible).
+                let k = val.inner_ptr() as usize;
+                if let Some(cached) = memo.get(&k) {
+                    result.push(cached.clone());
+                    continue;
+                }
+                let memo_key_opt = Some(k);
+                match val.view() {
+                    ValueView::Bool(b) => result.push(if b { "True" } else { "False" }.to_string()),
+                    ValueView::Long(n) => result.push(n.to_string()),
+                    ValueView::Float(fl) => result.push(format!("{}", fl)),
+                    ValueView::Unit => result.push("()".to_string()),
+                    ValueView::Empty => result.push("Empty".to_string()),
+                    ValueView::NotReducible => result.push("NotReducible".to_string()),
+                    ValueView::Atom(s) => result.push(s.to_string()),
+                    ValueView::String(s) => result.push(format_string_escaped(s)),
+                    ValueView::Space(h) => {
+                        result.push(format!("(Space {} \"{}\")", h.id, h.name))
+                    }
+                    ValueView::State(id) => result.push(format!("(State {})", id)),
+                    ValueView::Memo(h) => {
+                        result.push(format!("(Memo {} \"{}\")", h.id, h.name))
+                    }
+                    ValueView::Error(msg, details) => {
+                        // Layout when Join fires: result has [..., msg_str, details_str].
+                        // Push msg_str into result now (it's just an atom name).
+                        // Schedule Process(details) → pushes details_str later.
+                        // Then Join {count=2} drains both and formats.
+                        work.push(Work::Join {
+                            count: 2,
+                            prefix: "(Error ",
+                            suffix: ")",
+                            separator: " ",
+                            memo_key: memo_key_opt,
+                        });
+                        work.push(Work::Process(details));
+                        result.push(msg.to_string());
+                    }
+                    ValueView::Type(t) => {
+                        work.push(Work::Join {
+                            count: 1,
+                            prefix: "Type(",
+                            suffix: ")",
+                            separator: "",
+                            memo_key: memo_key_opt,
+                        });
+                        work.push(Work::Process(t));
+                    }
+                    ValueView::SExpr(items) => {
+                        if items.is_empty() {
+                            let s = "()".to_string();
+                            if let Some(k) = memo_key_opt {
+                                memo.insert(k, s.clone());
+                            }
+                            result.push(s);
+                        } else {
+                            work.push(Work::Join {
+                                count: items.len(),
+                                prefix: "(",
+                                suffix: ")",
+                                separator: " ",
+                                memo_key: memo_key_opt,
+                            });
+                            for item in items.iter().rev() {
+                                work.push(Work::Process(item.clone()));
+                            }
+                        }
+                    }
+                    ValueView::Conjunction(g) => {
+                        if g.is_empty() {
+                            let s = "(, )".to_string();
+                            if let Some(k) = memo_key_opt {
+                                memo.insert(k, s.clone());
+                            }
+                            result.push(s);
+                        } else {
+                            work.push(Work::Join {
+                                count: g.len(),
+                                prefix: "(, ",
+                                suffix: ")",
+                                separator: " ",
+                                memo_key: memo_key_opt,
+                            });
+                            for goal in g.iter().rev() {
+                                work.push(Work::Process(goal.clone()));
+                            }
+                        }
+                    }
+                    ValueView::Quoted(inner) => {
+                        work.push(Work::Join {
+                            count: 1,
+                            prefix: "(quote ",
+                            suffix: ")",
+                            separator: "",
+                            memo_key: memo_key_opt,
+                        });
+                        work.push(Work::Process(inner));
+                    }
+                }
+            }
+            Work::Join {
+                count,
+                prefix,
+                suffix,
+                separator,
+                memo_key,
+            } => {
+                let start = result.len() - count;
+                let parts: Vec<String> = result.drain(start..).collect();
+                let formatted =
+                    format!("{}{}{}", prefix, parts.join(separator), suffix);
+                if let Some(k) = memo_key {
+                    memo.insert(k, formatted.clone());
+                }
+                result.push(formatted);
             }
         }
-        ValueView::Long(n) => n.to_string(),
-        ValueView::Float(f) => format!("{}", f),
-        ValueView::Unit => "()".to_string(),
-        ValueView::Empty => "Empty".to_string(),
-        ValueView::NotReducible => "NotReducible".to_string(),
-        ValueView::Atom(s) => s.to_string(),
-        ValueView::String(s) => format_string_escaped(s),
-        ValueView::Error(msg, details) => {
-            format!("(Error {} {})", msg, format_value(&details))
-        }
-        ValueView::Type(t) => format!("Type({})", format_value(&t)),
-        ValueView::SExpr(items) => {
-            let f: Vec<String> = items.iter().map(format_value).collect();
-            format!("({})", f.join(" "))
-        }
-        ValueView::Conjunction(g) => {
-            let f: Vec<String> = g.iter().map(format_value).collect();
-            format!("(, {})", f.join(" "))
-        }
-        ValueView::Space(h) => format!("(Space {} \"{}\")", h.id, h.name),
-        ValueView::State(id) => format!("(State {})", id),
-        ValueView::Quoted(inner) => format!("(quote {})", format_value(&inner)),
-        ValueView::Memo(h) => format!("(Memo {} \"{}\")", h.id, h.name),
     }
+    result.pop().unwrap_or_default()
 }
 
 /// Parse the expected `results:` block from an `.expected.yaml` fixture.

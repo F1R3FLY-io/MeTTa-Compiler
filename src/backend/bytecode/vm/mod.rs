@@ -5726,6 +5726,8 @@ where
         self.alpha_equiv_inner(a, b, &mut l2r, &mut r2l)
     }
 
+    /// **Stack-safety mandate (2026-05-15)**: refactored to iterative pair-stack.
+    /// Audit item T2.2.
     fn alpha_equiv_inner(
         &self,
         a: &V,
@@ -5733,80 +5735,83 @@ where
         l2r: &mut std::collections::HashMap<String, String>,
         r2l: &mut std::collections::HashMap<String, String>,
     ) -> bool {
-        // Fast path: structural equality
-        if a == b {
-            return true;
-        }
+        let mut work: Vec<(V, V)> = Vec::with_capacity(8);
+        work.push((a.clone(), b.clone()));
 
-        // Check atoms (including variables)
-        if let (Some(sa), Some(sb)) = (a.as_atom(), b.as_atom()) {
-            let a_is_var = sa.starts_with('$');
-            let b_is_var = sb.starts_with('$');
-
-            if a_is_var && b_is_var {
-                // Both variables: check bidirectional mapping
-                match l2r.get(sa) {
-                    Some(mapped) => {
-                        if mapped != sb {
-                            return false;
+        while let Some((a, b)) = work.pop() {
+            if a == b {
+                continue;
+            }
+            if let (Some(sa), Some(sb)) = (a.as_atom(), b.as_atom()) {
+                let a_is_var = sa.starts_with('$');
+                let b_is_var = sb.starts_with('$');
+                if a_is_var && b_is_var {
+                    match l2r.get(sa) {
+                        Some(mapped) => {
+                            if mapped != sb {
+                                return false;
+                            }
+                        }
+                        None => {
+                            l2r.insert(sa.to_string(), sb.to_string());
                         }
                     }
-                    None => {
-                        l2r.insert(sa.to_string(), sb.to_string());
-                    }
-                }
-                match r2l.get(sb) {
-                    Some(mapped) => {
-                        if mapped != sa {
-                            return false;
+                    match r2l.get(sb) {
+                        Some(mapped) => {
+                            if mapped != sa {
+                                return false;
+                            }
+                        }
+                        None => {
+                            r2l.insert(sb.to_string(), sa.to_string());
                         }
                     }
-                    None => {
-                        r2l.insert(sb.to_string(), sa.to_string());
-                    }
+                    continue;
                 }
-                return true;
+                if sa != sb {
+                    return false;
+                }
+                continue;
             }
-
-            // Non-variable atoms: must be identical
-            return sa == sb;
-        }
-
-        // S-expressions: recursive check
-        if let (Some(items_a), Some(items_b)) = (a.as_sexpr(), b.as_sexpr()) {
-            if items_a.len() != items_b.len() {
-                return false;
+            if let (Some(items_a), Some(items_b)) = (a.as_sexpr(), b.as_sexpr()) {
+                if items_a.len() != items_b.len() {
+                    return false;
+                }
+                for (ia, ib) in items_a.iter().zip(items_b.iter()).rev() {
+                    work.push((ia.clone(), ib.clone()));
+                }
+                continue;
             }
-            return items_a
-                .iter()
-                .zip(items_b.iter())
-                .all(|(ia, ib)| self.alpha_equiv_inner(ia, ib, l2r, r2l));
+            if let (Some(ba), Some(bb)) = (a.as_bool(), b.as_bool()) {
+                if ba != bb {
+                    return false;
+                }
+                continue;
+            }
+            if let (Some(la), Some(lb)) = (a.as_long(), b.as_long()) {
+                if la != lb {
+                    return false;
+                }
+                continue;
+            }
+            if let (Some(fa), Some(fb)) = (a.as_float(), b.as_float()) {
+                if fa != fb {
+                    return false;
+                }
+                continue;
+            }
+            if let (Some(sa), Some(sb)) = (a.as_string(), b.as_string()) {
+                if sa != sb {
+                    return false;
+                }
+                continue;
+            }
+            if a.is_unit() && b.is_unit() {
+                continue;
+            }
+            return false;
         }
-
-        // Booleans
-        if let (Some(ba), Some(bb)) = (a.as_bool(), b.as_bool()) {
-            return ba == bb;
-        }
-
-        // Numbers
-        if let (Some(la), Some(lb)) = (a.as_long(), b.as_long()) {
-            return la == lb;
-        }
-        if let (Some(fa), Some(fb)) = (a.as_float(), b.as_float()) {
-            return fa == fb;
-        }
-
-        // Strings
-        if let (Some(sa), Some(sb)) = (a.as_string(), b.as_string()) {
-            return sa == sb;
-        }
-
-        // Unit
-        if a.is_unit() && b.is_unit() {
-            return true;
-        }
-
-        false
+        true
     }
 
     // === Nondeterminism Stubs ===
@@ -8032,6 +8037,11 @@ where
     /// `current_bindings` and the sub-expression's bindings, this
     /// method returns `VmError::Runtime` so the VM's Fail path can
     /// prune the inconsistent branch — HE-faithful.
+    ///
+    /// `forgetting_copy_types`: V may be Copy in some monomorphizations
+    /// (e.g., V == MettaValue) — the `mem::forget` calls below are correct
+    /// for the non-Copy case and a harmless no-op for the Copy case.
+    #[allow(forgetting_copy_types)]
     fn eval_sub_expr_vm(&mut self, sub_expr: V, env: GenericEnvironment<V, F>) -> VmResult<V> {
         use crate::backend::eval::bindings::{apply_chain_generic, compose_outer_inner_generic};
         use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
@@ -8117,6 +8127,7 @@ where
     /// `(value, bindings)` pairs. Companion to `eval_sub_expr_vm_all`
     /// that preserves per-result bindings for downstream Cartesian-
     /// product composition (HE-bisimilar multi-result pre-eval).
+    #[allow(forgetting_copy_types)]
     fn eval_sub_expr_vm_all_with_bindings(
         &self,
         sub_expr: V,
@@ -8166,47 +8177,6 @@ where
         }
     }
 
-    /// Evaluate a sub-expression via the trampoline, returning ALL results.
-    /// Used by eager multi-match evaluation to collect all nondeterministic
-    /// results from each matched RHS without creating VM choice points.
-    fn eval_sub_expr_vm_all(&self, sub_expr: V, env: GenericEnvironment<V, F>) -> Vec<V> {
-        use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
-
-        let ctx = VmEvalContext {
-            factory: crate::backend::models::global_factory(),
-        };
-
-        // eval_trampoline now takes MettaValue + MettaEnvironment.
-        // Transmute via TypeId check — in practice V is always MettaValue.
-        assert_eq!(
-            TypeId::of::<V>(),
-            TypeId::of::<MettaValue>(),
-            "eval_sub_expr_vm_all: V must be MettaValue"
-        );
-        // SAFETY: V == MettaValue verified above. Identical layouts.
-        let metta_sub_expr: MettaValue =
-            unsafe { std::ptr::read(&sub_expr as *const V as *const MettaValue) };
-        let metta_env: crate::backend::eval::trampoline::MettaEnvironment = unsafe {
-            std::ptr::read(
-                &env as *const GenericEnvironment<V, F>
-                    as *const crate::backend::eval::trampoline::MettaEnvironment,
-            )
-        };
-        std::mem::forget(sub_expr);
-        std::mem::forget(env);
-
-        let (results, _final_env) = eval_trampoline(metta_sub_expr, metta_env, &ctx);
-        // SAFETY: V == MettaValue verified above. Vec<MettaValue> → Vec<V>.
-        let metta_results: Vec<MettaValue> = results.into_iter().map(|(v, _)| v).collect();
-        unsafe {
-            let mut v_results = std::mem::ManuallyDrop::new(metta_results);
-            Vec::from_raw_parts(
-                v_results.as_mut_ptr() as *mut V,
-                v_results.len(),
-                v_results.capacity(),
-            )
-        }
-    }
 
     // === Space Operations ===
 
@@ -8707,132 +8677,63 @@ where
         value: &V,
         bindings: &mut Vec<(String, V)>,
     ) -> bool {
-        match pattern.view() {
-            // Wildcards (both `_` and `$_`) match anything without binding.
-            // Check wildcards FIRST so `$_` doesn't fall into the variable arm.
-            ValueView::Atom(s) if s == "_" || s == "$_" => true,
-            ValueView::Atom(s) if s.starts_with('$') => {
-                bindings.push((s.to_string(), value.clone()));
-                true
-            }
-            ValueView::SExpr(_) => {
-                let p_items = pattern.as_sexpr().expect("matched SExpr");
-                // S3 (ERROR-MATCH cross-shape): variant→SExpr projection.
-                if let Some((v_off, v_detail)) = value.as_error() {
-                    if p_items.len() == 3
-                        && matches!(p_items[0].view(), ValueView::Atom(s) if s == "Error")
-                    {
-                        return self.pattern_match_bind_recursive(&p_items[1], v_off, bindings)
-                            && self.pattern_match_bind_recursive(&p_items[2], v_detail, bindings);
-                    }
-                    return false;
+        // **Stack-safety mandate (2026-05-15)**: iterative pair-stack (audit
+        // item T1.1). Preserves the S3 Error/SExpr cross-shape branches verbatim.
+        let mut work: Vec<(V, V)> = Vec::with_capacity(8);
+        work.push((pattern.clone(), value.clone()));
+        while let Some((pat, val)) = work.pop() {
+            match pat.view() {
+                ValueView::Atom(s) if s == "_" || s == "$_" => {}
+                ValueView::Atom(s) if s.starts_with('$') => {
+                    bindings.push((s.to_string(), val.clone()));
                 }
-                if let Some(v_items) = value.as_sexpr() {
-                    if p_items.len() != v_items.len() {
+                ValueView::SExpr(_) => {
+                    let p_items = pat.as_sexpr().expect("matched SExpr");
+                    if let Some((v_off, v_detail)) = val.as_error() {
+                        if p_items.len() == 3
+                            && matches!(p_items[0].view(), ValueView::Atom(s) if s == "Error")
+                        {
+                            work.push((p_items[2].clone(), v_detail.clone()));
+                            work.push((p_items[1].clone(), v_off.clone()));
+                            continue;
+                        }
                         return false;
                     }
-                    for (p, v) in p_items.iter().zip(v_items.iter()) {
-                        if !self.pattern_match_bind_recursive(p, v, bindings) {
+                    if let Some(v_items) = val.as_sexpr() {
+                        if p_items.len() != v_items.len() {
                             return false;
                         }
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
-            // S3 symmetric: Error-variant pattern vs SExpr-shaped value.
-            ValueView::Error(_, _) => {
-                if let Some((p_off, p_detail)) = pattern.as_error() {
-                    if let Some(v_items) = value.as_sexpr() {
-                        if v_items.len() == 3
-                            && matches!(v_items[0].view(), ValueView::Atom(s) if s == "Error")
-                        {
-                            return self.pattern_match_bind_recursive(p_off, &v_items[1], bindings)
-                                && self.pattern_match_bind_recursive(
-                                    p_detail,
-                                    &v_items[2],
-                                    bindings,
-                                );
+                        for (p, v) in p_items.iter().zip(v_items.iter()).rev() {
+                            work.push((p.clone(), v.clone()));
                         }
-                    }
-                }
-                pattern.structurally_equivalent(value)
-            }
-            _ => pattern.structurally_equivalent(value),
-        }
-    }
-
-    /// Unification with binding extraction.
-    fn unify_generic(&self, a: &V, b: &V) -> Option<Vec<(String, V)>> {
-        let mut bindings = Vec::new();
-        if self.unify_recursive(a, b, &mut bindings) {
-            Some(bindings)
-        } else {
-            None
-        }
-    }
-
-    fn unify_recursive(&self, a: &V, b: &V, bindings: &mut Vec<(String, V)>) -> bool {
-        // Check if a is a variable
-        if let ValueView::Atom(name) = a.view() {
-            if name.starts_with('$') {
-                bindings.push((name.to_string(), b.clone()));
-                return true;
-            }
-        }
-        // Check if b is a variable
-        if let ValueView::Atom(name) = b.view() {
-            if name.starts_with('$') {
-                bindings.push((name.to_string(), a.clone()));
-                return true;
-            }
-        }
-
-        // Dispatch on a's variant
-        match a.view() {
-            ValueView::SExpr(_) => {
-                let a_items = a.as_sexpr().expect("matched SExpr");
-                // S3 (ERROR-MATCH cross-shape): unify SExpr-shaped a vs Error variant b.
-                if let Some((b_off, b_detail)) = b.as_error() {
-                    if a_items.len() == 3
-                        && matches!(a_items[0].view(), ValueView::Atom(s) if s == "Error")
-                    {
-                        return self.unify_recursive(&a_items[1], b_off, bindings)
-                            && self.unify_recursive(&a_items[2], b_detail, bindings);
-                    }
-                    return false;
-                }
-                if let Some(b_items) = b.as_sexpr() {
-                    if a_items.len() != b_items.len() {
+                    } else {
                         return false;
                     }
-                    for (x, y) in a_items.iter().zip(b_items.iter()) {
-                        if !self.unify_recursive(x, y, bindings) {
-                            return false;
+                }
+                ValueView::Error(_, _) => {
+                    if let Some((p_off, p_detail)) = pat.as_error() {
+                        if let Some(v_items) = val.as_sexpr() {
+                            if v_items.len() == 3
+                                && matches!(v_items[0].view(), ValueView::Atom(s) if s == "Error")
+                            {
+                                work.push((p_detail.clone(), v_items[2].clone()));
+                                work.push((p_off.clone(), v_items[1].clone()));
+                                continue;
+                            }
                         }
                     }
-                    true
-                } else {
-                    false
-                }
-            }
-            // S3 symmetric: Error-variant a vs SExpr-shaped b.
-            ValueView::Error(_, _) => {
-                if let Some((a_off, a_detail)) = a.as_error() {
-                    if let Some(b_items) = b.as_sexpr() {
-                        if b_items.len() == 3
-                            && matches!(b_items[0].view(), ValueView::Atom(s) if s == "Error")
-                        {
-                            return self.unify_recursive(a_off, &b_items[1], bindings)
-                                && self.unify_recursive(a_detail, &b_items[2], bindings);
-                        }
+                    if !pat.structurally_equivalent(&val) {
+                        return false;
                     }
                 }
-                a.structurally_equivalent(b)
+                _ => {
+                    if !pat.structurally_equivalent(&val) {
+                        return false;
+                    }
+                }
             }
-            _ => a.structurally_equivalent(b),
         }
+        true
     }
 }
 

@@ -495,6 +495,13 @@ impl WorkPool {
 
         let handle = thread::Builder::new()
             .name(format!("work-pool-{}", id))
+            // **Stack-safety defense-in-depth (2026-05-15)**: explicit 8 MB stack.
+            // Matches Linux glibc default but is now guaranteed across platforms
+            // (macOS default is ~512 KB on some thread types — would not be
+            // adequate for the trampoline's bounded-but-non-trivial stack frame
+            // budget). After Phases 1-5, the trampoline's recursion is eliminated
+            // and this excess capacity is purely forward-compatibility headroom.
+            .stack_size(8 * 1024 * 1024)
             .spawn(move || {
                 work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park, cpu_state)
             })
@@ -880,6 +887,8 @@ impl WorkPool {
 
             let new_handle = thread::Builder::new()
                 .name(format!("work-pool-{}", id))
+                // **Stack-safety defense-in-depth**: see `spawn_worker` for rationale.
+                .stack_size(8 * 1024 * 1024)
                 .spawn(move || {
                     work_pool_worker_loop(id, queue, runtime_tracker, shutdown, park, cpu_state);
                 })
@@ -988,6 +997,8 @@ impl WorkPool {
 
             let handle = thread::Builder::new()
                 .name(format!("work-pool-overflow-{}", worker_id))
+                // **Stack-safety defense-in-depth**: see `spawn_worker` for rationale.
+                .stack_size(8 * 1024 * 1024)
                 .spawn(move || {
                     overflow_worker_loop(
                         worker_id,

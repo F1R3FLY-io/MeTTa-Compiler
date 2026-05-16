@@ -63,114 +63,154 @@ fn is_variable(s: &str) -> bool {
     s.starts_with('$')
 }
 
-/// Recursive alpha-equivalence check with bidirectional variable mappings.
+/// Alpha-equivalence check with bidirectional variable mappings.
 ///
 /// Maintains two maps:
 /// - `l2r`: maps left-side variable names to their right-side counterparts
 /// - `r2l`: maps right-side variable names to their left-side counterparts
 ///
 /// Both must be consistent for the check to pass (bijective mapping).
+///
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative pair-stack
+/// (audit item T2.1). Was recursive on SExpr/Conjunction/Error/Type/Quoted
+/// children. The two copies in `bytecode/vm/mod.rs` and `eval/testing.rs`
+/// (audit items T2.2 / T2.3) get the same treatment in-file (this trait
+/// uses `&V` references with lifetime 'a, so unification into a single
+/// helper requires a different trait API; left in place for now and just
+/// made iterative locally).
 fn alpha_equiv_inner<'a, V: MettaValueTrait>(
     left: &'a V,
     right: &'a V,
     l2r: &mut HashMap<&'a str, &'a str>,
     r2l: &mut HashMap<&'a str, &'a str>,
 ) -> bool {
-    // Both atoms?
-    if let (Some(la), Some(ra)) = (left.as_atom(), right.as_atom()) {
-        if is_variable(la) && is_variable(ra) {
-            // Both variables: check bidirectional mapping consistency
-            return check_bidirectional_mapping(l2r, r2l, la, ra);
+    let mut work: Vec<(&'a V, &'a V)> = Vec::with_capacity(8);
+    work.push((left, right));
+
+    while let Some((left, right)) = work.pop() {
+        // Both atoms?
+        if let (Some(la), Some(ra)) = (left.as_atom(), right.as_atom()) {
+            if is_variable(la) && is_variable(ra) {
+                if !check_bidirectional_mapping(l2r, r2l, la, ra) {
+                    return false;
+                }
+                continue;
+            }
+            if is_variable(la) || is_variable(ra) {
+                return false;
+            }
+            if la != ra {
+                return false;
+            }
+            continue;
         }
-        if is_variable(la) || is_variable(ra) {
-            // One variable, one non-variable: never alpha-equivalent
-            return false;
+
+        // Both booleans?
+        if let (Some(lb), Some(rb)) = (left.as_bool(), right.as_bool()) {
+            if lb != rb {
+                return false;
+            }
+            continue;
         }
-        // Both non-variable atoms: must be identical
-        return la == ra;
-    }
 
-    // Both booleans?
-    if let (Some(lb), Some(rb)) = (left.as_bool(), right.as_bool()) {
-        return lb == rb;
-    }
-
-    // Both longs?
-    if let (Some(ln), Some(rn)) = (left.as_long(), right.as_long()) {
-        return ln == rn;
-    }
-
-    // Both floats?
-    if let (Some(lf), Some(rf)) = (left.as_float(), right.as_float()) {
-        return lf == rf;
-    }
-
-    // Both strings?
-    if let (Some(ls), Some(rs)) = (left.as_string(), right.as_string()) {
-        return ls == rs;
-    }
-
-    // Both unit?
-    if left.is_unit() && right.is_unit() {
-        return true;
-    }
-
-    // Both s-expressions?
-    if let (Some(l_items), Some(r_items)) = (left.as_sexpr(), right.as_sexpr()) {
-        if l_items.len() != r_items.len() {
-            return false;
+        // Both longs?
+        if let (Some(ln), Some(rn)) = (left.as_long(), right.as_long()) {
+            if ln != rn {
+                return false;
+            }
+            continue;
         }
-        return l_items
-            .iter()
-            .zip(r_items.iter())
-            .all(|(l, r)| alpha_equiv_inner(l, r, l2r, r2l));
-    }
 
-    // Both errors? HE-bisimilar shape: Error(offending, detail). Recurse
-    // into both slots — variable atoms in either position can rename.
-    if let (Some((l_off, l_det)), Some((r_off, r_det))) = (left.as_error(), right.as_error()) {
-        return alpha_equiv_inner(l_off, r_off, l2r, r2l)
-            && alpha_equiv_inner(l_det, r_det, l2r, r2l);
-    }
-
-    // Both types?
-    if let (Some(lt), Some(rt)) = (left.as_type(), right.as_type()) {
-        return alpha_equiv_inner(lt, rt, l2r, r2l);
-    }
-
-    // Both conjunctions?
-    if let (Some(lg), Some(rg)) = (left.as_conjunction(), right.as_conjunction()) {
-        if lg.len() != rg.len() {
-            return false;
+        // Both floats?
+        if let (Some(lf), Some(rf)) = (left.as_float(), right.as_float()) {
+            if lf != rf {
+                return false;
+            }
+            continue;
         }
-        return lg
-            .iter()
-            .zip(rg.iter())
-            .all(|(l, r)| alpha_equiv_inner(l, r, l2r, r2l));
-    }
 
-    // Both empty?
-    if left.is_empty() && right.is_empty() {
-        return true;
-    }
+        // Both strings?
+        if let (Some(ls), Some(rs)) = (left.as_string(), right.as_string()) {
+            if ls != rs {
+                return false;
+            }
+            continue;
+        }
 
-    // Both spaces?
-    if let (Some(ls), Some(rs)) = (left.as_space(), right.as_space()) {
-        return ls.id == rs.id;
-    }
+        // Both unit?
+        if left.is_unit() && right.is_unit() {
+            continue;
+        }
 
-    // Both states?
-    if let (Some(ls), Some(rs)) = (left.as_state(), right.as_state()) {
-        return ls == rs;
-    }
+        // Both s-expressions?
+        if let (Some(l_items), Some(r_items)) = (left.as_sexpr(), right.as_sexpr()) {
+            if l_items.len() != r_items.len() {
+                return false;
+            }
+            // Push in reverse so the first pair is processed first on pop.
+            for (l, r) in l_items.iter().zip(r_items.iter()).rev() {
+                work.push((l, r));
+            }
+            continue;
+        }
 
-    // Both quoted? Use as_quoted_ref to get references with lifetime 'a
-    if let (Some(lq), Some(rq)) = (left.as_quoted_ref(), right.as_quoted_ref()) {
-        return alpha_equiv_inner(lq, rq, l2r, r2l);
-    }
+        // Both errors? Error(offending, detail).
+        if let (Some((l_off, l_det)), Some((r_off, r_det))) =
+            (left.as_error(), right.as_error())
+        {
+            work.push((l_det, r_det));
+            work.push((l_off, r_off));
+            continue;
+        }
 
-    // Different variant types: never alpha-equivalent
-    false
+        // Both types?
+        if let (Some(lt), Some(rt)) = (left.as_type(), right.as_type()) {
+            work.push((lt, rt));
+            continue;
+        }
+
+        // Both conjunctions?
+        if let (Some(lg), Some(rg)) = (left.as_conjunction(), right.as_conjunction()) {
+            if lg.len() != rg.len() {
+                return false;
+            }
+            for (l, r) in lg.iter().zip(rg.iter()).rev() {
+                work.push((l, r));
+            }
+            continue;
+        }
+
+        // Both empty?
+        if left.is_empty() && right.is_empty() {
+            continue;
+        }
+
+        // Both spaces?
+        if let (Some(ls), Some(rs)) = (left.as_space(), right.as_space()) {
+            if ls.id != rs.id {
+                return false;
+            }
+            continue;
+        }
+
+        // Both states?
+        if let (Some(ls), Some(rs)) = (left.as_state(), right.as_state()) {
+            if ls != rs {
+                return false;
+            }
+            continue;
+        }
+
+        // Both quoted?
+        if let (Some(lq), Some(rq)) = (left.as_quoted_ref(), right.as_quoted_ref()) {
+            work.push((lq, rq));
+            continue;
+        }
+
+        // Different variant types: never alpha-equivalent.
+        return false;
+    }
+    true
 }
 
 /// Check bidirectional variable mapping consistency.

@@ -388,7 +388,10 @@ pub fn with_mork_query_bytes<V: MettaValueTrait, R>(
             symbol_cache,
             ground_cache,
             float_cache,
-            needs_gc_validation,
+            // De Bruijn path clears `ground_cache` below so `needs_gc_validation`
+            // doesn't matter here; the literal `with_mork_bytes` path is the
+            // one that consults it.
+            needs_gc_validation: _,
             ..
         } = &mut *state;
         context.var_map.clear();
@@ -484,18 +487,28 @@ pub fn metta_to_mork_query_bytes(
 // Internal Write Functions — MettaValueInner dispatch with scratch buffer
 // ============================================================================
 
-/// Recursively write MettaValueInner to ExprZipper.
+/// Iteratively write MettaValueInner to ExprZipper.
 ///
 /// Variables (`$x`, `&y`, `'z`) and wildcards (`_`) are written as literal symbols,
 /// preserving their names through MORK round-trip (storage → PathMap → deserialization).
 ///
 /// Uses `scratch` buffer for string quoting and `itoa`/`ryu` for numeric formatting
 /// to avoid heap String allocations.
+///
+/// **Stack-safety mandate (2026-05-15)**: refactored from recursive to a heap
+/// work-stack (audit item T#14). The ground-fragment cache logic is preserved
+/// via two work-item variants: `IterWork::CachedChild` (cache-check-then-dispatch)
+/// and `IterWork::FinalizeFragment` (post-serialization capture). All other
+/// recursive call sites (Error offending/detail, Type inner, Quoted inner,
+/// Spanned inner) become straightforward `IterWork::Process` pushes.
 #[inline]
 fn write_metta_value_inner(
     inner: &MettaValueInner,
     pdp: &mut ParDataParser,
-    ctx: &mut ConversionContext,
+    // `ctx` is required by the De Bruijn variant (which uses it for variable
+    // index assignment) but not by this non-De-Bruijn path. Kept in the
+    // signature for symmetry with `write_metta_value_debruijn_inner`.
+    _ctx: &mut ConversionContext,
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
     symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
@@ -503,91 +516,52 @@ fn write_metta_value_inner(
     float_cache: &mut FloatFormatCache,
     needs_gc_validation: bool,
 ) -> Result<(), String> {
-    // Pre-bounds-check: detect buffer overrun before any write.
-    if ez.loc >= MAX_MORK_BUFFER {
-        return Err(format!(
-            "MORK buffer overflow at loc={} (max={}): expression too deeply nested or too large",
-            ez.loc, MAX_MORK_BUFFER
-        ));
+    enum IterWork {
+        Process(*const MettaValueInner),
+        CachedChild(MettaValue),
+        FinalizeFragment {
+            start_loc: usize,
+            key: usize,
+            key_ptr: *const MettaValueInner,
+        },
     }
-    // GC trace mode: validate that inner ptr hasn't been freed by GC.
-    if gc_trace_enabled() {
-        let ptr = inner as *const MettaValueInner as *const u8;
-        if !crate::backend::models::metta_value::is_inline_singleton_inner_ptr(inner)
-            && !global_allocator().is_value_ptr_valid(ptr)
-        {
-            panic!(
-                "write_metta_value_inner: DANGLING POINTER {:p} — value was freed by GC \
-                 (slot epoch = u64::MAX or ptr not in any page). \
-                 Run with ASAN for allocation/deallocation stacks.",
-                ptr
-            );
-        }
-    }
-    match inner {
-        MettaValueInner::Atom(name) => {
-            write_symbol(name.as_bytes(), pdp, ez, symbol_cache)?;
-        }
 
-        MettaValueInner::Bool(b) => {
-            if *b {
-                write_symbol(b"true", pdp, ez, symbol_cache)?;
-            } else {
-                write_symbol(b"false", pdp, ez, symbol_cache)?;
+    let mut work: Vec<IterWork> = Vec::with_capacity(16);
+    work.push(IterWork::Process(inner as *const MettaValueInner));
+
+    while let Some(iw) = work.pop() {
+        if ez.loc >= MAX_MORK_BUFFER {
+            return Err(format!(
+                "MORK buffer overflow at loc={} (max={}): expression too deeply nested or too large",
+                ez.loc, MAX_MORK_BUFFER
+            ));
+        }
+        match iw {
+            IterWork::FinalizeFragment { start_loc, key, key_ptr } => {
+                let end_loc = ez.loc;
+                let frag_len = end_loc - start_loc;
+                if frag_len > 0 && frag_len <= 256 {
+                    let alloc_epoch = global_allocator()
+                        .get_slot_epoch(key_ptr as *const u8)
+                        .unwrap_or(0);
+                    let frag = unsafe {
+                        std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
+                    }
+                    .to_vec();
+                    ground_cache.insert(
+                        key,
+                        GroundCacheEntry {
+                            fragment: frag,
+                            alloc_epoch,
+                        },
+                    );
+                }
+                continue;
             }
-        }
-
-        MettaValueInner::Long(n) => {
-            let mut ibuf = itoa::Buffer::new();
-            let s = ibuf.format(*n);
-            write_symbol(s.as_bytes(), pdp, ez, symbol_cache)?;
-        }
-
-        MettaValueInner::Float(f) => {
-            // Float format cache: skip ryu formatting for repeated PLN truth values
-            let bits = f.to_bits();
-            if let Some(cached_bytes) = float_cache.lookup(bits) {
-                write_symbol(cached_bytes, pdp, ez, symbol_cache)?;
-            } else {
-                let mut rbuf = ryu::Buffer::new();
-                let s = rbuf.format(*f);
-                let s_bytes = s.as_bytes();
-                float_cache.insert(bits, s_bytes);
-                write_symbol(s_bytes, pdp, ez, symbol_cache)?;
-            }
-        }
-
-        MettaValueInner::String(s) => {
-            scratch.clear();
-            scratch.push(b'"');
-            scratch.extend_from_slice(s.as_bytes());
-            scratch.push(b'"');
-            write_symbol(scratch, pdp, ez, symbol_cache)?;
-        }
-
-        MettaValueInner::Unit => {
-            ez.write_arity(0);
-            ez.loc += 1;
-        }
-
-        MettaValueInner::SExpr(items) => {
-            if items.len() >= 64 {
-                return Err(format!(
-                    "Expression has too many children ({}) - MORK arity limit is 63",
-                    items.len()
-                ));
-            }
-            ez.write_arity(items.len() as u8);
-            ez.loc += 1;
-
-            for item in *items {
-                // Ground fragment cache: skip recursive serialization for ground sub-expressions.
-                // O(1) tagged pointer flag check + HashMap lookup.
-                // Skip cache for inline NaN-boxed values (null inner_ptr) — they're trivially cheap.
-                let key_ptr = item.inner_ptr();
-                if !key_ptr.is_null() && !item.has_variables_fast() {
+            IterWork::CachedChild(child_value) => {
+                let key_ptr = child_value.inner_ptr();
+                if !key_ptr.is_null() && !child_value.has_variables_fast() {
                     let key = key_ptr as usize;
-                    // Two-phase lookup: check validity first, then use or evict.
                     let cache_hit = if let Some(entry) = ground_cache.get(&key) {
                         if needs_gc_validation {
                             let current_epoch =
@@ -600,14 +574,12 @@ fn write_metta_value_inner(
                         false
                     };
                     if !cache_hit {
-                        // Evict stale entry if present
                         ground_cache.remove(&key);
                     }
                     if cache_hit {
                         let frag = &ground_cache[&key].fragment;
                         let frag_len = frag.len();
                         if ez.loc + frag_len <= MAX_MORK_BUFFER {
-                            // SAFETY: ez.root.ptr is the buffer, and we write within bounds.
                             unsafe {
                                 std::ptr::copy_nonoverlapping(
                                     frag.as_ptr(),
@@ -619,136 +591,245 @@ fn write_metta_value_inner(
                             continue;
                         }
                     }
-                    // Cache miss or stale: serialize normally, then capture fragment
+                    // Cache miss: schedule serialization, then finalize fragment.
                     let start_loc = ez.loc;
-                    write_metta_value_inner(
-                        item.inner_ref(),
-                        pdp,
-                        ctx,
-                        ez,
-                        scratch,
-                        symbol_cache,
-                        ground_cache,
-                        float_cache,
-                        needs_gc_validation,
-                    )?;
-                    let end_loc = ez.loc;
-                    let frag_len = end_loc - start_loc;
-                    // Only cache fragments up to 256 bytes (avoids bloating cache with large subtrees)
-                    if frag_len > 0 && frag_len <= 256 {
-                        let alloc_epoch = global_allocator()
-                            .get_slot_epoch(key_ptr as *const u8)
-                            .unwrap_or(0);
-                        let frag = unsafe {
-                            std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
-                        }
-                        .to_vec();
-                        ground_cache.insert(
-                            key,
-                            GroundCacheEntry {
-                                fragment: frag,
-                                alloc_epoch,
-                            },
+                    work.push(IterWork::FinalizeFragment { start_loc, key, key_ptr });
+                    work.push(IterWork::Process(
+                        child_value.inner_ref() as *const MettaValueInner,
+                    ));
+                } else {
+                    work.push(IterWork::Process(
+                        child_value.inner_ref() as *const MettaValueInner,
+                    ));
+                }
+                continue;
+            }
+            IterWork::Process(inner_ptr) => {
+                // SAFETY: inner_ptr is either the function's input (alive for
+                // the call's duration) or `child.inner_ref()` from a
+                // MettaValue still owned by the work stack (Copy semantics
+                // keep the slab pointer alive). MORK conversion runs
+                // synchronously without yielding to GC, so slab pointers
+                // remain valid through the loop.
+                let inner: &MettaValueInner = unsafe { &*inner_ptr };
+
+                if gc_trace_enabled() {
+                    let ptr = inner as *const MettaValueInner as *const u8;
+                    if !crate::backend::models::metta_value::is_inline_singleton_inner_ptr(inner)
+                        && !global_allocator().is_value_ptr_valid(ptr)
+                    {
+                        panic!(
+                            "write_metta_value_inner: DANGLING POINTER {:p} — value was freed by GC \
+                             (slot epoch = u64::MAX or ptr not in any page). \
+                             Run with ASAN for allocation/deallocation stacks.",
+                            ptr
                         );
                     }
-                } else {
-                    write_metta_value_inner(
-                        item.inner_ref(),
-                        pdp,
-                        ctx,
-                        ez,
-                        scratch,
-                        symbol_cache,
-                        ground_cache,
-                        float_cache,
-                        needs_gc_validation,
-                    )?;
+                }
+
+                match inner {
+                    MettaValueInner::Atom(name) => {
+                        write_symbol(name.as_bytes(), pdp, ez, symbol_cache)?;
+                    }
+                    MettaValueInner::Bool(b) => {
+                        if *b {
+                            write_symbol(b"true", pdp, ez, symbol_cache)?;
+                        } else {
+                            write_symbol(b"false", pdp, ez, symbol_cache)?;
+                        }
+                    }
+                    MettaValueInner::Long(n) => {
+                        let mut ibuf = itoa::Buffer::new();
+                        let s = ibuf.format(*n);
+                        write_symbol(s.as_bytes(), pdp, ez, symbol_cache)?;
+                    }
+                    MettaValueInner::Float(f) => {
+                        let bits = f.to_bits();
+                        if let Some(cached_bytes) = float_cache.lookup(bits) {
+                            write_symbol(cached_bytes, pdp, ez, symbol_cache)?;
+                        } else {
+                            let mut rbuf = ryu::Buffer::new();
+                            let s = rbuf.format(*f);
+                            let s_bytes = s.as_bytes();
+                            float_cache.insert(bits, s_bytes);
+                            write_symbol(s_bytes, pdp, ez, symbol_cache)?;
+                        }
+                    }
+                    MettaValueInner::String(s) => {
+                        scratch.clear();
+                        scratch.push(b'"');
+                        scratch.extend_from_slice(s.as_bytes());
+                        scratch.push(b'"');
+                        write_symbol(scratch, pdp, ez, symbol_cache)?;
+                    }
+                    MettaValueInner::Unit => {
+                        ez.write_arity(0);
+                        ez.loc += 1;
+                    }
+                    MettaValueInner::SExpr(items) => {
+                        if items.len() >= 64 {
+                            return Err(format!(
+                                "Expression has too many children ({}) - MORK arity limit is 63",
+                                items.len()
+                            ));
+                        }
+                        ez.write_arity(items.len() as u8);
+                        ez.loc += 1;
+                        for item in items.iter().rev() {
+                            work.push(IterWork::CachedChild(item.clone()));
+                        }
+                    }
+                    MettaValueInner::Error(offending, detail) => {
+                        ez.write_arity(3);
+                        ez.loc += 1;
+                        write_symbol(b"error", pdp, ez, symbol_cache)?;
+                        // Push detail first so offending is processed first
+                        // (LIFO pop order).
+                        work.push(IterWork::Process(
+                            detail.inner_ref() as *const MettaValueInner,
+                        ));
+                        work.push(IterWork::Process(
+                            offending.inner_ref() as *const MettaValueInner,
+                        ));
+                    }
+                    MettaValueInner::Type(t) => {
+                        work.push(IterWork::Process(
+                            t.inner_ref() as *const MettaValueInner,
+                        ));
+                    }
+                    MettaValueInner::Quoted(qinner) => {
+                        ez.write_arity(2);
+                        ez.loc += 1;
+                        write_symbol(b"quote", pdp, ez, symbol_cache)?;
+                        work.push(IterWork::Process(
+                            qinner.inner_ref() as *const MettaValueInner,
+                        ));
+                    }
+                    MettaValueInner::Conjunction(goals) => {
+                        let total_arity = goals.len() + 1;
+                        if total_arity >= 64 {
+                            return Err(format!(
+                                "Conjunction has too many goals ({}) - MORK arity limit is 63",
+                                goals.len()
+                            ));
+                        }
+                        ez.write_arity(total_arity as u8);
+                        ez.loc += 1;
+                        write_symbol(b",", pdp, ez, symbol_cache)?;
+                        for goal in goals.iter().rev() {
+                            work.push(IterWork::CachedChild(goal.clone()));
+                        }
+                    }
+                    MettaValueInner::Space(handle) => {
+                        ez.write_arity(3);
+                        ez.loc += 1;
+                        write_symbol(b"Space", pdp, ez, symbol_cache)?;
+                        let mut ibuf = itoa::Buffer::new();
+                        let id_str = ibuf.format(handle.id);
+                        write_symbol(id_str.as_bytes(), pdp, ez, symbol_cache)?;
+                        scratch.clear();
+                        scratch.push(b'"');
+                        scratch.extend_from_slice(handle.name.as_bytes());
+                        scratch.push(b'"');
+                        write_symbol(scratch, pdp, ez, symbol_cache)?;
+                    }
+                    MettaValueInner::State(id) => {
+                        ez.write_arity(2);
+                        ez.loc += 1;
+                        write_symbol(b"State", pdp, ez, symbol_cache)?;
+                        let mut ibuf = itoa::Buffer::new();
+                        let id_str = ibuf.format(*id);
+                        write_symbol(id_str.as_bytes(), pdp, ez, symbol_cache)?;
+                    }
+                    MettaValueInner::Memo(handle) => {
+                        return Err(format!(
+                            "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
+                            handle.name, handle.id
+                        ));
+                    }
+                    MettaValueInner::Empty => {
+                        return Err(
+                            "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
+                        );
+                    }
+                    MettaValueInner::NotReducible => {
+                        write_symbol(b"NotReducible", pdp, ez, symbol_cache)?;
+                    }
+                    MettaValueInner::Spanned(v, _) => {
+                        work.push(IterWork::Process(
+                            v.inner_ref() as *const MettaValueInner,
+                        ));
+                    }
                 }
             }
         }
+    }
+    Ok(())
+}
 
-        MettaValueInner::Error(offending, detail) => {
-            // HE-bisimilar `(error offending detail)`. Both slots are arbitrary
-            // atoms — recurse instead of treating either as a raw string.
-            ez.write_arity(3);
-            ez.loc += 1;
-            write_symbol(b"error", pdp, ez, symbol_cache)?;
-            write_metta_value_inner(
-                offending.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
-            write_metta_value_inner(
-                detail.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
+
+/// Iteratively write MettaValueInner to ExprZipper using De Bruijn encoding for variables.
+///
+/// Variables get De Bruijn indices; wildcards (`_`) become anonymous NewVar.
+/// This is the encoding needed for MORK's `query_multi()` structural matching.
+///
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-stack
+/// (audit item T#15). Same pattern as `write_metta_value_inner`: `DebruijnIterWork::Process`
+/// replaces direct recursive calls; `DebruijnIterWork::CachedChild` +
+/// `DebruijnIterWork::FinalizeFragment` preserve the ground-fragment cache
+/// logic for SExpr / Conjunction children.
+#[inline]
+fn write_metta_value_debruijn_inner(
+    inner: &MettaValueInner,
+    pdp: &mut ParDataParser,
+    ctx: &mut ConversionContext,
+    ez: &mut ExprZipper,
+    scratch: &mut Vec<u8>,
+    symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
+    ground_cache: &mut HashMap<usize, GroundCacheEntry, FxBuildHasher>,
+    float_cache: &mut FloatFormatCache,
+    needs_gc_validation: bool,
+) -> Result<(), String> {
+    let mut work: Vec<DebruijnIterWork> = Vec::with_capacity(16);
+    work.push(DebruijnIterWork::Process(inner as *const MettaValueInner));
+
+    while let Some(iw) = work.pop() {
+        if ez.loc >= MAX_MORK_BUFFER {
+            return Err(format!(
+                "MORK buffer overflow at loc={} (max={}): expression too deeply nested or too large",
+                ez.loc, MAX_MORK_BUFFER
+            ));
         }
-
-        MettaValueInner::Type(t) => {
-            write_metta_value_inner(
-                t.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
-        }
-
-        MettaValueInner::Quoted(inner) => {
-            ez.write_arity(2);
-            ez.loc += 1;
-            write_symbol(b"quote", pdp, ez, symbol_cache)?;
-            write_metta_value_inner(
-                inner.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
-        }
-
-        MettaValueInner::Conjunction(goals) => {
-            let total_arity = goals.len() + 1;
-            if total_arity >= 64 {
-                return Err(format!(
-                    "Conjunction has too many goals ({}) - MORK arity limit is 63",
-                    goals.len()
-                ));
+        match iw {
+            DebruijnIterWork::FinalizeFragment { start_loc, key, key_ptr } => {
+                let end_loc = ez.loc;
+                let frag_len = end_loc - start_loc;
+                if frag_len > 0 && frag_len <= 256 {
+                    let alloc_epoch = global_allocator()
+                        .get_slot_epoch(key_ptr as *const u8)
+                        .unwrap_or(0);
+                    let frag = unsafe {
+                        std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
+                    }
+                    .to_vec();
+                    ground_cache.insert(
+                        key,
+                        GroundCacheEntry {
+                            fragment: frag,
+                            alloc_epoch,
+                        },
+                    );
+                }
+                continue;
             }
-            ez.write_arity(total_arity as u8);
-            ez.loc += 1;
-            write_symbol(b",", pdp, ez, symbol_cache)?;
-
-            for goal in *goals {
-                // Ground fragment cache for conjunction children
-                let goal_key_ptr = goal.inner_ptr();
-                if !goal_key_ptr.is_null() && !goal.has_variables_fast() {
-                    let key = goal_key_ptr as usize;
+            DebruijnIterWork::CachedChild(child_value) => {
+                let key_ptr = child_value.inner_ptr();
+                if !key_ptr.is_null() && !child_value.has_variables_fast() {
+                    let key = key_ptr as usize;
                     let cache_hit = if let Some(entry) = ground_cache.get(&key) {
                         if needs_gc_validation {
                             let current_epoch =
-                                global_allocator().get_slot_epoch(goal_key_ptr as *const u8);
+                                global_allocator().get_slot_epoch(key_ptr as *const u8);
                             current_epoch == Some(entry.alloc_epoch)
                         } else {
                             true
@@ -775,143 +856,56 @@ fn write_metta_value_inner(
                         }
                     }
                     let start_loc = ez.loc;
-                    write_metta_value_inner(
-                        goal.inner_ref(),
-                        pdp,
-                        ctx,
-                        ez,
-                        scratch,
-                        symbol_cache,
-                        ground_cache,
-                        float_cache,
-                        needs_gc_validation,
-                    )?;
-                    let end_loc = ez.loc;
-                    let frag_len = end_loc - start_loc;
-                    if frag_len > 0 && frag_len <= 256 {
-                        let alloc_epoch = global_allocator()
-                            .get_slot_epoch(goal_key_ptr as *const u8)
-                            .unwrap_or(0);
-                        let frag = unsafe {
-                            std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
-                        }
-                        .to_vec();
-                        ground_cache.insert(
-                            key,
-                            GroundCacheEntry {
-                                fragment: frag,
-                                alloc_epoch,
-                            },
-                        );
-                    }
+                    work.push(DebruijnIterWork::FinalizeFragment { start_loc, key, key_ptr });
+                    work.push(DebruijnIterWork::Process(
+                        child_value.inner_ref() as *const MettaValueInner,
+                    ));
                 } else {
-                    write_metta_value_inner(
-                        goal.inner_ref(),
-                        pdp,
-                        ctx,
-                        ez,
-                        scratch,
-                        symbol_cache,
-                        ground_cache,
-                        float_cache,
-                        needs_gc_validation,
-                    )?;
+                    work.push(DebruijnIterWork::Process(
+                        child_value.inner_ref() as *const MettaValueInner,
+                    ));
                 }
+                continue;
+            }
+            DebruijnIterWork::Process(inner_ptr) => {
+                let inner: &MettaValueInner = unsafe { &*inner_ptr };
+                debruijn_dispatch(
+                    inner,
+                    pdp,
+                    ctx,
+                    ez,
+                    scratch,
+                    symbol_cache,
+                    float_cache,
+                    &mut work,
+                )?;
             }
         }
-
-        MettaValueInner::Space(handle) => {
-            ez.write_arity(3);
-            ez.loc += 1;
-            write_symbol(b"Space", pdp, ez, symbol_cache)?;
-            let mut ibuf = itoa::Buffer::new();
-            let id_str = ibuf.format(handle.id);
-            write_symbol(id_str.as_bytes(), pdp, ez, symbol_cache)?;
-            scratch.clear();
-            scratch.push(b'"');
-            scratch.extend_from_slice(handle.name.as_bytes());
-            scratch.push(b'"');
-            write_symbol(scratch, pdp, ez, symbol_cache)?;
-        }
-
-        MettaValueInner::State(id) => {
-            ez.write_arity(2);
-            ez.loc += 1;
-            write_symbol(b"State", pdp, ez, symbol_cache)?;
-            let mut ibuf = itoa::Buffer::new();
-            let id_str = ibuf.format(*id);
-            write_symbol(id_str.as_bytes(), pdp, ez, symbol_cache)?;
-        }
-
-        MettaValueInner::Memo(handle) => {
-            return Err(format!(
-                "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
-                handle.name, handle.id
-            ));
-        }
-
-        MettaValueInner::Empty => {
-            return Err(
-                "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
-            );
-        }
-
-        MettaValueInner::NotReducible => {
-            // Plan S0a (2026-05-13) — HE `NotReducible` sentinel is an interned
-            // atom in the HE space. Write it as a symbol so MORK queries can
-            // match it like any other symbol.
-            write_symbol(b"NotReducible", pdp, ez, symbol_cache)?;
-        }
-
-        MettaValueInner::Spanned(v, _) => {
-            write_metta_value_inner(
-                v.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
-        }
     }
-
     Ok(())
 }
 
-/// Recursively write MettaValueInner to ExprZipper using De Bruijn encoding for variables.
-///
-/// Variables get De Bruijn indices; wildcards (`_`) become anonymous NewVar.
-/// This is the encoding needed for MORK's `query_multi()` structural matching.
+/// Dispatch a single MettaValueInner in De Bruijn mode. Leaf variants write
+/// directly; composite variants push child work-items onto `work`.
 #[inline]
-fn write_metta_value_debruijn_inner(
+fn debruijn_dispatch(
     inner: &MettaValueInner,
     pdp: &mut ParDataParser,
     ctx: &mut ConversionContext,
     ez: &mut ExprZipper,
     scratch: &mut Vec<u8>,
     symbol_cache: &mut HashMap<Vec<u8>, CachedSymbolId, FxBuildHasher>,
-    ground_cache: &mut HashMap<usize, GroundCacheEntry, FxBuildHasher>,
     float_cache: &mut FloatFormatCache,
-    needs_gc_validation: bool,
+    work: &mut Vec<DebruijnIterWork>,
 ) -> Result<(), String> {
-    if ez.loc >= MAX_MORK_BUFFER {
-        return Err(format!(
-            "MORK buffer overflow at loc={} (max={}): expression too deeply nested or too large",
-            ez.loc, MAX_MORK_BUFFER
-        ));
-    }
+    use DebruijnIterWork as W;
     if gc_trace_enabled() {
         let ptr = inner as *const MettaValueInner as *const u8;
         if !crate::backend::models::metta_value::is_inline_singleton_inner_ptr(inner)
             && !global_allocator().is_value_ptr_valid(ptr)
         {
             panic!(
-                "write_metta_value_debruijn_inner: DANGLING POINTER {:p} — value was freed by GC \
-                 (slot epoch = u64::MAX or ptr not in any page). \
-                 Run with ASAN for allocation/deallocation stacks.",
+                "write_metta_value_debruijn_inner: DANGLING POINTER {:p}",
                 ptr
             );
         }
@@ -946,7 +940,6 @@ fn write_metta_value_debruijn_inner(
                 write_symbol(name.as_bytes(), pdp, ez, symbol_cache)?;
             }
         }
-
         MettaValueInner::Bool(b) => {
             if *b {
                 write_symbol(b"true", pdp, ez, symbol_cache)?;
@@ -954,13 +947,11 @@ fn write_metta_value_debruijn_inner(
                 write_symbol(b"false", pdp, ez, symbol_cache)?;
             }
         }
-
         MettaValueInner::Long(n) => {
             let mut ibuf = itoa::Buffer::new();
             let s = ibuf.format(*n);
             write_symbol(s.as_bytes(), pdp, ez, symbol_cache)?;
         }
-
         MettaValueInner::Float(f) => {
             let bits = f.to_bits();
             if let Some(cached_bytes) = float_cache.lookup(bits) {
@@ -973,7 +964,6 @@ fn write_metta_value_debruijn_inner(
                 write_symbol(s_bytes, pdp, ez, symbol_cache)?;
             }
         }
-
         MettaValueInner::String(s) => {
             scratch.clear();
             scratch.push(b'"');
@@ -981,12 +971,10 @@ fn write_metta_value_debruijn_inner(
             scratch.push(b'"');
             write_symbol(scratch, pdp, ez, symbol_cache)?;
         }
-
         MettaValueInner::Unit => {
             ez.write_arity(0);
             ez.loc += 1;
         }
-
         MettaValueInner::SExpr(items) => {
             if items.len() >= 64 {
                 return Err(format!(
@@ -996,147 +984,26 @@ fn write_metta_value_debruijn_inner(
             }
             ez.write_arity(items.len() as u8);
             ez.loc += 1;
-            for item in *items {
-                // Ground fragment cache for De Bruijn encoding (ground = no variables = same bytes)
-                let item_key_ptr = item.inner_ptr();
-                if !item_key_ptr.is_null() && !item.has_variables_fast() {
-                    let key = item_key_ptr as usize;
-                    let cache_hit = if let Some(entry) = ground_cache.get(&key) {
-                        if needs_gc_validation {
-                            let current_epoch =
-                                global_allocator().get_slot_epoch(item_key_ptr as *const u8);
-                            current_epoch == Some(entry.alloc_epoch)
-                        } else {
-                            true
-                        }
-                    } else {
-                        false
-                    };
-                    if !cache_hit {
-                        ground_cache.remove(&key);
-                    }
-                    if cache_hit {
-                        let frag = &ground_cache[&key].fragment;
-                        let frag_len = frag.len();
-                        if ez.loc + frag_len <= MAX_MORK_BUFFER {
-                            unsafe {
-                                std::ptr::copy_nonoverlapping(
-                                    frag.as_ptr(),
-                                    ez.root.ptr.add(ez.loc),
-                                    frag_len,
-                                );
-                            }
-                            ez.loc += frag_len;
-                            continue;
-                        }
-                    }
-                    let start_loc = ez.loc;
-                    write_metta_value_debruijn_inner(
-                        item.inner_ref(),
-                        pdp,
-                        ctx,
-                        ez,
-                        scratch,
-                        symbol_cache,
-                        ground_cache,
-                        float_cache,
-                        needs_gc_validation,
-                    )?;
-                    let end_loc = ez.loc;
-                    let frag_len = end_loc - start_loc;
-                    if frag_len > 0 && frag_len <= 256 {
-                        let alloc_epoch = global_allocator()
-                            .get_slot_epoch(item_key_ptr as *const u8)
-                            .unwrap_or(0);
-                        let frag = unsafe {
-                            std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
-                        }
-                        .to_vec();
-                        ground_cache.insert(
-                            key,
-                            GroundCacheEntry {
-                                fragment: frag,
-                                alloc_epoch,
-                            },
-                        );
-                    }
-                } else {
-                    write_metta_value_debruijn_inner(
-                        item.inner_ref(),
-                        pdp,
-                        ctx,
-                        ez,
-                        scratch,
-                        symbol_cache,
-                        ground_cache,
-                        float_cache,
-                        needs_gc_validation,
-                    )?;
-                }
+            for item in items.iter().rev() {
+                work.push(W::CachedChild(item.clone()));
             }
         }
-
         MettaValueInner::Error(offending, detail) => {
-            // HE-bisimilar `(error offending detail)`. Both slots are arbitrary
-            // atoms — recurse instead of treating either as a raw string.
             ez.write_arity(3);
             ez.loc += 1;
             write_symbol(b"error", pdp, ez, symbol_cache)?;
-            write_metta_value_debruijn_inner(
-                offending.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
-            write_metta_value_debruijn_inner(
-                detail.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
+            work.push(W::Process(detail.inner_ref() as *const MettaValueInner));
+            work.push(W::Process(offending.inner_ref() as *const MettaValueInner));
         }
-
         MettaValueInner::Type(t) => {
-            write_metta_value_debruijn_inner(
-                t.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
+            work.push(W::Process(t.inner_ref() as *const MettaValueInner));
         }
-
-        MettaValueInner::Quoted(inner) => {
+        MettaValueInner::Quoted(qinner) => {
             ez.write_arity(2);
             ez.loc += 1;
             write_symbol(b"quote", pdp, ez, symbol_cache)?;
-            write_metta_value_debruijn_inner(
-                inner.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
+            work.push(W::Process(qinner.inner_ref() as *const MettaValueInner));
         }
-
         MettaValueInner::Conjunction(goals) => {
             let total_arity = goals.len() + 1;
             if total_arity >= 64 {
@@ -1148,85 +1015,10 @@ fn write_metta_value_debruijn_inner(
             ez.write_arity(total_arity as u8);
             ez.loc += 1;
             write_symbol(b",", pdp, ez, symbol_cache)?;
-            for goal in *goals {
-                let goal_key_ptr = goal.inner_ptr();
-                if !goal_key_ptr.is_null() && !goal.has_variables_fast() {
-                    let key = goal_key_ptr as usize;
-                    let cache_hit = if let Some(entry) = ground_cache.get(&key) {
-                        if needs_gc_validation {
-                            let current_epoch =
-                                global_allocator().get_slot_epoch(goal_key_ptr as *const u8);
-                            current_epoch == Some(entry.alloc_epoch)
-                        } else {
-                            true
-                        }
-                    } else {
-                        false
-                    };
-                    if !cache_hit {
-                        ground_cache.remove(&key);
-                    }
-                    if cache_hit {
-                        let frag = &ground_cache[&key].fragment;
-                        let frag_len = frag.len();
-                        if ez.loc + frag_len <= MAX_MORK_BUFFER {
-                            unsafe {
-                                std::ptr::copy_nonoverlapping(
-                                    frag.as_ptr(),
-                                    ez.root.ptr.add(ez.loc),
-                                    frag_len,
-                                );
-                            }
-                            ez.loc += frag_len;
-                            continue;
-                        }
-                    }
-                    let start_loc = ez.loc;
-                    write_metta_value_debruijn_inner(
-                        goal.inner_ref(),
-                        pdp,
-                        ctx,
-                        ez,
-                        scratch,
-                        symbol_cache,
-                        ground_cache,
-                        float_cache,
-                        needs_gc_validation,
-                    )?;
-                    let end_loc = ez.loc;
-                    let frag_len = end_loc - start_loc;
-                    if frag_len > 0 && frag_len <= 256 {
-                        let alloc_epoch = global_allocator()
-                            .get_slot_epoch(goal_key_ptr as *const u8)
-                            .unwrap_or(0);
-                        let frag = unsafe {
-                            std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
-                        }
-                        .to_vec();
-                        ground_cache.insert(
-                            key,
-                            GroundCacheEntry {
-                                fragment: frag,
-                                alloc_epoch,
-                            },
-                        );
-                    }
-                } else {
-                    write_metta_value_debruijn_inner(
-                        goal.inner_ref(),
-                        pdp,
-                        ctx,
-                        ez,
-                        scratch,
-                        symbol_cache,
-                        ground_cache,
-                        float_cache,
-                        needs_gc_validation,
-                    )?;
-                }
+            for goal in goals.iter().rev() {
+                work.push(W::CachedChild(goal.clone()));
             }
         }
-
         MettaValueInner::Space(handle) => {
             ez.write_arity(3);
             ez.loc += 1;
@@ -1240,7 +1032,6 @@ fn write_metta_value_debruijn_inner(
             scratch.push(b'"');
             write_symbol(scratch, pdp, ez, symbol_cache)?;
         }
-
         MettaValueInner::State(id) => {
             ez.write_arity(2);
             ez.loc += 1;
@@ -1249,43 +1040,38 @@ fn write_metta_value_debruijn_inner(
             let id_str = ibuf.format(*id);
             write_symbol(id_str.as_bytes(), pdp, ez, symbol_cache)?;
         }
-
         MettaValueInner::Memo(handle) => {
             return Err(format!(
                 "Cannot convert Memo table '{}' (id={}) to MORK - memoization tables are runtime-only",
                 handle.name, handle.id
             ));
         }
-
         MettaValueInner::Empty => {
             return Err(
                 "Cannot convert Empty sentinel to MORK - Empty should be filtered at result collection".to_string()
             );
         }
-
         MettaValueInner::NotReducible => {
-            // Plan S0a (2026-05-13) — HE `NotReducible` sentinel is an interned
-            // atom in the HE space. Write it as a symbol so MORK queries can
-            // match it like any other symbol.
             write_symbol(b"NotReducible", pdp, ez, symbol_cache)?;
         }
-
         MettaValueInner::Spanned(v, _) => {
-            write_metta_value_debruijn_inner(
-                v.inner_ref(),
-                pdp,
-                ctx,
-                ez,
-                scratch,
-                symbol_cache,
-                ground_cache,
-                float_cache,
-                needs_gc_validation,
-            )?;
+            work.push(W::Process(v.inner_ref() as *const MettaValueInner));
         }
     }
     Ok(())
 }
+
+enum DebruijnIterWork {
+    Process(*const MettaValueInner),
+    CachedChild(MettaValue),
+    FinalizeFragment {
+        start_loc: usize,
+        key: usize,
+        key_ptr: *const MettaValueInner,
+    },
+}
+
+#[allow(dead_code)]
 
 /// Write a symbol to ExprZipper using the provided ParDataParser.
 ///

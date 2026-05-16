@@ -508,56 +508,68 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     ///
     /// Helper for `free_variables()`. Avoids allocating intermediate SmallVecs
     /// during recursive traversal.
-    fn collect_free_variables(&self, out: &mut smallvec::SmallVec<[&'static str; 8]>) {
-        // Fast path: no variables in this value
-        if !self.has_variables_fast() {
-            return;
-        }
+    ///
+    /// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list
+    /// (audit item T1.6). Was recursive on SExpr/Conjunction children.
+    fn collect_free_variables(&self, out: &mut smallvec::SmallVec<[&'static str; 8]>)
+    where
+        Self: Sized,
+    {
+        let mut work: Vec<&Self> = Vec::with_capacity(8);
+        work.push(self);
 
-        if let Some(name) = self.as_atom() {
-            // Variables start with $, &, or ' (excluding special space refs and wildcards)
-            if name != "_"
-                && name != "&"
-                && name != "&self"
-                && name != "&kb"
-                && name != "&stack"
-                && name.len() > 1
-                && (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
-            {
-                // Deduplicate: only add if not already present
-                if !out.contains(&name) {
-                    out.push(name);
+        while let Some(v) = work.pop() {
+            // Fast path: no variables in this subvalue.
+            if !v.has_variables_fast() {
+                continue;
+            }
+
+            if let Some(name) = v.as_atom() {
+                if name != "_"
+                    && name != "&"
+                    && name != "&self"
+                    && name != "&kb"
+                    && name != "&stack"
+                    && name.len() > 1
+                    && (name.starts_with('$')
+                        || name.starts_with('&')
+                        || name.starts_with('\''))
+                {
+                    if !out.contains(&name) {
+                        out.push(name);
+                    }
                 }
+                continue;
             }
-            return;
-        }
 
-        if let Some(items) = self.as_sexpr() {
-            for item in items {
-                item.collect_free_variables(out);
+            if let Some(items) = v.as_sexpr() {
+                // Push in reverse so the first item is processed first on pop.
+                for item in items.iter().rev() {
+                    work.push(item);
+                }
+                continue;
             }
-            return;
-        }
 
-        if let Some(goals) = self.as_conjunction() {
-            for g in goals {
-                g.collect_free_variables(out);
+            if let Some(goals) = v.as_conjunction() {
+                for g in goals.iter().rev() {
+                    work.push(g);
+                }
+                continue;
             }
-            return;
-        }
 
-        if let Some((_, details)) = self.as_error() {
-            details.collect_free_variables(out);
-            return;
-        }
+            if let Some((_, details)) = v.as_error() {
+                work.push(details);
+                continue;
+            }
 
-        if let Some(t) = self.as_type() {
-            t.collect_free_variables(out);
-            return;
-        }
+            if let Some(t) = v.as_type() {
+                work.push(t);
+                continue;
+            }
 
-        if let Some(q) = self.as_quoted_ref() {
-            q.collect_free_variables(out);
+            if let Some(q) = v.as_quoted_ref() {
+                work.push(q);
+            }
         }
     }
 
@@ -567,29 +579,53 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     ///
     /// Used by `apply_bindings_generic_inner` to short-circuit recursion and
     /// avoid allocating new S-expressions for variable-free values.
-    fn contains_variables(&self) -> bool {
-        if let Some(s) = self.as_atom() {
-            if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
-                return false;
+    /// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list
+    /// (audit item T1.5). Was recursive on SExpr/Conjunction children.
+    fn contains_variables(&self) -> bool
+    where
+        Self: Sized,
+    {
+        let mut work: Vec<&Self> = Vec::with_capacity(8);
+        work.push(self);
+
+        while let Some(v) = work.pop() {
+            if let Some(s) = v.as_atom() {
+                if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
+                    continue;
+                }
+                if s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
+                {
+                    return true;
+                }
+                continue;
             }
-            return s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'');
+            if let Some(items) = v.as_sexpr() {
+                for item in items.iter().rev() {
+                    work.push(item);
+                }
+                continue;
+            }
+            if let Some(goals) = v.as_conjunction() {
+                for g in goals.iter().rev() {
+                    work.push(g);
+                }
+                continue;
+            }
+            if let Some((_, details)) = v.as_error() {
+                work.push(details);
+                continue;
+            }
+            if let Some(t) = v.as_type() {
+                work.push(t);
+                continue;
+            }
+            if let Some(q) = v.as_quoted_ref() {
+                work.push(q);
+                continue;
+            }
+            // Ground types: Bool, Long, Float, String, Unit, Space, State, Memo, Empty
         }
-        if let Some(items) = self.as_sexpr() {
-            return items.iter().any(|item| item.contains_variables());
-        }
-        if let Some(goals) = self.as_conjunction() {
-            return goals.iter().any(|g| g.contains_variables());
-        }
-        if let Some((_, details)) = self.as_error() {
-            return details.contains_variables();
-        }
-        if let Some(t) = self.as_type() {
-            return t.contains_variables();
-        }
-        if let Some(q) = self.as_quoted_ref() {
-            return q.contains_variables();
-        }
-        false // Ground types: Bool, Long, Float, String, Unit, Space, State, Memo, Empty
+        false
     }
 
     // =========================================================================

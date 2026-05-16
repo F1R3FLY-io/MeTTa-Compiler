@@ -699,84 +699,166 @@ unsafe fn apply_bindings_to_saved(saved: *mut JitSavedBindings, bindings: &[(Str
 ///
 /// Like `pattern_matches_impl` but also collects variable bindings.
 /// Variables are atoms starting with '$'.
+///
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list
+/// (was recursive on SExpr children; deeply-nested patterns would overflow).
+/// Audit item T1.4.
 fn pattern_matches_with_bindings_impl(
     pattern: &MettaValue,
     value: &MettaValue,
     bindings: &mut Vec<(String, MettaValue)>,
 ) -> bool {
-    match (pattern.view(), value.view()) {
-        // Wildcard - always matches (check BEFORE variable arm — both `_` and `$_`).
-        (ValueView::Atom(s), _) if s == "_" || s == "$_" => true,
+    // Pairs of (pattern, value) to match. Pushed in reverse order so the
+    // first pushed pair is processed first when popped.
+    let mut work: Vec<(MettaValue, MettaValue)> = Vec::with_capacity(8);
+    work.push((pattern.clone(), value.clone()));
 
-        // Variable pattern (atom starting with $) - always matches and binds
-        (ValueView::Atom(var), _) if var.starts_with('$') => {
-            bindings.push((var.to_string(), value.clone()));
-            true
-        }
-
-        // Same type matching
-        (ValueView::Atom(p), ValueView::Atom(v)) => p == v,
-        (ValueView::Long(p), ValueView::Long(v)) => p == v,
-        (ValueView::Bool(p), ValueView::Bool(v)) => p == v,
-        (ValueView::Unit, ValueView::Unit) => true,
-        (ValueView::String(p), ValueView::String(v)) => p == v,
-
-        // S-expression matching - recursive with same length
-        (ValueView::SExpr(pats), ValueView::SExpr(vals)) => {
-            if pats.len() != vals.len() {
-                return false;
+    while let Some((pat, val)) = work.pop() {
+        match (pat.view(), val.view()) {
+            (ValueView::Atom(s), _) if s == "_" || s == "$_" => {
+                // wildcard — proceed
             }
-            for (p, v) in pats.iter().zip(vals.iter()) {
-                if !pattern_matches_with_bindings_impl(p, v, bindings) {
+            (ValueView::Atom(var), _) if var.starts_with('$') => {
+                bindings.push((var.to_string(), val.clone()));
+            }
+            (ValueView::Atom(p), ValueView::Atom(v)) => {
+                if p != v {
                     return false;
                 }
             }
-            true
+            (ValueView::Long(p), ValueView::Long(v)) => {
+                if p != v {
+                    return false;
+                }
+            }
+            (ValueView::Bool(p), ValueView::Bool(v)) => {
+                if p != v {
+                    return false;
+                }
+            }
+            (ValueView::Unit, ValueView::Unit) => {}
+            (ValueView::String(p), ValueView::String(v)) => {
+                if p != v {
+                    return false;
+                }
+            }
+            (ValueView::SExpr(pats), ValueView::SExpr(vals)) => {
+                if pats.len() != vals.len() {
+                    return false;
+                }
+                // Push in reverse so original order is preserved on pop.
+                for (p, v) in pats.iter().zip(vals.iter()).rev() {
+                    work.push((p.clone(), v.clone()));
+                }
+            }
+            _ => return false,
         }
-
-        _ => false,
     }
+    true
 }
 
 /// Instantiate a template expression with bindings.
 ///
 /// Replaces variables in the template with their bound values.
 /// Variables are atoms starting with '$'.
+///
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list
+/// (was recursive on SExpr/Conjunction children). Audit item T1.3.
+/// Uses `Work::Process` / `Work::BuildSExpr` / `Work::BuildConjunction`
+/// shape mirroring `apply_bindings_iterative_generic`.
 fn instantiate_template_impl(
     template: &MettaValue,
     bindings: &[(String, MettaValue)],
 ) -> MettaValue {
-    match template.view() {
-        // Variable substitution (atoms starting with $)
-        ValueView::Atom(var) if var.starts_with('$') => {
-            for (name, value) in bindings {
-                if name == var {
-                    return value.clone();
-                }
-            }
-            // Unbound variable - keep as-is
-            template.clone()
-        }
-
-        // S-expression - recurse
-        ValueView::SExpr(items) => MettaValue::SExpr(
-            items
-                .iter()
-                .map(|item| instantiate_template_impl(item, bindings))
-                .collect(),
-        ),
-
-        // Conjunction - recurse
-        ValueView::Conjunction(items) => MettaValue::Conjunction(
-            items
-                .iter()
-                .map(|item| instantiate_template_impl(item, bindings))
-                .collect(),
-        ),
-
-        // All other values pass through unchanged
-        _ => template.clone(),
+    enum Work<'a> {
+        Process(&'a MettaValue),
+        BuildSExpr(usize),
+        BuildConjunction(usize),
     }
+
+    // Owned children that need their own walk go through a separate path —
+    // we hold them via a Vec<MettaValue> to keep refs alive.
+    let mut owned_children: Vec<Vec<MettaValue>> = Vec::with_capacity(4);
+    let mut work_stack: Vec<Work<'_>> = Vec::with_capacity(8);
+    let mut result_stack: Vec<MettaValue> = Vec::with_capacity(8);
+
+    work_stack.push(Work::Process(template));
+
+    while let Some(w) = work_stack.pop() {
+        match w {
+            Work::Process(t) => match t.view() {
+                ValueView::Atom(var) if var.starts_with('$') => {
+                    let mut bound = None;
+                    for (name, value) in bindings {
+                        if name == var {
+                            bound = Some(value.clone());
+                            break;
+                        }
+                    }
+                    result_stack.push(bound.unwrap_or_else(|| t.clone()));
+                }
+                ValueView::SExpr(items) => {
+                    if items.is_empty() {
+                        result_stack.push(t.clone());
+                    } else {
+                        // We need stable references to children for Process(&)
+                        // — clone into an owned Vec held by `owned_children`.
+                        let children: Vec<MettaValue> =
+                            items.iter().cloned().collect();
+                        let idx = owned_children.len();
+                        owned_children.push(children);
+                        work_stack.push(Work::BuildSExpr(idx));
+                        // Push children Process calls in reverse so the first
+                        // child is processed first.
+                        let len = owned_children[idx].len();
+                        for i in (0..len).rev() {
+                            // SAFETY: owned_children[idx] is owned and not
+                            // mutated after this point until BuildSExpr drains it.
+                            let r: &MettaValue = unsafe {
+                                &*(&owned_children[idx][i] as *const MettaValue)
+                            };
+                            work_stack.push(Work::Process(r));
+                        }
+                    }
+                }
+                ValueView::Conjunction(items) => {
+                    if items.is_empty() {
+                        result_stack.push(t.clone());
+                    } else {
+                        let children: Vec<MettaValue> =
+                            items.iter().cloned().collect();
+                        let idx = owned_children.len();
+                        owned_children.push(children);
+                        work_stack.push(Work::BuildConjunction(idx));
+                        let len = owned_children[idx].len();
+                        for i in (0..len).rev() {
+                            let r: &MettaValue = unsafe {
+                                &*(&owned_children[idx][i] as *const MettaValue)
+                            };
+                            work_stack.push(Work::Process(r));
+                        }
+                    }
+                }
+                _ => {
+                    result_stack.push(t.clone());
+                }
+            },
+            Work::BuildSExpr(idx) => {
+                let count = owned_children[idx].len();
+                let start = result_stack.len() - count;
+                let parts: Vec<MettaValue> = result_stack.drain(start..).collect();
+                result_stack.push(MettaValue::SExpr(parts));
+            }
+            Work::BuildConjunction(idx) => {
+                let count = owned_children[idx].len();
+                let start = result_stack.len() - count;
+                let parts: Vec<MettaValue> = result_stack.drain(start..).collect();
+                result_stack.push(MettaValue::Conjunction(parts));
+            }
+        }
+    }
+
+    result_stack.pop().expect("instantiate_template_impl: empty result")
 }
 
 /// Resume space match from a SpaceMatch alternative during backtracking.

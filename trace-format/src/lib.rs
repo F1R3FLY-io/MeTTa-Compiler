@@ -118,35 +118,118 @@ impl std::fmt::Display for SelfEvaluatingReason {
 }
 
 impl std::fmt::Display for TraceValue {
+    /// **Stack-safety + memory-safety fix (2026-05-15)**: iterative work-list +
+    /// memoization. Was recursive on SExpr/Error/Type/Quoted children and
+    /// vulnerable to exponential expansion via shared substructure. The
+    /// `TraceValue` enum uses `Box<TraceValue>` for recursive variants and
+    /// `Vec<TraceValue>` for SExpr, so memo is keyed by the boxed-or-vec
+    /// pointer address (stable within a single Display invocation).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TraceValue::Atom(s) => write!(f, "{s}"),
-            TraceValue::Bool(b) => {
-                if *b {
-                    write!(f, "True")
-                } else {
-                    write!(f, "False")
-                }
-            }
-            TraceValue::Long(n) => write!(f, "{n}"),
-            TraceValue::Float(v) => write!(f, "{v}"),
-            TraceValue::String(s) => write!(f, "\"{s}\""),
-            TraceValue::SExpr(items) => {
-                write!(f, "(")?;
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{item}")?;
-                }
-                write!(f, ")")
-            }
-            TraceValue::Unit => write!(f, "()"),
-            TraceValue::Error(msg, details) => write!(f, "(Error {msg} {details})"),
-            TraceValue::Type(inner) => write!(f, "(: {inner})"),
-            TraceValue::Empty => write!(f, "%void%"),
-            TraceValue::Quoted(inner) => write!(f, "(quote {inner})"),
+        enum Work<'a> {
+            Process(&'a TraceValue),
+            Join {
+                count: usize,
+                prefix: &'static str,
+                suffix: &'static str,
+                separator: &'static str,
+                memo_key: Option<usize>,
+            },
         }
+        let mut work: Vec<Work<'_>> = Vec::with_capacity(16);
+        let mut result: Vec<String> = Vec::with_capacity(16);
+        let mut memo: std::collections::HashMap<usize, String> =
+            std::collections::HashMap::with_capacity(64);
+        work.push(Work::Process(self));
+        while let Some(w) = work.pop() {
+            match w {
+                Work::Process(val) => {
+                    let memo_key = val as *const TraceValue as usize;
+                    if let Some(cached) = memo.get(&memo_key) {
+                        result.push(cached.clone());
+                        continue;
+                    }
+                    match val {
+                        TraceValue::Atom(s) => result.push(s.to_string()),
+                        TraceValue::Bool(b) => result.push(
+                            if *b { "True" } else { "False" }.to_string(),
+                        ),
+                        TraceValue::Long(n) => result.push(n.to_string()),
+                        TraceValue::Float(v) => result.push(v.to_string()),
+                        TraceValue::String(s) => result.push(format!("\"{}\"", s)),
+                        TraceValue::Unit => result.push("()".to_string()),
+                        TraceValue::Empty => result.push("%void%".to_string()),
+                        TraceValue::SExpr(items) => {
+                            if items.is_empty() {
+                                let s = "()".to_string();
+                                memo.insert(memo_key, s.clone());
+                                result.push(s);
+                            } else {
+                                work.push(Work::Join {
+                                    count: items.len(),
+                                    prefix: "(",
+                                    suffix: ")",
+                                    separator: " ",
+                                    memo_key: Some(memo_key),
+                                });
+                                for item in items.iter().rev() {
+                                    work.push(Work::Process(item));
+                                }
+                            }
+                        }
+                        TraceValue::Error(msg, details) => {
+                            // Layout: msg literal, then Process(details), then Join(count=2).
+                            work.push(Work::Join {
+                                count: 2,
+                                prefix: "(Error ",
+                                suffix: ")",
+                                separator: " ",
+                                memo_key: Some(memo_key),
+                            });
+                            work.push(Work::Process(details.as_ref()));
+                            result.push(msg.to_string());
+                        }
+                        TraceValue::Type(inner) => {
+                            work.push(Work::Join {
+                                count: 1,
+                                prefix: "(: ",
+                                suffix: ")",
+                                separator: "",
+                                memo_key: Some(memo_key),
+                            });
+                            work.push(Work::Process(inner.as_ref()));
+                        }
+                        TraceValue::Quoted(inner) => {
+                            work.push(Work::Join {
+                                count: 1,
+                                prefix: "(quote ",
+                                suffix: ")",
+                                separator: "",
+                                memo_key: Some(memo_key),
+                            });
+                            work.push(Work::Process(inner.as_ref()));
+                        }
+                    }
+                }
+                Work::Join {
+                    count,
+                    prefix,
+                    suffix,
+                    separator,
+                    memo_key,
+                } => {
+                    let start = result.len() - count;
+                    let parts: Vec<String> = result.drain(start..).collect();
+                    let formatted =
+                        format!("{}{}{}", prefix, parts.join(separator), suffix);
+                    if let Some(k) = memo_key {
+                        memo.insert(k, formatted.clone());
+                    }
+                    result.push(formatted);
+                }
+            }
+        }
+        let s = result.pop().unwrap_or_default();
+        f.write_str(&s)
     }
 }
 

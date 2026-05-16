@@ -1812,51 +1812,59 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
     }
 }
 
-/// Recursively hash an MettaValue for complex types.
+/// **Stack-safety mandate (2026-05-15)**: refactored to iterative work-list
+/// (audit item T#19). Was recursive on SExpr / Quoted children — deeply-nested
+/// values would overflow. No memoization needed: this is hash-streaming, not
+/// string-building, so shared substructure doesn't cause exponential output —
+/// just re-hashes the same bytes which is fine.
 fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H) {
-    match expr.view() {
-        ValueView::Unit => 0u8.hash(hasher),
-        ValueView::Bool(b) => {
-            2u8.hash(hasher);
-            b.hash(hasher);
-        }
-        ValueView::Long(n) => {
-            3u8.hash(hasher);
-            n.hash(hasher);
-        }
-        ValueView::Float(f) => {
-            4u8.hash(hasher);
-            f.to_bits().hash(hasher);
-        }
-        ValueView::Empty => 9u8.hash(hasher),
-        // Plan S0a (2026-05-13) — unique tag 1u8 for NotReducible sentinel.
-        ValueView::NotReducible => 1u8.hash(hasher),
-        ValueView::String(s) => {
-            5u8.hash(hasher);
-            s.hash(hasher);
-        }
-        ValueView::Atom(s) => {
-            6u8.hash(hasher);
-            s.hash(hasher);
-        }
-        ValueView::SExpr(items) => {
-            7u8.hash(hasher);
-            items.len().hash(hasher);
-            for item in items.iter() {
-                hash_value_recursive(item, hasher);
+    let mut work: Vec<MettaValue> = Vec::with_capacity(8);
+    work.push(expr.clone());
+    while let Some(val) = work.pop() {
+        match val.view() {
+            ValueView::Unit => 0u8.hash(hasher),
+            ValueView::Bool(b) => {
+                2u8.hash(hasher);
+                b.hash(hasher);
             }
+            ValueView::Long(n) => {
+                3u8.hash(hasher);
+                n.hash(hasher);
+            }
+            ValueView::Float(f) => {
+                4u8.hash(hasher);
+                f.to_bits().hash(hasher);
+            }
+            ValueView::Empty => 9u8.hash(hasher),
+            ValueView::NotReducible => 1u8.hash(hasher),
+            ValueView::String(s) => {
+                5u8.hash(hasher);
+                s.hash(hasher);
+            }
+            ValueView::Atom(s) => {
+                6u8.hash(hasher);
+                s.hash(hasher);
+            }
+            ValueView::SExpr(items) => {
+                7u8.hash(hasher);
+                items.len().hash(hasher);
+                // Push children in reverse so the first child is hashed first.
+                for item in items.iter().rev() {
+                    work.push(item.clone());
+                }
+            }
+            ValueView::Error(..) => 8u8.hash(hasher),
+            ValueView::Quoted(inner) => {
+                10u8.hash(hasher);
+                "quote".hash(hasher);
+                work.push(inner);
+            }
+            ValueView::Type(_)
+            | ValueView::Conjunction(_)
+            | ValueView::Space(_)
+            | ValueView::State(_)
+            | ValueView::Memo(_) => 10u8.hash(hasher),
         }
-        ValueView::Error(..) => 8u8.hash(hasher),
-        ValueView::Quoted(inner) => {
-            10u8.hash(hasher);
-            "quote".hash(hasher);
-            hash_value_recursive(&inner, hasher);
-        }
-        ValueView::Type(_)
-        | ValueView::Conjunction(_)
-        | ValueView::Space(_)
-        | ValueView::State(_)
-        | ValueView::Memo(_) => 10u8.hash(hasher),
     }
 }
 

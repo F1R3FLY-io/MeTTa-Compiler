@@ -12,11 +12,14 @@
 //! - Bindings use `GenericBindings<MettaValue>` (heap-allocated binding map)
 //! - Names retain the `Generic` prefix for now; renaming is a separate step
 
+use std::cell::Cell;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use smallvec::SmallVec;
 
-use crate::backend::environment::MettaEnvironment;
+use crate::backend::eval::cesk::coroutine::CancelToken;
+use crate::backend::eval::frame_chain::EvalFrameGuard;
 use crate::backend::grounded::GroundedState;
 use crate::backend::models::{GenericBindings, MemoHandle, MettaValue};
 // SpaceHandle was previously used by ProcessAddAtomAtom and ProcessRemoveAtomAtom,
@@ -96,19 +99,147 @@ pub fn bv_with(value: MettaValue, bindings: GenericBindings<MettaValue>) -> Boun
     (value, bindings)
 }
 
-/// Helper: wrap a `SmallVec<[MettaValue; 2]>` as a `SmallVec<[BoundValue; 2]>`
-/// with empty bindings on each element. Convenience for call sites that
-/// produce raw values without bindings tracking.
-#[inline]
-pub fn bvs_from_values(values: SmallVec<[MettaValue; 2]>) -> SmallVec<[BoundValue; 2]> {
-    values.into_iter().map(bv).collect()
-}
-
 /// Helper: extract just the values (drop bindings) from a bound result set.
 /// Used by code paths that don't need per-result bindings.
 #[inline]
 pub fn values_of(results: &SmallVec<[BoundValue; 2]>) -> SmallVec<[MettaValue; 2]> {
     results.iter().map(|(v, _)| v.clone()).collect()
+}
+
+/// Merge mode for `WaitForParallel` continuation result composition.
+///
+/// Different call sites of `parallel_dispatch` merge results differently:
+/// - `dispatch_rule_matches` composes per-branch bindings with the outer
+///   carrying bindings.
+/// - `StartAmb` / `ProcessLet` simply concatenate per-branch results
+///   without re-composing.
+#[derive(Debug, Clone, Copy)]
+pub enum ParallelMergeMode {
+    /// Rule-match dispatch: compose each branch's bindings with `outer_carrying`.
+    RuleMatch,
+    /// Amb / superpose / let parallel-body dispatch: concatenate results into
+    /// `base_results` without re-composing outer bindings.
+    AmbConcat,
+}
+
+/// Merge mode for `WaitForParallelCollapse` continuation.
+///
+/// - `Plain`: produce a single tuple of all collected branch values.
+/// - `Bind`: per-branch `(value (Bindings ...))` sidecar encoding used by
+///   `collapse-bind`.
+#[derive(Debug, Clone, Copy)]
+pub enum CollapseMergeMode {
+    Plain,
+    Bind,
+}
+
+/// Per-call mutable bookkeeping for the trampolinized parallel-dispatch wait.
+///
+/// Tracks the previous `remaining` snapshot and consecutive-stall count so
+/// the WaitForParallel arm can spawn overflow workers if no progress is
+/// observed across several pump ticks (mirrors the original `stall_count`
+/// state in `parallel_branch_eval`'s synchronous wait loop).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StallState {
+    pub prev_remaining: u32,
+    pub stall_count: u32,
+    pub overflow_requested: bool,
+}
+
+/// Handle for a trampolinized parallel-branch dispatch.
+///
+/// Carries every piece of state that the synchronous `parallel_branch_eval`
+/// wait loop previously kept on its stack frame. The handle is owned by a
+/// `Continuation::WaitForParallel` variant; when that continuation is
+/// consumed (at completion or cancellation), the handle drops — releasing
+/// the budget, popping the frame-chain entry via `_root_guard.Drop`, and
+/// freeing the `Box<ParallelBranchRootFrame>` whose raw pointer the guard
+/// held.
+///
+/// **Thread-safety**: the handle stays on the trampoline thread that
+/// originated the dispatch. Cell fields are interior-mutable but not Sync;
+/// EvalFrameGuard pushes a thread-local frame-chain entry whose pop MUST
+/// happen on the same thread. Since the continuation stack is per-trampoline
+/// invocation and never moves across threads, this is sound.
+pub struct ParallelDispatchHandle {
+    /// Per-branch result slots: `Arc<Mutex<Vec<Option<Vec<BoundValue>>>>>`.
+    /// Each spawned branch closure writes its slot when complete.
+    pub results: super::eval_loop::ParallelEvalResults,
+    /// Number of branches still in-flight. Decrements to zero when all
+    /// branches have completed (or been cancelled).
+    pub remaining: Arc<AtomicU32>,
+    /// `(done_flag, condvar)` pair used to wake the wait loop when a branch
+    /// completes. The flag is set when `remaining` reaches zero.
+    pub done_pair: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    /// Cooperative-cancellation token. For `Demand::Exactly(N)`, the first
+    /// satisfying branch flips the token; sibling workers observe it at
+    /// their next safepoint and bail with `BranchCancelled`.
+    pub cancel_token: Arc<CancelToken>,
+    /// Total number of branches dispatched (informational; equal to the
+    /// initial `remaining` value).
+    pub num_branches: usize,
+    /// Heap-allocated frame whose raw pointer was registered with the
+    /// frame_chain. The `_root_guard` field holds the LIFO pop handle;
+    /// both must drop together (guard first, then box) so the pop happens
+    /// before the backing allocation is freed.
+    ///
+    /// Visibility is `pub(crate)` because `ParallelBranchRootFrame` itself
+    /// is crate-private — external callers can't name the type anyway.
+    /// `allow(dead_code)`: the field's purpose is to keep the heap box alive
+    /// for the lifetime of `_root_guard` (which holds a raw pointer to it);
+    /// the box is never read directly after construction.
+    #[allow(dead_code)]
+    pub(crate) root_frame: Box<super::eval_loop::ParallelBranchRootFrame>,
+    /// RAII handle that pops the frame_chain entry on drop. Stored as
+    /// `Option` so it can be `.take()`-ed for early release if needed.
+    /// **Drop order**: declared BEFORE `root_frame` so it drops first.
+    pub _root_guard: Option<EvalFrameGuard>,
+    /// Snapshot of the global allocation counter at the start of the
+    /// last cooperative GC drop. Used by the WaitForParallel pump to gate
+    /// periodic guard drops.
+    pub started_at_alloc_count: Cell<u64>,
+    /// Per-call stall-detection state.
+    pub stall_state: Cell<StallState>,
+}
+
+impl std::fmt::Debug for ParallelDispatchHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelDispatchHandle")
+            .field("num_branches", &self.num_branches)
+            .field("remaining", &self.remaining.load(std::sync::atomic::Ordering::Relaxed))
+            .field("stall_state", &self.stall_state.get())
+            .finish()
+    }
+}
+
+/// Handle for a trampolinized parallel-collapse dispatch.
+///
+/// Mirrors `ParallelDispatchHandle` for the `parallel_collapse_eval` path.
+/// Differs in that the root frame stores `items: Vec<BoundValue>` instead
+/// of `branches: Vec<ParallelBranch>`.
+pub struct ParallelCollapseDispatchHandle {
+    pub results: super::eval_loop::ParallelEvalResults,
+    pub remaining: Arc<AtomicU32>,
+    pub done_pair: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    pub cancel_token: Arc<CancelToken>,
+    pub num_branches: usize,
+    /// `pub(crate)` because `ParallelCollapseRootFrame` is crate-private.
+    /// `allow(dead_code)`: held alive for the lifetime of `_root_guard`.
+    #[allow(dead_code)]
+    pub(crate) root_frame: Box<super::eval_loop::ParallelCollapseRootFrame>,
+    pub _root_guard: Option<EvalFrameGuard>,
+    pub started_at_alloc_count: Cell<u64>,
+    pub stall_state: Cell<StallState>,
+}
+
+impl std::fmt::Debug for ParallelCollapseDispatchHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelCollapseDispatchHandle")
+            .field("num_branches", &self.num_branches)
+            .field("remaining", &self.remaining.load(std::sync::atomic::Ordering::Relaxed))
+            .field("stall_state", &self.stall_state.get())
+            .finish()
+    }
 }
 
 /// Work item representing pending evaluation work.
@@ -697,6 +828,66 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+    },
+
+    /// **Stack-safety mandate (2026-05-15)**: wait state for a trampolinized
+    /// parallel-branch dispatch.
+    ///
+    /// Previously, `parallel_branch_eval` held a synchronous condvar-wait
+    /// loop inside its own stack frame, which combined with inline branch-0
+    /// evaluation and work-stealing to produce unbounded same-thread C-stack
+    /// recursion (Robot.metta crash, 68-frame work-pool stack overflow).
+    ///
+    /// After trampolinization, `parallel_dispatch` returns a handle and
+    /// immediately yields to the trampoline outer loop via this continuation.
+    /// Each pump tick of the trampoline checks `handle.remaining`, optionally
+    /// steals one task or sleeps briefly, then re-pushes the continuation —
+    /// no C-stack growth across ticks regardless of `MAX_PARALLEL_DEPTH`.
+    WaitForParallel {
+        /// Per-call state for the dispatch (shared via Arc with workers).
+        handle: ParallelDispatchHandle,
+        /// How to merge per-branch results into `base_results`.
+        merge_mode: ParallelMergeMode,
+        /// Results already accumulated by the caller (e.g., from prior
+        /// sequential evaluation rounds). Branch results are appended to
+        /// these per `merge_mode`.
+        base_results: SmallVec<[BoundValue; 2]>,
+        /// Outer (caller's) carrying bindings, used by `RuleMatch` mode to
+        /// compose with each branch's per-branch bindings.
+        outer_carrying: SharedBindings,
+        env: SharedEnv,
+        depth: usize,
+        /// Total parallel budget acquired at dispatch — released on completion.
+        budget_acquired: u32,
+        /// `PARALLEL_BRANCH_DEPTH` value at the call site; informational for
+        /// trace/scheduler routing (not used for cap checks here).
+        caller_depth: u32,
+        /// Stable snapshot of the input branches, used by safepoint root
+        /// collection in `pump_parallel_wait` (mirrors `frame_chain`
+        /// registration's branch set).
+        stable_branches_snapshot: Arc<Vec<super::eval_loop::ParallelBranch>>,
+    },
+
+    /// **Stack-safety mandate (2026-05-15)**: wait state for a trampolinized
+    /// parallel-collapse dispatch. Mirrors `WaitForParallel`.
+    WaitForParallelCollapse {
+        handle: ParallelCollapseDispatchHandle,
+        merge_mode: CollapseMergeMode,
+        /// The original items being collapsed (preserved for safepoint roots
+        /// and for `Bind`-mode sidecar reconstruction).
+        stable_items_snapshot: Arc<Vec<BoundValue>>,
+        /// Caller's carrying bindings (preserved for downstream continuation
+        /// state completeness; collapse-bind opens its own scope but the
+        /// outer scope is still tracked).
+        outer_carrying: SharedBindings,
+        /// Layer A: tracked-variable hints from the enclosing collapse-bind
+        /// frame, projected at the sidecar encoding step. None for plain
+        /// collapse.
+        tracked_vars_hint: Option<Arc<SmallVec<[&'static str; 4]>>>,
+        env: SharedEnv,
+        depth: usize,
+        budget_acquired: u32,
+        caller_depth: u32,
     },
 
     /// Processing guard
@@ -1733,6 +1924,69 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
+            Self::WaitForParallel {
+                handle,
+                base_results,
+                outer_carrying,
+                stable_branches_snapshot,
+                ..
+            } => {
+                // 1. Walk the input branches snapshot (mirrors what
+                //    `collect_parallel_branch_frame_roots` does for the
+                //    frame_chain-registered entry — the two collectors fire
+                //    independently from the safepoint, both must report the
+                //    same roots so this is intentional).
+                for (value, bindings) in stable_branches_snapshot.iter() {
+                    out.push(*value);
+                    collect_bindings_values(bindings, out);
+                }
+                // 2. Walk any partial results that branch workers have
+                //    written so far (slots are `Option<Vec<BoundValue>>`).
+                let guard = handle
+                    .results
+                    .lock()
+                    .expect("parallel results mutex poisoned");
+                for slot in guard.iter().flatten() {
+                    for (v, bindings) in slot.iter() {
+                        out.push(*v);
+                        collect_bindings_values(bindings, out);
+                    }
+                }
+                drop(guard);
+                // 3. Walk caller-side accumulators.
+                for (v, bindings) in base_results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
+                collect_bindings_values(outer_carrying, out);
+            }
+
+            Self::WaitForParallelCollapse {
+                handle,
+                stable_items_snapshot,
+                outer_carrying,
+                ..
+            } => {
+                // 1. Walk the input collapse items.
+                for (value, bindings) in stable_items_snapshot.iter() {
+                    out.push(*value);
+                    collect_bindings_values(bindings, out);
+                }
+                // 2. Walk any partial results.
+                let guard = handle
+                    .results
+                    .lock()
+                    .expect("parallel collapse results mutex poisoned");
+                for slot in guard.iter().flatten() {
+                    for (v, bindings) in slot.iter() {
+                        out.push(*v);
+                        collect_bindings_values(bindings, out);
+                    }
+                }
+                drop(guard);
+                collect_bindings_values(outer_carrying, out);
+            }
+
             Self::ProcessGuard { outer_carrying, .. } => {
                 collect_bindings_values(outer_carrying, out);
             }
@@ -2160,6 +2414,8 @@ impl Continuation {
             | Self::ProcessCollapseBind { depth, .. }
             | Self::ProcessCollapseEvalResults { depth, .. }
             | Self::ProcessAmb { depth, .. }
+            | Self::WaitForParallel { depth, .. }
+            | Self::WaitForParallelCollapse { depth, .. }
             | Self::ProcessGuard { depth, .. }
             | Self::ProcessGetAtoms { depth, .. }
             | Self::ProcessMemoTable { depth, .. }
@@ -2235,6 +2491,8 @@ impl Continuation {
             Self::ProcessCollapseBind { .. } => "ProcessCollapseBind",
             Self::ProcessCollapseEvalResults { .. } => "ProcessCollapseEvalResults",
             Self::ProcessAmb { .. } => "ProcessAmb",
+            Self::WaitForParallel { .. } => "WaitForParallel",
+            Self::WaitForParallelCollapse { .. } => "WaitForParallelCollapse",
             Self::ProcessGuard { .. } => "ProcessGuard",
             Self::ProcessGetAtoms { .. } => "ProcessGetAtoms",
             Self::ProcessMemoTable { .. } => "ProcessMemoTable",
@@ -2288,7 +2546,7 @@ mod tests {
     }
 
     fn env() -> SharedEnv {
-        std::sync::Arc::new(MettaEnvironment::new(factory()))
+        std::sync::Arc::new(crate::backend::environment::MettaEnvironment::new(factory()))
     }
 
     #[test]

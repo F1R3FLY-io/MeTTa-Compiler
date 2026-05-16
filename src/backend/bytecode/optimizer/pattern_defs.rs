@@ -103,6 +103,7 @@ pub fn is_numeric_producer(opcode: Option<Opcode>) -> bool {
             | Some(Opcode::Neg)
             | Some(Opcode::Abs)
             | Some(Opcode::Pow)
+            | Some(Opcode::PowMath)
             | Some(Opcode::FloorDiv)
     )
 }

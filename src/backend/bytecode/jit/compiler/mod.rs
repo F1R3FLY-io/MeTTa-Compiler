@@ -977,6 +977,7 @@ impl JitCompiler {
                 let mut ctx = handlers::ArithmeticHandlerContext {
                     module: &mut self.module,
                     pow_func_id: self.arithmetic.pow_func_id,
+                    pow_math_func_id: self.arithmetic.pow_math_func_id,
                     numeric_add_func_id: self.arithmetic.numeric_add_func_id,
                     numeric_sub_func_id: self.arithmetic.numeric_sub_func_id,
                     numeric_mul_func_id: self.arithmetic.numeric_mul_func_id,
@@ -992,6 +993,7 @@ impl JitCompiler {
                 let mut ctx = handlers::ArithmeticHandlerContext {
                     module: &mut self.module,
                     pow_func_id: self.arithmetic.pow_func_id,
+                    pow_math_func_id: self.arithmetic.pow_math_func_id,
                     numeric_add_func_id: self.arithmetic.numeric_add_func_id,
                     numeric_sub_func_id: self.arithmetic.numeric_sub_func_id,
                     numeric_mul_func_id: self.arithmetic.numeric_mul_func_id,
@@ -1001,6 +1003,22 @@ impl JitCompiler {
                     numeric_abs_func_id: self.arithmetic.numeric_abs_func_id,
                 };
                 return handlers::compile_pow(&mut ctx, codegen);
+            }
+
+            Opcode::PowMath => {
+                let mut ctx = handlers::ArithmeticHandlerContext {
+                    module: &mut self.module,
+                    pow_func_id: self.arithmetic.pow_func_id,
+                    pow_math_func_id: self.arithmetic.pow_math_func_id,
+                    numeric_add_func_id: self.arithmetic.numeric_add_func_id,
+                    numeric_sub_func_id: self.arithmetic.numeric_sub_func_id,
+                    numeric_mul_func_id: self.arithmetic.numeric_mul_func_id,
+                    numeric_div_func_id: self.arithmetic.numeric_div_func_id,
+                    numeric_mod_func_id: self.arithmetic.numeric_mod_func_id,
+                    numeric_neg_func_id: self.arithmetic.numeric_neg_func_id,
+                    numeric_abs_func_id: self.arithmetic.numeric_abs_func_id,
+                };
+                return handlers::compile_pow_math(&mut ctx, codegen);
             }
 
             // =====================================================================

@@ -545,6 +545,12 @@ pub enum Opcode {
     IsNan = 0xDC,
     /// Check if infinity: [a] -> [bool]
     IsInf = 0xDD,
+    /// Power (math version): [a, b] -> [Float(a^b)]
+    ///
+    /// HE-aligned `pow-math`: always promotes both operands to f64 and
+    /// returns Float regardless of input subtype. Distinct from `Pow`
+    /// (0xC8) which preserves Long×Long → Long for the short-name `pow`.
+    PowMath = 0xDE,
 
     // === Grounded Boolean (0xE0-0xE7) ===
     /// Logical and: [a, b] -> [a && b]
@@ -678,6 +684,7 @@ impl Opcode {
             | Self::Abs
             | Self::FloorDiv
             | Self::Pow
+            | Self::PowMath
             | Self::Sqrt
             | Self::Log
             | Self::Trunc
@@ -1050,6 +1057,7 @@ impl Opcode {
             Self::Abs => "abs",
             Self::FloorDiv => "floor_div",
             Self::Pow => "pow",
+            Self::PowMath => "pow_math",
             Self::Sqrt => "sqrt",
             Self::Log => "log",
             Self::Trunc => "trunc",
@@ -1386,6 +1394,7 @@ static OPCODE_TABLE: [Option<Opcode>; 256] = {
     table[0xDB] = Some(Opcode::Atan);
     table[0xDC] = Some(Opcode::IsNan);
     table[0xDD] = Some(Opcode::IsInf);
+    table[0xDE] = Some(Opcode::PowMath);
 
     // Grounded boolean
     table[0xE0] = Some(Opcode::And);

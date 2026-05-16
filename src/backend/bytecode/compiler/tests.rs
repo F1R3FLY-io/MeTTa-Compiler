@@ -2182,7 +2182,8 @@ fn test_fold_pow_positive() {
 
 #[test]
 fn test_fold_pow_math_alias() {
-    // (pow-math 3 4) should fold to 81
+    // HE-aligned: (pow-math 3 4) folds to Float(81.0), not Long(81).
+    // `pow-math` always returns Float per HE stdlib/math.rs:35.
     let expr = MettaValue::SExpr(vec![
         MettaValue::Atom("pow-math".to_string()),
         MettaValue::Long(3),
@@ -2190,9 +2191,16 @@ fn test_fold_pow_math_alias() {
     ]);
     let chunk = compile("test", &expr).unwrap();
     let disasm = chunk.disassemble();
+    // Float literal goes via constant pool (push_const)
     assert!(
-        disasm.contains("push_long_small 81"),
-        "pow-math should fold: {}",
+        disasm.contains("push_const") || disasm.contains("Float(81"),
+        "pow-math should fold to Float(81.0): {}",
+        disasm
+    );
+    // Should NOT emit the pow_math opcode (the result was folded)
+    assert!(
+        !disasm.contains("\npow_math\n") && !disasm.contains(" pow_math "),
+        "pow-math opcode should not be emitted (folded): {}",
         disasm
     );
 }

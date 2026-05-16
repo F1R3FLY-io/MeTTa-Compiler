@@ -1662,6 +1662,7 @@ where
             Opcode::Pow => {
                 // Spec §13.2: integer pow wraps on overflow.
                 // i64::wrapping_pow handles overflow without panicking.
+                // `pow` (short-name) preserves Long×Long → Long.
                 let b = self.pop()?;
                 let a = self.pop()?;
                 // BUG-T0-T1-003: Empty annihilation per spec §14.1.1 Ext-3.
@@ -1696,6 +1697,50 @@ where
                             },
                         },
                     }
+                }
+            }
+            Opcode::PowMath => {
+                // HE-aligned `pow-math` (lib/src/metta/runner/stdlib/math.rs:21-37):
+                // always promote both operands to f64 and return Float.
+                // Even Long×Long inputs (e.g. `(pow-math 2 10)`) yield
+                // Float(1024.0), not Long(1024).
+                let b = self.pop()?;
+                let a = self.pop()?;
+                if a.is_empty() || b.is_empty()
+                    || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty") {
+                    self.push(self.factory.empty());
+                } else {
+                    // Promote both to f64; powf for Float exp, powi for Long exp.
+                    let base = match a.as_float() {
+                        Some(x) => x,
+                        None => match a.as_long() {
+                            Some(x) => x as f64,
+                            None => {
+                                return Err(VmError::TypeError {
+                                    expected: "number (Long or Float)",
+                                    got: "other",
+                                })
+                            }
+                        },
+                    };
+                    // Exponent: use powi for Long (matches HE try_into::<i32>),
+                    // powf for Float. Result is always Float.
+                    let result = match b.as_long() {
+                        Some(y) => match i32::try_from(y) {
+                            Ok(y_i32) => base.powi(y_i32),
+                            Err(_) => base.powf(y as f64),
+                        },
+                        None => match b.as_float() {
+                            Some(y) => base.powf(y),
+                            None => {
+                                return Err(VmError::TypeError {
+                                    expected: "number (Long or Float)",
+                                    got: "other",
+                                })
+                            }
+                        },
+                    };
+                    self.push(self.make_float(result));
                 }
             }
             Opcode::Sqrt => {
@@ -1750,10 +1795,14 @@ where
                 }
             }
             Opcode::Ceil => {
+                // HE-aligned `ceil-math` (lib/src/metta/runner/stdlib/math.rs:153-162):
+                // Float(f) → Float(f.ceil()). For Long input, we deliberately
+                // promote to Float to keep return type uniform (MTT spec: *-math
+                // ops return Float). Conformance fixture T06/070 expects "4.0".
                 let a = self.pop()?;
                 match a.view() {
-                    ValueView::Float(x) => self.push(self.make_long(x.ceil() as i64)),
-                    ValueView::Long(_) => self.push(a),
+                    ValueView::Float(x) => self.push(self.make_float(x.ceil())),
+                    ValueView::Long(n) => self.push(self.make_float(n as f64)),
                     _ => {
                         return Err(VmError::TypeError {
                             expected: "Float or Long",
@@ -1763,10 +1812,12 @@ where
                 }
             }
             Opcode::FloorMath => {
+                // HE-aligned `floor-math`. See Ceil note above. Conformance
+                // fixture T06/069 expects "3.0".
                 let a = self.pop()?;
                 match a.view() {
-                    ValueView::Float(x) => self.push(self.make_long(x.floor() as i64)),
-                    ValueView::Long(_) => self.push(a),
+                    ValueView::Float(x) => self.push(self.make_float(x.floor())),
+                    ValueView::Long(n) => self.push(self.make_float(n as f64)),
                     _ => {
                         return Err(VmError::TypeError {
                             expected: "Float or Long",
@@ -1776,10 +1827,12 @@ where
                 }
             }
             Opcode::Round => {
+                // HE-aligned `round-math`. See Ceil note above. Conformance
+                // fixture T06/071 expects "4.0".
                 let a = self.pop()?;
                 match a.view() {
-                    ValueView::Float(x) => self.push(self.make_long(x.round() as i64)),
-                    ValueView::Long(_) => self.push(a),
+                    ValueView::Float(x) => self.push(self.make_float(x.round())),
+                    ValueView::Long(n) => self.push(self.make_float(n as f64)),
                     _ => {
                         return Err(VmError::TypeError {
                             expected: "Float or Long",

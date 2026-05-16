@@ -245,6 +245,9 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
             name: "floor-math",
             min_arity: 1,
             max_arity: 1,
+            // HE-actual return is Float (subtype of Number). See VM
+            // `Opcode::FloorMath` and `jit_runtime_floor_math` — both always
+            // produce Float. TypeExpr has no Float variant; Number suffices.
             type_sig: arrow(vec![Number], Number),
         },
         BuiltinSignature {
@@ -257,6 +260,7 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
             name: "ceil-math",
             min_arity: 1,
             max_arity: 1,
+            // HE-actual return is Float (subtype of Number).
             type_sig: arrow(vec![Number], Number),
         },
         BuiltinSignature {
@@ -269,6 +273,7 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
             name: "round-math",
             min_arity: 1,
             max_arity: 1,
+            // HE-actual return is Float (subtype of Number).
             type_sig: arrow(vec![Number], Number),
         },
         BuiltinSignature {
@@ -313,6 +318,9 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
             name: "pow-math",
             min_arity: 2,
             max_arity: 2,
+            // HE-actual return is Float (subtype of Number). See VM
+            // `Opcode::PowMath` and `jit_runtime_pow_math` — both always
+            // produce Float regardless of input subtype.
             type_sig: arrow(vec![Number, Number], Number),
         },
         BuiltinSignature {

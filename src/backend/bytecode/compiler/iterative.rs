@@ -1069,7 +1069,7 @@ impl Compiler {
                 });
                 Ok(Some(()))
             }
-            "pow" | "pow-math" => {
+            "pow" => {
                 self.check_arity("pow", args.len(), 2)?;
                 if matches!(args[1].view(), ValueView::Long(0)) {
                     self.builder.emit_byte(Opcode::PushLongSmall, 1);
@@ -1086,6 +1086,22 @@ impl Compiler {
                 let folded = self.try_fold_binary_arith("pow", &args[0], &args[1]);
                 work_stack.push(CompileWork::CompileBinaryOp {
                     op: BinaryOp::Pow,
+                    left: args[0].clone(),
+                    right: args[1].clone(),
+                    folded,
+                    cont_id,
+                });
+                Ok(Some(()))
+            }
+            "pow-math" => {
+                // HE-aligned: pow-math always returns Float. We must NOT shortcut
+                // to `x` for `(pow-math x 1)` because the result Float(x_as_f64)
+                // differs from Long(x). The (pow-math x 0) → 1 shortcut is also
+                // suppressed for the same reason; folding handles literal cases.
+                self.check_arity("pow-math", args.len(), 2)?;
+                let folded = self.try_fold_binary_arith("pow-math", &args[0], &args[1]);
+                work_stack.push(CompileWork::CompileBinaryOp {
+                    op: BinaryOp::PowMath,
                     left: args[0].clone(),
                     right: args[1].clone(),
                     folded,

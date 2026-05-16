@@ -266,6 +266,8 @@ pub enum BinaryOp {
     Div,
     Mod,
     Pow,
+    /// `pow-math`: HE-aligned — always promotes to Float (see Opcode::PowMath).
+    PowMath,
     FloorDiv,
     Log,
 
@@ -317,6 +319,7 @@ impl BinaryOp {
             BinaryOp::Div => Opcode::Div,
             BinaryOp::Mod => Opcode::Mod,
             BinaryOp::Pow => Opcode::Pow,
+            BinaryOp::PowMath => Opcode::PowMath,
             BinaryOp::FloorDiv => Opcode::FloorDiv,
             BinaryOp::Log => Opcode::Log,
             BinaryOp::Lt => Opcode::Lt,

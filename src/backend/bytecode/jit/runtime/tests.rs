@@ -1714,29 +1714,51 @@ mod tests {
 
     #[test]
     fn test_ceil() {
-        // ceil(integer) should return same value
+        // HE-aligned `ceil-math`: Long input is promoted to Float for
+        // uniform return type. Conformance fixture T06/070 expects
+        // Float output even for Float inputs (e.g. 3.2 → 4.0).
         let val = box_long(42);
         let result = unsafe { jit_runtime_ceil(val) };
-        let result_val = extract_long_signed(result);
-        assert_eq!(result_val, 42);
+        // Float is heap-allocated and tagged as PTR.
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_PTR, "ceil-math should return Float");
+        // Reconstruct the value and verify it's Float(42.0).
+        let jv = unsafe { JitValue::from_raw(result) };
+        let mv = unsafe { jv.to_metta() };
+        match mv.view() {
+            crate::backend::models::ValueView::Float(x) => assert_eq!(x, 42.0),
+            other => panic!("expected Float(42.0), got {:?}", other),
+        }
     }
 
     #[test]
     fn test_floor_math() {
-        // floor(integer) should return same value
+        // HE-aligned `floor-math`: Long input promoted to Float.
         let val = box_long(42);
         let result = unsafe { jit_runtime_floor_math(val) };
-        let result_val = extract_long_signed(result);
-        assert_eq!(result_val, 42);
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_PTR, "floor-math should return Float");
+        let jv = unsafe { JitValue::from_raw(result) };
+        let mv = unsafe { jv.to_metta() };
+        match mv.view() {
+            crate::backend::models::ValueView::Float(x) => assert_eq!(x, 42.0),
+            other => panic!("expected Float(42.0), got {:?}", other),
+        }
     }
 
     #[test]
     fn test_round() {
-        // round(integer) should return same value
+        // HE-aligned `round-math`: Long input promoted to Float.
         let val = box_long(42);
         let result = unsafe { jit_runtime_round(val) };
-        let result_val = extract_long_signed(result);
-        assert_eq!(result_val, 42);
+        let tag = result & TAG_MASK;
+        assert_eq!(tag, TAG_PTR, "round-math should return Float");
+        let jv = unsafe { JitValue::from_raw(result) };
+        let mv = unsafe { jv.to_metta() };
+        match mv.view() {
+            crate::backend::models::ValueView::Float(x) => assert_eq!(x, 42.0),
+            other => panic!("expected Float(42.0), got {:?}", other),
+        }
     }
 
     // ==========================================================================

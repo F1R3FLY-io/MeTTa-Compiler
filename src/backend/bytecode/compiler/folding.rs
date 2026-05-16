@@ -107,7 +107,12 @@ pub fn try_fold_binary_arith_values(
             "*" => Some(MettaValue::Long(x.wrapping_mul(y))),
             "/" if y != 0 => Some(MettaValue::Long(x.wrapping_div(y))),
             "%" | "mod" if y != 0 => Some(MettaValue::Long(x.wrapping_rem(y))),
-            "pow" | "pow-math" if y >= 0 => Some(MettaValue::Long(x.wrapping_pow(y as u32))),
+            // `pow` keeps Long×Long → Long semantics (legacy short-name).
+            "pow" if y >= 0 => Some(MettaValue::Long(x.wrapping_pow(y as u32))),
+            // `pow-math` is HE-aligned: ALWAYS promote both operands to f64 and
+            // return Float, regardless of input subtype (HE stdlib/math.rs:35
+            // wraps the result as `Number::Float(res)`).
+            "pow-math" => Some(MettaValue::Float((x as f64).powf(y as f64))),
             "floor-div" if y != 0 => Some(MettaValue::Long(x.wrapping_div_euclid(y))),
             _ => None,
         },

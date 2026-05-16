@@ -22,6 +22,8 @@ use crate::backend::bytecode::Opcode;
 pub struct ArithmeticHandlerContext<'m> {
     pub module: &'m mut JITModule,
     pub pow_func_id: FuncId,
+    /// HE-aligned `pow-math` runtime (always returns Float).
+    pub pow_math_func_id: FuncId,
     // Numeric operations with type promotion (float fallback)
     pub numeric_add_func_id: FuncId,
     pub numeric_sub_func_id: FuncId,
@@ -334,6 +336,25 @@ pub fn compile_pow<'a, 'b>(
         .declare_func_in_func(ctx.pow_func_id, codegen.builder.func);
 
     // Call jit_runtime_pow(base, exp) - both are NaN-boxed
+    let call_inst = codegen.builder.ins().call(func_ref, &[base, exp]);
+    let result = codegen.builder.inst_results(call_inst)[0];
+    codegen.push(result)?;
+
+    Ok(())
+}
+
+/// Compile PowMath opcode via runtime call (HE-aligned: returns Float)
+pub fn compile_pow_math<'a, 'b>(
+    ctx: &mut ArithmeticHandlerContext<'_>,
+    codegen: &mut CodegenContext<'a, 'b>,
+) -> JitResult<()> {
+    let exp = codegen.pop()?;
+    let base = codegen.pop()?;
+
+    let func_ref = ctx
+        .module
+        .declare_func_in_func(ctx.pow_math_func_id, codegen.builder.func);
+
     let call_inst = codegen.builder.ins().call(func_ref, &[base, exp]);
     let result = codegen.builder.inst_results(call_inst)[0];
     codegen.push(result)?;

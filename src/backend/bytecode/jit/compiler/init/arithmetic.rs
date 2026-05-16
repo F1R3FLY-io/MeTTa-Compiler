@@ -12,8 +12,10 @@ use crate::backend::bytecode::jit::types::{JitError, JitResult};
 
 /// Function IDs for arithmetic operations
 pub struct ArithmeticFuncIds {
-    /// Power function: base^exp
+    /// Power function: base^exp (Long×Long → Long; mixed → Float)
     pub pow_func_id: FuncId,
+    /// HE-aligned `pow-math`: always returns Float regardless of input subtype.
+    pub pow_math_func_id: FuncId,
     /// Square root
     pub sqrt_func_id: FuncId,
     /// Natural logarithm
@@ -80,8 +82,13 @@ pub trait ArithmeticInit {
 /// Implementation for any type (will be used by JitCompiler)
 impl<T> ArithmeticInit for T {
     fn register_arithmetic_symbols(builder: &mut JITBuilder) {
-        // Power function
+        // Power function (short-name `pow`: Long×Long → Long)
         builder.symbol("jit_runtime_pow", runtime::jit_runtime_pow as *const u8);
+        // HE-aligned `pow-math` (always returns Float)
+        builder.symbol(
+            "jit_runtime_pow_math",
+            runtime::jit_runtime_pow_math as *const u8,
+        );
 
         // Extended math operations
         builder.symbol("jit_runtime_sqrt", runtime::jit_runtime_sqrt as *const u8);
@@ -176,6 +183,16 @@ impl<T> ArithmeticInit for T {
             .declare_function("jit_runtime_pow", Linkage::Import, &binary_sig)
             .map_err(|e| {
                 JitError::CompilationError(format!("Failed to declare jit_runtime_pow: {}", e))
+            })?;
+
+        // Declare pow_math (binary, HE-aligned: returns Float)
+        let pow_math_func_id = module
+            .declare_function("jit_runtime_pow_math", Linkage::Import, &binary_sig)
+            .map_err(|e| {
+                JitError::CompilationError(format!(
+                    "Failed to declare jit_runtime_pow_math: {}",
+                    e
+                ))
             })?;
 
         // Declare unary math functions
@@ -381,6 +398,7 @@ impl<T> ArithmeticInit for T {
 
         Ok(ArithmeticFuncIds {
             pow_func_id,
+            pow_math_func_id,
             sqrt_func_id,
             log_func_id,
             trunc_func_id,

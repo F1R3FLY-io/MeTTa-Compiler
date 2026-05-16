@@ -364,7 +364,7 @@ pub fn can_compile(expr: &MettaValue) -> bool {
         ValueView::SExpr(items) => {
             if let ValueView::Atom(head) = items[0].view() {
                 let head_ok = match head {
-                    "+" | "-" | "*" | "/" | "%" | "abs" | "pow" => true,
+                    "+" | "-" | "*" | "/" | "%" | "abs" | "pow" | "pow-math" => true,
                     "<" | "<=" | ">" | ">=" | "==" | "!=" => true,
                     "and" | "or" | "not" | "xor" => true,
                     "if" => true,

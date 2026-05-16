@@ -67,7 +67,8 @@ pub fn can_compile_stage1_bytecode(code: &[u8]) -> bool {
             | Opcode::Neg
             | Opcode::Abs
             | Opcode::FloorDiv
-            | Opcode::Pow => {}
+            | Opcode::Pow
+            | Opcode::PowMath => {}
 
             // Extended math operations
             Opcode::Sqrt
@@ -322,7 +323,8 @@ pub fn can_compile_stage1(chunk: &BytecodeChunk) -> bool {
             | Opcode::Neg
             | Opcode::Abs
             | Opcode::FloorDiv
-            | Opcode::Pow => {} // Stage 2: Pow uses runtime call
+            | Opcode::Pow
+            | Opcode::PowMath => {} // Stage 2: Pow / PowMath use runtime calls
 
             // Extended math operations (PR #62) - all use runtime calls
             Opcode::Sqrt

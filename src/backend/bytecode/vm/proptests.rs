@@ -1413,37 +1413,41 @@ proptest! {
 
     #[test]
     fn prop_ceil_float(x in -1000.0f64..1000.0f64) {
+        // HE-aligned `ceil-math`: Float input returns Float (was Long-cast).
+        // Conformance fixture T06/070 expects Float output (e.g. 3.2 → 4.0).
         let result = run_vm_unary_op_value(MettaValue::Float(x), Opcode::Ceil);
         prop_assert!(result.is_ok());
         match result.unwrap().inner() {
-            MettaValueInner::Long(r) => {
-                prop_assert_eq!(*r, x.ceil() as i64);
+            MettaValueInner::Float(r) => {
+                prop_assert_eq!(*r, x.ceil());
             }
-            _ => return Err(TestCaseError::fail("Expected Long result")),
+            _ => return Err(TestCaseError::fail("Expected Float result")),
         }
     }
 
     #[test]
     fn prop_floor_float(x in -1000.0f64..1000.0f64) {
+        // HE-aligned `floor-math`: Float input returns Float.
         let result = run_vm_unary_op_value(MettaValue::Float(x), Opcode::FloorMath);
         prop_assert!(result.is_ok());
         match result.unwrap().inner() {
-            MettaValueInner::Long(r) => {
-                prop_assert_eq!(*r, x.floor() as i64);
+            MettaValueInner::Float(r) => {
+                prop_assert_eq!(*r, x.floor());
             }
-            _ => return Err(TestCaseError::fail("Expected Long result")),
+            _ => return Err(TestCaseError::fail("Expected Float result")),
         }
     }
 
     #[test]
     fn prop_round_float(x in -1000.0f64..1000.0f64) {
+        // HE-aligned `round-math`: Float input returns Float.
         let result = run_vm_unary_op_value(MettaValue::Float(x), Opcode::Round);
         prop_assert!(result.is_ok());
         match result.unwrap().inner() {
-            MettaValueInner::Long(r) => {
-                prop_assert_eq!(*r, x.round() as i64);
+            MettaValueInner::Float(r) => {
+                prop_assert_eq!(*r, x.round());
             }
-            _ => return Err(TestCaseError::fail("Expected Long result")),
+            _ => return Err(TestCaseError::fail("Expected Float result")),
         }
     }
 

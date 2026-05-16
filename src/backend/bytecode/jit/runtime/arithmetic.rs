@@ -82,6 +82,50 @@ pub unsafe extern "C" fn jit_runtime_pow(base: u64, exp: u64) -> u64 {
     box_long(result)
 }
 
+/// Compute math power: base^exp (HE-aligned `pow-math`)
+///
+/// Always returns Float regardless of input subtype. Matches HE
+/// `stdlib/math.rs::PowMathOp` (lib/src/metta/runner/stdlib/math.rs:21-37):
+/// promote `base` to f64, use `powi` for integer exponent / `powf` for
+/// float exponent, wrap result as `Number::Float`.
+///
+/// # Safety
+/// The inputs must be valid NaN-boxed values (Long or PTR to Float).
+#[no_mangle]
+pub unsafe extern "C" fn jit_runtime_pow_math(base: u64, exp: u64) -> u64 {
+    let base_jv = JitValue::from_raw(base);
+    let exp_jv = JitValue::from_raw(exp);
+    let base_mv = base_jv.to_metta();
+    let exp_mv = exp_jv.to_metta();
+
+    let base_f = match base_mv.view() {
+        ValueView::Float(x) => x,
+        ValueView::Long(x) => x as f64,
+        _ => {
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            return metta_to_jit(&factory.error(factory.atom("BadType"), factory.string("JIT type error"))).to_bits();
+        }
+    };
+
+    let result_val = match exp_mv.view() {
+        ValueView::Long(y) => match i32::try_from(y) {
+            Ok(y_i32) => base_f.powi(y_i32),
+            Err(_) => base_f.powf(y as f64),
+        },
+        ValueView::Float(y) => base_f.powf(y),
+        _ => {
+            signal_jit_type_error();
+            let factory = crate::backend::models::global_factory();
+            use crate::backend::models::MettaValueFactory;
+            return metta_to_jit(&factory.error(factory.atom("BadType"), factory.string("JIT type error"))).to_bits();
+        }
+    };
+
+    metta_to_jit(&MettaValue::Float(result_val)).to_bits()
+}
+
 /// Integer absolute value
 ///
 /// # Safety
@@ -187,7 +231,11 @@ pub unsafe extern "C" fn jit_runtime_trunc(val: u64) -> u64 {
     metta_to_jit(&result).to_bits()
 }
 
-/// Ceiling: ceil(value) -> Long
+/// Ceiling: ceil-math(value) -> Float
+///
+/// HE-aligned: Float input returns Float(x.ceil()). Long input is promoted
+/// to Float (n as f64) so the MTT *-math op always returns Float, matching
+/// conformance fixture T06/070 ("ceil-math 3.2" → "4.0").
 ///
 /// # Safety
 /// The input must be a valid NaN-boxed value.
@@ -197,15 +245,17 @@ pub unsafe extern "C" fn jit_runtime_ceil(val: u64) -> u64 {
     let mv = jv.to_metta();
 
     let result = match mv.view() {
-        ValueView::Float(x) => MettaValue::Long(x.ceil() as i64),
-        ValueView::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                  // Type error
+        ValueView::Float(x) => MettaValue::Float(x.ceil()),
+        ValueView::Long(x) => MettaValue::Float(x as f64),
+        _ => MettaValue::Float(0.0), // Type error: return 0.0 (was Long(0))
     };
 
     metta_to_jit(&result).to_bits()
 }
 
-/// Floor: floor(value) -> Long
+/// Floor: floor-math(value) -> Float
+///
+/// HE-aligned. See Ceil note above. Conformance fixture T06/069.
 ///
 /// # Safety
 /// The input must be a valid NaN-boxed value.
@@ -215,15 +265,17 @@ pub unsafe extern "C" fn jit_runtime_floor_math(val: u64) -> u64 {
     let mv = jv.to_metta();
 
     let result = match mv.view() {
-        ValueView::Float(x) => MettaValue::Long(x.floor() as i64),
-        ValueView::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                  // Type error
+        ValueView::Float(x) => MettaValue::Float(x.floor()),
+        ValueView::Long(x) => MettaValue::Float(x as f64),
+        _ => MettaValue::Float(0.0), // Type error
     };
 
     metta_to_jit(&result).to_bits()
 }
 
-/// Round: round(value) -> Long
+/// Round: round-math(value) -> Float
+///
+/// HE-aligned. See Ceil note above. Conformance fixture T06/071.
 ///
 /// # Safety
 /// The input must be a valid NaN-boxed value.
@@ -233,9 +285,9 @@ pub unsafe extern "C" fn jit_runtime_round(val: u64) -> u64 {
     let mv = jv.to_metta();
 
     let result = match mv.view() {
-        ValueView::Float(x) => MettaValue::Long(x.round() as i64),
-        ValueView::Long(x) => MettaValue::Long(x), // Already an integer
-        _ => MettaValue::Long(0),                  // Type error
+        ValueView::Float(x) => MettaValue::Float(x.round()),
+        ValueView::Long(x) => MettaValue::Float(x as f64),
+        _ => MettaValue::Float(0.0), // Type error
     };
 
     metta_to_jit(&result).to_bits()

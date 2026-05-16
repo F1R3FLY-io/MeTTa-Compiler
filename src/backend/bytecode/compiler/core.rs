@@ -468,11 +468,22 @@ where
                 self.builder.emit(Opcode::Mod);
                 Ok(Some(()))
             }
-            "pow" | "pow-math" => {
+            "pow" => {
                 self.check_arity("pow", args.len(), 2)?;
                 self.compile(&args[0])?;
                 self.compile(&args[1])?;
                 self.builder.emit(Opcode::Pow);
+                Ok(Some(()))
+            }
+            "pow-math" => {
+                // HE-aligned: pow-math always returns Float (matches HE
+                // stdlib/math.rs PowMathOp wrapping result as Number::Float).
+                // Distinct opcode from `pow` so the short-name `pow` may keep
+                // Long×Long → Long semantics for legacy use.
+                self.check_arity("pow-math", args.len(), 2)?;
+                self.compile(&args[0])?;
+                self.compile(&args[1])?;
+                self.builder.emit(Opcode::PowMath);
                 Ok(Some(()))
             }
             "abs" | "abs-math" => {

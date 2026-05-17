@@ -81,11 +81,17 @@ pub enum OverridableOpId {
     /// `(= (test $v) ...)` as a Bool predicate without colliding with the
     /// PeTTa-compatible builtin. See T06/095 fixture.
     Test = 23,
+    // Bare set-op aliases (HE stdlib.metta:629-663). HE defines them as
+    // METTA-level rules; user rules can shadow MTT's grounded fast path.
+    Unique = 24,
+    Union = 25,
+    Intersection = 26,
+    Subtraction = 27,
 }
 
 /// Number of overridable operator names. Must equal the highest
 /// `OverridableOpId` discriminant + 1.
-pub const NUM_OVERRIDABLE_OPS: usize = 24;
+pub const NUM_OVERRIDABLE_OPS: usize = 28;
 
 const _: () = {
     assert!(
@@ -255,6 +261,11 @@ pub fn overridable_op_id(op: &str) -> Option<OverridableOpId> {
         // PeTTa-specific test form — overridable so user rules with the
         // same head can shadow the builtin (T06/095).
         "test" => Test,
+        // Bare set-op aliases — HE stdlib rules (stdlib.metta:629-663).
+        "unique" => Unique,
+        "union" => Union,
+        "intersection" => Intersection,
+        "subtraction" => Subtraction,
         _ => return None,
     })
 }
@@ -327,6 +338,10 @@ mod tests {
             ("best-candidate", OverridableOpId::BestCandidate),
             ("cut", OverridableOpId::Cut),
             ("test", OverridableOpId::Test),
+            ("unique", OverridableOpId::Unique),
+            ("union", OverridableOpId::Union),
+            ("intersection", OverridableOpId::Intersection),
+            ("subtraction", OverridableOpId::Subtraction),
         ];
         assert_eq!(names.len(), NUM_OVERRIDABLE_OPS);
         for (name, id) in names {

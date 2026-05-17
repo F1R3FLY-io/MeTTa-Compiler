@@ -90,11 +90,12 @@ pub fn is_eager_special_form(op: &str) -> bool {
         | "repr" | "format-args"
         // Set operations (produce list values)
         | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
-        // Bare set-op aliases (T06/108-111) are NOT listed here — their
-        // dispatch in step/sexpr.rs uses an explicit `(collapse arg)` wrap,
-        // so the bare arm must receive UNEVALUATED args. If listed here,
-        // the trampoline pre-evaluates (superpose …) to nondet values and
-        // fires the bare arm once per value, breaking dedup semantics.
+        // Bare set-op aliases (T06/108-111, MTT-FN-SET-BARE) — produce list
+        // values. Bare-arm at sexpr.rs:3034 desugars to
+        // `(let $u (op-atom (collapse arg)…) (superpose $u))` and fires
+        // BEFORE the global pre-eval check (see arm-relocation in sexpr.rs)
+        // so it receives UNEVALUATED args.
+        | "unique" | "union" | "intersection" | "subtraction"
         // Alpha equivalence (produces Bool value)
         | "=alpha"
     )
@@ -154,11 +155,11 @@ pub fn is_grounded_op(name: &str) -> bool {
         // structural equality (matching PeTTa).
         | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom"
         | "intersection-atom" | "subtraction-atom"
-        // Bare set-op aliases (T06/108-111) are NOT listed — they desugar
-        // via `(collapse arg)` and must receive unevaluated args. See note
-        // in is_eager_special_form above. Listing them here would cause
-        // pre-evaluation, breaking M09f/004 (unique dedup) and M09f/005
-        // (intersection) per HE-empirical verification.
+        // Bare set-op aliases (T06/108-111). Listed here so nested calls
+        // trigger pre-evaluation of the enclosing expression. The bare
+        // arm in sexpr.rs handles its own internal `(collapse arg)` wrap
+        // and fires BEFORE pre-eval would mangle its args.
+        | "unique" | "union" | "intersection" | "subtraction"
         // String operations (Workstream X.5a)
         | "stringToChars"
         // String operations (T06/060 — sort-strings, HE-aligned)

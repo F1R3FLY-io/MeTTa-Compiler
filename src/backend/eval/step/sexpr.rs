@@ -3031,7 +3031,17 @@ where
                 //
                 // The same shape applies for the 2-arg ops (union / intersection /
                 // subtraction) — each collapse + the outer let → superpose.
+                //
+                // 2026-05-17: gated by `dispatch_overrides` — user rules of
+                // the form `(= (unique $x) ...)` etc. shadow the bare-setop
+                // desugar. HE stdlib defines these as METTA-level rules
+                // (stdlib.metta:629-663) so they are user-overridable.
                 "unique" | "union" | "intersection" | "subtraction" => {
+                    let id = overridable_op_id(op)
+                        .expect("bare set-ops registered in OverridableOpId");
+                    if env.dispatch_overrides().is_overridden(id) {
+                        break 'special_forms;
+                    }
                     let factory = ctx.factory();
                     let op_atom = factory.atom(&format!("{}-atom", op));
                     let collapse_sym = factory.atom("collapse");

@@ -47,7 +47,7 @@ use crate::backend::eval::mork_forms::{
 };
 use crate::backend::eval::trampoline::{EvalContext, MettaEnvironment};
 use crate::backend::eval::types::{
-    eval_check_type_generic, eval_get_type_generic, types_match_generic,
+    check_call_site_types, eval_check_type_generic, eval_get_type_generic, types_match_generic,
 };
 use crate::backend::grounded::{has_grounded_op, GroundedState};
 use crate::backend::models::metta_value::{MettaValueInner, ValueView};
@@ -2466,9 +2466,34 @@ where
                             ));
                         }
                     }
-                    // Side-effect: store pragma setting. MTT has no
-                    // PragmaSettings field yet, so this is a no-op. Per HE
-                    // semantics the return value is Unit regardless.
+                    // S-step (2026-05-16): persist pragma settings on env.
+                    // HE-bisim: store all key/value pairs; semantic effect
+                    // only for keys MTT recognizes (`type-check` controls
+                    // call-site checking via `check_call_site_types`).
+                    use crate::backend::environment::core::TypeCheckMode;
+                    if key == "type-check" {
+                        if let Some(mode_atom) = items[2].as_atom() {
+                            match mode_atom {
+                                "auto" => env.set_type_check_mode(TypeCheckMode::Auto),
+                                "permissive" => {
+                                    env.set_type_check_mode(TypeCheckMode::Permissive)
+                                }
+                                _ => env.set_pragma_other(key, mode_atom),
+                            }
+                        }
+                    } else if key != "max-stack-depth" {
+                        // Store unknown keys as stringified (key already validated above)
+                        let value_str = if let Some(s) = items[2].as_string() {
+                            s.to_string()
+                        } else if let Some(a) = items[2].as_atom() {
+                            a.to_string()
+                        } else if let Some(n) = items[2].as_long() {
+                            n.to_string()
+                        } else {
+                            format!("{:?}", items[2])
+                        };
+                        env.set_pragma_other(key, &value_str);
+                    }
                     return GenericEvalStep::Done((smallvec![ctx.factory().unit()], env));
                 }
 
@@ -3312,6 +3337,22 @@ where
                 depth,
             };
         }
+    }
+
+    // Step 3.6 (S-step 2026-05-16): Call-site type checking.
+    //
+    // After rule matching fails (Step 3 didn't take an early return), check
+    // whether the call site is ill-typed against the head's declared arrow
+    // type. Permissive mode (default) only fires when both head has a
+    // concrete `(-> ...)` declaration and arg types are determinable.
+    // `(pragma! type-check auto)` switches to strict mode that also fires
+    // on `%Undefined%` arg types.
+    //
+    // HE parity: `hyperon-experimental/lib/src/metta/types.rs::check_type`
+    // returns BadArgType / IncorrectNumberOfArguments errors with 1-indexed
+    // arg position; same shape emitted here.
+    if let Some(err) = check_call_site_types(&items, ctx.factory(), &env) {
+        return GenericEvalStep::Done((smallvec![err], env));
     }
 
     // Step 4: No rules matched. Fall through to tuple path (HE's

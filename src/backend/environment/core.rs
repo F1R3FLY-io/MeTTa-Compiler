@@ -68,6 +68,49 @@ use crate::backend::wide_mork::encoding::encode_wide_storage;
 // ============================================================================
 
 // ============================================================================
+// Pragma Settings
+// ============================================================================
+
+/// Type-check mode controlling whether type errors at call sites are emitted.
+///
+/// HE parity (`hyperon-experimental/lib/src/metta/runner/stdlib/core.rs`):
+/// `(pragma! type-check auto)` enables strict checking; the default `permissive`
+/// mode emits type errors only when both the function head and the argument
+/// have determinable concrete types.
+///
+/// S-step (2026-05-16): added for type-error emission at call sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeCheckMode {
+    /// Default. Type errors are emitted only when the head has a declared
+    /// `(-> ...)` type and arg types can be inferred concretely (no
+    /// `%Undefined%`, no free variables).
+    Permissive,
+    /// Strict. Type errors fire whenever the declared head type contradicts
+    /// the inferred argument type, even when the arg type is `%Undefined%`.
+    Auto,
+}
+
+impl Default for TypeCheckMode {
+    fn default() -> Self {
+        TypeCheckMode::Permissive
+    }
+}
+
+/// Per-environment pragma settings stored on `GenericEnvironmentShared`.
+///
+/// All known settings live here. Unknown settings are stored as raw
+/// `(key, value)` pairs in `other` (for HE-bisim — pragma key validation
+/// happens in the `pragma!` arm and unknown keys are accepted silently).
+#[derive(Debug, Clone, Default)]
+pub struct PragmaSettings {
+    /// Controls call-site type checking. Default: `Permissive`.
+    pub type_check_mode: TypeCheckMode,
+    /// Other pragma key/value pairs (no semantic effect, but stored for
+    /// observability and future use).
+    pub other: HashMap<String, String>,
+}
+
+// ============================================================================
 // Helper Functions for Environment Operations
 // ============================================================================
 
@@ -284,6 +327,15 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// addresses showing two distinct instances). Map-atom's test happened
     /// to survive the split; car-atom's did not.
     pub(crate) dispatch_overrides: Arc<super::dispatch_overrides::DispatchOverrides>,
+
+    /// Per-environment pragma settings (S-step 2026-05-16).
+    ///
+    /// Updated by the `pragma!` special form. Read by call-site type
+    /// checking (`type_check_mode` controls strict vs permissive checking).
+    /// Arc-wrapped + RwLock so forks share the same mutable state. The
+    /// `pragma!` arm makes a `make_owned()` clone implicitly when it writes;
+    /// reads are lock-free `Acquire` loads on the inner atomic.
+    pub(crate) pragma_settings: Arc<RwLock<PragmaSettings>>,
 }
 
 /// Byte length of the MORK-serialized rule prefix: `[Arity(3)] + [SymbolSize(8)] + [8 symbol ID bytes]`.
@@ -451,6 +503,8 @@ where
             inferred_fn_types: DashMap::new(),
             // Override bitset starts empty — no user rules yet
             dispatch_overrides: Arc::new(super::dispatch_overrides::DispatchOverrides::default()),
+            // Pragma settings start at defaults (type_check_mode = Permissive)
+            pragma_settings: Arc::new(RwLock::new(PragmaSettings::default())),
         });
 
         // Register as GC root provider (no-op if V != MettaValue)
@@ -670,6 +724,10 @@ where
             // so `note_user_rule_added` is visible to subsequent
             // `is_overridden` checks across CoW env handoffs.
             dispatch_overrides: Arc::clone(&self.shared.dispatch_overrides),
+            // Share pragma settings — `pragma!` writes propagate through the
+            // same Arc<RwLock> across CoW handoffs (matches dispatch_overrides
+            // semantics).
+            pragma_settings: Arc::clone(&self.shared.pragma_settings),
         });
 
         // Register new shared state as GC root provider
@@ -731,6 +789,9 @@ where
             // the same atomic state (rules added by one branch are visible to
             // others, matching the globally-shared rule_index above).
             dispatch_overrides: Arc::clone(&self.shared.dispatch_overrides),
+            // Share pragma settings across the fork — same rationale as
+            // dispatch_overrides (writes are rare, sharing is correct).
+            pragma_settings: Arc::clone(&self.shared.pragma_settings),
         });
 
         // Register forked shared state as GC root provider
@@ -1113,6 +1174,28 @@ where
                     }
                 }
                 Arc::new(merged)
+            },
+            // Merge pragma settings — other takes precedence on conflict, like
+            // bindings. Wrap in a fresh Arc<RwLock> so future writes to either
+            // input env don't leak into the merged env.
+            pragma_settings: {
+                let merged = {
+                    let self_p = self.shared.pragma_settings.read();
+                    let other_p = other.shared.pragma_settings.read();
+                    let mut combined = self_p.clone();
+                    // other wins on type_check_mode if either is Auto
+                    if other_p.type_check_mode == TypeCheckMode::Auto
+                        || self_p.type_check_mode == TypeCheckMode::Auto
+                    {
+                        combined.type_check_mode = TypeCheckMode::Auto;
+                    }
+                    // Merge other's keys into combined.other
+                    for (k, v) in other_p.other.iter() {
+                        combined.other.insert(k.clone(), v.clone());
+                    }
+                    combined
+                };
+                Arc::new(RwLock::new(merged))
             },
         });
 
@@ -1581,6 +1664,25 @@ where
                 }
                 Arc::new(merged)
             },
+            // Merge pragma settings — same algebra as binary union
+            // (Auto from any input wins; `other` keys merge into self's).
+            pragma_settings: {
+                let merged = {
+                    let self_p = self.shared.pragma_settings.read();
+                    let mut combined = self_p.clone();
+                    for other_env in others {
+                        let other_p = other_env.shared.pragma_settings.read();
+                        if other_p.type_check_mode == TypeCheckMode::Auto {
+                            combined.type_check_mode = TypeCheckMode::Auto;
+                        }
+                        for (k, v) in other_p.other.iter() {
+                            combined.other.insert(k.clone(), v.clone());
+                        }
+                    }
+                    combined
+                };
+                Arc::new(RwLock::new(merged))
+            },
         });
 
         // Repopulate type bloom filter from merged types HashMap
@@ -1639,6 +1741,36 @@ where
     }
 
     // Note: set_current_module_path is defined in module_ops.rs
+
+    // ========================================================================
+    // Pragma Accessors (S-step 2026-05-16)
+    // ========================================================================
+
+    /// Get the current type-check mode (default: `Permissive`).
+    ///
+    /// Used by `check_call_site_types` to decide whether to fire on
+    /// `%Undefined%` arg types.
+    pub fn get_type_check_mode(&self) -> TypeCheckMode {
+        self.shared.pragma_settings.read().type_check_mode
+    }
+
+    /// Set the type-check mode.
+    ///
+    /// Called by the `pragma!` arm when handling `(pragma! type-check auto|permissive)`.
+    /// Writes are propagated through the shared `Arc<RwLock<PragmaSettings>>`
+    /// so all clones (forks/unioned envs) see the new value.
+    pub fn set_type_check_mode(&self, mode: TypeCheckMode) {
+        self.shared.pragma_settings.write().type_check_mode = mode;
+    }
+
+    /// Store an arbitrary pragma key/value pair (no semantic effect, HE-bisim).
+    pub fn set_pragma_other(&self, key: &str, value: &str) {
+        self.shared
+            .pragma_settings
+            .write()
+            .other
+            .insert(key.to_string(), value.to_string());
+    }
 
     /// Collect all GC root values from this environment.
     ///

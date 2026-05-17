@@ -1844,6 +1844,225 @@ where
     factory.sexpr(vec![factory.atom("Error"), expr.clone(), detail])
 }
 
+/// S-step (2026-05-16): Call-site type checking.
+///
+/// Returns `Some(error_atom)` if the call `(head arg1 arg2 ...)` is ill-typed
+/// against the head's declared `(-> ...)` arrow type, `None` otherwise.
+///
+/// HE parity (`hyperon-experimental/lib/src/metta/types.rs::check_type`):
+/// - IncorrectNumberOfArguments: arity mismatch
+/// - BadArgType: param `i` (1-indexed) declared type doesn't match arg type
+///
+/// Permissive mode (default): only fires when ALL conditions hold:
+///   1. Head is an atom with a `(-> T1 T2 ... Tret)` arrow type.
+///   2. Arg's inferred type is concretely determinable (not `%Undefined%`,
+///      not a free variable).
+///   3. The declared param type and the inferred arg type don't match
+///      (with subtype awareness).
+///
+/// Auto mode (set via `(pragma! type-check auto)`): also fires when arg
+/// type is `%Undefined%` — strict checking matches HE's `interpret_atom_type`.
+///
+/// Returns the error in HE shape: `(Error (head arg1...) (BadArgType N declared inferred))`
+/// where `N` is 1-indexed.
+pub fn check_call_site_types<V, F>(
+    items: &[V],
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+) -> Option<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    use crate::backend::environment::core::TypeCheckMode;
+
+    // Need at least a head and the arrow check makes no sense on length 0/1.
+    if items.len() < 2 {
+        return None;
+    }
+
+    // Head must be an atom — variable/sexpr/lambda heads don't have static
+    // arrow declarations in `(: head (-> ...))` form. (Higher-order constructs
+    // like `apply` use rules, handled by Step 3.)
+    let head_name = match items[0].as_atom() {
+        Some(n) => n,
+        None => return None,
+    };
+
+    // Skip special forms / decl-atom heads — these handle their own argument
+    // typing or are syntactic forms (no `(-> ...)` declaration to check).
+    if matches!(
+        head_name,
+        "="
+        | "!"
+        | ":"
+        | ":<"
+        | "->"
+        | "quote"
+        | "unquote"
+        | "match"
+        | "if"
+        | "if-reducible"
+        | "if-equal"
+        | "let"
+        | "let*"
+        | "case"
+        | "switch"
+        | "chain"
+        | "function"
+        | "return"
+        | "eval"
+        | "evalc"
+        | "metta"
+        | "lambda"
+        | "lambda-form"
+        | "pragma!"
+        | "bind!"
+        | "import!"
+        | "include!"
+        | "load-ascii!"
+        | "new-space"
+        | "add-atom"
+        | "remove-atom"
+        | "add-reduct"
+        | "add-reducts"
+        | "add-atoms"
+        | "collapse"
+        | "collapse-bind"
+        | "superpose"
+        | "superpose-bind"
+        | "get-type"
+        | "get-type-space"
+        | "get-metatype"
+        | "infer-type"
+        | "check-type"
+        | "type-cast"
+        | "is-function"
+        | "validate-atom"
+        | "trace!"
+        | "println!"
+        | "print!"
+        | "format-args"
+        | "format-message"
+        | "context-space"
+        | "noreduce-error"
+        | "nop"
+        | "and"
+        | "or"
+        | "not"
+    ) {
+        return None;
+    }
+
+    let mode = env.get_type_check_mode();
+
+    // Look up the head's declared types. We need a `(-> ...)` arrow type.
+    let head_types = env.get_types_generic(head_name);
+    if head_types.is_empty() {
+        // No declared head type → no check (HE-bisim: untyped heads pass).
+        return None;
+    }
+
+    // Find a single arrow declaration. HE only checks the first arrow it
+    // finds; multiple arrows would be ambiguous so we conservatively skip.
+    let arrow_items = head_types.iter().find_map(|t| {
+        let sexpr_items = t.as_sexpr()?;
+        if sexpr_items.first().and_then(|v| v.as_atom()) == Some("->")
+            && sexpr_items.len() >= 2
+        {
+            Some(sexpr_items)
+        } else {
+            None
+        }
+    });
+
+    let arrow = match arrow_items {
+        Some(a) => a,
+        None => return None, // head has only value types, no arrow declaration
+    };
+
+    // arrow = ["->" P1 P2 ... Pret], so params = arrow[1..arrow.len()-1]
+    let param_types: &[V] = &arrow[1..arrow.len() - 1];
+    let _ret_type: &V = &arrow[arrow.len() - 1];
+    let actual_args = &items[1..];
+
+    // Arity check: declared param count must equal actual arg count.
+    if param_types.len() != actual_args.len() {
+        let call_sexpr = factory.sexpr(items.to_vec());
+        let err = factory.sexpr(vec![
+            factory.atom("Error"),
+            call_sexpr,
+            factory.atom("IncorrectNumberOfArguments"),
+        ]);
+        return Some(err);
+    }
+
+    // Per-argument type check.
+    for (i, param_type) in param_types.iter().enumerate() {
+        let arg = &actual_args[i];
+
+        // Skip meta-typed params: `Atom`, `Symbol`, `Variable`, `Expression`,
+        // `Grounded`, `Any`. These accept any concrete arg type per HE.
+        if let Some(pname) = param_type.as_atom() {
+            if is_meta_type(pname) || pname == "%Undefined%" {
+                continue;
+            }
+            // Type variables ($a, $b) — accept anything.
+            if pname.starts_with('$') {
+                continue;
+            }
+        }
+
+        // Skip if arg head is a variable — runtime substitution will resolve.
+        if let Some(arg_atom) = arg.as_atom() {
+            if arg_atom.starts_with('$') {
+                continue;
+            }
+        }
+        if let Some(arg_items) = arg.as_sexpr() {
+            if let Some(first) = arg_items.first() {
+                if let Some(n) = first.as_atom() {
+                    if n.starts_with('$') {
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Infer arg type. infer_type_generic returns one representative type.
+        let arg_type = infer_type_generic(arg, factory, env);
+
+        // Permissive: skip if arg type is %Undefined%.
+        let arg_undefined = matches!(arg_type.as_atom(), Some("%Undefined%"));
+        if arg_undefined && mode == TypeCheckMode::Permissive {
+            continue;
+        }
+
+        // Skip if arg type is a free variable (e.g., bound parameter still
+        // un-resolved).
+        if let Some(arg_type_name) = arg_type.as_atom() {
+            if arg_type_name.starts_with('$') {
+                continue;
+            }
+        }
+
+        // Compare with subtype awareness.
+        if !types_match_with_subtypes(&arg_type, param_type, env) {
+            let call_sexpr = factory.sexpr(items.to_vec());
+            let detail = factory.sexpr(vec![
+                factory.atom("BadArgType"),
+                factory.long((i + 1) as i64), // 1-indexed (HE empirical)
+                param_type.clone(),
+                arg_type,
+            ]);
+            let err = factory.sexpr(vec![factory.atom("Error"), call_sexpr, detail]);
+            return Some(err);
+        }
+    }
+
+    None
+}
+
 /// Evaluate `(validate-atom expr)` — recursive well-typedness checking.
 ///
 /// Returns `True` if the expression is well-typed (all inferred types are
@@ -1906,11 +2125,11 @@ where
         )];
     }
 
-    let space = &items[1];
+    let space_arg = &items[1];
     let atom = &items[2];
 
     // If space is &self, use the normal type inference
-    if let Some(space_name) = space.as_atom() {
+    if let Some(space_name) = space_arg.as_atom() {
         if space_name == "&self" || space_name == "self" {
             return infer_types_generic(atom, factory, env);
         }
@@ -1925,17 +2144,55 @@ where
         }
     };
 
-    // Fast path: if space is a resolved SpaceHandle, query its PathMap directly
-    if let Some(space_handle) = space.as_space() {
+    // S-step (2026-05-16): if the space argument is an atom token like `&s`,
+    // resolve it via `bind!` lookup to the actual SpaceHandle. Without this,
+    // (get-type-space &s y) is treated as a named-space lookup by name "&s"
+    // and misses the typed atoms living in the PathMap of the bound handle.
+    let resolved_space: V = if space_arg.as_space().is_some() {
+        space_arg.clone()
+    } else if let Some(space_token) = space_arg.as_atom() {
+        env.get_binding(space_token).unwrap_or_else(|| space_arg.clone())
+    } else {
+        space_arg.clone()
+    };
+
+    // Fast path: if space resolves to a SpaceHandle, query its PathMap directly
+    if let Some(space_handle) = resolved_space.as_space() {
+        // 1. Try the existing type query (linear over collapsed atoms).
         let types = space_handle.query_types_generic(&atom_name, factory);
         if !types.is_empty() {
             return types;
+        }
+        // 2. Fallback: scan all atoms in the space and pattern-match `(: name TYPE)`.
+        // Some spaces (e.g., new-space() handles after add-atom) may have
+        // atoms not yet visible through query_types_generic's iteration path.
+        // We use collapse_generic for a unified view.
+        let all_atoms = space_handle.collapse_generic::<V, F>(factory);
+        let mut types_found = Vec::new();
+        for a in &all_atoms {
+            if let Some(parts) = a.as_sexpr() {
+                if parts.len() == 3 {
+                    if let Some(":") = parts[0].as_atom() {
+                        if let Some(n) = parts[1].as_atom() {
+                            if n == atom_name {
+                                let typ = parts[2].clone();
+                                if !types_found.contains(&typ) {
+                                    types_found.push(typ);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !types_found.is_empty() {
+            return types_found;
         }
         return vec![factory.atom("%Undefined%")];
     }
 
     // Fallback for named spaces by atom name (e.g., `(get-type-space my-space x)`)
-    if let Some(space_name) = space.as_atom() {
+    if let Some(space_name) = space_arg.as_atom() {
         let named_spaces = env.shared.named_spaces.read();
         for (_id, (name, atoms)) in named_spaces.iter() {
             if name == space_name {

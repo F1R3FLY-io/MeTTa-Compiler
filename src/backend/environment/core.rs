@@ -2965,16 +2965,21 @@ where
     ///
     /// Used to gate the bytecode VM path: the VM doesn't implement cut,
     /// so expressions whose rules use `(cut)` must go through the trampoline.
+    ///
+    /// Phase 11.A (2026-05-17) — O(1) via `PerHeadAtomIndex` in the
+    /// rule index, populated incrementally at `add_rule` / `remove_rule`
+    /// time. The legacy O(rules × rhs_size) scan was fatal under PLN's
+    /// per-step gating from `expression_involves_impure_rules`
+    /// (`eval/mod.rs:895`) where it was invoked once per eval-step × 11
+    /// needles × every node of the expression tree. Removed the inner
+    /// `contains_atom_recursive` walk entirely from the hot path; the
+    /// recursive helper at `:3245` is now only used in tests.
     pub fn rule_rhs_contains_atom(&self, head: &str, target_atom: &str) -> bool {
-        let idx = self.shared.rule_index.read();
-        for entry in idx.get_all_rules() {
-            if entry.lhs.get_head_symbol() == Some(head) {
-                if contains_atom_recursive(&entry.rhs, target_atom) {
-                    return true;
-                }
-            }
-        }
-        false
+        self.shared
+            .rule_index
+            .read()
+            .rule_rhs_atoms
+            .contains(head, target_atom)
     }
 
     /// Check if a (head, arity) pair may match a RULE definition (not data atoms).

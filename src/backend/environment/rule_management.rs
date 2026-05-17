@@ -22,7 +22,7 @@
 //! matching. Only the final matched result is deserialized to MettaValue.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -551,6 +551,156 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for RuleGroupIter<'a, V> {
 ///
 /// When `add_rule()` is called with the same `(lhs, rhs)` (by `PartialEq`),
 /// the existing entry's multiplicity is incremented rather than creating a duplicate.
+/// Phase 11.A (2026-05-17) — per-head RHS-atom membership index.
+///
+/// Answers `rule_rhs_contains_atom(head, atom)` in O(1) via a
+/// refcount-backed HashMap, replacing the legacy O(rules × rhs_size)
+/// linear scan in `core.rs:rule_rhs_contains_atom`. The scan was being
+/// invoked per eval-step × 11 needles × expression tree, contributing
+/// roughly 230 K dereferences + 11 read-lock acquisitions per step on
+/// a 140-rule environment — that overhead is the dominant regression
+/// behind the PLN Robot.metta 60× slowdown.
+///
+/// **Refcount semantics.** The value tracks the NUMBER OF RULES (not
+/// occurrences) whose `(head, atom)` pair is registered. Two distinct
+/// rules with the same head, both referencing the same atom anywhere
+/// in their RHS, push the refcount to 2; the first removal drops to 1
+/// (the entry is still present, so membership remains positive); the
+/// second drops to 0 and the key is removed.
+///
+/// **Multiplicity vs refcount.** Adding a rule that is already present
+/// (only `RuleEntry.multiplicity` is incremented) MUST NOT touch the
+/// bloom — the rule's RHS atoms are already registered. The hook is
+/// at the new-entry path only. Removal symmetrically only depopulates
+/// when an entry is actually deleted (multiplicity 1 → 0).
+///
+/// **Wildcards.** Rules with non-S-expression LHS (variable or atom
+/// head, stored in `RuleIndex::wildcard`) carry no head symbol. The
+/// legacy `rule_rhs_contains_atom` filtered them out via
+/// `entry.lhs.get_head_symbol() == Some(head)`, so the bloom mirrors
+/// that: wildcard rules do NOT contribute to the index. Callers asking
+/// "any rule for HEAD with atom X" therefore see the same answer set.
+///
+/// **No false negatives.** The key is the byte-exact atom name. False
+/// positives are impossible (the key is `String`-equality based via the
+/// underlying `HashMap`). If false positives were possible, the gate
+/// would over-route to the trampoline path — still correct but slower.
+/// True membership is required for correctness of the dispatch gates
+/// in `eval/mod.rs:895` (`expression_involves_impure_rules`).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PerHeadAtomIndex {
+    /// `(interned_head, interned_atom) → refcount-of-rules`.
+    counts: HashMap<(&'static str, &'static str), u32>,
+}
+
+impl PerHeadAtomIndex {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// O(1) membership: is there any registered rule for `head` whose
+    /// RHS contains an atom named `atom`?
+    #[inline]
+    pub fn contains(&self, head: &str, atom: &str) -> bool {
+        use crate::backend::models::gc_allocator::global_allocator;
+        let h: &'static str = global_allocator().alloc_str(head);
+        let a: &'static str = global_allocator().alloc_str(atom);
+        self.counts.contains_key(&(h, a))
+    }
+
+    /// Bump refcount for each unique `atom` appearing anywhere in
+    /// `rhs`. Called once per new rule entry in `RuleIndex::add_rule`.
+    pub fn note_rule_added<V: MettaValueTrait>(&mut self, head: &'static str, rhs: &V) {
+        let mut atoms: HashSet<&'static str> = HashSet::new();
+        collect_static_atoms(rhs, &mut atoms);
+        for atom in atoms {
+            *self.counts.entry((head, atom)).or_insert(0) += 1;
+        }
+    }
+
+    /// Decrement refcount for each unique `atom` appearing in `rhs`.
+    /// Removes the key when refcount reaches zero. Called from
+    /// `RuleIndex::remove_rule` ONLY when an entry is actually deleted
+    /// (multiplicity 1 → 0); not when multiplicity simply decrements.
+    pub fn note_rule_removed<V: MettaValueTrait>(&mut self, head: &'static str, rhs: &V) {
+        let mut atoms: HashSet<&'static str> = HashSet::new();
+        collect_static_atoms(rhs, &mut atoms);
+        for atom in atoms {
+            let key = (head, atom);
+            if let Some(c) = self.counts.get_mut(&key) {
+                *c -= 1;
+                if *c == 0 {
+                    self.counts.remove(&key);
+                }
+            }
+        }
+    }
+
+    /// Test-only inspection: total tracked (head, atom) pairs.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.counts.len()
+    }
+}
+
+/// Walk `value` recursively and collect every distinct atom name into
+/// `out`. Atom names are stored as `&'static str` via the slab
+/// allocator — `MettaValueTrait::as_atom` returns
+/// `Option<&'static str>` (see `models/metta_value_trait.rs:132`), so
+/// the collected names share the same interned storage as the rule
+/// itself. No allocation beyond the `HashSet`.
+///
+/// Phase 11.A — bounded by RHS size, called once per `add_rule` /
+/// `remove_rule`. The cost is amortized over the program's lifetime;
+/// the eval-step hot path pays only the `HashMap::contains_key` query.
+fn collect_static_atoms<V: MettaValueTrait>(value: &V, out: &mut HashSet<&'static str>) {
+    if let Some(name) = value.as_atom() {
+        out.insert(name);
+        return;
+    }
+    if let Some(items) = value.as_sexpr() {
+        for item in items {
+            collect_static_atoms(item, out);
+        }
+    }
+}
+
+/// Phase 11.A (2026-05-17) — fast structural test: does `value` contain
+/// any atom whose name appears in `keys`?
+///
+/// Returns `true` as soon as one match is found (early exit). Used by
+/// the sequential structural-matcher path at `match_rules_native_inner`
+/// to gate the per-binding transitive-resolution loop.
+///
+/// Bindings whose values have NO cross-key reference are independent of
+/// each other; pre-resolution would be a no-op on them. The gate skips
+/// the loop entirely in that case — the common case for PLN's
+/// recursive-list helpers where each binding is a self-contained
+/// ground value (e.g., `$tuple → ((Sentence ...) (Sentence ...) ...)`
+/// with no other-binding-name atoms).
+///
+/// Bindings whose values DO contain a cross-key (e.g., bidirectional
+/// unify's `$B → (Inheritance $1 ...)` together with `$1 → Anna`)
+/// still take the full transitive-resolution path, preserving the
+/// `petta_helpers::modus_ponens_repeated_var_bidirectional_unify`
+/// semantics from commit `b359684`.
+///
+/// Cost: O(|value|) per call. Cheap relative to the avoided
+/// `apply_bindings_generic` loop (O(|bindings| × |value|)).
+fn value_contains_any_key<V: MettaValueTrait>(value: &V, keys: &[&str]) -> bool {
+    if keys.is_empty() {
+        return false;
+    }
+    if let Some(name) = value.as_atom() {
+        return keys.iter().any(|k| *k == name);
+    }
+    if let Some(items) = value.as_sexpr() {
+        return items.iter().any(|item| value_contains_any_key(item, keys));
+    }
+    false
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RuleIndex<V: MettaValueTrait + Clone + 'static> {
     /// Rules indexed by (head_symbol, arity) → RuleGroup (with second-level first-arg indexing).
@@ -560,6 +710,9 @@ pub(crate) struct RuleIndex<V: MettaValueTrait + Clone + 'static> {
     /// Rules with non-S-expression LHS (atoms, variables like `$x`).
     /// Always included in query results since they can match any expression.
     wildcard: Vec<RuleEntry<V>>,
+
+    /// Phase 11.A — per-head RHS-atom membership index.
+    pub(crate) rule_rhs_atoms: PerHeadAtomIndex,
 }
 
 impl<V: MettaValueTrait + Clone> RuleIndex<V> {
@@ -568,6 +721,7 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         RuleIndex {
             by_head_arity: HashMap::new(),
             wildcard: Vec::new(),
+            rule_rhs_atoms: PerHeadAtomIndex::new(),
         }
     }
 
@@ -629,6 +783,12 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 entry.rule_index_in_group = idx;
                 entry.global_rule_index = GLOBAL_RULE_COUNTER.fetch_add(1, Ordering::Relaxed);
                 group.next_rule_index += 1;
+
+                // Phase 11.A — populate the per-head RHS-atom bloom for
+                // this NEW entry (skipped on duplicate-multiplicity
+                // increments above). Cost is bounded by RHS size, paid
+                // once per add.
+                self.rule_rhs_atoms.note_rule_added(interned, &entry.rhs);
 
                 #[cfg(feature = "trace")]
                 {
@@ -741,9 +901,23 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
 
     /// Remove a rule by decrementing multiplicity. Returns true if the entry was removed entirely.
     pub fn remove_rule(&mut self, lhs: &V, rhs: &V) -> bool {
+        // Phase 11.A — capture the head BEFORE removal so we can
+        // depopulate the per-head RHS-atom bloom symmetrically with
+        // `add_rule`. Wildcards have no head and don't contribute to
+        // the bloom, so no capture is needed in the wildcard branch.
+        let removed_head: Option<&'static str> = lhs.get_head_symbol().map(|h| {
+            use crate::backend::models::gc_allocator::global_allocator;
+            global_allocator().alloc_str(h)
+        });
+
         // Search in all groups
         for group in self.by_head_arity.values_mut() {
             if let Some(removed) = group.remove_rule(lhs, rhs) {
+                if removed {
+                    if let Some(h) = removed_head {
+                        self.rule_rhs_atoms.note_rule_removed(h, rhs);
+                    }
+                }
                 return removed;
             }
         }
@@ -941,6 +1115,8 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
     pub fn clear(&mut self) {
         self.by_head_arity.clear();
         self.wildcard.clear();
+        // Phase 11.A — reset the bloom alongside the index.
+        self.rule_rhs_atoms = PerHeadAtomIndex::new();
     }
 }
 
@@ -3469,26 +3645,44 @@ where
                         let body_local_epoch = allocate_epoch();
                         let dispatch_scope = allocate_scope_id();
                         let prefix = format!("$__fr_{}_", body_local_epoch);
-                        // P3 (2026-05-12): the compiled-RHS path at
-                        // `vm/mod.rs:6826` populates BindingFrame from
-                        // `result.original_bindings` directly — its
-                        // `PushVariable` opcode pushes the bound value
-                        // verbatim with NO transitive substitution of
-                        // free variables inside that value. For
-                        // repeated-var rules where bidirectional unify
-                        // produces query-side bindings (e.g. modus
-                        // ponens: $B → `(Inheritance $1 (IntSet ...))`
-                        // and $1 → Anna), $1 inside $B's value never
-                        // resolves through the frame.
+                        // Phase 11.A (2026-05-17) — gate the per-binding
+                        // transitive substitution by whether any binding
+                        // value actually contains a free variable that
+                        // is also a key in `bindings` (a "cross-binding"
+                        // reference, which can arise from bidirectional
+                        // unify via repeated-var rules; the structural
+                        // matcher itself never produces them).
                         //
-                        // Fix: pre-substitute the bindings transitively
-                        // BEFORE the snapshot, so $B's value becomes
-                        // `(Inheritance Anna (IntSet ...))` with the
-                        // query-side var already resolved. The trampoline
-                        // path's `apply_bindings_with_rename_scoped`
-                        // does this via Work::ProcessOwned recursion;
-                        // the compiled path needs the values pre-resolved.
-                        let original_bindings = {
+                        // Background: commit `b359684` (P3) added an
+                        // unconditional loop here. For PLN's
+                        // `BestCandidate` / `LimitSize` / etc. recursions
+                        // over 100-element lists with `$tuple` bound to
+                        // the giant list tail, this is O(|bindings| ×
+                        // |value_tree|) per match — the dominant
+                        // component of the 60× Robot.metta regression.
+                        //
+                        // The gate restores the original cost (O(|bindings|)
+                        // for the test) only when actually needed. For
+                        // PLN's bindings (typically 3 keys, each bound to
+                        // a ground value with no free variables), the
+                        // gate trivially returns `false` and the loop
+                        // does not run.
+                        //
+                        // Correctness: the gate uses
+                        // `value_contains_any_key` (defined below) which
+                        // walks the value tree once looking for any atom
+                        // whose name matches a binding key. If false, the
+                        // values are independent and pre-resolution is a
+                        // no-op; if true, we run the loop as before. This
+                        // is a STRICT optimization of identical behavior.
+                        let needs_transitive_resolution = {
+                            let keys: SmallVec<[&str; 8]> =
+                                bindings.iter().map(|(k, _)| k).collect();
+                            bindings.iter().any(|(_, v)| {
+                                value_contains_any_key(v, &keys)
+                            })
+                        };
+                        let original_bindings = if needs_transitive_resolution {
                             let mut resolved =
                                 crate::backend::models::GenericBindings::new();
                             for (name, value) in bindings.iter() {
@@ -3500,6 +3694,8 @@ where
                                 resolved.insert(name, r);
                             }
                             resolved
+                        } else {
+                            bindings.clone()
                         };
                         let bindings = freshen_bindings_keys_with_epoch(
                             bindings,

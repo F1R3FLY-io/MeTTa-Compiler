@@ -96,6 +96,33 @@ impl Default for TypeCheckMode {
     }
 }
 
+/// Controls how nondeterministic rule dispatch resolves when multiple rules
+/// match the same call site.
+///
+/// HE has no specificity filter — all matching rules fire nondeterministically.
+/// MeTTaTron exposes a SUPERSET opt-in: when `Specificity` is engaged, only
+/// the most-structurally-specific rules in the match set fire. This makes
+/// programs with overlapping rule patterns (e.g., naive Fibonacci with base
+/// cases + variable-pattern recursive case) terminate cleanly.
+///
+/// **Score function** (see `rule_management.rs::lhs_specificity`):
+/// constructor-depth-weighted with NewVar penalty. Constructor atoms / literals
+/// / S-expr heads contribute `W_CONSTRUCTOR * (1 + depth)`; first occurrences
+/// of variables contribute 0; repeat-var occurrences contribute `W_REPEAT_VAR`.
+/// Among matching candidates, the maximum score wins; ties keep all (graceful
+/// degradation to HE nondet for genuinely incomparable patterns).
+///
+/// Engaged via `(pragma! rule-fire-mode specificity)` or `--rule-fire-mode=specificity`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RuleFireMode {
+    /// HE-bisim default. All matching rules fire nondeterministically.
+    #[default]
+    Nondet,
+    /// MTT superset (opt-in). Retain only candidates whose LHS specificity
+    /// score equals the maximum among matches.
+    Specificity,
+}
+
 /// Per-environment pragma settings stored on `GenericEnvironmentShared`.
 ///
 /// All known settings live here. Unknown settings are stored as raw
@@ -105,6 +132,9 @@ impl Default for TypeCheckMode {
 pub struct PragmaSettings {
     /// Controls call-site type checking. Default: `Permissive`.
     pub type_check_mode: TypeCheckMode,
+    /// Controls multi-rule-fire dispatch policy. Default: `Nondet` (HE-bisim).
+    /// Set via `(pragma! rule-fire-mode specificity)` for the SUPERSET filter.
+    pub rule_fire_mode: RuleFireMode,
     /// Other pragma key/value pairs (no semantic effect, but stored for
     /// observability and future use).
     pub other: HashMap<String, String>,
@@ -1189,6 +1219,14 @@ where
                     {
                         combined.type_check_mode = TypeCheckMode::Auto;
                     }
+                    // rule_fire_mode: Specificity wins over Nondet on union
+                    // (the stricter setting takes precedence, mirroring the
+                    // TypeCheckMode::Auto precedence above).
+                    if other_p.rule_fire_mode == RuleFireMode::Specificity
+                        || self_p.rule_fire_mode == RuleFireMode::Specificity
+                    {
+                        combined.rule_fire_mode = RuleFireMode::Specificity;
+                    }
                     // Merge other's keys into combined.other
                     for (k, v) in other_p.other.iter() {
                         combined.other.insert(k.clone(), v.clone());
@@ -1675,6 +1713,9 @@ where
                         if other_p.type_check_mode == TypeCheckMode::Auto {
                             combined.type_check_mode = TypeCheckMode::Auto;
                         }
+                        if other_p.rule_fire_mode == RuleFireMode::Specificity {
+                            combined.rule_fire_mode = RuleFireMode::Specificity;
+                        }
                         for (k, v) in other_p.other.iter() {
                             combined.other.insert(k.clone(), v.clone());
                         }
@@ -1761,6 +1802,27 @@ where
     /// so all clones (forks/unioned envs) see the new value.
     pub fn set_type_check_mode(&self, mode: TypeCheckMode) {
         self.shared.pragma_settings.write().type_check_mode = mode;
+    }
+
+    /// Get the current rule-fire mode (default: `Nondet` = HE-bisim).
+    ///
+    /// Consulted by `RuleIndex::match_rules_native` to decide whether to
+    /// apply the specificity filter after candidate matching.
+    pub fn get_rule_fire_mode(&self) -> RuleFireMode {
+        self.shared.pragma_settings.read().rule_fire_mode
+    }
+
+    /// Set the rule-fire mode (`(pragma! rule-fire-mode specificity|nondet)`).
+    ///
+    /// Bumps `RULE_EPOCH` so cached match-result entries (keyed on epoch)
+    /// don't serve stale results across mode changes.
+    pub fn set_rule_fire_mode(&self, mode: RuleFireMode) {
+        self.shared.pragma_settings.write().rule_fire_mode = mode;
+        // Cache invalidation: bump rule epoch so trampoline/operator caches
+        // re-fetch under the new mode. (Match results legitimately differ
+        // when the pragma toggles even though the rule set is unchanged.)
+        crate::backend::environment::rule_management::RULE_EPOCH
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     /// Store an arbitrary pragma key/value pair (no semantic effect, HE-bisim).

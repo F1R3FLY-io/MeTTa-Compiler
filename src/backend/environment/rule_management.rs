@@ -192,6 +192,11 @@ pub struct RuleMatchResult<V: MettaValueTrait + Clone> {
     /// Pre-compiled bytecode for the RHS body, if available.
     /// Type-erased; downcasted in op_dispatch_rules.
     pub compiled_rhs: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    /// MTT SUPERSET (2026-05-17): LHS specificity score copied from
+    /// `RuleEntry`. Used by the post-match filter when
+    /// `env.get_rule_fire_mode() == RuleFireMode::Specificity`. Zero overhead
+    /// otherwise — the filter is a single `if` on the pragma.
+    pub entry_specificity: u32,
 }
 
 /// A single rule entry in the RuleIndex.
@@ -233,11 +238,20 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     pub var_names: Vec<&'static str>,
     /// Indices of `_` wildcards (skip these in named bindings)
     pub wildcard_indices: SmallVec<[u8; 4]>,
-    // NOTE: The old `specificity` field (count of NewVar tags) was removed.
-    // MeTTa HE has NO specificity filter — all matching rules fire nondeterministically.
-    // The old filter dropped structurally-more-specific rules when a variable-only rule
-    // happened to have fewer NewVar tags (e.g. `(f ($c $tv) $y)` with 3 vars beat
-    // `(f ((Implication $A $B) $TV) $Y)` with 4 vars despite the latter being more specific).
+    /// MTT SUPERSET specificity score (2026-05-17 restoration).
+    ///
+    /// Higher = more structurally constrained. Computed once at insertion
+    /// via `lhs_specificity`. Consulted by `match_rules_native` ONLY when
+    /// `env.get_rule_fire_mode() == RuleFireMode::Specificity` (opt-in
+    /// pragma `(pragma! rule-fire-mode specificity)`).
+    ///
+    /// HE-bisim default (`Nondet`) ignores this field — all matching rules
+    /// fire nondeterministically. Zero overhead on the default path.
+    ///
+    /// Correct metric: weighted constructor-depth + repeat-var penalty
+    /// (replaces the removed broken NewVar-count metric — see
+    /// `lhs_specificity` docs for the PLN regression case).
+    pub specificity: u32,
     /// How many times this rule was added (synced with PathMap multiplicity)
     pub multiplicity: u64,
     /// Cached return type of the RHS, computed once at insertion time.
@@ -1808,6 +1822,117 @@ pub(crate) fn validate_mork_bytes(bytes: &[u8]) -> Result<usize, (usize, u8)> {
 /// Count the number of NewVar tags in MORK bytes (used for specificity computation).
 ///
 // ============================================================================
+// LHS specificity score (MTT SUPERSET — opt-in via `rule-fire-mode specificity`)
+// ============================================================================
+
+/// Constructor symbols contribute this much per depth level. Picked large
+/// enough that one constructor at any depth outweighs all repeat-var penalties
+/// in any realistic pattern.
+const SPECIFICITY_W_CONSTRUCTOR: u32 = 1000;
+
+/// Repeat occurrences of the same variable contribute this much (encodes the
+/// "occurs check" intuition: `(f $x $x)` is strictly more specific than
+/// `(f $x $y)` even though they have the same constructor count).
+const SPECIFICITY_W_REPEAT_VAR: u32 = 1;
+
+/// Compute the structural specificity score of a rule's LHS pattern.
+///
+/// **Higher = more specific.** Score is the sum, over every position in the
+/// LHS tree, of:
+/// - `SPECIFICITY_W_CONSTRUCTOR * (1 + depth)` for constructor atoms,
+///   literals, and S-expression head positions.
+/// - `SPECIFICITY_W_REPEAT_VAR` for repeated variable occurrences.
+/// - `0` for first-occurrence variables and `_` wildcards.
+///
+/// **Why this metric replaces the removed NewVar-count:**
+///
+/// The original removed metric counted NewVar tags in the De Bruijn encoding
+/// and selected the rule with the *fewest* tags as "most specific". This
+/// inverts the order when variables appear nested inside constructor
+/// wrappers — e.g., PLN's `(f ((Implication $A $B) $TV) $Y)` has 4
+/// vars but is more structurally constrained than `(f ($c $tv) $y)` (3 vars).
+///
+/// The corrected metric weights constructor positions by their depth, which
+/// is monotone with the subsumption ordering of MeTTa first-order patterns:
+/// rule A more-specific-than rule B (in the subsumption sense) implies
+/// `lhs_specificity(A) >= lhs_specificity(B)`. Ties keep all candidates
+/// (graceful degradation to HE nondet for genuinely incomparable patterns).
+///
+/// Stack-safe via explicit work-stack (no recursion).
+pub(crate) fn lhs_specificity<V: MettaValueTrait + Clone>(lhs: &V) -> u32 {
+    let mut total: u32 = 0;
+    // Stack-allocated seen-var set; falls back to heap if patterns get huge.
+    let mut seen_vars: smallvec::SmallVec<[&'static str; 8]> = smallvec::SmallVec::new();
+    // Work-stack of (value-as-erased-pointer, depth). Using indices into
+    // a Vec keeps lifetimes simple while still being iterative.
+    let mut stack: smallvec::SmallVec<[(V, u32); 16]> = smallvec::SmallVec::new();
+    stack.push((lhs.clone(), 0));
+
+    while let Some((val, depth)) = stack.pop() {
+        if let Some(items) = val.as_sexpr() {
+            // S-expression: push every child for processing. The head atom
+            // contributes via its own per-atom handling below — no need to
+            // double-count here.
+            for child in items.iter() {
+                stack.push((child.clone(), depth.saturating_add(1)));
+            }
+            continue;
+        }
+        if let Some(name) = val.as_atom() {
+            // Heuristic var detector — matches `$x`, `'y`, and namespace `&y`
+            // sigils (but excludes the special `&self`/`&kb`/`&stack` tokens
+            // which are treated as ground name atoms by the matcher).
+            let is_var = name.len() > 1
+                && (name.starts_with('$')
+                    || name.starts_with('\'')
+                    || (name.starts_with('&')
+                        && name != "&self"
+                        && name != "&kb"
+                        && name != "&stack"));
+            if is_var {
+                // Use a static-str hack: SmallVec stores the &'static str only
+                // for comparison; we don't keep references past this iteration.
+                // SAFETY: `name` is a &str with the same lifetime as `val`'s
+                // backing slab string; it lives at least until the end of this
+                // function. Transmuting to 'static is a known borrow-checker
+                // workaround used elsewhere in the codebase.
+                let name_static: &'static str = unsafe { std::mem::transmute(name) };
+                if seen_vars.contains(&name_static) {
+                    total = total.saturating_add(SPECIFICITY_W_REPEAT_VAR);
+                } else {
+                    seen_vars.push(name_static);
+                }
+            } else if name != "_" {
+                // Constructor or head atom — concrete constraint at this depth.
+                total = total.saturating_add(
+                    SPECIFICITY_W_CONSTRUCTOR
+                        .saturating_mul(depth.saturating_add(1)),
+                );
+            }
+            // `_` wildcard contributes 0.
+            continue;
+        }
+        // Literals (Long/Float/Bool/String/Unit) are concrete constraints —
+        // they require an exact value match at this position.
+        if val.as_long().is_some()
+            || val.as_float().is_some()
+            || val.as_bool().is_some()
+            || val.as_string().is_some()
+        {
+            total = total.saturating_add(
+                SPECIFICITY_W_CONSTRUCTOR.saturating_mul(depth.saturating_add(1)),
+            );
+            continue;
+        }
+        // Other value types (Type, Quoted, Space, etc.) — treat as opaque
+        // constructors at their position.
+        total = total.saturating_add(SPECIFICITY_W_CONSTRUCTOR);
+    }
+
+    total
+}
+
+// ============================================================================
 /// Each NewVar tag (0xC0) introduces a new variable binding position.
 /// Fewer NewVar tags = more specific pattern (more concrete structure).
 ///
@@ -2615,6 +2740,7 @@ where
                     full_debruijn,
                     var_names,
                     wildcard_indices,
+                    specificity: lhs_specificity(&lhs),
                     multiplicity: 1,
                     rhs_type: rhs_type.clone(),
                     structural_matcher,
@@ -2723,6 +2849,7 @@ where
                 full_debruijn, // Wide De Bruijn bytes for alpha-equivalent removal
                 var_names,
                 wildcard_indices,
+                specificity: lhs_specificity(&lhs),
                 multiplicity: 1,
                 rhs_type, // Phase 8.1: computed before closure, last use — no clone needed
                 structural_matcher,
@@ -2812,7 +2939,50 @@ where
     /// The structural matcher performs direct MettaValue comparison at ~4-6x the speed
     /// of MORK byte-level matching, eliminating `encode_wide_storage_inner` (2% CPU)
     /// and `ExprZipper::gnext` (3.3% CPU) from the hot path.
+    /// MTT SUPERSET (2026-05-17): post-match specificity filter for opt-in
+    /// `RuleFireMode::Specificity`. Default `Nondet` (HE-bisim) skips the
+    /// filter entirely — a single relaxed atomic read + comparison.
+    ///
+    /// Reads `pragma_settings.rule_fire_mode` once. If `Specificity` AND
+    /// there are 2+ matching rules, retains only those with maximum
+    /// `entry_specificity` score. Ties keep all (graceful degradation to
+    /// HE-nondet for genuinely incomparable patterns — Ernst et al. (1998)
+    /// Theorem 5.3 endorses this fallback).
+    #[inline]
+    pub(crate) fn apply_rule_fire_mode_filter(
+        &self,
+        results: &mut Vec<RuleMatchResult<V>>,
+    ) {
+        if results.len() < 2 {
+            return;
+        }
+        let mode = self.shared.pragma_settings.read().rule_fire_mode;
+        if mode != crate::backend::environment::core::RuleFireMode::Specificity {
+            return;
+        }
+        let max_spec = results
+            .iter()
+            .map(|r| r.entry_specificity)
+            .max()
+            .expect("non-empty");
+        results.retain(|r| r.entry_specificity == max_spec);
+    }
+
     pub fn match_rules_native(
+        &self,
+        expr: &V,
+        apply_bindings: impl Fn(&V, &GenericBindings<V>, &F) -> V,
+        outer_carrying: &GenericBindings<V>,
+    ) -> Vec<RuleMatchResult<V>> {
+        let mut results =
+            self.match_rules_native_inner(expr, apply_bindings, outer_carrying);
+        self.apply_rule_fire_mode_filter(&mut results);
+        results
+    }
+
+    /// Inner implementation of `match_rules_native` (post-filter is in the
+    /// thin wrapper above).
+    fn match_rules_native_inner(
         &self,
         expr: &V,
         apply_bindings: impl Fn(&V, &GenericBindings<V>, &F) -> V,
@@ -3138,6 +3308,7 @@ where
                                                 rhs_type: entry.rhs_type.clone(),
                                                 rhs_has_variables: entry.rhs_has_variables,
                                                 compiled_rhs: entry.compiled_rhs.clone(),
+                                                entry_specificity: entry.specificity,
                                             }));
                                         }
                                     }
@@ -3436,6 +3607,7 @@ where
                                 rhs_type: entry.rhs_type.clone(),
                                 rhs_has_variables: entry.rhs_has_variables,
                                 compiled_rhs: entry.compiled_rhs.clone(),
+                                entry_specificity: entry.specificity,
                             });
                         } else {
                             for _ in 0..multiplicity {
@@ -3449,6 +3621,7 @@ where
                                     rhs_type: entry.rhs_type.clone(),
                                     rhs_has_variables: entry.rhs_has_variables,
                                     compiled_rhs: entry.compiled_rhs.clone(),
+                                    entry_specificity: entry.specificity,
                                 });
                             }
                         }
@@ -3640,6 +3813,7 @@ where
                                     rhs_type: entry.rhs_type.clone(),
                                     rhs_has_variables: entry.rhs_has_variables,
                                     compiled_rhs: entry.compiled_rhs.clone(),
+                                    entry_specificity: entry.specificity,
                                 });
                             } else {
                                 for _ in 0..multiplicity {
@@ -3653,6 +3827,7 @@ where
                                         rhs_type: entry.rhs_type.clone(),
                                         rhs_has_variables: entry.rhs_has_variables,
                                         compiled_rhs: entry.compiled_rhs.clone(),
+                                        entry_specificity: entry.specificity,
                                     });
                                 }
                             }
@@ -3759,6 +3934,7 @@ where
                                 rhs_type: entry.rhs_type.clone(),
                                 rhs_has_variables: entry.rhs_has_variables,
                                 compiled_rhs: entry.compiled_rhs.clone(),
+                                entry_specificity: entry.specificity,
                             });
                         } else {
                             for _ in 0..multiplicity {
@@ -3772,6 +3948,7 @@ where
                                     rhs_type: entry.rhs_type.clone(),
                                     rhs_has_variables: entry.rhs_has_variables,
                                     compiled_rhs: entry.compiled_rhs.clone(),
+                                    entry_specificity: entry.specificity,
                                 });
                             }
                         }
@@ -4046,6 +4223,7 @@ where
                         rhs_type: entry.rhs_type.clone(),
                         rhs_has_variables: entry.rhs_has_variables,
                         compiled_rhs: entry.compiled_rhs.clone(),
+                        entry_specificity: entry.specificity,
                     });
                 } else {
                     for _ in 0..multiplicity {
@@ -4059,6 +4237,7 @@ where
                             rhs_type: entry.rhs_type.clone(),
                             rhs_has_variables: entry.rhs_has_variables,
                             compiled_rhs: entry.compiled_rhs.clone(),
+                            entry_specificity: entry.specificity,
                         });
                     }
                 }
@@ -4161,8 +4340,19 @@ where
                 rhs_type,
                 rhs_has_variables: false,
                 compiled_rhs: None,
+                // Unify-fallback path: entry reference isn't plumbed through;
+                // default to 0 so the filter treats these as least-specific.
+                // Rare path (only when structural matcher fails), so the
+                // perf/expressiveness trade-off is negligible.
+                entry_specificity: 0,
             });
         }
+        // Apply the same SUPERSET specificity filter to the unify path so
+        // tier behavior is consistent. With all entry_specificity==0, the
+        // filter is a no-op (max==0 retains all), but if structural matches
+        // also happen to feed in via mixed code paths the filter handles
+        // them uniformly.
+        self.apply_rule_fire_mode_filter(&mut results);
         results
     }
 
@@ -4672,6 +4862,7 @@ impl MettaEnvironment {
                                 full_debruijn,
                                 var_names,
                                 wildcard_indices,
+                                specificity: lhs_specificity(&lhs),
                                 multiplicity,
                                 rhs_type,
                                 structural_matcher,

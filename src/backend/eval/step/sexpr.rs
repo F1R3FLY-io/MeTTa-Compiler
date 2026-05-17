@@ -2558,7 +2558,7 @@ where
                     // HE-bisim: store all key/value pairs; semantic effect
                     // only for keys MTT recognizes (`type-check` controls
                     // call-site checking via `check_call_site_types`).
-                    use crate::backend::environment::core::TypeCheckMode;
+                    use crate::backend::environment::core::{RuleFireMode, TypeCheckMode};
                     if key == "type-check" {
                         if let Some(mode_atom) = items[2].as_atom() {
                             match mode_atom {
@@ -2566,6 +2566,22 @@ where
                                 "permissive" => {
                                     env.set_type_check_mode(TypeCheckMode::Permissive)
                                 }
+                                _ => env.set_pragma_other(key, mode_atom),
+                            }
+                        }
+                    } else if key == "rule-fire-mode" {
+                        // MTT SUPERSET (2026-05-17): multi-pattern rule dispatch.
+                        // `specificity` engages the structural-depth-weighted
+                        // filter so naive recursive patterns (e.g., overlapping
+                        // base + variable Fibonacci rules) terminate cleanly.
+                        // `nondet` (default) is HE-bisim — all matching rules
+                        // fire nondeterministically. See PragmaSettings docs.
+                        if let Some(mode_atom) = items[2].as_atom() {
+                            match mode_atom {
+                                "specificity" => {
+                                    env.set_rule_fire_mode(RuleFireMode::Specificity)
+                                }
+                                "nondet" => env.set_rule_fire_mode(RuleFireMode::Nondet),
                                 _ => env.set_pragma_other(key, mode_atom),
                             }
                         }

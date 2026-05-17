@@ -307,6 +307,24 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
             max_arity: 1,
             type_sig: arrow(vec![String], Expression),
         },
+        // String operations (T06/060 — sort-strings, mirrors HE
+        // stdlib/string.rs::sort_strings, signature `(-> Expression Expression)`)
+        BuiltinSignature {
+            name: "sort-strings",
+            min_arity: 1,
+            max_arity: 1,
+            type_sig: arrow(vec![Expression], Expression),
+        },
+        // Meta / polymorphic operations (T06/037 — id, mirrors HE
+        // stdlib.metta:262 `(: id (-> $t $t))`. We model the polymorphism
+        // via the universal Undefined type since the BuiltinSignature
+        // registry does not yet carry per-call type variables.)
+        BuiltinSignature {
+            name: "id",
+            min_arity: 1,
+            max_arity: 1,
+            type_sig: arrow(vec![Undefined], Undefined),
+        },
         // ====================================================================
         // JSON module (T07/019-020) — `json` builtin module.
         // HE source: lib/src/metta/runner/builtin_mods/json.rs:43,48 (token

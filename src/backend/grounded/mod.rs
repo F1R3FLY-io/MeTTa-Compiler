@@ -26,6 +26,7 @@ pub mod comparison;
 pub mod fileio;
 pub mod json;
 pub mod logical;
+pub mod meta;
 pub mod random;
 pub mod registry;
 pub mod state;
@@ -45,13 +46,14 @@ pub use fileio::{
 };
 pub use json::{JsonDecodeOp, JsonEncodeOp};
 pub use logical::{AndOp, NotOp, OrOp, XorOp};
+pub use meta::IdOp;
 pub use random::{
     FlipOp, NewRandomGeneratorOp, RandomFloatOp, RandomIntOp, ResetRandomGeneratorOp,
     SetRandomSeedOp,
 };
 pub use registry::{execute_grounded_op, get_grounded_registry, has_grounded_op, GroundedRegistry};
 pub use state::{find_error, friendly_type_name, GroundedState, GroundedWork};
-pub use string::StringToCharsOp;
+pub use string::{SortStringsOp, StringToCharsOp};
 pub use traits::GroundedOperationTCO;
 
 /// Bindings from pattern matching (variable name -> value)

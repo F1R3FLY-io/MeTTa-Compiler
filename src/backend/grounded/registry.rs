@@ -43,12 +43,13 @@ use super::fileio::{
 };
 use super::json::{JsonDecodeOp, JsonEncodeOp};
 use super::logical::{AndOp, NotOp, OrOp, XorOp};
+use super::meta::IdOp;
 use super::random::{
     FlipOp, NewRandomGeneratorOp, RandomFloatOp, RandomIntOp, ResetRandomGeneratorOp,
     SetRandomSeedOp,
 };
 use super::state::{GroundedState, GroundedWork};
-use super::string::StringToCharsOp;
+use super::string::{SortStringsOp, StringToCharsOp};
 use super::traits::GroundedOperationTCO;
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
@@ -110,6 +111,10 @@ where
         "clamp" => Some(ClampOp.execute_step(state, factory)),
         // String operations (Workstream X.5a)
         "stringToChars" => Some(StringToCharsOp.execute_step(state, factory)),
+        // String operations (T06/060 — sort-strings, HE-aligned)
+        "sort-strings" => Some(SortStringsOp.execute_step(state, factory)),
+        // Meta / polymorphic operations (T06/037 — id, HE-aligned)
+        "id" => Some(IdOp.execute_step(state, factory)),
         // JSON module (T07/019-020, HE-aligned: `json` builtin)
         "json-encode" => Some(JsonEncodeOp.execute_step(state, factory)),
         "json-decode" => Some(JsonDecodeOp.execute_step(state, factory)),
@@ -167,6 +172,8 @@ pub fn has_grounded_op(name: &str) -> bool {
             | "/safe"
             | "clamp"
             | "stringToChars"
+            | "sort-strings"
+            | "id"
             // JSON module (T07/019-020)
             | "json-encode"
             | "json-decode"
@@ -486,10 +493,89 @@ mod tests {
         assert!(has_grounded_op("or"));
         assert!(has_grounded_op("not"));
 
+        // String ops
+        assert!(has_grounded_op("stringToChars"));
+        assert!(has_grounded_op("sort-strings"));
+
+        // Meta ops
+        assert!(has_grounded_op("id"));
+
         // Non-existent ops
         assert!(!has_grounded_op("nonexistent"));
         assert!(!has_grounded_op("if"));
         assert!(!has_grounded_op("match"));
+    }
+
+    #[test]
+    fn test_execute_grounded_op_id() {
+        let factory = GcFactory::default();
+
+        // Test id with a single argument
+        let mut state = GroundedState::new("id".to_string(), vec![MettaValue::Long(42)]);
+
+        // Step 0: Request eval of arg 0
+        let work = execute_grounded_op("id", &mut state, &factory);
+        match work.expect("id should dispatch") {
+            GroundedWork::EvalArg { arg_idx, .. } => {
+                assert_eq!(arg_idx, 0);
+            }
+            _ => panic!("Expected EvalArg"),
+        }
+
+        // Simulate arg 0 evaluated → still Long(42)
+        state.set_arg(0, vec![MettaValue::Long(42)]);
+        state.step = 1;
+
+        // Step 1: Compute result
+        let work = execute_grounded_op("id", &mut state, &factory);
+        match work.expect("id should produce result") {
+            GroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].0.as_long(), Some(42));
+            }
+            _ => panic!("Expected Done"),
+        }
+    }
+
+    #[test]
+    fn test_execute_grounded_op_sort_strings() {
+        let factory = GcFactory::default();
+
+        // Build (sort-strings ("c" "a" "b"))
+        let list = MettaValue::SExpr(vec![
+            MettaValue::String("c".to_string()),
+            MettaValue::String("a".to_string()),
+            MettaValue::String("b".to_string()),
+        ]);
+        let mut state = GroundedState::new("sort-strings".to_string(), vec![list.clone()]);
+
+        // Step 0: request eval of arg 0
+        let work = execute_grounded_op("sort-strings", &mut state, &factory);
+        match work.expect("sort-strings should dispatch") {
+            GroundedWork::EvalArg { arg_idx, .. } => {
+                assert_eq!(arg_idx, 0);
+            }
+            _ => panic!("Expected EvalArg"),
+        }
+
+        // Simulate arg 0 evaluated → still the list
+        state.set_arg(0, vec![list]);
+        state.step = 1;
+
+        // Step 1: compute sorted result
+        let work = execute_grounded_op("sort-strings", &mut state, &factory);
+        match work.expect("sort-strings should produce result") {
+            GroundedWork::Done(results) => {
+                assert_eq!(results.len(), 1);
+                let sorted = &results[0].0;
+                let items = sorted.as_sexpr().expect("result is sexpr");
+                assert_eq!(items.len(), 3);
+                assert_eq!(items[0].as_string(), Some("a"));
+                assert_eq!(items[1].as_string(), Some("b"));
+                assert_eq!(items[2].as_string(), Some("c"));
+            }
+            _ => panic!("Expected Done"),
+        }
     }
 
     #[test]

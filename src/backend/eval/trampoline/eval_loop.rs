@@ -61,6 +61,61 @@ thread_local! {
     /// `WorkerEvalScope::enter()` at the top of each worker closure;
     /// reset to false in the scope's Drop impl.
     pub(crate) static IS_PARALLEL_WORKER: Cell<bool> = const { Cell::new(false) };
+
+    /// Phase 11.C (2026-05-17) — sample counter for
+    /// `cache.record_execution` calls in the per-step hot path
+    /// (`should_memoize_with_env` branch below). The per-step gate
+    /// hashes the entire sub-expression tree (xxh3) plus a DashMap
+    /// lookup, costing hundreds of nanoseconds per step. For
+    /// PLN-style workloads with thousands of cold sub-expressions per
+    /// inference, 100% sampling burns minutes on expressions that
+    /// will never reach the tier-promotion threshold. Sampling at
+    /// `SAMPLE_RATE = 32` (configurable via
+    /// `METTATRON_EXEC_SAMPLE_RATE`) skips ~97% of these calls,
+    /// matching the historical baseline before this gate was added.
+    ///
+    /// Skipping is HE-correctness-irrelevant: when sampled out, the
+    /// trampoline falls through to the standard rule-dispatch path
+    /// (instead of attempting bytecode dispatch on this sub-step).
+    /// Tier promotion is delayed by `SAMPLE_RATE`× but eventually
+    /// fires for steady-state hot expressions (mmverify, etc.). Cold
+    /// sub-expressions that would never reach the threshold avoid the
+    /// per-call cost entirely.
+    static EXEC_SAMPLE_COUNTER: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Phase 11.C — sample rate for `record_execution` in the per-step
+/// hot path. Read once at process start from
+/// `METTATRON_EXEC_SAMPLE_RATE` (default 32). Setting to 1 disables
+/// sampling and restores the pre-Phase-11.C 100%-sampling behavior.
+static EXEC_SAMPLE_RATE: OnceLock<u64> = OnceLock::new();
+
+#[inline]
+fn exec_sample_rate() -> u64 {
+    *EXEC_SAMPLE_RATE.get_or_init(|| {
+        std::env::var("METTATRON_EXEC_SAMPLE_RATE")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or(32)
+    })
+}
+
+/// Phase 11.C — returns `true` iff this thread's per-step
+/// `record_execution` call should fire on this iteration. Counter
+/// rolls over with `SAMPLE_RATE`; called from the per-step
+/// `should_memoize_with_env` branch in the trampoline.
+#[inline]
+fn should_record_execution_sample() -> bool {
+    let rate = exec_sample_rate();
+    if rate <= 1 {
+        return true;
+    }
+    EXEC_SAMPLE_COUNTER.with(|c| {
+        let n = c.get().wrapping_add(1);
+        c.set(n);
+        n % rate == 0
+    })
 }
 
 /// RAII guard that flips the thread-local `IS_PARALLEL_WORKER` flag for
@@ -3258,7 +3313,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     continue; // Skip eval_step_generic — compiled code handled it
                                 }
                             }
-                        } else if should_memoize_with_env(&value, &*env)
+                        } else if should_record_execution_sample()
+                            && should_memoize_with_env(&value, &*env)
                             && !crate::backend::eval::expression_has_overridden_grounded_op(
                                 &value, &*env,
                             )

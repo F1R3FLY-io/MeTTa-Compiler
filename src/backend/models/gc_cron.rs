@@ -504,7 +504,6 @@ fn execute_counter_sync() {
 
 #[cfg(test)]
 mod tests {
-    use super::super::gc_allocator::is_gc_requested;
     use super::super::gc_pool::AdaptiveGcPool;
     use super::*;
     use std::sync::atomic::Ordering;
@@ -530,13 +529,21 @@ mod tests {
 
     /// Test that high allocation rate triggers GC request.
     ///
-    /// Uses a polling loop with a deadline because `GC_REQUESTED` is a global
-    /// flag that may be cleared by `maybe_trigger_gc()` in parallel tests.
-    /// The monitor re-sets it on each poll, so we check repeatedly.
+    /// Polls the monotonic `gc_requests_total()` counter rather than the
+    /// transient `GC_REQUESTED` flag. Post Phase 9 (commit `82ccb77`), the
+    /// cron monitor calls `request_gc()` AND `maybe_async_gc()` back-to-back
+    /// on the same thread tick — `maybe_async_gc()` consumes the flag via
+    /// CAS within nanoseconds of being set, so cross-thread polling of
+    /// `is_gc_requested()` would race deterministically. The monotonic
+    /// counter is sticky and append-only: it captures the request event
+    /// regardless of which path subsequently consumed the flag.
     #[test]
     fn test_gc_requested_on_high_alloc_rate() {
-        // Clear any prior GC request from other tests
-        super::super::gc_allocator::GC_REQUESTED.store(false, Ordering::Relaxed);
+        use super::super::gc_allocator::gc_requests_total;
+
+        // Capture baseline count before spawning the cron (other parallel
+        // tests may have incremented it; we only care about the delta).
+        let baseline = gc_requests_total();
 
         let committed = Arc::new(AtomicUsize::new(0));
         let alloc_count = Arc::new(AtomicU64::new(0));
@@ -551,15 +558,13 @@ mod tests {
         // Simulate high allocation rate: 1M allocs
         alloc_count.store(1_000_000, Ordering::Relaxed);
 
-        // Poll until GC_REQUESTED is set (with timeout).
-        // The monitor fires every 100ms and will re-set the flag if cleared
-        // by other parallel tests calling maybe_trigger_gc().
-        // Use a generous deadline (2s = 20 poll cycles) to avoid flaky failures
-        // under heavy parallel test load where thread scheduling is delayed.
+        // Poll until the monotonic counter advances (with timeout).
+        // The monitor fires every 100ms; allow 20 poll cycles (2s) of
+        // scheduler slack under heavy parallel test load.
         let deadline = Instant::now() + Duration::from_millis(2000);
         let mut observed = false;
         while Instant::now() < deadline {
-            if is_gc_requested() {
+            if gc_requests_total() > baseline {
                 observed = true;
                 break;
             }
@@ -568,7 +573,11 @@ mod tests {
 
         assert!(
             observed,
-            "GC_REQUESTED should be true after high allocation rate (within 2s)"
+            "gc_requests_total() should advance after high allocation rate \
+             (baseline {}, current {}) — cron monitor must call request_gc() \
+             when alloc rate exceeds ALLOC_RATE_THRESHOLD",
+            baseline,
+            gc_requests_total(),
         );
 
         singleton.shutdown();

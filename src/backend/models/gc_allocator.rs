@@ -2518,15 +2518,43 @@ pub fn global_factory() -> GcFactory {
 /// `pub(crate)` for test observability (clearing between tests).
 pub(crate) static GC_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Monotonic counter incremented on every `request_gc()` call.
+///
+/// Unlike the transient `GC_REQUESTED` flag — which post Phase 9 may be
+/// consumed nanoseconds later by `maybe_async_gc()` running on the same
+/// cron-thread tick — this counter is sticky and append-only. It records
+/// the number of times the system decided GC was needed and reflects the
+/// true intent of "GC was requested" regardless of which path subsequently
+/// consumed the flag.
+///
+/// Used by `test_gc_requested_on_high_alloc_rate` (and external telemetry)
+/// to observe request events without racing on flag consumption.
+static GC_REQUESTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
 /// Request a GC cycle. Sets the `gc_requested` flag which will be picked up
-/// by the next `maybe_gc()` call from the trampoline loop.
+/// by the next `maybe_gc()` call from the trampoline loop. Also increments
+/// `GC_REQUESTS_TOTAL` so callers can observe the request event even if the
+/// transient flag is consumed by `maybe_async_gc()` on the same thread.
 pub fn request_gc() {
+    GC_REQUESTS_TOTAL.fetch_add(1, Ordering::Relaxed);
     GC_REQUESTED.store(true, Ordering::Release);
 }
 
 /// Check whether a GC cycle has been requested (test observability).
 pub fn is_gc_requested() -> bool {
     GC_REQUESTED.load(Ordering::Acquire)
+}
+
+/// Get the total number of `request_gc()` calls since process start.
+///
+/// Monotonic and sticky: each call to `request_gc()` increments this once,
+/// and it never decreases. This is the canonical observable for "did the
+/// system decide GC was needed?" — the `is_gc_requested()` flag is transient
+/// (post Phase 9 it is consumed by `maybe_async_gc()` immediately after
+/// being set by the cron monitor) and unsuitable for cross-thread polling.
+#[inline]
+pub fn gc_requests_total() -> u64 {
+    GC_REQUESTS_TOTAL.load(Ordering::Relaxed)
 }
 
 // ============================================================================

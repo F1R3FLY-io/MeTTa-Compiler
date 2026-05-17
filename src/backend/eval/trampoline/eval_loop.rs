@@ -4117,17 +4117,31 @@ fn eval_trampoline_inner<C: EvalContext>(
                             | crate::backend::models::metta_value::ValueView::Unit => true,
                             // SExpr with variable head → NotReducible
                             // (HE is_variable_op_expr at line 596-602).
+                            // Also: `(quote X)` is self-evaluating in HE —
+                            // `(eval (quote X))` returns NotReducible at the
+                            // kernel level, then `metta_call_return` wraps
+                            // back to `(eval (quote X))`. Verified empirically:
+                            //   metta-repl '!(eval (quote (+ 1 2)))'
+                            //   → [(eval (quote (+ 1 2)))]
                             crate::backend::models::metta_value::ValueView::SExpr(items) => {
                                 items.first().map_or(false, |head| {
-                                    matches!(
-                                        head.view(),
-                                        crate::backend::models::metta_value::ValueView::Atom(n)
-                                            if n.starts_with('$')
-                                    )
+                                    match head.view() {
+                                        crate::backend::models::metta_value::ValueView::Atom(n) => {
+                                            n.starts_with('$') || n == "quote"
+                                        }
+                                        _ => false,
+                                    }
                                 })
                             }
                             // NotReducible argument is itself NotReducible (idempotent).
                             crate::backend::models::metta_value::ValueView::NotReducible => true,
+                            // `(quote X)` parsed as Quoted variant is self-evaluating
+                            // in HE — `(eval (quote X))` returns NotReducible at the
+                            // kernel level, then `metta_call_return` wraps back to
+                            // `(eval (quote X))`. Verified empirically:
+                            //   metta-repl '!(eval (quote (+ 1 2)))'
+                            //   → [(eval (quote (+ 1 2)))]
+                            crate::backend::models::metta_value::ValueView::Quoted(_) => true,
                             // Other variants (Error, Type, Conjunction, Space, etc.)
                             // are passed through to the normal eval path.
                             _ => false,

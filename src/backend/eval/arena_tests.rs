@@ -214,28 +214,30 @@ mod tests {
 
     // quote is self-evaluating — preserves the (quote ...) wrapper (HE semantics)
     eval_test!(quote_preserves, "!(quote (+ 1 2))", &["(quote (+ 1 2))"]);
-    eval_test!(eval_quoted, "!(eval (quote (+ 1 2)))", &["3"]);
+    // T04/105 (2026-05-17): `eval` performs HE one-step rewrite, then the
+    // `metta_call_return` parity wraps NotReducible back to `(eval ARG)`
+    // at the user-visible `!` level. Verified empirically against HE:
+    //   metta-repl '!(eval (quote (+ 1 2)))' → [(eval (quote (+ 1 2)))]
+    //   metta-repl '!(eval 42)'              → [(eval 42)]
+    // The previous test assertions (`["3"]`, `["NotReducible"]`, etc.)
+    // violated HE semantics — they encoded MTT's pre-T04/105 transitive
+    // reduction behavior and raw kernel sentinel exposure. Per the user's
+    // HE-bisim mandate, the tests are now aligned with HE empirical
+    // output; spec fixture T04/069 was updated in lockstep.
+    eval_test!(eval_quoted, "!(eval (quote (+ 1 2)))", &["(eval (quote (+ 1 2)))"]);
     eval_test!(
         quote_nested,
         "!(quote (+ (+ 1 2) 3))",
         &["(quote (+ (+ 1 2) 3))"]
     );
-    eval_test!(eval_force_quoted, "!(eval (quote (* 6 7)))", &["42"]);
-    // Plan S4 (2026-05-14): HE-faithful one-step `(eval X)` semantics.
-    // Grounded scalar at top level emits `NotReducible` per spec §06.4 /
-    // T04-kernel/069-eval-on-grounded.expected.yaml. HE's `eval_impl` line
-    // 504 classifies the resolved arg as a scalar with no equation match
-    // → `return_not_reducible()`. The outer `metta_call_return` wrapping at
-    // the user-visible `!` level converts `NotReducible` back to the
-    // original atom in HE's REPL, but MeTTaTron's `!` is unwrapped — so we
-    // observe the raw kernel-level sentinel.
-    eval_test!(eval_on_value, "!(eval 42)", &["NotReducible"]);
+    eval_test!(eval_force_quoted, "!(eval (quote (* 6 7)))", &["(eval (quote (* 6 7)))"]);
+    eval_test!(eval_on_value, "!(eval 42)", &["(eval 42)"]);
     eval_test!(
         quote_nested_structure,
         "!(quote ((+ 1 2) (* 3 4)))",
         &["(quote ((+ 1 2) (* 3 4)))"]
     );
-    eval_test!(eval_nested_quote, "!(eval (quote (+ 1 (+ 2 3))))", &["6"]);
+    eval_test!(eval_nested_quote, "!(eval (quote (+ 1 (+ 2 3))))", &["(eval (quote (+ 1 (+ 2 3))))"]);
 
     // unquote: unwraps Quoted variant without evaluating the inner expression
     eval_test!(unquote_quoted, "!(unquote (quote (+ 1 2)))", &["(+ 1 2)"]);
@@ -1107,11 +1109,16 @@ mod tests {
                 prop_assert_eq!(results[0].as_str(), expected.as_str());
             }
 
+            // T04/105 (2026-05-17): the "round-trip" arithmetic property no
+            // longer holds under HE one-step `eval` semantics. HE empirical:
+            //   !(eval (quote (+ a b))) → [(eval (quote (+ a b)))]
+            // (NotReducible wrapped back to the original eval form at the
+            // user-visible `!` boundary). Assert the wrapped form instead.
             #[test]
             fn prop_quote_eval_roundtrip(a in 1i64..100, b in 1i64..100) {
                 let src = format!("!(eval (quote (+ {} {})))", a, b);
                 let results = run_eval(&src);
-                let expected = format!("{}", a + b);
+                let expected = format!("(eval (quote (+ {} {})))", a, b);
                 prop_assert_eq!(results[0].as_str(), expected.as_str());
             }
 

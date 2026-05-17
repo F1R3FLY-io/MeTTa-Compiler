@@ -3031,7 +3031,23 @@ where
                 // Both args are pre-evaluated (applicative order). Compares with
                 // alpha-equivalence and prints a diagnostic line. Returns Unit on
                 // match, error MettaValue on mismatch (NEVER halts/panics).
+                //
+                // T06/095 (2026-05-17): `test` is in the overridable set, so a
+                // user-defined rule `(= (test $v) ...)` shadows the PeTTa
+                // builtin. Without this gate, the builtin's 2-arg arity check
+                // fires first and produces a spurious "test requires exactly
+                // 2 arguments" error when called with 1 arg (e.g. inside
+                // `(filter-atom $coll $v (test $v))`). Falling through to
+                // rule matching via `break 'special_forms` lets the user
+                // rule apply for ANY arity. When no user rule exists the
+                // gate is false (single relaxed atomic load ~1 ns) and
+                // dispatch proceeds to the PeTTa builtin as before.
                 "test" => {
+                    let id = overridable_op_id("test")
+                        .expect("test is registered in OverridableOpId");
+                    if env.dispatch_overrides().is_overridden(id) {
+                        break 'special_forms;
+                    }
                     return crate::backend::eval::testing_ops::eval_testing_op_generic(
                         items, env, ctx,
                     );

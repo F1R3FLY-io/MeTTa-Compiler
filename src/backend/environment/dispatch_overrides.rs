@@ -10,9 +10,19 @@
 //! considers overridable.
 //!
 //! True HE primitives (`cons-atom`, `decons-atom`, `size-atom`, `+`, `if`, …)
-//! and side-effecting MeTTaTron internals (state, memo, modules, I/O, tests)
-//! remain non-overridable: they are NOT in `OverridableOpId` and never go
-//! through this gate.
+//! and side-effecting MeTTaTron internals (state, memo, modules, I/O, the
+//! `assertEqual*`/`=alpha` spec-test API) remain non-overridable: they are
+//! NOT in `OverridableOpId` and never go through this gate.
+//!
+//! ### The `test` exception
+//!
+//! `test` is a PeTTa-specific diagnostic form (not in HE proper). It is
+//! syntactically `(test actual expected)`, but user programs frequently
+//! define `(= (test $x) ...)` as a Bool predicate (see T06/095). Including
+//! `test` in this overridable set lets a user-defined rule for `test` shadow
+//! the PeTTa special form — matching the general MeTTa convention that user
+//! rules with the same head shadow built-ins. The `assertEqual*` and `=alpha`
+//! forms are *spec* APIs and remain non-overridable.
 //!
 //! ## Design
 //!
@@ -65,11 +75,17 @@ pub enum OverridableOpId {
     SortTuple = 20,
     BestCandidate = 21,
     Cut = 22,
+    /// PeTTa-specific diagnostic form `(test actual expected)`.
+    ///
+    /// Not in HE proper — overridable so user programs can define
+    /// `(= (test $v) ...)` as a Bool predicate without colliding with the
+    /// PeTTa-compatible builtin. See T06/095 fixture.
+    Test = 23,
 }
 
 /// Number of overridable operator names. Must equal the highest
 /// `OverridableOpId` discriminant + 1.
-pub const NUM_OVERRIDABLE_OPS: usize = 23;
+pub const NUM_OVERRIDABLE_OPS: usize = 24;
 
 const _: () = {
     assert!(
@@ -236,6 +252,9 @@ pub fn overridable_op_id(op: &str) -> Option<OverridableOpId> {
         "sort-tuple" => SortTuple,
         "best-candidate" => BestCandidate,
         "cut" => Cut,
+        // PeTTa-specific test form — overridable so user rules with the
+        // same head can shadow the builtin (T06/095).
+        "test" => Test,
         _ => return None,
     })
 }
@@ -307,6 +326,7 @@ mod tests {
             ("sort-tuple", OverridableOpId::SortTuple),
             ("best-candidate", OverridableOpId::BestCandidate),
             ("cut", OverridableOpId::Cut),
+            ("test", OverridableOpId::Test),
         ];
         assert_eq!(names.len(), NUM_OVERRIDABLE_OPS);
         for (name, id) in names {
@@ -335,6 +355,14 @@ mod tests {
         assert_eq!(overridable_op_id("println!"), None);
         assert_eq!(overridable_op_id("import!"), None);
         assert_eq!(overridable_op_id("new-state"), None);
+        // Spec-test API — must NOT be overridable (these forms ARE the
+        // testing surface MeTTa programs depend on).
+        assert_eq!(overridable_op_id("=alpha"), None);
+        assert_eq!(overridable_op_id("assertEqual"), None);
+        assert_eq!(overridable_op_id("assertAlphaEqual"), None);
+        assert_eq!(overridable_op_id("assertEqualToResult"), None);
+        // `test` IS overridable (PeTTa-specific, see Test variant docstring).
+        assert_eq!(overridable_op_id("test"), Some(OverridableOpId::Test));
         // Truly unknown name.
         assert_eq!(overridable_op_id("definitely-not-an-op"), None);
     }

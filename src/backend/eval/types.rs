@@ -1954,6 +1954,22 @@ where
         return None;
     }
 
+    // 2026-05-17 perf fix: built-in grounded ops are validated upstream by
+    // `validate_grounded_arg_types` (static `builtin_signatures` registry).
+    // Skipping `check_call_site_types` here prevents redundant
+    // `infer_type_generic` recursion on every recursive sub-call (e.g.,
+    // `(- $n 1)` inside `(fib $n)` exploded `fib 5` to 19GB RSS / 21min).
+    // Defense-in-depth guard: also at T1/T2/T3 wire sites.
+    //
+    // Edge case: a user explicitly overriding a grounded-op type via
+    // `(: + (-> Number String))` — `may_have_type` returns true, falling
+    // through to the check. HE-bisim parity preserved.
+    if crate::backend::grounded::has_grounded_op(head_name)
+        && !env.may_have_type(head_name)
+    {
+        return None;
+    }
+
     let mode = env.get_type_check_mode();
 
     // Look up the head's declared types. We need a `(-> ...)` arrow type.
@@ -2042,6 +2058,24 @@ where
         // un-resolved).
         if let Some(arg_type_name) = arg_type.as_atom() {
             if arg_type_name.starts_with('$') {
+                continue;
+            }
+        }
+
+        // S-step (2026-05-17): cross-tier HE-bisim parity.
+        //
+        // Skip meta-typed inferred arg types in permissive mode. HE's
+        // `check_type` does not fire BadArgType when the inferred arg type
+        // is a meta-type (`Atom`, `Symbol`, `Expression`, `Variable`,
+        // `Grounded`, `Any`) — those represent "shape known, concrete type
+        // not yet known" and behave like `%Undefined%`. Without this skip,
+        // T1 fires BadArgType on `(f (foo))` (where `(foo)` infers to
+        // `Expression`) while T0 does not (because T0's evaluation order
+        // happens to materialize `(foo)` to `%Undefined%` via the
+        // inference cache). This skip homogenizes the three tiers without
+        // changing the permissive-mode user contract.
+        if let Some(arg_type_name) = arg_type.as_atom() {
+            if is_meta_type(arg_type_name) && mode == TypeCheckMode::Permissive {
                 continue;
             }
         }

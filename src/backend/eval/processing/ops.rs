@@ -293,25 +293,27 @@ pub fn process_single_combination_generic(
     // prevents ghost results from flowing through conjunctions where an
     // argument-bound call like `(father c $x)` fails to match any rule.
     //
-    // At depth == 0 (top level), we retain the old ADD-mode behavior of
-    // adding to space and returning the data — user programs rely on this
-    // for their own data constructors.
-    // X-followup (2026-05-11): HE pattern-fail semantics apply at every
-    // depth, not only depth > 0. Previously the depth gate caused top-level
-    // `!(specific 6)` (where `specific` has rules but 6 doesn't match) to
-    // return the unreduced expression instead of Empty.
-    if let Some(head) = sexpr.get_head_symbol() {
-        let arity = sexpr.get_arity();
-        let has_any_rules = unified_env
-            .shared
-            .rule_index
-            .read()
-            .get_candidates(head, arity, None)
-            .next()
-            .is_some();
-        if has_any_rules {
-            // Function with no matching rules → empty (HE semantics).
-            return GenericProcessedSExpr::Done((SmallVec::new(), unified_env));
+    // At depth == 0 (top level), HE empirically returns the unreduced
+    // expression — verified via metta-repl: `(= (f 1) good) !(f 2)` →
+    // `[(f 2)]`. So depth==0 falls through to ADD-mode handling below,
+    // which returns the unreduced sexpr. Only depth > 0 (inside
+    // conjunctions, match goals, etc.) emits Empty per HE pattern-fail
+    // semantics. This matches the bound path which has always gated on
+    // `depth > 0`.
+    if depth > 0 {
+        if let Some(head) = sexpr.get_head_symbol() {
+            let arity = sexpr.get_arity();
+            let has_any_rules = unified_env
+                .shared
+                .rule_index
+                .read()
+                .get_candidates(head, arity, None)
+                .next()
+                .is_some();
+            if has_any_rules {
+                // Function with no matching rules → empty (HE semantics).
+                return GenericProcessedSExpr::Done((SmallVec::new(), unified_env));
+            }
         }
     }
 

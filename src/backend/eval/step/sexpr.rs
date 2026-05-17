@@ -525,6 +525,49 @@ where
                     };
                 }
 
+                // if-error - HE-bisim: evaluate first arg; if Error → second arg, else third.
+                //
+                // HE source: stdlib.metta:300-317 —
+                //   `(= (if-error $atom $then $else)
+                //      (case $atom (((Error $a $c) $then) ($_ $else))))`.
+                // We desugar to case at the IR level. Reuses case's collapse
+                // semantics, and (post-T04/117 fix) Error-as-terminal re-eval
+                // skip — so `(if-error (function) caught else)` works because
+                // case no longer re-evaluates the Error.
+                "if-error" => {
+                    if items.len() != 4 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "if-error requires exactly 3 arguments, got {}. Usage: (if-error atom then else)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let f = ctx.factory();
+                    // Pattern variables prefixed with `$__ie_` to minimize
+                    // collision with user vars (pattern_match freshens anyway).
+                    let cases = f.sexpr(vec![
+                        f.sexpr(vec![
+                            f.sexpr(vec![
+                                f.atom("Error"),
+                                f.atom("$__ie_a"),
+                                f.atom("$__ie_c"),
+                            ]),
+                            items[2].clone(),
+                        ]),
+                        f.sexpr(vec![f.atom("$_"), items[3].clone()]),
+                    ]);
+                    return GenericEvalStep::EvalCaseAtom {
+                        atom: items[1].clone(),
+                        cases,
+                        env,
+                        depth,
+                    };
+                }
+
                 // eval - Plan S4 (2026-05-14) HE-faithful ONE-STEP semantics.
                 //
                 // HE's `eval_impl` in
@@ -2925,25 +2968,53 @@ where
                     return crate::backend::eval::set_ops::eval_set_op_generic(items, env, ctx);
                 }
 
-                // Bare set-op aliases (Workstream X.5b — MTT-FN-SET-BARE)
+                // Bare set-op aliases (Workstream X.5b — MTT-FN-SET-BARE; T06/108-111)
                 //
-                // Desugar `(unique X)` -> `(unique-atom (collapse X))` etc.
-                // HE stdlib.metta:629-663 wraps with an extra `superpose` to
-                // re-emit multi-results; MeTTaTron returns a single tuple per
-                // the M09f fixture convention (M09f/004: `(unique (superpose
-                // (1 1 2)))` -> `(1 2)`, single tuple result).
+                // HE-bisimilar desugar matching `hyperon-experimental/lib/src/metta/
+                // runner/stdlib/stdlib.metta:629-663`. HE uses a let-chain so that
+                // the inner `(op-atom (collapse arg)…)` is FIRST evaluated to a
+                // tuple, then `(superpose tuple)` re-emits as multi-result:
+                //
+                //   (unique $a)
+                //   = (let $c (collapse $a) (let $u (unique-atom $c) (superpose $u)))
+                //
+                // A direct nesting `(superpose (op-atom (collapse arg)…))` would
+                // be WRONG: MeTTaTron's `superpose` treats its argument as data
+                // (the literal tuple to fan out), not as an expression to evaluate
+                // first. So we must materialize the inner result via `let` before
+                // superposing.
+                //
+                // The same shape applies for the 2-arg ops (union / intersection /
+                // subtraction) — each collapse + the outer let → superpose.
                 "unique" | "union" | "intersection" | "subtraction" => {
-                    let mut new_items: Vec<MettaValue> = Vec::with_capacity(items.len());
-                    let op_atom = format!("{}-atom", op);
-                    new_items.push(ctx.factory().atom(&op_atom));
-                    let collapse_sym = ctx.factory().atom("collapse");
+                    let factory = ctx.factory();
+                    let op_atom = factory.atom(&format!("{}-atom", op));
+                    let collapse_sym = factory.atom("collapse");
+                    let superpose_sym = factory.atom("superpose");
+                    let let_sym = factory.atom("let");
+                    let u_var = factory.atom("$__set_u");
+
+                    // Build `(op-atom (collapse arg1) (collapse arg2)…)`.
+                    let mut inner_call: Vec<MettaValue> = Vec::with_capacity(items.len());
+                    inner_call.push(op_atom);
                     for arg in items.into_iter().skip(1) {
-                        new_items.push(
-                            ctx.factory().sexpr(vec![collapse_sym.clone(), arg]),
-                        );
+                        inner_call.push(factory.sexpr(vec![collapse_sym.clone(), arg]));
                     }
-                    return GenericEvalStep::EvalSExpr {
-                        items: new_items,
+                    let inner_sexpr = factory.sexpr(inner_call);
+
+                    // Wrap: `(let $__set_u <inner> (superpose $__set_u))` — the
+                    // `let` evaluates `<inner>` to a single tuple `$__set_u`, then
+                    // `(superpose $__set_u)` fans out its elements.
+                    let superpose_call =
+                        factory.sexpr(vec![superpose_sym, u_var.clone()]);
+                    let wrapped = factory.sexpr(vec![
+                        let_sym,
+                        u_var,
+                        inner_sexpr,
+                        superpose_call,
+                    ]);
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: wrapped,
                         env,
                         depth,
                     };

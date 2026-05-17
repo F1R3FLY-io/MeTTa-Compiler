@@ -956,7 +956,7 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         // === Special forms (eval_sexpr_step_generic match arms) ===
         "=" | "!" | "quote" | "unquote" | "noreduce" | "noeval"
         | "if" | "if-reducible" | "if-equal"
-        | "error" | "Error" | "is-error" | "catch"
+        | "error" | "Error" | "is-error" | "catch" | "if-error"
         | "eval" | "capture" | "reduce" | "progn" | "function" | "return" | "chain"
         | "match" | "match-or" | "case"
         | "switch" | "switch-minimal" | "switch-internal"
@@ -1009,6 +1009,10 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "isnan-math" | "isinf-math"
         // === String operations (Workstream X.5a) ===
         | "stringToChars"
+        // === String operations (T06/060 — HE-aligned) ===
+        | "sort-strings"
+        // === Meta / polymorphic operations (T06/037 — HE-aligned) ===
+        | "id"
     )
 }
 
@@ -1189,6 +1193,16 @@ mod tests {
             "best-candidate",
             "/safe",
             "clamp",
+            "stringToChars",
+            "sort-strings",
+            "id",
+            // Bare set-op aliases (T06/108-111). Listed in is_grounded_op so
+            // nested calls trigger pre-evaluation; the bare-form dispatch in
+            // step/sexpr.rs desugars them to `(superpose (op-atom (collapse arg)…))`.
+            "unique",
+            "union",
+            "intersection",
+            "subtraction",
         ];
         for op in &grounded_ops {
             assert!(
@@ -1249,6 +1263,13 @@ mod tests {
             "union-atom",
             "intersection-atom",
             "subtraction-atom",
+            // Bare set-op aliases (T06/108-111) — redispatch path must
+            // recognize the bare names so the wrapped form
+            // `(superpose (op-atom (collapse arg)…))` re-enters the dispatch.
+            "unique",
+            "union",
+            "intersection",
+            "subtraction",
             "=alpha",
             "match-types",
             "assertEqual",
@@ -1293,6 +1314,12 @@ mod tests {
             "union-atom",
             "intersection-atom",
             "subtraction-atom",
+            // Bare set-op aliases (T06/108-111) — eager so nested usage is
+            // pre-evaluated before being passed to outer rules.
+            "unique",
+            "union",
+            "intersection",
+            "subtraction",
             "=alpha",
         ];
         for op in &eager_forms {
@@ -1311,7 +1338,7 @@ mod tests {
         // Check has_grounded_op coverage
         let generic_grounded = [
             "+", "-", "*", "/", "%", "min", "max", "<", "<=", ">", ">=", "==", "!=", "and", "or",
-            "not", "xor", "/safe", "clamp",
+            "not", "xor", "/safe", "clamp", "stringToChars", "sort-strings", "id",
         ];
         for op in &generic_grounded {
             assert!(

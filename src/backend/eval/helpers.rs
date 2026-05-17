@@ -35,7 +35,7 @@ pub fn needs_special_form_redispatch(op: &str) -> bool {
         // Pattern/substitution forms
         | "sealed" | "atom-subst" | "match" | "match-or"
         // Error handling (special flow)
-        | "catch" | "is-error"
+        | "catch" | "is-error" | "if-error"
         // Evaluation control
         | "eval" | "capture" | "quote" | "unquote"
         // Space operations that need special handling
@@ -46,6 +46,10 @@ pub fn needs_special_form_redispatch(op: &str) -> bool {
         | "println!" | "print-alternatives!" | "trace!"
         // Set operations
         | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        // Bare set-op aliases (T06/108-111, MTT-FN-SET-BARE) — bare form desugars
+        // to `(superpose (op-atom (collapse arg)…))` at dispatch time, so the
+        // re-dispatch path must recognize the bare names too.
+        | "unique" | "union" | "intersection" | "subtraction"
         // Alpha equivalence
         | "=alpha"
         // Type matching (HE stdlib parity)
@@ -86,6 +90,11 @@ pub fn is_eager_special_form(op: &str) -> bool {
         | "repr" | "format-args"
         // Set operations (produce list values)
         | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom" | "intersection-atom" | "subtraction-atom"
+        // Bare set-op aliases (T06/108-111) are NOT listed here — their
+        // dispatch in step/sexpr.rs uses an explicit `(collapse arg)` wrap,
+        // so the bare arm must receive UNEVALUATED args. If listed here,
+        // the trampoline pre-evaluates (superpose …) to nondet values and
+        // fires the bare arm once per value, breaking dedup semantics.
         // Alpha equivalence (produces Bool value)
         | "=alpha"
     )
@@ -145,8 +154,17 @@ pub fn is_grounded_op(name: &str) -> bool {
         // structural equality (matching PeTTa).
         | "unique-atom" | "alpha-unique-atom" | "struct-unique-atom" | "union-atom"
         | "intersection-atom" | "subtraction-atom"
+        // Bare set-op aliases (T06/108-111) are NOT listed — they desugar
+        // via `(collapse arg)` and must receive unevaluated args. See note
+        // in is_eager_special_form above. Listing them here would cause
+        // pre-evaluation, breaking M09f/004 (unique dedup) and M09f/005
+        // (intersection) per HE-empirical verification.
         // String operations (Workstream X.5a)
         | "stringToChars"
+        // String operations (T06/060 — sort-strings, HE-aligned)
+        | "sort-strings"
+        // Meta / polymorphic operations (T06/037 — id, HE-aligned)
+        | "id"
     )
 }
 

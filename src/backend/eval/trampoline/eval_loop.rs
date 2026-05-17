@@ -9705,15 +9705,28 @@ fn process_continuation<C: EvalContext>(
             // carrying_bindings so rule matches inside the re-eval can resolve
             // variables bound by earlier rule matches in the scrutinee's
             // derivation chain.
-            work_stack.push(WorkItem::Eval {
-                value: first_raw,
-                env: atom_env,
-                depth: depth + 1,
-                is_tail_call: false,
-                expected_type: None,
-                demand: None,
-                carrying_bindings: first_raw_carrying,
-            });
+            //
+            // HE parity (2026-05-17 T04/117 fix): if the scrutinee result is
+            // already an Error, skip re-eval. Errors are terminal in HE
+            // (verified: `!(eval (Error foo bar))` → `[(eval (Error foo bar))]`
+            // — NotReducible). Re-eval'ing an Error like `(Error (function) "msg")`
+            // re-fires the inner `(function)` arity check, mangling the shape
+            // so case patterns like `(Error $a $c)` no longer match.
+            if first_raw.is_error() {
+                work_stack.push(WorkItem::Resume {
+                    result: (smallvec![bv(first_raw)], atom_env),
+                });
+            } else {
+                work_stack.push(WorkItem::Eval {
+                    value: first_raw,
+                    env: atom_env,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                    expected_type: None,
+                    demand: None,
+                    carrying_bindings: first_raw_carrying,
+                });
+            }
         }
 
         Continuation::ProcessCaseMultiResults {
@@ -10006,6 +10019,16 @@ fn process_continuation<C: EvalContext>(
                     current_raw_bindings: std::sync::Arc::new(next_raw_bindings),
                     outer_carrying: outer_carrying.clone(),
                 });
+
+                // HE parity (2026-05-17 T04/117 fix): Errors are terminal —
+                // skip re-eval to preserve their structure for pattern matching.
+                // See ProcessCaseAtom first_raw comment for full rationale.
+                if next_raw.is_error() {
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(next_raw)], eval_env),
+                    });
+                    return;
+                }
 
                 work_stack.push(WorkItem::Eval {
                     value: next_raw,

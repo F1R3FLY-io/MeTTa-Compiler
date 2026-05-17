@@ -315,11 +315,18 @@ pub fn classify_and_parse(s: &str) -> ClassifiedLiteral<'_> {
     }
 
     // Numeric: combined classify-and-accumulate scan.
+    // HE accepts `+3` as a number (verified empirically `!(get-metatype +3)`
+    // → `[Grounded]`). T01/041 alignment 2026-05-17.
     let (is_negative, mut i) = if first == b'-' {
         if len < 2 || !bytes[1].is_ascii_digit() {
             return ClassifiedLiteral::Atom; // bare `-` or `-foo`
         }
         (true, 1)
+    } else if first == b'+' {
+        if len < 2 || !bytes[1].is_ascii_digit() {
+            return ClassifiedLiteral::Atom; // bare `+` or `+foo`
+        }
+        (false, 1) // `+3` parses as positive, skipping the `+` sign byte
     } else if first.is_ascii_digit() {
         (false, 0)
     } else {

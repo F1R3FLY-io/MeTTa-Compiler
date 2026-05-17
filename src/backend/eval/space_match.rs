@@ -177,8 +177,16 @@ where
 
                 match (p_is_var, s_is_var) {
                     (true, true) => {
-                        // Both variables: bind pattern var → stored var
-                        if !try_bind(&mut bindings, p_name, sto) {
+                        // T03/050 (HE-bisim): when both pattern var and stored
+                        // var are free, bind STORED→PATTERN so the query-side
+                        // variable identity wins. After narrowing to pattern
+                        // vars, the pattern var remains unbound — substituting
+                        // it into the template prints it as `$A` (HE shape),
+                        // not the freshened stored `$__fr_N_a` (prior bug).
+                        // Verified empirically:
+                        //   HE:  `(foo $x)` + `(match &self (foo $y) $y)` → `$y`
+                        //   MTT: same query previously yielded `$__fr_1_x`.
+                        if !try_bind(&mut bindings, s_name, pat) {
                             return None;
                         }
                     }
@@ -477,20 +485,19 @@ mod tests {
 
     #[test]
     fn test_pattern_var_vs_stored_variable() {
-        // Pattern: (foo $a), Stored: (foo $x)
-        // Should succeed: $a binds to freshened $x_fr
+        // T03/050 (HE-bisim): when both pattern and stored are unbound vars,
+        // the pattern (query) var wins. Binding is recorded on the stored
+        // freshened var, then narrowed away — so `$a` remains unbound.
+        // Pattern: (foo $a), Stored: (foo $x)  →  match succeeds, no
+        // pattern-side bindings (template `$a` substitutes to itself = `$a`).
         let f = factory();
         let pattern = f.sexpr(vec![f.atom("foo"), f.atom("$a")]);
         let stored = f.sexpr(vec![f.atom("foo"), f.atom("$x")]);
         let result = do_match(&pattern, &stored).expect("should match");
-        assert_eq!(result.len(), 1);
-        let bound = result.get("$a").expect("$a should be bound");
-        // Should be bound to the freshened variable name
-        let bound_name = bound.as_atom().expect("should be an atom");
         assert!(
-            bound_name.starts_with("$__fr_"),
-            "Should be freshened: {}",
-            bound_name
+            result.is_empty(),
+            "Pattern var should remain unbound (HE-bisim), got: {:?}",
+            result
         );
     }
 
@@ -500,20 +507,18 @@ mod tests {
 
     #[test]
     fn test_same_var_pattern_vs_same_var_stored() {
+        // T03/050 (HE-bisim): with stored→pattern binding direction, both
+        // positions bind $__fr_N_x → $a. After narrowing to pattern vars,
+        // the result is empty (pattern var $a remains free, prints as $a).
         // Pattern: (pair $a $a), Stored: (pair $x $x)
-        // After freshening stored → (pair $__fr_N_x $__fr_N_x)
-        // $a binds to $__fr_N_x (both positions match)
         let f = factory();
         let pattern = f.sexpr(vec![f.atom("pair"), f.atom("$a"), f.atom("$a")]);
         let stored = f.sexpr(vec![f.atom("pair"), f.atom("$x"), f.atom("$x")]);
         let result = do_match(&pattern, &stored).expect("should match");
-        assert_eq!(result.len(), 1);
-        let bound = result.get("$a").expect("$a should be bound");
-        let bound_name = bound.as_atom().expect("should be atom");
         assert!(
-            bound_name.starts_with("$__fr_"),
-            "Should be freshened: {}",
-            bound_name
+            result.is_empty(),
+            "Both pattern occurrences of $a should remain unbound, got: {:?}",
+            result
         );
     }
 
@@ -540,22 +545,27 @@ mod tests {
 
     #[test]
     fn test_different_var_pattern_vs_same_var_stored() {
-        // Pattern: (pair $a $b), Stored: (pair $x $x)
-        // After freshening → (pair $__fr_N_x $__fr_N_x)
-        // $a binds to $__fr_N_x, $b binds to $__fr_N_x
-        // After chain resolution: $a=$__fr_N_x, $b=$__fr_N_x
+        // T03/050 (HE-bisim): Pattern (pair $a $b) vs Stored (pair $x $x).
+        // Freshened → (pair $__fr_N_x $__fr_N_x).
+        // Pos 1: bind $__fr_N_x → $a.
+        // Pos 2: $__fr_N_x already bound to $a; try_bind($a, $b) → $a → $b.
+        // After resolve_chains and narrow: {$a: $b}.
+        // Verified empirically (HE):
+        //   stored (pair $x $x), query !(match &self (pair $a $b) ($a $b))
+        //   → `($b $b)` (i.e. $a substitutes to $b atom; $b stays free).
         let f = factory();
         let pattern = f.sexpr(vec![f.atom("pair"), f.atom("$a"), f.atom("$b")]);
         let stored = f.sexpr(vec![f.atom("pair"), f.atom("$x"), f.atom("$x")]);
         let result = do_match(&pattern, &stored).expect("should match");
-        assert_eq!(result.len(), 2);
+        // $a is bound to the atom $b (a variable name), $b itself remains free.
         let bound_a = result.get("$a").expect("$a should be bound");
-        let bound_b = result.get("$b").expect("$b should be bound");
-        // Both should be bound to the same freshened variable
+        let bound_name = bound_a.as_atom().expect("should be a variable atom");
         assert_eq!(
-            bound_a, bound_b,
-            "$a and $b should be equal (same stored var)"
+            bound_name, "$b",
+            "$a should be bound to $b atom (HE-bisim), got: {}",
+            bound_name
         );
+        assert!(result.get("$b").is_none(), "$b should remain unbound");
     }
 
     #[test]
@@ -619,6 +629,8 @@ mod tests {
 
     #[test]
     fn test_nested_bidirectional() {
+        // T03/050 (HE-bisim): pattern var binding to stored var leaves the
+        // pattern var unbound (HE prints the query var name).
         // Pattern: (outer (inner $a)), Stored: (outer (inner $x))
         let f = factory();
         let pattern = f.sexpr(vec![
@@ -630,12 +642,8 @@ mod tests {
             f.sexpr(vec![f.atom("inner"), f.atom("$x")]),
         ]);
         let result = do_match(&pattern, &stored).expect("should match");
-        assert_eq!(result.len(), 1);
-        let bound = result.get("$a").expect("$a should be bound");
-        assert!(bound
-            .as_atom()
-            .expect("should be atom")
-            .starts_with("$__fr_"));
+        // Pattern var $a remains unbound — template `$a` prints as `$a`.
+        assert!(result.is_empty(), "Pattern var should remain unbound");
     }
 
     // -----------------------------------------------------------------------

@@ -4004,6 +4004,11 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Evaluate eval (internal full-reduction path — used by
                     // progn, metta, capture, reduce).
+                    //
+                    // T04/105 (2026-05-17): `original_eval_expr: None` here —
+                    // EvalEval is for non-`eval` forms (capture/reduce/progn)
+                    // which do NOT undergo HE `metta_call_return`'s
+                    // NotReducible→original conversion at this level.
                     GenericEvalStep::EvalEval {
                         arg,
                         env: step_env,
@@ -4014,6 +4019,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             env: env.clone(),
                             depth,
                             outer_carrying: carrying_bindings.clone(),
+                            original_eval_expr: None,
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -4066,6 +4072,34 @@ fn eval_trampoline_inner<C: EvalContext>(
                             apply_bindings(&arg, &*carrying_bindings, ctx.factory())
                         };
 
+                        // T04/105 (2026-05-17): construct original `(eval <arg>)`
+                        // expression for HE `metta_call_return` parity. When the
+                        // eval result is NotReducible, we substitute back to
+                        // this expression. Use the RESOLVED arg (post-binding)
+                        // so the original captures any caller-side variable
+                        // substitutions HE would apply via apply_bindings_to_atom_move
+                        // before quoting back. Empirical HE: `(eval (eval 5))`
+                        // → `[(eval (eval 5))]` — bindings-applied inner.
+                        let original_eval_expr = ctx.factory().sexpr(vec![
+                            ctx.factory().atom("eval"),
+                            resolved,
+                        ]);
+
+                        // Detect nesting: if the top continuation is already
+                        // a ProcessEvalEval, this eval is nested under another
+                        // eval. In HE, the inner eval's NotReducible propagates
+                        // directly to the outer's metta_call_return (no inner
+                        // conversion). MTT mirrors this by propagating
+                        // NotReducible raw to the outer ProcessEvalEval.
+                        //
+                        // For standalone/top-level eval (top continuation is
+                        // Done/ProcessLet/etc.), we MUST do the conversion
+                        // here because there's no outer ProcessEvalEval to do it.
+                        let nested_in_eval = matches!(
+                            continuations.last(),
+                            Some(Continuation::ProcessEvalEval { .. })
+                        );
+
                         // Classify resolved argument.
                         // Use ValueView for exhaustive, NaN-box-ready dispatch.
                         let view = resolved.view();
@@ -4100,9 +4134,19 @@ fn eval_trampoline_inner<C: EvalContext>(
                         };
 
                         if immediate_not_reducible {
+                            // HE eval_impl line 555 query → NotReducible.
+                            // If nested under outer eval, propagate NotReducible
+                            // (outer ProcessEvalEval will convert at its level).
+                            // Otherwise, convert here (HE metta_call_return
+                            // semantics: NotReducible → original eval call).
                             let env: SharedEnv = Arc::new(step_env);
+                            let result_value = if nested_in_eval {
+                                ctx.factory().not_reducible()
+                            } else {
+                                original_eval_expr
+                            };
                             work_stack.push(WorkItem::Resume {
-                                result: (smallvec![bv(ctx.factory().not_reducible())], env),
+                                result: (smallvec![bv(result_value)], env),
                             });
                             continue;
                         }
@@ -4129,13 +4173,17 @@ fn eval_trampoline_inner<C: EvalContext>(
                             );
                             match matches {
                                 Some(ms) if ms.is_empty() => {
-                                    // No rule matched → NotReducible.
+                                    // No rule matched → HE metta_call_return:
+                                    // NotReducible. Convert here if standalone,
+                                    // propagate raw if nested under outer eval.
                                     let env: SharedEnv = Arc::new(step_env);
+                                    let result_value = if nested_in_eval {
+                                        ctx.factory().not_reducible()
+                                    } else {
+                                        original_eval_expr
+                                    };
                                     work_stack.push(WorkItem::Resume {
-                                        result: (
-                                            smallvec![bv(ctx.factory().not_reducible())],
-                                            env,
-                                        ),
+                                        result: (smallvec![bv(result_value)], env),
                                     });
                                     continue;
                                 }
@@ -4143,11 +4191,19 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     // Matched — dispatch each RHS as a
                                     // result. Use existing dispatch helper
                                     // for non-det fan-out.
+                                    // We push our own ProcessEvalEval (this
+                                    // eval is "outermost" for the rule body's
+                                    // sub-evaluations). The push happens
+                                    // unconditionally regardless of nesting —
+                                    // the outer's ProcessEvalEval will see
+                                    // OUR ProcessEvalEval's result (not the
+                                    // raw NotReducible from a nested case).
                                     let env: SharedEnv = Arc::new(step_env);
                                     continuations.push(Continuation::ProcessEvalEval {
                                         env: env.clone(),
                                         depth,
                                         outer_carrying: carrying_bindings.clone(),
+                                        original_eval_expr: Some(original_eval_expr),
                                     });
                                     dispatch_rule_matches(
                                         ms,
@@ -4179,6 +4235,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             env: env.clone(),
                             depth,
                             outer_carrying: carrying_bindings.clone(),
+                            original_eval_expr: Some(original_eval_expr),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -10326,6 +10383,7 @@ fn process_continuation<C: EvalContext>(
             env: _,
             depth,
             outer_carrying,
+            original_eval_expr,
         } => {
             let (eval_results, result_env) = result;
 
@@ -10340,6 +10398,46 @@ fn process_continuation<C: EvalContext>(
                 // Compose outer_carrying with this alt's per-branch bindings
                 // so the re-evaluation inherits the alt's binding context.
                 let (mut value, alt_b) = eval_results.into_iter().next().unwrap();
+
+                // T04/105 (2026-05-17): HE `metta_call_return` parity for
+                // eval/evalc forms (original_eval_expr is Some).
+                //   - If result is NotReducible: convert to original (HE
+                //     interpreter.rs:1456-1457). The nested-detection in
+                //     EvalEvalStep propagates raw NotReducible UP to this
+                //     ProcessEvalEval; THIS continuation does the conversion.
+                //   - Otherwise: return value as-is (no transitive re-eval —
+                //     HE's one-step eval semantics).
+                //
+                // EvalEval (capture/reduce/progn — original_eval_expr = None)
+                // retains the existing full-reduction TCO re-eval below.
+                if let Some(ref orig) = original_eval_expr {
+                    let final_value = if matches!(
+                        value.view(),
+                        crate::backend::models::metta_value::ValueView::NotReducible
+                    ) {
+                        orig.clone()
+                    } else {
+                        // Unwrap Quoted: (eval (quote X)) → X.
+                        if let Some(inner) = value.as_quoted() {
+                            inner
+                        } else {
+                            value
+                        }
+                    };
+                    // Compose alt_b into result bindings so caller-side variable
+                    // bindings produced by the inner eval (e.g. via `unify`)
+                    // flow upward (mirrors HE Bindings propagation).
+                    let result_b = if alt_b.is_empty() {
+                        crate::backend::models::GenericBindings::default()
+                    } else {
+                        alt_b
+                    };
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![(final_value, result_b)], result_env),
+                    });
+                    return;
+                }
+
                 if let Some(inner) = value.as_quoted() {
                     value = inner;
                 }
@@ -10371,17 +10469,42 @@ fn process_continuation<C: EvalContext>(
                 // Each alternative carries its own `b` so downstream
                 // evaluation inherits the alt's binding context (HE-faithful).
                 // Unwrap Quoted values while preserving bindings.
+                //
+                // T04/105 (2026-05-17): for `eval`/`evalc` (original_eval_expr
+                // is Some), HE one-step semantics: each NotReducible alt
+                // converts to original; non-NotReducible alts return as-is
+                // (no transitive re-eval).
                 let results_vec: Vec<BoundValue> = eval_results
                     .into_iter()
                     .map(|(v, b)| {
-                        let unwrapped = if let Some(inner) = v.as_quoted() {
+                        let resolved = if let Some(ref orig) = original_eval_expr {
+                            if matches!(
+                                v.view(),
+                                crate::backend::models::metta_value::ValueView::NotReducible
+                            ) {
+                                orig.clone()
+                            } else if let Some(inner) = v.as_quoted() {
+                                inner
+                            } else {
+                                v
+                            }
+                        } else if let Some(inner) = v.as_quoted() {
                             inner
                         } else {
                             v
                         };
-                        (unwrapped, b)
+                        (resolved, b)
                     })
                     .collect();
+
+                // For eval/evalc (one-step): return all alts directly without re-eval.
+                if original_eval_expr.is_some() {
+                    work_stack.push(WorkItem::Resume {
+                        result: (results_vec.into_iter().collect(), result_env),
+                    });
+                    return;
+                }
+
                 let mut results_iter = results_vec.into_iter();
                 let amb_capacity = results_iter.len();
                 let (first_val, first_b) = results_iter.next().unwrap();
@@ -10434,13 +10557,22 @@ fn process_continuation<C: EvalContext>(
                     result: (smallvec![bv(err.clone())], arg_env),
                 });
             } else {
-                // Wrap results in return structure: (return value)
-                let return_results: Vec<MettaValue> = arg_results
+                // Wrap results in return structure: (return value).
+                //
+                // T04/035 (2026-05-17): PRESERVE per-alt bindings. The chain's
+                // unify-bound vars (e.g. `(unify B $a ...)` binding $a=B) flow
+                // through the return wrapping so the outer chain's templ-eval
+                // sees them. Previously bindings were dropped via `bv()`,
+                // losing HE Bindings propagation.
+                let return_results: Vec<BoundValue> = arg_results
                     .into_iter()
-                    .map(|(r, _)| ctx.factory().sexpr(vec![ctx.factory().atom("return"), r]))
+                    .map(|(r, b)| {
+                        let wrapped = ctx.factory().sexpr(vec![ctx.factory().atom("return"), r]);
+                        (wrapped, b)
+                    })
                     .collect();
                 work_stack.push(WorkItem::Resume {
-                    result: (return_results.into_iter().map(bv).collect(), arg_env),
+                    result: (return_results.into_iter().collect(), arg_env),
                 });
             }
         }
@@ -10751,19 +10883,30 @@ fn process_continuation<C: EvalContext>(
                     .partition(|(r, _)| is_return_expr(r));
 
                 if !final_results.is_empty() {
-                    // Extract return values - unwrap (return value) to just value
-                    let returns: Vec<MettaValue> = final_results
+                    // Extract return values - unwrap (return value) to just value.
+                    //
+                    // T04/035 (2026-05-17): PRESERVE bindings from the function
+                    // body's evaluation. HE-bisim: when the body's evaluation
+                    // produces bindings (e.g. via `(unify B $a ...)` binding
+                    // $a → B), those bindings must propagate to the function's
+                    // caller (mirrors HE Bindings propagation through
+                    // InterpretedAtom). Previously bindings were dropped,
+                    // breaking patterns like
+                    //   `(chain (function ... (unify B $a ...) ...) $_ $a)`
+                    // where the outer chain's templ `$a` should resolve to B.
+                    let returns: Vec<BoundValue> = final_results
                         .into_iter()
-                        .map(|(r, _)| {
-                            if let Some(items) = r.as_sexpr() {
+                        .map(|(r, b)| {
+                            let v = if let Some(items) = r.as_sexpr() {
                                 items[1].clone()
                             } else {
                                 r // shouldn't happen, but be safe
-                            }
+                            };
+                            (v, b)
                         })
                         .collect();
                     work_stack.push(WorkItem::Resume {
-                        result: (returns.into_iter().map(bv).collect(), current_env),
+                        result: (returns.into_iter().collect(), current_env),
                     });
                 } else if continue_exprs.is_empty() {
                     // Nothing to continue
@@ -11697,6 +11840,39 @@ fn process_continuation<C: EvalContext>(
                         ctx.factory(),
                     );
 
+                    // T04/035 (2026-05-17): HE Bindings propagation parity.
+                    // unify produces new bindings (e.g. `(unify B $a ...)` binds
+                    // $a → B). These must flow UPWARD to the caller via the
+                    // BoundValue's bindings, so outer forms like `(chain ... $_ $a)`
+                    // can resolve `$a` to `B` in the templ post-unify.
+                    //
+                    // HE source: interpreter.rs:809-841 — unify merges match
+                    // bindings with the InterpretedAtom's bindings, which
+                    // propagate to the caller via stack return.
+                    //
+                    // MeTTaTron: compose unify bindings into carrying_bindings
+                    // so the body Eval sees them as ambient; the body's
+                    // result will tag the unify bindings onto its BoundValue
+                    // via the GenericEvalStep::Done propagation point.
+                    let unify_b = if all_bindings[0].is_empty_classes() {
+                        all_bindings.into_iter().next().unwrap().into_entries()
+                    } else {
+                        crate::backend::models::GenericBindings::default()
+                    };
+                    let composed_carrying = if unify_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(unify_b)
+                    } else {
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                &unify_b,
+                                ctx.factory(),
+                            ),
+                        )
+                    };
+
                     work_stack.push(WorkItem::Eval {
                         value: instantiated,
                         env: result_env,
@@ -11704,15 +11880,39 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: true,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: outer_carrying.clone(),
+                        carrying_bindings: composed_carrying,
                     });
                 } else {
+                    // Multi-result: each match produces a body to evaluate.
+                    // T04/035 (2026-05-17): the unify bindings for the FIRST
+                    // alt are passed via carrying so they flow upward. Other
+                    // alts' bindings are lost — multi-result unify is rare
+                    // and a full fix requires ProcessUnifyBodies to carry
+                    // per-body bindings (out of scope for this targeted fix).
                     let bodies_vec: Vec<MettaValue> = all_bindings
                         .iter()
                         .map(|bindings| {
                             apply_bindings_with_classes(&success_body, bindings, ctx.factory())
                         })
                         .collect();
+                    let first_unify_b = if all_bindings[0].is_empty_classes() {
+                        all_bindings[0].clone().into_entries()
+                    } else {
+                        crate::backend::models::GenericBindings::default()
+                    };
+                    let first_carrying = if first_unify_b.is_empty() {
+                        outer_carrying.clone()
+                    } else if outer_carrying.is_empty() {
+                        std::sync::Arc::new(first_unify_b)
+                    } else {
+                        std::sync::Arc::new(
+                            crate::backend::eval::bindings::compose_outer_inner_generic(
+                                &*outer_carrying,
+                                &first_unify_b,
+                                ctx.factory(),
+                            ),
+                        )
+                    };
                     let mut bodies_iter = bodies_vec.into_iter();
                     let first_body = bodies_iter.next().unwrap();
                     let unify_capacity = bodies_iter.len() + 1;
@@ -11732,7 +11932,7 @@ fn process_continuation<C: EvalContext>(
                         is_tail_call: false,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: outer_carrying.clone(),
+                        carrying_bindings: first_carrying,
                     });
                 }
             }

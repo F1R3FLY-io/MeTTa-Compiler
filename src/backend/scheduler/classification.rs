@@ -91,6 +91,7 @@ const PURE_HEADS: &[&str] = &[
     "random-int",
     "random-float",
     "id",
+    "sort-strings",
 ];
 
 /// Check if a head symbol is a known arithmetic/comparison operator.

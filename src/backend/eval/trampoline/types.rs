@@ -756,6 +756,14 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+        /// T04/105 (2026-05-17): HE `metta_call_return` parity.
+        /// Original `(eval <arg>)` expression. When the eval result is
+        /// `NotReducible`, replace with this — HE-bisim: empirical
+        /// `(eval 42)` → `[(eval 42)]`, `(eval (eval 5))` → `[(eval (eval 5))]`.
+        /// `None` for callers that don't need this conversion (e.g. internal
+        /// full-reduction paths). When `Some`, the NotReducible-detect
+        /// branch in `ProcessEvalEval` returns this value.
+        original_eval_expr: Option<MettaValue>,
     },
 
     /// Processing (return value)

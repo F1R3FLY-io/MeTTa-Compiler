@@ -881,7 +881,16 @@ impl SpaceHandle {
 
         match &self.backing {
             SpaceBacking::Owned { space } => {
-                // 1. Match against ground atoms from PathMap (unidirectional)
+                // T03/050 (spec §04.1): an atom stored in `btm`/`wide_btm`
+                // may still contain pattern variables (e.g. user-added via
+                // `(add-atom &kb (rule (condition $c) ...))`) — `add-atom`
+                // routes everything through MORK literal encoding rather
+                // than `variable_atoms`. When stored atom has variables,
+                // use bidirectional matching with freshening; otherwise
+                // keep the unidirectional fast path.
+                let pattern_vars = collect_variables_generic(pattern);
+
+                // 1. Match against atoms from PathMap (bidirectional when needed)
                 {
                     let pm = space.btm.read();
                     let deser_space = deserialization_space(&space.shared_mapping);
@@ -896,7 +905,20 @@ impl SpaceHandle {
                         if let Ok(atom) =
                             mork_encoding::mork_bytes_to_generic_value(path, &deser_space, factory)
                         {
-                            if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                            if atom.has_variables_fast() {
+                                let freshened: V = freshen_variables_generic(&atom, factory);
+                                if let Some(bindings) = space_match_bidirectional_generic(
+                                    pattern,
+                                    &freshened,
+                                    &pattern_vars,
+                                ) {
+                                    let instantiated =
+                                        apply_bindings_generic(template, &bindings, factory);
+                                    for _ in 0..count {
+                                        results.push(instantiated.clone());
+                                    }
+                                }
+                            } else if let Some(bindings) = pattern_match_generic(pattern, &atom) {
                                 let instantiated =
                                     apply_bindings_generic(template, &bindings, factory);
                                 for _ in 0..count {
@@ -907,7 +929,7 @@ impl SpaceHandle {
                     }
                 }
 
-                // 1b. Match against wide atoms from wide_btm (unidirectional)
+                // 1b. Match against wide atoms from wide_btm
                 {
                     let wbtm = space.wide_btm.read();
                     let mut wrz = wbtm.read_zipper();
@@ -922,7 +944,20 @@ impl SpaceHandle {
                                 path_bytes, factory,
                             )
                         {
-                            if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                            if atom.has_variables_fast() {
+                                let freshened: V = freshen_variables_generic(&atom, factory);
+                                if let Some(bindings) = space_match_bidirectional_generic(
+                                    pattern,
+                                    &freshened,
+                                    &pattern_vars,
+                                ) {
+                                    let instantiated =
+                                        apply_bindings_generic(template, &bindings, factory);
+                                    for _ in 0..count {
+                                        results.push(instantiated.clone());
+                                    }
+                                }
+                            } else if let Some(bindings) = pattern_match_generic(pattern, &atom) {
                                 let instantiated =
                                     apply_bindings_generic(template, &bindings, factory);
                                 for _ in 0..count {
@@ -937,7 +972,6 @@ impl SpaceHandle {
                 {
                     let var_atoms = space.variable_atoms.read();
                     if !var_atoms.is_empty() {
-                        let pattern_vars = collect_variables_generic(pattern);
                         for (stored, mult) in var_atoms.iter() {
                             // Freshen stored atom variables to prevent capture
                             let freshened: V = freshen_variables_generic(

@@ -1807,21 +1807,45 @@ fn bidirectional_unify_generic_impl<V: MettaValueTrait + Clone>(
             return false;
         }
 
-        if let Some(l_long) = lhs.as_long() {
-            if let Some(r_long) = rhs.as_long() {
-                if l_long == r_long {
+        // T03/074 (spec §18.6.0 + §04.1.1): Gnd × Gnd unification uses
+        // host-provided equivalence (gv_eq) with HE's `Number` Long↔Float
+        // promotion. Mirrors `numeric_equal_generic`
+        // (`src/backend/models/metta_value.rs:2174-2189`): exact IEEE 754
+        // `==` on Float↔Float (NaN != NaN, +0.0 == -0.0) plus lossless
+        // `as f64` cast for Long↔Float / Float↔Long.
+        match (lhs.as_long(), lhs.as_float(), rhs.as_long(), rhs.as_float()) {
+            (Some(l), _, Some(r), _) => {
+                if l == r {
                     continue;
                 }
+                return false;
             }
+            (_, Some(l), _, Some(r)) => {
+                if l == r {
+                    continue;
+                }
+                return false;
+            }
+            (Some(l), _, _, Some(r)) => {
+                if (l as f64) == r {
+                    continue;
+                }
+                return false;
+            }
+            (_, Some(l), Some(r), _) => {
+                if l == (r as f64) {
+                    continue;
+                }
+                return false;
+            }
+            _ => {}
+        }
+        // If one side is numeric but the other isn't, fail fast — the
+        // promotion table above already handled all numeric pairings.
+        if lhs.as_long().is_some() || lhs.as_float().is_some() {
             return false;
         }
-
-        if let Some(l_float) = lhs.as_float() {
-            if let Some(r_float) = rhs.as_float() {
-                if l_float.to_bits() == r_float.to_bits() {
-                    continue;
-                }
-            }
+        if rhs.as_long().is_some() || rhs.as_float().is_some() {
             return false;
         }
 
@@ -2174,21 +2198,41 @@ where
             return false;
         }
 
-        if let Some(l_long) = lhs.as_long() {
-            if let Some(r_long) = rhs.as_long() {
-                if l_long == r_long {
+        // T03/074 (spec §18.6.0 + §04.1.1): mirror `numeric_equal_generic`
+        // so the class-aware unifier (UnifyMode::Match / UnifyMode::Unify)
+        // also accepts HE's `Number` Long↔Float promotion. See
+        // `bidirectional_unify_generic_impl` above for the rationale.
+        match (lhs.as_long(), lhs.as_float(), rhs.as_long(), rhs.as_float()) {
+            (Some(l), _, Some(r), _) => {
+                if l == r {
                     continue;
                 }
+                return false;
             }
+            (_, Some(l), _, Some(r)) => {
+                if l == r {
+                    continue;
+                }
+                return false;
+            }
+            (Some(l), _, _, Some(r)) => {
+                if (l as f64) == r {
+                    continue;
+                }
+                return false;
+            }
+            (_, Some(l), Some(r), _) => {
+                if l == (r as f64) {
+                    continue;
+                }
+                return false;
+            }
+            _ => {}
+        }
+        if lhs.as_long().is_some() || lhs.as_float().is_some() {
             return false;
         }
-
-        if let Some(l_float) = lhs.as_float() {
-            if let Some(r_float) = rhs.as_float() {
-                if l_float.to_bits() == r_float.to_bits() {
-                    continue;
-                }
-            }
+        if rhs.as_long().is_some() || rhs.as_float().is_some() {
             return false;
         }
 

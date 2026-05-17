@@ -2945,6 +2945,23 @@ where
             }
         }
 
+        // T03/050 (spec §04.1 + HE-bisim): `(match &self pattern template)`
+        // must unify the pattern with each stored atom *bidirectionally* — a
+        // free variable in the *stored* atom can bind against a concrete atom
+        // (or another variable) in the pattern. The unidirectional
+        // `pattern_match_generic` only binds pattern-side variables, so a
+        // fact like `(rule (condition $c) (action $a))` queried with
+        // `(rule (condition C) (action $A))` would silently return zero
+        // matches. We use `space_match_bidirectional_generic` (with stored
+        // atoms freshened to prevent variable capture) whenever the stored
+        // atom has variables; ground atoms keep the cheap unidirectional
+        // fast path. Mirrors `SpaceHandle::match_pattern_generic`
+        // (`src/backend/models/space_handle.rs:869`) for owned spaces.
+        use crate::backend::eval::bindings::collect_variables_generic;
+        use crate::backend::eval::freshening::freshen_variables_generic;
+        use crate::backend::eval::space_match::space_match_bidirectional_generic;
+        let pattern_vars = collect_variables_generic(pattern);
+
         let space = self.create_space();
         let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
@@ -2958,9 +2975,19 @@ where
             if let Ok(atom) =
                 mork_bytes_to_generic_value::<V, F, Multiplicity>(path_bytes, &space, &self.factory)
             {
-                // Direct pattern matching on V (no conversion)
-                if let Some(bindings) = pattern_match_generic(pattern, &atom) {
-                    // Direct template instantiation on V (no conversion)
+                if atom.has_variables_fast() {
+                    // Stored atom has variables — bidirectional match with
+                    // freshening (HE-bisim for variable-containing facts).
+                    let freshened = freshen_variables_generic(&atom, &self.factory);
+                    if let Some(bindings) =
+                        space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
+                    {
+                        let instantiated =
+                            apply_bindings_generic(template, &bindings, &self.factory);
+                        results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                    }
+                } else if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                    // Ground atom — fast unidirectional path.
                     let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
                     results.push(MultiplicityMatch::new(instantiated, multiplicity));
                 }
@@ -2977,7 +3004,16 @@ where
                 let path_bytes = rz.path();
                 let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
                 if let Ok(atom) = wide_bytes_to_generic_value::<V, F>(path_bytes, &self.factory) {
-                    if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                    if atom.has_variables_fast() {
+                        let freshened = freshen_variables_generic(&atom, &self.factory);
+                        if let Some(bindings) =
+                            space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
+                        {
+                            let instantiated =
+                                apply_bindings_generic(template, &bindings, &self.factory);
+                            results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                        }
+                    } else if let Some(bindings) = pattern_match_generic(pattern, &atom) {
                         let instantiated =
                             apply_bindings_generic(template, &bindings, &self.factory);
                         results.push(MultiplicityMatch::new(instantiated, multiplicity));
@@ -3014,6 +3050,14 @@ where
             }
         }
 
+        // T03/050 consistency: existence check must agree with `match_space`
+        // about which stored atoms "match" — bidirectional unification when
+        // the stored atom has variables, unidirectional fast path otherwise.
+        use crate::backend::eval::bindings::collect_variables_generic;
+        use crate::backend::eval::freshening::freshen_variables_generic;
+        use crate::backend::eval::space_match::space_match_bidirectional_generic;
+        let pattern_vars = collect_variables_generic(pattern);
+
         let space = self.create_space();
         let mut rz = space.btm.read_zipper();
 
@@ -3024,8 +3068,14 @@ where
             if let Ok(atom) =
                 mork_bytes_to_generic_value::<V, F, Multiplicity>(path_bytes, &space, &self.factory)
             {
-                // Direct pattern matching on V (no conversion)
-                if pattern_match_generic(pattern, &atom).is_some() {
+                if atom.has_variables_fast() {
+                    let freshened = freshen_variables_generic(&atom, &self.factory);
+                    if space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
+                        .is_some()
+                    {
+                        return true;
+                    }
+                } else if pattern_match_generic(pattern, &atom).is_some() {
                     return true;
                 }
             }
@@ -3040,7 +3090,14 @@ where
             while wrz.to_next_val() {
                 let path_bytes = wrz.path();
                 if let Ok(atom) = wide_bytes_to_generic_value::<V, F>(path_bytes, &self.factory) {
-                    if pattern_match_generic(pattern, &atom).is_some() {
+                    if atom.has_variables_fast() {
+                        let freshened = freshen_variables_generic(&atom, &self.factory);
+                        if space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
+                            .is_some()
+                        {
+                            return true;
+                        }
+                    } else if pattern_match_generic(pattern, &atom).is_some() {
                         return true;
                     }
                 }

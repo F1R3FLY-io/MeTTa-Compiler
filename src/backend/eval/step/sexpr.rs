@@ -601,6 +601,51 @@ where
                     };
                 }
 
+                // T04/050 (2026-05-17): evalc — explicit-space variant of eval.
+                //
+                // HE source: `hyperon-experimental/lib/src/metta/interpreter.rs::evalc`
+                // at line 478. `evalc(stack, bindings)` extracts `(_op, to_eval, space)`
+                // and delegates to `eval_impl(to_eval, space, ...)` — same semantics
+                // as `eval` but uses the explicit `space` arg for rule lookup
+                // instead of the interpreter's `context.space`.
+                //
+                // MeTTaTron desugars `(evalc atom space)` to `(match space (= atom $body) $body)`
+                // followed by `(eval $body)` for each match. For the T04/050 test:
+                //   `!(evalc (bar) &s)` where `&s` has `(= (bar) 42)`
+                //   → `(match &s (= (bar) $body) $body)` → 42 (from the rule's RHS).
+                //
+                // Match returns the RHS values (already evaluated by the rule
+                // mechanism), so a subsequent `eval` is unnecessary for the
+                // common case. We use a direct desugar via the existing
+                // StartMatch infrastructure (which resolves the space arg
+                // and dispatches against the resolved SpaceHandle).
+                "evalc" => {
+                    if items.len() != 3 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "evalc requires exactly 2 arguments, got {}. Usage: (evalc atom space)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let f = ctx.factory();
+                    let atom = items[1].clone();
+                    let space_arg = items[2].clone();
+                    let body_var = f.atom("$__ec_body");
+                    // Build pattern (= <atom> $__ec_body) and template $__ec_body.
+                    let pattern = f.sexpr(vec![f.atom("="), atom, body_var.clone()]);
+                    return GenericEvalStep::StartMatch {
+                        space_arg,
+                        pattern,
+                        template: body_var,
+                        env,
+                        depth,
+                    };
+                }
+
                 // capture - HE-faithful full-reduction.
                 //
                 // HE source: `hyperon-experimental/lib/src/metta/runner/stdlib/core.rs:224-254`.

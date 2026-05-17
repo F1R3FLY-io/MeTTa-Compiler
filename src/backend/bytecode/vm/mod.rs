@@ -2950,20 +2950,48 @@ where
         //   3. SExpr → arrow return type lookup via env
         //   4. Fallback `%Undefined%` for untyped atoms
         //
-        // For nondeterministic results (multiple type assertions), VM pushes
-        // the first; the T0 trampoline path handles full nondet enumeration.
+        // T04/068 (2026-05-17): HE-bisimilar nondeterministic enumeration.
+        // When a symbol has multiple `(: name T)` assertions, HE returns
+        // every type via superpose-style fan-out. The VM mirrors that by
+        // pushing the first type onto the value stack and registering the
+        // remaining alternatives as a `GenericChoicePoint` (same pattern as
+        // `op_eval_superpose`). On backtrack each remaining alternative is
+        // restored, yielding the full type set as separate results.
         if let Some(env) = self.env.as_ref() {
             use crate::backend::eval::types::infer_types_generic;
             let factory = self.factory.clone();
             let types = infer_types_generic(&value, &factory, env);
-            // Push first result (deterministic representative).
-            // Empty results → %Undefined% (HE parity fallback).
-            let result = if types.is_empty() {
-                self.make_atom("%Undefined%")
+
+            if types.is_empty() {
+                // HE parity fallback: untyped atom → %Undefined%.
+                self.push(self.make_atom("%Undefined%"));
             } else {
-                types[0].clone()
-            };
-            self.push(result);
+                // Fan out alternatives via choice points so the VM enumerates
+                // all declared types under nondet (HE superpose semantics).
+                if types.len() > 1 {
+                    let remaining: Vec<
+                        GenericAlternative<V, GenericBytecodeChunk<V>>,
+                    > = types[1..]
+                        .iter()
+                        .cloned()
+                        .map(GenericAlternative::Value)
+                        .collect();
+                    self.choice_points.push(GenericChoicePoint {
+                        value_stack_height: self.value_stack.len(),
+                        call_stack_height: self.call_stack.len(),
+                        bindings_stack_height: self.bindings_stack.len(),
+                        ip: self.ip,
+                        chunk: Arc::clone(&self.chunk),
+                        alternatives: remaining,
+                        saved_unreduced: self.unreduced,
+                        trail_height: self.trail.len(),
+                        saved_current_bindings: self.current_bindings.clone(),
+                        locals_height: self.locals.len(),
+                        locals_base_at_cp: self.locals_base,
+                    });
+                }
+                self.push(types.into_iter().next().expect("non-empty checked"));
+            }
         } else {
             // No env attached — fall back to syntactic type_name() (legacy path
             // for tests/utilities that construct a VM without an environment).

@@ -362,12 +362,17 @@ fn max_parallel_depth() -> u32 {
                     .ok()
                     .and_then(|s| s.parse::<u32>().ok())
             })
-            // Phase 10.C (2026-05-17): default raised from 3 to 8 (the
-            // `MAX_DEPTH_LEVELS` ceiling). The new
-            // `DEPTH_QUOTA_PERCENTS` schedule allocates quota out to
-            // depth 7, but the depth cap was clamping fan-out before
-            // those quotas could be consumed. Now they can.
-            .unwrap_or(MAX_DEPTH_LEVELS as u32)
+            // Phase 10.H (2026-05-17): default raised from 8 → u32::MAX
+            // (effectively no cap). The per-depth quota schedule at
+            // `DEPTH_QUOTA_PERCENTS` clamps to the deepest level for
+            // depths ≥ MAX_DEPTH_LEVELS, so the hard cap was redundant
+            // and forced deep-recursion workloads (PLN.Derive nests to
+            // depth 17+) to lose ALL parallelism past depth 7. Now the
+            // 1% quota at depth 7 governs everything from depth 7
+            // upward, while the budget pool naturally throttles total
+            // fan-out. Set `METTATRON_PARALLEL_FANOUT_DEPTH=8` to
+            // restore the Phase 10.C cap.
+            .unwrap_or(u32::MAX)
     })
 }
 
@@ -394,18 +399,68 @@ fn min_parallel_branches() -> usize {
 fn depth_budgets() -> &'static DepthBudgets {
     DEPTH_BUDGETS.get_or_init(|| {
         let cpus = num_cpus::get() as u32;
-        let total = cpus.saturating_mul(2).min(128);
+        // Phase 10.I (2026-05-17): total budget raised from cpus*2
+        // → cpus*4 (capped at 128). The old `cpus*2` produced only
+        // 8 slots on a 4-CPU machine, so the 1% quota at depth 7
+        // floored at a single slot — serializing depth-7+ dispatches.
+        // The factor of 4 is the empirical sweet spot: cpus*8 OOMed
+        // Robot.metta within 13 s by allowing 240+ in-flight items,
+        // while cpus*2 starved deep depths.
+        let total = cpus.saturating_mul(4).min(128).max(16);
 
         // Initialize per-depth quotas. Can't use array init with AtomicU32
         // directly, so initialize each element.
+        //
+        // Phase 10.I (2026-05-17): floor lifted from 1 → 2 for active
+        // depth levels — deep PLN.Derive iterations need at least
+        // 2 concurrent dispatches per depth to overlap with the
+        // sequential parent merge of the previous iteration.
         let quotas = std::array::from_fn(|i| {
             let pct = DEPTH_QUOTA_PERCENTS[i];
             let quota = (total * pct) / 100;
-            // Ensure at least 1 slot for active depth levels (depths 0-3)
-            AtomicU32::new(if pct > 0 { quota.max(1) } else { 0 })
+            AtomicU32::new(if pct > 0 { quota.max(2) } else { 0 })
         });
 
         DepthBudgets { quotas, total }
+    })
+}
+
+/// Phase 10.F (2026-05-17) — per-cause rejection counters for
+/// `try_acquire_budget`. Atomically incremented at the call site
+/// when the gate fires. Use the snapshot helpers
+/// `budget_rejection_*_count()` for telemetry / lint reports.
+static BUDGET_REJ_QUEUE_PRESSURE: AtomicU64 = AtomicU64::new(0);
+static BUDGET_REJ_DEPTH_QUOTA_EMPTY: AtomicU64 = AtomicU64::new(0);
+static BUDGET_GRANTED_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Snapshot of per-cause rejection / grant counters. Returned as
+/// `(queue_pressure, depth_quota_empty, granted)`.
+#[allow(dead_code)]
+pub(crate) fn budget_counters_snapshot() -> (u64, u64, u64) {
+    (
+        BUDGET_REJ_QUEUE_PRESSURE.load(Ordering::Relaxed),
+        BUDGET_REJ_DEPTH_QUOTA_EMPTY.load(Ordering::Relaxed),
+        BUDGET_GRANTED_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+/// Phase 10.F (2026-05-17): queue-pressure factor, cached from
+/// `METTATRON_QUEUE_PRESSURE_FACTOR`. Default loosened from the
+/// historical `2` to `4` — under Phase 10.A-G the dispatch sites can
+/// saturate the queue legitimately with short, deep tasks. The
+/// factor of 4 is the empirical sweet spot: a factor of 8 OOMed
+/// Robot.metta within 13 s, while 2 rejected useful dispatches.
+/// Set to `2` to restore the pre-Phase-10 behavior.
+static QUEUE_PRESSURE_FACTOR: OnceLock<u32> = OnceLock::new();
+
+#[inline]
+fn queue_pressure_factor() -> u32 {
+    *QUEUE_PRESSURE_FACTOR.get_or_init(|| {
+        std::env::var("METTATRON_QUEUE_PRESSURE_FACTOR")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or(4)
     })
 }
 
@@ -416,7 +471,9 @@ fn depth_budgets() -> &'static DepthBudgets {
 /// starving deeper levels.
 ///
 /// Budget gate: when the work pool queue is saturated
-/// (`queue_depth > active_workers * 2`), no budget is granted.
+/// (`queue_depth > active_workers * queue_pressure_factor()`), no
+/// budget is granted. Factor defaulted 2 → MAX_DEPTH_LEVELS (8) in
+/// Phase 10.F.
 ///
 /// Returns actual slots acquired (0..=N).
 fn try_acquire_budget(n: u32, depth: u32) -> u32 {
@@ -449,7 +506,8 @@ fn try_acquire_budget(n: u32, depth: u32) -> u32 {
     let pool = global_eval_pool();
     let queue_depth = pool.queue_len();
     let active = pool.active_workers();
-    if active > 0 && queue_depth > active * 2 {
+    if active > 0 && queue_depth > active * queue_pressure_factor() as usize {
+        BUDGET_REJ_QUEUE_PRESSURE.fetch_add(1, Ordering::Relaxed);
         return 0;
     }
 
@@ -460,6 +518,7 @@ fn try_acquire_budget(n: u32, depth: u32) -> u32 {
     loop {
         let granted = n.min(current);
         if granted == 0 {
+            BUDGET_REJ_DEPTH_QUOTA_EMPTY.fetch_add(1, Ordering::Relaxed);
             return 0;
         }
         match quota.compare_exchange_weak(
@@ -468,7 +527,10 @@ fn try_acquire_budget(n: u32, depth: u32) -> u32 {
             Ordering::AcqRel,
             Ordering::Relaxed,
         ) {
-            Ok(_) => return granted,
+            Ok(_) => {
+                BUDGET_GRANTED_COUNT.fetch_add(granted as u64, Ordering::Relaxed);
+                return granted;
+            }
             Err(actual) => current = actual,
         }
     }

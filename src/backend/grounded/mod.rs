@@ -23,7 +23,10 @@
 
 pub mod arithmetic;
 pub mod comparison;
+pub mod fileio;
+pub mod json;
 pub mod logical;
+pub mod random;
 pub mod registry;
 pub mod state;
 pub mod string;
@@ -37,7 +40,15 @@ use super::models::MettaValue;
 // Re-export operation types
 pub use arithmetic::{AbsOp, AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp};
 pub use comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
+pub use fileio::{
+    FileGetSizeOp, FileOpenOp, FileReadExactOp, FileReadToStringOp, FileSeekOp, FileWriteOp,
+};
+pub use json::{JsonDecodeOp, JsonEncodeOp};
 pub use logical::{AndOp, NotOp, OrOp, XorOp};
+pub use random::{
+    FlipOp, NewRandomGeneratorOp, RandomFloatOp, RandomIntOp, ResetRandomGeneratorOp,
+    SetRandomSeedOp,
+};
 pub use registry::{execute_grounded_op, get_grounded_registry, has_grounded_op, GroundedRegistry};
 pub use state::{find_error, friendly_type_name, GroundedState, GroundedWork};
 pub use string::StringToCharsOp;

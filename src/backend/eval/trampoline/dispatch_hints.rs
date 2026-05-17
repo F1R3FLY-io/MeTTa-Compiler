@@ -356,6 +356,15 @@ fn is_impure_head(head: &str) -> bool {
             | "assertEqualToResult" | "assertAlphaEqualToResult"
             | "assertEqualToResultMsg" | "assertAlphaEqualToResultMsg"
             | "exec"
+            // T07/021-022: fileio + random ops mutate global registries
+            // and/or hit the filesystem. Memoizing them would erase ordering
+            // semantics for back-to-back calls (e.g. reading after writing
+            // the same file) and would defeat seeded-RNG determinism (a
+            // memoized random-int call would always return the same value).
+            | "file-open!" | "file-read-to-string!" | "file-write!"
+            | "file-seek!" | "file-read-exact!" | "file-get-size!"
+            | "new-random-generator" | "random-int" | "random-float"
+            | "set-random-seed" | "reset-random-generator" | "flip"
     )
 }
 
@@ -1013,6 +1022,14 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "sort-strings"
         // === Meta / polymorphic operations (T06/037 — HE-aligned) ===
         | "id"
+        // === JSON module (T07/019-020, HE-aligned: `json` builtin) ===
+        | "json-encode" | "json-decode"
+        // === FileIO module (T07/021, HE-aligned: `fileio` builtin) ===
+        | "file-open!" | "file-read-to-string!" | "file-write!"
+        | "file-seek!" | "file-read-exact!" | "file-get-size!"
+        // === Random module (T07/022, HE-aligned: `random` builtin) ===
+        | "new-random-generator" | "random-int" | "random-float"
+        | "set-random-seed" | "reset-random-generator" | "flip"
     )
 }
 

@@ -161,6 +161,13 @@ liblevenshtein = { version = "^0.7", features = ["pathmap-backend", "simd"] }
 toml = "0.8"
 # Serde - Serialization for package manifest
 serde = { version = "1.0", features = ["derive"] }
+# serde_json - JSON encoding/decoding for the `json` builtin module
+# (HE-bisim: matches hyperon-experimental/lib/src/metta/runner/builtin_mods/json.rs)
+serde_json = "1.0"
+# rand - Random number generator for the `random` builtin module
+# Uses StdRng (ChaCha-based) seeded via `seed_from_u64` for HE-deterministic
+# behavior when the seed is provided (matches hyperon-experimental/lib/src/metta/runner/builtin_mods/random.rs).
+rand = "0.8"
 # hex - Byte encoding for MORK serialization
 hex = "0.4"
 # itoa - Fast integer-to-string formatting on stack (no heap allocation)

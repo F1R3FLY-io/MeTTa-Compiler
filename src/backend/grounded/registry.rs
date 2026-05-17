@@ -38,7 +38,15 @@ use std::collections::HashMap;
 
 use super::arithmetic::{AbsOp, AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp};
 use super::comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
+use super::fileio::{
+    FileGetSizeOp, FileOpenOp, FileReadExactOp, FileReadToStringOp, FileSeekOp, FileWriteOp,
+};
+use super::json::{JsonDecodeOp, JsonEncodeOp};
 use super::logical::{AndOp, NotOp, OrOp, XorOp};
+use super::random::{
+    FlipOp, NewRandomGeneratorOp, RandomFloatOp, RandomIntOp, ResetRandomGeneratorOp,
+    SetRandomSeedOp,
+};
 use super::state::{GroundedState, GroundedWork};
 use super::string::StringToCharsOp;
 use super::traits::GroundedOperationTCO;
@@ -102,6 +110,23 @@ where
         "clamp" => Some(ClampOp.execute_step(state, factory)),
         // String operations (Workstream X.5a)
         "stringToChars" => Some(StringToCharsOp.execute_step(state, factory)),
+        // JSON module (T07/019-020, HE-aligned: `json` builtin)
+        "json-encode" => Some(JsonEncodeOp.execute_step(state, factory)),
+        "json-decode" => Some(JsonDecodeOp.execute_step(state, factory)),
+        // FileIO module (T07/021, HE-aligned: `fileio` builtin)
+        "file-open!" => Some(FileOpenOp.execute_step(state, factory)),
+        "file-read-to-string!" => Some(FileReadToStringOp.execute_step(state, factory)),
+        "file-write!" => Some(FileWriteOp.execute_step(state, factory)),
+        "file-seek!" => Some(FileSeekOp.execute_step(state, factory)),
+        "file-read-exact!" => Some(FileReadExactOp.execute_step(state, factory)),
+        "file-get-size!" => Some(FileGetSizeOp.execute_step(state, factory)),
+        // Random module (T07/022, HE-aligned: `random` builtin)
+        "new-random-generator" => Some(NewRandomGeneratorOp.execute_step(state, factory)),
+        "random-int" => Some(RandomIntOp.execute_step(state, factory)),
+        "random-float" => Some(RandomFloatOp.execute_step(state, factory)),
+        "set-random-seed" => Some(SetRandomSeedOp.execute_step(state, factory)),
+        "reset-random-generator" => Some(ResetRandomGeneratorOp.execute_step(state, factory)),
+        "flip" => Some(FlipOp.execute_step(state, factory)),
         // Unknown operation - not a grounded op
         _ => None,
     }
@@ -142,6 +167,23 @@ pub fn has_grounded_op(name: &str) -> bool {
             | "/safe"
             | "clamp"
             | "stringToChars"
+            // JSON module (T07/019-020)
+            | "json-encode"
+            | "json-decode"
+            // FileIO module (T07/021)
+            | "file-open!"
+            | "file-read-to-string!"
+            | "file-write!"
+            | "file-seek!"
+            | "file-read-exact!"
+            | "file-get-size!"
+            // Random module (T07/022)
+            | "new-random-generator"
+            | "random-int"
+            | "random-float"
+            | "set-random-seed"
+            | "reset-random-generator"
+            | "flip"
     )
 }
 

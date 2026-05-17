@@ -307,6 +307,111 @@ static BUILTIN_SIGNATURES: LazyLock<Vec<BuiltinSignature>> = LazyLock::new(|| {
             max_arity: 1,
             type_sig: arrow(vec![String], Expression),
         },
+        // ====================================================================
+        // JSON module (T07/019-020) — `json` builtin module.
+        // HE source: lib/src/metta/runner/builtin_mods/json.rs:43,48 (token
+        // registration of `json-encode` and `json-decode` with signatures
+        // `(-> Atom String)` and `(-> String Atom)` respectively).
+        // ====================================================================
+        BuiltinSignature {
+            name: "json-encode",
+            min_arity: 1,
+            max_arity: 1,
+            type_sig: arrow(vec![Undefined], String),
+        },
+        BuiltinSignature {
+            name: "json-decode",
+            min_arity: 1,
+            max_arity: 1,
+            type_sig: arrow(vec![String], Undefined),
+        },
+        // ====================================================================
+        // FileIO module (T07/021) — `fileio` builtin module.
+        // HE source: lib/src/metta/runner/builtin_mods/fileio.rs:125-153 (token
+        // registrations for file-open!, file-read-to-string!, file-write!,
+        // file-seek!, file-read-exact!, file-get-size!).
+        // FileHandle is modeled as Undefined (it's an opaque grounded atom).
+        // ====================================================================
+        BuiltinSignature {
+            name: "file-open!",
+            min_arity: 2,
+            max_arity: 2,
+            type_sig: arrow(vec![String, String], Undefined),
+        },
+        BuiltinSignature {
+            name: "file-read-to-string!",
+            min_arity: 1,
+            max_arity: 1,
+            type_sig: arrow(vec![Undefined], String),
+        },
+        BuiltinSignature {
+            name: "file-write!",
+            min_arity: 2,
+            max_arity: 2,
+            type_sig: arrow(vec![Undefined, String], Unit),
+        },
+        BuiltinSignature {
+            name: "file-seek!",
+            min_arity: 2,
+            max_arity: 2,
+            type_sig: arrow(vec![Undefined, Number], Unit),
+        },
+        BuiltinSignature {
+            name: "file-read-exact!",
+            min_arity: 2,
+            max_arity: 2,
+            type_sig: arrow(vec![Undefined, Number], String),
+        },
+        BuiltinSignature {
+            name: "file-get-size!",
+            min_arity: 1,
+            max_arity: 1,
+            type_sig: arrow(vec![Undefined], Number),
+        },
+        // ====================================================================
+        // Random module (T07/022) — `random` builtin module.
+        // HE source: lib/src/metta/runner/builtin_mods/random.rs:97-126 (token
+        // registrations for random-int, random-float, set-random-seed,
+        // new-random-generator, reset-random-generator, flip).
+        // RandomGenerator is modeled as Undefined (it's an opaque grounded
+        // atom).
+        // ====================================================================
+        BuiltinSignature {
+            name: "new-random-generator",
+            min_arity: 1,
+            max_arity: 1,
+            type_sig: arrow(vec![Number], Undefined),
+        },
+        BuiltinSignature {
+            name: "random-int",
+            min_arity: 3,
+            max_arity: 3,
+            type_sig: arrow(vec![Undefined, Number, Number], Number),
+        },
+        BuiltinSignature {
+            name: "random-float",
+            min_arity: 3,
+            max_arity: 3,
+            type_sig: arrow(vec![Undefined, Number, Number], Number),
+        },
+        BuiltinSignature {
+            name: "set-random-seed",
+            min_arity: 2,
+            max_arity: 2,
+            type_sig: arrow(vec![Undefined, Number], Unit),
+        },
+        BuiltinSignature {
+            name: "reset-random-generator",
+            min_arity: 1,
+            max_arity: 1,
+            type_sig: arrow(vec![Undefined], Unit),
+        },
+        BuiltinSignature {
+            name: "flip",
+            min_arity: 0,
+            max_arity: 0,
+            type_sig: arrow(vec![], Bool),
+        },
         // Binary math
         BuiltinSignature {
             name: "pow",

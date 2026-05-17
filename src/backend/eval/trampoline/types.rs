@@ -214,6 +214,18 @@ pub struct ParallelDispatchHandle {
     /// See `ParallelDispatchRootProvider`'s doc for the race this closes.
     #[allow(dead_code)]
     pub(crate) _root_provider_arc: Arc<ParallelDispatchRootProvider>,
+    /// Phase 10.A — Stage 1e closure: tracked-vars hint captured from the
+    /// parent thread's `BINDING_CAPTURE_STACK` at dispatch construction.
+    /// Workers re-establish a shadow capture frame from this hint so
+    /// `in_collapse_bind_scope()` returns `true` on the worker side and
+    /// `active_tracked_vars()` matches the parent's union. None when no
+    /// collapse-bind is active on the parent.
+    ///
+    /// Threading this through unblocks parallel dispatch under the
+    /// dominant `in_collapse_bind_scope() → 0` veto (eval_loop.rs:408)
+    /// which previously forced all four dispatch sites sequential inside
+    /// PLN's `(let $derivations (collapse ...) ...)` body.
+    pub tracked_vars_hint: Option<Arc<SmallVec<[&'static str; 4]>>>,
 }
 
 impl std::fmt::Debug for ParallelDispatchHandle {
@@ -325,6 +337,8 @@ pub struct ParallelCollapseDispatchHandle {
     /// See `ParallelDispatchHandle::_root_provider_arc`.
     #[allow(dead_code)]
     pub(crate) _root_provider_arc: Arc<ParallelCollapseRootProvider>,
+    /// See `ParallelDispatchHandle::tracked_vars_hint` (Phase 10.A).
+    pub tracked_vars_hint: Option<Arc<SmallVec<[&'static str; 4]>>>,
 }
 
 impl std::fmt::Debug for ParallelCollapseDispatchHandle {

@@ -32,7 +32,53 @@ const GROUNDED_ARITH_OPS: &[&str] = &[
     "min-atom", "max-atom", "abs", "mod", "pow", "sqrt", "log",
 ];
 
-/// Known impure (side-effecting) head symbols.
+/// Phase 10.D (2026-05-17) — split of the historical `IMPURE_HEADS`
+/// into two semantically distinct classes:
+///
+/// 1. **State-mutating** heads — operations whose execution order can
+///    produce different evaluator state and therefore can break
+///    HE-bisim correctness under parallel dispatch (e.g.,
+///    `add-atom`/`remove-atom` racing on the same space, `bind!`
+///    racing on the same name). These MUST keep the body-impurity
+///    veto on parallel dispatch.
+///
+/// 2. **I/O** heads — operations whose execution order affects
+///    OBSERVABLE output (`println!`, `print!`) but does NOT affect
+///    evaluator state. HE-bisim treats parallel I/O as unordered
+///    (any interleaving is correct), so these are safe to parallel-
+///    dispatch by default. Users who depend on print ordering can
+///    set `METTATRON_STRICT_PRINT_ORDER=1` to restore the wider veto.
+///
+/// `IMPURE_HEADS` remains the union — used by the cost-class
+/// scheduler (`classify_heuristic` → `CostClass::ImpureSequential`)
+/// where any impurity, including I/O, is a sequential-affinity hint
+/// regardless of bisim correctness.
+const STATE_MUTATING_HEADS: &[&str] = &[
+    "add-atom",
+    "remove-atom",
+    "change-state!",
+    "get-state",
+    "sealed",
+    "import!",
+    "include",
+    "bind!",
+    "pragma!",
+    "new-space",
+    "new-state",
+];
+
+const IO_HEADS: &[&str] = &[
+    "println!",
+    "print!",
+    "eprintln!",
+    "eprint!",
+    "trace!",
+    "format",
+];
+
+/// Known impure (side-effecting) head symbols — the union of
+/// `STATE_MUTATING_HEADS` and `IO_HEADS`. Retained for the cost-class
+/// scheduler and for callers that want the historical wide check.
 const IMPURE_HEADS: &[&str] = &[
     "add-atom",
     "remove-atom",
@@ -40,7 +86,10 @@ const IMPURE_HEADS: &[&str] = &[
     "get-state",
     "println!",
     "print!",
+    "eprintln!",
+    "eprint!",
     "trace!",
+    "format",
     "sealed",
     "import!",
     "include",
@@ -100,10 +149,25 @@ fn is_arithmetic_head(head: &str) -> bool {
     GROUNDED_ARITH_OPS.iter().any(|&op| op == head)
 }
 
-/// Check if a head symbol is known to be impure.
+/// Check if a head symbol is known to be impure (state-mutating OR I/O).
 #[inline]
 fn is_impure_head(head: &str) -> bool {
     IMPURE_HEADS.iter().any(|&op| op == head)
+}
+
+/// Check if a head symbol mutates evaluator state (HE-bisim
+/// correctness blocker under parallel dispatch). Subset of
+/// `IMPURE_HEADS` per Phase 10.D split.
+#[inline]
+fn is_state_mutating_head(head: &str) -> bool {
+    STATE_MUTATING_HEADS.iter().any(|&op| op == head)
+}
+
+/// Check if a head symbol is an I/O head whose order affects observable
+/// output but not evaluator state. Subset of `IMPURE_HEADS`.
+#[inline]
+fn is_io_head(head: &str) -> bool {
+    IO_HEADS.iter().any(|&op| op == head)
 }
 
 /// Check if a head symbol is known to be pure.
@@ -156,6 +220,91 @@ pub fn body_contains_impure(body: &MettaValue, max_depth: u32) -> bool {
         }
     }
     false
+}
+
+/// Phase 10.D (2026-05-17): bisim-correctness-only impurity check used
+/// at the 3 parallel-dispatch gates (rule-match, ProcessLet body,
+/// StartAmb/superpose). Strictly tighter than `body_contains_impure`
+/// — it returns `true` only for `STATE_MUTATING_HEADS` (the subset
+/// that can race on evaluator state and break HE-bisim).
+///
+/// `IO_HEADS` (println!/print!/trace!) are NOT detected by this
+/// function, so PLN bodies like `(progn (println! ...) (PLN.Derive ...))`
+/// remain parallel-eligible. Users who depend on exact print order can
+/// set `METTATRON_STRICT_PRINT_ORDER=1` — see
+/// `body_blocks_parallel_dispatch` below.
+pub fn body_contains_state_mutation(body: &MettaValue, max_depth: u32) -> bool {
+    if max_depth == 0 {
+        return false;
+    }
+    if let Some(items) = body.as_sexpr() {
+        if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+            if is_state_mutating_head(head) {
+                return true;
+            }
+        }
+        for child in items {
+            if body_contains_state_mutation(child, max_depth - 1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Phase 10.D (2026-05-17): I/O-head detector for the strict-print
+/// order opt-in.
+pub fn body_contains_io(body: &MettaValue, max_depth: u32) -> bool {
+    if max_depth == 0 {
+        return false;
+    }
+    if let Some(items) = body.as_sexpr() {
+        if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+            if is_io_head(head) {
+                return true;
+            }
+        }
+        for child in items {
+            if body_contains_io(child, max_depth - 1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Phase 10.D (2026-05-17): unified parallel-dispatch veto used by
+/// `dispatch_rule_matches`, `ProcessLet` body fan-out, and
+/// `StartAmb`/superpose. Returns `true` if the body contains a head
+/// that would make parallel dispatch incorrect or that the user has
+/// opted into treating as ordered.
+///
+/// Default: state-mutation only (HE-bisim correctness). With
+/// `METTATRON_STRICT_PRINT_ORDER=1`, ALSO returns `true` for bodies
+/// containing I/O heads (restores the historical
+/// `body_contains_impure` behavior). The env var is sampled once
+/// per process via `OnceLock`.
+pub fn body_blocks_parallel_dispatch(body: &MettaValue, max_depth: u32) -> bool {
+    if body_contains_state_mutation(body, max_depth) {
+        return true;
+    }
+    if strict_print_order() && body_contains_io(body, max_depth) {
+        return true;
+    }
+    false
+}
+
+/// Cached value of `METTATRON_STRICT_PRINT_ORDER` — when truthy, the
+/// parallel-dispatch veto also treats I/O heads as ordering-relevant.
+fn strict_print_order() -> bool {
+    use std::sync::OnceLock;
+    static STRICT: OnceLock<bool> = OnceLock::new();
+    *STRICT.get_or_init(|| {
+        std::env::var("METTATRON_STRICT_PRINT_ORDER")
+            .ok()
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+            .unwrap_or(false)
+    })
 }
 
 /// Recursively check if an expression's children contain calls to unknown

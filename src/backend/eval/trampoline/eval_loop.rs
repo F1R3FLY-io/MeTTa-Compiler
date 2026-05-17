@@ -300,10 +300,22 @@ fn hash_continuation_context(continuations: &[Continuation]) -> u64 {
 const MAX_DEPTH_LEVELS: usize = 8;
 
 /// Per-depth budget quotas as percentage of total budget.
-/// Depth 0: 50%, Depth 1: 30%, Depth 2: 15%, Depth 3+: 5%.
-/// This replaces the exponential `4^(-depth)` decay with configurable quotas,
-/// allowing inner forks to exploit more parallelism when outer levels are idle.
-const DEPTH_QUOTA_PERCENTS: [u32; MAX_DEPTH_LEVELS] = [50, 30, 15, 5, 0, 0, 0, 0];
+///
+/// Phase 10.C (2026-05-17): smoothly decreasing schedule replacing the
+/// previous `[50, 30, 15, 5, 0, 0, 0, 0]`. The old schedule actively
+/// starved depths 4-7 even when worker capacity existed, but PLN.Derive
+/// (and similar deeply-nested workloads) routinely fork at depths 4-7.
+/// The new schedule
+///
+///   `[40, 25, 15, 8, 5, 4, 2, 1]`
+///
+/// keeps the bulk at shallow depths (where wider fan-outs are most
+/// common) but never zeroes deeper levels — sums to 100%.
+///
+/// This replaces the exponential `4^(-depth)` decay with configurable
+/// quotas, allowing inner forks to exploit more parallelism when outer
+/// levels are idle.
+const DEPTH_QUOTA_PERCENTS: [u32; MAX_DEPTH_LEVELS] = [40, 25, 15, 8, 5, 4, 2, 1];
 
 /// Per-depth parallel branch budget quotas (Phase 3.6).
 ///
@@ -350,7 +362,12 @@ fn max_parallel_depth() -> u32 {
                     .ok()
                     .and_then(|s| s.parse::<u32>().ok())
             })
-            .unwrap_or(3)
+            // Phase 10.C (2026-05-17): default raised from 3 to 8 (the
+            // `MAX_DEPTH_LEVELS` ceiling). The new
+            // `DEPTH_QUOTA_PERCENTS` schedule allocates quota out to
+            // depth 7, but the depth cap was clamping fan-out before
+            // those quotas could be consumed. Now they can.
+            .unwrap_or(MAX_DEPTH_LEVELS as u32)
     })
 }
 
@@ -366,7 +383,11 @@ fn min_parallel_branches() -> usize {
         std::env::var("METTATRON_MIN_PARALLEL_BRANCHES")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(4)
+            // Phase 10.B (2026-05-17): default lowered from 4 → 2. PLN's
+            // `(superpose ((case (|- $x $y) ...) (case (|- $y $x) ...)))`
+            // pattern is exactly 2 branches; 4 forced it sequential. Set
+            // `METTATRON_MIN_PARALLEL_BRANCHES=4` to restore old behavior.
+            .unwrap_or(2)
     })
 }
 
@@ -399,15 +420,28 @@ fn depth_budgets() -> &'static DepthBudgets {
 ///
 /// Returns actual slots acquired (0..=N).
 fn try_acquire_budget(n: u32, depth: u32) -> u32 {
-    // Collapse-bind scope gate: the BINDING_CAPTURE_STACK is a thread-local,
-    // so parallel worker threads cannot see the tracked-variable set of the
-    // main thread. Rule-match projection would then observe an empty set
-    // and strip bindings that the caller's collapse-bind expected to
-    // capture. Force sequential dispatch whenever a collapse-bind scope is
-    // active.
-    if in_collapse_bind_scope() {
-        return 0;
-    }
+    // Phase 10.A — Stage 1e closure (2026-05-17):
+    //
+    // The historical `in_collapse_bind_scope() → 0` veto used to live
+    // here. Rationale was: BINDING_CAPTURE_STACK is a thread-local, so
+    // workers couldn't see the parent's tracked-variable set and
+    // rule-match projection would observe an empty set and strip
+    // bindings that the caller's collapse-bind expected to capture.
+    //
+    // That veto is no longer needed: all 5 callers of this function
+    // (`dispatch_rule_matches`, `StartAmb`/superpose, `ProcessLet` body
+    // fan-out, `ProcessCollapse`, `ProcessCollapseBind`) feed
+    // `parallel_dispatch` / `parallel_collapse_dispatch`, both of which
+    // now snapshot the parent's tracked-vars and re-establish them on
+    // each worker via `WorkerCaptureScope::enter`. So
+    // `in_collapse_bind_scope()` and `active_tracked_vars()` return the
+    // right answers on the worker thread, and rule-match projection
+    // sees the correct set.
+    //
+    // The veto stays out of the queue-pressure / quota path below — if
+    // a future callsite is added that does NOT thread the hint, it
+    // must spin its own veto at the callsite (the gate API stays
+    // minimal).
 
     let budgets = depth_budgets();
 
@@ -925,8 +959,16 @@ fn dispatch_rule_matches<C: EvalContext>(
         // Side-effecting branches (containing add-atom/remove-atom/change-state!/
         // bind!/...) must serialize to preserve HE branch-ordering semantics.
         // mmverify's filter'/assign_f_hyp_to_var race demonstrated the corruption.
+        //
+        // Phase 10.D (2026-05-17): switched from `body_contains_impure` to
+        // `body_blocks_parallel_dispatch`, which only blocks on
+        // `STATE_MUTATING_HEADS` by default. `IO_HEADS` (println!/print!/
+        // trace!) no longer force serialization, so PLN.Derive's
+        // `(progn (println! ...) (PLN.Derive ...))` body is now parallel-
+        // eligible. Set `METTATRON_STRICT_PRINT_ORDER=1` to restore the
+        // historical wide veto if exact print order is required.
         let all_pure = matches.iter().all(|(rhs, _)| {
-            !crate::backend::scheduler::classification::body_contains_impure(rhs, 8)
+            !crate::backend::scheduler::classification::body_blocks_parallel_dispatch(rhs, 8)
         });
         degree_ok && all_pure
     } else {
@@ -1372,6 +1414,54 @@ fn in_collapse_bind_scope() -> bool {
     BINDING_CAPTURE_STACK.with(|stack| !stack.borrow().is_empty())
 }
 
+/// Phase 10.A — RAII guard that pushes a shadow `BindingCaptureFrame` on
+/// worker entry and pops it on drop (normal exit AND panic-unwind).
+///
+/// Workers spawn on different threads and therefore have empty
+/// `BINDING_CAPTURE_STACK` by default. Without this shadow frame,
+/// `in_collapse_bind_scope()` and `active_tracked_vars()` would return
+/// the wrong answers — workers would think they're outside any
+/// collapse-bind, strip bindings they were meant to track, and produce
+/// wrong rule-match projections.
+///
+/// The shadow frame records only the `tracked_vars` set (the parent's
+/// union). It does NOT carry any mutation hooks back to the parent's
+/// stack — workers cannot mutate the parent's captures. They only
+/// READ via `active_tracked_vars()`.
+///
+/// Use: `let _scope = WorkerCaptureScope::enter(handle.tracked_vars_hint.clone());`
+pub(crate) struct WorkerCaptureScope {
+    pushed: bool,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl WorkerCaptureScope {
+    pub(crate) fn enter(hint: Option<Arc<SmallVec<[&'static str; 4]>>>) -> Self {
+        let pushed = if let Some(vars) = hint {
+            // Clone the SmallVec out of the Arc — the worker pushes its
+            // OWN frame, not a reference to the parent's. This keeps the
+            // worker's frame independent and panic-safe.
+            push_binding_capture_frame((*vars).clone());
+            true
+        } else {
+            false
+        };
+        Self { pushed, _not_send: std::marker::PhantomData }
+    }
+}
+
+impl Drop for WorkerCaptureScope {
+    fn drop(&mut self) {
+        if self.pushed {
+            // SAFETY: we pushed exactly one frame on entry; pop it now.
+            // If the worker pushed additional frames during eval (e.g.,
+            // nested collapse-bind), those must have been popped before
+            // this guard runs (RAII ordering).
+            let _ = pop_binding_capture_frame();
+        }
+    }
+}
+
 /// Union of tracked variables across all active collapse-bind frames on
 /// this thread. Returned as a sorted-deduped `SmallVec`. Used to project
 /// match bindings at dispatch sites to just the relevant set.
@@ -1681,6 +1771,14 @@ fn parallel_dispatch(
         )
     };
 
+    // Phase 10.A: capture parent's tracked-vars union ONCE before the spawn
+    // loop. Each worker closure gets a cheap Arc::clone — the union is
+    // re-established on the worker thread via `WorkerCaptureScope::enter`
+    // so `in_collapse_bind_scope()` and `active_tracked_vars()` return the
+    // correct answers on the worker.
+    let parent_tracked_vars: Option<Arc<SmallVec<[&'static str; 4]>>> =
+        active_tracked_vars().map(Arc::new);
+
     // Spawn ALL branches to the pool — including branch 0 (stack-safety mandate).
     for (slot, (branch_expr, branch_bindings)) in branches.iter().enumerate() {
         let branch_expr = branch_expr.clone();
@@ -1690,6 +1788,7 @@ fn parallel_dispatch(
         let remaining = Arc::clone(&remaining);
         let done_pair = Arc::clone(&done_pair);
         let cancel_token = Arc::clone(&cancel_token);
+        let worker_tracked_vars = parent_tracked_vars.clone();
 
         // WFST classification: same as the old parallel_branch_eval path.
         let scheduler = crate::backend::scheduler::global_scheduler();
@@ -1730,6 +1829,12 @@ fn parallel_dispatch(
             // safepoint root registrations.
             let _current_iter_scope =
                 super::current_iter_root::CurrentIterScope::enter(branch_expr);
+            // Phase 10.A — Stage 1e closure: re-establish the parent's
+            // collapse-bind tracked-vars on the worker thread so
+            // `in_collapse_bind_scope()` and `active_tracked_vars()` return
+            // the right answers during worker eval. No-op if parent has no
+            // active collapse-bind. RAII: drops on closure exit OR panic.
+            let _worker_capture_scope = WorkerCaptureScope::enter(worker_tracked_vars);
             let _demand_scope = DemandScope::enter(demand);
             let _worker_marker = WorkerEvalScope::enter();
             // Cache-root refresh: branch workers evaluate arbitrary rule RHS
@@ -1828,6 +1933,13 @@ fn parallel_dispatch(
         &(Arc::clone(&root_provider) as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
     );
 
+    // Phase 10.A: capture the parent's tracked-vars union BEFORE spawning
+    // any worker. The union is later re-established as a shadow frame on
+    // each worker thread via `WorkerCaptureScope::enter`. If no
+    // collapse-bind is active, the hint is None and workers run without
+    // pushing a frame (zero overhead).
+    let tracked_vars_hint = active_tracked_vars().map(Arc::new);
+
     ParallelDispatchHandle {
         results,
         remaining,
@@ -1839,6 +1951,7 @@ fn parallel_dispatch(
         started_at_alloc_count,
         stall_state: Mutex::new(StallState::default()),
         _root_provider_arc: root_provider,
+        tracked_vars_hint,
     }
 }
 
@@ -1868,6 +1981,14 @@ fn pump_parallel_wait(
     let pool = global_eval_pool();
 
     // (1) Short cv wait.
+    //
+    // Phase 10.E.2 (2026-05-17): timeout dropped from 1 ms → 100 µs.
+    // The parent does no productive work inside `pump_parallel_wait`
+    // (see stack-safety mandate note below), so each ms of wait is a
+    // pure latency-bubble between worker `notify_one()` and parent
+    // re-check. At 100 µs the parent unblocks ~10× faster on
+    // worker completion, with negligible additional wakeup overhead
+    // (one extra context switch every ~900 µs in steady state).
     {
         let (lock, cvar) = &*handle.done_pair;
         let done_guard = lock.lock().expect("done mutex poisoned");
@@ -1875,7 +1996,7 @@ fn pump_parallel_wait(
             return;
         }
         let res = cvar
-            .wait_timeout(done_guard, Duration::from_millis(1))
+            .wait_timeout(done_guard, Duration::from_micros(100))
             .expect("done condvar wait failed");
         if *res.0 {
             return;
@@ -1990,6 +2111,9 @@ fn pump_parallel_collapse_wait(
     let pool = global_eval_pool();
 
     // (1) Short cv wait.
+    //
+    // Phase 10.E.2 (2026-05-17): timeout dropped from 1 ms → 100 µs
+    // (see rationale in `pump_parallel_wait`).
     {
         let (lock, cvar) = &*handle.done_pair;
         let done_guard = lock.lock().expect("done mutex poisoned");
@@ -1997,7 +2121,7 @@ fn pump_parallel_collapse_wait(
             return;
         }
         let res = cvar
-            .wait_timeout(done_guard, Duration::from_millis(1))
+            .wait_timeout(done_guard, Duration::from_micros(100))
             .expect("done condvar wait failed");
         if *res.0 {
             return;
@@ -2123,6 +2247,16 @@ fn parallel_collapse_dispatch(
         )
     };
 
+    // Phase 10.A — Stage 1e closure: capture the parent's collapse-bind
+    // tracked-vars union ONCE before the spawn loop. Each worker clones
+    // the Arc (cheap) and pushes a shadow `BINDING_CAPTURE_STACK` frame
+    // via `WorkerCaptureScope::enter`, so `in_collapse_bind_scope()` and
+    // `active_tracked_vars()` return the right answers on the worker
+    // thread during nested evaluation. No-op when the parent has no
+    // active collapse-bind. See `WorkerCaptureScope` docs at `:1380`.
+    let parent_tracked_vars: Option<Arc<SmallVec<[&'static str; 4]>>> =
+        active_tracked_vars().map(Arc::new);
+
     // Spawn ALL items to the pool — NO inline item-0 (stack-safety mandate).
     for (slot, (item_expr, item_bindings)) in items.iter().enumerate() {
         let item_expr = item_expr.clone();
@@ -2131,6 +2265,7 @@ fn parallel_collapse_dispatch(
         let results = Arc::clone(&results);
         let remaining = Arc::clone(&remaining);
         let done_pair = Arc::clone(&done_pair);
+        let worker_tracked_vars = parent_tracked_vars.clone();
 
         let scheduler = crate::backend::scheduler::global_scheduler();
         let (cost_class, _action) = scheduler.classify_and_transduce(&item_expr);
@@ -2163,6 +2298,12 @@ fn parallel_collapse_dispatch(
             // `:1730`). See `current_iter_root` module docs.
             let _current_iter_scope =
                 super::current_iter_root::CurrentIterScope::enter(item_expr);
+            // Phase 10.A — Stage 1e closure: re-establish the parent's
+            // collapse-bind tracked-vars on the worker thread so
+            // `in_collapse_bind_scope()` and `active_tracked_vars()` return
+            // the right answers during worker eval. No-op if parent has no
+            // active collapse-bind. RAII: drops on closure exit OR panic.
+            let _worker_capture_scope = WorkerCaptureScope::enter(worker_tracked_vars);
             let _demand_scope =
                 DemandScope::enter(crate::backend::eval::cesk::coroutine::Demand::All);
             let _worker_marker = WorkerEvalScope::enter();
@@ -2263,13 +2404,32 @@ fn parallel_collapse_dispatch(
         ),
         stall_state: Mutex::new(StallState::default()),
         _root_provider_arc: root_provider,
+        // Phase 10.A: handed off to the WaitForParallelCollapse continuation
+        // for sidecar per-branch binding-projection reconstruction.
+        tracked_vars_hint: parent_tracked_vars,
     }
 }
 
 /// Minimum number of collapse results to trigger parallel evaluation.
 /// Below this threshold, the sequential `ProcessCollapseEvalResults` path
 /// is cheaper due to lower overhead (no Arc, no Mutex, no condvar).
-const PARALLEL_COLLAPSE_THRESHOLD: usize = 16;
+///
+/// Phase 10.G (2026-05-17): default lowered 16 → 8. PLN's inner Derive
+/// step typically produces 4–12 collapse results; the old threshold of
+/// 16 meant they almost never dispatched in parallel. The env var
+/// `METTATRON_PARALLEL_COLLAPSE_THRESHOLD` overrides at process start.
+static PARALLEL_COLLAPSE_THRESHOLD_CACHE: OnceLock<usize> = OnceLock::new();
+
+#[inline]
+fn parallel_collapse_threshold() -> usize {
+    *PARALLEL_COLLAPSE_THRESHOLD_CACHE.get_or_init(|| {
+        std::env::var("METTATRON_PARALLEL_COLLAPSE_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n >= 2)
+            .unwrap_or(8)
+    })
+}
 
 
 /// Generic trampoline evaluation entry point.
@@ -4749,8 +4909,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     action.parallelism_degree > 1
                                 });
                                 // H2: branch-purity gate (spec §5.6.1).
+                                // Phase 10.D: state-mutation only by
+                                // default; opt-in I/O strictness via
+                                // METTATRON_STRICT_PRINT_ORDER=1.
                                 let all_pure = alternatives.iter().all(|alt| {
-                                    !crate::backend::scheduler::classification::body_contains_impure(alt, 8)
+                                    !crate::backend::scheduler::classification::body_blocks_parallel_dispatch(alt, 8)
                                 });
                                 degree_ok && all_pure
                             } else {
@@ -7822,8 +7985,11 @@ fn process_continuation<C: EvalContext>(
                             action.parallelism_degree > 1
                         });
                         // H2: branch-purity gate (spec §5.6.1).
+                        // Phase 10.D: state-mutation only by default;
+                        // opt-in I/O strictness via
+                        // METTATRON_STRICT_PRINT_ORDER=1.
                         let all_pure = instantiated_bodies.iter().all(|body| {
-                            !crate::backend::scheduler::classification::body_contains_impure(
+                            !crate::backend::scheduler::classification::body_blocks_parallel_dispatch(
                                 body, 8,
                             )
                         });
@@ -12008,7 +12174,7 @@ fn process_continuation<C: EvalContext>(
             // evaluation that changes result order is semantically correct.
             let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
             let n_results = expr_results.len();
-            let par_budget = if n_results >= PARALLEL_COLLAPSE_THRESHOLD
+            let par_budget = if n_results >= parallel_collapse_threshold()
                 && current_depth < max_parallel_depth()
                 && global_eval_pool().active_workers() > 0
             {
@@ -12132,16 +12298,33 @@ fn process_continuation<C: EvalContext>(
             // (expr_results[i].1), so there is nothing to extract from the
             // capture frame — it's now a pure scope marker.
             //
-            // Force sequential flag retained until Stage 1e: parallel paths
-            // don't yet thread tracked_vars_hint into workers, so we stay
-            // sequential whenever a scope marker was active.
-            let force_sequential = captured_frame.is_some();
+            // Phase 10.A — Stage 1e closure (2026-05-17): the historical
+            // `force_sequential = captured_frame.is_some()` gate is no
+            // longer needed. Three independent mechanisms now keep
+            // HE-bisim correctness intact under parallel dispatch with a
+            // popped capture frame:
+            //
+            //   1. The just-popped frame's tracked_vars are extracted into
+            //      `tracked_vars_for_sidecar` (above) and threaded into
+            //      `WaitForParallelCollapse.tracked_vars_hint`, where
+            //      per-branch binding projection runs at MERGE time on
+            //      the parent thread — independent of worker thread state.
+            //   2. The popped frame's *outer* scope (if any) is captured
+            //      by `parallel_collapse_dispatch`'s
+            //      `parent_tracked_vars` snapshot BEFORE worker spawn,
+            //      and re-pushed on each worker via
+            //      `WorkerCaptureScope::enter`. Any nested collapse-bind
+            //      a worker encounters inside an item's eval pushes its
+            //      OWN frame on top, preserving HE's lexical scoping.
+            //   3. Per-result bindings already travel with each
+            //      `BoundValue`, so workers don't depend on the
+            //      thread-local capture stack for the result they're
+            //      evaluating.
             let _ = captured_frame;
 
             // ── Parallel path: identical to ProcessCollapse ──
             let current_depth = PARALLEL_BRANCH_DEPTH.with(|d| d.get());
-            let par_budget = if !force_sequential
-                && expr_results.len() >= PARALLEL_COLLAPSE_THRESHOLD
+            let par_budget = if expr_results.len() >= parallel_collapse_threshold()
                 && current_depth < max_parallel_depth()
                 && global_eval_pool().active_workers() > 0
             {

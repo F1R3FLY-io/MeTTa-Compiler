@@ -362,6 +362,33 @@ impl std::fmt::Debug for NativeCode {
 /// Tracks the execution count and compilation status for each tier.
 /// All fields use atomic operations for lock-free concurrent access.
 /// Code storage uses OnceLock for lock-free reads after initialization.
+/// Phase 11.B (2026-05-17) — pack a `(rule_epoch, bool)` pair into a
+/// single u64 for atomic storage. Encoding:
+/// - bit 0:        1 = set, 0 = unset
+/// - bit 1:        value (1 = true, 0 = false)
+/// - bits 2..=63:  rule_epoch at write time
+///
+/// 62 bits of epoch is sufficient (rule_epoch is a process-wide counter
+/// of rule_index mutations; reaching 2^62 is not realizable on any
+/// physical hardware in the program's lifetime).
+#[inline]
+fn encode_epoch_bool(epoch: u64, value: bool) -> u64 {
+    let val_bit = if value { 1u64 << 1 } else { 0 };
+    (epoch << 2) | val_bit | 1
+}
+
+#[inline]
+fn decode_epoch_bool(packed: u64, current_epoch: u64) -> Option<bool> {
+    if packed & 1 == 0 {
+        return None;
+    }
+    let stored_epoch = packed >> 2;
+    if stored_epoch != current_epoch {
+        return None;
+    }
+    Some((packed >> 1) & 1 != 0)
+}
+
 pub struct ExprCompilationState {
     /// Number of times this expression has been executed
     pub execution_count: AtomicU32,
@@ -409,6 +436,37 @@ pub struct ExprCompilationState {
     /// Write-once, lock-free reads. Eliminates ~922K recursive tree walks for
     /// repeated expressions in the PLN benchmark.
     compilable_with_env: AtomicU8,
+
+    /// Phase 11.B (2026-05-17) — bit-packed `(rule_epoch, value)` caches
+    /// for the three expression-purity predicates evaluated at the
+    /// per-step gate in `eval_loop.rs::should_record_execution_sample`
+    /// branch:
+    ///
+    /// - `expression_involves_impure_rules`
+    /// - `expression_has_overridden_grounded_op`
+    /// - `expression_has_declared_meta_typed_params`
+    ///
+    /// Each predicate is O(tree × needles × Phase-11.A bloom) when
+    /// recomputed. PLN's hot loop hits each one once per sampled
+    /// trampoline step on the same sub-expression; the cache lets the
+    /// second-and-later sampled visits return in O(1).
+    ///
+    /// Encoding (per AtomicU64):
+    ///   - bit 0:        1 = cache populated, 0 = unset
+    ///   - bit 1:        value (1 = true, 0 = false)
+    ///   - bits 2..=63:  rule_epoch at write time
+    ///
+    /// Read flow: load Acquire; if bit 0 is 0 → `None`; else compare
+    /// epoch with `RULE_EPOCH.load(Acquire)`; on mismatch the cached
+    /// value is stale → return `None` (caller recomputes and resets).
+    ///
+    /// Why not `parking_lot::Mutex<Option<(u64, bool)>>` (as
+    /// `type_registry_cache` does)? The mutex pays ~10 ns per call
+    /// even uncontended; the per-step gate fires thousands of times
+    /// per inference. Bit-packing keeps the read at one Acquire load.
+    cached_impure_rules: AtomicU64,
+    cached_overridden_grounded: AtomicU64,
+    cached_meta_typed: AtomicU64,
 }
 
 impl ExprCompilationState {
@@ -428,7 +486,57 @@ impl ExprCompilationState {
                 super::runtime_profile::RuntimeTypeProfile::new(),
             )),
             compilable_with_env: AtomicU8::new(0),
+            cached_impure_rules: AtomicU64::new(0),
+            cached_overridden_grounded: AtomicU64::new(0),
+            cached_meta_typed: AtomicU64::new(0),
         }
+    }
+
+    /// Phase 11.B — read the cached `expression_involves_impure_rules`
+    /// result if its rule_epoch tag matches the current
+    /// `RULE_EPOCH`. Returns `None` when unset or stale.
+    #[inline]
+    pub fn cached_involves_impure_rules(&self, current_epoch: u64) -> Option<bool> {
+        decode_epoch_bool(self.cached_impure_rules.load(Ordering::Acquire), current_epoch)
+    }
+
+    /// Phase 11.B — write the `expression_involves_impure_rules` cache
+    /// for the given `rule_epoch`. Last-writer-wins, lock-free.
+    #[inline]
+    pub fn set_involves_impure_rules(&self, epoch: u64, value: bool) {
+        self.cached_impure_rules
+            .store(encode_epoch_bool(epoch, value), Ordering::Release);
+    }
+
+    /// Phase 11.B — read the cached
+    /// `expression_has_overridden_grounded_op` result.
+    #[inline]
+    pub fn cached_has_overridden_grounded_op(&self, current_epoch: u64) -> Option<bool> {
+        decode_epoch_bool(
+            self.cached_overridden_grounded.load(Ordering::Acquire),
+            current_epoch,
+        )
+    }
+
+    /// Phase 11.B — write the `expression_has_overridden_grounded_op` cache.
+    #[inline]
+    pub fn set_has_overridden_grounded_op(&self, epoch: u64, value: bool) {
+        self.cached_overridden_grounded
+            .store(encode_epoch_bool(epoch, value), Ordering::Release);
+    }
+
+    /// Phase 11.B — read the cached
+    /// `expression_has_declared_meta_typed_params` result.
+    #[inline]
+    pub fn cached_has_declared_meta_typed(&self, current_epoch: u64) -> Option<bool> {
+        decode_epoch_bool(self.cached_meta_typed.load(Ordering::Acquire), current_epoch)
+    }
+
+    /// Phase 11.B — write the `expression_has_declared_meta_typed_params` cache.
+    #[inline]
+    pub fn set_has_declared_meta_typed(&self, epoch: u64, value: bool) {
+        self.cached_meta_typed
+            .store(encode_epoch_bool(epoch, value), Ordering::Release);
     }
 
     /// Get or build a cached `TypeSignatureRegistry` for JIT execution.

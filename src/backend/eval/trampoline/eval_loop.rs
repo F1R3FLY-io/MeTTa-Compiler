@@ -3315,19 +3315,54 @@ fn eval_trampoline_inner<C: EvalContext>(
                             }
                         } else if should_record_execution_sample()
                             && should_memoize_with_env(&value, &*env)
-                            && !crate::backend::eval::expression_has_overridden_grounded_op(
-                                &value, &*env,
-                            )
-                            && !crate::backend::eval::expression_has_declared_meta_typed_params(
-                                &value, &*env,
-                            )
-                            && !crate::backend::eval::expression_involves_impure_rules(
-                                &value, &*env,
-                            )
                         {
+                            // Phase 11.B (2026-05-17) — fetch the
+                            // per-expression compilation state once,
+                            // then read the three purity predicates
+                            // from rule_epoch-tagged caches. On miss,
+                            // compute, populate, return. Saves
+                            // O(tree × needles × bloom) per sampled
+                            // step on repeat-visited expressions
+                            // (PLN's `BestCandidate` rule body is
+                            // visited thousands of times per
+                            // inference; once cached, the next
+                            // visit returns in O(1)).
                             let cache = crate::backend::bytecode::global_tiered_cache();
                             let compilation_state = cache.record_execution(&value);
-                            let compilable_with_env = compilation_state
+                            let rule_epoch = crate::backend::environment::rule_management::RULE_EPOCH
+                                .load(Ordering::Acquire);
+                            let has_overridden = compilation_state
+                                .cached_has_overridden_grounded_op(rule_epoch)
+                                .unwrap_or_else(|| {
+                                    let r = crate::backend::eval::expression_has_overridden_grounded_op(
+                                        &value, &*env,
+                                    );
+                                    compilation_state.set_has_overridden_grounded_op(rule_epoch, r);
+                                    r
+                                });
+                            let has_meta_typed = !has_overridden && compilation_state
+                                .cached_has_declared_meta_typed(rule_epoch)
+                                .unwrap_or_else(|| {
+                                    let r = crate::backend::eval::expression_has_declared_meta_typed_params(
+                                        &value, &*env,
+                                    );
+                                    compilation_state.set_has_declared_meta_typed(rule_epoch, r);
+                                    r
+                                });
+                            let involves_impure = !has_overridden && !has_meta_typed && compilation_state
+                                .cached_involves_impure_rules(rule_epoch)
+                                .unwrap_or_else(|| {
+                                    let r = crate::backend::eval::expression_involves_impure_rules(
+                                        &value, &*env,
+                                    );
+                                    compilation_state.set_involves_impure_rules(rule_epoch, r);
+                                    r
+                                });
+                            let safe_to_dispatch = !has_overridden
+                                && !has_meta_typed
+                                && !involves_impure;
+
+                            let compilable_with_env = safe_to_dispatch && compilation_state
                                 .cached_compilable_with_env()
                                 .unwrap_or_else(|| {
                                     let result =

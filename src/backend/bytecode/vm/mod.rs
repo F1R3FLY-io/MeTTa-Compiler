@@ -7099,6 +7099,34 @@ where
         }
 
         if matches.is_empty() {
+            // S-step (2026-05-17): Call-site type checking (T1 in-tier).
+            //
+            // Mirrors T0 Step 3.6 (`eval/step/sexpr.rs:3413-3427`). After
+            // both native + unify rule-matching produce zero matches, check
+            // whether the call site is ill-typed against the head's declared
+            // arrow type. Tier-locality: reuses generic-over-V helper
+            // `check_call_site_types` from `eval/types.rs:1868` — same status
+            // as `env.match_space()` / `apply_bindings_generic` (shared
+            // environment infrastructure, not a tier delegate). Permissive
+            // mode (default) only fires when both head has a concrete
+            // `(-> ...)` declaration and arg types are determinable. Strict
+            // (`auto`) mode also fires on `%Undefined%` arg types.
+            //
+            // HE parity: `hyperon-experimental/lib/src/metta/types.rs::check_type`.
+            // Errors are shaped as
+            //   `(Error <call-form> (BadArgType <1-indexed-N> <expected> <inferred>))`
+            // or `(Error <call-form> IncorrectNumberOfArguments)`.
+            if let Some(items) = expr.as_sexpr() {
+                if let Some(env) = &self.env {
+                    if let Some(err) =
+                        crate::backend::eval::types::check_call_site_types(items, &self.factory, env)
+                    {
+                        self.push(err);
+                        return Ok(());
+                    }
+                }
+            }
+
             // Phase 2.B HE-bisimilarity (three-tier parity with tree-walker):
             // distinguish "function with no matching rules" (→ empty) from
             // "data constructor" (→ unreduced data). Data constructors
@@ -7748,6 +7776,26 @@ where
             };
 
             if matches.is_empty() {
+                // S-step (2026-05-17): Call-site type checking (T1 multi-combo).
+                //
+                // Same logic as the single-combo path — see commentary at the
+                // analogous `matches.is_empty()` site above for tier-locality
+                // rationale. We check per-combination because each combo has
+                // its own substituted expression (different concrete arg
+                // shapes) and may independently trigger BadArgType /
+                // IncorrectNumberOfArguments.
+                if let Some(items) = combo_expr.as_sexpr() {
+                    if let Some(err) =
+                        crate::backend::eval::types::check_call_site_types(items, &self.factory, &env)
+                    {
+                        // Emit the error as this combination's outcome with
+                        // its per-combo bindings, then continue to the next
+                        // combination. The error flows through the choice-
+                        // point machinery the same as any other outcome.
+                        all_outcomes.push((err, combo_b));
+                        continue;
+                    }
+                }
                 // No rules for this combination — the expression is
                 // irreducible. Contribute it as a result with its own
                 // per-combination bindings.

@@ -553,6 +553,36 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     // in T0 trampoline. Route from T1 to T0 — compile-time
                     // tier selection, no runtime down-bail.
                     "format-args" | "context-space" => false,
+                    // T06/108-111 (MTT-FN-SET-BARE): bare set-op aliases
+                    // desugar in T0 (`eval/step/sexpr.rs`) to
+                    //   `(let $u (op-atom (collapse arg)…) (superpose $u))`
+                    // before any rule dispatch can apply. If the bytecode tier
+                    // compiles `(unique X)` as a generic `Call`, the desugar
+                    // never runs and the args are evaluated as if `unique` were
+                    // an ordinary user-defined function — multi-result inputs
+                    // leak out unchanged. Route to T0 explicitly.
+                    "unique" | "union" | "intersection" | "subtraction" => false,
+                    // T04/117 + T04/050 (2026-05-17): embedded kernel ops
+                    // `function`, `return`, `evalc` have no bytecode lowering.
+                    // When the bytecode VM's `op_dispatch_rules` encounters
+                    // them, finds no matching user rules, and falls through
+                    // to the "data constructor / normal form" path
+                    // (`vm/mod.rs:7233-7239`) — pushing the raw S-expr back
+                    // unchanged. This breaks tree-walker bisimilarity:
+                    //   T04/117: `(case (function) ((Error $a $c) caught) ...)`
+                    //     bytecode returns `[other]` (case pattern-matches
+                    //     against raw `(function)` SExpr, not the Error variant
+                    //     the tree-walker `"function"` arity-guard would emit).
+                    //   T04/050: `(evalc (bar) &s)` returns `[(evalc (bar) ...)]`
+                    //     instead of `[42]` (evalc never dispatches into the
+                    //     given space).
+                    //   T04/105 (indirect): `(eval (eval 5))` requires top-level
+                    //     NotReducible→original conversion which only happens in
+                    //     the tree-walker post-eval path.
+                    // Compile-time tier selection: route to T0 trampoline
+                    // where the special-form arms in `eval/step/sexpr.rs`
+                    // produce correct HE-bisim semantics.
+                    "function" | "return" | "evalc" => false,
                     // User-defined functions: compiled as Call opcodes.
                     // The VM dispatches via op_dispatch_rules → match_rules_native.
                     // eval_inner completes evaluation via trampoline re-eval.

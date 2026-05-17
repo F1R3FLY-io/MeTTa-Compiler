@@ -17,6 +17,7 @@ use crate::backend::bytecode::jit::types::{
 use crate::backend::bytecode::mork_bridge::{CompiledRule, MorkBridge};
 use crate::backend::eval::apply_bindings;
 use crate::backend::models::Bindings;
+use crate::backend::models::MettaValueTrait;
 
 // =============================================================================
 // Phase C: Rule Dispatch Operations
@@ -37,7 +38,7 @@ use crate::backend::models::Bindings;
 pub unsafe extern "C" fn jit_runtime_dispatch_rules(
     ctx: *mut JitContext,
     expr: u64,
-    _ip: u64,
+    ip: u64,
 ) -> u64 {
     let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
@@ -78,6 +79,36 @@ pub unsafe extern "C" fn jit_runtime_dispatch_rules(
         ctx_ref.current_rules = std::ptr::null_mut();
     }
     ctx_ref.current_rule_idx = 0;
+
+    // S-step (2026-05-17): Call-site type checking (T2/T3 in-tier,
+    // DispatchRules opcode path).
+    //
+    // When there are no matching rules AND the call site is ill-typed
+    // against the head's declared arrow type, signal bailout to the VM
+    // which now also has the in-tier type-check (`op_dispatch_rules` in
+    // `bytecode/vm/mod.rs`). The VM will re-run dispatch with full
+    // type-check semantics and emit the proper `(Error <call> ...)`
+    // value.
+    //
+    // Tier-locality: this reuses the same generic helper as T0 and T1
+    // (`crate::backend::eval::types::check_call_site_types`), which
+    // operates over shared environment infrastructure (`env.get_types_generic`,
+    // `infer_type_generic`) — not a tier delegate.
+    //
+    // HE parity: `hyperon-experimental/lib/src/metta/types.rs::check_type`.
+    if count == 0 && !ctx_ref.env_ptr.is_null() {
+        if let Some(items) = expr_metta.as_sexpr() {
+            let env =
+                &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
+            let factory = crate::backend::models::global_factory();
+            if crate::backend::eval::types::check_call_site_types(items, &factory, env).is_some()
+            {
+                ctx_ref.bailout = true;
+                ctx_ref.bailout_ip = ip as usize;
+                ctx_ref.bailout_reason = JitBailoutReason::Call;
+            }
+        }
+    }
 
     box_long(count)
 }

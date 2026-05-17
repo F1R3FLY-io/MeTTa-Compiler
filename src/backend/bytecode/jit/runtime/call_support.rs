@@ -212,6 +212,42 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     None
 }
 
+/// S-step (2026-05-17): Call-site type checking (T2/T3 in-tier).
+///
+/// JIT-tier analog of T0's `check_call_site_types` wire (`eval/step/sexpr.rs:
+/// 3413-3427`) and T1's `op_dispatch_rules` no-match arm. After rule matching
+/// produces zero results, check whether the call site is ill-typed against
+/// the head's declared arrow type. The check itself reuses the generic
+/// helper `crate::backend::eval::types::check_call_site_types` — same status
+/// as `env.get_types_generic` / `apply_bindings_generic` already used here
+/// (shared environment infrastructure, not a tier delegate). Permissive mode
+/// (default) only fires when both head has a concrete `(-> ...)` declaration
+/// and arg types are determinable; auto mode also fires on `%Undefined%`.
+///
+/// HE parity: `hyperon-experimental/lib/src/metta/types.rs::check_type`.
+/// Errors are shaped as
+///   `(Error <call-form> (BadArgType <1-indexed-N> <expected> <inferred>))`
+/// or `(Error <call-form> IncorrectNumberOfArguments)`.
+///
+/// Returns `Some(error_jit_bits)` when ill-typed, `None` otherwise.
+///
+/// # Safety
+/// `ctx_ref.env_ptr`, if non-null, must point to a valid `MettaEnvironment`.
+#[inline]
+unsafe fn jit_check_call_site_types(
+    ctx_ref: &JitContext,
+    expr: &MettaValue,
+) -> Option<u64> {
+    if ctx_ref.env_ptr.is_null() {
+        return None;
+    }
+    let items = expr.as_sexpr()?;
+    let env = &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
+    let factory = crate::backend::models::global_factory();
+    let err = crate::backend::eval::types::check_call_site_types(items, &factory, env)?;
+    Some(value_to_jit_generic(&err).to_bits())
+}
+
 /// Dispatch a call expression with native rule lookup.
 ///
 /// Stage 2 implementation with native rule dispatch:
@@ -372,6 +408,14 @@ pub unsafe extern "C" fn jit_runtime_call(
         let matches = bridge.dispatch_rules(&expr);
 
         if matches.is_empty() {
+            // S-step (2026-05-17): Call-site type checking (T2/T3 in-tier).
+            // See `jit_check_call_site_types` for full rationale. Mirrors
+            // T0 Step 3.6 and T1's no-match arm. We check BEFORE memoizing
+            // as normal form — otherwise the error would never fire on
+            // subsequent identical calls.
+            if let Some(err_bits) = jit_check_call_site_types(ctx_ref, &expr) {
+                return err_bits;
+            }
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
@@ -610,6 +654,12 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
         let matches = bridge.dispatch_rules(&expr);
 
         if matches.is_empty() {
+            // S-step (2026-05-17): Call-site type checking (T2/T3 in-tier,
+            // tail-call path). Mirrors T0 Step 3.6 and T1's no-match arm.
+            // See `jit_check_call_site_types` for full rationale.
+            if let Some(err_bits) = jit_check_call_site_types(ctx_ref, &expr) {
+                return err_bits;
+            }
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
@@ -728,6 +778,12 @@ pub unsafe extern "C" fn jit_runtime_call_n(
         let matches = bridge.dispatch_rules(&expr);
 
         if matches.is_empty() {
+            // S-step (2026-05-17): Call-site type checking (T2/T3 in-tier,
+            // CallN path). Mirrors T0 Step 3.6 and T1's no-match arm.
+            // See `jit_check_call_site_types` for full rationale.
+            if let Some(err_bits) = jit_check_call_site_types(ctx_ref, &expr) {
+                return err_bits;
+            }
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
@@ -840,6 +896,12 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
         let matches = bridge.dispatch_rules(&expr);
 
         if matches.is_empty() {
+            // S-step (2026-05-17): Call-site type checking (T2/T3 in-tier,
+            // TailCallN path). Mirrors T0 Step 3.6 and T1's no-match arm.
+            // See `jit_check_call_site_types` for full rationale.
+            if let Some(err_bits) = jit_check_call_site_types(ctx_ref, &expr) {
+                return err_bits;
+            }
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);

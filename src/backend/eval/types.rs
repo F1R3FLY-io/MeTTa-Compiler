@@ -183,6 +183,31 @@ where
                     let _ = source;
                     types
                 }
+                // 2026-05-17 (Cluster B): for overridable built-ins (those with
+                // an `OverridableOpId` — HE-stdlib ops like `id`, `test`,
+                // `car-atom`, …), prefer user-declared types in the env over
+                // the static `BuiltinSignature`. The grounded fast path's
+                // signature is often non-polymorphic (`(-> Undefined Undefined)`
+                // for `id`), so user-supplied `(: id (-> $t $t))` declarations
+                // would be lost without this gate. HE-reserved kernel ops
+                // (`+`, `==`, etc.) have NO `OverridableOpId` so the static
+                // signature still wins for them.
+                else if env.may_have_type(op)
+                    && crate::backend::environment::dispatch_overrides::overridable_op_id(op).is_some()
+                    && env.get_types_generic(op).iter().any(|t| {
+                        t.as_sexpr()
+                            .and_then(|items| items.first().and_then(|v| v.as_atom()))
+                            == Some("->")
+                    })
+                {
+                    let (types, source) = infer_types_sexpr_body(op, items, factory, env);
+                    #[cfg(feature = "trace")]
+                    {
+                        _trace_source = source;
+                    }
+                    let _ = source;
+                    types
+                }
                 // Check the built-in signature registry
                 else if let Some(sig) = get_signature(op) {
                     if let Some(ret_type) = get_return_type(&sig.type_sig) {

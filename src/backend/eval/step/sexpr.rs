@@ -3161,9 +3161,20 @@ where
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
 
+                    // 2026-05-17: dispatch override gate for overridable
+                    // built-ins (id, test, car-atom, map-atom, …). When a
+                    // user rule exists for this name, the grounded fast
+                    // path is skipped and rule matching at the bottom of
+                    // this function handles dispatch. Class A (HE-reserved
+                    // kernel ops like +, ==, eval) have NO OverridableOpId
+                    // and pass through unconditionally.
+                    let overridden = overridable_op_id(op).map_or(false, |id| {
+                        env.dispatch_overrides().is_overridden(id)
+                    });
+
                     // Try generic grounded operation (zero-conversion path)
                     // Uses static dispatch - works with any V: MettaValueTrait
-                    if has_grounded_op(op) {
+                    if has_grounded_op(op) && !overridden {
                         let args: Vec<MettaValue> = items[1..].to_vec();
                         // X.4 — HE Empty annihilation (MTT-EMPTY-ANNIHILATION).
                         // If any argument is the Empty sentinel OR the literal

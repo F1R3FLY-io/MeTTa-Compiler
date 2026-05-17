@@ -87,11 +87,15 @@ pub enum OverridableOpId {
     Union = 25,
     Intersection = 26,
     Subtraction = 27,
+    /// `id` polymorphic identity (HE stdlib.metta:262 — `(: id (-> $t $t)) (= (id $x) $x)`).
+    /// Overridable so user-declared types/rules flow through type inference and
+    /// rule matching when present; otherwise MTT's grounded fast path runs.
+    Id = 28,
 }
 
 /// Number of overridable operator names. Must equal the highest
 /// `OverridableOpId` discriminant + 1.
-pub const NUM_OVERRIDABLE_OPS: usize = 28;
+pub const NUM_OVERRIDABLE_OPS: usize = 29;
 
 const _: () = {
     assert!(
@@ -266,6 +270,8 @@ pub fn overridable_op_id(op: &str) -> Option<OverridableOpId> {
         "union" => Union,
         "intersection" => Intersection,
         "subtraction" => Subtraction,
+        // `id` polymorphic identity — HE stdlib rule (stdlib.metta:262).
+        "id" => Id,
         _ => return None,
     })
 }
@@ -342,6 +348,7 @@ mod tests {
             ("union", OverridableOpId::Union),
             ("intersection", OverridableOpId::Intersection),
             ("subtraction", OverridableOpId::Subtraction),
+            ("id", OverridableOpId::Id),
         ];
         assert_eq!(names.len(), NUM_OVERRIDABLE_OPS);
         for (name, id) in names {

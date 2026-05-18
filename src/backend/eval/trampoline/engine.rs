@@ -1212,6 +1212,16 @@ pub fn try_deterministic_chain(
     env: &Environment,
     factory: &GcFactory,
 ) -> Option<MettaValue> {
+    // Task #6 Phase 5 (2026-05-18): the historic `MAX_CHAIN_LENGTH = 512`
+    // band-aid is replaced by a principled hash-cycle bound. For
+    // self-referential rules like `(= (rec) (rec))` the chain previously
+    // ran 512 inline iterations PER outer trampoline tick before
+    // returning the unchanged `(rec)` — every tick burning chain budget
+    // without making progress. Now we track seen content-hashes and
+    // terminate as soon as we'd revisit a state. Worst-case bound is
+    // `MAX_CHAIN_LENGTH` only as a safety net for pathological hash
+    // collisions; the genuine termination criterion is the hash cycle,
+    // not a magic 512.
     const MAX_CHAIN_LENGTH: usize = 512;
 
     let items = expr.as_sexpr()?;
@@ -1233,11 +1243,28 @@ pub fn try_deterministic_chain(
         return None;
     }
 
+    // Seed the seen-set with the entry expression's hash so a self-
+    // recursive RHS that returns the same form (e.g. `(rec) → (rec)`)
+    // terminates after exactly one step.
+    let mut seen: smallvec::SmallVec<[u64; 8]> = smallvec::SmallVec::new();
+    seen.push(expr.hash_value());
+
     // First step: structural match against the single candidate
     let mut current = try_deterministic_step(expr, head, arity, env, factory)?;
 
     // Chain subsequent steps
     for _ in 1..MAX_CHAIN_LENGTH {
+        // Hash-cycle termination: if `current` is a state we've already
+        // been at (including the entry), the chain has reached a fixed
+        // point and any further steps would loop. Return immediately;
+        // the trampoline's cycle-detection / memoization layer handles
+        // the outer recursion.
+        let h = current.hash_value();
+        if seen.iter().any(|&prev| prev == h) {
+            return Some(current);
+        }
+        seen.push(h);
+
         let next_items = match current.as_sexpr() {
             Some(items) if !items.is_empty() => items,
             _ => return Some(current), // Not an S-expr or empty -> done
@@ -1268,7 +1295,8 @@ pub fn try_deterministic_chain(
         }
     }
 
-    // Chain too long -> bail, return current result for the trampoline to handle
+    // Chain reached the safety-net cap without cycling — unlikely with
+    // hash-cycle detection in place but preserved for pathological cases.
     Some(current)
 }
 

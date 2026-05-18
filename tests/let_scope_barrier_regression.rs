@@ -54,11 +54,13 @@ fn collapse_let_pushes_body_result() {
 }
 
 /// Bug #2: `!(collapse-bind (let $x a 42))` returned `[()]`.
-/// After fix: `[((42 (Bindings)))]` — body result + empty bindings sidecar.
+/// After Bucket A commit 2356d93 (decomp accepts `{ }`) + 2ee7467
+/// (collapse-bind empty `{ }`): the empty-bindings sidecar shape is now
+/// `{ }` per HE-empirical alignment, not the older `(Bindings)`.
 #[test]
 fn collapse_bind_let_pushes_body_result() {
     let output = eval_last("!(collapse-bind (let $x a 42))");
-    assert_eq!(output, vec!["((42 (Bindings)))"]);
+    assert_eq!(output, vec!["((42 { }))"]);
 }
 
 /// Bug #3: `!(collapse (let* (($x a)) 42))` returned `[()]`.
@@ -69,10 +71,12 @@ fn collapse_let_star_pushes_body_result() {
 }
 
 /// Bug #4: `!(collapse-bind (let* (($x a)) 42))` returned `[()]`.
+/// Empty-bindings shape is `{ }` per HE-empirical alignment
+/// (Bucket A commits 2356d93 + 2ee7467).
 #[test]
 fn collapse_bind_let_star_pushes_body_result() {
     let output = eval_last("!(collapse-bind (let* (($x a)) 42))");
-    assert_eq!(output, vec!["((42 (Bindings)))"]);
+    assert_eq!(output, vec!["((42 { }))"]);
 }
 
 /// Bug #5: `!(collapse (chain a $x 42))` returned `[()]`.
@@ -83,10 +87,12 @@ fn collapse_chain_pushes_body_result() {
 }
 
 /// Bug #6: `!(collapse-bind (chain a $x 42))` returned `[()]`.
+/// Empty-bindings shape is `{ }` per HE-empirical alignment
+/// (Bucket A commits 2356d93 + 2ee7467).
 #[test]
 fn collapse_bind_chain_pushes_body_result() {
     let output = eval_last("!(collapse-bind (chain a $x 42))");
-    assert_eq!(output, vec!["((42 (Bindings)))"]);
+    assert_eq!(output, vec!["((42 { }))"]);
 }
 
 /// Bug #7: `!(collapse (let $x a (superpose (1 2 3))))` returned `[()]`.

@@ -528,6 +528,14 @@ mod tests {
 
     #[test]
     fn test_error_in_nested_expression() {
+        // Bucket A commit 1ae6269 (arithmetic Error-typed arg): when `+`
+        // (or any arithmetic op) receives a sub-expression that evaluated
+        // to an Error value, the outer op now emits `(Error <form>
+        // (BadArgType N Number ErrorType))` per HE-empirical alignment.
+        // The original user error (`"deep error"`) is preserved inside
+        // the wrapping form (offending). Verify both: it IS an Error
+        // variant AND the original error message string appears in the
+        // serialized output (which proves propagation through the chain).
         let input = r#"(+ 1 (+ 2 (+ 3 (error "deep error" nested))))"#;
         let state = compile(input).expect("compile failed");
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
@@ -536,11 +544,18 @@ mod tests {
         let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        if let MettaValueInner::Error(_, detail) = results[0].inner() {
-            assert_eq!(detail.as_string(), Some("deep error"));
-        } else {
-            panic!("Expected error propagation from nested expression");
-        }
+        assert!(
+            matches!(results[0].inner(), MettaValueInner::Error(_, _)),
+            "Expected an Error variant (HE-bisim wraps as `(Error <form> BadArgType)`), got: {:?}",
+            results[0]
+        );
+        let serialized = format!("{:?}", results[0]);
+        assert!(
+            serialized.contains("deep error"),
+            "Expected the user's original `\"deep error\"` to be preserved in the wrapped Error \
+             (offending form), got: {}",
+            serialized
+        );
     }
 
     #[test]
@@ -787,12 +802,22 @@ mod tests {
             }
         }
 
+        // Bucket A commit 1ae6269 (arithmetic Error-typed arg): arithmetic
+        // wraps the first Error-typed arg in `(BadArgType 1 Number ErrorType)`
+        // per HE-empirical alignment. The original "first-error" string
+        // is preserved inside the wrapped form.
         if let Some(r) = result {
-            if let MettaValueInner::Error(_, detail) = r.inner() {
-                assert_eq!(detail.as_string(), Some("first-error"));
-            } else {
-                panic!("Expected first error to propagate");
-            }
+            assert!(
+                matches!(r.inner(), MettaValueInner::Error(_, _)),
+                "Expected an Error variant (HE-bisim wraps as `(Error <form> BadArgType)`), got: {:?}",
+                r
+            );
+            let serialized = format!("{:?}", r);
+            assert!(
+                serialized.contains("first-error"),
+                "Expected the first error string `\"first-error\"` to be preserved in the wrapped Error, got: {}",
+                serialized
+            );
         } else {
             panic!("Expected first error to propagate");
         }

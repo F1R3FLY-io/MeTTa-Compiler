@@ -980,11 +980,18 @@ mod tests {
 
     #[test]
     fn function_no_return() {
+        // Bucket A commit 2ee7467 (function fresh-var): `(function expr)`
+        // when `expr` does not call `return` returns a fresh variable
+        // `$__function_result_N` representing the unresolved continuation —
+        // matching HE-empirical semantics. Accept the old "3"/"Error"
+        // outputs too in case the implementation later inlines the body.
         let results = run_eval("!(function (+ 1 2))");
         assert!(!results.is_empty(), "Function should return result");
         assert!(
-            results[0] == "3" || results[0].contains("Error"),
-            "Should return 3 or error: {}",
+            results[0] == "3"
+                || results[0].contains("Error")
+                || results[0].starts_with("$__function_result_"),
+            "Should return 3, error, or fresh-var (HE-bisim), got: {}",
             results[0]
         );
     }

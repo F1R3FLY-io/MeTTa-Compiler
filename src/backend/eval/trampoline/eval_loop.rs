@@ -942,10 +942,20 @@ fn dispatch_rule_matches<C: EvalContext>(
         } else {
             std::sync::Arc::new(rhs_carrying)
         };
+        // Task #6 Phase 4 (2026-05-18): mirror the `rhs_carrying_arc` cache
+        // for `bindings` itself. Self-recursive rules with no match bindings
+        // (e.g. `(= (rec) (rec))`) reach this push with `bindings.is_empty()
+        // == true` every iteration; reusing the empty Arc replaces a fresh
+        // heap allocation with a refcount bump on the hot recursion path.
+        let bindings_arc = if bindings.is_empty() {
+            crate::backend::eval::trampoline::types::empty_shared_bindings()
+        } else {
+            std::sync::Arc::new(bindings)
+        };
         if rhs.has_variables_fast() {
             work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
-                bindings: std::sync::Arc::new(bindings),
+                bindings: bindings_arc,
                 env,
                 depth: depth + 1,
                 is_tail_call: true,
@@ -1072,10 +1082,20 @@ fn dispatch_rule_matches<C: EvalContext>(
         // position relative to the rule's caller — applies to both the
         // single-match fast path (above) and this multi-match shim
         // (each branch is independently tail-called by its caller).
+        //
+        // Task #6 Phase 4 (2026-05-18): same empty-Arc reuse on the
+        // multi-match first-branch path. Only compute the cached Arc
+        // inside the variable-RHS branch — the else branch borrows
+        // `bindings` (apply_bindings).
         if rhs.has_variables_fast() {
+            let bindings_arc = if bindings.is_empty() {
+                crate::backend::eval::trampoline::types::empty_shared_bindings()
+            } else {
+                std::sync::Arc::new(bindings)
+            };
             work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
-                bindings: std::sync::Arc::new(bindings),
+                bindings: bindings_arc,
                 env,
                 depth: depth + 1,
                 is_tail_call: true,
@@ -6354,9 +6374,30 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 template: new_template,
                                 bindings: new_bindings,
                             } => {
+                                // Task #6 Phase 4 (2026-05-18): TCO for
+                                // EvalWithBindings recursive RHS. When the
+                                // deferred chain re-emits an empty-bindings
+                                // step at the same template hash AND we are
+                                // already a tail call AND no outer ambient
+                                // carrying would be lost, reuse the cached
+                                // empty-bindings Arc (refcount bump) instead
+                                // of allocating a fresh Arc<Bindings> per
+                                // recursion step. Conservative gate per the
+                                // plan: any non-trivial binding flow (PLN
+                                // Robot's heavy EvalWithBindings traffic)
+                                // falls through unchanged.
+                                let new_bindings_arc = if new_bindings.is_empty()
+                                    && is_tail_call
+                                    && carrying_bindings.is_empty()
+                                    && new_template.hash_value() == template.hash_value()
+                                {
+                                    crate::backend::eval::trampoline::types::empty_shared_bindings()
+                                } else {
+                                    std::sync::Arc::new(new_bindings)
+                                };
                                 work_stack.push(WorkItem::EvalWithBindings {
                                     template: new_template,
-                                    bindings: std::sync::Arc::new(new_bindings),
+                                    bindings: new_bindings_arc,
                                     env,
                                     depth,
                                     is_tail_call,

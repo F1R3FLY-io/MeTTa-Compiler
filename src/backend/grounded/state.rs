@@ -157,6 +157,36 @@ pub fn find_error<V: MettaValueTrait>(results: &[V]) -> Option<&V> {
     results.iter().find(|v| v.is_error())
 }
 
+/// Build a HE-aligned `BadArgType` error atom for the case when a grounded
+/// op's argument evaluated to an `Error` value (T04/046).
+///
+/// HE empirically returns `(Error (op args...) (BadArgType POS EXPECTED ErrorType))`
+/// — see `hyperon-experimental/lib/src/metta/runner/stdlib/atom.rs` Error
+/// emission shape (spec §10.6). The position is 1-indexed.
+///
+/// Use this in arithmetic / comparison / logical ops after `find_error`
+/// detects an Error-typed argument; produces the structured BadArgType
+/// shape instead of forwarding the inner error verbatim.
+pub fn error_to_bad_arg_type<V, F>(
+    state: &GroundedState<V>,
+    factory: &F,
+    arg_idx: usize,
+    expected_type: &str,
+) -> V
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    let call = state.call_form(factory);
+    let detail = factory.sexpr(vec![
+        factory.atom("BadArgType"),
+        factory.long((arg_idx + 1) as i64),
+        factory.atom(expected_type),
+        factory.atom("ErrorType"),
+    ]);
+    factory.error(call, detail)
+}
+
 /// Get a friendly type name for error messages.
 ///
 /// Version that uses `MettaValueTrait::friendly_type_name()`.

@@ -15,7 +15,7 @@
 //! instead of pattern matching on `MettaValueInner`, enabling them to work with
 //! both heap and arena allocation without conversion.
 
-use super::state::{find_error, GroundedState, GroundedWork};
+use super::state::{error_to_bad_arg_type, find_error, GroundedState, GroundedWork};
 use super::traits::GroundedOperationTCO;
 use super::ExecError;
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
@@ -49,10 +49,13 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AddOp {
                 }
             }
             1 => {
-                // Step 1: Check first arg for errors, request second argument
+                // Step 1: Check first arg for errors, request second argument.
+                // HE-bisim: when arg is an Error, emit BadArgType wrap rather
+                // than forwarding the inner error verbatim (T04/046).
                 let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
-                if let Some(err) = find_error(a_results) {
-                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                if find_error(a_results).is_some() {
+                    let err = error_to_bad_arg_type(state, factory, 0, "Number");
+                    return GroundedWork::Done(vec![(err, None)]);
                 }
                 state.step = 2;
                 GroundedWork::EvalArg {
@@ -65,8 +68,9 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AddOp {
                 let a_results = state.get_arg(0).expect("arg 0 should be evaluated");
                 let b_results = state.get_arg(1).expect("arg 1 should be evaluated");
 
-                if let Some(err) = find_error(b_results) {
-                    return GroundedWork::Done(vec![(err.clone(), None)]);
+                if find_error(b_results).is_some() {
+                    let err = error_to_bad_arg_type(state, factory, 1, "Number");
+                    return GroundedWork::Done(vec![(err, None)]);
                 }
 
                 let mut results = Vec::new();

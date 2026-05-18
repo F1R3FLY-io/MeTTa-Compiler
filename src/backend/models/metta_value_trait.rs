@@ -82,6 +82,21 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// Check if this is an Error variant
     fn is_error(&self) -> bool;
 
+    /// Check if this value is an error *sentinel* — either the dedicated
+    /// Error variant OR the user-level surface form `(Error <call> <detail>)`.
+    /// Default impl matches `is_error()` plus the SExpr-with-`Error`-head shape.
+    /// Used by arithmetic / comparison op error-arg checks to be tier-uniform.
+    #[inline]
+    fn is_error_sentinel(&self) -> bool {
+        if self.is_error() {
+            return true;
+        }
+        if let Some(items) = self.as_sexpr() {
+            return items.first().and_then(|h| h.as_atom()) == Some("Error");
+        }
+        false
+    }
+
     /// Check if this is a Type variant
     fn is_type(&self) -> bool;
 

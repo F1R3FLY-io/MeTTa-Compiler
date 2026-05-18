@@ -1115,6 +1115,23 @@ impl MettaValue {
         }
     }
 
+    /// Check if this value is an error *sentinel* — either the dedicated
+    /// `Error` variant OR the user-level surface form `(Error <call> <detail>)`
+    /// (an SExpr whose head is `Atom("Error")`). T1 bytecode often produces
+    /// the SExpr form when compiling literal Error atoms; using this helper
+    /// keeps arithmetic / comparison op-error-arg checks tier-uniform.
+    /// Distinct from `is_error()` which matches the narrow variant only.
+    #[inline]
+    pub fn is_error_sentinel(&self) -> bool {
+        if self.is_error() {
+            return true;
+        }
+        if let Some(items) = self.as_sexpr() {
+            return items.first().and_then(|h| h.as_atom()) == Some("Error");
+        }
+        false
+    }
+
     /// Check if this is a Type variant (transparent through Spanned)
     #[inline]
     pub fn is_type(&self) -> bool {

@@ -1516,9 +1516,9 @@ where
             Opcode::ReturnMulti => return self.op_return_multi(),
 
             // === Arithmetic ===
-            Opcode::Add => self.op_binary_num(|a, b| a.wrapping_add(b), |a, b| a + b)?,
-            Opcode::Sub => self.op_binary_num(|a, b| a.wrapping_sub(b), |a, b| a - b)?,
-            Opcode::Mul => self.op_binary_num(|a, b| a.wrapping_mul(b), |a, b| a * b)?,
+            Opcode::Add => self.op_binary_num("+", |a, b| a.wrapping_add(b), |a, b| a + b)?,
+            Opcode::Sub => self.op_binary_num("-", |a, b| a.wrapping_sub(b), |a, b| a - b)?,
+            Opcode::Mul => self.op_binary_num("*", |a, b| a.wrapping_mul(b), |a, b| a * b)?,
             Opcode::Div => {
                 // Spec §13.2: integer / 0 → DivisionByZero; otherwise wrapping_div
                 // (so i64::MIN / -1 wraps to i64::MIN, no SIGFPE/error).
@@ -2345,24 +2345,42 @@ where
     // === Helper Methods for Opcodes ===
 
     /// Binary numeric operation helper.
+    ///
+    /// `op_name` is the printable op symbol ("+", "-", "*", …) used to build
+    /// the HE-aligned `(Error (op a b) (BadArgType pos Number ErrorType))`
+    /// shape when one of the arguments is itself an `Error` atom.
     #[inline]
     fn op_binary_num(
         &mut self,
+        op_name: &str,
         int_op: impl Fn(i64, i64) -> i64,
         float_op: impl Fn(f64, f64) -> f64,
     ) -> VmResult<()> {
         let b = self.pop()?;
         let a = self.pop()?;
-        // Error propagation per HE semantics: if either operand is already an
-        // Error atom, propagate it (deepest error wins). Avoids wrapping a
-        // nested error in a fresh "TypeError: expected number" — matches T0's
-        // trampoline error-propagation in `arithmetic.rs:eval_*`.
-        if a.is_error() {
-            self.push(a);
-            return Ok(());
-        }
-        if b.is_error() {
-            self.push(b);
+        // Error propagation per HE semantics: when either operand is an
+        // Error atom, emit `(Error (op a b) (BadArgType POS Number ErrorType))`
+        // (1-indexed position) rather than forwarding the inner Error.
+        // T04/046 verifies; matches T0's `error_to_bad_arg_type` helper in
+        // `grounded/state.rs`. Use the *sentinel* check so we catch the
+        // SExpr-with-`Error`-head form that T1 compiles literal Error atoms
+        // into (the dedicated `is_error()` variant only fires after a
+        // runtime Error has been raised by another opcode).
+        if a.is_error_sentinel() || b.is_error_sentinel() {
+            let arg_idx = if a.is_error_sentinel() { 1 } else { 2 };
+            let call = self.factory.sexpr(vec![
+                self.factory.atom(op_name),
+                a.clone(),
+                b.clone(),
+            ]);
+            let detail = self.factory.sexpr(vec![
+                self.factory.atom("BadArgType"),
+                self.factory.long(arg_idx as i64),
+                self.factory.atom("Number"),
+                self.factory.atom("ErrorType"),
+            ]);
+            let err = self.factory.error(call, detail);
+            self.push(err);
             return Ok(());
         }
         // BUG-T0-T1-003 (spec §14.1.1 Ext-3): Empty annihilation in arithmetic.

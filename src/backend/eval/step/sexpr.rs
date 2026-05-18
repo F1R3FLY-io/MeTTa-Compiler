@@ -584,13 +584,9 @@ where
                 // is used by internal full-reduction paths (progn, metta).
                 "eval" => {
                     if items.len() != 2 {
-                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
                             ctx.factory().sexpr(items),
-                            ctx.factory().string(&format!(
-                                "eval requires exactly 1 argument, got {}. Usage: (eval expr)",
-                                arg_count
-                            )),
+                            ctx.factory().atom("IncorrectNumberOfArguments"),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -780,13 +776,9 @@ where
                 // function - defers evaluation to trampoline
                 "function" => {
                     if items.len() != 2 {
-                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
                             ctx.factory().sexpr(items),
-                            ctx.factory().string(&format!(
-                            "function requires exactly 1 argument, got {}. Usage: (function expr)",
-                            arg_count
-                            )),
+                            ctx.factory().atom("IncorrectNumberOfArguments"),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -820,13 +812,9 @@ where
                 // chain - defers evaluation to trampoline
                 "chain" => {
                     if items.len() != 4 {
-                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        ctx.factory().sexpr(items),
-                        ctx.factory().string(&format!(
-                            "chain requires exactly 3 arguments, got {}. Usage: (chain expr $var body)",
-                            arg_count
-                        )),
+                            ctx.factory().sexpr(items),
+                            ctx.factory().atom("IncorrectNumberOfArguments"),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
@@ -1066,13 +1054,9 @@ where
                 // unify - defers pattern evaluation to trampoline
                 "unify" => {
                     if items.len() != 5 {
-                        let arg_count = items.len() - 1;
                         let err = ctx.factory().error(
-                        ctx.factory().sexpr(items),
-                        ctx.factory().string(&format!(
-                            "unify requires exactly 4 arguments, got {}. Usage: (unify pattern1 pattern2 success failure)",
-                            arg_count
-                        )),
+                            ctx.factory().sexpr(items),
+                            ctx.factory().atom("IncorrectNumberOfArguments"),
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }

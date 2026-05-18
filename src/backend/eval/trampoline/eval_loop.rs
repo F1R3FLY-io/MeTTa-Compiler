@@ -914,13 +914,21 @@ fn dispatch_rule_matches<C: EvalContext>(
             };
         // Phase 1: Lazy binding — defer apply_bindings via EvalWithBindings.
         // When RHS has no variables, push as Eval directly (O(1) pointer copy).
+        //
+        // Task #6 Phase 2 (2026-05-18): Mark rule-RHS evaluations as
+        // tail-calls. A user-defined rule's RHS is in tail position
+        // relative to its caller — the dispatch returns directly to
+        // whoever invoked the rule's head, with no intervening work.
+        // The `is_tail_call: true` flag is read by Phase 3's TCO-aware
+        // push to collapse self-recursive `Eval`s into the surrounding
+        // continuation instead of growing the work_stack.
         if rhs.has_variables_fast() {
             work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
                 bindings: std::sync::Arc::new(bindings),
                 env,
                 depth: depth + 1,
-                is_tail_call: false,
+                is_tail_call: true,
                 expected_type: None,
                 carrying_bindings: std::sync::Arc::new(rhs_carrying),
             });
@@ -947,7 +955,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                         value: chained,
                         env,
                         depth: depth + 1,
-                        is_tail_call: false,
+                        is_tail_call: true,
                         expected_type: None,
                         demand: None,
                         carrying_bindings: std::sync::Arc::new(rhs_carrying),
@@ -957,7 +965,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                         value: rhs,
                         env,
                         depth: depth + 1,
-                        is_tail_call: false,
+                        is_tail_call: true,
                         expected_type: None,
                         demand: None,
                         carrying_bindings: std::sync::Arc::new(rhs_carrying),
@@ -1033,14 +1041,18 @@ fn dispatch_rule_matches<C: EvalContext>(
                     None => crate::backend::models::GenericBindings::new(),
                 }
             };
-        // Evaluate the first branch
+        // Evaluate the first branch.
+        // Task #6 Phase 2 (2026-05-18): rule-RHS dispatch is in tail
+        // position relative to the rule's caller — applies to both the
+        // single-match fast path (above) and this multi-match shim
+        // (each branch is independently tail-called by its caller).
         if rhs.has_variables_fast() {
             work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
                 bindings: std::sync::Arc::new(bindings),
                 env,
                 depth: depth + 1,
-                is_tail_call: false,
+                is_tail_call: true,
                 expected_type: None,
                 carrying_bindings: std::sync::Arc::new(lazy_carrying),
             });
@@ -1049,7 +1061,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                 value: apply_bindings(&rhs, &bindings, ctx.factory()),
                 env,
                 depth: depth + 1,
-                is_tail_call: false,
+                is_tail_call: true,
                 expected_type: None,
                 demand: None,
                 carrying_bindings: std::sync::Arc::new(lazy_carrying),

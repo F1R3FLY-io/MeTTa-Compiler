@@ -3230,14 +3230,33 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     );
                                 }
                             }
-                            // First evaluation: mark active, push CompleteSubgoal.
-                            crate::backend::eval::cesk::mark_eval_active(tabling_hash);
-                            continuations.push(Continuation::CompleteSubgoal {
-                                expr_hash: tabling_hash,
-                                env: env.clone(),
-                                depth,
-                                start_epoch: mutation_epoch(),
-                            });
+                            // Task #6 Phase 7 (2026-05-18): collapse duplicate
+                            // CompleteSubgoal for the SAME hash. CRITICAL: the
+                            // mark_eval_active / unmark_eval_active discipline
+                            // must remain BALANCED — when we elide a
+                            // CompleteSubgoal push we MUST also elide the
+                            // matching mark_eval_active so that the single
+                            // popping unmark_eval_active doesn't underflow
+                            // the refcount for the parent frame.
+                            //
+                            // Cycle detection (is_actively_evaluating above)
+                            // still returns TRUE because the outer frame's
+                            // mark_eval_active set count > 0.
+                            let already_pending = matches!(
+                                continuations.last(),
+                                Some(Continuation::CompleteSubgoal { expr_hash: prev, .. })
+                                    if *prev == tabling_hash
+                            );
+                            if !already_pending {
+                                // First evaluation: mark active, push CompleteSubgoal.
+                                crate::backend::eval::cesk::mark_eval_active(tabling_hash);
+                                continuations.push(Continuation::CompleteSubgoal {
+                                    expr_hash: tabling_hash,
+                                    env: env.clone(),
+                                    depth,
+                                    start_epoch: mutation_epoch(),
+                                });
+                            }
                         }
                     }
                 }
@@ -3477,12 +3496,27 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // canonical SubgoalTable, dominating the EVAL_MEMO write.
                 if let Some(h) = memo_hash {
                     if !subgoal_path_taken {
-                        continuations.push(Continuation::MemoizeResult {
-                            expr_hash: h,
-                            mutation_epoch: mutation_epoch(),
-                            env: env.clone(),
-                            depth,
-                        });
+                        // Task #6 Phase 7 (2026-05-18): collapse duplicate
+                        // MemoizeResult for the SAME hash. Self-recursive
+                        // descent (`(rec) → (rec)`) would otherwise push
+                        // one MemoizeResult per outer iteration (~48B each),
+                        // leading to unbounded growth of the continuations
+                        // Vec. A single MemoizeResult per distinct hash
+                        // suffices: when it fires it caches results — any
+                        // prior identical frame is redundant.
+                        let already_pending = matches!(
+                            continuations.last(),
+                            Some(Continuation::MemoizeResult { expr_hash: prev, .. })
+                                if *prev == h
+                        );
+                        if !already_pending {
+                            continuations.push(Continuation::MemoizeResult {
+                                expr_hash: h,
+                                mutation_epoch: mutation_epoch(),
+                                env: env.clone(),
+                                depth,
+                            });
+                        }
                     }
                 }
 

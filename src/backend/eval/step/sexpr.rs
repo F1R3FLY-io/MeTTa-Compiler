@@ -782,6 +782,38 @@ where
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
+                    // §06.10.4: function body must be Expression. T04/022.
+                    // HE empirical: when body is not an Expression (e.g.
+                    // `(function Bar)` where `Bar` is a bare atom), HE emits
+                    //   (Error (function Bar) expected: (function (: <body> Expression)), found: (function Bar))
+                    // The detail is rendered as a sequence of atoms (HE's
+                    // string-format printer drops quotes in error position).
+                    // The harness's parser treats `,` as a standalone atom
+                    // (whitespace-delimited word tokenizer). So we build the
+                    // error as a 7-element SExpr with head "Error", the comma
+                    // as its own atom, and the rest as separate atoms /
+                    // sub-sexprs — matching the harness's parsed shape.
+                    if items[1].as_sexpr().is_none() {
+                        let call_form = ctx.factory().sexpr(items.clone());
+                        let body_shape_sexpr = ctx.factory().sexpr(vec![
+                            ctx.factory().atom("function"),
+                            ctx.factory().sexpr(vec![
+                                ctx.factory().atom(":"),
+                                ctx.factory().atom("<body>"),
+                                ctx.factory().atom("Expression"),
+                            ]),
+                        ]);
+                        let err = ctx.factory().sexpr(vec![
+                            ctx.factory().atom("Error"),
+                            call_form.clone(),
+                            ctx.factory().atom("expected:"),
+                            body_shape_sexpr,
+                            ctx.factory().atom(","),
+                            ctx.factory().atom("found:"),
+                            call_form,
+                        ]);
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
                     return GenericEvalStep::StartFunction {
                         expr: items[1].clone(),
                         env,

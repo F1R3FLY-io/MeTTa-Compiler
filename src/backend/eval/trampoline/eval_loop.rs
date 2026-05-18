@@ -9187,7 +9187,9 @@ fn process_continuation<C: EvalContext>(
 
             // Prune: Empty literals (failed rule applications) are dead
             // branches; discard them. Keep error branches (they propagate).
-            result_values.retain(|(v, _)| !v.is_empty());
+            // Use the broader sentinel check to also catch user-level
+            // `Atom("Empty")` (HE-bisim §06.4.5; T04/063, T04/082-dir4).
+            result_values.retain(|(v, _)| !v.is_empty_sentinel());
 
             if result_values.is_empty() {
                 work_stack.push(WorkItem::Resume {
@@ -9973,10 +9975,11 @@ fn process_continuation<C: EvalContext>(
                 }
             }
 
-            // Filter out Empty sentinels
+            // Filter out Empty sentinels (both `ValueView::Empty` and the
+            // user-visible `Atom("Empty")` symbol — HE-bisim §06.4.5).
             let filtered_results: Vec<_> = atom_results
                 .into_iter()
-                .filter(|(v, _)| !v.is_empty())
+                .filter(|(v, _)| !v.is_empty_sentinel())
                 .collect();
 
             // Handle case when evaluation returns no results
@@ -10336,8 +10339,9 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (eval_results, eval_env) = result;
 
-            // Collect non-empty evaluated results
-            evaluated.extend(eval_results.into_iter().filter(|(v, _)| !v.is_empty()));
+            // Collect non-empty evaluated results (broader sentinel check —
+            // catches both `ValueView::Empty` and `Atom("Empty")`)
+            evaluated.extend(eval_results.into_iter().filter(|(v, _)| !v.is_empty_sentinel()));
 
             if let Some((next_raw, next_raw_bindings)) = remaining_raw.next() {
                 // Task #68 gap-fix: preserve next_raw's bindings (previously
@@ -12628,7 +12632,7 @@ fn process_continuation<C: EvalContext>(
             evaluated.extend(
                 eval_results
                     .into_iter()
-                    .filter(|(v, _)| !v.is_empty())
+                    .filter(|(v, _)| !v.is_empty_sentinel())
                     .filter_map(|(v, child_b)| {
                         let mut merged = carrying.clone();
                         if !merged.merge(&child_b) {

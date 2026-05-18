@@ -1219,6 +1219,17 @@ impl MettaValue {
         }
     }
 
+    /// Check if this value is the Empty *sentinel* — i.e. either the
+    /// dedicated `ValueView::Empty` variant OR the user-visible symbol
+    /// `Atom("Empty")`. Use this in spec §06.4.5 / §10.4 filter sites
+    /// (collapse Empty filtering, top-level directive return) where HE
+    /// treats both representations as the same sentinel.
+    /// Distinct from `is_empty()` which matches the narrow variant only.
+    #[inline]
+    pub fn is_empty_sentinel(&self) -> bool {
+        self.is_empty() || self.as_atom() == Some("Empty")
+    }
+
     /// Check if this value is a variable (Atom starting with $) (transparent through Spanned)
     #[inline]
     pub fn is_variable(&self) -> bool {

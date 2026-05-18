@@ -670,8 +670,13 @@ fn eval_metta(
         }
 
         // Format results WHILE guard is alive — values are not yet released.
-        let filtered_results: Vec<MettaValue> =
-            results.into_iter().filter(|v| !v.is_empty()).collect();
+        // Filter Empty sentinels (both `ValueView::Empty` and user-visible
+        // `Atom("Empty")`) — spec §10.4 directive-return Empty filter;
+        // T04/082 dir-4 verifies.
+        let filtered_results: Vec<MettaValue> = results
+            .into_iter()
+            .filter(|v| !v.is_empty_sentinel())
+            .collect();
 
         // Root results against GC between eval() and format_results().
         //

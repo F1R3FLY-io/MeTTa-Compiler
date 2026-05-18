@@ -5156,9 +5156,11 @@ where
 
         // Collect the current value from the stack (one result from the body).
         // Phase C: snapshot bindings in parallel when inside collapse-bind.
+        // Filter Empty sentinels (both `ValueView::Empty` and user-visible
+        // `Atom("Empty")`) — HE-bisim §06.4.5; T04/063 verifies.
         if self.value_stack.len() > value_stack_height {
             let value = self.pop()?;
-            if !value.is_unit() {
+            if !value.is_unit() && !value.is_empty_sentinel() {
                 if self.unreduced {
                     self.had_unreduced_result = true;
                 }
@@ -5178,11 +5180,12 @@ where
             return self.op_fail_within_collapse();
         }
 
-        // All alternatives exhausted — finalize collapse
+        // All alternatives exhausted — finalize collapse.
+        // Filter both Unit and Empty sentinels (HE-bisim §06.4.5).
         let frame = self.collapse_frames.pop().expect("checked above");
         let collected: Vec<V> = std::mem::take(&mut self.results)
             .into_iter()
-            .filter(|v| !v.is_unit())
+            .filter(|v| !v.is_unit() && !v.is_empty_sentinel())
             .collect();
 
         // Restore outer results

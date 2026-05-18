@@ -106,6 +106,18 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// Check if this is an Empty variant
     fn is_empty(&self) -> bool;
 
+    /// Check if this value is the Empty *sentinel* — i.e. either the
+    /// dedicated Empty variant OR the user-visible `Atom("Empty")` symbol.
+    /// Use this in spec §06.4.5 / §10.4 filter sites (collapse Empty
+    /// filtering, top-level directive return) where HE treats both
+    /// representations as the same sentinel.
+    /// Default impl matches the broader sentinel via `is_empty()` plus an
+    /// `as_atom() == Some("Empty")` check.
+    #[inline]
+    fn is_empty_sentinel(&self) -> bool {
+        self.is_empty() || self.as_atom() == Some("Empty")
+    }
+
     /// Check if this value has a Spanned wrapper (carries source location)
     fn is_spanned(&self) -> bool;
 

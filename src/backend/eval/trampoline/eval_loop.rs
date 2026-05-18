@@ -4954,25 +4954,34 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let mut out: Vec<BoundValue> = Vec::with_capacity(children.len());
                             for child in children.iter() {
                                 if let Some(items) = child.as_sexpr() {
-                                    match items.len() {
-                                        2 => {
-                                            // (atom (Bindings ...))
-                                            let atom = items[0].clone();
-                                            let bindings_sexpr = &items[1];
-                                            let bindings =
-                                                crate::backend::eval::trampoline::eval_loop::decode_bindings_from_sexpr(
-                                                    bindings_sexpr,
-                                                    ctx.factory(),
-                                                );
-                                            out.push(crate::backend::eval::trampoline::types::bv_with(
-                                                atom, bindings,
-                                            ));
-                                        }
-                                        _ => {
-                                            // Malformed pair — treat as raw atom
-                                            // with empty bindings (forgiving HE).
-                                            out.push(bv(child.clone()));
-                                        }
+                                    // HE-bisim binding-pair shapes accepted:
+                                    //   2 children: `(value (Bindings ...))` — explicit
+                                    //                non-empty binding SExpr.
+                                    //   3 children: `(value { })` — HE-style empty
+                                    //                bindings rendered as two atoms
+                                    //                `{` and `}` (T04/025, T04/026).
+                                    //                Same encoding used by collapse-bind.
+                                    let is_empty_curly = items.len() == 3
+                                        && items[1].as_atom() == Some("{")
+                                        && items[2].as_atom() == Some("}");
+                                    if is_empty_curly {
+                                        out.push(bv(items[0].clone()));
+                                    } else if items.len() == 2 {
+                                        // (atom (Bindings ...))
+                                        let atom = items[0].clone();
+                                        let bindings_sexpr = &items[1];
+                                        let bindings =
+                                            crate::backend::eval::trampoline::eval_loop::decode_bindings_from_sexpr(
+                                                bindings_sexpr,
+                                                ctx.factory(),
+                                            );
+                                        out.push(crate::backend::eval::trampoline::types::bv_with(
+                                            atom, bindings,
+                                        ));
+                                    } else {
+                                        // Other shapes — treat as raw atom with
+                                        // empty bindings (forgiving HE).
+                                        out.push(bv(child.clone()));
                                     }
                                 } else {
                                     out.push(bv(child.clone()));

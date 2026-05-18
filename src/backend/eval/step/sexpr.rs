@@ -2288,6 +2288,35 @@ where
                         );
                         return GenericEvalStep::Done((smallvec![err], env));
                     }
+                    // HE-bisim §06.12.3: superpose-bind takes a *collapsed*
+                    // tuple of `(value bindings)` pairs — i.e. the result of
+                    // `collapse-bind` — and fans it back out as nondet.
+                    // T04/027 verifies the inverse property
+                    // `superpose-bind ∘ collapse-bind ≅ id`.
+                    //
+                    // If the arg's head is a reducible op (e.g. literal
+                    // `(collapse-bind …)` source form), we pre-evaluate it
+                    // via the standard `EvalGroundedArgs` mechanism so the
+                    // re-dispatched `superpose-bind` sees the evaluated
+                    // tuple. Already-evaluated args (whose head is not an
+                    // atom, or whose head is a non-reducible data atom)
+                    // proceed directly to `StartSuperposeBind`.
+                    let needs_preeval = items[1]
+                        .as_sexpr()
+                        .and_then(|s| s.first())
+                        .and_then(|h| h.as_atom())
+                        .map(|head| {
+                            crate::backend::eval::trampoline::dispatch_hints::is_reducible_head(head)
+                        })
+                        .unwrap_or(false);
+                    if needs_preeval {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: vec![1],
+                            env,
+                            depth,
+                        };
+                    }
                     return GenericEvalStep::StartSuperposeBind {
                         arg: items[1].clone(),
                         env,

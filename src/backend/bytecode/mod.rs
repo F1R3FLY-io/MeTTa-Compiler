@@ -371,8 +371,12 @@ pub fn can_compile(expr: &MettaValue) -> bool {
                     "quote" => return true,
                     "unquote" => true,
                     "superpose" => return true,
-                    "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" => true,
-                    "decons-atom" | "empty" => true,
+                    "car-atom" | "cdr-atom" | "size-atom" => true,
+                    "empty" => true,
+                    // cons-atom and decons-atom: HE treats their args as
+                    // literal structure (T04/020, T04/061 verify). Route to
+                    // T0 always (see `can_compile_with_env` for rationale).
+                    "cons-atom" | "decons-atom" => false,
                     "repr" => true,
                     "get-metatype" => true,
                     "let" | "let*" => true,
@@ -471,8 +475,16 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     "quote" => return true,
                     "unquote" => true,
                     "superpose" => return true,
-                    "car-atom" | "cdr-atom" | "cons-atom" | "size-atom" | "decons-atom"
-                    | "empty" => true,
+                    "car-atom" | "cdr-atom" | "size-atom" | "empty" => true,
+                    // cons-atom and decons-atom: HE treats their args as
+                    // literal structure (T04/020, T04/061 verify). The T1
+                    // ConsAtom/DeconsAtom opcodes both evaluate the args
+                    // via `self.compile(...)` before applying, diverging
+                    // from HE. Route to T0 instead — sexpr.rs Arm A1 (the
+                    // cons-atom / decons-atom dispatch) calls the native
+                    // generic op directly on UNREDUCED items, matching
+                    // HE byte-for-byte.
+                    "cons-atom" | "decons-atom" => false,
                     "repr" => true,
                     "get-metatype" => true,
                     "let" | "let*" => true,

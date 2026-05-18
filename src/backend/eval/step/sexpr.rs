@@ -1750,11 +1750,28 @@ where
                 // See `crate::backend::environment::dispatch_overrides` for the
                 // partition rationale and the `OverridableOpId` enum.
 
-                // Arm A: TRUE HE primitives — never overridable.
-                // Uses type-aware pre-eval: meta-typed args (Atom, Variable)
+                // Arm A1: cons-atom / decons-atom — HE treats both args as
+                // literal structure, NEVER pre-evaluating. T04/020 and
+                // T04/061 verify this empirically:
+                //   `(cons-atom 5 (+ 1 2))` → `(5 + 1 2)` (no reduction)
+                //   `(decons-atom (cons-atom a (b c)))` →
+                //     `(cons-atom (a (b c)))` (the inner cons-atom is
+                //     preserved as expression structure).
+                // Going through `EvalGroundedArgs` here would reduce the
+                // chain/cons-atom/etc. arg, diverging from HE.
+                "cons-atom" => {
+                    let results = eval_cons_atom_generic(&items, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+                "decons-atom" => {
+                    let results = eval_decons_atom_generic(&items, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+
+                // Arm A2: size-atom — pre-eval the (Expression) arg where
+                // type signature allows; meta-typed args (Atom, Variable)
                 // are NOT pre-evaluated, matching HE embedded-op semantics.
-                "cons-atom" | "decons-atom" | "size-atom" | "max-atom" | "min-atom"
-                | "index-atom" => {
+                "size-atom" => {
                     let reducible_indices = list_op_reducible_arg_indices_typed(op, &items, &env);
                     if !reducible_indices.is_empty() {
                         return GenericEvalStep::EvalGroundedArgs {
@@ -1764,15 +1781,46 @@ where
                             depth,
                         };
                     }
-                    let results = match op {
-                        "cons-atom" => eval_cons_atom_generic(&items, ctx.factory()),
-                        "decons-atom" => eval_decons_atom_generic(&items, ctx.factory()),
-                        "size-atom" => eval_size_atom_generic(&items, ctx.factory()),
-                        "max-atom" => eval_max_atom_generic(&items, ctx.factory()),
-                        "min-atom" => eval_min_atom_generic(&items, ctx.factory()),
-                        "index-atom" => eval_index_atom_generic(&items, ctx.factory()),
-                        _ => unreachable!("Arm A list op dispatch mismatch"),
-                    };
+                    let results = eval_size_atom_generic(&items, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+                "max-atom" => {
+                    let reducible_indices = list_op_reducible_arg_indices_typed(op, &items, &env);
+                    if !reducible_indices.is_empty() {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: reducible_indices,
+                            env,
+                            depth,
+                        };
+                    }
+                    let results = eval_max_atom_generic(&items, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+                "min-atom" => {
+                    let reducible_indices = list_op_reducible_arg_indices_typed(op, &items, &env);
+                    if !reducible_indices.is_empty() {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: reducible_indices,
+                            env,
+                            depth,
+                        };
+                    }
+                    let results = eval_min_atom_generic(&items, ctx.factory());
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+                "index-atom" => {
+                    let reducible_indices = list_op_reducible_arg_indices_typed(op, &items, &env);
+                    if !reducible_indices.is_empty() {
+                        return GenericEvalStep::EvalGroundedArgs {
+                            items,
+                            grounded_indices: reducible_indices,
+                            env,
+                            depth,
+                        };
+                    }
+                    let results = eval_index_atom_generic(&items, ctx.factory());
                     return GenericEvalStep::Done((SmallVec::from_vec(results), env));
                 }
 

@@ -130,15 +130,36 @@ where
         return GenericEvalStep::Done((smallvec![ctx.factory().sexpr(vec![])], env));
     }
 
-    // HE-bisim §06.4.6: `(pragma! max-stack-depth N)` is parsed and
-    // stored on env (see `pragma!` arm below + `PragmaSettings::max_stack_depth`).
-    // Enforcement of the spec-mandated `(Error <form> StackOverflow)`
-    // emission for T04/047 is intentionally NOT a depth-counter band-aid
-    // here, per [[feedback-stack-safety-mandate]]: artificial depth
-    // limits don't address the root cause of unbounded memory growth in
-    // self-referential rules like `(= (rec) (rec))`. The principled
-    // wiring lives at the trampoline-allocation watermark + per-rule
-    // TCO/CPS layer designed by Task #6's Plan-agent output.
+    // HE-bisim §06.4.6: spec-mandated `(pragma! max-stack-depth N)` enforcement.
+    //
+    // This emits `(Error <form> StackOverflow)` when the user has explicitly
+    // set a `max-stack-depth` pragma AND `depth > N`. This is a USER-OPT-IN
+    // observational/diagnostic mechanism — NOT memory protection.
+    //
+    // The default is `None` (no depth cap), preserving the
+    // [[feedback-stack-safety-mandate]]: no artificial depth limits in the
+    // default behavior. Memory protection for runaway recursion like
+    // `(= (rec) (rec)) !(rec)` comes from:
+    //   * the trampoline's outer cycle detection (via subgoal tabling)
+    //   * deterministic-chain hash-cycle cap (Task #6 Phase 5)
+    //   * tail-call optimization at rule-RHS push sites (Phases 2-4)
+    //   * `MemoizeResult`/`CompleteSubgoal` continuation collapse (Phase 7)
+    //
+    // This depth check does NOT and CANNOT protect against unbounded memory
+    // growth — it is the §06.4.6 spec-mandated diagnostic the user requests
+    // via `(pragma! max-stack-depth N)` to surface deep-call sites in their
+    // own code. T04-kernel/047 covers this fixture.
+    if let Some(max_depth) = env.get_max_stack_depth() {
+        if depth > max_depth {
+            let form = original_sexpr.unwrap_or_else(|| ctx.factory().sexpr(items.clone()));
+            let err = ctx.factory().sexpr(vec![
+                ctx.factory().atom("Error"),
+                form,
+                ctx.factory().atom("StackOverflow"),
+            ]);
+            return GenericEvalStep::Done((smallvec![err], env));
+        }
+    }
 
     // Cached parent operator types: computed once in the catch-all arm (Phase 1),
     // reused by find_typed_arg_indices_generic (Step 2) and

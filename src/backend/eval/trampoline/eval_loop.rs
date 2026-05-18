@@ -736,7 +736,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         crate::backend::models::GenericBindings<MettaValue>,
     )>,
     base_results: SmallVec<[BoundValue; 2]>,
-    env: MettaEnvironment,
+    env: SharedEnv,
     depth: usize,
     ctx: &C,
     work_stack: &mut Vec<WorkItem>,
@@ -744,8 +744,15 @@ fn dispatch_rule_matches<C: EvalContext>(
     demand: Option<crate::backend::eval::cesk::coroutine::Demand>,
     outer_carrying: &crate::backend::models::GenericBindings<MettaValue>,
 ) {
-    // Wrap bare env in Arc for O(1) sharing across WorkItem/Continuation fields.
-    let env: SharedEnv = Arc::new(env);
+    // Task #6 Phase 3 (2026-05-18): `env` arrives as `SharedEnv` (Arc-
+    // wrapped) directly from the caller, instead of being passed by value
+    // and re-Arc'd per call. Caller now does `Arc::clone(&env)` (refcount
+    // bump) rather than `(*env).clone()` (full `MettaEnvironment` value
+    // clone, which allocates a fresh PathBuf and other shallow fields).
+    // For self-recursive rules like `(rec) → (rec)`, this eliminates the
+    // per-iteration `Arc::new(MettaEnvironment)` allocation — Explore-
+    // identified root cause #3 — preserving constant memory across the
+    // recursion.
 
     debug_assert!(
         !matches.is_empty(),
@@ -922,6 +929,19 @@ fn dispatch_rule_matches<C: EvalContext>(
         // The `is_tail_call: true` flag is read by Phase 3's TCO-aware
         // push to collapse self-recursive `Eval`s into the surrounding
         // continuation instead of growing the work_stack.
+        //
+        // Task #6 Phase 3a (2026-05-18): per-iter `Arc::new(rhs_carrying)`
+        // is the Explore-identified leak source for `(rec) → (rec)`
+        // self-recursion. When `rhs_carrying` is the Empty variant
+        // (the overwhelmingly common case for pure-fact-style rules
+        // with no outer carrying context), reuse the cached
+        // `empty_shared_bindings()` Arc instead of allocating a fresh
+        // one each iteration. Refcount bump replaces heap allocation.
+        let rhs_carrying_arc = if rhs_carrying.is_empty() {
+            crate::backend::eval::trampoline::types::empty_shared_bindings()
+        } else {
+            std::sync::Arc::new(rhs_carrying)
+        };
         if rhs.has_variables_fast() {
             work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
@@ -930,18 +950,24 @@ fn dispatch_rule_matches<C: EvalContext>(
                 depth: depth + 1,
                 is_tail_call: true,
                 expected_type: None,
-                carrying_bindings: std::sync::Arc::new(rhs_carrying),
+                carrying_bindings: rhs_carrying_arc,
             });
         } else {
             // Normal-form short-circuit for ground RHS
             if is_memoized_normal_form(&rhs) {
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv_with(rhs, rhs_carrying)], env),
+                    result: (
+                        smallvec![bv_with(rhs, (*rhs_carrying_arc).clone())],
+                        env,
+                    ),
                 });
             } else if is_normal_form_bounded(&rhs, &*env, 2) {
                 memoize_normal_form(&rhs);
                 work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv_with(rhs, rhs_carrying)], env),
+                    result: (
+                        smallvec![bv_with(rhs, (*rhs_carrying_arc).clone())],
+                        env,
+                    ),
                 });
             } else {
                 // Phase F: Tight deterministic chain — if the ground RHS is itself
@@ -958,7 +984,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                         is_tail_call: true,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: std::sync::Arc::new(rhs_carrying),
+                        carrying_bindings: rhs_carrying_arc,
                     });
                 } else {
                     work_stack.push(WorkItem::Eval {
@@ -968,7 +994,7 @@ fn dispatch_rule_matches<C: EvalContext>(
                         is_tail_call: true,
                         expected_type: None,
                         demand: None,
-                        carrying_bindings: std::sync::Arc::new(rhs_carrying),
+                        carrying_bindings: rhs_carrying_arc,
                     });
                 }
             }
@@ -3878,7 +3904,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             dispatch_rule_matches(
                                 matches_deque,
                                 SmallVec::new(),
-                                (*env).clone(),
+                                Arc::clone(&env),
                                 depth,
                                 ctx,
                                 &mut work_stack,
@@ -4547,7 +4573,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     dispatch_rule_matches(
                                         ms,
                                         SmallVec::new(),
-                                        (*env).clone(),
+                                        Arc::clone(&env),
                                         depth + 1,
                                         ctx,
                                         &mut work_stack,
@@ -6387,7 +6413,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     dispatch_rule_matches(
                                         matches,
                                         SmallVec::new(),
-                                        (*env).clone(),
+                                        Arc::clone(&env),
                                         depth,
                                         ctx,
                                         &mut work_stack,
@@ -6651,7 +6677,7 @@ fn process_continuation<C: EvalContext>(
                                 dispatch_rule_matches(
                                     matches,
                                     base_results,
-                                    env,
+                                    Arc::new(env),
                                     depth,
                                     ctx,
                                     work_stack,
@@ -6777,7 +6803,7 @@ fn process_continuation<C: EvalContext>(
                                 dispatch_rule_matches(
                                     matches,
                                     base_results.into_iter().map(|v| (v, mb.clone())).collect(),
-                                    env,
+                                    Arc::new(env),
                                     depth,
                                     ctx,
                                     work_stack,
@@ -7759,7 +7785,7 @@ fn process_continuation<C: EvalContext>(
                     dispatch_rule_matches(
                         matches_deque,
                         SmallVec::new(),
-                        (*result_env).clone(),
+                        Arc::clone(&result_env),
                         depth,
                         ctx,
                         work_stack,
@@ -7911,7 +7937,7 @@ fn process_continuation<C: EvalContext>(
                     dispatch_rule_matches(
                         matches_deque,
                         SmallVec::new(),
-                        (*result_env).clone(),
+                        Arc::clone(&result_env),
                         depth,
                         ctx,
                         work_stack,
@@ -8655,7 +8681,7 @@ fn process_continuation<C: EvalContext>(
                                 dispatch_rule_matches(
                                     matches_deque,
                                     SmallVec::new(),
-                                    (*result_env).clone(),
+                                    Arc::clone(&result_env),
                                     depth,
                                     ctx,
                                     work_stack,

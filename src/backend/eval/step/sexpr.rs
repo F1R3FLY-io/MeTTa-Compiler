@@ -1400,19 +1400,39 @@ where
                     let then_branch = &items[3];
                     let else_branch = &items[4];
 
-                    // %Undefined% and Atom match anything, per HE semantics
+                    // HE stdlib.metta:413 defines `match-types` as
+                    //   (= (match-types $type1 $type2 $then $else)
+                    //      (function (eval (if-equal $type1 %Undefined%
+                    //        (return $then) ... (unify $type1 $type2
+                    //        (return $then) (return $else)) ...))))
+                    // — i.e. the matching step is `unify` (which binds
+                    // type variables), not a pure structural equality.
+                    // T03/066: `(match-types Number $x $x (alpha-1))`
+                    // succeeds binding $x → Number, then evaluates the
+                    // success branch `$x` → `Number` (HE empirical).
+                    // MTT was using pure `types_match_generic` (no binding);
+                    // it succeeded but the then_branch saw $x unbound and
+                    // returned `$x`. Route through `StartUnify` for binding
+                    // semantics; preserve the %Undefined% / Atom early-exit
+                    // (HE's `if-equal` short-circuits before reaching unify).
                     let undefined = ctx.factory().atom("%Undefined%");
                     let atom_type = ctx.factory().atom("Atom");
-
-                    let matched = *type1 == undefined
+                    let early_match = *type1 == undefined
                         || *type2 == undefined
                         || *type1 == atom_type
-                        || *type2 == atom_type
-                        || types_match_generic(type1, type2);
-
-                    let branch = if matched { then_branch } else { else_branch };
-                    return GenericEvalStep::EvalIfBranch {
-                        branch: branch.clone(),
+                        || *type2 == atom_type;
+                    if early_match {
+                        return GenericEvalStep::EvalIfBranch {
+                            branch: then_branch.clone(),
+                            env,
+                            depth,
+                        };
+                    }
+                    return GenericEvalStep::StartUnify {
+                        pattern1: type1.clone(),
+                        pattern2: type2.clone(),
+                        success_body: then_branch.clone(),
+                        failure_body: else_branch.clone(),
                         env,
                         depth,
                     };

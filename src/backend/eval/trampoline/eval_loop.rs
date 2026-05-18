@@ -12767,7 +12767,20 @@ fn process_continuation<C: EvalContext>(
                     });
                 }
             } else {
-                // All results evaluated — assemble the tuple
+                // All results evaluated — assemble the tuple.
+                //
+                // HE-bisim §06.11.5: if every alternative was filtered out
+                // (Empty / merge-conflict / etc.), produce ZERO results
+                // rather than one Unit `()`. T03/065 verifies: when chain
+                // ranges over a collapse-bind whose alts all reduce to
+                // Empty, the chain body must NOT fire. HE's `[]` semantics
+                // for collapse-bind on an all-Empty input.
+                if evaluated.is_empty() {
+                    work_stack.push(WorkItem::Resume {
+                        result: (SmallVec::new(), result_env),
+                    });
+                    return;
+                }
                 let result_list = if is_bind {
                     // collapse-bind: wrap each result as (result (Bindings ($var val) ...))
                     // Use per-result bindings from each BoundValue.

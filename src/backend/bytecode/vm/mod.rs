@@ -755,6 +755,22 @@ where
         self.value_stack.pop().ok_or(VmError::StackUnderflow)
     }
 
+    /// Task #6 Phase 9 (2026-05-18): drain `call_stack` down to `target_height`,
+    /// unmarking each popped frame's `active_eval_hash` so the trampoline-
+    /// shared `cesk::tabling::ACTIVE_EVAL_SET` refcount stays balanced even
+    /// when choice-point backtracking unwinds multiple frames at once. This
+    /// is the choice-point counterpart to op_return's per-frame unmark.
+    #[inline]
+    pub(crate) fn truncate_call_stack(&mut self, target_height: usize) {
+        while self.call_stack.len() > target_height {
+            if let Some(frame) = self.call_stack.pop() {
+                if let Some(h) = frame.active_eval_hash {
+                    crate::backend::eval::cesk::unmark_eval_active(h);
+                }
+            }
+        }
+    }
+
     /// Peek at the top value on the stack.
     #[inline]
     pub fn peek(&self) -> VmResult<&V> {
@@ -2306,6 +2322,11 @@ where
     /// Handle reaching the end of a bytecode chunk.
     fn handle_chunk_end(&mut self) -> VmResult<ControlFlow<Vec<V>>> {
         if let Some(frame) = self.call_stack.pop() {
+            // Task #6 Phase 9: balance the mark_eval_active issued when this
+            // frame was pushed (op_dispatch_rules path).
+            if let Some(h) = frame.active_eval_hash {
+                crate::backend::eval::cesk::unmark_eval_active(h);
+            }
             let value = self.pop().unwrap_or_else(|_| self.make_unit());
 
             // Return to caller
@@ -2832,6 +2853,11 @@ where
         }
         let value = self.pop()?;
         if let Some(frame) = self.call_stack.pop() {
+            // Task #6 Phase 9: balance the mark_eval_active issued when this
+            // frame was pushed (op_dispatch_rules path).
+            if let Some(h) = frame.active_eval_hash {
+                crate::backend::eval::cesk::unmark_eval_active(h);
+            }
             // Return to caller - restore chunk/ip
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
@@ -2905,6 +2931,11 @@ where
         let values: Vec<V> = self.value_stack.drain(base..).collect();
 
         if let Some(frame) = self.call_stack.pop() {
+            // Task #6 Phase 9: balance the mark_eval_active issued when this
+            // frame was pushed (op_dispatch_rules path).
+            if let Some(h) = frame.active_eval_hash {
+                crate::backend::eval::cesk::unmark_eval_active(h);
+            }
             self.ip = frame.return_ip;
             self.chunk = frame.return_chunk;
             self.value_stack.truncate(frame.base_ptr);
@@ -4823,7 +4854,7 @@ where
 
         while let Some(mut cp) = self.choice_points.pop() {
             self.value_stack.truncate(cp.value_stack_height);
-            self.call_stack.truncate(cp.call_stack_height);
+            self.truncate_call_stack(cp.call_stack_height);
             self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
@@ -4870,6 +4901,10 @@ where
                         locals_base: caller_locals_base,
                         caller_locals_len: caller_locals_len_snap,
                         caller_trail_len: caller_trail_len_snap,
+                        // Task #6 Phase 9: alternative-dispatch path inside an
+                        // outer op_dispatch_rules; the outer frame carries the
+                        // active_eval_hash mark, so this push does not.
+                        active_eval_hash: None,
                     });
                     let depth = self.bindings_stack.len() as u32;
                     let mut frame = GenericBindingFrame::new(depth);
@@ -5250,7 +5285,7 @@ where
         while let Some(mut cp) = self.choice_points.pop() {
             // Restore state
             self.value_stack.truncate(cp.value_stack_height);
-            self.call_stack.truncate(cp.call_stack_height);
+            self.truncate_call_stack(cp.call_stack_height);
             self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
@@ -5309,6 +5344,10 @@ where
                         locals_base: caller_locals_base,
                         caller_locals_len: caller_locals_len_snap,
                         caller_trail_len: caller_trail_len_snap,
+                        // Task #6 Phase 9: alternative-dispatch path inside an
+                        // outer op_dispatch_rules; the outer frame carries the
+                        // active_eval_hash mark, so this push does not.
+                        active_eval_hash: None,
                     });
                     let depth = self.bindings_stack.len() as u32;
                     let mut frame = GenericBindingFrame::new(depth);
@@ -6210,7 +6249,7 @@ where
             let mut cp = self.choice_points.pop().expect("len > floor");
             // Restore state
             self.value_stack.truncate(cp.value_stack_height);
-            self.call_stack.truncate(cp.call_stack_height);
+            self.truncate_call_stack(cp.call_stack_height);
             self.unwind_trail(cp.trail_height);
             self.bindings_stack.truncate(cp.bindings_stack_height);
             self.unreduced = cp.saved_unreduced;
@@ -6269,6 +6308,9 @@ where
                         caller_locals_len: caller_locals_len_snap,
                         caller_trail_len: caller_trail_len_snap,
                         locals_base: caller_locals_base,
+                        // Task #6 Phase 9: same as the alternative-dispatch
+                        // sites — the outer dispatch frame holds the mark.
+                        active_eval_hash: None,
                     });
                     // Push new binding frame (don't pollute existing frames)
                     let depth = self.bindings_stack.len() as u32;
@@ -6303,7 +6345,7 @@ where
                         VmError::Runtime("case barrier lost during backtracking".to_string())
                     })?;
                     self.value_stack.truncate(barrier.value_stack_height);
-                    self.call_stack.truncate(barrier.call_stack_height);
+                    self.truncate_call_stack(barrier.call_stack_height);
                     self.bindings_stack.truncate(barrier.bindings_stack_height);
                     self.choice_points.truncate(barrier.choice_point_floor);
                     self.unreduced = barrier.saved_unreduced;
@@ -6963,6 +7005,27 @@ where
         // `(op (nd1) (nd2))`), return cached results instead of re-matching.
         let expr_hash = expr.hash_value();
         let current_epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+
+        // Task #6 Phase 9 (2026-05-18): structural cycle detection. Mirrors
+        // trampoline `eval_loop.rs:3136-3149` semantics — if the SAME pure
+        // expression is already being evaluated on this thread's call stack
+        // (via the trampoline-shared `cesk::tabling::ACTIVE_EVAL_SET` refcount),
+        // contribute nothing rather than recursing further. This fences
+        // `(= (rec) (rec)) !(rec)` at auto/T1 tiers without depth limits per
+        // [[feedback-stack-safety-mandate]]. Side-effecting expressions (impure
+        // head per `should_memoize` gate) are NOT cycle-detected here so
+        // diagnostic loops like `(println! ...)` are unaffected — they remain
+        // bounded by the user's own program termination instead.
+        if crate::backend::eval::trampoline::dispatch_hints::should_memoize(&expr)
+            && crate::backend::eval::cesk::is_actively_evaluating(expr_hash)
+        {
+            self.unreduced = true;
+            // No value pushed: caller observes the empty contribution; outer
+            // choice points / collapse machinery handle the dead branch the
+            // same way they handle a no-match arm.
+            return Ok(());
+        }
+
         if let Some((cached_epoch, cached)) = self.dispatch_memo.get(&expr_hash) {
             if *cached_epoch == current_epoch {
                 match cached.len() {
@@ -7350,6 +7413,15 @@ where
                     let caller_locals_base = self.locals_base;
                     let caller_locals_len_snap = self.locals.len();
                     let caller_trail_len_snap = self.trail.len();
+                    // Task #6 Phase 9 (2026-05-18): mark the dispatched expression
+                    // as "actively evaluating" in the shared cesk::tabling set
+                    // so a subsequent self-recursive op_dispatch_rules entry can
+                    // detect the cycle at the entry guard and short-circuit
+                    // instead of growing the call_stack unbounded. The mark is
+                    // unmarked by op_return / op_return_multi when this frame
+                    // pops, by op_fail truncate-drain on backtrack, or by the
+                    // VM's Drop guard on error/panic exits.
+                    crate::backend::eval::cesk::mark_eval_active(expr_hash);
                     self.call_stack.push(GenericCallFrame {
                         return_ip: self.ip,
                         return_chunk: Arc::clone(&self.chunk),
@@ -7360,6 +7432,7 @@ where
                         caller_trail_len: caller_trail_len_snap,
                         saved_bindings: self.current_bindings.clone(),
                         locals_base: caller_locals_base,
+                        active_eval_hash: Some(expr_hash),
                     });
 
                     // Push new binding frame with match bindings.
@@ -8965,6 +9038,32 @@ where
 // ============================================================================
 // Convenience Constructors (F: Default)
 // ============================================================================
+
+/// Task #6 Phase 9 (2026-05-18): belt-and-suspenders unmark on VM drop.
+///
+/// `op_dispatch_rules` calls `cesk::tabling::mark_eval_active` on the
+/// expression's hash before pushing a `GenericCallFrame { active_eval_hash:
+/// Some(h), ... }`. The matching `unmark_eval_active` fires on:
+///   * normal return (`op_return`, `op_return_multi`, `handle_chunk_end`)
+///   * backtrack (`truncate_call_stack` via choice-point unwind)
+///
+/// This `Drop` impl covers the residual paths — VM error propagation,
+/// panic unwind, top-level drop without explicit unwind — so the global
+/// thread-local refcount in `cesk::tabling::ACTIVE_EVAL_SET` cannot
+/// become unbalanced even if a VM run terminates abnormally.
+impl<V, F> Drop for GenericBytecodeVM<V, F>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + PartialEq + 'static,
+    F: MettaValueFactory<V> + Copy + Clone + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        for frame in self.call_stack.drain(..) {
+            if let Some(h) = frame.active_eval_hash {
+                crate::backend::eval::cesk::unmark_eval_active(h);
+            }
+        }
+    }
+}
 
 impl<V, F> GenericBytecodeVM<V, F>
 where

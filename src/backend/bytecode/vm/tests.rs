@@ -95,6 +95,7 @@ fn test_collect_roots_includes_vm_owned_chunk_constants() {
         locals_base: 0,
         caller_locals_len: 0,
         caller_trail_len: 0,
+        active_eval_hash: None,
     });
     vm.choice_points.push(ChoicePoint {
         value_stack_height: 0,

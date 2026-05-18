@@ -366,6 +366,17 @@ where
     /// own bindings, so the trail entries from inner execution are
     /// stale.
     pub caller_trail_len: usize,
+    /// Task #6 Phase 9 (2026-05-18): hash that `cesk::tabling::
+    /// mark_eval_active` was called with when this frame was pushed
+    /// (`Some`) or `None` if this frame did not consume a mark.
+    ///
+    /// Every code path that pops this frame — `op_return`,
+    /// `op_return_multi`, `op_fail` truncate, and the VM's `Drop` —
+    /// MUST call `unmark_eval_active(h)` exactly once per `Some(h)` to
+    /// keep the refcount balanced. Cycle detection via the trampoline-
+    /// shared `cesk::tabling::ACTIVE_EVAL_SET` fences (rec) → (rec)
+    /// runaway recursion at auto/T1 tiers without depth limits.
+    pub active_eval_hash: Option<u64>,
 }
 
 /// Generic choice point for nondeterminism.

@@ -333,6 +333,25 @@ struct RuleGroup<V: MettaValueTrait + Clone> {
     next_rule_index: u32,
 }
 
+/// Outcome of a `remove_rule_by_debruijn` call on a `RuleGroup`.
+///
+/// Distinguishes the multiplicity-decrement case (entry still present) from
+/// the full-removal case (entry deleted). Carries the removed RHS so
+/// `RuleIndex` can depopulate the per-head RHS-atom bloom symmetrically
+/// with `add_rule`. See `RuleGroup::remove_rule_by_debruijn` for details.
+///
+/// Phase 11.A follow-up (2026-05-18) — without this distinction the bloom
+/// drifted to soft false-positives as rules were removed via debruijn
+/// matching (still correct, just over-routing to the trampoline path).
+#[derive(Debug)]
+pub(crate) enum RemovalOutcome<V> {
+    /// Multiplicity > 1; was decremented. Bloom must NOT be touched.
+    Decremented,
+    /// Multiplicity dropped to 0; entry deleted. Caller depopulates the
+    /// bloom by passing `rhs` to `PerHeadAtomIndex::note_rule_removed`.
+    Removed { rhs: V },
+}
+
 impl<V: MettaValueTrait + Clone> RuleGroup<V> {
     fn new() -> Self {
         RuleGroup {
@@ -449,19 +468,23 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
     /// equivalent by construction: two rules that differ only in variable
     /// names produce identical bytes.
     ///
-    /// Returns `Some(true)` if an entry was fully removed (multiplicity dropped
-    /// to 0), `Some(false)` if only decremented, `None` if no match found.
-    fn remove_rule_by_debruijn(&mut self, full_bytes: &[u8]) -> Option<bool> {
+    /// Returns `Some(RemovalOutcome::Removed { rhs })` when the entry was
+    /// fully removed (multiplicity dropped to 0) — the RHS is returned so
+    /// the caller can depopulate the per-head RHS-atom bloom symmetrically
+    /// with `add_rule`. Returns `Some(RemovalOutcome::Decremented)` when
+    /// only multiplicity was decremented (the rule's bloom entry must NOT
+    /// be touched in that case). Returns `None` when no match was found.
+    fn remove_rule_by_debruijn(&mut self, full_bytes: &[u8]) -> Option<RemovalOutcome<V>> {
         // Search first-arg-indexed buckets
         for entries in self.by_first_arg_head.values_mut() {
             if let Some(pos) = entries.iter().position(|e| e.full_debruijn == full_bytes) {
                 if entries[pos].multiplicity > 1 {
                     entries[pos].multiplicity -= 1;
-                    return Some(false);
+                    return Some(RemovalOutcome::Decremented);
                 } else {
-                    entries.remove(pos);
+                    let removed = entries.remove(pos);
                     self.invalidate_disc_tree();
-                    return Some(true);
+                    return Some(RemovalOutcome::Removed { rhs: removed.rhs });
                 }
             }
         }
@@ -473,11 +496,11 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
         {
             if self.variable_first_arg[pos].multiplicity > 1 {
                 self.variable_first_arg[pos].multiplicity -= 1;
-                return Some(false);
+                return Some(RemovalOutcome::Decremented);
             } else {
-                self.variable_first_arg.remove(pos);
+                let removed = self.variable_first_arg.remove(pos);
                 self.invalidate_disc_tree();
-                return Some(true);
+                return Some(RemovalOutcome::Removed { rhs: removed.rhs });
             }
         }
         None // Not found in this group
@@ -964,13 +987,29 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
     /// `.is_some()` to decide whether the index was authoritatively
     /// updated; only run a fallback path on `None`.
     pub fn remove_rule_by_debruijn(&mut self, full_bytes: &[u8]) -> Option<bool> {
-        // Search head-arity-indexed groups
-        for group in self.by_head_arity.values_mut() {
-            if let Some(result) = group.remove_rule_by_debruijn(full_bytes) {
-                return Some(result);
+        // Phase 11.A follow-up (2026-05-18): symmetrically depopulate the
+        // per-head RHS-atom bloom when an entry is fully removed (mirrors
+        // the working path in `remove_rule` at the LHS-comparison route).
+        // The head comes from the iteration key — `RuleGroup` doesn't know
+        // its own head, so the bloom update lives at this layer.
+        //
+        // Iterate `iter_mut` to keep the (head, arity) key in scope; the
+        // first matching group short-circuits, so cost is the same as the
+        // previous `values_mut()` loop on the common path.
+        for ((head, _arity), group) in self.by_head_arity.iter_mut() {
+            if let Some(outcome) = group.remove_rule_by_debruijn(full_bytes) {
+                return match outcome {
+                    RemovalOutcome::Removed { rhs } => {
+                        self.rule_rhs_atoms.note_rule_removed(*head, &rhs);
+                        Some(true)
+                    }
+                    RemovalOutcome::Decremented => Some(false),
+                };
             }
         }
-        // Search wildcard bucket
+        // Search wildcard bucket — wildcards do NOT contribute to the
+        // bloom (see `PerHeadAtomIndex` "Wildcards" doc), so no
+        // `note_rule_removed` call is needed here.
         if let Some(pos) = self
             .wildcard
             .iter()
@@ -5406,5 +5445,258 @@ impl MettaEnvironment {
             count += 1;
         }
         count
+    }
+}
+
+#[cfg(test)]
+mod bloom_depopulation_tests {
+    //! Phase 11.A follow-up (2026-05-18) — regression coverage for the
+    //! per-head RHS-atom bloom (`PerHeadAtomIndex`) depopulation gap
+    //! along the `remove_rule_by_debruijn` path. Without these tests, the
+    //! `note_rule_removed` call site at `RuleIndex::remove_rule_by_debruijn`
+    //! can silently regress to a no-op (soft false-positive — overrouting
+    //! to the trampoline path but still correct), which is hard to spot
+    //! from the outside.
+    //!
+    //! Strategy: add a rule via `MettaEnvironment::add_rule` (real
+    //! end-to-end path that populates `full_debruijn`), capture the
+    //! stored entry's bytes, then directly call
+    //! `RuleIndex::remove_rule_by_debruijn` (the path exercised in
+    //! production at `core.rs::remove_from_space`).
+    use super::*;
+    use crate::backend::models::MettaValue;
+
+    /// Helper: collect the `full_debruijn` bytes for the rule whose RHS
+    /// is a single atom named `rhs_atom` within the (head, arity) group.
+    /// Returns the first match.
+    fn find_full_debruijn(
+        idx: &RuleIndex<MettaValue>,
+        head: &'static str,
+        arity: usize,
+        rhs_atom: &str,
+    ) -> Vec<u8> {
+        let group = idx
+            .by_head_arity
+            .get(&(head, arity))
+            .expect("rule group exists after add_rule");
+        for entry in group.all_entries() {
+            if entry.rhs.as_atom() == Some(rhs_atom) {
+                return entry.full_debruijn.clone();
+            }
+        }
+        panic!(
+            "no entry with rhs atom = {rhs_atom:?} under head={head:?} arity={arity}"
+        );
+    }
+
+    #[test]
+    fn remove_rule_by_debruijn_depopulates_bloom_on_full_removal() {
+        // Rule: (= (foo arg-val) bloom_witness_atom)
+        // Head = "foo", arity = 1 (one arg), RHS atom = "bloom_witness_atom"
+        let mut env = MettaEnvironment::default();
+        let head = crate::backend::models::gc_allocator::global_allocator()
+            .alloc_str("foo");
+        let lhs = MettaValue::SExpr(vec![
+            MettaValue::Atom("foo".to_string()),
+            MettaValue::Atom("arg-val".to_string()),
+        ]);
+        let rhs = MettaValue::Atom("bloom_witness_atom".to_string());
+
+        env.add_rule(lhs.clone(), rhs.clone());
+
+        // Bloom should reflect the new rule.
+        {
+            let idx = env.shared.rule_index.read();
+            assert!(
+                idx.rule_rhs_atoms.contains("foo", "bloom_witness_atom"),
+                "bloom should contain (foo, bloom_witness_atom) after add_rule"
+            );
+            assert_eq!(idx.rule_rhs_atoms.len(), 1);
+        }
+
+        // Capture stored entry's full_debruijn and invoke removal.
+        let bytes = {
+            let idx = env.shared.rule_index.read();
+            find_full_debruijn(&idx, head, 1, "bloom_witness_atom")
+        };
+
+        {
+            let mut idx = env.shared.rule_index.write();
+            let outcome = idx.remove_rule_by_debruijn(&bytes);
+            assert_eq!(
+                outcome,
+                Some(true),
+                "remove_rule_by_debruijn should report full removal"
+            );
+        }
+
+        // Bloom must be depopulated symmetrically.
+        let idx = env.shared.rule_index.read();
+        assert!(
+            !idx.rule_rhs_atoms.contains("foo", "bloom_witness_atom"),
+            "bloom must drop (foo, bloom_witness_atom) after remove_rule_by_debruijn"
+        );
+        assert_eq!(
+            idx.rule_rhs_atoms.len(),
+            0,
+            "bloom must be empty after the only rule referencing the atom was removed"
+        );
+    }
+
+    #[test]
+    fn remove_rule_by_debruijn_preserves_bloom_on_decrement() {
+        // Same rule added twice: multiplicity = 2. First removal merely
+        // decrements; the bloom MUST remain populated. Second removal
+        // drops the entry and the bloom.
+        let mut env = MettaEnvironment::default();
+        let bar = crate::backend::models::gc_allocator::global_allocator()
+            .alloc_str("bar");
+        let lhs = MettaValue::SExpr(vec![
+            MettaValue::Atom("bar".to_string()),
+            MettaValue::Atom("arg-val".to_string()),
+        ]);
+        let rhs = MettaValue::Atom("dup_witness".to_string());
+
+        env.add_rule(lhs.clone(), rhs.clone());
+        env.add_rule(lhs.clone(), rhs.clone()); // multiplicity = 2
+
+        let bytes = {
+            let idx = env.shared.rule_index.read();
+            assert!(idx.rule_rhs_atoms.contains("bar", "dup_witness"));
+            // Bloom refcount must be 1, not 2 — duplicate adds touch
+            // multiplicity, not the bloom.
+            assert_eq!(idx.rule_rhs_atoms.len(), 1);
+            find_full_debruijn(&idx, bar, 1, "dup_witness")
+        };
+
+        // First debruijn removal: decrements multiplicity, bloom unchanged.
+        {
+            let mut idx = env.shared.rule_index.write();
+            assert_eq!(idx.remove_rule_by_debruijn(&bytes), Some(false));
+            assert!(
+                idx.rule_rhs_atoms.contains("bar", "dup_witness"),
+                "bloom must remain populated while multiplicity > 0"
+            );
+        }
+
+        // Second removal: entry deleted, bloom must drop.
+        {
+            let mut idx = env.shared.rule_index.write();
+            assert_eq!(idx.remove_rule_by_debruijn(&bytes), Some(true));
+            assert!(
+                !idx.rule_rhs_atoms.contains("bar", "dup_witness"),
+                "bloom must drop (bar, dup_witness) once multiplicity reaches 0"
+            );
+            assert_eq!(idx.rule_rhs_atoms.len(), 0);
+        }
+    }
+
+    #[test]
+    fn remove_rule_by_debruijn_keeps_bloom_for_other_rules_sharing_atom() {
+        // Two distinct rules under the same head, both referencing the
+        // same RHS atom. Removing one drops the bloom refcount from 2 to
+        // 1; the atom stays in the bloom until the second is removed.
+        let mut env = MettaEnvironment::default();
+        let rhs_atom = "shared_witness";
+
+        // Rule 1: (= (baz a) shared_witness)
+        let lhs1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("baz".to_string()),
+            MettaValue::Atom("a".to_string()),
+        ]);
+        // Rule 2: (= (baz b) shared_witness)
+        let lhs2 = MettaValue::SExpr(vec![
+            MettaValue::Atom("baz".to_string()),
+            MettaValue::Atom("b".to_string()),
+        ]);
+        let rhs = MettaValue::Atom(rhs_atom.to_string());
+
+        env.add_rule(lhs1.clone(), rhs.clone());
+        env.add_rule(lhs2.clone(), rhs.clone());
+
+        // Bloom should hold (baz, shared_witness) with refcount 2 — but
+        // `contains` is membership-only, so we sanity-check via removal.
+        {
+            let idx = env.shared.rule_index.read();
+            assert!(idx.rule_rhs_atoms.contains("baz", rhs_atom));
+        }
+
+        let bytes1 = {
+            let idx = env.shared.rule_index.read();
+            // Pull the entry whose LHS matches rule 1 by full-equality on
+            // the original-name (lhs1, rhs) — bypassing the alpha-rename
+            // surface to keep the test self-contained.
+            let group = idx
+                .by_head_arity
+                .get(&("baz", 1))
+                .expect("baz/2 group exists");
+            let mut found = None;
+            for entry in group.all_entries() {
+                let lhs_items = entry.lhs.as_sexpr().expect("sexpr lhs");
+                if lhs_items[1].as_atom() == Some("a") {
+                    found = Some(entry.full_debruijn.clone());
+                    break;
+                }
+            }
+            found.expect("rule 1 stored under baz/2")
+        };
+
+        // Remove rule 1: refcount drops 2 → 1, but bloom membership stays.
+        {
+            let mut idx = env.shared.rule_index.write();
+            assert_eq!(idx.remove_rule_by_debruijn(&bytes1), Some(true));
+            assert!(
+                idx.rule_rhs_atoms.contains("baz", rhs_atom),
+                "bloom must still report membership while rule 2 references the atom"
+            );
+        }
+
+        // Remove rule 2: refcount drops 1 → 0, bloom empty.
+        let bytes2: Vec<u8> = {
+            let idx = env.shared.rule_index.read();
+            let group = idx
+                .by_head_arity
+                .get(&("baz", 1))
+                .expect("baz/2 group still exists");
+            let entry = group
+                .all_entries()
+                .next()
+                .expect("rule 2 still present");
+            // Materialize the clone into a new binding so the iterator
+            // temporary is dropped before the read-guard. Without this,
+            // the impl-Iterator destructor's borrow of `group` (which
+            // borrows `idx`) extends past the read-guard's drop point.
+            let owned = entry.full_debruijn.clone();
+            drop(idx);
+            owned
+        };
+        {
+            let mut idx = env.shared.rule_index.write();
+            assert_eq!(idx.remove_rule_by_debruijn(&bytes2), Some(true));
+            assert!(
+                !idx.rule_rhs_atoms.contains("baz", rhs_atom),
+                "bloom must be depopulated once the last rule referencing the atom is removed"
+            );
+        }
+    }
+
+    #[test]
+    fn remove_rule_by_debruijn_returns_none_when_not_found() {
+        // No matching rule → None. Defensively guards against a regression
+        // that would treat "not found" as "successfully removed" and
+        // perturb the bloom (or the higher-level structural fallback).
+        let mut env = MettaEnvironment::default();
+        let lhs = MettaValue::SExpr(vec![MettaValue::Atom("qux".to_string())]);
+        let rhs = MettaValue::Atom("present".to_string());
+        env.add_rule(lhs, rhs);
+
+        let mut idx = env.shared.rule_index.write();
+        // Bytes that don't match any stored rule.
+        let bogus_bytes: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        assert_eq!(idx.remove_rule_by_debruijn(&bogus_bytes), None);
+        assert!(
+            idx.rule_rhs_atoms.contains("qux", "present"),
+            "bloom must remain untouched on a not-found removal"
+        );
     }
 }

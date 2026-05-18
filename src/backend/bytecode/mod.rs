@@ -632,7 +632,25 @@ fn can_compile_chain_with_env(items: &[MettaValue]) -> bool {
         return false;
     }
     let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
-    var_ok && can_compile_with_env(&items[1]) && can_compile_with_env(&items[3])
+    // T1 `compile_chain` calls `compile(expr)` followed by a single
+    // `bind_pattern(var)` StoreLocal — works only when expr is single-valued.
+    // For multi-valued expressions (superpose), the bind sees one element
+    // per branch but downstream body opcodes (e.g. `(* $v 10)`) do not
+    // properly fan out through the binding, yielding the raw superpose
+    // values instead of evaluating the body per branch. T04/044 verifies
+    // (HE: [10, 20, 30]; T1: [1, 2, 3]; T0 and T2/T3: [10, 20, 30]).
+    // Route chain-with-superpose-expr to T0 until T1 chain learns
+    // multi-value binding propagation.
+    let expr_is_superpose = items[1]
+        .as_sexpr()
+        .and_then(|i| i.first())
+        .and_then(|h| h.as_atom())
+        .map(|op| op == "superpose")
+        .unwrap_or(false);
+    !expr_is_superpose
+        && var_ok
+        && can_compile_with_env(&items[1])
+        && can_compile_with_env(&items[3])
 }
 
 // Y.2 (2026-05-12): can_compile_{map,filter,foldl}_atom_with_env predicates
@@ -648,7 +666,15 @@ fn can_compile_chain(items: &[MettaValue]) -> bool {
         return false;
     }
     let var_ok = matches!(items[2].view(), ValueView::Atom(s) if s.starts_with('$'));
-    var_ok && can_compile(&items[1]) && can_compile(&items[3])
+    // Same superpose-expr opt-out as `can_compile_chain_with_env` above —
+    // see T04/044 rationale there.
+    let expr_is_superpose = items[1]
+        .as_sexpr()
+        .and_then(|i| i.first())
+        .and_then(|h| h.as_atom())
+        .map(|op| op == "superpose")
+        .unwrap_or(false);
+    !expr_is_superpose && var_ok && can_compile(&items[1]) && can_compile(&items[3])
 }
 
 /// Check if a map-atom expression can be compiled

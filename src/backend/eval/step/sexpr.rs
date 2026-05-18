@@ -130,6 +130,16 @@ where
         return GenericEvalStep::Done((smallvec![ctx.factory().sexpr(vec![])], env));
     }
 
+    // HE-bisim §06.4.6: `(pragma! max-stack-depth N)` is parsed and
+    // stored on env (see `pragma!` arm below + `PragmaSettings::max_stack_depth`).
+    // Enforcement of the spec-mandated `(Error <form> StackOverflow)`
+    // emission for T04/047 is intentionally NOT a depth-counter band-aid
+    // here, per [[feedback-stack-safety-mandate]]: artificial depth
+    // limits don't address the root cause of unbounded memory growth in
+    // self-referential rules like `(= (rec) (rec))`. The principled
+    // wiring lives at the trampoline-allocation watermark + per-rule
+    // TCO/CPS layer designed by Task #6's Plan-agent output.
+
     // Cached parent operator types: computed once in the catch-all arm (Phase 1),
     // reused by find_typed_arg_indices_generic (Step 2) and
     // is_declared_value_type (Step 2.5) to avoid redundant RwLock reads.
@@ -2665,6 +2675,15 @@ where
                                 )],
                                 env,
                             ));
+                        }
+                        // HE-bisim §06.4.6: persist the limit so the eval
+                        // loop can enforce it (T04/047). MTT's runaway
+                        // recursion fixtures (T04/054, T04/055, T04/080,
+                        // T02/041) implicitly rely on the implementation
+                        // default; only T04/047 sets a small explicit cap
+                        // via this pragma.
+                        if let Some(n) = items[2].as_long() {
+                            env.set_max_stack_depth(n as usize);
                         }
                     }
                     // S-step (2026-05-16): persist pragma settings on env.

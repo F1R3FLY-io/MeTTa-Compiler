@@ -135,6 +135,10 @@ pub struct PragmaSettings {
     /// Controls multi-rule-fire dispatch policy. Default: `Nondet` (HE-bisim).
     /// Set via `(pragma! rule-fire-mode specificity)` for the SUPERSET filter.
     pub rule_fire_mode: RuleFireMode,
+    /// Maximum eval-loop depth before emitting `(Error <form> StackOverflow)`.
+    /// `None` means use the implementation default. Set via
+    /// `(pragma! max-stack-depth N)`. HE-bisim §06.4.6, T04/047 verifies.
+    pub max_stack_depth: Option<usize>,
     /// Other pragma key/value pairs (no semantic effect, but stored for
     /// observability and future use).
     pub other: HashMap<String, String>,
@@ -1823,6 +1827,18 @@ where
         // when the pragma toggles even though the rule set is unchanged.)
         crate::backend::environment::rule_management::RULE_EPOCH
             .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Get the configured `max-stack-depth` (None = no per-env limit).
+    /// HE-bisim §06.4.6: when eval-loop depth exceeds this, the form
+    /// returns `(Error <form> StackOverflow)`. T04/047 verifies.
+    pub fn get_max_stack_depth(&self) -> Option<usize> {
+        self.shared.pragma_settings.read().max_stack_depth
+    }
+
+    /// Set the `max-stack-depth` pragma value.
+    pub fn set_max_stack_depth(&self, depth: usize) {
+        self.shared.pragma_settings.write().max_stack_depth = Some(depth);
     }
 
     /// Store an arbitrary pragma key/value pair (no semantic effect, HE-bisim).

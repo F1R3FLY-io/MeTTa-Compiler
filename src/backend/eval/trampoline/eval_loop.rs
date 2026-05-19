@@ -10070,14 +10070,43 @@ fn process_continuation<C: EvalContext>(
                             );
                         }
                     }
-                    let unreduced = ctx.factory().sexpr(vec![
+                    // Phase 2 C5 (2026-05-19): HE-canonical Error emission for
+                    // non-Bool condition. Replaces the prior residual-form
+                    // `(if cond then else)`. The 2026-04-26 spec-strictness
+                    // attempt reverted because it caused PLN Robot.metta OOM
+                    // — but the root cause was missing `check_alternatives`
+                    // in collapse-bind, not the emission shape. With the
+                    // check_alternatives filter now landed in
+                    // ProcessCollapseEvalResults (terminal branch, same
+                    // commit), PLN cardinality bounds are preserved because
+                    // errors get filtered when successful alternatives
+                    // coexist (per HE interpreter.rs:1079-1108).
+                    //
+                    // HE empirical (HE REPL probe): `(if 1 yes no)` returns
+                    // `(Error (if 1 yes no) (BadArgType 1 Bool Number))`.
+                    let if_call = ctx.factory().sexpr(vec![
                         ctx.factory().atom("if"),
                         first.clone(),
                         mat_then,
                         mat_else,
                     ]);
+                    let actual_type_name = match first.view() {
+                        crate::backend::models::metta_value::ValueView::Long(_)
+                        | crate::backend::models::metta_value::ValueView::Float(_) => "Number",
+                        crate::backend::models::metta_value::ValueView::String(_) => "String",
+                        crate::backend::models::metta_value::ValueView::Bool(_) => "Bool",
+                        crate::backend::models::metta_value::ValueView::Atom(_) => "Symbol",
+                        _ => "Expression",
+                    };
+                    let bad_arg = ctx.factory().sexpr(vec![
+                        ctx.factory().atom("BadArgType"),
+                        ctx.factory().long(1),
+                        ctx.factory().atom("Bool"),
+                        ctx.factory().atom(actual_type_name),
+                    ]);
+                    let err = ctx.factory().error(if_call, bad_arg);
                     work_stack.push(WorkItem::Resume {
-                        result: (smallvec![bv(unreduced)], env_after_cond),
+                        result: (smallvec![bv(err)], env_after_cond),
                     });
                 }
             } else {
@@ -12932,6 +12961,44 @@ fn process_continuation<C: EvalContext>(
                         result: (SmallVec::new(), result_env),
                     });
                     return;
+                }
+                // Phase 2 C5 (2026-05-19) — `check_alternatives` filter.
+                //
+                // HE-bisim parity: HE's `interpreter.rs:1079-1108`
+                // `check_alternatives` runs after every collapse-bind/metta_impl
+                // step. If any non-error alternative exists in the result set,
+                // errors are dropped (failure does not pollute success). If ALL
+                // alternatives are errors, errors are preserved (so callers
+                // observe the error). Without this filter, `(if 1 yes no)`
+                // emitting `(Error ... (BadArgType ...))` inside PLN's
+                // collapse-bind accumulators (Truth_*, PLN.Derive, LimitSize,
+                // BestCandidate) would multiply error+success cardinality at
+                // every recursion boundary — causing the Robot.metta peak RSS
+                // 219MB → 900MB OOM regression originally observed in the
+                // 2026-04-26 spec-strictness attempt. The 2026-04-26 attempt
+                // reverted because it changed `if` emission shape without
+                // adding this missing filter; this commit ADDS the filter so
+                // the HE-canonical `if` Error emission can be safely defaulted.
+                //
+                // Empirical HE verification (Plan agent 2026-05-19):
+                //   `(collapse-bind (foo))` with rules
+                //     `(= (foo) yes) (= (foo) (if 1 yes no)) (= (foo) no)`
+                //     → HE returns `[((no {})) ((yes {}))]` (error dropped)
+                //   `(collapse-bind (bad))` with rule `(= (bad) (if 1 yes no))`
+                //     → HE returns `[(Error (if 1 yes no) (BadArgType 1 Bool Number))]`
+                //       (error preserved — sole alternative)
+                let any_success = evaluated.iter().any(|(v, _)| !v.is_error_sentinel());
+                if any_success {
+                    evaluated.retain(|(v, _)| !v.is_error_sentinel());
+                    if evaluated.is_empty() {
+                        // Defensive: every error filtered out leaving zero
+                        // results. Should never happen given any_success was
+                        // true, but treat as empty per HE semantics.
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), result_env),
+                        });
+                        return;
+                    }
                 }
                 let result_list = if is_bind {
                     // collapse-bind: wrap each result as (result (Bindings ($var val) ...))

@@ -5046,20 +5046,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                             let mut out: Vec<BoundValue> = Vec::with_capacity(children.len());
                             for child in children.iter() {
                                 if let Some(items) = child.as_sexpr() {
-                                    // HE-bisim binding-pair shapes accepted:
-                                    //   2 children: `(value (Bindings ...))` — explicit
-                                    //                non-empty binding SExpr.
-                                    //   3 children: `(value { })` — HE-style empty
-                                    //                bindings rendered as two atoms
-                                    //                `{` and `}` (T04/025, T04/026).
-                                    //                Same encoding used by collapse-bind.
-                                    let is_empty_curly = items.len() == 3
-                                        && items[1].as_atom() == Some("{")
-                                        && items[2].as_atom() == Some("}");
-                                    if is_empty_curly {
-                                        out.push(bv(items[0].clone()));
-                                    } else if items.len() == 2 {
-                                        // (atom (Bindings ...))
+                                    // HE-bisim binding-pair decoder: collapse-bind output
+                                    // is always 2-element `(value (Bindings …))` after
+                                    // Workstream A. `(Bindings)` (single-atom SExpr) is
+                                    // the empty-bindings shape; `(Bindings (k v) …)` is
+                                    // non-empty. HE-style `{ }` / `{ $x <- v }` rendering
+                                    // is applied only at format time (Workstream B);
+                                    // structurally the shape is always 2-element here.
+                                    if items.len() == 2 {
                                         let atom = items[0].clone();
                                         let bindings_sexpr = &items[1];
                                         let bindings =
@@ -5071,8 +5065,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                                             atom, bindings,
                                         ));
                                     } else {
-                                        // Other shapes — treat as raw atom with
-                                        // empty bindings (forgiving HE).
+                                        // Malformed input (not the 2-element shape):
+                                        // treat as raw atom with empty bindings.
                                         out.push(bv(child.clone()));
                                     }
                                 } else {

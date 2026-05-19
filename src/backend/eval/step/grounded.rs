@@ -276,7 +276,21 @@ where
 ///
 /// This provides clear type error messages instead of `NoReduce` → reconstructed
 /// unreduced expression trees when ground-typed args don't match the signature.
-pub fn validate_grounded_arg_types<V, F>(op: &str, args: &[V], factory: &F) -> Option<V>
+///
+/// Phase 2 (2026-05-19): emits HE-canonical 3-tuple
+/// `(Error <call-form> (BadArgType <1-indexed-pos> <expected-type> <actual-type>))`
+/// in place of the prior `(Error TypeError "msg")` shape. Mirrors HE's
+/// `BadArgType` (see `hyperon-experimental/lib/src/metta/mod.rs:26-28`) so
+/// downstream `case ((Error _ (BadArgType _ _ _)) caught)` patterns unify.
+///
+/// `call_items` is the full call expression items including `op` at index 0
+/// (so `factory.sexpr(call_items.to_vec())` rebuilds the original call form).
+pub fn validate_grounded_arg_types<V, F>(
+    op: &str,
+    call_items: &[V],
+    args: &[V],
+    factory: &F,
+) -> Option<V>
 where
     V: MettaValueTrait + Clone,
     F: MettaValueFactory<V>,
@@ -337,16 +351,18 @@ where
                 TypeExpr::String => "String",
                 _ => unreachable!("only concrete types reach mismatch=true"),
             };
-            return Some(factory.error(
-                factory.atom("TypeError"),
-                factory.string(&format!(
-                    "{}: argument {} expected {}, got {}",
-                    op,
-                    i + 1,
-                    expected_name,
-                    actual_type
-                )),
-            ));
+            // Phase 2 (2026-05-19): emit HE-canonical 3-tuple form
+            // `(Error <call> (BadArgType <pos> <expected> <got>))`. Replaces
+            // the prior `(Error TypeError "msg")` shape which never matched
+            // HE's `case ((Error _ (BadArgType _ _ _)) caught)` patterns.
+            let call_form = factory.sexpr(call_items.to_vec());
+            let bad_arg_type = factory.sexpr(vec![
+                factory.atom("BadArgType"),
+                factory.long((i + 1) as i64),
+                factory.atom(expected_name),
+                factory.atom(actual_type),
+            ]);
+            return Some(factory.error(call_form, bad_arg_type));
         }
     }
     None

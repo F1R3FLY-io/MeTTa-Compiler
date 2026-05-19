@@ -3386,7 +3386,7 @@ where
                         // Phase 8.8: Pre-validate ground-type args against arrow signature.
                         // Returns clear type error instead of NoReduce → unreduced expression.
                         if let Some(type_error) =
-                            validate_grounded_arg_types(op, &args, ctx.factory())
+                            validate_grounded_arg_types(op, &items, &args, ctx.factory())
                         {
                             return GenericEvalStep::Done((smallvec![type_error], env));
                         }

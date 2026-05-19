@@ -1150,7 +1150,24 @@ where
     /// (errors-as-values). The resulting value is pushed onto the operand
     /// stack instead of bubbling up as a Rust `Err`. Used by the dispatch
     /// loop's error interceptor.
+    ///
+    /// Phase 2 (2026-05-19): emit HE-canonical 3-tuple
+    /// `(Error <tag-atom> (BadArgType <pos> <expected> <got>))` for TypeError
+    /// instead of the prior `(Error BadType "msg")` shape, so downstream
+    /// `case ((Error _ (BadArgType _ _ _)) caught)` patterns unify. The
+    /// `pos` is conservatively set to 0 (unknown at VM level without call
+    /// expression reconstruction); slot 2 carries the canonical `BadArgType`
+    /// tag atom rather than the offending expression.
     fn materialize_runtime_error_atom(&self, err: &VmError) -> V {
+        if let Some((expected, got)) = err.as_type_error_pair() {
+            let bad_arg_tuple = self.factory.sexpr(vec![
+                self.factory.atom("BadArgType"),
+                self.factory.long(0),
+                self.factory.atom(expected),
+                self.factory.atom(got),
+            ]);
+            return self.factory.error(self.factory.atom("BadArgType"), bad_arg_tuple);
+        }
         let (msg, kind) = err.as_error_strings();
         let offending = self.factory.atom(kind);
         self.factory.error(offending, self.factory.string(&msg))

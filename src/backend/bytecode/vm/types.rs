@@ -92,6 +92,9 @@ impl VmError {
 
     /// Format a runtime-data error as a `(msg, details_atom)` pair that the
     /// VM uses to build a `(Error msg details)` atom. Spec K T1.A.
+    ///
+    /// Phase 2 (2026-05-19): also returns the structured-detail expected/got
+    /// info for HE-canonical `(BadArgType pos expected got)` shape.
     pub fn as_error_strings(&self) -> (String, &'static str) {
         match self {
             Self::TypeError { expected, got } => (
@@ -105,6 +108,16 @@ impl VmError {
                 ("Arithmetic overflow".to_string(), "ArithmeticOverflow")
             }
             _ => ("Unexpected error".to_string(), "Unknown"),
+        }
+    }
+
+    /// Phase 2 (2026-05-19): return the structured `(expected, got)` type pair
+    /// for `TypeError` so callers can emit HE-canonical
+    /// `(BadArgType <pos> <expected> <got>)` tuples.
+    pub fn as_type_error_pair(&self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::TypeError { expected, got } => Some((expected, got)),
+            _ => None,
         }
     }
 }

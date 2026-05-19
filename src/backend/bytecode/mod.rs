@@ -594,7 +594,31 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     // Compile-time tier selection: route to T0 trampoline
                     // where the special-form arms in `eval/step/sexpr.rs`
                     // produce correct HE-bisim semantics.
-                    "function" | "return" | "evalc" => false,
+                    //
+                    // Phase 6 (2026-05-19) cross-cutting case-scrutinee fix:
+                    // extended this exclusion arm with testing operations,
+                    // assertion ops, and corelib helpers — they have no T1
+                    // bytecode lowering, so when compiled-into-bytecode they
+                    // hit the VM's data-constructor fallthrough at
+                    // `vm/mod.rs:7264-7312` (op_dispatch_rules returns 0
+                    // matches → push raw SExpr unchanged). Routing these
+                    // heads to T0 restores correct HE-bisim Error emission
+                    // from `eval/step/sexpr.rs:3302+` (testing_ops) and
+                    // resolves the corelib RHS function/return chain that
+                    // executes in T0 context. Same bug-class as the existing
+                    // function/return/evalc precedent. Plan agents (2026-05-19)
+                    // confirmed root cause is in `can_compile_with_env`, NOT
+                    // in `is_normal_form_bounded` — the latter correctly
+                    // marks `assertEqual` as reducible.
+                    "function" | "return" | "evalc"
+                    | "test" | "=alpha"
+                    | "assertEqual" | "assertAlphaEqual"
+                    | "assertEqualMsg" | "assertAlphaEqualMsg"
+                    | "assertEqualToResult" | "assertAlphaEqualToResult"
+                    | "assertEqualToResultMsg" | "assertAlphaEqualToResultMsg"
+                    | "if-decons-expr" | "if-error" | "return-on-error"
+                    | "assertIncludes" | "noreduce-eq"
+                    | "trace" | "trace!" | "filter-atom" | "assert" => false,
                     // User-defined functions: compiled as Call opcodes.
                     // The VM dispatches via op_dispatch_rules → match_rules_native.
                     // eval_inner completes evaluation via trampoline re-eval.

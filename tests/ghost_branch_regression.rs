@@ -49,12 +49,12 @@ fn eval_last(source: &str) -> Vec<String> {
 
 /// Reproducer confirmed by Explore agent (`/tmp/test_conj.metta`).
 ///
-/// Before Phase 2.B fix:
+/// Before Phase 2.B fix (rendered with Workstream B's HE-style bindings):
 /// ```
 /// !(collapse-bind (, (father $a $b) (father $b c)))
 /// →
-/// [(((, (stv 1 0.9) (stv 1 0.9)) (Bindings ($a a) ($b b)))
-///   ((, (stv 1 0.9) (stv 1 0.9)) (Bindings)))]     ← GHOST
+/// [(((, (stv 1 0.9) (stv 1 0.9)) { $a <- a, $b <- b })
+///   ((, (stv 1 0.9) (stv 1 0.9)) { }))]     ← GHOST
 /// ```
 ///
 /// After: exactly ONE alternative (the non-conflicting one), no ghost with
@@ -74,25 +74,20 @@ fn conjunction_binding_conflict_drops_not_ghost() {
     );
     let s = &results[0];
 
-    // Must contain the correct non-ghost binding.
+    // Must contain the correct non-ghost binding (HE-style render).
     assert!(
-        s.contains("($a a)") && s.contains("($b b)"),
+        s.contains("$a <- a") && s.contains("$b <- b"),
         "correct combination missing — output: {}",
         s
     );
 
     // Must NOT contain an empty-bindings ghost tuple.
-    // The pattern "(Bindings))" with a space before means empty bindings wrapped.
-    // Matching carefully: "(Bindings)" inside the output should NOT appear standalone
-    // (without any ($var val) inside it) as its own alternative.
-    let ghost_pattern = "(Bindings))";
-    // Empty-bindings alternative would end its pair with `(Bindings))` — one close
-    // for Bindings, one for the enclosing pair. Ensure that we don't see a bare
-    // `(Bindings)` that represents empty (no inner bindings pair).
+    // After Workstream B (Task #6 follow-up) the empty-bindings sidecar
+    // renders as `{ }` (HE-style); a ghost alternative ends its pair with
+    // `{ })` — empty bindings closing brace followed by the enclosing
+    // result-pair's closing paren.
+    let ghost_pattern = "{ })";
     let bare_empty_count = s.matches(ghost_pattern).count();
-    // In a correct output, `(Bindings ($a a) ($b b))` closes with `))`, and the
-    // enclosing pair closes with another `)`. So any `(Bindings))` triple-close
-    // sequence indicates a bare empty bindings pair.
     assert_eq!(
         bare_empty_count, 0,
         "ghost alternative with empty bindings detected — output: {}",
@@ -121,13 +116,13 @@ fn three_way_conjunction_drops_conflict_combos() {
     );
     let joined = results.join(" ");
     assert!(
-        joined.contains("($x a)"),
+        joined.contains("$x <- a"),
         "expected $x=a binding in output, got: {}",
         joined
     );
     // Must NOT have any $x=b bindings (would be a ghost: (p b 2) doesn't exist).
     assert!(
-        !joined.contains("($x b)"),
+        !joined.contains("$x <- b"),
         "ghost $x=b detected (conflict should have been pruned), got: {}",
         joined
     );
@@ -222,12 +217,14 @@ fn collapse_bind_basic_no_ghost_from_empty_branch() {
     let results = eval_last(source);
     assert_eq!(results.len(), 1);
     let s = &results[0];
-    // Must contain TWO correct pairs, both with non-empty bindings.
-    assert!(s.contains("($x a)"), "missing $x=a binding: {}", s);
-    assert!(s.contains("($x b)"), "missing $x=b binding: {}", s);
-    // Must NOT contain any bare empty-bindings pair (ghost).
+    // Must contain TWO correct pairs, both with non-empty bindings (HE-style).
+    assert!(s.contains("$x <- a"), "missing $x=a binding: {}", s);
+    assert!(s.contains("$x <- b"), "missing $x=b binding: {}", s);
+    // Must NOT contain any bare empty-bindings pair (ghost): `{ })`
+    // is the close-brace-then-pair-close signature of an empty-bindings
+    // alternative after Workstream B's HE-style render.
     assert_eq!(
-        s.matches("(Bindings))").count(),
+        s.matches("{ })").count(),
         0,
         "ghost empty-bindings pair detected: {}",
         s
@@ -333,7 +330,7 @@ fn vm_tier_op_return_composes_bindings() {
     assert_eq!(results.len(), 1);
     let s = &results[0];
     assert!(
-        s.contains("($who a)"),
+        s.contains("$who <- a"),
         "caller's $who binding missing from collapse-bind output: {}",
         s
     );
@@ -424,7 +421,7 @@ fn parallel_collapse_bind_preserves_bindings() {
     for c in [
         'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p',
     ] {
-        let binding = format!("($x {})", c);
+        let binding = format!("$x <- {}", c);
         assert!(
             s.contains(&binding),
             "parallel collapse-bind lost binding {}: {}",
@@ -545,12 +542,12 @@ fn within_query_cache_isolation_contract() {
     let s = &results[0];
 
     // Both $y=a and $y=b must appear (neither eaten by the other's cache).
-    assert!(s.contains("($y a)"), "$y=a binding missing: {}", s);
-    assert!(s.contains("($y b)"), "$y=b binding missing: {}", s);
+    assert!(s.contains("$y <- a"), "$y=a binding missing: {}", s);
+    assert!(s.contains("$y <- b"), "$y=b binding missing: {}", s);
 
     // Neither caller's binding should leak into the other's pair.
-    // A correct output contains exactly 2 "($y ..." substrings.
-    let y_count = s.matches("($y ").count();
+    // A correct output contains exactly 2 "$y <- " substrings.
+    let y_count = s.matches("$y <- ").count();
     assert_eq!(
         y_count, 2,
         "expected exactly 2 $y bindings (no cross-caller leak); got {}: {}",
@@ -605,7 +602,7 @@ fn conjunction_ghost_elimination_deterministic_20_runs() {
     let base = baseline.unwrap();
     assert_eq!(base.len(), 1, "expected exactly one tuple from all runs");
     assert!(
-        base[0].contains("($a a)") && base[0].contains("($b b)"),
+        base[0].contains("$a <- a") && base[0].contains("$b <- b"),
         "unexpected baseline content: {:?}",
         base
     );

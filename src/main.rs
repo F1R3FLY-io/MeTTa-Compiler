@@ -280,6 +280,30 @@ fn format_string_escaped(s: &str) -> String {
     out
 }
 
+/// Workstream B (Task #6 follow-up, 2026-05-18): HE-style render for
+/// `(Bindings ($x val) ($y val2) …)` SExpr — emit as `{ $x <- val, $y <- val2 }`
+/// matching HE's `Display for Bindings` format
+/// (`hyperon-experimental/hyperon-atom/src/matcher.rs:762-789`).
+/// Empty `(Bindings)` renders as `{ }`. Malformed pairs (not 2-element SExpr,
+/// or non-atom $var head) fall back to normal SExpr text — defensive only;
+/// the encoder always produces well-formed pairs.
+fn format_bindings_he_style(pairs: &[MettaValue]) -> String {
+    if pairs.is_empty() {
+        return "{ }".to_string();
+    }
+    let parts: Vec<String> = pairs
+        .iter()
+        .map(|p| match p.view() {
+            ValueView::SExpr(kv) if kv.len() == 2 => match kv[0].view() {
+                ValueView::Atom(var) => format!("{} <- {}", var, format_result(&kv[1])),
+                _ => format_result(p),
+            },
+            _ => format_result(p),
+        })
+        .collect();
+    format!("{{ {} }}", parts.join(", "))
+}
+
 /// Format an MettaValue result for display.
 fn format_result(value: &MettaValue) -> String {
     match value.view() {
@@ -302,6 +326,16 @@ fn format_result(value: &MettaValue) -> String {
         }
         ValueView::Type(t) => format!("Type({})", format_result(&t)),
         ValueView::SExpr(items) => {
+            // Workstream B: detect `(Bindings …)` and emit HE-style `{ … }`.
+            // Detection: head is the literal atom `"Bindings"`. The encoder
+            // (`encode_bindings_as_sexpr_generic`) is the only producer of
+            // this shape; user-defined atoms named `"Bindings"` would
+            // collide but this is exceedingly rare in practice.
+            if let Some(head) = items.first() {
+                if head.as_atom() == Some("Bindings") {
+                    return format_bindings_he_style(&items[1..]);
+                }
+            }
             let formatted: Vec<String> = items.iter().map(format_result).collect();
             format!("({})", formatted.join(" "))
         }

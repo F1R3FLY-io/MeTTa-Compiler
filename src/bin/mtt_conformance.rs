@@ -204,6 +204,18 @@ fn format_value(v: &MettaValue) -> String {
             separator: &'static str,
             memo_key: Option<usize>,
         },
+        /// Workstream B (Task #6 follow-up, 2026-05-18): HE-style render
+        /// for `(Bindings ($x val) ($y val2) …)`. `var_names[i]` is the
+        /// pre-extracted variable name (cheap — atoms are O(1)) for the
+        /// i-th pair. `malformed[i] == true` means the i-th pair wasn't a
+        /// well-formed 2-element `($var val)` SExpr; the work-stack pushed
+        /// the entire pair as `Process(pair)` instead, and the join arm
+        /// uses the rendered string verbatim (no `$var <- ` prefix).
+        JoinBindings {
+            var_names: Vec<String>,
+            malformed: Vec<bool>,
+            memo_key: Option<usize>,
+        },
     }
     let mut work: Vec<Work> = Vec::with_capacity(16);
     let mut result: Vec<String> = Vec::with_capacity(16);
@@ -270,6 +282,64 @@ fn format_value(v: &MettaValue) -> String {
                                 memo.insert(k, s.clone());
                             }
                             result.push(s);
+                        } else if items
+                            .first()
+                            .and_then(|h| h.as_atom())
+                            == Some("Bindings")
+                        {
+                            // Workstream B: HE-style `{ }` / `{ $x <- val, … }`
+                            // render for `(Bindings ($x val) …)` SExpr.
+                            // Mirrors HE's `Display for Bindings`
+                            // (`hyperon-experimental/hyperon-atom/src/matcher.rs:762-789`).
+                            let pairs = &items[1..];
+                            if pairs.is_empty() {
+                                let s = "{ }".to_string();
+                                if let Some(k) = memo_key_opt {
+                                    memo.insert(k, s.clone());
+                                }
+                                result.push(s);
+                            } else {
+                                let mut var_names: Vec<String> =
+                                    Vec::with_capacity(pairs.len());
+                                let mut malformed: Vec<bool> =
+                                    Vec::with_capacity(pairs.len());
+                                for p in pairs {
+                                    let (name, ok) = match p.view() {
+                                        ValueView::SExpr(kv) if kv.len() == 2 => {
+                                            match kv[0].view() {
+                                                ValueView::Atom(n) => {
+                                                    (n.to_string(), true)
+                                                }
+                                                _ => (String::new(), false),
+                                            }
+                                        }
+                                        _ => (String::new(), false),
+                                    };
+                                    var_names.push(name);
+                                    malformed.push(!ok);
+                                }
+                                // Stack discipline: JoinBindings consumes `pairs.len()` strings
+                                // from `result`. Push the renderer first, then push Process
+                                // items in reverse so they're processed in original order and
+                                // appear on `result` in original order (top = last pair).
+                                work.push(Work::JoinBindings {
+                                    var_names,
+                                    malformed: malformed.clone(),
+                                    memo_key: memo_key_opt,
+                                });
+                                for (i, p) in pairs.iter().enumerate().rev() {
+                                    let to_render = if malformed[i] {
+                                        // Render the whole malformed pair as normal SExpr text.
+                                        p.clone()
+                                    } else if let ValueView::SExpr(kv) = p.view() {
+                                        // Render only the VALUE; var name is already captured.
+                                        kv[1].clone()
+                                    } else {
+                                        p.clone()
+                                    };
+                                    work.push(Work::Process(to_render));
+                                }
+                            }
                         } else {
                             work.push(Work::Join {
                                 count: items.len(),
@@ -330,6 +400,31 @@ fn format_value(v: &MettaValue) -> String {
                     memo.insert(k, formatted.clone());
                 }
                 result.push(formatted);
+            }
+            Work::JoinBindings {
+                var_names,
+                malformed,
+                memo_key,
+            } => {
+                let count = var_names.len();
+                let start = result.len() - count;
+                let parts: Vec<String> = result.drain(start..).collect();
+                let segs: Vec<String> = parts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, rendered)| {
+                        if malformed[i] {
+                            rendered
+                        } else {
+                            format!("{} <- {}", var_names[i], rendered)
+                        }
+                    })
+                    .collect();
+                let s = format!("{{ {} }}", segs.join(", "));
+                if let Some(k) = memo_key {
+                    memo.insert(k, s.clone());
+                }
+                result.push(s);
             }
         }
     }

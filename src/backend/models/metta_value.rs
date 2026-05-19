@@ -1798,6 +1798,19 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
             separator: &'static str,
             memo_key: Option<usize>,
         },
+        /// Workstream B (Task #6 follow-up, 2026-05-18): HE-style render
+        /// for `(Bindings ($x val) …)` — emit as `{ $x <- val, … }` matching
+        /// HE's `Display for Bindings` (`hyperon-experimental/hyperon-atom/
+        /// src/matcher.rs:762-789`). Only fires when `style ==
+        /// FormatStyle::Display`; the `MettaString` and `MorkString` styles
+        /// keep the structural `(Bindings (k v) …)` text so the output
+        /// round-trips through the MeTTa lexer (which tokenizes `{` and `}`
+        /// as separate one-char words).
+        JoinBindings {
+            var_names: Vec<String>,
+            malformed: Vec<bool>,
+            memo_key: Option<usize>,
+        },
     }
 
     let mut work_stack: Vec<FmtWork<'_>> = Vec::with_capacity(16);
@@ -1949,6 +1962,58 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                             let s = "()".to_string();
                             memo.insert(memo_key, s.clone());
                             result_stack.push(s);
+                        } else if matches!(style, FormatStyle::Display)
+                            && items
+                                .first()
+                                .and_then(|h| h.as_atom())
+                                == Some("Bindings")
+                        {
+                            // Workstream B: HE-style `{ }` / `{ $x <- val, … }`
+                            // render — Display-only (MettaString/MorkString
+                            // keep the round-trippable structural shape).
+                            let pairs = &items[1..];
+                            if pairs.is_empty() {
+                                let s = "{ }".to_string();
+                                memo.insert(memo_key, s.clone());
+                                result_stack.push(s);
+                            } else {
+                                let mut var_names: Vec<String> =
+                                    Vec::with_capacity(pairs.len());
+                                let mut malformed: Vec<bool> =
+                                    Vec::with_capacity(pairs.len());
+                                for p in pairs {
+                                    let (name, ok) = match p.inner_ref() {
+                                        MettaValueInner::SExpr(kv) if kv.len() == 2 => {
+                                            match kv[0].inner_ref() {
+                                                MettaValueInner::Atom(n) => {
+                                                    (n.to_string(), true)
+                                                }
+                                                _ => (String::new(), false),
+                                            }
+                                        }
+                                        _ => (String::new(), false),
+                                    };
+                                    var_names.push(name);
+                                    malformed.push(!ok);
+                                }
+                                work_stack.push(FmtWork::JoinBindings {
+                                    var_names,
+                                    malformed: malformed.clone(),
+                                    memo_key: Some(memo_key),
+                                });
+                                for (i, p) in pairs.iter().enumerate().rev() {
+                                    let to_render: &MettaValue = if malformed[i] {
+                                        p
+                                    } else if let MettaValueInner::SExpr(kv) =
+                                        p.inner_ref()
+                                    {
+                                        &kv[1]
+                                    } else {
+                                        p
+                                    };
+                                    work_stack.push(FmtWork::Process(to_render));
+                                }
+                            }
                         } else {
                             work_stack.push(FmtWork::Join {
                                 count: items.len(),
@@ -2002,6 +2067,31 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                     memo.insert(key, formatted.clone());
                 }
                 result_stack.push(formatted);
+            }
+            FmtWork::JoinBindings {
+                var_names,
+                malformed,
+                memo_key,
+            } => {
+                let count = var_names.len();
+                let start = result_stack.len() - count;
+                let parts: Vec<String> = result_stack.drain(start..).collect();
+                let segs: Vec<String> = parts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, rendered)| {
+                        if malformed[i] {
+                            rendered
+                        } else {
+                            format!("{} <- {}", var_names[i], rendered)
+                        }
+                    })
+                    .collect();
+                let s = format!("{{ {} }}", segs.join(", "));
+                if let Some(key) = memo_key {
+                    memo.insert(key, s.clone());
+                }
+                result_stack.push(s);
             }
         }
     }
@@ -2669,6 +2759,13 @@ impl MettaValueTrait for MettaValue {
                 suffix: &'static str,
                 separator: &'static str,
             },
+            /// Workstream B (Task #6 follow-up, 2026-05-18): HE-style render
+            /// for `(Bindings ($x val) …)` — emit as `{ $x <- val, … }`
+            /// matching HE's `Display for Bindings`.
+            JoinBindings {
+                var_names: Vec<String>,
+                malformed: Vec<bool>,
+            },
         }
 
         let mut work_stack: Vec<ReprWork<'_>> = Vec::with_capacity(16);
@@ -2745,6 +2842,53 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::SExpr(items) => {
                             if items.is_empty() {
                                 result_stack.push("()".to_string());
+                            } else if items
+                                .first()
+                                .and_then(|h| h.as_atom())
+                                == Some("Bindings")
+                            {
+                                // Workstream B: HE-style `{ }` / `{ $x <- val, … }`
+                                // render for `(Bindings ($x val) …)` SExpr.
+                                let pairs = &items[1..];
+                                if pairs.is_empty() {
+                                    result_stack.push("{ }".to_string());
+                                } else {
+                                    let mut var_names: Vec<String> =
+                                        Vec::with_capacity(pairs.len());
+                                    let mut malformed: Vec<bool> =
+                                        Vec::with_capacity(pairs.len());
+                                    for p in pairs {
+                                        let (name, ok) = match p.inner_ref() {
+                                            MettaValueInner::SExpr(kv) if kv.len() == 2 => {
+                                                match kv[0].inner_ref() {
+                                                    MettaValueInner::Atom(n) => {
+                                                        (n.to_string(), true)
+                                                    }
+                                                    _ => (String::new(), false),
+                                                }
+                                            }
+                                            _ => (String::new(), false),
+                                        };
+                                        var_names.push(name);
+                                        malformed.push(!ok);
+                                    }
+                                    work_stack.push(ReprWork::JoinBindings {
+                                        var_names,
+                                        malformed: malformed.clone(),
+                                    });
+                                    for (i, p) in pairs.iter().enumerate().rev() {
+                                        let to_render: &MettaValue = if malformed[i] {
+                                            p
+                                        } else if let MettaValueInner::SExpr(kv) =
+                                            p.inner_ref()
+                                        {
+                                            &kv[1]
+                                        } else {
+                                            p
+                                        };
+                                        work_stack.push(ReprWork::Process(to_render));
+                                    }
+                                }
                             } else {
                                 work_stack.push(ReprWork::Join {
                                     count: items.len(),
@@ -2787,6 +2931,26 @@ impl MettaValueTrait for MettaValue {
                     let parts: Vec<std::string::String> = result_stack.drain(start..).collect();
                     result_stack.push(format!("{}{}{}", prefix, parts.join(separator), suffix));
                 }
+                ReprWork::JoinBindings {
+                    var_names,
+                    malformed,
+                } => {
+                    let count = var_names.len();
+                    let start = result_stack.len() - count;
+                    let parts: Vec<String> = result_stack.drain(start..).collect();
+                    let segs: Vec<String> = parts
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, rendered)| {
+                            if malformed[i] {
+                                rendered
+                            } else {
+                                format!("{} <- {}", var_names[i], rendered)
+                            }
+                        })
+                        .collect();
+                    result_stack.push(format!("{{ {} }}", segs.join(", ")));
+                }
             }
         }
 
@@ -2819,6 +2983,13 @@ impl MettaValueTrait for MettaValue {
                 /// Memo key: slab pointer of the value being rendered, or
                 /// `None` for synthetic Joins that don't correspond to a
                 /// single unique value.
+                memo_key: Option<usize>,
+            },
+            /// Workstream B (Task #6 follow-up, 2026-05-18): HE-style render
+            /// for `(Bindings ($x val) …)` — `{ $x <- val, … }` (empty: `{ }`).
+            JoinBindings {
+                var_names: Vec<String>,
+                malformed: Vec<bool>,
                 memo_key: Option<usize>,
             },
         }
@@ -2911,6 +3082,55 @@ impl MettaValueTrait for MettaValue {
                                 let s = "()".to_string();
                                 memo.insert(memo_key, s.clone());
                                 result_stack.push(s);
+                            } else if items
+                                .first()
+                                .and_then(|h| h.as_atom())
+                                == Some("Bindings")
+                            {
+                                // Workstream B: HE-style `{ }` / `{ $x <- val, … }`.
+                                let pairs = &items[1..];
+                                if pairs.is_empty() {
+                                    let s = "{ }".to_string();
+                                    memo.insert(memo_key, s.clone());
+                                    result_stack.push(s);
+                                } else {
+                                    let mut var_names: Vec<String> =
+                                        Vec::with_capacity(pairs.len());
+                                    let mut malformed: Vec<bool> =
+                                        Vec::with_capacity(pairs.len());
+                                    for p in pairs {
+                                        let (name, ok) = match p.inner_ref() {
+                                            MettaValueInner::SExpr(kv) if kv.len() == 2 => {
+                                                match kv[0].inner_ref() {
+                                                    MettaValueInner::Atom(n) => {
+                                                        (n.to_string(), true)
+                                                    }
+                                                    _ => (String::new(), false),
+                                                }
+                                            }
+                                            _ => (String::new(), false),
+                                        };
+                                        var_names.push(name);
+                                        malformed.push(!ok);
+                                    }
+                                    work_stack.push(ReprWork::JoinBindings {
+                                        var_names,
+                                        malformed: malformed.clone(),
+                                        memo_key: Some(memo_key),
+                                    });
+                                    for (i, p) in pairs.iter().enumerate().rev() {
+                                        let to_render: &MettaValue = if malformed[i] {
+                                            p
+                                        } else if let MettaValueInner::SExpr(kv) =
+                                            p.inner_ref()
+                                        {
+                                            &kv[1]
+                                        } else {
+                                            p
+                                        };
+                                        work_stack.push(ReprWork::Process(to_render));
+                                    }
+                                }
                             } else {
                                 work_stack.push(ReprWork::Join {
                                     count: items.len(),
@@ -2963,6 +3183,31 @@ impl MettaValueTrait for MettaValue {
                         memo.insert(key, formatted.clone());
                     }
                     result_stack.push(formatted);
+                }
+                ReprWork::JoinBindings {
+                    var_names,
+                    malformed,
+                    memo_key,
+                } => {
+                    let count = var_names.len();
+                    let start = result_stack.len() - count;
+                    let parts: Vec<String> = result_stack.drain(start..).collect();
+                    let segs: Vec<String> = parts
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, rendered)| {
+                            if malformed[i] {
+                                rendered
+                            } else {
+                                format!("{} <- {}", var_names[i], rendered)
+                            }
+                        })
+                        .collect();
+                    let s = format!("{{ {} }}", segs.join(", "));
+                    if let Some(key) = memo_key {
+                        memo.insert(key, s.clone());
+                    }
+                    result_stack.push(s);
                 }
             }
         }

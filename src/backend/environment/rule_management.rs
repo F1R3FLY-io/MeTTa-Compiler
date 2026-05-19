@@ -3190,7 +3190,75 @@ where
         outer_carrying: &GenericBindings<V>,
     ) -> Vec<RuleMatchResult<V>> {
         let mut results =
-            self.match_rules_native_inner(expr, apply_bindings, outer_carrying);
+            self.match_rules_native_inner(expr, &apply_bindings, outer_carrying);
+
+        // Phase 5 corelib chain (2026-05-19): consult the corelib MettaMod for
+        // HE stdlib helpers (`if-decons-expr`, `if-error`, `return-on-error`,
+        // `assertIncludes`, `noreduce-eq`). Mirrors HE's `ModuleSpace::query`
+        // which walks `main + deps`; user-env `get-atoms &self` continues to
+        // see only user atoms (HE `ModuleSpace::visit` semantics).
+        //
+        // TypeId-gated: only V = MettaValue has a corelib. The `corelib_mod`
+        // field on `GenericEnvironmentShared` stores Option<Arc<MettaMod>>
+        // typed over MettaValue values; for other V (e.g. heap MettaExpr in
+        // tests) the field is present but the corelib's rules wouldn't unify.
+        // The TypeId guard makes the specialization explicit.
+        if std::any::TypeId::of::<V>() == std::any::TypeId::of::<MettaValue>() {
+            if let Some(corelib_arc) = self.shared.corelib_mod.as_ref() {
+                // SAFETY: TypeId equality guarantees V = MettaValue at runtime
+                // (single concrete type — `MettaEnvironment` is the only env
+                // instantiation the eval pipeline uses, with V = MettaValue,
+                // F = GcFactory). Pointer casts reinterpret values of identical
+                // memory layout. We use *const/*mut casts (not `transmute`)
+                // because `transmute` requires same-size proof at COMPILE time
+                // and Rust can't see through generic V; pointer casts work for
+                // dependently-sized generics with runtime size equality.
+                let mv_expr: &MettaValue =
+                    unsafe { &*(expr as *const V as *const MettaValue) };
+                let mv_outer: &GenericBindings<MettaValue> = unsafe {
+                    &*(outer_carrying as *const GenericBindings<V>
+                        as *const GenericBindings<MettaValue>)
+                };
+                let apply_ref = &apply_bindings;
+                let adapter: &dyn Fn(
+                    &MettaValue,
+                    &GenericBindings<MettaValue>,
+                    &crate::backend::models::GcFactory,
+                ) -> MettaValue = &|a, b, f| {
+                    let v_a: &V =
+                        unsafe { &*(a as *const MettaValue as *const V) };
+                    let v_b: &GenericBindings<V> = unsafe {
+                        &*(b as *const GenericBindings<MettaValue>
+                            as *const GenericBindings<V>)
+                    };
+                    let v_f: &F = unsafe {
+                        &*(f as *const crate::backend::models::GcFactory
+                            as *const F)
+                    };
+                    let r: V = apply_ref(v_a, v_b, v_f);
+                    let r_md = std::mem::ManuallyDrop::new(r);
+                    unsafe {
+                        std::ptr::read(&*r_md as *const V as *const MettaValue)
+                    }
+                };
+                let corelib_matches =
+                    corelib_arc.lookup_rules(mv_expr, adapter, mv_outer);
+                // Cast Vec<RuleMatchResult<MettaValue>> → Vec<RuleMatchResult<V>>.
+                // Vec layout (ptr/len/cap) is identical regardless of T size, but
+                // the element type bound is part of the Vec's type. Disassemble
+                // via raw parts to re-typed Vec.
+                let mut md = std::mem::ManuallyDrop::new(corelib_matches);
+                let typed: Vec<RuleMatchResult<V>> = unsafe {
+                    Vec::from_raw_parts(
+                        md.as_mut_ptr() as *mut RuleMatchResult<V>,
+                        md.len(),
+                        md.capacity(),
+                    )
+                };
+                results.extend(typed);
+            }
+        }
+
         self.apply_rule_fire_mode_filter(&mut results);
         results
     }

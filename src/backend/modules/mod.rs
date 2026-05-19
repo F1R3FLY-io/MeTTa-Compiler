@@ -12,6 +12,7 @@
 //! - Path resolution utilities for `self:` and `top:` notation
 
 mod cache;
+pub mod corelib;
 mod loader;
 mod metta_mod;
 mod module_space;

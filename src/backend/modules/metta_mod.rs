@@ -138,6 +138,14 @@ impl MettaMod {
         &self.space
     }
 
+    /// Get a mutable reference to the module's space Arc.
+    ///
+    /// Used by `corelib::load_corelib()` to install a pre-populated ModuleSpace
+    /// (containing the populated `MettaEnvironment` with corelib rules).
+    pub fn space_mut(&mut self) -> &mut Arc<RwLock<ModuleSpace>> {
+        &mut self.space
+    }
+
     /// Get a reference to the module's tokenizer.
     pub fn tokenizer(&self) -> &Arc<RwLock<Tokenizer>> {
         &self.tokenizer
@@ -184,6 +192,51 @@ impl MettaMod {
     /// Get the number of imported dependencies.
     pub fn imported_dep_count(&self) -> usize {
         self.imported_deps.read().len()
+    }
+}
+
+// Concrete-type rule lookup for corelib/dependency module chaining.
+// Per Phase 5 (2026-05-19): user envs hold an `Option<Arc<MettaMod>>` reference
+// to the corelib MettaMod. After a user env's `match_rules_native_inner` collects
+// its own matches, it consults this module's rule_index via `lookup_rules` for
+// HE-equivalent stdlib-helper visibility (per [[bisim-baseline-2026-05-19]] and
+// the corelib architecture in `docs/CORELIB_ARCHITECTURE.md`).
+//
+// Mirrors HE's `ModuleSpace::query` which walks `main + deps` while `visit`
+// (used by `get-atoms`) walks only `main`.
+impl MettaMod {
+    /// Look up rules in this module's main_space rule_index for the given expression.
+    ///
+    /// Returns all matching `RuleMatchResult`s; empty if no main_space env is set
+    /// or no rules match. Delegates to the underlying `MettaEnvironment::match_rules_native`.
+    ///
+    /// The `apply_bindings` closure is taken as `&dyn Fn` (type-erased) rather than
+    /// `impl Fn` to break a monomorphization recursion: callers of `lookup_rules`
+    /// are themselves inside generic `match_rules_native<F>`, and a generic closure
+    /// parameter would cause `lookup_rules<F>` to monomorphize anew per caller,
+    /// which then re-instantiates `match_rules_native<G>` etc. forever. The
+    /// `&dyn Fn` signature is a single function-pointer type, terminating recursion.
+    pub fn lookup_rules(
+        &self,
+        expr: &crate::backend::models::MettaValue,
+        apply_bindings: &dyn Fn(
+            &crate::backend::models::MettaValue,
+            &crate::backend::models::GenericBindings<crate::backend::models::MettaValue>,
+            &crate::backend::models::GcFactory,
+        ) -> crate::backend::models::MettaValue,
+        outer_carrying: &crate::backend::models::GenericBindings<
+            crate::backend::models::MettaValue,
+        >,
+    ) -> Vec<
+        crate::backend::environment::rule_management::RuleMatchResult<
+            crate::backend::models::MettaValue,
+        >,
+    > {
+        let space = self.space.read();
+        match space.main_space() {
+            Some(env) => env.match_rules_native(expr, apply_bindings, outer_carrying),
+            None => Vec::new(),
+        }
     }
 }
 

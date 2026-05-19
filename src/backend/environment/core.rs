@@ -370,6 +370,20 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// `pragma!` arm makes a `make_owned()` clone implicitly when it writes;
     /// reads are lock-free `Acquire` loads on the inner atomic.
     pub(crate) pragma_settings: Arc<RwLock<PragmaSettings>>,
+
+    /// Corelib MettaMod dependency for HE-equivalent stdlib helper lookup.
+    ///
+    /// Per Phase 5 (2026-05-19): user envs hold an `Arc<MettaMod>` reference
+    /// to the process-wide corelib (loaded once via
+    /// `crate::backend::modules::corelib::ensure_corelib_loaded`). User-env
+    /// `match_rules_native_inner` consults this after collecting its own
+    /// matches, achieving the HE pattern where `query` walks main + deps
+    /// while `visit` (used by `get-atoms`) walks only main.
+    ///
+    /// `None` for the corelib's own internal env (the load guard in
+    /// `corelib::corelib_mod()` prevents recursive attachment).
+    pub(crate) corelib_mod:
+        Option<Arc<crate::backend::modules::MettaMod>>,
 }
 
 /// Byte length of the MORK-serialized rule prefix: `[Arity(3)] + [SymbolSize(8)] + [8 symbol ID bytes]`.
@@ -539,6 +553,16 @@ where
             dispatch_overrides: Arc::new(super::dispatch_overrides::DispatchOverrides::default()),
             // Pragma settings start at defaults (type_check_mode = Permissive)
             pragma_settings: Arc::new(RwLock::new(PragmaSettings::default())),
+
+            // Corelib chain: attach if the global corelib is already loaded.
+            // Returns None when:
+            //   (a) we're inside `corelib::load_corelib()` on this thread
+            //       (the LOADING guard prevents recursive attachment to the
+            //       corelib's own internal env), OR
+            //   (b) the corelib has not yet been loaded (very early init).
+            // After `ensure_corelib_loaded()` runs (called by `new_env()`),
+            // subsequent MettaEnvironment::new() calls receive Some(arc).
+            corelib_mod: crate::backend::modules::corelib::corelib_mod(),
         });
 
         // Register as GC root provider (no-op if V != MettaValue)
@@ -762,6 +786,9 @@ where
             // same Arc<RwLock> across CoW handoffs (matches dispatch_overrides
             // semantics).
             pragma_settings: Arc::clone(&self.shared.pragma_settings),
+            // CoW: corelib reference is shared across env clones — corelib is
+            // immutable post-load so Arc::clone is the canonical sharing op.
+            corelib_mod: self.shared.corelib_mod.clone(),
         });
 
         // Register new shared state as GC root provider
@@ -826,6 +853,9 @@ where
             // Share pragma settings across the fork — same rationale as
             // dispatch_overrides (writes are rare, sharing is correct).
             pragma_settings: Arc::clone(&self.shared.pragma_settings),
+            // CoW: corelib reference is shared across env clones — corelib is
+            // immutable post-load so Arc::clone is the canonical sharing op.
+            corelib_mod: self.shared.corelib_mod.clone(),
         });
 
         // Register forked shared state as GC root provider
@@ -1239,6 +1269,13 @@ where
                 };
                 Arc::new(RwLock::new(merged))
             },
+            // Union: corelib is process-wide (same Arc); prefer self's reference
+            // — both envs hold identical Arc-shared corelib refs.
+            corelib_mod: self
+                .shared
+                .corelib_mod
+                .clone()
+                .or_else(|| other.shared.corelib_mod.clone()),
         });
 
         // Repopulate type bloom filter from merged types HashMap
@@ -1728,6 +1765,14 @@ where
                 };
                 Arc::new(RwLock::new(merged))
             },
+            // Union: corelib is process-wide (same Arc); prefer self's reference
+            // — both envs hold identical Arc-shared corelib refs.
+            // Multi-other union: corelib is process-wide (Arc-shared identical
+            // across all envs); self's reference is canonical. `others` was
+            // consumed earlier by `others.last()` — re-iterating would require
+            // collecting upfront, which is unnecessary since corelib is a
+            // global singleton.
+            corelib_mod: self.shared.corelib_mod.clone(),
         });
 
         // Repopulate type bloom filter from merged types HashMap

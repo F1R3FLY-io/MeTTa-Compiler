@@ -327,10 +327,7 @@ where
         let arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "union-atom requires exactly 2 arguments, got {}. Usage: (union-atom left right)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -382,10 +379,7 @@ where
         let arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "intersection-atom requires exactly 2 arguments, got {}. Usage: (intersection-atom left right)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -468,10 +462,7 @@ where
         let arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "subtraction-atom requires exactly 2 arguments, got {}. Usage: (subtraction-atom left right)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }

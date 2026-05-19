@@ -160,7 +160,7 @@ where
     if args.len() < 3 {
         let err = factory.error(
             factory.sexpr(args.to_vec()),
-            factory.string("exec requires 3 arguments: priority, antecedent, and consequent"),
+            factory.atom("IncorrectNumberOfArguments"),
         );
         return (vec![err], env);
     }
@@ -508,7 +508,7 @@ where
     if args.len() < 2 {
         let err = factory.error(
             factory.sexpr(args.to_vec()),
-            factory.string("coalg requires 2 arguments: pattern and templates"),
+            factory.atom("IncorrectNumberOfArguments"),
         );
         return (vec![err], env);
     }
@@ -569,9 +569,7 @@ where
     if args.len() < 3 {
         let err = factory.error(
             factory.sexpr(args.to_vec()),
-            factory.string(
-                "lookup requires 3 arguments: pattern, success-goals, and failure-goals",
-            ),
+            factory.atom("IncorrectNumberOfArguments"),
         );
         return (vec![err], env);
     }
@@ -734,9 +732,7 @@ where
     if args.len() < 5 {
         let err = factory.error(
             factory.sexpr(args.to_vec()),
-            factory.string(
-                "rulify requires 5 arguments: name, pattern, templates, antecedent, consequent",
-            ),
+            factory.atom("IncorrectNumberOfArguments"),
         );
         return (vec![err], env);
     }

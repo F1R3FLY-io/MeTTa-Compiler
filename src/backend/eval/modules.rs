@@ -48,7 +48,7 @@ where
     if items.len() < 2 {
         let err = factory.error(
             factory.sexpr(items),
-            factory.string("include requires 1 argument: (include path)"),
+            factory.atom("IncorrectNumberOfArguments"),
         );
         return (vec![err], env);
     }
@@ -206,7 +206,7 @@ where
     if items.len() < 2 {
         let err = factory.error(
             factory.sexpr(items),
-            factory.string("import! requires at least 1 argument: (import! [space] module-path)"),
+            factory.atom("IncorrectNumberOfArguments"),
         );
         return (vec![err], env);
     }
@@ -397,7 +397,7 @@ where
     if items.len() < 2 {
         let err = factory.error(
             factory.sexpr(items),
-            factory.string("mod-space! requires 1 argument: (mod-space! module-name)"),
+            factory.atom("IncorrectNumberOfArguments"),
         );
         return (vec![err], env);
     }

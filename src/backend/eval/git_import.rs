@@ -58,11 +58,7 @@ where
     if items.len() < 2 || items.len() > 3 {
         return vec![factory.error(
             factory.sexpr(items.to_vec()),
-            factory.string(&format!(
-                "git-import! requires 1 or 2 arguments, got {}. \
-                 Usage: (git-import! \"url\" [\"build_cmd\"])",
-                items.len() - 1
-            )),
+            factory.atom("IncorrectNumberOfArguments"),
         )];
     }
 

@@ -11491,7 +11491,13 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (expr_results, result_env) = result;
 
-            let is_error = expr_results.iter().any(|(v, _)| v.is_error());
+            // Phase 6 (2026-05-19): use `is_error_sentinel` (matches BOTH the
+            // `Error` variant AND the user-level surface form `(Error _ _)`
+            // SExpr). Without this, `(is-error (some-grounded-op-call))` would
+            // return False when the sub-eval produces an SExpr-shape error
+            // (T1/T2 tiers often produce SExpr form when compiling literal
+            // Error atoms; T0 produces variant form). HE-bisim parity.
+            let is_error = expr_results.iter().any(|(v, _)| v.is_error_sentinel());
             let result_value = ctx.factory().bool(is_error);
 
             work_stack.push(WorkItem::Resume {
@@ -11507,8 +11513,11 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (expr_results, result_env) = result;
 
-            // Check if any result is an error
-            let has_error = expr_results.iter().any(|(v, _)| v.is_error());
+            // Check if any result is an error.
+            // Phase 6 (2026-05-19): use is_error_sentinel to match BOTH
+            // Error variant AND SExpr-Error surface form (same rationale as
+            // ProcessIsError handler above).
+            let has_error = expr_results.iter().any(|(v, _)| v.is_error_sentinel());
 
             if has_error {
                 // Evaluate default value

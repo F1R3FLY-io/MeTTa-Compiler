@@ -85,13 +85,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 3 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "=alpha requires exactly 2 arguments, got {}. Usage: (=alpha expr1 expr2)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -135,13 +132,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 3 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "test requires exactly 2 arguments, got {}. Usage: (test actual expected)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -227,13 +221,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 3 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "assertEqual requires exactly 2 arguments, got {}. Usage: (assertEqual actual expected)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -274,13 +265,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 3 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "assertAlphaEqual requires exactly 2 arguments, got {}. Usage: (assertAlphaEqual actual expected)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -324,13 +312,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 4 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "assertEqualMsg requires exactly 3 arguments, got {}. Usage: (assertEqualMsg actual expected message)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -370,13 +355,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 4 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "assertAlphaEqualMsg requires exactly 3 arguments, got {}. Usage: (assertAlphaEqualMsg actual expected message)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -420,13 +402,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 3 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "assertEqualToResult requires exactly 2 arguments, got {}. Usage: (assertEqualToResult actual expected-results)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -467,13 +446,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 3 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "assertAlphaEqualToResult requires exactly 2 arguments, got {}. Usage: (assertAlphaEqualToResult actual expected-results)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -519,13 +495,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 4 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "assertEqualToResultMsg requires exactly 3 arguments, got {}. Usage: (assertEqualToResultMsg actual expected-results message)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }
@@ -567,13 +540,10 @@ where
     MettaValue: Clone,
 {
     if items.len() != 4 {
-        let arg_count = items.len() - 1;
+        let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().sexpr(items),
-            ctx.factory().string(&format!(
-                "assertAlphaEqualToResultMsg requires exactly 3 arguments, got {}. Usage: (assertAlphaEqualToResultMsg actual expected-results message)",
-                arg_count
-            )),
+            ctx.factory().atom("IncorrectNumberOfArguments"),
         );
         return GenericEvalStep::Done((smallvec![err], env));
     }

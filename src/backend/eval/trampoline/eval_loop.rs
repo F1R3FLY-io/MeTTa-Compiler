@@ -5327,6 +5327,42 @@ fn eval_trampoline_inner<C: EvalContext>(
                         });
                     }
 
+                    // Start get-type-space (Phase 4, 2026-05-19): pre-evaluate
+                    // the space arg via WorkItem::Eval so `bind!`-bound space
+                    // tokens (like `&s`) resolve to the actual SpaceHandle via
+                    // `step.rs` `lookup_token_generic` (the same path
+                    // get-atoms uses). Without this, atom-tokens were resolved
+                    // via `env.get_binding` which reads `shared.bindings` —
+                    // a different store than `bind!` populates (which writes
+                    // to `shared.tokenizer`). Mirrors StartGetAtoms above.
+                    GenericEvalStep::StartGetTypeSpace {
+                        space_ref,
+                        atom,
+                        call_form,
+                        env: step_env,
+                        depth,
+                    } => {
+                        let env: SharedEnv = Arc::new(step_env);
+                        continuations.push(Continuation::ProcessGetTypeSpace {
+                            space_ref: space_ref.clone(),
+                            atom,
+                            call_form,
+                            env: env.clone(),
+                            depth,
+                            outer_carrying: carrying_bindings.clone(),
+                        });
+
+                        work_stack.push(WorkItem::Eval {
+                            value: space_ref,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
+                        });
+                    }
+
                     // Start memo
                     GenericEvalStep::StartMemo {
                         memo_ref,
@@ -13340,6 +13376,129 @@ fn process_continuation<C: EvalContext>(
                     // Empty results - guard fails
                     work_stack.push(WorkItem::Resume {
                         result: (SmallVec::new(), result_env),
+                    });
+                }
+            }
+        }
+
+        Continuation::ProcessGetTypeSpace {
+            space_ref,
+            atom,
+            call_form,
+            env: _,
+            depth: _,
+            outer_carrying: _,
+        } => {
+            let (space_results, mut result_env) = result;
+
+            if space_results.is_empty() {
+                // No type lookup possible — space was Empty.
+                // HE returns %Undefined% in this case.
+                let undef = ctx.factory().atom("%Undefined%");
+                work_stack.push(WorkItem::Resume {
+                    result: (smallvec![bv(undef)], result_env),
+                });
+            } else {
+                let (first, _) = &space_results[0];
+                // Auto-bind `&name` atoms; transparent for already-resolved Space values.
+                let resolved_handle = resolve_space_or_autobind(first, &mut result_env, ctx);
+                if let Some(handle) = resolved_handle.as_ref() {
+                    // Special-case &self: query the env's atom_space directly
+                    // (where add-atom &self routes its writes), then fall back
+                    // to `infer_types_generic` for explicit `(: name TYPE)` decls
+                    // stored in the env's `types` field.
+                    let atom_name = atom.as_atom().map(|s| s.to_string());
+
+                    let types: Vec<MettaValue> =
+                        if handle.is_module_space() || handle.name == "self" {
+                            // Scan the env's full atom storage for `(: name TYPE)`.
+                            let all_atoms = result_env.get_all_atoms();
+                            let mut found = Vec::new();
+                            if let Some(ref name) = atom_name {
+                                for a in &all_atoms {
+                                    if let Some(parts) = a.as_sexpr() {
+                                        if parts.len() == 3 {
+                                            if let Some(":") = parts[0].as_atom() {
+                                                if let Some(n) = parts[1].as_atom() {
+                                                    if n == name {
+                                                        let typ = parts[2];
+                                                        if !found.contains(&typ) {
+                                                            found.push(typ);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if found.is_empty() {
+                                // Fall back to env's declared type system (handles
+                                // explicit (: ... ...) decls + inferred fn types).
+                                crate::backend::eval::types::infer_types_generic(
+                                    &atom,
+                                    ctx.factory(),
+                                    &*result_env,
+                                )
+                            } else {
+                                found
+                            }
+                        } else {
+                            // External handle: query its PathMap directly.
+                            if let Some(ref name) = atom_name {
+                                let mut types =
+                                    handle.query_types_generic(name, ctx.factory());
+                                if types.is_empty() {
+                                    let all_atoms = handle.collapse_generic::<MettaValue, _>(
+                                        ctx.factory(),
+                                    );
+                                    for a in &all_atoms {
+                                        if let Some(parts) = a.as_sexpr() {
+                                            if parts.len() == 3 {
+                                                if let Some(":") = parts[0].as_atom() {
+                                                    if let Some(n) = parts[1].as_atom() {
+                                                        if n == name {
+                                                            let typ = parts[2];
+                                                            if !types.contains(&typ) {
+                                                                types.push(typ);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                types
+                            } else {
+                                // Non-atom expression: infer type structurally.
+                                crate::backend::eval::types::infer_types_generic(
+                                    &atom,
+                                    ctx.factory(),
+                                    &*result_env,
+                                )
+                            }
+                        };
+
+                    if types.is_empty() {
+                        let undef = ctx.factory().atom("%Undefined%");
+                        work_stack.push(WorkItem::Resume {
+                            result: (smallvec![bv(undef)], result_env),
+                        });
+                    } else {
+                        // Each type returned as its own result (superposition).
+                        work_stack.push(WorkItem::Resume {
+                            result: (types.into_iter().map(bv).collect(), result_env),
+                        });
+                    }
+                } else {
+                    // Space couldn't resolve — return Undefined per HE semantics.
+                    // (Could also return Error; HE returns Undefined for
+                    // unrecognized space args in practice.)
+                    let _ = (space_ref, call_form); // unused-var silence
+                    let undef = ctx.factory().atom("%Undefined%");
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(undef)], result_env),
                     });
                 }
             }

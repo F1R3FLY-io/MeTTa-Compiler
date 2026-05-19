@@ -387,6 +387,27 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         depth: usize,
     },
 
+    /// Start get-type-space evaluation — evaluates space ref, then queries types
+    /// of the named atom in that space.
+    ///
+    /// Mirrors `StartGetAtoms` pattern so `bind!`-bound space tokens resolve via
+    /// the tokenizer path (see step/step.rs `lookup_token_generic`) rather than
+    /// via the bindings store (which `get_binding` reads but `bind!` does not
+    /// write to). Phase 4 (2026-05-19) fix for T05/033.
+    StartGetTypeSpace {
+        /// Space reference to evaluate (literal `&self` or atom token like `&s`
+        /// or an arbitrary space-producing expression).
+        space_ref: V,
+        /// Atom whose types we want to query in the resolved space.
+        atom: V,
+        /// Original call form for error reporting.
+        call_form: V,
+        /// Environment for evaluation.
+        env: E,
+        /// Evaluation depth.
+        depth: usize,
+    },
+
     /// Start memo evaluation - evaluates memo table, then checks cache and evaluates expr.
     StartMemo {
         /// Memo table reference to evaluate

@@ -1066,6 +1066,22 @@ pub enum Continuation {
         outer_carrying: SharedBindings,
     },
 
+    /// Processing get-type-space — receives evaluated space, queries types of atom.
+    ///
+    /// Phase 4 (2026-05-19): pre-eval the space arg so `bind!`-bound tokens
+    /// resolve via `lookup_token_generic` (the same path get-atoms uses).
+    ProcessGetTypeSpace {
+        /// Original space-ref expression (for error reporting).
+        space_ref: MettaValue,
+        /// Atom whose types we want to query in the resolved space.
+        atom: MettaValue,
+        /// Original call form (for error reporting).
+        call_form: MettaValue,
+        env: SharedEnv,
+        depth: usize,
+        outer_carrying: SharedBindings,
+    },
+
     /// Processing memo table
     ProcessMemoTable {
         memo_ref: MettaValue,
@@ -2159,6 +2175,19 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
+            Self::ProcessGetTypeSpace {
+                space_ref,
+                atom,
+                call_form,
+                outer_carrying,
+                ..
+            } => {
+                out.push(*space_ref);
+                out.push(*atom);
+                out.push(*call_form);
+                collect_bindings_values(outer_carrying, out);
+            }
+
             Self::ProcessMemoTable {
                 memo_ref,
                 expr,
@@ -2577,6 +2606,7 @@ impl Continuation {
             | Self::WaitForParallelCollapse { depth, .. }
             | Self::ProcessGuard { depth, .. }
             | Self::ProcessGetAtoms { depth, .. }
+            | Self::ProcessGetTypeSpace { depth, .. }
             | Self::ProcessMemoTable { depth, .. }
             | Self::ProcessMemoExpr { depth, .. }
             | Self::ProcessNewMemoName { depth, .. }
@@ -2654,6 +2684,7 @@ impl Continuation {
             Self::WaitForParallelCollapse { .. } => "WaitForParallelCollapse",
             Self::ProcessGuard { .. } => "ProcessGuard",
             Self::ProcessGetAtoms { .. } => "ProcessGetAtoms",
+            Self::ProcessGetTypeSpace { .. } => "ProcessGetTypeSpace",
             Self::ProcessMemoTable { .. } => "ProcessMemoTable",
             Self::ProcessMemoExpr { .. } => "ProcessMemoExpr",
             Self::ProcessNewMemoName { .. } => "ProcessNewMemoName",

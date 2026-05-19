@@ -1276,14 +1276,35 @@ where
                     return GenericEvalStep::Done((SmallVec::from_vec(results), env));
                 }
 
-                // get-type-space - query types in a specific space (Phase 5)
+                // get-type-space — query types in a specific space.
+                //
+                // Phase 4 (2026-05-19): use Start/Process trampoline pattern
+                // so the space arg is evaluated via WorkItem::Eval (which
+                // routes `&s` through `step.rs::lookup_token_generic` — the
+                // same path get-atoms uses for bind!-bound space tokens).
+                // The synchronous fallback (`eval_get_type_space_generic`)
+                // remains for the literal `&self` case and unit tests.
                 "get-type-space" => {
-                    let results = crate::backend::eval::types::eval_get_type_space_generic(
-                        &items,
-                        ctx.factory(),
-                        &env,
-                    );
-                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                    if items.len() != 3 {
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items.clone()),
+                            ctx.factory().string(&format!(
+                                "get-type-space requires exactly 2 arguments, got {}. Usage: (get-type-space space atom)",
+                                items.len().saturating_sub(1)
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let space_ref = items[1];
+                    let atom = items[2];
+                    let call_form = ctx.factory().sexpr(items.clone());
+                    return GenericEvalStep::StartGetTypeSpace {
+                        space_ref,
+                        atom,
+                        call_form,
+                        env,
+                        depth,
+                    };
                 }
 
                 // is-function - check if a type is an arrow type (Phase G, HE parity)

@@ -796,6 +796,15 @@ where
             count: usize,
             original: V,
         },
+        /// Phase 6 (2026-05-19): rebuild a `(quote X)` wrapper after the inner
+        /// value has been substituted. HE substitutes bindings INTO the quoted
+        /// body (then prevents reduction); MTT previously left `(quote $x)` as
+        /// `Quoted($x)` and never descended into it during apply_bindings.
+        /// Fixes T06/129 noreduce-eq and any rule whose body uses
+        /// `(quote $var)` with $var bound.
+        BuildQuoted {
+            original: V,
+        },
     }
 
     // Inline-storage stacks: most calls process small expressions and
@@ -907,6 +916,14 @@ where
                             work_stack.push(Work::Process(goal));
                         }
                     }
+                } else if let Some(inner) = val.as_quoted_ref() {
+                    // Phase 6 (2026-05-19): substitute INSIDE quote, then
+                    // rebuild the wrapper. HE-faithful: `(quote $x)` with
+                    // `$x → foo` becomes `(quote foo)`, not `(quote $x)`.
+                    work_stack.push(Work::BuildQuoted {
+                        original: val.clone(),
+                    });
+                    work_stack.push(Work::Process(inner));
                 } else {
                     result_stack.push(val.clone());
                 }
@@ -974,6 +991,11 @@ where
                             work_stack.push(Work::ProcessOwned(goal));
                         }
                     }
+                } else if let Some(inner) = val.as_quoted() {
+                    // Phase 6 (2026-05-19): owned-value variant of the Quoted
+                    // descent — see comment on Work::BuildQuoted.
+                    work_stack.push(Work::BuildQuoted { original: val });
+                    work_stack.push(Work::ProcessOwned(inner));
                 } else {
                     result_stack.push(val);
                 }
@@ -1009,6 +1031,23 @@ where
                     let result = factory.conjunction_from_slice(&result_stack[start..]);
                     result_stack.truncate(start);
                     result_stack.push(result);
+                }
+            }
+            Work::BuildQuoted { original } => {
+                // Phase 6 (2026-05-19): rebuild `(quote X)` with the substituted
+                // inner value. Identity-equality optimization: if the inner is
+                // pointer-equal to the original's inner, reuse `original`
+                // verbatim (skip the alloc).
+                let new_inner = result_stack
+                    .pop()
+                    .expect("Result stack must hold the processed Quoted inner");
+                let original_inner = original
+                    .as_quoted()
+                    .expect("BuildQuoted original must be Quoted");
+                if new_inner.identity_eq(&original_inner) {
+                    result_stack.push(original);
+                } else {
+                    result_stack.push(factory.quote(new_inner));
                 }
             }
         }

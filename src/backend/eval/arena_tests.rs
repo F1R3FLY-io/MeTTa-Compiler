@@ -144,17 +144,26 @@ mod tests {
     // rule is satisfied as a residual: the unreduced expression matches
     // no equation, so callers get the equivalent "no further reduction"
     // signal. See eval_loop.rs ProcessIfCondition non-boolean branch.
-    eval_test!(if_non_bool_number, "!(if 1 yes no)", &["(if 1 yes no)"]);
+    // Phase 2 C5 (2026-05-19): if non-Bool now emits HE-canonical
+    // (Error (if cond then else) (BadArgType 1 Bool <type>)). Previously
+    // returned the unreduced residual. The collapse-bind check_alternatives
+    // filter (same commit) preserves PLN cardinality bounds so this default
+    // is PLN-safe.
+    eval_test!(
+        if_non_bool_number,
+        "!(if 1 yes no)",
+        &["(Error (if 1 yes no) (BadArgType 1 Bool Number))"]
+    );
     eval_test!(
         if_with_atom_condition,
         "!(if foo then else)",
-        &["(if foo then else)"]
+        &["(Error (if foo then else) (BadArgType 1 Bool Symbol))"]
     );
-    // MeTTa HE: Unit is NOT boolean — returns unreduced (if () then else)
+    // MeTTa HE: Unit is NOT boolean — emits BadArgType per Phase 2 C5
     eval_test!(
         if_unit_condition_unreduced,
         "!(if () True False)",
-        &["(if () True False)"]
+        &["(Error (if () True False) (BadArgType 1 Bool Expression))"]
     );
 
     // =========================================================================

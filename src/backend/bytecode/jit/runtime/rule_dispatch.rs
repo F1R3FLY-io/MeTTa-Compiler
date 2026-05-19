@@ -61,6 +61,31 @@ pub unsafe extern "C" fn jit_runtime_dispatch_rules(
         return box_long(0);
     }
 
+    // Task #6 Phase 9 (2026-05-18): defensive cycle guard for the JIT
+    // inline-dispatch path. The VM's `op_dispatch_rules` already has a
+    // cycle check (via `cesk::tabling::ACTIVE_EVAL_SET`), and the JIT's
+    // per-matched-rule `BytecodeVM::new(rule.body).run()` (see
+    // `call_support.rs:440`) re-enters that protected path — so for
+    // tail-recursive function bodies a self-recursive cycle is detected
+    // at the next op_dispatch_rules call. This defensive guard adds an
+    // ADDITIONAL check at the FFI boundary itself for hypothetical
+    // future cases where the JIT compiles dispatch inline and a matched
+    // rule's RHS recursively reaches the same head without going through
+    // op_dispatch_rules. Same purity gate as the VM (`should_memoize`):
+    // side-effecting expressions are NOT cycle-detected.
+    if crate::backend::eval::trampoline::dispatch_hints::should_memoize(&expr_metta) {
+        let expr_hash = expr_metta.hash_value();
+        if crate::backend::eval::cesk::is_actively_evaluating(expr_hash) {
+            // Cycle: report zero matches. Caller observes the empty
+            // contribution; the JIT's no-match arm memoizes as normal
+            // form and returns the expression unchanged — exactly the
+            // fixpoint semantics the trampoline uses at eval_loop.rs.
+            ctx_ref.current_rules = std::ptr::null_mut();
+            ctx_ref.current_rule_idx = 0;
+            return box_long(0);
+        }
+    }
+
     // Get the MorkBridge and call dispatch_rules
     let bridge = &*(ctx_ref.bridge_ptr as *const MorkBridge);
     let rules = bridge.dispatch_rules(&expr_metta);

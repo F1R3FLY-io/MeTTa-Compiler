@@ -358,3 +358,42 @@ fn repeated_invocation_total_rss_bounded_t0() {
         elapsed
     );
 }
+
+#[test]
+fn repeated_invocation_total_rss_bounded_auto() {
+    // Auto-tier counterpart to `repeated_invocation_total_rss_bounded_t0`.
+    // Verifies that Phase 9's VM cycle detection (`cesk::tabling::
+    // ACTIVE_EVAL_SET` mark/unmark balance) doesn't leak refcount entries
+    // across the 100 sessions — i.e. each VM `Drop` correctly drains its
+    // remaining marks AND each `op_dispatch_rules` push is matched by an
+    // `op_return` / `op_fail` unmark within the same session.
+    let rss_before = rss_mb();
+    let start = Instant::now();
+    for i in 0..100 {
+        let label = if i == 0 { "loop-0" } else { "loop-N" };
+        let results = eval_auto_with_timeout("(= (rec) (rec))\n!(rec)\n", label);
+        assert_eq!(
+            results.len(),
+            0,
+            "AUTO iteration {} expected 0 results, got {}",
+            i,
+            results.len()
+        );
+    }
+    let elapsed = start.elapsed();
+    let rss_after = rss_mb();
+    let delta = rss_after.saturating_sub(rss_before);
+
+    let cumulative_budget_mb = MAX_RSS_DELTA_MB * 2;
+    assert!(
+        delta < cumulative_budget_mb,
+        "AUTO 100-iter cumulative RSS delta {} MB exceeds budget {} MB — Phase 9 mark/unmark balance regression suspected",
+        delta,
+        cumulative_budget_mb
+    );
+    assert!(
+        elapsed < Duration::from_secs(MAX_EVAL_WALL_SECS * 4),
+        "AUTO 100-iter cumulative wall time {:?} exceeds budget",
+        elapsed
+    );
+}

@@ -262,11 +262,35 @@ pub fn eval_with_tier(
 // Per-tier execution paths
 // -----------------------------------------------------------------------------
 
+/// Workstream C (2026-05-18): mirror `eval()`'s S1 TOPLEVEL + S2 BANG-WORD
+/// resets (`backend/eval/mod.rs:224-226`) so each per-directive call sees a
+/// clean `interpret_mode=true` / `bang_body=false` env.
+///
+/// Without this reset, a `!` directive followed by a `(= lhs rhs)` rule
+/// declaration leaves `bang_body=true` stale on the threaded env. The next
+/// `=` arm in `step/sexpr.rs:293-297` matches `env.in_bang_body()` and skips
+/// rule registration entirely — the rule never reaches `RuleIndex` and
+/// subsequent dispatches see "no matching rule" and return the call form
+/// unexpanded. This bug pre-dated Task #6 (`tier_forced.rs` added in
+/// `ccebabc`, eval()'s S2 reset added later in `cb363c1`) and only surfaced
+/// when PLN Direct.metta was run under `--tier <T>` for any tier.
+///
+/// Every `run_*` per-tier entry point below MUST call this helper at the top
+/// to keep the forced-tier paths in lock-step with the auto-tier `eval()`.
+#[inline]
+fn prepare_per_directive_env(env: MettaEnvironment) -> MettaEnvironment {
+    let mut env = env;
+    env.set_interpret_mode(true);
+    env.set_bang_body(false);
+    env
+}
+
 fn run_t0_direct(
     value: MettaValue,
     env: MettaEnvironment,
     state: &MettaState,
 ) -> TierEvalOutcome {
+    let env = prepare_per_directive_env(env);
     let (results, shared_env) = eval_trampoline(value, env, state);
     TierEvalOutcome::Ok {
         results: results.into_iter().map(|(v, _)| v).collect(),
@@ -283,6 +307,7 @@ fn run_t0(
     tier_requested: ExecutionTier,
     reason: TierUnavailableReason,
 ) -> TierEvalOutcome {
+    let env = prepare_per_directive_env(env);
     let (results, shared_env) = eval_trampoline(value, env, state);
     TierEvalOutcome::Demoted {
         results: results.into_iter().map(|(v, _)| v).collect(),
@@ -299,6 +324,7 @@ fn run_t1(
     state: &MettaState,
     policy: FallbackPolicy,
 ) -> TierEvalOutcome {
+    let env = prepare_per_directive_env(env);
     // Synchronously compile and execute on the bytecode VM, bypassing
     // the `TieredCache` auto-promotion. This mirrors the `Path B` path in
     // `eval_inner` (`eval/mod.rs:725`) without the threshold gating.
@@ -344,6 +370,7 @@ fn run_jit(
     requested: ExecutionTier,
     policy: FallbackPolicy,
 ) -> TierEvalOutcome {
+    let env = prepare_per_directive_env(env);
     let cache = global_tiered_cache();
     let compilation_state = cache.record_execution(&value);
 

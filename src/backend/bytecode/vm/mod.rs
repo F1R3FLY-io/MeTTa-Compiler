@@ -4709,23 +4709,19 @@ where
                 projected
             };
 
-            // HE-bisim §06.11: empty bindings render as `{  }` (two atoms
-            // `{` and `}` inlined as siblings of value). T04/025, T04/026.
-            // For non-empty bindings keep the `(Bindings (k v) ...)` SExpr.
-            let pair = if filtered.is_empty() {
-                self.make_sexpr(vec![
-                    value,
-                    self.make_atom("{"),
-                    self.make_atom("}"),
-                ])
-            } else {
-                let bindings_sexpr = crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
-                    &filtered,
-                    &self.factory,
-                );
-                self.make_sexpr(vec![value, bindings_sexpr])
-            };
-            pairs.push(pair);
+            // HE-bisim §06.11: 2-element `(value (Bindings …))` pair shape
+            // unconditionally. `(Bindings)` (empty) and `(Bindings ($x val))`
+            // (non-empty) round-trip via encode_/decode_bindings_as_sexpr and
+            // are the shape PLN's `?` macro expects. HE-style `{ }`/`{ $x <-
+            // val }` rendering is applied at format time only (formatters in
+            // metta_value.rs / main.rs / mtt_conformance.rs). Workstream A of
+            // [[task6-direct-regression-plan]] reverted the prior 3-atom
+            // splice (Bucket A commit `2ee7467`) which broke PLN destructure.
+            let bindings_sexpr = crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
+                &filtered,
+                &self.factory,
+            );
+            pairs.push(self.make_sexpr(vec![value, bindings_sexpr]));
         }
 
         // Continue at the resolved continuation_ip, if set.
@@ -4960,22 +4956,14 @@ where
             } else {
                 projected
             };
-            // HE-bisim §06.11: empty bindings render as `{  }` (two atoms
-            // inlined as siblings of value). T04/025, T04/026.
-            let pair = if filtered.is_empty() {
-                self.make_sexpr(vec![
-                    value,
-                    self.make_atom("{"),
-                    self.make_atom("}"),
-                ])
-            } else {
-                let bindings_sexpr = crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
-                    &filtered,
-                    &self.factory,
-                );
-                self.make_sexpr(vec![value, bindings_sexpr])
-            };
-            pairs.push(pair);
+            // HE-bisim §06.11: 2-element `(value (Bindings …))` pair shape
+            // unconditionally — see the parallel site above for rationale
+            // (Workstream A revert of 3-atom splice from `2ee7467`).
+            let bindings_sexpr = crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(
+                &filtered,
+                &self.factory,
+            );
+            pairs.push(self.make_sexpr(vec![value, bindings_sexpr]));
         }
 
         if let Some(cont_chunk) = frame.continuation_chunk {

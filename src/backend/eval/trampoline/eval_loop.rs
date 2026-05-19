@@ -12936,34 +12936,27 @@ fn process_continuation<C: EvalContext>(
                             } else {
                                 projected
                             };
-                            // HE-bisim §06.11: bindings are rendered with
-                            // curly braces. For empty bindings HE prints
-                            // `{  }` (two atoms `{` and `}` separated by a
-                            // space) inline as siblings of `result_val`,
-                            // rather than a nested `(Bindings)` SExpr.
-                            // T04/025, T04/026 verify. The harness parser
-                            // tokenizes `{` and `}` as separate one-char
-                            // words (parser.py:_parse_word breaks only on
-                            // whitespace and parens), so to match the
-                            // parsed shape we splice them in as siblings.
-                            if filtered.is_empty() {
-                                ctx.factory().sexpr(vec![
-                                    result_val,
-                                    ctx.factory().atom("{"),
-                                    ctx.factory().atom("}"),
-                                ])
-                            } else {
-                                // Non-empty bindings: use existing
-                                // `(Bindings (k v) ...)` SExpr encoding.
-                                // HE's exact non-empty format is unverified
-                                // in the conformance fixtures we have; this
-                                // preserves the prior MTT behavior so that
-                                // any consumers reading the bindings out
-                                // (e.g. PLN's `?` macro destructuring) still
-                                // see the structured form.
-                                let bindings_sexpr = encode_bindings_as_sexpr(&filtered, ctx.factory());
-                                ctx.factory().sexpr(vec![result_val, bindings_sexpr])
-                            }
+                            // HE-bisim §06.11: emit the result-pair as a
+                            // 2-element `(result_val (Bindings …))` SExpr
+                            // unconditionally. `(Bindings)` (empty) and
+                            // `(Bindings ($x val) …)` (non-empty) round-trip
+                            // through `encode_bindings_as_sexpr` /
+                            // `decode_bindings_from_sexpr` and are the
+                            // structural shape PLN's `?` macro expects via
+                            // `(let ($stv $binds) $pair …)` destructure.
+                            // The HE-style `{ }` / `{ $x <- val }` rendering
+                            // is applied at format time only — see
+                            // `format_value_iterative` in
+                            // `src/backend/models/metta_value.rs`,
+                            // `format_value` in `src/bin/mtt_conformance.rs`,
+                            // and `format_result` in `src/main.rs`. Prior
+                            // implementation spliced `{`/`}` as sibling atoms
+                            // (Bucket A commit `2ee7467`); reverted by
+                            // Workstream A of [[task6-direct-regression-plan]]
+                            // because the 3-element pair broke PLN's
+                            // destructure on ground queries.
+                            let bindings_sexpr = encode_bindings_as_sexpr(&filtered, ctx.factory());
+                            ctx.factory().sexpr(vec![result_val, bindings_sexpr])
                         })
                         .collect();
                     ctx.factory().sexpr(pairs)
@@ -13266,21 +13259,12 @@ fn process_continuation<C: EvalContext>(
                                 } else {
                                     projected
                                 };
-                                // HE-bisim §06.11: empty bindings render as
-                                // `{  }` (two atoms `{` and `}`) inlined as
-                                // siblings of `result_val`. See the parallel
-                                // path's branch above for full rationale.
-                                if filtered.is_empty() {
-                                    ctx.factory().sexpr(vec![
-                                        result_val,
-                                        ctx.factory().atom("{"),
-                                        ctx.factory().atom("}"),
-                                    ])
-                                } else {
-                                    let bindings_sexpr =
-                                        encode_bindings_as_sexpr(&filtered, ctx.factory());
-                                    ctx.factory().sexpr(vec![result_val, bindings_sexpr])
-                                }
+                                // HE-bisim §06.11: 2-element pair shape
+                                // unconditionally — see the serial site
+                                // above for full rationale (Workstream A).
+                                let bindings_sexpr =
+                                    encode_bindings_as_sexpr(&filtered, ctx.factory());
+                                ctx.factory().sexpr(vec![result_val, bindings_sexpr])
                             })
                             .collect();
                         ctx.factory().sexpr(pairs)

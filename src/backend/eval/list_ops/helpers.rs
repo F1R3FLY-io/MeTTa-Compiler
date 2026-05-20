@@ -111,6 +111,9 @@ enum SubstituteWorkGeneric<V> {
     /// Build an Error from the last 2 results (offending, detail).
     /// HE-bisimilar: slot 1 = offending expression, slot 2 = detail value.
     BuildError,
+    /// Build a Quoted value from the last 1 result.
+    /// HE-faithful: `(chain X $x (quote $x))` produces `(quote X)`.
+    BuildQuoted,
 }
 
 /// Iterative implementation of substitute_variable_generic using explicit work stack.
@@ -180,6 +183,14 @@ where
                     continue;
                 }
 
+                // Handle Quoted: substitute inside the quoted body, then
+                // rebuild the wrapper. HE-faithful (T06/129 noreduce-eq).
+                if let Some(inner) = val.as_quoted_ref() {
+                    work_stack.push(SubstituteWorkGeneric::BuildQuoted);
+                    work_stack.push(SubstituteWorkGeneric::Process(inner.clone()));
+                    continue;
+                }
+
                 // All other types: return as-is (leaf nodes)
                 result_stack.push(val);
             }
@@ -208,6 +219,13 @@ where
                     .pop()
                     .expect("BuildError should have offending on result stack");
                 result_stack.push(factory.error(offending, detail));
+            }
+
+            SubstituteWorkGeneric::BuildQuoted => {
+                let inner = result_stack
+                    .pop()
+                    .expect("BuildQuoted should have inner on result stack");
+                result_stack.push(factory.quote(inner));
             }
         }
     }

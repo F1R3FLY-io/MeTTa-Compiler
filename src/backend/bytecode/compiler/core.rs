@@ -128,6 +128,20 @@ where
             return Ok(());
         }
 
+        // Quoted: HE-faithful (T06/129 noreduce-eq) — compile the inner as
+        // LITERAL data so bound variables resolve via LoadLocal at runtime
+        // (substitution) WITHOUT reducing nested S-expressions (no Add /
+        // Call opcodes for `(+ 1 2)` etc.). Then MakeQuote wraps the result.
+        // `(quote (+ 1 2))` → `(quote (+ 1 2))` (unevaluated); `(let $x foo
+        // (quote $x))` → `(quote foo)` (substituted but not reduced); ground
+        // inner Quoted values still short-circuit through `compile_atom` /
+        // `MakeSExpr` with no dynamic substitution overhead.
+        if let Some(inner) = expr.as_quoted_ref() {
+            self.compile_as_literal_sexpr(inner)?;
+            self.builder.emit(Opcode::MakeQuote);
+            return Ok(());
+        }
+
         // Fallback: push as constant
         let idx = self.builder.add_constant(expr.clone());
         self.builder.emit_u16(Opcode::PushConstant, idx);
@@ -757,10 +771,17 @@ where
                 Ok(Some(()))
             }
 
-            // Quote and eval
+            // Quote and eval — value-form `(quote X)` produces a Quoted
+            // wrapper. Most call sites parse `(quote X)` as the Quoted
+            // variant (compile.rs:200), routing through compile()'s Quoted
+            // arm; this branch handles any path where the parser preserves
+            // the SExpr-with-head-`quote` shape (dynamic head dispatch /
+            // tests). Both paths must emit the same bytecode: literal-shape
+            // inner + MakeQuote.
             "quote" => {
                 self.check_arity("quote", args.len(), 1)?;
-                self.compile_quoted(&args[0])?;
+                self.compile_as_literal_sexpr(&args[0])?;
+                self.builder.emit(Opcode::MakeQuote);
                 Ok(Some(()))
             }
             "eval" => {

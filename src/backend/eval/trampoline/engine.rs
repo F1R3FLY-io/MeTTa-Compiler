@@ -133,6 +133,9 @@ fn apply_bindings_inner(
         BuildError { original: MettaValue },
         /// After processing 1 inner value, re-wrap with the saved Span.
         BuildSpanned { span: Span, original: MettaValue },
+        /// After processing 1 inner value, re-wrap as `(quote inner)`.
+        /// HE-faithful: `(quote $x)` with `$x → foo` becomes `(quote foo)`.
+        BuildQuoted { original: MettaValue },
     }
 
     let mut work_stack: Vec<Work> = Vec::with_capacity(32);
@@ -248,6 +251,15 @@ fn apply_bindings_inner(
                     continue;
                 }
 
+                // Quoted: substitute bindings inside the quoted body, then
+                // rebuild the wrapper. HE-faithful (T06/129 noreduce-eq):
+                // `(quote $x)` with `$x → foo` becomes `(quote foo)`.
+                if let Some(inner) = v.as_quoted() {
+                    work_stack.push(Work::BuildQuoted { original: v });
+                    work_stack.push(Work::Process(inner));
+                    continue;
+                }
+
                 // Ground / unknown values: return as-is.
                 result_stack.push(v);
             }
@@ -311,6 +323,17 @@ fn apply_bindings_inner(
                     result_stack.push(original);
                 } else {
                     result_stack.push(factory.spanned(inner, span));
+                }
+            }
+            Work::BuildQuoted { original } => {
+                let new_inner = result_stack.pop().expect("BuildQuoted needs inner");
+                let original_inner = original
+                    .as_quoted()
+                    .expect("BuildQuoted original must be Quoted");
+                if new_inner.identity_eq(&original_inner) {
+                    result_stack.push(original);
+                } else {
+                    result_stack.push(factory.quote(new_inner));
                 }
             }
         }

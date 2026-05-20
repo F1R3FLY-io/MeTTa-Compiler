@@ -120,6 +120,17 @@ pub fn collect_variables_generic<V: MettaValueTrait>(expr: &V) -> HashSet<String
             for goal in goals.iter().rev() {
                 work_stack.push(goal);
             }
+        } else if let Some(inner) = val.as_quoted_ref() {
+            // HE-faithful (T06/129): variables inside `(quote $x)` are still
+            // live for binding projection — apply_bindings substitutes inside
+            // the quoted body, so consumer-projection must keep their bindings.
+            work_stack.push(inner);
+        } else if let Some((offending, detail)) = val.as_error() {
+            // Errors carry sub-expressions that may reference variables (e.g.,
+            // `(Error (f $x) BadArg)` from a user rule). Descend to preserve
+            // those bindings through projection.
+            work_stack.push(detail);
+            work_stack.push(offending);
         }
     }
 
@@ -177,6 +188,11 @@ enum SealWork<'a, V> {
     Process(&'a V),
     BuildSExpr(usize),
     BuildConjunction(usize),
+    /// Re-wrap the next result as a Quoted value. HE-faithful (T06/129):
+    /// freshening must descend through Quoted so vars inside `(quote $x)`
+    /// also get unique tags; otherwise rule LHS `(qq $x)` and RHS
+    /// `(quote $x)` reference different variables after freshening.
+    BuildQuoted,
 }
 
 /// Iterative implementation of seal_variables using explicit work stack.
@@ -223,6 +239,9 @@ where
                             work_stack.push(SealWork::Process(goal));
                         }
                     }
+                } else if let Some(inner) = val.as_quoted_ref() {
+                    work_stack.push(SealWork::BuildQuoted);
+                    work_stack.push(SealWork::Process(inner));
                 } else {
                     result_stack.push(val.clone());
                 }
@@ -236,6 +255,10 @@ where
                 let start = result_stack.len() - count;
                 let children: Vec<V> = result_stack.drain(start..).collect();
                 result_stack.push(factory.conjunction(children));
+            }
+            SealWork::BuildQuoted => {
+                let inner = result_stack.pop().expect("BuildQuoted needs inner");
+                result_stack.push(factory.quote(inner));
             }
         }
     }

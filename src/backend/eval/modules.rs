@@ -220,6 +220,24 @@ where
         &items[1]
     };
 
+    // Plan Phase J.5 (2026-05-20): `(import! &self stdlib)` /
+    // `(import! &self corelib)` and related stdlib-module imports are
+    // no-ops in MeTTaTron — those modules are built into the runtime
+    // (native Rust dispatch + type registry per Phase F), no MeTTa
+    // source to load. Return Unit silently.
+    const NATIVE_BUILTIN_MODULES: &[&str] = &[
+        "stdlib", "corelib", "random", "fileio", "json",
+        "das", "catalog", "math",
+    ];
+    let builtin_match = path_arg
+        .as_atom()
+        .or_else(|| path_arg.as_string())
+        .map(|name| NATIVE_BUILTIN_MODULES.contains(&name))
+        .unwrap_or(false);
+    if builtin_match {
+        return (vec![factory.sexpr(vec![])], env);
+    }
+
     // Resolve the module path. Three accepted forms:
     //
     //   1. String literal: `(import! &self "path/to/file.metta")`

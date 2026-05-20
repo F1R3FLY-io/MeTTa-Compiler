@@ -8154,8 +8154,9 @@ where
             }
 
             // HE-faithful (T06/137 if-decons-expr fix): if the arg still has
-            // unbound variables after applying current bindings, skip pre-eval
-            // and treat as literal data. Without this, grounded ops like
+            // unbound variables after applying current bindings AND the arg's
+            // head is a pure grounded op (no rules in env), skip pre-eval and
+            // treat as literal data. Without this, grounded ops like
             // `(cons-atom $h $t)` (where $h, $t are caller-side variables that
             // get bound by the callee's `unify` form) would be eagerly
             // pre-evaluated here and fail with a BadArgType error, never
@@ -8163,11 +8164,37 @@ where
             // achieves the same effect via type-driven dispatch when the
             // callee's param type is `Atom` / `Variable` (meta-type → no
             // pre-eval); we approximate that for the untyped/bloom-fallback
-            // path by deferring whenever the arg can't reduce in the current
-            // environment.
+            // path by deferring whenever the arg's pure grounded head can't
+            // reduce in the current environment.
+            //
+            // **Rule-bearing heads with vars STILL pre-eval** — `(father $a $b)`
+            // for the family ancestor example correctly unifies via dispatch
+            // even when both args are variables, producing the rule-LHS
+            // bindings. Without this carve-out we'd lose conjunction
+            // pre-eval entirely for var-containing children, regressing
+            // `ghost_branch_regression::three_way_conjunction_drops_conflict_combos`
+            // (no bindings would propagate to collapse-bind).
             if item_to_eval.has_variables_fast() {
-                per_arg_results.push(vec![(item_to_eval, empty_b.clone())]);
-                continue;
+                use crate::backend::eval::{is_eager_special_form, is_grounded_op};
+                let head_is_pure_grounded = item_to_eval
+                    .as_sexpr()
+                    .and_then(|items| items.first())
+                    .and_then(|h| h.as_atom())
+                    .map(|op| {
+                        let is_grounded_or_eager =
+                            is_grounded_op(op) || is_eager_special_form(op);
+                        let has_rules = self
+                            .env
+                            .as_ref()
+                            .map(|e| e.may_have_rules_for(op, item_to_eval.as_sexpr().map_or(0, |i| i.len() - 1)))
+                            .unwrap_or(false);
+                        is_grounded_or_eager && !has_rules
+                    })
+                    .unwrap_or(false);
+                if head_is_pure_grounded {
+                    per_arg_results.push(vec![(item_to_eval, empty_b.clone())]);
+                    continue;
+                }
             }
 
             // Derive expected_type for this argument position.

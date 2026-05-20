@@ -1895,10 +1895,15 @@ where
 {
     use crate::backend::environment::core::TypeCheckMode;
 
-    // Need at least a head and the arrow check makes no sense on length 0/1.
-    if items.len() < 2 {
+    // Empty SExpr has no head to check.
+    if items.is_empty() {
         return None;
     }
+    // Note: `items.len() == 1` (head with zero args) IS validated below — HE
+    // raises `IncorrectNumberOfArguments` when the declared arrow signature
+    // has ≥1 param but the call passed none. T06/227 verifies for
+    // `(return-on-error)`; T06/226 fixed independently via the assert arm
+    // in `step/sexpr.rs`.
 
     // Head must be an atom — variable/sexpr/lambda heads don't have static
     // arrow declarations in `(: head (-> ...))` form. (Higher-order constructs

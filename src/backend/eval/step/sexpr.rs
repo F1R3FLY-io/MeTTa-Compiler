@@ -3361,6 +3361,20 @@ where
                     );
                 }
 
+                // HE-bisim §15.3 (T06/226): `(assert)` with no args raises
+                // an Error atom. MTT preserves its grounded `assert` for
+                // the 1-arg / 2-arg variants (`(assert Bool)` /
+                // `(assert Bool message)`), but the 0-arg call previously
+                // returned the unreduced form. HE returns
+                // `(Error (assert) IncorrectNumberOfArguments)`.
+                "assert" if items.len() == 1 => {
+                    let err = ctx.factory().error(
+                        ctx.factory().sexpr(items),
+                        ctx.factory().atom("IncorrectNumberOfArguments"),
+                    );
+                    return GenericEvalStep::Done((smallvec![err], env));
+                }
+
                 // Step 1: Try grounded operations with RAW (unevaluated) arguments
                 _ => {
                     // Phase 9.1: Variable-head guard.

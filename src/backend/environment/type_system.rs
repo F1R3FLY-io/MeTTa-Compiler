@@ -24,6 +24,49 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V> + Clone,
 {
+    /// Register the native-Rust corelib type declarations.
+    ///
+    /// Plan Phase F (2026-05-20): MeTTaTron's corelib has no MeTTa source
+    /// file — all built-in type metadata lives in this native Rust function,
+    /// called once during `new_env()`. Mirrors HE's stdlib.metta:21,30,32
+    /// minus the `(: Error (-> Atom Atom ErrorType))` declaration which
+    /// interacts poorly with MTT's internal Error variant (caused recursion
+    /// regressions in T04/054/055/080 when added empirically — see
+    /// `[[corelib-native-port]]`).
+    ///
+    /// Declarations registered:
+    ///   - `(: ErrorDescription Type)`
+    ///   - `(: IncorrectNumberOfArguments ErrorDescription)`
+    ///   - `(: BadType (-> Type Type ErrorDescription))`
+    ///   - `(: BadArgType (-> Number Type Type ErrorDescription))`
+    ///
+    /// Stack-safe: pure linear sequence of `add_type_generic` calls — no
+    /// recursion. Per [[feedback-stack-safety-mandate]].
+    pub fn register_corelib_types(&mut self) {
+        let f = self.factory.clone();
+        self.add_type_generic("ErrorDescription", f.atom("Type"));
+        self.add_type_generic("IncorrectNumberOfArguments", f.atom("ErrorDescription"));
+        self.add_type_generic(
+            "BadType",
+            f.sexpr(vec![
+                f.atom("->"),
+                f.atom("Type"),
+                f.atom("Type"),
+                f.atom("ErrorDescription"),
+            ]),
+        );
+        self.add_type_generic(
+            "BadArgType",
+            f.sexpr(vec![
+                f.atom("->"),
+                f.atom("Number"),
+                f.atom("Type"),
+                f.atom("Type"),
+                f.atom("ErrorDescription"),
+            ]),
+        );
+    }
+
     /// Add a type assertion (generic version).
     ///
     /// Appends the type to the `types` HashMap Vec for the given name (with dedup).
@@ -76,43 +119,13 @@ where
             Vec::new()
         };
 
-        // Phase 6 corelib chain (T06/137 if-decons-expr fix): consult the
-        // corelib MettaMod's type registry for HE stdlib helper signatures
-        // (`if-decons-expr`, `if-error`, `return-on-error`, ...). Mirrors
-        // `match_rules_native`'s corelib chain in
-        // `environment/rule_management.rs:3186-3263`. Without this, MTT's
-        // type-driven pre-eval (`bytecode/vm/mod.rs:vm_type_driven_pre_eval`,
-        // `eval/step/sexpr.rs:find_grounded_arg_indices_generic`) misses the
-        // corelib's meta-type declarations (Atom / Variable) and eagerly
-        // reduces caller args that the callee's `unify` would have bound,
-        // breaking corelib helpers whose bodies pass `(cons-atom $h $t)`-
-        // shape templates through the user's variable scope.
-        //
-        // TypeId-gated: only V = MettaValue has a corelib. For other V the
-        // corelib's types wouldn't unify with V's type (the corelib stores
-        // MettaValue typed types).
-        if std::any::TypeId::of::<V>() == std::any::TypeId::of::<MettaValue>() {
-            if let Some(corelib_arc) = self.shared.corelib_mod.as_ref() {
-                let corelib_space = corelib_arc.space().read();
-                if let Some(corelib_env) = corelib_space.main_space() {
-                    let corelib_types_mv = corelib_env.get_types_generic(name);
-                    // SAFETY: TypeId equality guarantees V = MettaValue; the
-                    // corelib's types are Vec<MettaValue>, and we cast each
-                    // element through the same pointer reinterpretation used
-                    // by `match_rules_native`'s corelib chain (read+write are
-                    // identical layout for MettaValue's 8-byte tagged pointer).
-                    for t_mv in corelib_types_mv {
-                        let t_md = std::mem::ManuallyDrop::new(t_mv);
-                        let t_v: V = unsafe {
-                            std::ptr::read(&*t_md as *const MettaValue as *const V)
-                        };
-                        if !types.contains(&t_v) {
-                            types.push(t_v);
-                        }
-                    }
-                }
-            }
-        }
+        // Plan Phase F (2026-05-20): the corelib MettaMod chain has been
+        // deleted. Built-in type declarations (ErrorDescription, BadType,
+        // BadArgType, IncorrectNumberOfArguments) are registered into the
+        // user env's `shared.types` HashMap via
+        // `MettaEnvironment::register_corelib_types()` at `new_env()` time
+        // and are found via the regular `types.read()` lookup above —
+        // no separate chain needed.
 
         // HE parity: append transitive supertypes for each declared type.
         // Iterate over direct types (snapshot len), appending supertypes.
@@ -139,22 +152,10 @@ where
     /// no supertype closure computation, no Vec allocation.
     #[inline]
     pub fn may_have_type(&self, name: &str) -> bool {
-        if self.shared.atom_space.type_bloom.read().may_have_type(name) {
-            return true;
-        }
-        // Phase 6 corelib chain (T06/137): if the user env's bloom misses
-        // but the corelib has types, defer to `get_types_generic` (which
-        // chains to corelib) so type-driven pre-eval honours corelib
-        // signatures (e.g., `if-decons-expr` with `Atom` param type).
-        if std::any::TypeId::of::<V>() == std::any::TypeId::of::<MettaValue>() {
-            if let Some(corelib_arc) = self.shared.corelib_mod.as_ref() {
-                let corelib_space = corelib_arc.space().read();
-                if let Some(corelib_env) = corelib_space.main_space() {
-                    return corelib_env.may_have_type(name);
-                }
-            }
-        }
-        false
+        // Plan Phase F (2026-05-20): no corelib chain — `register_corelib_types`
+        // populates the user env's bloom at `new_env()` time, so a single
+        // bloom check is sufficient.
+        self.shared.atom_space.type_bloom.read().may_have_type(name)
     }
 
     /// Returns `true` if ANY atom has a declared type assertion in this env.

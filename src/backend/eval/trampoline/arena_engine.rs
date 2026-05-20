@@ -71,23 +71,26 @@ pub fn get_static_factory() -> GcFactory {
 /// that resolve to `Float(std::f64::consts::{PI, E})` respectively.
 /// HE registers these in `lib/src/metta/runner/stdlib/math.rs`.
 ///
-/// Phase 5 (2026-05-19): on first call (and only first), the process-wide
-/// corelib MettaMod is loaded via `ensure_corelib_loaded()`. The corelib
-/// contains HE-equivalent stdlib helper rules (`if-decons-expr`, `if-error`,
-/// `return-on-error`, `assertIncludes`, `noreduce-eq`). Subsequent envs created
-/// via `new_env` automatically attach the loaded corelib as a dependency
-/// (their `MettaEnvironment::new()` reads it via `corelib::corelib_mod()`).
-/// Rule lookup chains user-env → corelib at `match_rules_native`; `get-atoms
-/// &self` continues to see only user-env atoms (HE-equivalent isolation).
+/// Plan Phase F (2026-05-20): MeTTaTron's corelib is now entirely native
+/// Rust — no MeTTa source file is involved. Built-in helpers
+/// (`if-decons-expr`, `if-error`, `return-on-error`, `assertIncludes`,
+/// `noreduce-eq`) dispatch at the `'special_forms` arm in
+/// `eval/step/sexpr.rs` before rule lookup. Built-in type declarations
+/// (ErrorDescription, BadType, BadArgType, IncorrectNumberOfArguments)
+/// are registered via `MettaEnvironment::register_corelib_types()` here.
+/// All paths use the iterative trampoline; no direct Rust recursion
+/// per [[feedback-stack-safety-mandate]].
 #[inline]
 pub fn new_env() -> MettaEnvironment {
-    // Ensure corelib is loaded BEFORE constructing the new env so that the
-    // env's `shared.corelib_mod` field is populated. The internal env built
-    // INSIDE `ensure_corelib_loaded` is guarded by `CORELIB_LOADING`, so
-    // its own `corelib_mod` stays None — preventing infinite recursion.
-    let _ = crate::backend::modules::corelib::ensure_corelib_loaded();
-
+    // Plan Phase F (2026-05-20): MeTTaTron's corelib has no MeTTa source
+    // file — all built-in type metadata is registered natively here, and
+    // built-in helper rules (if-decons-expr, if-error, return-on-error,
+    // assertIncludes, noreduce-eq) are dispatched at the
+    // `'special_forms` arm in `eval/step/sexpr.rs` before rule lookup.
+    // Per [[feedback-stack-safety-mandate]], the helper desugars use the
+    // existing iterative trampoline; no direct Rust recursion.
     let mut env = MettaEnvironment::new(global_factory());
+    env.register_corelib_types();
     let f = global_factory();
     env.register_token("PI", crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::PI));
     env.register_token("EXP", crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::E));

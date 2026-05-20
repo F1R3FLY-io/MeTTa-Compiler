@@ -12,7 +12,10 @@
 //! - Path resolution utilities for `self:` and `top:` notation
 
 mod cache;
-pub mod corelib;
+// Plan Phase F (2026-05-20): `corelib.rs` and `corelib.metta` deleted —
+// MeTTaTron's corelib is now entirely native Rust (helpers dispatched in
+// `eval/step/sexpr.rs`, type decls registered in
+// `environment::type_system::MettaEnvironment::register_corelib_types`).
 mod loader;
 mod metta_mod;
 mod module_space;

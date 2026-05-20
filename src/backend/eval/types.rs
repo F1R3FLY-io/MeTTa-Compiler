@@ -490,7 +490,14 @@ where
     // Phase 10.1: Check inferred function return type index.
     // This catches user-defined functions whose RHS type was inferred
     // at add_rule() time but which lack explicit (: f (-> ...)) declarations.
-    if env.has_inferred_type(op) {
+    //
+    // Plan Phase F (2026-05-20): the `GET_TYPE_SKIP_INFERRED` thread-local
+    // is set by `eval_get_type_generic` to suppress this lookup — HE's
+    // `get-type` consults declared types only (§08.7.1 / T05/076). The
+    // MTT-only `(get-deep-type X)` operator leaves the flag unset and
+    // gets the full inferred-types output.
+    let skip_inferred = GET_TYPE_SKIP_INFERRED.with(|f| f.get());
+    if !skip_inferred && env.has_inferred_type(op) {
         let inferred = env.get_inferred_fn_types(op);
         let mut inferred_results = Vec::new();
         let mut has_inferred_arrow = false;
@@ -1792,7 +1799,77 @@ where
     }
 
     let expr = &items[1];
+    // Plan Phase F (2026-05-20): `(get-type X)` consults ONLY declared
+    // types per HE empirical (§08.7.1 / fixture T05/076). The
+    // `inferred_fn_types` map (MTT Phase 10 deep inference) is a
+    // private optimization for internal pre-eval gating and is NOT
+    // user-visible via `get-type`. The MTT-only `(get-deep-type X)`
+    // operator exposes the inferred map for users who want it.
+    let _skip_guard = SkipInferredGuard::enter();
     infer_types_generic(expr, factory, env)
+}
+
+/// `(get-deep-type X)` — MTT-only operator that consults BOTH declared
+/// types AND `inferred_fn_types` (the Phase 10 deep type inference).
+///
+/// Plan Phase F (2026-05-20): introduced as a distinct surface so the
+/// HE-aligned `get-type` (declared-only) can default to HE semantics
+/// without losing MTT's stricter inference capability. No HE
+/// equivalent.
+pub fn eval_get_deep_type_generic<V, F>(
+    items: &[V],
+    factory: &F,
+    env: &GenericEnvironment<V, F>,
+) -> Vec<V>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    if items.len() != 2 {
+        return vec![factory.error(
+            factory.sexpr(items.to_vec()),
+            factory.atom("IncorrectNumberOfArguments"),
+        )];
+    }
+
+    let expr = &items[1];
+    // Deliberately NO `SkipInferredGuard` here — consult full deep
+    // inference path including `inferred_fn_types`.
+    infer_types_generic(expr, factory, env)
+}
+
+// Plan Phase F (2026-05-20): thread-local flag that gates the
+// `inferred_fn_types` lookup inside `infer_types_generic_inner`
+// (rule_management.rs:493). The `SkipInferredGuard` RAII type
+// scopes the flag to the lifetime of one `eval_get_type_generic`
+// call so nested type inference (e.g. inferring `(foo $bar)`'s arg
+// types while evaluating its rule body) is not affected.
+thread_local! {
+    pub(crate) static GET_TYPE_SKIP_INFERRED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard that sets `GET_TYPE_SKIP_INFERRED = true` for its scope.
+pub(crate) struct SkipInferredGuard {
+    prev: bool,
+}
+
+impl SkipInferredGuard {
+    pub(crate) fn enter() -> Self {
+        let prev = GET_TYPE_SKIP_INFERRED.with(|f| {
+            let p = f.get();
+            f.set(true);
+            p
+        });
+        Self { prev }
+    }
+}
+
+impl Drop for SkipInferredGuard {
+    fn drop(&mut self) {
+        let prev = self.prev;
+        GET_TYPE_SKIP_INFERRED.with(|f| f.set(prev));
+    }
 }
 
 /// check-type: Check if expression has expected type (generic version, HE parity).

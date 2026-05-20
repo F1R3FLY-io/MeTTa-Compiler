@@ -4686,19 +4686,15 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         ));
                                     }
                                 }
-                                // Chain through the corelib MettaMod so
-                                // stdlib rules (~70 entries) are enumerated
-                                // too. Mirrors `match_rules_native`'s
-                                // corelib chain at
-                                // `rule_management.rs:3206-3259`.
-                                if let Some(corelib_arc) = step_env.shared.corelib_mod.as_ref() {
-                                    for rhs in corelib_arc.enumerate_all_rule_rhss(ctx.factory()) {
-                                        collected.push((
-                                            rhs,
-                                            crate::backend::models::GenericBindings::new(),
-                                        ));
-                                    }
-                                }
+                                // Plan Phase F (2026-05-20): the corelib
+                                // MettaMod chain has been deleted — built-in
+                                // helpers (if-decons-expr, if-error,
+                                // return-on-error, assertIncludes,
+                                // noreduce-eq) are now dispatched at the
+                                // `'special_forms` arm in `step/sexpr.rs`
+                                // before rule lookup, so they don't appear
+                                // as user-visible rules and are not
+                                // enumerated by `(eval $var)`.
                                 Some(collected)
                             } else {
                                 try_match_rules_with_bindings(

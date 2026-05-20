@@ -599,6 +599,215 @@ where
                     };
                 }
 
+                // Plan Phase F (2026-05-20): native corelib helpers ported
+                // from the now-deleted `src/backend/modules/corelib.metta`.
+                // Each helper is dispatched at this `'special_forms` arm
+                // BEFORE rule lookup, so user-side `(= (helper ...) ...)`
+                // shadowing is not possible (matches HE precedence for
+                // built-ins). All helpers desugar to existing trampoline
+                // primitives (`EvalIfBranch`, `EvalCaseAtom`,
+                // `StartLetBinding`) — NO direct Rust recursion. Per
+                // [[feedback-stack-safety-mandate]].
+                //
+                // `if-decons-expr`: HE stdlib.metta:293-298. If `$atom`
+                // is a non-empty expression, decompose into
+                // `($head . $tail)` and evaluate `$then` (with bindings).
+                // Otherwise evaluate `$else`. Desugar to:
+                //   (chain (decons-atom $atom) $__ide_list
+                //     (unify $__ide_list ($head $tail) $then $else))
+                "if-decons-expr" => {
+                    if items.len() != 6 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "if-decons-expr requires exactly 5 arguments, got {}. Usage: (if-decons-expr atom head tail then else)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let f = ctx.factory();
+                    let atom = items[1].clone();
+                    let head_pat = items[2].clone();
+                    let tail_pat = items[3].clone();
+                    let then_branch = items[4].clone();
+                    let else_branch = items[5].clone();
+                    let fresh_list = f.atom("$__ide_list");
+                    let pattern = f.sexpr(vec![head_pat, tail_pat]);
+                    let decons_call =
+                        f.sexpr(vec![f.atom("decons-atom"), atom]);
+                    let unify_call = f.sexpr(vec![
+                        f.atom("unify"),
+                        fresh_list.clone(),
+                        pattern,
+                        then_branch,
+                        else_branch,
+                    ]);
+                    let chain_call = f.sexpr(vec![
+                        f.atom("chain"),
+                        decons_call,
+                        fresh_list,
+                        unify_call,
+                    ]);
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: chain_call,
+                        env,
+                        depth,
+                    };
+                }
+
+                // `return-on-error`: HE stdlib.metta:325-329. If `$atom`
+                // is Empty or an Error-headed expression, return
+                // `(return $atom)` (HE's function-scope short-circuit
+                // shape). Otherwise evaluate `$then`. Desugar:
+                //   (if-error $atom (return $atom)
+                //     (if-equal $atom Empty (return $atom) $then))
+                "return-on-error" => {
+                    if items.len() != 3 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "return-on-error requires exactly 2 arguments, got {}. Usage: (return-on-error atom then)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let f = ctx.factory();
+                    let atom = items[1].clone();
+                    let then_branch = items[2].clone();
+                    let return_atom =
+                        f.sexpr(vec![f.atom("return"), atom.clone()]);
+                    let if_equal_inner = f.sexpr(vec![
+                        f.atom("if-equal"),
+                        atom.clone(),
+                        f.atom("Empty"),
+                        return_atom.clone(),
+                        then_branch,
+                    ]);
+                    let if_error_outer = f.sexpr(vec![
+                        f.atom("if-error"),
+                        atom,
+                        return_atom,
+                        if_equal_inner,
+                    ]);
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: if_error_outer,
+                        env,
+                        depth,
+                    };
+                }
+
+                // `assertIncludes`: HE stdlib.metta:691-698. Collapse
+                // `$atom`, verify every element of `$content` appears in
+                // the collapsed result (set-subtraction empty); else emit
+                // Error. Desugar:
+                //   (let $__ai_eval (collapse $atom)
+                //     (let $__ai_diff (subtraction-atom $content $__ai_eval)
+                //       (if (== $__ai_diff ())
+                //         ()
+                //         (Error (assertIncludes $atom $content)
+                //                (assertIncludes error: $__ai_diff
+                //                  not included in result: $__ai_eval)))))
+                "assertIncludes" => {
+                    if items.len() != 3 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "assertIncludes requires exactly 2 arguments, got {}. Usage: (assertIncludes atom content)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let f = ctx.factory();
+                    let atom = items[1].clone();
+                    let content = items[2].clone();
+                    let eval_var = f.atom("$__ai_eval");
+                    let diff_var = f.atom("$__ai_diff");
+                    let unit = f.sexpr(vec![]);
+                    let cmp = f.sexpr(vec![
+                        f.atom("=="),
+                        diff_var.clone(),
+                        unit.clone(),
+                    ]);
+                    let err_call = f.sexpr(vec![
+                        f.atom("assertIncludes"),
+                        atom.clone(),
+                        content.clone(),
+                    ]);
+                    let err_msg = f.sexpr(vec![
+                        f.atom("assertIncludes"),
+                        f.atom("error:"),
+                        diff_var.clone(),
+                        f.atom("not"),
+                        f.atom("included"),
+                        f.atom("in"),
+                        f.atom("result:"),
+                        eval_var.clone(),
+                    ]);
+                    let err_atom = f.sexpr(vec![f.atom("Error"), err_call, err_msg]);
+                    let if_body = f.sexpr(vec![
+                        f.atom("if"),
+                        cmp,
+                        unit,
+                        err_atom,
+                    ]);
+                    let subtraction_call = f.sexpr(vec![
+                        f.atom("subtraction-atom"),
+                        content,
+                        eval_var.clone(),
+                    ]);
+                    let inner_let = f.sexpr(vec![
+                        f.atom("let"),
+                        diff_var,
+                        subtraction_call,
+                        if_body,
+                    ]);
+                    let collapse_call =
+                        f.sexpr(vec![f.atom("collapse"), atom]);
+                    let outer_let = f.sexpr(vec![
+                        f.atom("let"),
+                        eval_var,
+                        collapse_call,
+                        inner_let,
+                    ]);
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: outer_let,
+                        env,
+                        depth,
+                    };
+                }
+
+                // `noreduce-eq`: HE stdlib.metta:966-967. Alpha-equivalence
+                // comparison without further reduction. Desugars to
+                // `(== (quote $a) (quote $b))`.
+                "noreduce-eq" => {
+                    if items.len() != 3 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "noreduce-eq requires exactly 2 arguments, got {}. Usage: (noreduce-eq a b)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let f = ctx.factory();
+                    let qa = f.quote(items[1].clone());
+                    let qb = f.quote(items[2].clone());
+                    let eq_call = f.sexpr(vec![f.atom("=="), qa, qb]);
+                    return GenericEvalStep::EvalIfBranch {
+                        branch: eq_call,
+                        env,
+                        depth,
+                    };
+                }
+
                 // eval - Plan S4 (2026-05-14) HE-faithful ONE-STEP semantics.
                 //
                 // HE's `eval_impl` in
@@ -1257,6 +1466,21 @@ where
                 // get-type - native generic implementation
                 "get-type" => {
                     let results = eval_get_type_generic(&items, ctx.factory(), &env);
+                    return GenericEvalStep::Done((SmallVec::from_vec(results), env));
+                }
+
+                // Plan Phase F (2026-05-20): MTT-only `get-deep-type`
+                // exposes the full type-inference pipeline (declared
+                // types + Phase 10 `inferred_fn_types` from rule bodies).
+                // `get-type` itself defaults to HE semantics (declared
+                // only) per §08.7.1; this op is the strict superset
+                // surface.
+                "get-deep-type" => {
+                    let results = crate::backend::eval::types::eval_get_deep_type_generic(
+                        &items,
+                        ctx.factory(),
+                        &env,
+                    );
                     return GenericEvalStep::Done((SmallVec::from_vec(results), env));
                 }
 

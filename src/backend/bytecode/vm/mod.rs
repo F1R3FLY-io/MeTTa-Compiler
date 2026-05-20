@@ -3024,8 +3024,14 @@ where
         // `op_eval_superpose`). On backtrack each remaining alternative is
         // restored, yielding the full type set as separate results.
         if let Some(env) = self.env.as_ref() {
-            use crate::backend::eval::types::infer_types_generic;
+            use crate::backend::eval::types::{infer_types_generic, SkipInferredGuard};
             let factory = self.factory.clone();
+            // Plan Phase F (2026-05-20): `get-type` consults declared
+            // types only — the `SkipInferredGuard` thread-local gates
+            // the `inferred_fn_types` lookup inside
+            // `infer_types_generic_inner`. The MTT-only `get-deep-type`
+            // op bypasses this guard via its own dispatch.
+            let _skip_guard = SkipInferredGuard::enter();
             let types = infer_types_generic(&value, &factory, env);
 
             if types.is_empty() {

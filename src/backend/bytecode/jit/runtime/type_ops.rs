@@ -92,12 +92,16 @@ pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _i
         if !env_ptr.is_null() {
             use super::helpers::jit_to_value_generic;
             use crate::backend::bytecode::jit::types::JitValue;
-            use crate::backend::eval::types::infer_types_generic;
+            use crate::backend::eval::types::{infer_types_generic, SkipInferredGuard};
             let env =
                 &*(env_ptr as *const crate::backend::bytecode::MettaEnvironment);
             // Reconstruct MettaValue from NaN-boxed payload.
             let value: MettaValue =
                 jit_to_value_generic::<MettaValue, GcFactory>(JitValue::from_raw(val), &factory);
+            // Plan Phase F (2026-05-20): `get-type` consults declared
+            // types only across all tiers (T0/T1/T2/T3). The MTT-only
+            // `get-deep-type` op bypasses this guard.
+            let _skip_guard = SkipInferredGuard::enter();
             let types = infer_types_generic(&value, &factory, env);
             // HE parity: empty result → %Undefined%. Single representative
             // for the JIT FFI; full nondet enumeration handled at T0.

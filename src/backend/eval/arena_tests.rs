@@ -2045,10 +2045,13 @@ mod tests {
     /// get-type (f 5) should return Number via inferred type index
     #[test]
     fn test_inferred_type_arithmetic_rule() {
+        // Plan Phase F (2026-05-20): use `get-deep-type` — the MTT-only
+        // op that consults inferred types. Plain `get-type` consults only
+        // declared types per HE empirical (§08.7.1 / T05/076).
         let results = run_eval(
             r#"
             (= (f $x) (+ $x 1))
-            !(get-type (f 5))
+            !(get-deep-type (f 5))
         "#,
         );
         assert!(
@@ -2059,13 +2062,13 @@ mod tests {
     }
 
     /// (= (h $x) (< $x 0)) → inferred rhs_type = Bool
-    /// get-type (h 5) should return Bool via inferred type index
+    /// get-deep-type (h 5) should return Bool via inferred type index
     #[test]
     fn test_inferred_type_comparison_rule() {
         let results = run_eval(
             r#"
             (= (h $x) (< $x 0))
-            !(get-type (h 5))
+            !(get-deep-type (h 5))
         "#,
         );
         assert!(
@@ -2076,7 +2079,7 @@ mod tests {
     }
 
     /// (= (f $x) (+ $x 1)), (= (g $x) (f $x))
-    /// get-type (g 5) should return Number via chained inferred types:
+    /// get-deep-type (g 5) should return Number via chained inferred types:
     /// g's rhs is (f $x) — (f $x) is an S-expr whose head "f" has inferred type Number
     #[test]
     fn test_inferred_type_chained() {
@@ -2084,7 +2087,7 @@ mod tests {
             r#"
             (= (f $x) (+ $x 1))
             (= (g $x) (f $x))
-            !(get-type (g 5))
+            !(get-deep-type (g 5))
         "#,
         );
         assert!(
@@ -2172,12 +2175,14 @@ mod tests {
     /// Chain: f→Number, g calls f, h calls g → h returns Number
     #[test]
     fn test_recursive_inference_chain() {
+        // Plan Phase F (2026-05-20): use `get-deep-type` per the
+        // declared-vs-inferred split.
         let results = run_eval(
             r#"
             (= (f $x) (+ $x 1))
             (= (g $x) (f $x))
             (= (h $x) (g $x))
-            !(get-type (h 5))
+            !(get-deep-type (h 5))
         "#,
         );
         assert!(
@@ -2213,10 +2218,12 @@ mod tests {
     /// Without explicit type declaration, get-type should still find Number args
     #[test]
     fn test_infer_arrow_double() {
+        // Plan Phase F (2026-05-20): use `get-deep-type` per the
+        // declared-vs-inferred split.
         let results = run_eval(
             r#"
             (= (double $x) (+ $x $x))
-            !(get-type (double 5))
+            !(get-deep-type (double 5))
         "#,
         );
         assert!(
@@ -2232,7 +2239,7 @@ mod tests {
         let results = run_eval(
             r#"
             (= (is-pos $x) (> $x 0))
-            !(get-type (is-pos 5))
+            !(get-deep-type (is-pos 5))
         "#,
         );
         // rhs_type from (> $x 0) is Bool, so the inferred return type should be Bool
@@ -2250,14 +2257,14 @@ mod tests {
         let results = run_eval(
             r#"
             (= (id $x) $x)
-            !(get-type (id 42))
+            !(get-deep-type (id 42))
         "#,
         );
         // id has no constraints and variable RHS → %Undefined% rhs_type → falls through
         // The result should be at least something (possibly %Undefined%)
         assert!(
             !results.is_empty(),
-            "get-type (id 42) should return at least one result"
+            "get-deep-type (id 42) should return at least one result"
         );
     }
 
@@ -2271,7 +2278,7 @@ mod tests {
         let results = run_eval(
             r#"
             (= (f $x) (if (> $x 0) (+ $x 1) (- 0 $x)))
-            !(get-type (f 5))
+            !(get-deep-type (f 5))
         "#,
         );
         // The inferred type includes Number (from rhs_type) and possibly $t (from
@@ -2292,7 +2299,7 @@ mod tests {
             r#"
             (= (poly 0) True)
             (= (poly $x) (+ $x 1))
-            !(get-type (poly 0))
+            !(get-deep-type (poly 0))
         "#,
         );
         // Should have at least Bool (from True) and Number (from (+ $x 1))
@@ -2312,11 +2319,12 @@ mod tests {
     /// Simple call chain: g calls f. Fixpoint should propagate f's return type to g.
     #[test]
     fn test_fixpoint_simple_chain() {
+        // Plan Phase F: use `get-deep-type` per the declared-vs-inferred split.
         let results = run_eval(
             r#"
             (= (f $x) (+ $x 1))
             (= (g $x) (f $x))
-            !(get-type (g 5))
+            !(get-deep-type (g 5))
         "#,
         );
         let has_number = results.iter().any(|r| r == "Number");
@@ -2333,11 +2341,12 @@ mod tests {
     /// converges to this type variable — the important thing is it doesn't diverge.
     #[test]
     fn test_fixpoint_mutual_recursion() {
+        // Plan Phase F: use `get-deep-type`.
         let results = run_eval(
             r#"
             (= (f $x) (if (== $x 0) 1 (g (- $x 1))))
             (= (g $x) (f (+ $x 1)))
-            !(get-type (f 5))
+            !(get-deep-type (f 5))
         "#,
         );
         let has_number = results.iter().any(|r| r == "Number");
@@ -2354,13 +2363,14 @@ mod tests {
     /// Verifies that the fixpoint terminates within bounded iterations.
     #[test]
     fn test_fixpoint_max_iterations() {
+        // Plan Phase F: use `get-deep-type`.
         let results = run_eval(
             r#"
             (= (d $x) (+ $x 1))
             (= (c $x) (d $x))
             (= (b $x) (c $x))
             (= (a $x) (b $x))
-            !(get-type (a 5))
+            !(get-deep-type (a 5))
         "#,
         );
         // The chain a→b→c→d→(+ $x 1) should ultimately resolve to Number.

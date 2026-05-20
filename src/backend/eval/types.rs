@@ -84,11 +84,14 @@ where
             vec![factory.atom("String")]
         }
         MettaValueInner::Unit => {
+            // HE-bisim §08.1c (T05/074): `(get-type ())` returns `%Undefined%`.
+            // Previously MTT returned the metatype `Expression` (the variant's
+            // bucket); HE treats the empty tuple as having no declared type.
             #[cfg(feature = "trace")]
             {
                 _trace_source = "literal-unit";
             }
-            vec![factory.atom("Expression")]
+            vec![factory.atom("%Undefined%")]
         }
         MettaValueInner::Type(_) => {
             #[cfg(feature = "trace")]

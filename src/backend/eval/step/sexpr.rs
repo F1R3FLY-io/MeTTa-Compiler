@@ -2678,6 +2678,55 @@ where
                 // because the conformance fixtures (T06-stdlib/102) assert the
                 // exact `UnsignedIntegerIsExpected` Error wording.
                 "pragma!" => {
+                    // HE-bisim §9.8.2 (T07/051): `(pragma! key)` (1-arg read
+                    // form) returns the current value or `NotReducible` when
+                    // unset. `(pragma! key value)` (2-arg write form) persists
+                    // the value and returns Unit. Anything else is an Error.
+                    if items.len() == 2 {
+                        let key = match items[1].as_atom() {
+                            Some(k) => k,
+                            None => {
+                                return GenericEvalStep::Done((
+                                    smallvec![ctx.factory().error(
+                                        ctx.factory().sexpr(items),
+                                        ctx.factory().string(
+                                            "pragma! expects symbol atom as a key",
+                                        ),
+                                    )],
+                                    env,
+                                ));
+                            }
+                        };
+                        // HE-bisim §9.8.2 (T07/051): only report the value if
+                        // the user explicitly set it via the write form;
+                        // otherwise return `NotReducible` even though MTT may
+                        // carry a non-trivial default (e.g.,
+                        // `max-stack-depth=Some(1000)`).
+                        let value_atom = if !env.pragma_user_set(key) {
+                            None
+                        } else if key == "max-stack-depth" {
+                            env.get_max_stack_depth()
+                                .map(|n| ctx.factory().long(n as i64))
+                        } else if key == "type-check" {
+                            use crate::backend::environment::core::TypeCheckMode;
+                            Some(match env.get_type_check_mode() {
+                                TypeCheckMode::Auto => ctx.factory().atom("auto"),
+                                TypeCheckMode::Permissive => ctx.factory().atom("permissive"),
+                            })
+                        } else if key == "rule-fire-mode" {
+                            use crate::backend::environment::core::RuleFireMode;
+                            Some(match env.get_rule_fire_mode() {
+                                RuleFireMode::Nondet => ctx.factory().atom("nondet"),
+                                RuleFireMode::Specificity => ctx.factory().atom("specificity"),
+                            })
+                        } else {
+                            env.get_pragma_other(key)
+                                .map(|s| ctx.factory().atom(&s))
+                        };
+                        let result = value_atom
+                            .unwrap_or_else(|| ctx.factory().atom("NotReducible"));
+                        return GenericEvalStep::Done((smallvec![result], env));
+                    }
                     if items.len() != 3 {
                         return GenericEvalStep::Done((
                             smallvec![ctx.factory().error(

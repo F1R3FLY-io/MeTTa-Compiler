@@ -154,6 +154,13 @@ pub struct PragmaSettings {
     /// Other pragma key/value pairs (no semantic effect, but stored for
     /// observability and future use).
     pub other: HashMap<String, String>,
+    /// Tracks pragma keys that have been EXPLICITLY user-set via
+    /// `(pragma! key value)`. HE-bisim §9.8.2: `(pragma! key)` 1-arg read
+    /// returns the documented default OR `NotReducible` when no user
+    /// setting exists. MTT carries a non-trivial default (e.g.,
+    /// `max-stack-depth=Some(1000)`) but reports `NotReducible` until the
+    /// user opts in via the write form, matching HE T07/051.
+    pub user_set_keys: std::collections::HashSet<String>,
 }
 
 impl Default for PragmaSettings {
@@ -163,6 +170,7 @@ impl Default for PragmaSettings {
             rule_fire_mode: RuleFireMode::default(),
             max_stack_depth: Some(1000),
             other: HashMap::new(),
+            user_set_keys: std::collections::HashSet::new(),
         }
     }
 }
@@ -1873,7 +1881,9 @@ where
     /// Writes are propagated through the shared `Arc<RwLock<PragmaSettings>>`
     /// so all clones (forks/unioned envs) see the new value.
     pub fn set_type_check_mode(&self, mode: TypeCheckMode) {
-        self.shared.pragma_settings.write().type_check_mode = mode;
+        let mut p = self.shared.pragma_settings.write();
+        p.type_check_mode = mode;
+        p.user_set_keys.insert("type-check".to_string());
     }
 
     /// Get the current rule-fire mode (default: `Nondet` = HE-bisim).
@@ -1889,7 +1899,11 @@ where
     /// Bumps `RULE_EPOCH` so cached match-result entries (keyed on epoch)
     /// don't serve stale results across mode changes.
     pub fn set_rule_fire_mode(&self, mode: RuleFireMode) {
-        self.shared.pragma_settings.write().rule_fire_mode = mode;
+        {
+            let mut p = self.shared.pragma_settings.write();
+            p.rule_fire_mode = mode;
+            p.user_set_keys.insert("rule-fire-mode".to_string());
+        }
         // Cache invalidation: bump rule epoch so trampoline/operator caches
         // re-fetch under the new mode. (Match results legitimately differ
         // when the pragma toggles even though the rule set is unchanged.)
@@ -1913,16 +1927,27 @@ where
 
     /// Set the `max-stack-depth` pragma value.
     pub fn set_max_stack_depth(&self, depth: usize) {
-        self.shared.pragma_settings.write().max_stack_depth = Some(depth);
+        let mut p = self.shared.pragma_settings.write();
+        p.max_stack_depth = Some(depth);
+        p.user_set_keys.insert("max-stack-depth".to_string());
+    }
+
+    /// Has the user explicitly set this pragma key via the write form?
+    pub fn pragma_user_set(&self, key: &str) -> bool {
+        self.shared.pragma_settings.read().user_set_keys.contains(key)
     }
 
     /// Store an arbitrary pragma key/value pair (no semantic effect, HE-bisim).
     pub fn set_pragma_other(&self, key: &str, value: &str) {
-        self.shared
-            .pragma_settings
-            .write()
-            .other
-            .insert(key.to_string(), value.to_string());
+        let mut p = self.shared.pragma_settings.write();
+        p.other.insert(key.to_string(), value.to_string());
+        p.user_set_keys.insert(key.to_string());
+    }
+
+    /// Read an arbitrary pragma key (returns `None` if unset).
+    /// HE-bisim §9.8.2: powers the `(pragma! key)` 1-arg read form.
+    pub fn get_pragma_other(&self, key: &str) -> Option<String> {
+        self.shared.pragma_settings.read().other.get(key).cloned()
     }
 
     /// Collect all GC root values from this environment.

@@ -132,7 +132,7 @@ fn is_known_impure_head(name: &str) -> bool {
         // Space mutation
         "add-atom" | "remove-atom"
         // State mutation
-        | "new-state" | "change-state!" | "get-state"
+        | "new-state" | "change-state!" | "compare-and-swap-state!" | "get-state"
         // I/O
         | "println!" | "print!" | "trace!"
         // Module system
@@ -143,6 +143,13 @@ fn is_known_impure_head(name: &str) -> bool {
         | "get-atoms"
         // Memo mutation
         | "new-memo" | "memo-clear!" | "memo-delete!"
+        // Phase I (2026-05-20): concurrency primitives are impure
+        // (state mutation via spawn body, observer events, CAS).
+        | "spawn!" | "await!" | "await-barrier!"
+        | "loop-until-state"
+        | "new-das!" | "new-distributed-space" | "das-barrier!"
+        | "add-observer!"
+        | "snapshot!" | "partition-space"
     )
 }
 

@@ -618,7 +618,17 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     | "assertEqualToResultMsg" | "assertAlphaEqualToResultMsg"
                     | "if-decons-expr" | "if-error" | "return-on-error"
                     | "assertIncludes" | "noreduce-eq"
-                    | "trace" | "trace!" | "filter-atom" | "assert" => false,
+                    | "trace" | "trace!" | "filter-atom" | "assert"
+                    // Phase I (2026-05-20): concurrency + DAS primitives
+                    // are special forms implemented natively in T0
+                    // (eval/step/sexpr.rs); routing through T1 bytecode
+                    // would lose the special-form behavior and treat them
+                    // as user-rule Call opcodes. Route to T0 explicitly.
+                    | "spawn!" | "await!" | "await-barrier!"
+                    | "compare-and-swap-state!" | "loop-until-state"
+                    | "new-das!" | "new-distributed-space" | "das-barrier!"
+                    | "add-observer!"
+                    | "snapshot!" | "partition-space" => false,
                     // User-defined functions: compiled as Call opcodes.
                     // The VM dispatches via op_dispatch_rules → match_rules_native.
                     // eval_inner completes evaluation via trampoline re-eval.

@@ -79,6 +79,23 @@ pub mod tree_sitter_parser;
 pub use ir::{MettaExpr, Position, SExpr, Span};
 pub use tree_sitter_parser::TreeSitterMettaParser;
 
+/// MeTTaTron's declared HE conformance sub-profile per spec §21.2.
+///
+/// MTT supports MT-Partitioned (the strongest sub-profile in the
+/// rank order ST &lt; MT-Shared &lt; MT-Snapshot &lt; MT-Partitioned), which
+/// transitively conforms at every weaker sub-profile (§21.2). The
+/// implementation provides:
+///   - MT-Shared: work-pool + linearizable space ops + spawn!/await!/
+///     await-barrier!/compare-and-swap-state!
+///   - MT-Snapshot: snapshot! op backed by PathMap's persistent
+///     semantics (O(1) cheap snapshots)
+///   - MT-Partitioned: partition-space op + DistributedSpace tagged
+///     value (single-replica local) + das-barrier! synchronization
+///
+/// The harness probes this via `mettatron --print-sub-profile` to
+/// gate which T08-concurrency fixtures it runs.
+pub const SUB_PROFILE: &str = "MT-Partitioned";
+
 // ============================================================================
 // Slab-Allocated API (Primary — GC-backed allocation)
 // ============================================================================

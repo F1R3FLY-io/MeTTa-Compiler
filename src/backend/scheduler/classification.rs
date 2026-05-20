@@ -57,6 +57,7 @@ const STATE_MUTATING_HEADS: &[&str] = &[
     "add-atom",
     "remove-atom",
     "change-state!",
+    "compare-and-swap-state!",
     "get-state",
     "sealed",
     "import!",
@@ -65,6 +66,17 @@ const STATE_MUTATING_HEADS: &[&str] = &[
     "pragma!",
     "new-space",
     "new-state",
+    // Phase I (2026-05-20): concurrency primitives are state-mutating.
+    "spawn!",
+    "await!",
+    "await-barrier!",
+    "loop-until-state",
+    "new-das!",
+    "new-distributed-space",
+    "das-barrier!",
+    "add-observer!",
+    "snapshot!",
+    "partition-space",
 ];
 
 const IO_HEADS: &[&str] = &[
@@ -83,6 +95,7 @@ const IMPURE_HEADS: &[&str] = &[
     "add-atom",
     "remove-atom",
     "change-state!",
+    "compare-and-swap-state!",
     "get-state",
     "println!",
     "print!",
@@ -98,6 +111,17 @@ const IMPURE_HEADS: &[&str] = &[
     "new-space",
     "new-state",
     "nop",
+    // Phase I concurrency primitives.
+    "spawn!",
+    "await!",
+    "await-barrier!",
+    "loop-until-state",
+    "new-das!",
+    "new-distributed-space",
+    "das-barrier!",
+    "add-observer!",
+    "snapshot!",
+    "partition-space",
 ];
 
 /// Known pure head symbols (control flow and data manipulation).

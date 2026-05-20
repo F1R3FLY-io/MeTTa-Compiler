@@ -122,6 +122,10 @@ fn parse_args() -> Result<Options, String> {
                 print_version();
                 process::exit(0);
             }
+            "--print-sub-profile" => {
+                println!("{}", mettatron::SUB_PROFILE);
+                process::exit(0);
+            }
             "-o" | "--output" => {
                 i += 1;
                 if i >= args.len() {

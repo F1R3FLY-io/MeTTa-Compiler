@@ -1250,6 +1250,58 @@ pub enum Continuation {
         outer_carrying: SharedBindings,
     },
 
+    /// Phase I.3 — compare-and-swap-state! state-ref eval completed.
+    /// Captures the resolved state ref, evaluates expected next.
+    ProcessCasStateRef {
+        state_ref: MettaValue,
+        expected: MettaValue,
+        new_value: MettaValue,
+        env: SharedEnv,
+        depth: usize,
+        outer_carrying: SharedBindings,
+    },
+
+    /// Phase I.3 — compare-and-swap-state! expected eval completed.
+    /// Captures resolved expected; evaluates new_value next.
+    ProcessCasExpected {
+        state_value: MettaValue,
+        expected_value: MettaValue,
+        new_value: MettaValue,
+        env: SharedEnv,
+        depth: usize,
+        outer_carrying: SharedBindings,
+    },
+
+    /// Phase I.3 — compare-and-swap-state! new-value eval completed.
+    /// Performs the CAS atomically and emits True/False.
+    ProcessCasNewValue {
+        state_value: MettaValue,
+        expected_value: MettaValue,
+        env: SharedEnv,
+        depth: usize,
+        outer_carrying: SharedBindings,
+    },
+
+    /// Phase I.5 — loop-until-state state-ref eval completed.
+    /// On completion, polls the cell and either returns or re-loops.
+    ProcessLoopStateRef {
+        state_ref: MettaValue,
+        target: MettaValue,
+        env: SharedEnv,
+        depth: usize,
+        outer_carrying: SharedBindings,
+    },
+
+    /// Phase I.5 — loop-until-state target eval completed.
+    /// Captures resolved target; begins polling.
+    ProcessLoopTarget {
+        state_value: MettaValue,
+        target_value: MettaValue,
+        env: SharedEnv,
+        depth: usize,
+        outer_carrying: SharedBindings,
+    },
+
     /// Processing repr
     ProcessRepr {
         atom: MettaValue,
@@ -2345,6 +2397,65 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
+            Self::ProcessCasStateRef {
+                state_ref,
+                expected,
+                new_value,
+                outer_carrying,
+                ..
+            } => {
+                out.push(*state_ref);
+                out.push(*expected);
+                out.push(*new_value);
+                collect_bindings_values(outer_carrying, out);
+            }
+
+            Self::ProcessCasExpected {
+                state_value,
+                expected_value,
+                new_value,
+                outer_carrying,
+                ..
+            } => {
+                out.push(*state_value);
+                out.push(*expected_value);
+                out.push(*new_value);
+                collect_bindings_values(outer_carrying, out);
+            }
+
+            Self::ProcessCasNewValue {
+                state_value,
+                expected_value,
+                outer_carrying,
+                ..
+            } => {
+                out.push(*state_value);
+                out.push(*expected_value);
+                collect_bindings_values(outer_carrying, out);
+            }
+
+            Self::ProcessLoopStateRef {
+                state_ref,
+                target,
+                outer_carrying,
+                ..
+            } => {
+                out.push(*state_ref);
+                out.push(*target);
+                collect_bindings_values(outer_carrying, out);
+            }
+
+            Self::ProcessLoopTarget {
+                state_value,
+                target_value,
+                outer_carrying,
+                ..
+            } => {
+                out.push(*state_value);
+                out.push(*target_value);
+                collect_bindings_values(outer_carrying, out);
+            }
+
             Self::ProcessRepr {
                 atom,
                 outer_carrying,
@@ -2638,6 +2749,11 @@ impl Continuation {
             | Self::ProcessGetState { depth, .. }
             | Self::ProcessChangeStateRef { depth, .. }
             | Self::ProcessChangeStateValue { depth, .. }
+            | Self::ProcessCasStateRef { depth, .. }
+            | Self::ProcessCasExpected { depth, .. }
+            | Self::ProcessCasNewValue { depth, .. }
+            | Self::ProcessLoopStateRef { depth, .. }
+            | Self::ProcessLoopTarget { depth, .. }
             | Self::ProcessRepr { depth, .. }
             | Self::ProcessFormatArgsString { depth, .. }
             | Self::ProcessFormatArgsArgs { depth, .. }
@@ -2716,6 +2832,11 @@ impl Continuation {
             Self::ProcessGetState { .. } => "ProcessGetState",
             Self::ProcessChangeStateRef { .. } => "ProcessChangeStateRef",
             Self::ProcessChangeStateValue { .. } => "ProcessChangeStateValue",
+            Self::ProcessCasStateRef { .. } => "ProcessCasStateRef",
+            Self::ProcessCasExpected { .. } => "ProcessCasExpected",
+            Self::ProcessCasNewValue { .. } => "ProcessCasNewValue",
+            Self::ProcessLoopStateRef { .. } => "ProcessLoopStateRef",
+            Self::ProcessLoopTarget { .. } => "ProcessLoopTarget",
             Self::ProcessRepr { .. } => "ProcessRepr",
             Self::ProcessFormatArgsString { .. } => "ProcessFormatArgsString",
             Self::ProcessFormatArgsArgs { .. } => "ProcessFormatArgsArgs",

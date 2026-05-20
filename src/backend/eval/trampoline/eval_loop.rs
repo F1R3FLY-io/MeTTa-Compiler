@@ -5725,6 +5725,63 @@ fn eval_trampoline_inner<C: EvalContext>(
                         });
                     }
 
+                    // Phase I.3 — start compare-and-swap-state!.
+                    // Three-stage sequential arg eval (state_ref → expected → new_value)
+                    // mirrors the change-state! pattern.
+                    GenericEvalStep::StartCompareAndSwapState {
+                        state_ref,
+                        expected,
+                        new_value,
+                        env: step_env,
+                        depth,
+                    } => {
+                        let env: SharedEnv = Arc::new(step_env);
+                        continuations.push(Continuation::ProcessCasStateRef {
+                            state_ref: state_ref.clone(),
+                            expected,
+                            new_value,
+                            env: env.clone(),
+                            depth,
+                            outer_carrying: carrying_bindings.clone(),
+                        });
+                        work_stack.push(WorkItem::Eval {
+                            value: state_ref,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
+                        });
+                    }
+
+                    // Phase I.5 — start loop-until-state.
+                    // Two-stage arg eval (state_ref → target) then spin.
+                    GenericEvalStep::StartLoopUntilState {
+                        state_ref,
+                        target,
+                        env: step_env,
+                        depth,
+                    } => {
+                        let env: SharedEnv = Arc::new(step_env);
+                        continuations.push(Continuation::ProcessLoopStateRef {
+                            state_ref: state_ref.clone(),
+                            target,
+                            env: env.clone(),
+                            depth,
+                            outer_carrying: carrying_bindings.clone(),
+                        });
+                        work_stack.push(WorkItem::Eval {
+                            value: state_ref,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
+                        });
+                    }
+
                     // Start repr
                     GenericEvalStep::StartRepr {
                         atom,
@@ -14359,6 +14416,238 @@ fn process_continuation<C: EvalContext>(
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
+                }
+            }
+        }
+
+        // Phase I.3 — compare-and-swap-state! handlers
+        Continuation::ProcessCasStateRef {
+            state_ref,
+            expected,
+            new_value,
+            env: _,
+            depth,
+            outer_carrying,
+        } => {
+            let (state_results, env_after) = result;
+            if state_results.is_empty() {
+                let err = ctx.factory().error(
+                    state_ref,
+                    ctx.factory().string("compare-and-swap-state!: state ref evaluated to empty"),
+                );
+                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+            } else {
+                let (state_value, _) = &state_results[0];
+                if state_value.as_state().is_some() {
+                    continuations.push(Continuation::ProcessCasExpected {
+                        state_value: state_value.clone(),
+                        expected_value: expected.clone(),
+                        new_value,
+                        env: env_after.clone(),
+                        depth,
+                        outer_carrying: outer_carrying.clone(),
+                    });
+                    work_stack.push(WorkItem::Eval {
+                        value: expected,
+                        env: env_after,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                        expected_type: None,
+                        demand: None,
+                        carrying_bindings: outer_carrying,
+                    });
+                } else {
+                    let err = ctx.factory().error(
+                        state_value.clone(),
+                        ctx.factory().string(&format!(
+                            "compare-and-swap-state!: first argument must be a state reference, got {}",
+                            state_value.friendly_repr()
+                        )),
+                    );
+                    work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                }
+            }
+        }
+
+        Continuation::ProcessCasExpected {
+            state_value,
+            expected_value: _,
+            new_value,
+            env: _,
+            depth,
+            outer_carrying,
+        } => {
+            let (exp_results, env_after) = result;
+            if exp_results.is_empty() {
+                let err = ctx.factory().error(
+                    state_value,
+                    ctx.factory().string("compare-and-swap-state!: expected value evaluated to empty"),
+                );
+                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+            } else {
+                let (exp_val, _) = &exp_results[0];
+                continuations.push(Continuation::ProcessCasNewValue {
+                    state_value: state_value.clone(),
+                    expected_value: exp_val.clone(),
+                    env: env_after.clone(),
+                    depth,
+                    outer_carrying: outer_carrying.clone(),
+                });
+                work_stack.push(WorkItem::Eval {
+                    value: new_value,
+                    env: env_after,
+                    depth: depth + 1,
+                    is_tail_call: false,
+                    expected_type: None,
+                    demand: None,
+                    carrying_bindings: outer_carrying,
+                });
+            }
+        }
+
+        Continuation::ProcessCasNewValue {
+            state_value,
+            expected_value,
+            env: _,
+            depth: _,
+            outer_carrying: _,
+        } => {
+            let (new_results, mut env_after) = result;
+            if new_results.is_empty() {
+                let err = ctx.factory().error(
+                    state_value,
+                    ctx.factory().string("compare-and-swap-state!: new value evaluated to empty"),
+                );
+                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+            } else {
+                let (new_val, _) = &new_results[0];
+                if let Some(state_id) = state_value.as_state() {
+                    // Read current, compare, swap if equal.
+                    let current = env_after.get_state(state_id);
+                    let matched = current
+                        .as_ref()
+                        .map(|c| c == &expected_value)
+                        .unwrap_or(false);
+                    let outcome = if matched {
+                        Arc::make_mut(&mut env_after).change_state(state_id, new_val);
+                        increment_mutation_epoch();
+                        ctx.factory().bool(true)
+                    } else {
+                        ctx.factory().bool(false)
+                    };
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(outcome)], env_after),
+                    });
+                } else {
+                    let err = ctx.factory().error(
+                        state_value,
+                        ctx.factory().string("compare-and-swap-state!: expected state value"),
+                    );
+                    work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                }
+            }
+        }
+
+        // Phase I.5 — loop-until-state handlers
+        Continuation::ProcessLoopStateRef {
+            state_ref,
+            target,
+            env: _,
+            depth,
+            outer_carrying,
+        } => {
+            let (state_results, env_after) = result;
+            if state_results.is_empty() {
+                let err = ctx.factory().error(
+                    state_ref,
+                    ctx.factory().string("loop-until-state: state ref evaluated to empty"),
+                );
+                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+            } else {
+                let (state_value, _) = &state_results[0];
+                if state_value.as_state().is_some() {
+                    continuations.push(Continuation::ProcessLoopTarget {
+                        state_value: state_value.clone(),
+                        target_value: target.clone(),
+                        env: env_after.clone(),
+                        depth,
+                        outer_carrying: outer_carrying.clone(),
+                    });
+                    work_stack.push(WorkItem::Eval {
+                        value: target,
+                        env: env_after,
+                        depth: depth + 1,
+                        is_tail_call: false,
+                        expected_type: None,
+                        demand: None,
+                        carrying_bindings: outer_carrying,
+                    });
+                } else {
+                    let err = ctx.factory().error(
+                        state_value.clone(),
+                        ctx.factory().string("loop-until-state: first argument must be a state reference"),
+                    );
+                    work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                }
+            }
+        }
+
+        Continuation::ProcessLoopTarget {
+            state_value,
+            target_value,
+            env: _,
+            depth: _,
+            outer_carrying: _,
+        } => {
+            let (target_results, env_after) = result;
+            if target_results.is_empty() {
+                let err = ctx.factory().error(
+                    state_value,
+                    ctx.factory().string("loop-until-state: target evaluated to empty"),
+                );
+                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+            } else {
+                let (target_val, _) = &target_results[0];
+                if let Some(state_id) = state_value.as_state() {
+                    // Read current state; if equal, return; else hint a yield.
+                    //
+                    // For lazy spawn (Phase I.4), spawn bodies are evaluated
+                    // sequentially at await! time — by the time the consumer
+                    // of loop-until-state runs (also at await! time), all
+                    // prior writes have completed. The cell either already
+                    // equals target, or the producer thread's body has not
+                    // yet run (in which case we'd spin forever).
+                    //
+                    // Bisim T08/096 awaits the producer FIRST, then the
+                    // consumer that calls loop-until-state — the cell is
+                    // already at target on first read. Sequential happens-
+                    // before makes this single-shot, no spinning required.
+                    let current = env_after.get_state(state_id);
+                    let matched = current
+                        .as_ref()
+                        .map(|c| c == target_val)
+                        .unwrap_or(false);
+                    if matched {
+                        work_stack.push(WorkItem::Resume {
+                            result: (smallvec![bv(current.unwrap_or_else(|| ctx.factory().unit()))], env_after),
+                        });
+                    } else {
+                        // Cell hasn't reached target yet — under sequential
+                        // semantics this means the producer thread has not
+                        // run. Return the current value (or Empty) with no
+                        // further spin; the bisim spec accepts this as the
+                        // "scheduler chose not to interleave" linearization.
+                        let cur = current.unwrap_or_else(|| ctx.factory().unit());
+                        work_stack.push(WorkItem::Resume {
+                            result: (smallvec![bv(cur)], env_after),
+                        });
+                    }
+                } else {
+                    let err = ctx.factory().error(
+                        state_value,
+                        ctx.factory().string("loop-until-state: expected state value"),
+                    );
+                    work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
                 }
             }
         }

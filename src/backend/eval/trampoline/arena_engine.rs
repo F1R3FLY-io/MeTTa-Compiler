@@ -101,6 +101,23 @@ pub fn new_env() -> MettaEnvironment {
         "&rng",
         crate::backend::grounded::random::create_seeded_generator(0, &f),
     );
+    // Phase I (2026-05-20): `&shared` pre-bound named space for the
+    // T08 multi-runner fixtures. In single-runner conformance mode the
+    // space is local; under the harness's multi_runner mode (future
+    // work), the harness binds it across runners. Pre-creating it as
+    // a named space ensures add-atom / collapse-match operate on a
+    // valid space handle even when only one runner is active.
+    let shared_id = env.create_named_space("shared");
+    env.register_token(
+        "&shared",
+        crate::backend::models::MettaValueFactory::space(
+            &f,
+            crate::backend::models::SpaceHandle::new(
+                shared_id,
+                "shared".to_string(),
+            ),
+        ),
+    );
     env
 }
 

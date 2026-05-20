@@ -174,7 +174,39 @@ where
                     _trace_source = "sexpr-empty";
                 }
                 vec![factory.atom("Expression")]
-            } else if let Some(op) = items.first().and_then(|v| v.as_atom()) {
+            }
+            // Phase I (2026-05-20): tagged concurrency values produced
+            // by spawn!, new-das!, snapshot!, partition-space are
+            // tagged SExprs that carry an implicit "type kind":
+            //   `(ThreadHandle <body>)` → `(ThreadHandle <body-type>)`
+            //   `(DistributedSpace <host>)` → `DistributedSpace`
+            //   `(SpaceSnapshot <space>)` → `Space`
+            //   `(PartitionedSpace <space> <ns>)` → `Space`
+            // get-type recognises these tags so T08/122, T08/133 etc.
+            // produce the expected parametric / nominal type atoms.
+            else if items.first().and_then(|v| v.as_atom())
+                == Some("ThreadHandle")
+                && items.len() == 2
+            {
+                let body_type = infer_type_generic(&items[1], factory, env);
+                vec![factory.sexpr(vec![factory.atom("ThreadHandle"), body_type])]
+            }
+            else if items.first().and_then(|v| v.as_atom())
+                == Some("DistributedSpace")
+            {
+                vec![factory.atom("DistributedSpace")]
+            }
+            else if items.first().and_then(|v| v.as_atom())
+                == Some("SpaceSnapshot")
+            {
+                vec![factory.atom("Space")]
+            }
+            else if items.first().and_then(|v| v.as_atom())
+                == Some("PartitionedSpace")
+            {
+                vec![factory.atom("Space")]
+            }
+            else if let Some(op) = items.first().and_then(|v| v.as_atom()) {
                 // Phase 10.6: Control-flow tracing first (let, let*, if, if-reducible, case)
                 if let Some((types, source)) =
                     infer_types_control_flow(op, items, factory, env, seen)

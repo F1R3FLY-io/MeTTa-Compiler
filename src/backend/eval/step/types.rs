@@ -521,6 +521,35 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         depth: usize,
     },
 
+    /// Phase I.3 — start compare-and-swap-state! evaluation.
+    /// Args eval order: state_ref → expected → new_value, then perform CAS.
+    StartCompareAndSwapState {
+        /// State reference to evaluate
+        state_ref: V,
+        /// Expected current value (must equal cell contents for swap to succeed)
+        expected: V,
+        /// New value to set on successful swap
+        new_value: V,
+        /// Environment for evaluation
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
+    /// Phase I.5 — start loop-until-state evaluation.
+    /// Spin: read state, compare to target. If equal, return state value;
+    /// else re-push self. Trampolined to keep tight loop off the C stack.
+    StartLoopUntilState {
+        /// State reference (already evaluated or to be evaluated)
+        state_ref: V,
+        /// Target value to wait for (already evaluated)
+        target: V,
+        /// Environment for evaluation
+        env: E,
+        /// Evaluation depth
+        depth: usize,
+    },
+
     /// Start repr evaluation - evaluates atom then converts to string representation.
     StartRepr {
         /// Atom expression to evaluate

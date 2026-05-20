@@ -365,6 +365,14 @@ fn is_impure_head(head: &str) -> bool {
             | "file-seek!" | "file-read-exact!" | "file-get-size!"
             | "new-random-generator" | "random-int" | "random-float"
             | "set-random-seed" | "reset-random-generator" | "flip"
+            // Phase I (2026-05-20): concurrency primitives are side-
+            // effecting (state mutation via spawn body, observer events,
+            // CAS). Must force eager eval through let* lazy-binding gates.
+            | "spawn!" | "await!" | "await-barrier!"
+            | "compare-and-swap-state!" | "loop-until-state"
+            | "new-das!" | "new-distributed-space" | "das-barrier!"
+            | "add-observer!"
+            | "snapshot!" | "partition-space"
     )
 }
 

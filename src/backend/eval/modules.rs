@@ -227,7 +227,7 @@ where
     // source to load. Return Unit silently.
     const NATIVE_BUILTIN_MODULES: &[&str] = &[
         "stdlib", "corelib", "random", "fileio", "json",
-        "das", "catalog", "math",
+        "das", "catalog", "math", "concurrency",
     ];
     let builtin_match = path_arg
         .as_atom()

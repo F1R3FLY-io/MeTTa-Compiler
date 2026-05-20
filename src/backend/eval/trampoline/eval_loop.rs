@@ -3149,7 +3149,22 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                     // Step 1: Cycle detection via active evaluation set.
                     // True cycle = expression is on its own call stack.
+                    //
+                    // Hybrid semantics:
+                    //   - Default depth (Some(1000)): return empty
+                    //     contribution per MTT extension (Task #6) so
+                    //     `(= (rec) (rec)) !(rec) → []` terminates in
+                    //     constant memory at every tier.
+                    //   - User-explicit pragma (any value other than 1000):
+                    //     emit `(Error <expr> StackOverflow)` to match HE's
+                    //     `interpreter.rs:392` depth-limit response. T04/047
+                    //     fixture `(pragma! max-stack-depth 20) (= (rec) (rec)) !(rec)`
+                    //     asserts the Error.
                     if crate::backend::eval::cesk::is_actively_evaluating(tabling_hash) {
+                        let user_set_pragma = env
+                            .get_max_stack_depth()
+                            .map(|d| d != 1000)
+                            .unwrap_or(true); // None = (pragma! max-stack-depth 0) → unlimited, treat as user-set
                         #[cfg(feature = "trace")]
                         {
                             if let Some(tc) = ctx.trace_collector() {
@@ -3162,14 +3177,24 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     trace_format::TraceEventKind::TablingDecision {
                                         expr_hash: tabling_hash,
                                         decision: trace_format::TablingDecisionKind::CycleDetected,
-                                        result_count: Some(0),
+                                        result_count: Some(if user_set_pragma { 1 } else { 0 }),
                                     },
                                 );
                             }
                         }
-                        work_stack.push(WorkItem::Resume {
-                            result: (SmallVec::new(), env),
-                        });
+                        if user_set_pragma {
+                            let stack_overflow_err = ctx.factory().error(
+                                value.clone(),
+                                ctx.factory().atom("StackOverflow"),
+                            );
+                            work_stack.push(WorkItem::Resume {
+                                result: (smallvec![bv(stack_overflow_err)], env),
+                            });
+                        } else {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), env),
+                            });
+                        }
                         continue;
                     }
 

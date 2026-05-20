@@ -38,6 +38,13 @@ enum FreshenWork<'a, V> {
     BuildSExpr(usize),
     /// Build a conjunction from the top `count` items on the result stack
     BuildConjunction(usize),
+    /// Re-wrap the next result as a Quoted value. HE-faithful (T06/129
+    /// noreduce-eq): freshening MUST descend through `(quote $x)` so the
+    /// inner variable gets the SAME epoch suffix as the LHS variable; if
+    /// it stays as `$x` while the LHS becomes `$__fr_E_x`, the
+    /// `apply_bindings` lookup of `$x` in `{$__fr_E_x → foo}` fails
+    /// silently and the quoted body never substitutes.
+    BuildQuoted,
 }
 
 /// Freshen (alpha-rename) all variables in a value.
@@ -377,6 +384,9 @@ where
                             work_stack.push(FreshenWork::Process(goal));
                         }
                     }
+                } else if let Some(inner) = val.as_quoted_ref() {
+                    work_stack.push(FreshenWork::BuildQuoted);
+                    work_stack.push(FreshenWork::Process(inner));
                 } else {
                     result_stack.push(val.clone());
                 }
@@ -392,6 +402,12 @@ where
                 let result = factory.conjunction_from_slice(&result_stack[start..]);
                 result_stack.truncate(start);
                 result_stack.push(result);
+            }
+            FreshenWork::BuildQuoted => {
+                let inner = result_stack
+                    .pop()
+                    .expect("BuildQuoted needs inner on result stack");
+                result_stack.push(factory.quote(inner));
             }
         }
     }
@@ -468,6 +484,9 @@ where
                             work_stack.push(FreshenWork::Process(goal));
                         }
                     }
+                } else if let Some(inner) = val.as_quoted_ref() {
+                    work_stack.push(FreshenWork::BuildQuoted);
+                    work_stack.push(FreshenWork::Process(inner));
                 } else {
                     // Ground types (Bool, Long, Float, String, Unit, Space, State, etc.)
                     result_stack.push(val.clone());
@@ -484,6 +503,12 @@ where
                 let result = factory.conjunction_from_slice(&result_stack[start..]);
                 result_stack.truncate(start);
                 result_stack.push(result);
+            }
+            FreshenWork::BuildQuoted => {
+                let inner = result_stack
+                    .pop()
+                    .expect("BuildQuoted needs inner on result stack");
+                result_stack.push(factory.quote(inner));
             }
         }
     }

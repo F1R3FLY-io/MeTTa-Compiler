@@ -3242,6 +3242,14 @@ where
         ProcessOwned(V),
         BuildSExpr { count: usize, original: V },
         BuildConjunction { count: usize, original: V },
+        /// Re-wrap the next result as a Quoted value. HE-faithful
+        /// (T06/129 noreduce-eq): freshen/rename + bindings must descend
+        /// into `(quote $x)` so the inner variable resolves via the same
+        /// rename + bindings as siblings outside the quote. Otherwise the
+        /// rule body `(== (quote $a) (quote $b))` keeps literal $a/$b
+        /// after freshening, and the bindings map keyed on $a_E/$b_E
+        /// never finds them.
+        BuildQuoted { original: V },
     }
 
     // Lookup probes rule-side first (scope-aware), then falls back to
@@ -3335,6 +3343,11 @@ where
                             work_stack.push(Work::ProcessTemplate(goal));
                         }
                     }
+                } else if let Some(inner) = val.as_quoted_ref() {
+                    work_stack.push(Work::BuildQuoted {
+                        original: val.clone(),
+                    });
+                    work_stack.push(Work::ProcessTemplate(inner));
                 } else {
                     result_stack.push(val.clone());
                 }
@@ -3421,6 +3434,10 @@ where
                             work_stack.push(Work::ProcessOwned(goal));
                         }
                     }
+                } else if let Some(inner) = val.as_quoted_ref() {
+                    let inner = inner.clone();
+                    work_stack.push(Work::BuildQuoted { original: val });
+                    work_stack.push(Work::ProcessOwned(inner));
                 } else {
                     result_stack.push(val);
                 }
@@ -3454,6 +3471,19 @@ where
                 let result = factory.conjunction_from_slice(&result_stack[start..]);
                 result_stack.truncate(start);
                 result_stack.push(result);
+            }
+            Work::BuildQuoted { original } => {
+                let new_inner = result_stack
+                    .pop()
+                    .expect("BuildQuoted needs inner on result stack");
+                let original_inner = original
+                    .as_quoted()
+                    .expect("BuildQuoted original must be Quoted");
+                if new_inner.identity_eq(&original_inner) {
+                    result_stack.push(original);
+                } else {
+                    result_stack.push(factory.quote(new_inner));
+                }
             }
         }
     }

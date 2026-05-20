@@ -1772,8 +1772,11 @@ pub(crate) enum FormatStyle {
     /// unquoted strings (legacy), default Rust float formatting.
     MorkString,
     /// `Display for MettaValue` style: same as MettaString except
-    /// Space/State/Memo are rendered as `<Space:NAME>` / `<State:ID>` /
-    /// `<Memo:NAME>` (human-friendly, NOT parser-roundtrip).
+    /// State/Memo are rendered as `<State:ID>` / `<Memo:NAME>`
+    /// (human-friendly, NOT parser-roundtrip).
+    /// Plan Phase C (2026-05-20): Space rendering aligned with
+    /// MettaString / HE-canonical form (`ModuleSpace(GroundingSpace-top)`
+    /// for `&self`; `&<name>` for named spaces).
     Display,
 }
 
@@ -1893,12 +1896,16 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                         result_stack.push("NotReducible".to_string());
                     }
                     MettaValueInner::Space(handle) => {
-                        result_stack.push(match style {
-                            FormatStyle::Display => format!("<Space:{}>", handle.name),
-                            FormatStyle::MettaString | FormatStyle::MorkString => {
-                                format!("(Space {} \"{}\")", handle.id, handle.name)
-                            }
-                        });
+                        // Phase C (HE bisim, 2026-05-20): HE-aligned space
+                        // print form per fixture T04/028 / §06.15.
+                        // `&self` (context-space) → `ModuleSpace(GroundingSpace-top)`
+                        // Named space → `&<name>`
+                        let canonical = if handle.name == "self" {
+                            "ModuleSpace(GroundingSpace-top)".to_string()
+                        } else {
+                            format!("&{}", handle.name)
+                        };
+                        result_stack.push(canonical);
                     }
                     MettaValueInner::State(id) => {
                         result_stack.push(match style {
@@ -2803,7 +2810,14 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Empty => result_stack.push("Empty".to_string()),
                         MettaValueInner::NotReducible => result_stack.push("NotReducible".to_string()),
                         MettaValueInner::Space(handle) => {
-                            result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
+                            // Phase C (HE bisim, 2026-05-20): HE-aligned space
+                            // print form per fixture T04/028 / §06.15.
+                            let canonical = if handle.name == "self" {
+                                "ModuleSpace(GroundingSpace-top)".to_string()
+                            } else {
+                                format!("&{}", handle.name)
+                            };
+                            result_stack.push(canonical);
                         }
                         MettaValueInner::State(id) => {
                             result_stack.push(format!("(State {})", id));
@@ -3038,7 +3052,14 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Empty => result_stack.push("Empty".to_string()),
                         MettaValueInner::NotReducible => result_stack.push("NotReducible".to_string()),
                         MettaValueInner::Space(handle) => {
-                            result_stack.push(format!("(Space {} \"{}\")", handle.id, handle.name));
+                            // Phase C (HE bisim, 2026-05-20): HE-aligned space
+                            // print form per fixture T04/028 / §06.15.
+                            let canonical = if handle.name == "self" {
+                                "ModuleSpace(GroundingSpace-top)".to_string()
+                            } else {
+                                format!("&{}", handle.name)
+                            };
+                            result_stack.push(canonical);
                         }
                         MettaValueInner::State(id) => {
                             result_stack.push(format!("(State {})", id));

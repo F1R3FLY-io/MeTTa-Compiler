@@ -244,7 +244,14 @@ fn format_value(v: &MettaValue) -> String {
                     ValueView::Atom(s) => result.push(s.to_string()),
                     ValueView::String(s) => result.push(format_string_escaped(s)),
                     ValueView::Space(h) => {
-                        result.push(format!("(Space {} \"{}\")", h.id, h.name))
+                        // Phase C (HE bisim, 2026-05-20): HE-aligned space
+                        // print form per fixture T04/028 / §06.15.
+                        let canonical = if h.name == "self" {
+                            "ModuleSpace(GroundingSpace-top)".to_string()
+                        } else {
+                            format!("&{}", h.name)
+                        };
+                        result.push(canonical);
                     }
                     ValueView::State(id) => result.push(format!("(State {})", id)),
                     ValueView::Memo(h) => {

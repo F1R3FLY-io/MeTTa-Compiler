@@ -343,7 +343,17 @@ fn format_result(value: &MettaValue) -> String {
             let formatted: Vec<String> = goals.iter().map(format_result).collect();
             format!("(, {})", formatted.join(" "))
         }
-        ValueView::Space(handle) => format!("(Space {} \"{}\")", handle.id, handle.name),
+        ValueView::Space(handle) => {
+            // Phase C (HE bisim, 2026-05-20): align space print form to HE.
+            // - `&self` / context-space → `ModuleSpace(GroundingSpace-top)`
+            // - Named space         → `&<name>`
+            // (HE `metta-repl` 0.2.10 empirical, fixture T04/028.)
+            if handle.name == "self" {
+                "ModuleSpace(GroundingSpace-top)".to_string()
+            } else {
+                format!("&{}", handle.name)
+            }
+        }
         ValueView::State(id) => format!("(State {})", id),
         ValueView::Quoted(inner) => format!("(quote {})", format_result(&inner)),
         ValueView::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),

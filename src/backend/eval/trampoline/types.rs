@@ -915,6 +915,11 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+        /// Plan Phase E (2026-05-20): propagated from `StartCollapse`.
+        /// If true (default), the assembled tuple is sorted by canonical
+        /// printable form (HE behavior). False for the MTT-only
+        /// `collapse-defined-order` operator.
+        sort_results: bool,
     },
 
     /// Processing collapse-bind
@@ -962,6 +967,12 @@ pub enum Continuation {
         /// the observation point, not earlier during match composition).
         /// None for plain `collapse` or when no free vars were tracked.
         tracked_vars_hint: Option<std::sync::Arc<smallvec::SmallVec<[&'static str; 4]>>>,
+        /// Plan Phase E (2026-05-20): if true (default for plain `collapse`),
+        /// the assembled tuple is sorted by canonical printable form before
+        /// emission (HE behavior, fixture T04/063 / §06.11). If false (used
+        /// by `collapse-defined-order` and `collapse-bind`), the
+        /// rule-firing order is preserved.
+        sort_results: bool,
         /// Caller bindings active around the collapse form. Plain collapse
         /// re-evaluates raw results under this context; collapse-bind keeps it
         /// rooted for continuation-state completeness.
@@ -1047,6 +1058,12 @@ pub enum Continuation {
         depth: usize,
         budget_acquired: u32,
         caller_depth: u32,
+        /// Plan Phase E (2026-05-20): propagated from `StartCollapse`.
+        /// When `merge_mode == Plain` and this is true (default for
+        /// plain `collapse`), the assembled tuple is sorted by canonical
+        /// printable form (HE behavior). False for the MTT-only
+        /// `collapse-defined-order`.
+        sort_results: bool,
     },
 
     /// Processing guard
@@ -2930,6 +2947,7 @@ mod tests {
             depth: 0,
             tracked_vars_hint: None,
             outer_carrying: std::sync::Arc::new(outer),
+            sort_results: true,
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);

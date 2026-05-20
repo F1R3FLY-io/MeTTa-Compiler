@@ -238,6 +238,42 @@ impl MettaMod {
             None => Vec::new(),
         }
     }
+
+    /// Enumerate every rule's RHS verbatim with rule-local variables
+    /// freshened (each call gets a distinct epoch so multiple RHSs from
+    /// the same rule slot remain distinguishable, e.g. HE's
+    /// `$X#19`/`$X#29` pattern).
+    ///
+    /// Plan Phase D (2026-05-20): `(eval $var)` enumerates ALL `(= …)`
+    /// rules per HE `interpreter.rs:eval_impl` (line 504-557). This
+    /// helper exposes this module's rules without going through the
+    /// structural-matcher fast path, which bails for variable expr
+    /// (`get_head_symbol()` returns `None`).
+    pub fn enumerate_all_rule_rhss(
+        &self,
+        factory: &crate::backend::models::GcFactory,
+    ) -> Vec<crate::backend::models::MettaValue> {
+        use crate::backend::eval::freshening::{
+            allocate_epoch, freshen_variables_with_epoch,
+        };
+        let space = self.space.read();
+        let env = match space.main_space() {
+            Some(env) => env,
+            None => return Vec::new(),
+        };
+        let rule_index = env.shared.rule_index.read();
+        rule_index
+            .get_all_rules()
+            .map(|entry| {
+                if entry.rhs_has_variables {
+                    let epoch = allocate_epoch();
+                    freshen_variables_with_epoch(&entry.rhs, epoch, factory)
+                } else {
+                    entry.rhs.clone()
+                }
+            })
+            .collect()
+    }
 }
 
 impl Clone for MettaMod {

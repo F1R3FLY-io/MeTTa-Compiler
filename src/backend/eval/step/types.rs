@@ -330,6 +330,11 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         env: E,
         /// Evaluation depth
         depth: usize,
+        /// Plan Phase E (2026-05-20): if true, sort the assembled result
+        /// list by canonical printable form (HE behavior, fixture T04/063).
+        /// If false, preserve rule-firing (definition) order — used by the
+        /// new MTT-only `collapse-defined-order` operator.
+        sort_results: bool,
     },
 
     /// Start collapse-bind evaluation - evaluates expr, collects ALL results.

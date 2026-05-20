@@ -4550,10 +4550,17 @@ fn eval_trampoline_inner<C: EvalContext>(
                         // Use ValueView for exhaustive, NaN-box-ready dispatch.
                         let view = resolved.view();
                         let immediate_not_reducible = match view {
-                            // Variable atoms → NotReducible (HE is_variable_op).
-                            crate::backend::models::metta_value::ValueView::Atom(name) => {
-                                name.starts_with('$')
-                            }
+                            // Non-variable atoms (Symbol) fall through to the
+                            // rule-lookup path below. Variables NO LONGER
+                            // short-circuit to NotReducible — Plan Phase D
+                            // (2026-05-20) aligns MTT with HE's `eval_impl`
+                            // (`interpreter.rs:504-557`) which enumerates ALL
+                            // `(= …)` rules for a bare-variable `to_eval`
+                            // because HE's `is_variable_op_expr` guard
+                            // (line 596-602) only fires for SExpr-headed
+                            // variable forms, not bare-variable atoms.
+                            // (T04/070 / §06.4.5.)
+                            crate::backend::models::metta_value::ValueView::Atom(_) => false,
                             // Grounded scalars → NotReducible (HE: no
                             // `(= scalar X)` rule matches a scalar literal).
                             crate::backend::models::metta_value::ValueView::Bool(_)
@@ -4611,26 +4618,98 @@ fn eval_trampoline_inner<C: EvalContext>(
                             continue;
                         }
 
-                        // Bare non-variable atom (Symbol): query rules
+                        // Bare atom (Symbol or Variable): query rules
                         // directly. HE's `eval_impl` falls through to
-                        // `query(space, ...)` for symbol atoms (line 555).
+                        // `query(space, ...)` for atom args (line 555).
                         // If no rule matches, HE's `query` returns
                         // `NotReducible` (line 633-634).
-                        if let crate::backend::models::metta_value::ValueView::Atom(_) = view {
-                            // Non-variable atom (variable case handled above).
-                            // Use the trampoline's rule-match machinery via
-                            // the standard Eval path; we'll detect "no rule
-                            // matched and result == input" downstream in
-                            // ProcessEvalEval. For now, the cheapest correct
-                            // implementation: look up rules with arity 0.
-                            let matches = try_match_rules_with_bindings(
-                                &resolved,
-                                &*carrying_bindings,
-                                resolved.as_atom().expect("Atom view guarantees as_atom"),
-                                0,
-                                &step_env,
-                                ctx.factory(),
-                            );
+                        if let crate::backend::models::metta_value::ValueView::Atom(name) = view {
+                            let is_variable = name.starts_with('$');
+                            // Plan Phase D (2026-05-20): for bare variable
+                            // atoms, HE enumerates ALL `(= …)` rules in the
+                            // rule space (the variable unifies with every
+                            // LHS). MTT uses `env.match_rules_native(expr, …)`
+                            // which detects empty `get_head_symbol()` (the
+                            // variable case) and falls back to
+                            // `rule_index.get_all_rules()`
+                            // (rule_management.rs:3309-3313), then unifies
+                            // each rule LHS with the variable and threads
+                            // the corelib chain (lines 3206-3259).
+                            //
+                            // For non-variable atoms (Symbol), keep the
+                            // indexed `try_match_rules_with_bindings` path —
+                            // it's O(matching-bucket) rather than O(rules).
+                            let matches = if is_variable {
+                                // Plan Phase D enumeration: iterate ALL
+                                // rules (user + corelib) and return their
+                                // RHSs. For a bare variable, unification
+                                // with any rule LHS trivially binds the
+                                // variable to the LHS; the RHS does NOT
+                                // reference the user's variable name (rules
+                                // bind their own LHS vars internally).
+                                //
+                                // `match_rules_native` / `enumerate_rules_via_unification_detailed`
+                                // both bail when `get_head_symbol()` returns
+                                // None (variable case), because their
+                                // structural matchers and indexed-lookup
+                                // paths assume a concrete head. We bypass
+                                // them and iterate the rule indices directly.
+                                let mut collected: Vec<(
+                                    MettaValue,
+                                    crate::backend::models::GenericBindings<MettaValue>,
+                                )> = Vec::new();
+                                // Per-call freshen epoch (allocated inside
+                                // get_all_rules iteration) so rule-local
+                                // variables (`$y`, `$body`, etc.) get unique
+                                // IDs across the enumeration — mirroring HE's
+                                // `$X#19`, `$X#29` distinct numbering at
+                                // metta-repl:eval_impl.
+                                {
+                                    use crate::backend::eval::freshening::{
+                                        allocate_epoch, freshen_variables_with_epoch,
+                                    };
+                                    let rule_index = step_env.shared.rule_index.read();
+                                    for entry in rule_index.get_all_rules() {
+                                        let rhs = if entry.rhs_has_variables {
+                                            let epoch = allocate_epoch();
+                                            freshen_variables_with_epoch(
+                                                &entry.rhs,
+                                                epoch,
+                                                ctx.factory(),
+                                            )
+                                        } else {
+                                            entry.rhs.clone()
+                                        };
+                                        collected.push((
+                                            rhs,
+                                            crate::backend::models::GenericBindings::new(),
+                                        ));
+                                    }
+                                }
+                                // Chain through the corelib MettaMod so
+                                // stdlib rules (~70 entries) are enumerated
+                                // too. Mirrors `match_rules_native`'s
+                                // corelib chain at
+                                // `rule_management.rs:3206-3259`.
+                                if let Some(corelib_arc) = step_env.shared.corelib_mod.as_ref() {
+                                    for rhs in corelib_arc.enumerate_all_rule_rhss(ctx.factory()) {
+                                        collected.push((
+                                            rhs,
+                                            crate::backend::models::GenericBindings::new(),
+                                        ));
+                                    }
+                                }
+                                Some(collected)
+                            } else {
+                                try_match_rules_with_bindings(
+                                    &resolved,
+                                    &*carrying_bindings,
+                                    name,
+                                    0,
+                                    &step_env,
+                                    ctx.factory(),
+                                )
+                            };
                             match matches {
                                 Some(ms) if ms.is_empty() => {
                                     // No rule matched → HE metta_call_return:
@@ -4993,12 +5072,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                         expr,
                         env: step_env,
                         depth,
+                        sort_results,
                     } => {
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessCollapse {
                             env: env.clone(),
                             depth,
                             outer_carrying: carrying_bindings.clone(),
+                            sort_results,
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -12589,6 +12670,7 @@ fn process_continuation<C: EvalContext>(
             env: _,
             depth,
             outer_carrying,
+            sort_results,
         } => {
             let (expr_results, result_env) = result;
 
@@ -12646,6 +12728,7 @@ fn process_continuation<C: EvalContext>(
                     depth,
                     budget_acquired: par_budget,
                     caller_depth: current_depth,
+                    sort_results,
                 });
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::new(), env_for_resume),
@@ -12669,6 +12752,7 @@ fn process_continuation<C: EvalContext>(
                     // Plain `collapse` discards bindings — no projection needed.
                     tracked_vars_hint: None,
                     outer_carrying: outer_carrying.clone(),
+                    sort_results,
                 });
 
                 // Option C (2026-05-06) — HE-faithful re-eval skip:
@@ -12800,6 +12884,8 @@ fn process_continuation<C: EvalContext>(
                     depth,
                     budget_acquired: par_budget,
                     caller_depth: current_depth,
+                    // collapse-bind preserves pair order (HE-bisim parity).
+                    sort_results: false,
                 });
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::new(), env_for_resume),
@@ -12850,6 +12936,10 @@ fn process_continuation<C: EvalContext>(
                     // point, not earlier during match composition.
                     tracked_vars_hint: tracked_vars_for_sidecar,
                     outer_carrying: outer_carrying.clone(),
+                    // Plan Phase E: collapse-bind preserves pair-order
+                    // (sort_results=false) — HE-bisim parity at
+                    // interpreter.rs:767-792.
+                    sort_results: false,
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -12873,6 +12963,7 @@ fn process_continuation<C: EvalContext>(
             depth,
             tracked_vars_hint,
             outer_carrying,
+            sort_results,
         } => {
             let (eval_results, result_env) = result;
 
@@ -12941,6 +13032,7 @@ fn process_continuation<C: EvalContext>(
                                 depth,
                                 tracked_vars_hint,
                                 outer_carrying: outer_carrying.clone(),
+                                sort_results,
                             });
                             work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), result_env),
@@ -12962,6 +13054,7 @@ fn process_continuation<C: EvalContext>(
                     depth,
                     tracked_vars_hint,
                     outer_carrying: outer_carrying.clone(),
+                    sort_results,
                 });
 
                 // Option C (2026-05-06) — same HE-faithful re-eval skip
@@ -13107,8 +13200,19 @@ fn process_continuation<C: EvalContext>(
                         .collect();
                     ctx.factory().sexpr(pairs)
                 } else {
-                    ctx.factory()
-                        .sexpr(evaluated.into_iter().map(|(v, _)| v).collect())
+                    // Plan Phase E (2026-05-20): plain `collapse` sorts
+                    // the assembled tuple by canonical printable form
+                    // (HE behavior, fixture T04/063 / §06.11). The new
+                    // MTT-only `collapse-defined-order` opts out by
+                    // setting `sort_results: false` at dispatch time.
+                    let mut values: Vec<MettaValue> =
+                        evaluated.into_iter().map(|(v, _)| v).collect();
+                    if sort_results {
+                        values.sort_by(|a, b| {
+                            a.to_metta_string().cmp(&b.to_metta_string())
+                        });
+                    }
+                    ctx.factory().sexpr(values)
                 };
 
                 // Trace: collapse-result phase
@@ -13324,6 +13428,7 @@ fn process_continuation<C: EvalContext>(
             depth: _,
             budget_acquired,
             caller_depth,
+            sort_results,
         } => {
             // (a) done check
             let done_now = handle.remaining.load(Ordering::Acquire) == 0
@@ -13371,9 +13476,18 @@ fn process_continuation<C: EvalContext>(
                 let result_list = match merge_mode {
                     crate::backend::eval::trampoline::types::CollapseMergeMode::Plain => {
                         // Plain collapse: emit values only, bindings discarded.
-                        ctx.factory().sexpr(
-                            evaluated.into_iter().map(|(v, _)| v).collect()
-                        )
+                        // Plan Phase E (2026-05-20): sort by canonical
+                        // printable form (HE behavior) when
+                        // `sort_results` is true (default for `collapse`).
+                        // `collapse-defined-order` opts out.
+                        let mut values: Vec<MettaValue> =
+                            evaluated.into_iter().map(|(v, _)| v).collect();
+                        if sort_results {
+                            values.sort_by(|a, b| {
+                                a.to_metta_string().cmp(&b.to_metta_string())
+                            });
+                        }
+                        ctx.factory().sexpr(values)
                     }
                     crate::backend::eval::trampoline::types::CollapseMergeMode::Bind => {
                         // collapse-bind: per-result (value (Bindings ...)) sidecar.
@@ -13442,6 +13556,7 @@ fn process_continuation<C: EvalContext>(
                 depth: 0,
                 budget_acquired,
                 caller_depth,
+                sort_results,
             });
             work_stack.push(WorkItem::Resume {
                 result: (SmallVec::new(), env_for_resume),

@@ -2317,6 +2317,35 @@ where
                         expr: items[1].clone(),
                         env,
                         depth,
+                        // Plan Phase E (2026-05-20): default HE behavior —
+                        // sort assembled tuple by canonical printable form
+                        // (fixture T04/063 / §06.11). Use
+                        // `collapse-defined-order` for rule-firing order.
+                        sort_results: true,
+                    };
+                }
+
+                // Plan Phase E (2026-05-20): MTT-only operator that
+                // preserves rule-firing (definition) order in the
+                // assembled tuple — used when the user needs deterministic
+                // order independent of HE's lexicographic sort.
+                "collapse-defined-order" => {
+                    if items.len() != 2 {
+                        let arg_count = items.len() - 1;
+                        let err = ctx.factory().error(
+                            ctx.factory().sexpr(items),
+                            ctx.factory().string(&format!(
+                                "collapse-defined-order requires exactly 1 argument, got {}. Usage: (collapse-defined-order expr)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    return GenericEvalStep::StartCollapse {
+                        expr: items[1].clone(),
+                        env,
+                        depth,
+                        sort_results: false,
                     };
                 }
 

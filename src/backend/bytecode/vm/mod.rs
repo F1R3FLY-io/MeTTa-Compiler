@@ -5264,13 +5264,29 @@ where
         // All alternatives exhausted — finalize collapse.
         // Filter both Unit and Empty sentinels (HE-bisim §06.4.5).
         let frame = self.collapse_frames.pop().expect("checked above");
-        let collected: Vec<V> = std::mem::take(&mut self.results)
+        let mut collected: Vec<V> = std::mem::take(&mut self.results)
             .into_iter()
             .filter(|v| !v.is_unit() && !v.is_empty_sentinel())
             .collect();
 
         // Restore outer results
         self.results = frame.saved_results;
+
+        // Plan Phase E (2026-05-20): sort the assembled tuple by
+        // canonical printable form (HE behavior, fixture T04/063 /
+        // §06.11). The bytecode compiler only emits CollapseEnd for
+        // plain `collapse` (the MTT-only `collapse-defined-order`
+        // op falls back to T0 trampoline where `sort_results: false`
+        // is honored), so unconditional sort here is safe.
+        // V: MettaValueTrait + Debug; use Debug formatting as the
+        // canonical comparator since `to_metta_string` is only
+        // available on concrete `MettaValue` (TypeId-cast usage in this
+        // file uses concrete types). Debug yields stable lexicographic
+        // ordering for the small set of values appearing in collapse
+        // (atoms, ints, sexprs).
+        collected.sort_by(|a, b| {
+            format!("{:?}", a).cmp(&format!("{:?}", b))
+        });
 
         // Push collected results as S-expression
         self.push(self.make_sexpr(collected));

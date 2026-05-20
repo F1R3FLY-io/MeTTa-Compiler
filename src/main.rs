@@ -637,12 +637,42 @@ fn eval_metta(
         // style) were resolved lockstep in metta-specification
         // (2026-05-15) by removing the spurious `- atoms: []`
         // entries — HE-Kernel +15, HE-Core +31, HE-Full +38.
-        let is_bang = expr
+        // Phase A (HE bisim, 2026-05-20): `!` directive emits a `[...]`
+        // output line ONLY when its body is an Expression (S-expression,
+        // quoted form, or empty `()`), per HE empirical (metta-repl 0.2.10)
+        // and §E.9.2. Bare scalars (Long, Float, String, Bool) and bare
+        // Atoms (incl. variables and sigils) are silently consumed — no
+        // output line at all. The body's syntactic shape — NOT its
+        // evaluated value — determines emission.
+        //   - `!"hello"`   body = String   → suppress
+        //   - `!42`        body = Long     → suppress
+        //   - `!atom`      body = Atom     → suppress
+        //   - `!$x`        body = Atom     → suppress
+        //   - `!&self`     body = Atom     → suppress
+        //   - `!True`      body = Bool     → suppress
+        //   - `!()`        body = Unit     → emit `[()]` (MTT collapses
+        //                                    empty `()` to Unit in
+        //                                    `GcFactory::sexpr` 5655-5658;
+        //                                    HE represents `()` as an
+        //                                    empty Expression — observably
+        //                                    identical via `!()` → `[()]`)
+        //   - `!(+ 1 2)`   body = SExpr    → emit `[3]`
+        //   - `!(quote x)` body = Quoted   → emit `[(quote x)]` (compile.rs:198)
+        let should_output = expr
             .as_sexpr()
-            .and_then(|items| items.first())
-            .and_then(|h| h.as_atom())
-            .is_some_and(|s| s == "!");
-        let should_output = is_bang;
+            .and_then(|items| {
+                let head = items.first().and_then(|h| h.as_atom())?;
+                if head != "!" {
+                    return None;
+                }
+                items.get(1).map(|body| {
+                    matches!(
+                        body.view(),
+                        ValueView::SExpr(_) | ValueView::Quoted(_) | ValueView::Unit
+                    )
+                })
+            })
+            .unwrap_or(false);
 
         let guard = SessionGuard::enter();
         // Hold ACTIVE_EVALUATORS > 0 across eval+format to prevent

@@ -226,7 +226,7 @@ pub fn eval(
     env.set_bang_body(false);
 
     // Scope the EvalGuard so it drops after eval completes.
-    let result = {
+    let mut result = {
         let _guard = EvalGuard::enter();
         let r = eval_inner(value, env, state);
 
@@ -254,6 +254,21 @@ pub fn eval(
     // and add_rule() (which completed during eval) holds rule_index.write().
     // Calling after eval() returns ensures all locks are released (no deadlock).
     result.1.maybe_run_type_fixpoint();
+
+    // HE-bisim check_alternatives (interpreter.rs:1079-1108): drop Error
+    // alternatives from the top-level eval result bag whenever ≥1 non-error
+    // result exists. Mirrors the trampoline's `EvalOutcome::Complete` filter
+    // (trampoline/eval_loop.rs) and the in-collapse-bind filter
+    // (eval_loop.rs:12989). Required to bisimulate T07/003-factorial-style
+    // fixtures whose recursive rule produces an unproductive `(* -N ...)`
+    // branch that hits the `max-stack-depth` cap; HE drops the Error,
+    // returning `[120]`. Applied at this top level (not inside `eval_inner`)
+    // so the filter fires regardless of which tier produced the result
+    // (bytecode VM / JIT / tree-walker trampoline / builtin-chunk path).
+    let any_success = result.0.iter().any(|v| !v.is_error_sentinel());
+    if any_success {
+        result.0.retain(|v| !v.is_error_sentinel());
+    }
 
     // Session-based GC: reclamation is triggered by SessionGuard::drop() between
     // top-level expressions. No post-eval GC lifecycle needed here — the caller

@@ -128,7 +128,7 @@ pub enum RuleFireMode {
 /// All known settings live here. Unknown settings are stored as raw
 /// `(key, value)` pairs in `other` (for HE-bisim — pragma key validation
 /// happens in the `pragma!` arm and unknown keys are accepted silently).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct PragmaSettings {
     /// Controls call-site type checking. Default: `Permissive`.
     pub type_check_mode: TypeCheckMode,
@@ -136,12 +136,35 @@ pub struct PragmaSettings {
     /// Set via `(pragma! rule-fire-mode specificity)` for the SUPERSET filter.
     pub rule_fire_mode: RuleFireMode,
     /// Maximum eval-loop depth before emitting `(Error <form> StackOverflow)`.
-    /// `None` means use the implementation default. Set via
+    /// `Some(N)` caps; `None` means unlimited. Set via
     /// `(pragma! max-stack-depth N)`. HE-bisim §06.4.6, T04/047 verifies.
+    ///
+    /// Default: `Some(1000)` (MTT-extension): a finite cap is required to
+    /// terminate non-deterministic-overlapping recursion such as the
+    /// metta-spec T07/003-factorial fixture
+    /// `(= (fac 0) 1) (= (fac $n) (* $n (fac (- $n 1))))` where the recursive
+    /// rule also matches `(fac 0)` and recurses through negative N without
+    /// a base case. HE itself returns `[120]` for this fixture only when the
+    /// user sets a non-zero cap (e.g. `(pragma! max-stack-depth 200)` per
+    /// `hyperon-experimental/lib/src/metta/runner/stdlib/core.rs:471`); HE
+    /// hangs identically with the default `0`. MTT chooses `Some(1000)` so
+    /// these fixtures pass out of the box while still allowing
+    /// `(pragma! max-stack-depth 0)` to opt into HE-style unlimited.
     pub max_stack_depth: Option<usize>,
     /// Other pragma key/value pairs (no semantic effect, but stored for
     /// observability and future use).
     pub other: HashMap<String, String>,
+}
+
+impl Default for PragmaSettings {
+    fn default() -> Self {
+        Self {
+            type_check_mode: TypeCheckMode::default(),
+            rule_fire_mode: RuleFireMode::default(),
+            max_stack_depth: Some(1000),
+            other: HashMap::new(),
+        }
+    }
 }
 
 // ============================================================================
@@ -1877,8 +1900,15 @@ where
     /// Get the configured `max-stack-depth` (None = no per-env limit).
     /// HE-bisim §06.4.6: when eval-loop depth exceeds this, the form
     /// returns `(Error <form> StackOverflow)`. T04/047 verifies.
+    ///
+    /// HE-bisim sentinel (interpreter.rs:392): `max_stack_depth > 0` —
+    /// `Some(0)` means "no limit" (user opted into HE-default-unlimited).
+    /// Normalise to `None` so the depth-check sites short-circuit.
     pub fn get_max_stack_depth(&self) -> Option<usize> {
-        self.shared.pragma_settings.read().max_stack_depth
+        match self.shared.pragma_settings.read().max_stack_depth {
+            Some(0) => None,
+            other => other,
+        }
     }
 
     /// Set the `max-stack-depth` pragma value.

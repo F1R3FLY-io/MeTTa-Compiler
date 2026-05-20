@@ -2660,7 +2660,23 @@ fn eval_trampoline_with_carrying<C: EvalContext>(
     let mut outcome = eval_trampoline_inner(value, env, ctx, None, None, 0, carrying_bindings);
     let result = loop {
         match outcome {
-            crate::backend::eval::cesk::EvalOutcome::Complete(results, env) => {
+            crate::backend::eval::cesk::EvalOutcome::Complete(mut results, env) => {
+                // HE-bisim check_alternatives (interpreter.rs:1079-1108): at the
+                // top of every interpret cycle HE filters Error alternatives out
+                // of the result bag IF at least one non-error result exists.
+                // Mirrors the same filter that runs inside
+                // ProcessCollapseEvalResults at eval_loop.rs:12989 (Phase 2 C5).
+                // Without this top-level filter, non-deterministic recursion
+                // such as the T07/003-factorial fixture
+                //   `(= (fac 0) 1) (= (fac $n) (* $n (fac (- $n 1))))`
+                // produces both a productive `[120]` AND an Error from the
+                // unproductive `(* -995 (fac (- -995 1)))` branch that hits
+                // the `max-stack-depth=1000` cap. HE returns `[120]` only;
+                // MTT must also drop the Error to bisimulate.
+                let any_success = results.iter().any(|(v, _)| !v.is_error_sentinel());
+                if any_success {
+                    results.retain(|(v, _)| !v.is_error_sentinel());
+                }
                 break (results, Arc::new(env));
             }
             crate::backend::eval::cesk::EvalOutcome::Yielded(suspended) => {

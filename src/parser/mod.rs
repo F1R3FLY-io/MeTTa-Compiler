@@ -34,6 +34,12 @@ const CLS_OPEN_BR: u8 = 8; // {
 const CLS_CLOSE_BR: u8 = 9; // }
 
 /// Lookup table for byte classification. 256 entries, one per byte value.
+///
+/// Plan Phase B (2026-05-20): `#` is NOT a delimiter — it's an ordinary
+/// atom char per HE. HE accepts `#package`, `foo#bar`, etc. as atoms;
+/// HE only rejects `#` when it appears INSIDE a variable name (`$x#5`).
+/// The variable-internal `#` check is done in `parse_atom_or_number`
+/// after the atom is scanned.
 static CHAR_CLASS: [u8; 256] = {
     let mut table = [CLS_OTHER; 256];
     table[b' ' as usize] = CLS_SPACE;
@@ -444,6 +450,24 @@ impl<'src> MettaParser<'src> {
             Position::new(start_line, start_col, start_byte),
             Position::new(self.line, self.col, self.pos),
         );
+
+        // Plan Phase B (2026-05-20): variable-internal `#` is reserved
+        // per HE. HE rejects `$x#5` with exact message
+        // `'#' char is reserved for internal usage`
+        // (`hyperon-experimental/lib/src/metta/text.rs:663-666`) because
+        // `#` is HE's freshening separator (`name#id` internally).
+        // HE accepts `#package` and `foo#bar` (non-variable atoms with
+        // `#`), so only the variable-prefixed case errors. T01/031
+        // fixture asserts substring match on stderr.
+        if is_variable && atom_bytes.contains(&b'#') {
+            return Err(SyntaxError {
+                kind: SyntaxErrorKind::HashReserved,
+                line: start_line + 1,
+                column: start_col + 1,
+                text: "#".into(),
+                file_path: None,
+            });
+        }
 
         // Fast path: single-byte atoms
         if atom_bytes.len() == 1 {

@@ -41,6 +41,13 @@ pub enum SyntaxErrorKind {
     UnknownNodeKind(String),
     /// Parser initialization failed
     ParserInit(String),
+    /// `#` reserved for internal usage (HE-aligned).
+    /// Plan Phase B (2026-05-20): HE rejects `#` in user source —
+    /// `#` is HE's freshening separator (`name#id` internally). The
+    /// error string is HE-canonical (byte-identical) per
+    /// `hyperon-experimental/lib/src/metta/text.rs:663-666` and
+    /// fixture T01/031 asserts substring match on stderr.
+    HashReserved,
     /// Generic/fallback error
     Generic,
 }
@@ -55,11 +62,21 @@ impl std::fmt::Display for SyntaxError {
         match &self.kind {
             SyntaxErrorKind::UnexpectedToken => write!(f, "unexpected '{}'", self.text),
             SyntaxErrorKind::UnclosedDelimiter(c) => write!(f, "unclosed '{}'", c),
-            SyntaxErrorKind::ExtraClosingDelimiter(c) => write!(f, "unexpected closing '{}'", c),
+            // Plan Phase B optional enhancement (2026-05-20): include HE's
+            // canonical `Unexpected right bracket` substring alongside MTT's
+            // bracket-specific diagnostic so T01/028 (and similar fixtures)
+            // satisfy the substring match. MTT's bracket detail
+            // (`)`/`]`/`}`) is preserved as the leading clause.
+            SyntaxErrorKind::ExtraClosingDelimiter(c) => {
+                write!(f, "unexpected closing '{}' (Unexpected right bracket)", c)
+            }
             SyntaxErrorKind::UnclosedString => write!(f, "unclosed string literal"),
             SyntaxErrorKind::InvalidEscape(s) => write!(f, "invalid escape sequence '{}'", s),
             SyntaxErrorKind::UnknownNodeKind(k) => write!(f, "unknown syntax '{}'", k),
             SyntaxErrorKind::ParserInit(msg) => write!(f, "parser initialization failed: {}", msg),
+            // HE-canonical text (byte-identical to
+            // `hyperon-experimental/lib/src/metta/text.rs:663-666`).
+            SyntaxErrorKind::HashReserved => write!(f, "'#' char is reserved for internal usage"),
             SyntaxErrorKind::Generic => write!(f, "invalid syntax"),
         }
     }
@@ -107,6 +124,7 @@ fn has_unclosed_string(source: &str) -> bool {
     }
     in_string
 }
+
 
 /// Parser that uses Tree-Sitter with semantic node type decomposition
 pub struct TreeSitterMettaParser {
@@ -362,6 +380,15 @@ impl TreeSitterMettaParser {
         if has_unclosed_string(source) {
             return SyntaxErrorKind::UnclosedString;
         }
+
+        // Plan Phase B (2026-05-20): `#` reservation is variable-internal
+        // only — see `src/parser/mod.rs:parse_atom_or_number` for the
+        // HE-aligned check. The tree-sitter grammar permits `#` in
+        // identifiers (matching HE), so tree-sitter no longer surfaces
+        // `$x#5` as a syntax error; that case is caught earlier by the
+        // custom parser path used by `compile()` and `compile_with_path()`.
+        // The `SyntaxErrorKind::HashReserved` variant remains defined so
+        // both parsers emit byte-identical messages when triggered.
 
         // Check parenthesis balance
         let paren_balance = count_delimiter_balance(source, '(', ')');

@@ -82,6 +82,12 @@ module.exports = grammar({
     // Uses blacklist approach: any sequence of non-delimiter characters
     // Delimiters: whitespace, (), ;, ", $
     // Also excludes: !, ?, ' (prefix operators), & (space reference), _ (wildcard), [], {} (reserved)
+    // Plan Phase B revision (2026-05-20): `#` IS allowed in identifiers
+    // per HE — HE accepts `#package`, `foo#bar`, etc. as ordinary atoms.
+    // HE only rejects `#` when it appears INSIDE a variable name
+    // (`$x#5`), which the `variable` token (line 60-62) already
+    // excludes. The variable-internal `#` check is handled by the
+    // custom parser at `src/parser/mod.rs` post-scan.
     // Lower precedence (1) so specific tokens match first
     identifier: $ => token(prec(1, /[^\s()\[\]{}"$;!?'_&][^\s()\[\]{}"$;]*/)),
 

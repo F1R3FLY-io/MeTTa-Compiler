@@ -67,6 +67,25 @@ fn extract_rng_id<V: MettaValueTrait>(value: &V) -> Option<u64> {
     Some(id as u64)
 }
 
+/// Create a fresh seeded RandomGenerator value (for `&rng` token init,
+/// Plan Phase J.2 (2026-05-20)). Mirrors `NewRandomGeneratorOp`'s body
+/// but exposes a synchronous API that env init can call. No recursion
+/// (single `StdRng::seed_from_u64` + registry insert) — stack-safe per
+/// [[feedback-stack-safety-mandate]].
+pub fn create_seeded_generator<V, F>(seed: u64, factory: &F) -> V
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    let rng = StdRng::seed_from_u64(seed);
+    let id = NEXT_RNG_ID.fetch_add(1, Ordering::Relaxed);
+    registry()
+        .lock()
+        .expect("rng registry mutex poisoned")
+        .insert(id, rng);
+    rng_value(id, factory)
+}
+
 /// `(new-random-generator <Number:seed>) -> RandomGenerator`.
 pub struct NewRandomGeneratorOp;
 

@@ -94,6 +94,13 @@ pub fn new_env() -> MettaEnvironment {
     let f = global_factory();
     env.register_token("PI", crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::PI));
     env.register_token("EXP", crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::E));
+    // Plan Phase J.2 (2026-05-20): `&rng` global RandomGenerator handle.
+    // HE's stdlib pre-binds `&rng` to a process-wide seeded generator.
+    // Deterministic seed (0) so bisim fixtures are reproducible.
+    env.register_token(
+        "&rng",
+        crate::backend::grounded::random::create_seeded_generator(0, &f),
+    );
     env
 }
 

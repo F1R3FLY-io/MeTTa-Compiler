@@ -11069,30 +11069,29 @@ fn process_continuation<C: EvalContext>(
         } => {
             let (arg_results, arg_env) = result;
 
-            // Check for errors first - pass through without wrapping
-            if let Some((err, _b)) = arg_results.iter().find(|(r, _)| r.is_error()) {
-                work_stack.push(WorkItem::Resume {
-                    result: (smallvec![bv(err.clone())], arg_env),
-                });
-            } else {
-                // Wrap results in return structure: (return value).
-                //
-                // T04/035 (2026-05-17): PRESERVE per-alt bindings. The chain's
-                // unify-bound vars (e.g. `(unify B $a ...)` binding $a=B) flow
-                // through the return wrapping so the outer chain's templ-eval
-                // sees them. Previously bindings were dropped via `bv()`,
-                // losing HE Bindings propagation.
-                let return_results: Vec<BoundValue> = arg_results
-                    .into_iter()
-                    .map(|(r, b)| {
-                        let wrapped = ctx.factory().sexpr(vec![ctx.factory().atom("return"), r]);
-                        (wrapped, b)
-                    })
-                    .collect();
-                work_stack.push(WorkItem::Resume {
-                    result: (return_results.into_iter().collect(), arg_env),
-                });
-            }
+            // HE-faithful (2026-05-19 Phase 6 fix): preserve the `(return X)`
+            // wrapper even when X is an Error. Previously this branch
+            // stripped the wrapper, breaking corelib helpers like
+            // `(return-on-error (Error a b) ok)` that depend on
+            // `(return (return (Error a b)))` cascading through the function
+            // iteration. HE returns the unreduced `(return (Error a b))`
+            // verbatim — the `function` form (and the function-result-Error
+            // bisimilarity guard in ProcessFunction) is the only place
+            // wrappers get peeled.
+            //
+            // Bindings (per T04/035): preserve per-alt bindings so the
+            // chain's unify-bound vars (e.g. `(unify B $a ...)`) propagate
+            // through the return wrapper to the outer chain's templ-eval.
+            let return_results: Vec<BoundValue> = arg_results
+                .into_iter()
+                .map(|(r, b)| {
+                    let wrapped = ctx.factory().sexpr(vec![ctx.factory().atom("return"), r]);
+                    (wrapped, b)
+                })
+                .collect();
+            work_stack.push(WorkItem::Resume {
+                result: (return_results.into_iter().collect(), arg_env),
+            });
         }
 
         Continuation::ProcessChainExpr {

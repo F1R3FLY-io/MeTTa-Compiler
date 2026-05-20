@@ -8153,6 +8153,23 @@ where
                 continue;
             }
 
+            // HE-faithful (T06/137 if-decons-expr fix): if the arg still has
+            // unbound variables after applying current bindings, skip pre-eval
+            // and treat as literal data. Without this, grounded ops like
+            // `(cons-atom $h $t)` (where $h, $t are caller-side variables that
+            // get bound by the callee's `unify` form) would be eagerly
+            // pre-evaluated here and fail with a BadArgType error, never
+            // reaching the unify that would bind them. HE's `interpret_function`
+            // achieves the same effect via type-driven dispatch when the
+            // callee's param type is `Atom` / `Variable` (meta-type → no
+            // pre-eval); we approximate that for the untyped/bloom-fallback
+            // path by deferring whenever the arg can't reduce in the current
+            // environment.
+            if item_to_eval.has_variables_fast() {
+                per_arg_results.push(vec![(item_to_eval, empty_b.clone())]);
+                continue;
+            }
+
             // Derive expected_type for this argument position.
             {
                 use crate::backend::builtin_signatures;

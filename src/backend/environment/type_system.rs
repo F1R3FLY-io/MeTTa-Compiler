@@ -64,16 +64,55 @@ where
     /// uses the optimized MORK index.
     pub fn get_types_generic(&self, name: &str) -> Vec<V> {
         // O(1) bloom filter rejection: if the name definitely has no type, skip HashMap
-        if !self.shared.atom_space.type_bloom.read().may_have_type(name) {
-            return Vec::new();
+        let bloom_hit = self.shared.atom_space.type_bloom.read().may_have_type(name);
+        let mut types: Vec<V> = if bloom_hit {
+            self.shared
+                .types
+                .read()
+                .get(name)
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        // Phase 6 corelib chain (T06/137 if-decons-expr fix): consult the
+        // corelib MettaMod's type registry for HE stdlib helper signatures
+        // (`if-decons-expr`, `if-error`, `return-on-error`, ...). Mirrors
+        // `match_rules_native`'s corelib chain in
+        // `environment/rule_management.rs:3186-3263`. Without this, MTT's
+        // type-driven pre-eval (`bytecode/vm/mod.rs:vm_type_driven_pre_eval`,
+        // `eval/step/sexpr.rs:find_grounded_arg_indices_generic`) misses the
+        // corelib's meta-type declarations (Atom / Variable) and eagerly
+        // reduces caller args that the callee's `unify` would have bound,
+        // breaking corelib helpers whose bodies pass `(cons-atom $h $t)`-
+        // shape templates through the user's variable scope.
+        //
+        // TypeId-gated: only V = MettaValue has a corelib. For other V the
+        // corelib's types wouldn't unify with V's type (the corelib stores
+        // MettaValue typed types).
+        if std::any::TypeId::of::<V>() == std::any::TypeId::of::<MettaValue>() {
+            if let Some(corelib_arc) = self.shared.corelib_mod.as_ref() {
+                let corelib_space = corelib_arc.space().read();
+                if let Some(corelib_env) = corelib_space.main_space() {
+                    let corelib_types_mv = corelib_env.get_types_generic(name);
+                    // SAFETY: TypeId equality guarantees V = MettaValue; the
+                    // corelib's types are Vec<MettaValue>, and we cast each
+                    // element through the same pointer reinterpretation used
+                    // by `match_rules_native`'s corelib chain (read+write are
+                    // identical layout for MettaValue's 8-byte tagged pointer).
+                    for t_mv in corelib_types_mv {
+                        let t_md = std::mem::ManuallyDrop::new(t_mv);
+                        let t_v: V = unsafe {
+                            std::ptr::read(&*t_md as *const MettaValue as *const V)
+                        };
+                        if !types.contains(&t_v) {
+                            types.push(t_v);
+                        }
+                    }
+                }
+            }
         }
-        let mut types: Vec<V> = self
-            .shared
-            .types
-            .read()
-            .get(name)
-            .cloned()
-            .unwrap_or_default();
 
         // HE parity: append transitive supertypes for each declared type.
         // Iterate over direct types (snapshot len), appending supertypes.
@@ -100,7 +139,22 @@ where
     /// no supertype closure computation, no Vec allocation.
     #[inline]
     pub fn may_have_type(&self, name: &str) -> bool {
-        self.shared.atom_space.type_bloom.read().may_have_type(name)
+        if self.shared.atom_space.type_bloom.read().may_have_type(name) {
+            return true;
+        }
+        // Phase 6 corelib chain (T06/137): if the user env's bloom misses
+        // but the corelib has types, defer to `get_types_generic` (which
+        // chains to corelib) so type-driven pre-eval honours corelib
+        // signatures (e.g., `if-decons-expr` with `Atom` param type).
+        if std::any::TypeId::of::<V>() == std::any::TypeId::of::<MettaValue>() {
+            if let Some(corelib_arc) = self.shared.corelib_mod.as_ref() {
+                let corelib_space = corelib_arc.space().read();
+                if let Some(corelib_env) = corelib_space.main_space() {
+                    return corelib_env.may_have_type(name);
+                }
+            }
+        }
+        false
     }
 
     /// Returns `true` if ANY atom has a declared type assertion in this env.

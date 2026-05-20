@@ -318,29 +318,27 @@ where
     ///
     /// **MeTTa HE parity.** HE's `interpret_function` only pre-evaluates an
     /// argument when the callee's DECLARED parameter type is concrete
-    /// (non-meta). Unknown / meta / inferred-%Undefined% parameter types cause
-    /// the argument to be passed unevaluated into unification-based rule
+    /// (non-meta) and the argument is reducible in the current environment.
+    /// Unknown / meta / inferred-%Undefined% parameter types cause the
+    /// argument to be passed unevaluated into unification-based rule
     /// matching. We can't decide that at compile time — declared types are
-    /// registered during interpretation, and inferred types (Phase 10) don't
-    /// appear in the registry until rules execute. So the compiler MUST NOT
-    /// pre-reduce S-expr args whose head is user-defined: it constructs the
-    /// arg as literal data, and `op_dispatch_rules` → `vm_type_driven_pre_eval`
-    /// decides per-arg at runtime using the live type environment.
+    /// registered during interpretation, and the arg's reducibility depends
+    /// on runtime bindings. So the compiler ALWAYS constructs the arg as
+    /// literal data, and `op_dispatch_rules` → `vm_type_driven_pre_eval`
+    /// decides per-arg at runtime using the live type environment + the
+    /// new "skip if still has unbound variables after binding substitution"
+    /// guard (T06/137 if-decons-expr fix).
     ///
-    /// Exception: grounded operators (`+`, `*`, `cons-atom`, …) and eager
-    /// special forms (`collapse`, `reduce`, …) are always-eager in HE — they
-    /// reduce before being passed to any caller. We preserve the existing
-    /// fast-path for those heads: they compile through `self.compile`, which
-    /// emits the direct builtin opcodes, avoiding a needless round-trip
-    /// through the trampoline.
+    /// Previously this branch fast-pathed grounded operators (`+`, `*`,
+    /// `cons-atom`, …) through `self.compile` to skip a trampoline
+    /// round-trip. That broke corelib helpers whose call sites pass
+    /// `(cons-atom $h $t)` (with $h/$t freshly-introduced caller variables
+    /// that the callee's `unify` later binds): the eager pre-eval failed
+    /// with BadArgType, never giving the callee a chance to unify.
+    /// `vm_type_driven_pre_eval`'s bloom-fallback now handles the
+    /// pre-eval decision at runtime — it sees the same grounded-head
+    /// signal, succeeds when args are reducible, and defers otherwise.
     fn compile_arg_for_user_call(&mut self, arg: &V) -> CompileResult<()> {
-        if let Some(items) = arg.as_sexpr() {
-            if let Some(head) = items.first().and_then(|v| v.as_atom()) {
-                if is_grounded_op(head) || is_eager_special_form(head) {
-                    return self.compile(arg);
-                }
-            }
-        }
         self.compile_as_literal_sexpr(arg)
     }
 

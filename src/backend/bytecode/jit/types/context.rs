@@ -114,36 +114,22 @@ impl TypeSignatureRegistry {
             }
         }
 
-        // Phase 9.4: Also register inferred arrow types from Phase 10 deep type inference.
-        // Declared types take priority — skip operators already registered above.
-        for entry in env.shared.inferred_fn_types.iter() {
-            let name = entry.key();
-            if registry.entries.contains_key(name.as_str()) {
-                continue;
-            }
-            for typ in entry.value().iter() {
-                if let Some(arg_types) = extract_arg_types(typ) {
-                    let classifications: Vec<TypeClassification> = arg_types
-                        .iter()
-                        .map(|t| {
-                            if is_meta_type(t) {
-                                TypeClassification::PassThrough
-                            } else {
-                                TypeClassification::Evaluate
-                            }
-                        })
-                        .collect();
-                    registry.insert(
-                        name.clone(),
-                        FunctionTypeInfo {
-                            arity: classifications.len(),
-                            arg_types: classifications,
-                        },
-                    );
-                    break; // Use first inferred arrow type
-                }
-            }
-        }
+        // PT migration (2026-05-21): the Phase 9.4 inferred-type fallback was
+        // removed because it caused meta-typed inferred parameters to skip
+        // applicative-order evaluation in violation of PT semantics. PT/PeTTa
+        // always evaluates argument S-expressions whose head has rules (the
+        // bloom-filter-tier-3 fallback at the dispatch site), regardless of
+        // the inferred internal usage type of the parameter. Without this
+        // removal, PLN's `(PLN.Query (kb) ...)` form would bind `$Tasks=(kb)`
+        // unevaluated because `fn`'s inferred type comes out `(-> Expression
+        // %Undefined%)` from internal `(superpose $Tasks)` use — clobbering
+        // applicative-order pre-eval. The bytecode VM's
+        // `vm_type_driven_pre_eval` and the T0 trampoline both have bloom-
+        // filter-tier-3 fallback that correctly marks `(kb)` for pre-eval.
+        // The JIT call-support layer falls through to the bytecode VM (or
+        // T0) when no type-info entry exists for the head — so absence here
+        // means "trust the dispatch-level bloom fallback", which is the
+        // correct PT behavior.
 
         registry
     }

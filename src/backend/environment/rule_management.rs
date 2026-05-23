@@ -129,6 +129,55 @@ use super::{MettaEnvironment, MettaValue};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait, ValueView};
 use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
 
+/// Phase 2.x PT cons-pattern rewrite (2026-05-22): walk an LHS pattern
+/// and rewrite `(cons HEAD TAIL)` sub-SExprs into `(HEAD . TAIL)` dotted-pair
+/// form, BUT only when HEAD is a literal atom (not a variable). This is
+/// PLN's idiom for destructuring `(<literal-head> <args>...)` SExprs:
+///   `(cons , $args)` → `(, . $args)` matches `(, A B)` binding $args = (A B).
+///
+/// When HEAD is a variable (e.g. `(cons $x $xs)`), this is the user's
+/// own data shape with `cons` as a literal head atom; the structural
+/// element-wise match is the correct semantics, so the pattern is left
+/// unchanged.
+///
+/// Idempotent: applying twice produces the same result. Recurses through
+/// all SExpr children.
+pub(crate) fn rewrite_cons_to_dotted_pair<V, F>(value: V, factory: &F) -> V
+where
+    V: MettaValueTrait + Clone,
+    F: crate::backend::models::MettaValueFactory<V>,
+{
+    if let Some(items) = value.as_sexpr() {
+        // First recurse into children so nested cons-patterns get rewritten.
+        let rewritten_children: Vec<V> = items
+            .iter()
+            .map(|c| rewrite_cons_to_dotted_pair(c.clone(), factory))
+            .collect();
+        // Then check this SExpr itself for the cons-pattern shape.
+        if rewritten_children.len() == 3
+            && rewritten_children[0].as_atom() == Some("cons")
+        {
+            // Only rewrite if HEAD is a literal atom (not a variable like $x).
+            // PT's idiom is `(cons <literal> $args)` for destructure; user
+            // code's `(cons $x $xs)` is structural (cons literal head + args).
+            let head_atom = rewritten_children[1].as_atom();
+            let head_is_literal = head_atom
+                .map(|n| !n.starts_with('$') && !n.starts_with('\'') && n != "_" && n != "&")
+                .unwrap_or(false);
+            if head_is_literal {
+                // Rewrite `(cons LITERAL TAIL)` → `(LITERAL . TAIL)`.
+                return factory.sexpr(vec![
+                    rewritten_children[1].clone(),
+                    factory.atom("."),
+                    rewritten_children[2].clone(),
+                ]);
+            }
+        }
+        return factory.sexpr(rewritten_children);
+    }
+    value
+}
+
 /// Extract (lhs, rhs) from a deserialized rule value `(= lhs rhs)`.
 ///
 /// Returns `Some((lhs, rhs))` if the value is an s-expression with 3 elements
@@ -287,6 +336,29 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     /// skip these rules when the caller's first arg is empty sexpr —
     /// projected 78.7% wall savings on mmverify per Audit #7a.
     pub requires_non_empty_first_arg: bool,
+    /// PT-canonical rule-body preservation gate. True iff the RHS top-level
+    /// head is in `is_lazy_body_form` (e.g. `add-atom`, `quote`, `if`,
+    /// `case`, `let`, `chain`, `match`, `=`, ...). When set, the dispatcher
+    /// skips Step-2 arg pre-evaluation for calls to this rule's LHS-head so
+    /// the rule body sees its template args verbatim (PeTTa `findall`
+    /// substitution semantics).
+    ///
+    /// PLN benchmarks rely on this: `(=> $A $C $stv) → (add-atom &self
+    /// (= $C (Truth_MP $A $stv)))` requires `$A=(father $a $b)` to remain
+    /// unreduced so add-atom registers a variable-preserving rule.
+    pub body_wants_lazy_args: bool,
+    /// PT-canonical meta-typed signature gate. True iff the rule's LHS head
+    /// has at least one declared arrow type where ALL arg types AND the
+    /// return type are meta-types (`Atom`, `Expression`, `Symbol`,
+    /// `Variable`, `Grounded`, `Pattern`, `%Undefined%`).
+    ///
+    /// When set, the rule-firing dispatcher returns the substituted RHS
+    /// VERBATIM (no re-evaluation), matching PeTTa's semantic that a
+    /// `(-> Expression Atom)`-typed predicate is data-in / data-out.
+    ///
+    /// PLN's `(: ? (-> Expression Atom))` declares the canonical
+    /// "preserve the term" predicate that drives Direct.metta's inference.
+    pub lhs_head_all_meta_typed: bool,
 }
 
 /// Extract the head symbol of a value's first argument (for second-level rule indexing).
@@ -1050,6 +1122,34 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
 
         // Chain: group candidates (if group exists) + wildcard rules
         GroupOrEmpty { inner: group_iter }.chain(self.wildcard.iter())
+    }
+
+    /// PT-canonical rule-body preservation: cold-cache fallback for the
+    /// dispatcher's Step-2 pre-eval gate. Returns true iff ANY rule
+    /// matching (head, arity) has `body_wants_lazy_args = true`. O(candidates).
+    pub fn any_rule_wants_lazy_args(&self, head: &str, arity: usize) -> bool {
+        use crate::backend::models::gc_allocator::global_allocator;
+        let interned: &'static str = global_allocator().alloc_str(head);
+        if let Some(group) = self.by_head_arity.get(&(interned, arity)) {
+            if group.get_candidates(None).any(|e| e.body_wants_lazy_args) {
+                return true;
+            }
+        }
+        self.wildcard.iter().any(|e| e.body_wants_lazy_args)
+    }
+
+    /// PT-canonical meta-typed signature gate: cold-cache fallback for the
+    /// rule-firing "return verbatim" path. Returns true iff ANY rule matching
+    /// (head, arity) has `lhs_head_all_meta_typed = true`. O(candidates).
+    pub fn any_rule_lhs_head_all_meta_typed(&self, head: &str, arity: usize) -> bool {
+        use crate::backend::models::gc_allocator::global_allocator;
+        let interned: &'static str = global_allocator().alloc_str(head);
+        if let Some(group) = self.by_head_arity.get(&(interned, arity)) {
+            if group.get_candidates(None).any(|e| e.lhs_head_all_meta_typed) {
+                return true;
+            }
+        }
+        self.wildcard.iter().any(|e| e.lhs_head_all_meta_typed)
     }
 
     /// Collect candidates with discrimination tree pruning applied.
@@ -2296,6 +2396,65 @@ mod ownership_tests {
 /// Used by `get_candidates_filtered` to elide structurally-empty branches
 /// at dispatch time. Audit #7a: 1065/2013 (53%) of mmverify's match-atom
 /// fork:3 branches are structurally empty without this filter.
+/// PT-canonical: rule body preserves its arguments verbatim when the body's
+/// top-level head is a "lazy" special form (see `is_lazy_body_form`).
+/// Returns true iff `rhs` is an S-expression whose head atom is lazy.
+///
+/// Used to flag `RuleEntry::body_wants_lazy_args` so the dispatcher's Step-2
+/// pre-eval is skipped for calls to LHS-heads of such rules. Without the
+/// skip, `(=> $A $C $stv) → (add-atom &self (= $C (Truth_MP $A $stv)))`
+/// would eagerly reduce `$A` (an arg of `=>`) against any existing rules
+/// for $A's head, breaking the PT-canonical variable-preserving registration.
+pub(crate) fn rhs_head_is_lazy_form<V: MettaValueTrait>(rhs: &V) -> bool {
+    if let Some(items) = rhs.as_sexpr() {
+        if let Some(head) = items.first().and_then(|h| h.as_atom()) {
+            return crate::backend::eval::helpers::is_lazy_body_form(head);
+        }
+    }
+    false
+}
+
+/// PT-canonical meta-typed signature check. Returns true iff the head has
+/// at least one declared arrow type where ALL arg types AND the return
+/// type are meta-types per `is_meta_type`. Consulted at rule insertion
+/// time to cache `RuleEntry::lhs_head_all_meta_typed`.
+pub(crate) fn lhs_head_signature_all_meta_typed<V, F>(lhs: &V, env: &GenericEnvironment<V, F>) -> bool
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: crate::backend::models::MettaValueFactory<V> + Clone,
+{
+    use crate::backend::eval::step::grounded::{
+        extract_arg_types, extract_return_type, is_arrow_type, is_meta_type,
+    };
+
+    let head = match lhs.as_sexpr().and_then(|items| items.first()).and_then(|h| h.as_atom()) {
+        Some(h) => h,
+        None => return false,
+    };
+
+    let types = env.get_types_generic(head);
+    if types.is_empty() {
+        return false;
+    }
+
+    // PT-canonical: ANY arrow declaration with all-meta args+return is enough
+    // (one signature establishes the contract).
+    types.iter().any(|t| {
+        if !is_arrow_type(t) {
+            return false;
+        }
+        let arg_types = match extract_arg_types(t) {
+            Some(args) => args,
+            None => return false,
+        };
+        let return_type = match extract_return_type(t) {
+            Some(rt) => rt,
+            None => return false,
+        };
+        arg_types.iter().all(is_meta_type) && is_meta_type(&return_type)
+    })
+}
+
 pub(crate) fn rule_requires_non_empty_first_arg<V: MettaValueTrait>(lhs: &V, rhs: &V) -> bool {
     let lhs_items = match lhs.as_sexpr() {
         Some(items) if items.len() >= 2 => items,
@@ -2662,6 +2821,17 @@ where
         trace!(target: "mettatron::environment::add_rule", "Adding rule");
         self.make_owned(); // CoW: ensure we own data before modifying
 
+        // Phase 2.x PT cons-pattern rewrite (2026-05-22):
+        // PeTTa rules can use `(cons HEAD TAIL)` LHS patterns to destructure
+        // any SExpr (e.g. PLN's `(= (=> (cons , $args) $C $stvImp) ...)`
+        // matches `(=> (, A B) C STV)` with $args bound to the tail (A B)).
+        // MTT's unifier doesn't natively recognize `cons` as a destructure
+        // — but it DOES recognize the equivalent dotted-pair `(HEAD . TAIL)`.
+        // Rewrite the LHS in-place at rule-add time: any `(cons X Y)`
+        // sub-pattern becomes `(X . Y)`. The transformation is structural
+        // and idempotent.
+        let lhs = rewrite_cons_to_dotted_pair(lhs, &self.factory);
+
         // Phase 9.5: Invalidate normal-form memoization — new rules may make
         // previously normal-form expressions reducible.
         crate::backend::eval::trampoline::invalidate_normal_form_memo();
@@ -2946,6 +3116,8 @@ where
                 });
                 // H8: detect rules whose RHS does (decons-atom $first-arg-var).
                 let requires_non_empty_first_arg = rule_requires_non_empty_first_arg(&lhs, &rhs);
+                let body_wants_lazy_args = rhs_head_is_lazy_form(&rhs);
+                let lhs_head_all_meta_typed = lhs_head_signature_all_meta_typed(&lhs, self);
                 let entry = RuleEntry {
                     lhs: lhs.clone(),
                     rhs_has_variables: rhs.contains_variables(),
@@ -2965,6 +3137,8 @@ where
                     compiled_rhs,
                     has_monadic_effect,
                     requires_non_empty_first_arg,
+                    body_wants_lazy_args,
+                    lhs_head_all_meta_typed,
                 };
                 // Phase 4a: Pre-seed tiered cache so first RHS evaluation
                 // immediately triggers bytecode compilation (no warmup delay)
@@ -3055,6 +3229,8 @@ where
                 t.is_monadic_type() || t.is_arrow_returning_monadic()
             });
             let requires_non_empty_first_arg = rule_requires_non_empty_first_arg(&lhs, &rhs);
+            let body_wants_lazy_args = rhs_head_is_lazy_form(&rhs);
+            let lhs_head_all_meta_typed = lhs_head_signature_all_meta_typed(&lhs, self);
             let entry = RuleEntry {
                 lhs: lhs.clone(),
                 rhs_has_variables: rhs.contains_variables(),
@@ -3074,6 +3250,8 @@ where
                 compiled_rhs,
                 has_monadic_effect,
                 requires_non_empty_first_arg,
+                body_wants_lazy_args,
+                lhs_head_all_meta_typed,
             };
             // Phase 4a: Pre-seed tiered cache for wide MORK path
             crate::backend::bytecode::tiered_cache::global_tiered_cache()
@@ -3350,6 +3528,18 @@ where
             // Check if ALL candidates have structural matchers
             let all_structural = candidates.iter().all(|e| e.structural_matcher.is_some());
 
+            // PT-canonical rule-body preservation: if any candidate rule's
+            // RHS top-level head is a lazy form (add-atom, quote, if, ...),
+            // the caller's args must NOT be pre-evaluated. See `RuleEntry::
+            // body_wants_lazy_args`.
+            let any_rule_wants_lazy_args =
+                candidates.iter().any(|e| e.body_wants_lazy_args);
+            // PT-canonical meta-typed signature gate (Plan agent Phase B):
+            // ANY candidate with `(-> meta* meta)` signature triggers the
+            // dispatcher's "return verbatim" path.
+            let any_rule_lhs_head_all_meta_typed =
+                candidates.iter().any(|e| e.lhs_head_all_meta_typed);
+
             // Phase E: Populate operator inline cache with metadata about this
             // (head, arity) — the caller can use this to skip hash_value()
             // computation on subsequent calls.
@@ -3362,6 +3552,8 @@ where
                         rule_epoch: current_epoch,
                         all_structural,
                         candidate_count: candidates.len(),
+                        any_rule_wants_lazy_args,
+                        lhs_head_all_meta_typed: any_rule_lhs_head_all_meta_typed,
                     },
                 );
             }
@@ -3507,14 +3699,26 @@ where
                                             // SAFETY: V is MettaValue (TypeId checked at outer scope).
                                             let outer_ref: &crate::backend::models::GenericBindings<crate::backend::models::MettaValue> =
                                                 unsafe { &*(outer_carrying as *const _ as *const crate::backend::models::GenericBindings<crate::backend::models::MettaValue>) };
-                                            let result = crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
-                                                &rhs_freshened_mv,
-                                                b_ref,
-                                                &[dispatch_scope, ROOT_SCOPE],
-                                                dispatch_scope,
-                                                outer_ref,
-                                                &fac,
-                                            );
+                                            // PT-canonical: lazy substitution when rule is all-meta-typed (2026-05-21).
+                                            let result = if entry.lhs_head_all_meta_typed {
+                                                crate::backend::eval::bindings::apply_bindings_with_rename_scoped_lazy(
+                                                    &rhs_freshened_mv,
+                                                    b_ref,
+                                                    &[dispatch_scope, ROOT_SCOPE],
+                                                    dispatch_scope,
+                                                    outer_ref,
+                                                    &fac,
+                                                )
+                                            } else {
+                                                crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
+                                                    &rhs_freshened_mv,
+                                                    b_ref,
+                                                    &[dispatch_scope, ROOT_SCOPE],
+                                                    dispatch_scope,
+                                                    outer_ref,
+                                                    &fac,
+                                                )
+                                            };
                                             // SAFETY: MettaValue and V are the same type
                                             unsafe { std::mem::transmute_copy::<crate::backend::models::MettaValue, V>(&result) }
                                         } else {
@@ -3828,14 +4032,28 @@ where
                                 &self.factory,
                             );
                             // Phase 5 (Bug 1): caller-side outer_carrying threaded in.
-                            crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
-                                &rhs_freshened,
-                                &scoped_bindings,
-                                &[dispatch_scope, ROOT_SCOPE],
-                                dispatch_scope,
-                                outer_carrying,
-                                &self.factory,
-                            )
+                            // PT-canonical lazy mode (2026-05-21): wrap substituted
+                            // vars in `Lazy(...)` when rule's LHS head is
+                            // all-meta-typed.
+                            if entry.lhs_head_all_meta_typed {
+                                crate::backend::eval::bindings::apply_bindings_with_rename_scoped_lazy(
+                                    &rhs_freshened,
+                                    &scoped_bindings,
+                                    &[dispatch_scope, ROOT_SCOPE],
+                                    dispatch_scope,
+                                    outer_carrying,
+                                    &self.factory,
+                                )
+                            } else {
+                                crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
+                                    &rhs_freshened,
+                                    &scoped_bindings,
+                                    &[dispatch_scope, ROOT_SCOPE],
+                                    dispatch_scope,
+                                    outer_carrying,
+                                    &self.factory,
+                                )
+                            }
                         } else {
                             entry.rhs.clone()
                         };
@@ -4155,14 +4373,28 @@ where
                                 &self.factory,
                             );
                             // Phase 5 (Bug 1): caller-side outer_carrying threaded in.
-                            crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
-                                &rhs_freshened,
-                                &scoped_bindings,
-                                &[dispatch_scope, ROOT_SCOPE],
-                                dispatch_scope,
-                                outer_carrying,
-                                &self.factory,
-                            )
+                            // PT-canonical lazy mode (2026-05-21): wrap substituted
+                            // vars in `Lazy(...)` when rule's LHS head is
+                            // all-meta-typed.
+                            if entry.lhs_head_all_meta_typed {
+                                crate::backend::eval::bindings::apply_bindings_with_rename_scoped_lazy(
+                                    &rhs_freshened,
+                                    &scoped_bindings,
+                                    &[dispatch_scope, ROOT_SCOPE],
+                                    dispatch_scope,
+                                    outer_carrying,
+                                    &self.factory,
+                                )
+                            } else {
+                                crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
+                                    &rhs_freshened,
+                                    &scoped_bindings,
+                                    &[dispatch_scope, ROOT_SCOPE],
+                                    dispatch_scope,
+                                    outer_carrying,
+                                    &self.factory,
+                                )
+                            }
                         } else {
                             entry.rhs.clone()
                         };
@@ -4441,14 +4673,26 @@ where
                     );
                     // Phase 1 (Bug 1): outer_carrying empty here; Phase 5 wires in.
                     let empty_outer = crate::backend::models::GenericBindings::<V>::new();
-                    crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
-                        &rhs_freshened,
-                        &scoped_bindings,
-                        &[dispatch_scope, ROOT_SCOPE],
-                        dispatch_scope,
-                        &empty_outer,
-                        &self.factory,
-                    )
+                    // PT-canonical lazy mode (2026-05-21).
+                    if entry.lhs_head_all_meta_typed {
+                        crate::backend::eval::bindings::apply_bindings_with_rename_scoped_lazy(
+                            &rhs_freshened,
+                            &scoped_bindings,
+                            &[dispatch_scope, ROOT_SCOPE],
+                            dispatch_scope,
+                            &empty_outer,
+                            &self.factory,
+                        )
+                    } else {
+                        crate::backend::eval::bindings::apply_bindings_with_rename_scoped(
+                            &rhs_freshened,
+                            &scoped_bindings,
+                            &[dispatch_scope, ROOT_SCOPE],
+                            dispatch_scope,
+                            &empty_outer,
+                            &self.factory,
+                        )
+                    }
                 } else {
                     entry.rhs.clone()
                 };
@@ -5097,6 +5341,9 @@ impl MettaEnvironment {
                             });
                             let requires_non_empty_first_arg =
                                 rule_requires_non_empty_first_arg(&lhs, &rhs);
+                            let body_wants_lazy_args = rhs_head_is_lazy_form(&rhs);
+                            let lhs_head_all_meta_typed =
+                                lhs_head_signature_all_meta_typed(&lhs, self);
                             let entry = RuleEntry {
                                 lhs: lhs.clone(),
                                 rhs_has_variables: rhs.contains_variables(),
@@ -5116,6 +5363,8 @@ impl MettaEnvironment {
                                 compiled_rhs,
                                 has_monadic_effect,
                                 requires_non_empty_first_arg,
+                                body_wants_lazy_args,
+                                lhs_head_all_meta_typed,
                             };
 
                             // Phase 4a: Pre-seed tiered cache for bulk path

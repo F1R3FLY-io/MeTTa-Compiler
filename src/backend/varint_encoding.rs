@@ -118,6 +118,12 @@ fn encode_metta(buf: &mut Vec<u8>, value: &MettaValue) {
             buf.push(tags::QUOTED);
             encode_metta(buf, &inner);
         }
+        ValueView::Lazy(inner) => {
+            // PT-canonical Lazy is INVISIBLE for varint encoding (2026-05-21):
+            // encode the inner value transparently. The Lazy wrapper has no
+            // persisted form — it's purely a runtime eval-inhibitor marker.
+            encode_metta(buf, &inner);
+        }
     }
 }
 
@@ -362,6 +368,13 @@ fn encode_value_generic<V: MettaValueTrait>(buf: &mut Vec<u8>, value: &V) {
         ValueView::Quoted(_) => {
             let inner = value.as_quoted_ref().expect("matched Quoted");
             buf.push(tags::QUOTED);
+            encode_value_generic(buf, inner);
+        }
+        ValueView::Lazy(_) => {
+            // PT-canonical Lazy is INVISIBLE for varint encoding (2026-05-21):
+            // encode the inner value transparently. No tag emission — Lazy is
+            // a runtime-only marker with no persisted form.
+            let inner = value.as_lazy_ref().expect("matched Lazy");
             encode_value_generic(buf, inner);
         }
     }

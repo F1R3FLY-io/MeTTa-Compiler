@@ -20,6 +20,7 @@
 //! - `types`: Core type definitions (VmError, VmConfig, CallFrame, etc.)
 //! - `pattern`: Pattern matching helpers
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt;
@@ -889,7 +890,7 @@ where
     /// value sits in the first slot of `Error(offending, detail)`.
     #[inline]
     pub fn make_error(&self, msg: &str, offending: V) -> V {
-        self.factory.error(offending, self.factory.string(msg))
+        self.factory.error( self.factory.string(msg),offending)
     }
 
     // === Binding Operations ===
@@ -1166,11 +1167,11 @@ where
                 self.factory.atom(expected),
                 self.factory.atom(got),
             ]);
-            return self.factory.error(self.factory.atom("BadArgType"), bad_arg_tuple);
+            return self.factory.error( bad_arg_tuple,self.factory.atom("BadArgType"));
         }
         let (msg, kind) = err.as_error_strings();
         let offending = self.factory.atom(kind);
-        self.factory.error(offending, self.factory.string(&msg))
+        self.factory.error( self.factory.string(&msg),offending)
     }
 
     /// Run the VM to completion, returning all results.
@@ -1568,18 +1569,17 @@ where
                 } else {
                 match (a.as_long(), b.as_long()) {
                     (Some(_), Some(0)) => {
-                        // ERR-shape align (2026-05-16): push HE-aligned
-                        // `(Error (/ a b) DivisionByZero)` and continue VM.
-                        // Previously returned `Err(DivisionByZero)` whose
-                        // shape via `materialize_runtime_error_atom` was
-                        // inverted (`(Error DivisionByZero "Division by
-                        // zero")`).
+                        // Phase 1.1 (PT migration, 2026-05-21): emit
+                        // PT-canonical `(Error DivisionByZero (/ a b))`
+                        // shape per PHE-009. Slot order: Type-first, Ctx-second.
+                        // Supersedes the prior `(Error (/ a b) DivisionByZero)`
+                        // offending-first shape.
                         let call = self.make_sexpr(vec![
                             self.make_atom("/"),
                             a.clone(),
                             b.clone(),
                         ]);
-                        let err = self.factory.error(call, self.make_atom("DivisionByZero"));
+                        let err = self.factory.error_pt(self.make_atom("DivisionByZero"), call);
                         self.push(err);
                     }
                     (Some(x), Some(y)) => self.push(self.make_long(x.wrapping_div(y))),
@@ -1626,7 +1626,7 @@ where
                                 a.clone(),
                                 b.clone(),
                             ]);
-                            let err = self.factory.error(call, self.make_atom("DivisionByZero"));
+                            let err = self.factory.error( self.make_atom("DivisionByZero"),call);
                             self.push(err);
                         }
                         (Some(x), _, Some(y), _) => self.push(self.make_long(x.wrapping_rem(y))),
@@ -1688,7 +1688,7 @@ where
                         a.clone(),
                         b.clone(),
                     ]);
-                    let err = vm.factory.error(call, vm.make_atom("DivisionByZero"));
+                    let err = vm.factory.error( vm.make_atom("DivisionByZero"),call);
                     vm.push(err);
                 };
                 match (a.as_long(), b.as_long()) {
@@ -2417,7 +2417,7 @@ where
                 self.factory.atom("Number"),
                 self.factory.atom("ErrorType"),
             ]);
-            let err = self.factory.error(call, detail);
+            let err = self.factory.error( detail,call);
             self.push(err);
             return Ok(());
         }
@@ -5278,23 +5278,13 @@ where
         // Restore outer results
         self.results = frame.saved_results;
 
-        // Plan Phase E (2026-05-20): sort the assembled tuple by
-        // canonical printable form (HE behavior, fixture T04/063 /
-        // §06.11). The bytecode compiler only emits CollapseEnd for
-        // plain `collapse` (the MTT-only `collapse-defined-order`
-        // op falls back to T0 trampoline where `sort_results: false`
-        // is honored), so unconditional sort here is safe.
-        // V: MettaValueTrait + Debug; use Debug formatting as the
-        // canonical comparator since `to_metta_string` is only
-        // available on concrete `MettaValue` (TypeId-cast usage in this
-        // file uses concrete types). Debug yields stable lexicographic
-        // ordering for the small set of values appearing in collapse
-        // (atoms, ints, sexprs).
-        collected.sort_by(|a, b| {
-            format!("{:?}", a).cmp(&format!("{:?}", b))
-        });
+        // V14 PT-canonical (Phase 6.X, 2026-05-21): preserve rule-firing
+        // (definition) order in the assembled tuple, matching PT's findall
+        // semantics. Pre-V14 Phase E sorted lexicographically to match HE
+        // T04/063 / §06.11 empirical; under V14 single-coherent-semantics
+        // PT canonical takes priority.
 
-        // Push collected results as S-expression
+        // Push collected results as S-expression in original order.
         self.push(self.make_sexpr(collected));
 
         Ok(ControlFlow::Continue(()))
@@ -6979,9 +6969,8 @@ where
                         })
                     {
                         let err = self.factory.error(
-                            expr,
                             self.factory.string(&format!("All types for '{}' are errors", head)),
-                        );
+                            expr,);
                         self.push(err);
                         return Ok(());
                     }
@@ -8088,30 +8077,22 @@ where
         };
 
         let op_types = env.get_types_generic(head);
-        let mut all_arg_types: Vec<Vec<V>> = op_types
+        let all_arg_types: Vec<Vec<V>> = op_types
             .iter()
             .filter_map(|t| extract_arg_types(t))
             .collect();
 
-        // Phase 9.4: Inferred-type fallback from Phase 10 deep type inference.
-        if all_arg_types.is_empty() {
-            if env.has_inferred_type(head) {
-                let inferred = env.get_inferred_fn_types(head);
-                all_arg_types = inferred
-                    .iter()
-                    .filter_map(|t| extract_arg_types(t))
-                    .collect();
-            }
-        }
-
-        // Y.6 (2026-05-12): When no arg types are declared OR inferred for the
-        // head, fall back to the bloom-filter strategy used by T0's tree-walker
-        // (`step/sexpr.rs:2572`, `step/grounded.rs:126`). This handles cases
-        // like the syntactic conjunction head `,` whose args have rule-bearing
-        // sub-heads (e.g. `(, (father $a $b) (father $b c))` — `father` has
-        // rules even though `,` does not). Without this fallback, T1 returned
-        // the unreduced expression with empty bindings; the tree-walker
-        // returns the reduced expression with composed bindings.
+        // PT migration (2026-05-21): when no DECLARED arrow types exist for
+        // the head, fall back to the bloom-filter strategy regardless of
+        // whether INFERRED types exist. Phase 9.4's inferred-type meta-skip
+        // shadowed the bloom fallback for PLN-style `(fn $beliefs)` rules
+        // where inference produces `(-> Expression %Undefined%)` (because
+        // `$beliefs` is passed to `superpose`/etc.), incorrectly marking the
+        // arg as "do not pre-evaluate". PT's applicative-order semantics
+        // require the arg to be reduced when the head has rules. Bloom-
+        // filter Tier 3 covers this exactly. Inferred types remain useful
+        // for downstream prune/branch optimizations, but they must NOT
+        // gate caller-side applicative evaluation.
         let bloom_indices_opt: Option<Vec<usize>> = if all_arg_types.is_empty() {
             let indices = find_grounded_arg_indices_generic(items, env);
             if indices.is_empty() {
@@ -8573,6 +8554,18 @@ where
                 env.add_to_space(&atom);
             } else {
                 handle.add_atom_generic(&atom);
+                // Phase 1.4 PT dual-storage (2026-05-22): when the atom is
+                // `(= H B)`, also compile it as a callable rule in env so it
+                // fires from top-level evaluation. Mirrors PT's assertz/2 from
+                // `add-atom &kb (= H B)` populating the global Prolog clause
+                // database. Trampoline mirror: ProcessAddAtomSpace handler.
+                if crate::backend::environment::rule_management::extract_rule_parts(&atom)
+                    .is_some()
+                {
+                    if let Some(env) = self.env.as_mut() {
+                        env.add_to_space(&atom);
+                    }
+                }
             }
             crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
             self.push(self.make_unit());
@@ -8598,6 +8591,16 @@ where
                             env_mut.add_to_space(&atom);
                         } else {
                             handle.add_atom_generic(&atom);
+                            // Phase 1.4 PT dual-storage (2026-05-22): when the
+                            // atom is `(= H B)`, also compile globally.
+                            if crate::backend::environment::rule_management::extract_rule_parts(
+                                &atom,
+                            )
+                            .is_some()
+                            {
+                                let env_mut = self.env.as_mut().expect("env present");
+                                env_mut.add_to_space(&atom);
+                            }
                         }
                         crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch(
                         );
@@ -8605,6 +8608,32 @@ where
                         return Ok(());
                     }
                 }
+            }
+            // Phase 1.3 (PT migration): lazy auto-create for unbound
+            // `&<name>` atoms. Mirrors the trampoline's
+            // `resolve_space_or_autobind` (eval_loop.rs:6803). PT semantics:
+            // any `&<name>` reference creates a fresh dynamic predicate /
+            // named space on first use.
+            if name.starts_with('&') && name != "&" {
+                let env_mut = self.env.as_mut().ok_or_else(|| {
+                    VmError::Runtime(format!("add-atom: no environment for {}", name))
+                })?;
+                let id = env_mut.create_named_space(name);
+                let handle = crate::backend::models::SpaceHandle::new(id, name.to_string());
+                let space_val = self.factory.space(handle.clone());
+                env_mut.register_token(name, space_val);
+                handle.add_atom_generic(&atom);
+                // Phase 1.4 PT dual-storage (2026-05-22): when the atom is
+                // `(= H B)`, also compile globally so rule fires from
+                // top-level evaluation. Mirrors PT's assertz/2 semantics.
+                if crate::backend::environment::rule_management::extract_rule_parts(&atom)
+                    .is_some()
+                {
+                    env_mut.add_to_space(&atom);
+                }
+                crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                self.push(self.make_unit());
+                return Ok(());
             }
         }
 
@@ -8666,6 +8695,23 @@ where
                         return Ok(());
                     }
                 }
+            }
+            // Phase 1.3 (PT migration): lazy auto-create for unbound
+            // `&<name>` atoms. Removing an atom from a never-before-seen
+            // space is a no-op (the space starts empty) — return Unit.
+            if name.starts_with('&') && name != "&" {
+                let env_mut = self.env.as_mut().ok_or_else(|| {
+                    VmError::Runtime(format!("remove-atom: no environment for {}", name))
+                })?;
+                let id = env_mut.create_named_space(name);
+                let handle = crate::backend::models::SpaceHandle::new(id, name.to_string());
+                let space_val = self.factory.space(handle.clone());
+                env_mut.register_token(name, space_val);
+                // No-op remove on the empty space; still emits the unit
+                // result + mutation epoch bump for consistency.
+                crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                self.push(self.make_unit());
+                return Ok(());
             }
         }
 
@@ -8748,7 +8794,24 @@ where
 
         // X.6 MTT-FN-SPACE-RESOLVE: resolve env-bound atom names like
         // `&space` to their SpaceHandle (mirror of resolve_to_state_id).
-        if let Some(handle) = self.resolve_to_space_handle_owned(&space) {
+        // Phase 1.3 (PT migration): lazy auto-create for unbound `&<name>`
+        // atoms, mirroring op_space_add / op_space_remove behavior. PT
+        // semantics: `(match &newspace pattern template)` on a never-seen
+        // space returns the empty result set (the space starts empty).
+        let resolved = self.resolve_to_space_handle_owned(&space).or_else(|| {
+            let name = space.as_atom()?;
+            if !name.starts_with('&') || name == "&" || name == "&self" {
+                return None;
+            }
+            let env_mut = self.env.as_mut()?;
+            let id = env_mut.create_named_space(name);
+            let handle = SpaceHandle::new(id, name.to_string());
+            let space_val = self.factory.space(handle.clone());
+            env_mut.register_token(name, space_val);
+            crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+            Some(handle)
+        });
+        if let Some(handle) = resolved {
             let atoms: Vec<V> = handle.collapse_generic(&self.factory);
             // Preallocate to atoms.len() — upper bound on matches.
             let mut results: Vec<V> = Vec::with_capacity(atoms.len());
@@ -8799,9 +8862,8 @@ where
             // Per T1.A errors-as-values pattern: push an Error atom rather
             // than returning VmError, so downstream opcodes can short-circuit.
             let err = self.factory.error(
-                space,
                 self.factory.string("match: first argument must be a space"),
-            );
+                space,);
             self.push(err);
             Ok(())
         }

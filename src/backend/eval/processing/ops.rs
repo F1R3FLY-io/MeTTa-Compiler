@@ -4,6 +4,7 @@
 //! that work with any value type implementing `MettaValueTrait`. This enables
 //! zero-conversion evaluation for both heap and arena allocation modes.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use smallvec::{smallvec, SmallVec};
 
 use crate::backend::environment::GenericEnvironment;
@@ -246,7 +247,7 @@ pub fn process_single_combination_generic(
                         }
                         GroundedWork::Error(e) => {
                             let err =
-                                factory.error(factory.atom("GroundedError"), factory.string(&format!("{:?}", e)));
+                                factory.error( factory.string(&format!("{:?}", e)),factory.atom("GroundedError"));
                             return GenericProcessedSExpr::Done((smallvec![err], unified_env));
                         }
                     }
@@ -696,7 +697,7 @@ pub fn process_single_combination_bound_generic(
                         }
                         GroundedWork::Error(e) => {
                             let err =
-                                factory.error(factory.atom("GroundedError"), factory.string(&format!("{:?}", e)));
+                                factory.error( factory.string(&format!("{:?}", e)),factory.atom("GroundedError"));
                             return GenericProcessedSExprBound::Done((
                                 smallvec![bv_with(err, combo_bindings)],
                                 unified_env,

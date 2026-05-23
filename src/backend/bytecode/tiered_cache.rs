@@ -1980,7 +1980,8 @@ pub fn hash_value(expr: &MettaValue) -> u64 {
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => {
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => {
             let mut hasher = Xxh3::new();
             hash_value_recursive(expr, &mut hasher);
             hasher.finish()
@@ -2033,6 +2034,12 @@ fn hash_value_recursive<H: std::hash::Hasher>(expr: &MettaValue, hasher: &mut H)
             ValueView::Quoted(inner) => {
                 10u8.hash(hasher);
                 "quote".hash(hasher);
+                work.push(inner);
+            }
+            // PT-canonical Lazy is INVISIBLE for hashing — recurse into the
+            // wrapped value WITHOUT emitting a discriminator tag, so
+            // hash(Lazy(x)) == hash(x).
+            ValueView::Lazy(inner) => {
                 work.push(inner);
             }
             ValueView::Type(_)

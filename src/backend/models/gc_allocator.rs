@@ -30,6 +30,7 @@
 //! allocator lives for the entire program duration. Values must not be accessed
 //! after the allocator is dropped (only at program exit).
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::alloc::Layout;
 use std::any::Any;
 use std::cell::Cell;
@@ -90,6 +91,7 @@ fn discriminant_name(inner: &MettaValueInner) -> &'static str {
         MettaValueInner::Error(_, _) => "Error",
         MettaValueInner::Type(_) => "Type",
         MettaValueInner::Quoted(_) => "Quoted",
+        MettaValueInner::Lazy(_) => "Lazy",
         MettaValueInner::Conjunction(_) => "Conjunction",
         MettaValueInner::Space(_) => "Space",
         MettaValueInner::State(_) => "State",
@@ -3908,7 +3910,9 @@ pub(crate) fn trace_safepoint_live_set() -> (Option<PtrHashSet>, bool) {
                     }
                 }
             }
-            MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
+            MettaValueInner::Type(inner)
+            | MettaValueInner::Quoted(inner)
+            | MettaValueInner::Lazy(inner) => {
                 let inner_ptr = inner.inner_ptr();
                 if !inner_ptr.is_null() && live_set.insert(inner_ptr as *const u8) {
                     worklist.push(inner_ptr);
@@ -4996,7 +5000,9 @@ impl SlabAllocator {
                         }
                     }
                 }
-                MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
+                MettaValueInner::Type(inner)
+                | MettaValueInner::Quoted(inner)
+                | MettaValueInner::Lazy(inner) => {
                     let ip = inner.inner_ptr();
                     if !ip.is_null() && visited.insert(ip as *const u8) {
                         worklist.push(ip);
@@ -5088,7 +5094,9 @@ impl SlabAllocator {
                         }
                     }
                 }
-                MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
+                MettaValueInner::Type(inner)
+                | MettaValueInner::Quoted(inner)
+                | MettaValueInner::Lazy(inner) => {
                     let inner_ptr = inner.inner_ptr();
                     if !inner_ptr.is_null() && surviving.insert(inner_ptr as *const u8) {
                         worklist.push(inner_ptr);
@@ -5271,7 +5279,9 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
                     }
                 }
             }
-            MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
+            MettaValueInner::Type(inner)
+            | MettaValueInner::Quoted(inner)
+            | MettaValueInner::Lazy(inner) => {
                 let inner_ptr = inner.inner_ptr();
                 if !inner_ptr.is_null()
                     && snapshot_mark_value(snapshot, inner_ptr as *const u8, slot_size)
@@ -5436,7 +5446,9 @@ pub fn mark_from_roots(roots: impl Iterator<Item = MettaValue>, alloc: &SlabAllo
                     }
                 }
             }
-            MettaValueInner::Type(inner) | MettaValueInner::Quoted(inner) => {
+            MettaValueInner::Type(inner)
+            | MettaValueInner::Quoted(inner)
+            | MettaValueInner::Lazy(inner) => {
                 let inner_ptr = inner.inner_ptr();
                 if !inner_ptr.is_null() && alloc.mark_value(inner_ptr as *const u8) {
                     worklist.push(inner_ptr);
@@ -5772,6 +5784,27 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
         MettaValue::from_inner_tagged(inner, flags)
     }
 
+    /// PT-canonical Lazy wrapper (2026-05-21).
+    ///
+    /// Idempotency optimization: if `value` is already Lazy, return it as-is
+    /// (avoiding nested Lazy(Lazy(x)) allocations). Since equality/hash/display
+    /// treat Lazy as transparent, double-wrapping is semantically a no-op but
+    /// wastes a slab slot.
+    #[inline]
+    fn lazy(&self, value: MettaValue) -> MettaValue {
+        // Idempotency: don't double-wrap.
+        if value.is_lazy() {
+            return value;
+        }
+        let inner = self.alloc.alloc_value(MettaValueInner::Lazy(value));
+        let flags = if value.has_variables_fast() {
+            super::metta_value::FLAG_HAS_VARIABLES as u8
+        } else {
+            0
+        };
+        MettaValue::from_inner_tagged(inner, flags)
+    }
+
     #[inline]
     fn spanned(&self, value: MettaValue, span: crate::ir::Span) -> MettaValue {
         let span = self.alloc.alloc_span(span);
@@ -5898,13 +5931,15 @@ fn deserialize_slab_value(
         }
         UNIT_LEGACY => Ok((factory.unit(), 1)),
         ERROR => {
-            // HE-bisimilar: read offending expression then detail atom.
-            let (offending, offending_consumed) = deserialize_slab_value(factory, rest)?;
-            let (detail, detail_consumed) =
-                deserialize_slab_value(factory, &bytes[1 + offending_consumed..])?;
+            // Phase 1.1 PT-canonical Error(Type, Ctx): deserialize in field
+            // order — first field is Type, second is Ctx. factory.error()
+            // takes (Type, Ctx) verbatim post-Phase 1.1.
+            let (error_type, type_consumed) = deserialize_slab_value(factory, rest)?;
+            let (ctx_val, ctx_consumed) =
+                deserialize_slab_value(factory, &bytes[1 + type_consumed..])?;
             Ok((
-                factory.error(offending, detail),
-                1 + offending_consumed + detail_consumed,
+                factory.error(error_type, ctx_val),
+                1 + type_consumed + ctx_consumed,
             ))
         }
         TYPE => {
@@ -6302,15 +6337,16 @@ mod tests {
 
     #[test]
     fn test_gc_factory_error() {
+        // Phase 1.1 PT-canonical: factory.error(Type, Ctx) — Type first.
         let alloc = SlabAllocator::new();
         let factory = test_factory(&alloc);
-        let offending = factory.atom("bad-input");
-        let detail = factory.string("oops");
-        let v = factory.error(offending, detail);
+        let error_type = factory.atom("BadType");
+        let ctx_val = factory.string("oops");
+        let v = factory.error(error_type, ctx_val);
         assert!(v.is_error());
-        let (off, det) = v.as_error().expect("should be error");
-        assert_eq!(off.as_atom(), Some("bad-input"));
-        assert_eq!(det.as_string(), Some("oops"));
+        let (type_v, ctx_v) = v.as_error().expect("should be error");
+        assert_eq!(type_v.as_atom(), Some("BadType"));
+        assert_eq!(ctx_v.as_string(), Some("oops"));
     }
 
     #[test]
@@ -6475,7 +6511,7 @@ mod tests {
         let factory = test_factory(&alloc);
         let offending = factory.atom("bad-input");
         let detail = factory.string("oops");
-        let err = factory.error(offending, detail);
+        let err = factory.error( detail,offending);
         mark_from_roots(std::iter::once(err), &alloc);
         assert!(alloc.is_value_marked(err.inner_ptr() as *const u8));
         // GC must trace BOTH slots; verify offending and detail are reachable.

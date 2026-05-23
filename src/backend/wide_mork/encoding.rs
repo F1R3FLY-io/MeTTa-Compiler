@@ -276,6 +276,14 @@ fn encode_wide_storage_inner<V: MettaValueTrait>(value: &V, buf: &mut Vec<u8>) {
             let stripped = value.strip_one_span();
             encode_wide_storage_inner(&stripped, buf);
         }
+
+        MettaValueInner::Lazy(_) => {
+            // PT-canonical Lazy is INVISIBLE for Wide MORK storage encoding
+            // (2026-05-21): the wrapper has no persisted shape — encode the
+            // inner value transparently. Mirrors the Spanned handling above.
+            let inner = value.as_lazy_ref().expect("matched Lazy");
+            encode_wide_storage_inner(inner, buf);
+        }
     }
 }
 
@@ -443,6 +451,13 @@ fn encode_wide_debruijn_inner<V: MettaValueTrait>(
         MettaValueInner::Spanned(..) => {
             let stripped = value.strip_one_span();
             encode_wide_debruijn_inner(&stripped, ctx, buf);
+        }
+
+        MettaValueInner::Lazy(_) => {
+            // PT-canonical Lazy is INVISIBLE (2026-05-21): mirror Spanned and
+            // encode the inner value transparently into the De Bruijn stream.
+            let inner = value.as_lazy_ref().expect("matched Lazy");
+            encode_wide_debruijn_inner(inner, ctx, buf);
         }
     }
 }

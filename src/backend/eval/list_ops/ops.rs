@@ -12,6 +12,7 @@
 //! - Uses `MettaValueTrait` methods for type checking and value extraction
 //! - Uses `MettaValueFactory` for constructing new values
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
 /// car-atom: Get the first element of an expression (head)
@@ -23,12 +24,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "car-atom requires 1 argument, got {}. Usage: (car-atom expr)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -42,9 +42,8 @@ where
         // and the unify-failure branch produces:
         //   (Error (car-atom $atom) "car-atom expects a non-empty expression as an argument")
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string("car-atom expects a non-empty expression as an argument"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     // H3 hard-cut: quoted-transparency extension removed (not in HE).
@@ -53,17 +52,15 @@ where
     if expr.is_unit() {
         // H3 hard-cut: Unit treated identically to empty sexpr.
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string("car-atom expects a non-empty expression as an argument"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     // Not an expression — same HE Error message for all non-expr inputs
     // (consistency with empty/Unit per HE's chain-desugar semantics).
     vec![factory.error(
-        factory.sexpr(items.to_vec()),
         factory.string("car-atom expects a non-empty expression as an argument"),
-    )]
+        factory.sexpr(items.to_vec()),)]
 }
 
 /// cdr-atom: Get the rest of an expression (tail)
@@ -75,12 +72,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "cdr-atom requires 1 argument, got {}. Usage: (cdr-atom expr)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -93,42 +89,41 @@ where
         // H3 (2026-05-05) hard-cut: empty sexpr → HE-bisimilar Error atom.
         // Per HE stdlib.metta:587-590.
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string("cdr-atom expects a non-empty expression as an argument"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     // H3 hard-cut: quoted-transparency extension removed (not in HE).
 
     if expr.is_unit() {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string("cdr-atom expects a non-empty expression as an argument"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     // Not an expression — same HE Error message
     vec![factory.error(
-        factory.sexpr(items.to_vec()),
         factory.string("cdr-atom expects a non-empty expression as an argument"),
-    )]
+        factory.sexpr(items.to_vec()),)]
 }
 
 /// cons-atom: Construct an expression by prepending head to tail
 /// Example: (cons-atom a (b c)) -> (a b c)
+///
+/// Phase 3.3 (PT migration, 2026-05-21, finer divergence #14): malformed input
+/// produces a silent failure (empty result set), matching PeTTa's
+/// `src/translator.pl` behavior of `fail` on bad arity / non-list tail. Prior
+/// MTT-extension behavior emitted a structured `(Error _ _)` atom; under V14
+/// PT canonical that becomes a branch drop. HE-bisim fixtures asserting the
+/// Error shape are documented in assertions/he-bisim-protected.yaml.
 pub fn eval_cons_atom_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
     if items.len() != 3 {
-        return vec![factory.error(
-            factory.sexpr(items.to_vec()),
-            factory.string(&format!(
-                "cons-atom requires 2 arguments, got {}. Usage: (cons-atom head tail)",
-                items.len() - 1
-            )),
-        )];
+        // PT silent fail: zero results (branch drop). No Error atom.
+        return Vec::new();
     }
 
     let head = &items[1];
@@ -144,28 +139,27 @@ where
         return vec![factory.sexpr(vec![head.clone()])];
     }
 
-    // Tail is not an expression
-    vec![factory.error(
-        tail.clone(),
-        factory.string("cons-atom expected Expression as tail. Usage: (cons-atom head tail)"),
-    )]
+    // Tail is not an expression — PT silent fail.
+    Vec::new()
 }
 
 /// decons-atom: Deconstruct an expression into (head tail) pair
 /// Example: (decons-atom (a b c)) -> (a (b c))
+///
+/// Phase 3.3 (PT migration, 2026-05-21, finer divergence #14): malformed
+/// input (bad arity, non-list arg, empty list) produces silent failure
+/// (branch drop) matching PT canonical. Prior MTT-extension emitted
+/// structured Error atoms (HE T04-kernel/019-decons-empty). HE-bisim
+/// fixtures asserting Error are documented in
+/// assertions/he-bisim-protected.yaml.
 pub fn eval_decons_atom_generic<V, F>(items: &[V], factory: &F) -> Vec<V>
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
     if items.len() != 2 {
-        return vec![factory.error(
-            factory.sexpr(items.to_vec()),
-            factory.string(&format!(
-                "decons-atom requires 1 argument, got {}. Usage: (decons-atom expr)",
-                items.len() - 1
-            )),
-        )];
+        // PT silent fail.
+        return Vec::new();
     }
 
     let expr = &items[1];
@@ -176,47 +170,18 @@ where
             let tail = factory.sexpr(elements[1..].to_vec());
             return vec![factory.sexpr(vec![head, tail])];
         }
-        // H3 (2026-05-05) hard-cut: empty sexpr → HE-bisimilar Error atom.
-        // ERR-shape align (2026-05-16): per HE interpreter.rs:843-856 the
-        // detail string is `"expected: (decons-atom (: <expr> Expression)),
-        // found: <call>"` where `<call>` is the canonical print of the
-        // entire `(decons-atom <arg>)` form (NOT "empty expression").
-        // Conformance T04-kernel/019-decons-empty expects exactly
-        // `(Error (decons-atom ()) "expected: (decons-atom (: <expr>
-        // Expression)), found: (decons-atom ())")`.
-        let call_form = factory.sexpr(items.to_vec());
-        return vec![factory.error(
-            call_form.clone(),
-            factory.string(&format!(
-                "expected: (decons-atom (: <expr> Expression)), found: {}",
-                call_form.friendly_repr()
-            )),
-        )];
+        // Empty sexpr → PT silent fail (branch drop).
+        return Vec::new();
     }
 
     if expr.is_unit() {
-        // H3 hard-cut: Unit treated identically to empty sexpr.
-        // ERR-shape align (2026-05-16): same `found: <call>` HE format.
-        let call_form = factory.sexpr(items.to_vec());
-        return vec![factory.error(
-            call_form.clone(),
-            factory.string(&format!(
-                "expected: (decons-atom (: <expr> Expression)), found: {}",
-                call_form.friendly_repr()
-            )),
-        )];
+        // Unit treated identically to empty sexpr → PT silent fail.
+        return Vec::new();
     }
 
-    // Not an expression — HE-bisimilar Error.
-    // ERR-shape align (2026-05-16): same `found: <call>` HE format.
-    let call_form = factory.sexpr(items.to_vec());
-    vec![factory.error(
-        call_form.clone(),
-        factory.string(&format!(
-            "expected: (decons-atom (: <expr> Expression)), found: {}",
-            call_form.friendly_repr()
-        )),
-    )]
+    // Arg is neither sexpr nor unit (e.g. atom, number, string) — PT silent fail.
+    let _ = factory;
+    Vec::new()
 }
 
 /// size-atom: Get the number of elements in an expression
@@ -228,12 +193,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "size-atom requires 1 argument, got {}. Usage: (size-atom expr)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -248,9 +212,8 @@ where
 
     // Not an expression
     vec![factory.error(
-        expr.clone(),
         factory.string("size-atom: expected expression. Usage: (size-atom expr)"),
-    )]
+        expr.clone(),)]
 }
 
 /// max-atom: Get the maximum numeric value in an expression
@@ -283,12 +246,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "max-atom requires 1 argument, got {}. Usage: (max-atom expr)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -296,9 +258,8 @@ where
     if let Some(elements) = expr.as_sexpr() {
         if elements.is_empty() {
             return vec![factory.error(
-    expr.clone(),
     factory.string("max-atom expects a non-empty expression"),
-            )];
+    expr.clone(),)];
         }
 
         // BUG-T0-014: accept Float and mixed Long/Float inputs.
@@ -311,9 +272,8 @@ where
                 (_, Some(f)) => NumAcc::Float(f),
                 _ => {
                     return vec![factory.error(
-                        elem.clone(),
                         factory.string("max-atom expects all elements to be numbers"),
-                    )]
+                        elem.clone(),)]
                 }
             };
             acc = Some(match (acc, next) {
@@ -333,15 +293,13 @@ where
 
     if expr.is_unit() {
         return vec![factory.error(
-    expr.clone(),
     factory.string("max-atom expects a non-empty expression"),
-        )];
+    expr.clone(),)];
     }
 
     vec![factory.error(
-        expr.clone(),
         factory.string("max-atom: expected expression. Usage: (max-atom expr)"),
-    )]
+        expr.clone(),)]
 }
 
 /// min-atom: Get the minimum numeric value in an expression
@@ -353,12 +311,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "min-atom requires 1 argument, got {}. Usage: (min-atom expr)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -366,9 +323,8 @@ where
     if let Some(elements) = expr.as_sexpr() {
         if elements.is_empty() {
             return vec![factory.error(
-    expr.clone(),
     factory.string("min-atom expects a non-empty expression"),
-            )];
+    expr.clone(),)];
         }
 
         // BUG-T0-014: mirror max-atom's Float-promotion semantics.
@@ -379,9 +335,8 @@ where
                 (_, Some(f)) => NumAcc::Float(f),
                 _ => {
                     return vec![factory.error(
-                        elem.clone(),
                         factory.string("min-atom expects all elements to be numbers"),
-                    )]
+                        elem.clone(),)]
                 }
             };
             acc = Some(match (acc, next) {
@@ -401,15 +356,13 @@ where
 
     if expr.is_unit() {
         return vec![factory.error(
-    expr.clone(),
     factory.string("min-atom expects a non-empty expression"),
-        )];
+    expr.clone(),)];
     }
 
     vec![factory.error(
-        expr.clone(),
         factory.string("min-atom: expected expression. Usage: (min-atom expr)"),
-    )]
+        expr.clone(),)]
 }
 
 /// index-atom: Get element at index
@@ -421,12 +374,11 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "index-atom requires 2 arguments, got {}. Usage: (index-atom expr index)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -441,15 +393,13 @@ where
         Some(i) if i >= 0 => i as usize,
         Some(_) => {
             return vec![factory.error(
-                call_form,
                 factory.string("Index is negative"),
-            )];
+                call_form,)];
         }
         None => {
             return vec![factory.error(
-                call_form,
                 factory.string("Index is not an integer"),
-            )];
+                call_form,)];
         }
     };
 
@@ -462,15 +412,13 @@ where
         // T06-stdlib/083 expects `(Error (index-atom (a b c) 10) "Index is
         // out of bounds")`.
         return vec![factory.error(
-            call_form,
             factory.string("Index is out of bounds"),
-        )];
+            call_form,)];
     }
 
     vec![factory.error(
-        call_form,
         factory.string("First argument must be an expression"),
-    )]
+        call_form,)]
 }
 
 /// tuple-concat: Concatenate two tuples
@@ -483,12 +431,11 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "tuple-concat requires 2 arguments, got {}. Usage: (tuple-concat tuple1 tuple2)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let a = &items[1];
@@ -500,9 +447,8 @@ where
         elems.iter().cloned().collect()
     } else {
         return vec![factory.error(
-            a.clone(),
             factory.string("tuple-concat: first argument must be an expression"),
-        )];
+            a.clone(),)];
     };
 
     let b_elems: Vec<V> = if b.is_unit() {
@@ -511,9 +457,8 @@ where
         elems.iter().cloned().collect()
     } else {
         return vec![factory.error(
-            b.clone(),
             factory.string("tuple-concat: second argument must be an expression"),
-        )];
+            b.clone(),)];
     };
 
     let mut combined = Vec::with_capacity(a_elems.len() + b_elems.len());
@@ -532,12 +477,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "tuple-count requires 1 argument, got {}. Usage: (tuple-count tuple)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -551,9 +495,8 @@ where
     }
 
     vec![factory.error(
-        expr.clone(),
         factory.string("tuple-count: expected expression. Usage: (tuple-count tuple)"),
-    )]
+        expr.clone(),)]
 }
 
 /// without: Remove all occurrences of an element from a tuple
@@ -566,12 +509,11 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "without requires 2 arguments, got {}. Usage: (without tuple elem)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let tuple = &items[1];
@@ -583,9 +525,8 @@ where
         elems.iter().cloned().collect()
     } else {
         return vec![factory.error(
-            tuple.clone(),
             factory.string("without: first argument must be an expression"),
-        )];
+            tuple.clone(),)];
     };
 
     let filtered: Vec<V> = elements.into_iter().filter(|e| e != elem).collect();
@@ -603,12 +544,11 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "element-of requires 2 arguments, got {}. Usage: (element-of elem tuple)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let elem = &items[1];
@@ -620,9 +560,8 @@ where
         elems
     } else {
         return vec![factory.error(
-            tuple.clone(),
             factory.string("element-of: second argument must be an expression"),
-        )];
+            tuple.clone(),)];
     };
 
     let found = elements.iter().any(|e| e == elem);
@@ -638,27 +577,24 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "range requires 2 arguments, got {}. Usage: (range start end)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let start = match items[1].as_long() {
         Some(v) => v,
         None => return vec![factory.error(
-    items[1].clone(),
     factory.string("range: start must be Long"),
-        )],
+    items[1].clone(),)],
     };
     let end = match items[2].as_long() {
         Some(v) => v,
         None => return vec![factory.error(
-    items[2].clone(),
     factory.string("range: end must be Long"),
-        )],
+    items[2].clone(),)],
     };
 
     if start >= end {
@@ -682,12 +618,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "reverse-atom requires 1 argument, got {}. Usage: (reverse-atom expr)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -702,9 +637,8 @@ where
     }
 
     vec![factory.error(
-    expr.clone(),
     factory.string("reverse-atom: argument must be an expression"),
-    )]
+    expr.clone(),)]
 }
 
 /// flatten-atom: Flatten one level of nesting
@@ -716,12 +650,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "flatten-atom requires 1 argument, got {}. Usage: (flatten-atom expr)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -742,9 +675,8 @@ where
     }
 
     vec![factory.error(
-    expr.clone(),
     factory.string("flatten-atom: argument must be an expression"),
-    )]
+    expr.clone(),)]
 }
 
 /// zip-atom: Pair-wise zip of two tuples
@@ -757,30 +689,27 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "zip-atom requires 2 arguments, got {}. Usage: (zip-atom expr1 expr2)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let a_elems = match items[1].as_sexpr() {
         Some(e) => e,
         None => {
             return vec![factory.error(
-                items[1].clone(),
                 factory.string("zip-atom: first argument must be an expression"),
-            )]
+                items[1].clone(),)]
         }
     };
     let b_elems = match items[2].as_sexpr() {
         Some(e) => e,
         None => {
             return vec![factory.error(
-                items[2].clone(),
                 factory.string("zip-atom: second argument must be an expression"),
-            )]
+                items[2].clone(),)]
         }
     };
 
@@ -802,35 +731,31 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "take-atom requires 2 arguments, got {}. Usage: (take-atom expr n)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let elems = match items[1].as_sexpr() {
         Some(e) => e,
         None => {
             return vec![factory.error(
-                items[1].clone(),
                 factory.string("take-atom: first argument must be an expression"),
-            )]
+                items[1].clone(),)]
         }
     };
     let n = match items[2].as_long() {
         Some(v) if v >= 0 => v as usize,
         Some(_) => {
             return vec![factory.error(
-    items[2].clone(),
     factory.string("take-atom: n must be non-negative"),
-            )]
+    items[2].clone(),)]
         }
         None => return vec![factory.error(
-    items[2].clone(),
     factory.string("take-atom: n must be Long"),
-        )],
+    items[2].clone(),)],
     };
 
     let take_count = n.min(elems.len());
@@ -848,35 +773,31 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "drop-atom requires 2 arguments, got {}. Usage: (drop-atom expr n)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let elems = match items[1].as_sexpr() {
         Some(e) => e,
         None => {
             return vec![factory.error(
-                items[1].clone(),
                 factory.string("drop-atom: first argument must be an expression"),
-            )]
+                items[1].clone(),)]
         }
     };
     let n = match items[2].as_long() {
         Some(v) if v >= 0 => v as usize,
         Some(_) => {
             return vec![factory.error(
-    items[2].clone(),
     factory.string("drop-atom: n must be non-negative"),
-            )]
+    items[2].clone(),)]
         }
         None => return vec![factory.error(
-    items[2].clone(),
     factory.string("drop-atom: n must be Long"),
-        )],
+    items[2].clone(),)],
     };
 
     let drop_count = n.min(elems.len());
@@ -914,12 +835,11 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "is-member requires 2 arguments, got {}. Usage: (is-member elem tuple)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let elem = &items[1];
@@ -931,9 +851,8 @@ where
         elems
     } else {
         return vec![factory.error(
-            tuple.clone(),
             factory.string("is-member: second argument must be an expression"),
-        )];
+            tuple.clone(),)];
     };
 
     let found = elements.iter().any(|e| e == elem);
@@ -952,12 +871,11 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "append requires 2 arguments, got {}. Usage: (append tuple1 tuple2)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let a = &items[1];
@@ -969,9 +887,8 @@ where
         elems.iter().cloned().collect()
     } else {
         return vec![factory.error(
-    a.clone(),
     factory.string("append: first argument must be an expression"),
-        )];
+    a.clone(),)];
     };
 
     let b_elems: Vec<V> = if b.is_unit() {
@@ -980,9 +897,8 @@ where
         elems.iter().cloned().collect()
     } else {
         return vec![factory.error(
-    b.clone(),
     factory.string("append: second argument must be an expression"),
-        )];
+    b.clone(),)];
     };
 
     let mut combined = Vec::with_capacity(a_elems.len() + b_elems.len());
@@ -1003,12 +919,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "length requires 1 argument, got {}. Usage: (length tuple)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -1022,9 +937,8 @@ where
     }
 
     vec![factory.error(
-    expr.clone(),
     factory.string("length: argument must be an expression"),
-    )]
+    expr.clone(),)]
 }
 
 /// exclude-item: PeTTa-compatible — like MeTTaTron's `without` but with
@@ -1044,12 +958,11 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "exclude-item requires 2 arguments, got {}. Usage: (exclude-item elem tuple)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
     // Swap args: (exclude-item elem tuple) -> (without tuple elem)
     // The first item (head atom name) doesn't matter for `eval_without_generic`
@@ -1072,12 +985,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "msort requires 1 argument, got {}. Usage: (msort tuple)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
     let tuple = &items[1];
     let elements: Vec<V> = if tuple.is_unit() {
@@ -1086,9 +998,8 @@ where
         elems.iter().cloned().collect()
     } else {
         return vec![factory.error(
-    tuple.clone(),
     factory.string("msort: argument must be an expression"),
-        )];
+    tuple.clone(),)];
     };
     // Sort by numeric value (Long or Float). Non-numeric items error out.
     let mut keyed: Vec<(f64, V)> = Vec::with_capacity(elements.len());
@@ -1099,9 +1010,8 @@ where
             f
         } else {
             return vec![factory.error(
-    e,
     factory.string("msort: all elements must be numeric (Long or Float)"),
-            )];
+    e,)];
         };
         keyed.push((key, e));
     }
@@ -1127,9 +1037,8 @@ where
 {
     if items.len() < 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string("progn requires at least 1 argument"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
     // items[0] is the head atom "progn"; items[1..] are the args.
     // Last arg is at items[items.len() - 1]. Already pre-evaluated by the trampoline.
@@ -1152,12 +1061,11 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "reduce requires 1 argument, got {}. Usage: (reduce expr)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
     // The argument is already reduced by the time we get here (applicative order).
     vec![items[1].clone()]
@@ -1180,12 +1088,11 @@ where
 {
     if items.len() != 1 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.string(&format!(
                 "cut takes no arguments, got {}. Usage: (cut)",
                 items.len() - 1
             )),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
     // Signal the nearest enclosing ProcessRuleMatches continuation to
     // discard remaining alternative matches. The flag is consumed (cleared)

@@ -2208,7 +2208,7 @@ proptest! {
         prop_assert!(result.is_ok());
         match result.unwrap()[0].inner() {
             MettaValueInner::String(s) => {
-                let expected = if b { "True" } else { "False" };
+                let expected = if b { "true" } else { "false" };
                 prop_assert_eq!(*s, expected);
             }
             _ => return Err(TestCaseError::fail("Expected String result")),

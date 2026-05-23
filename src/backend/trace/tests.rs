@@ -1,5 +1,6 @@
 //! Tests for the trace system.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::io::Read;
 use std::sync::Arc;
 
@@ -70,8 +71,8 @@ fn test_bitcode_header_roundtrip() {
 #[test]
 fn test_trace_value_display() {
     assert_eq!(TraceValue::Atom("foo".into()).to_string(), "foo");
-    assert_eq!(TraceValue::Bool(true).to_string(), "True");
-    assert_eq!(TraceValue::Bool(false).to_string(), "False");
+    assert_eq!(TraceValue::Bool(true).to_string(), "true");
+    assert_eq!(TraceValue::Bool(false).to_string(), "false");
     assert_eq!(TraceValue::Long(42).to_string(), "42");
     assert_eq!(TraceValue::String("hi".into()).to_string(), "\"hi\"");
     assert_eq!(TraceValue::Unit.to_string(), "()");
@@ -213,7 +214,7 @@ fn test_trace_value_generic_matches_concrete() {
         factory.string("world"),
         factory.unit(),
         factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]),
-        factory.error("oops", factory.unit()),
+        factory.error( factory.unit(),"oops"),
     ];
 
     for val in &test_cases {

@@ -122,7 +122,7 @@ fn user_is_member_overrides_grounded_for_cons_data_type() {
     "#;
     let results = run_program(source);
     assert!(
-        results.iter().any(|r| format!("{}", r) == "True"),
+        results.iter().any(|r| format!("{}", r) == "true"),
         "expected True among results, got {:?}",
         results_to_strings(&results)
     );

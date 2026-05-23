@@ -1,0 +1,115 @@
+{
+  "git_sha": "cb2d625",
+  "timestamp": "2026-05-21T10:30:00Z",
+  "context": "Pre-PT-migration baseline. mtt-conformance discover_fixtures fixed to recurse into sub-buckets (M11-bisimilarity-pt has 0xx/1xx/2xx/3xx/4xx/5xx/9xx sub-buckets; M11-bisimilarity-he is flat).",
+  "mtt_spec": {
+    "m11_bisimilarity_pt": {
+      "fixtures_found": 73,
+      "pass": 57,
+      "fail": 16,
+      "error": 0,
+      "skip": 0,
+      "rate_pct": 78.1,
+      "failing_fixtures_by_phe": {
+        "PHE-finer-3-if-2arg": ["3xx-translator-forms/008-if-2arg.metta"],
+        "Phase-2.1-PT-only-forms": [
+          "3xx-translator-forms/019-forall.metta",
+          "3xx-translator-forms/024-foldall.metta",
+          "3xx-translator-forms/028-lambda.metta",
+          "3xx-translator-forms/413-progn-empty.metta"
+        ],
+        "PHE-finer-5-catch-3arg": ["3xx-translator-forms/020-catch.metta"],
+        "PHE-006-let-chain-unify": ["3xx-translator-forms/031-match.metta"],
+        "Excluded-FFI-user-constraint-4": ["3xx-translator-forms/032-translate-predicate.metta"],
+        "Cluster-B-C-bare-setops": [
+          "3xx-translator-forms/034-unique-rewrite.metta",
+          "3xx-translator-forms/035-union-rewrite.metta",
+          "3xx-translator-forms/036-intersection-rewrite.metta",
+          "3xx-translator-forms/037-subtraction-rewrite.metta"
+        ],
+        "PHE-007-case-default": ["3xx-translator-forms/044-phe-007-case-default.metta"],
+        "PHE-008-types": ["3xx-translator-forms/045-phe-008-types.metta"],
+        "PHE-009-errors": ["3xx-translator-forms/046-phe-009-errors.metta"],
+        "Phase-7-soft-cut": ["4xx-control/407-soft-cut-arrow.metta"]
+      },
+      "host_dependent_passes": ["3xx-translator-forms/050-phe-010-imports.metta"]
+    },
+    "m11_bisimilarity_he": {
+      "fixtures_found": 40,
+      "pass": 40,
+      "fail": 0,
+      "error": 0,
+      "skip": 0,
+      "rate_pct": 100.0
+    },
+    "discover_fixtures_fix_applied": true,
+    "discover_fixtures_fix_notes": "src/bin/mtt_conformance.rs collect_fixtures_recursive helper added; M11-PT sub-bucket layout now reachable. M11-HE flat layout unchanged (regression-tested)."
+  },
+  "pln_main": {
+    "Robot.metta":       { "wall_sec": 0.05, "status": "within_budget" },
+    "Direct.metta":      { "wall_sec": 0.05, "status": "within_budget" },
+    "Toothbrush.metta":  { "wall_sec": 1.55, "status": "within_budget" },
+    "Smokes.metta":      { "wall_sec": 0.20, "status": "within_budget" },
+    "FlyingRaven.metta": { "wall_sec": 8.10, "status": "over_budget_by_100ms", "expected_pre_migration": true },
+    "Roman.metta":       { "wall_sec": 8.08, "status": "over_budget_by_80ms",  "expected_pre_migration": true },
+    "notes": "Per tests/pln_smoke_regression.rs under non-strict gate. Robot.metta 0.05s with cargo test harness vs 0.53s under systemd-run scope (overhead). FlyingRaven/Roman barely over budget pre-migration — expected to come in line once PT semantics land."
+  },
+  "petta_spec": {
+    "fixtures_found": 146,
+    "pass": 83,
+    "fail": 58,
+    "error": 0,
+    "skip": 1,
+    "xfail": 4,
+    "xpass": 0,
+    "rate_pct": 56.8,
+    "per_bucket": {
+      "P00-kernel":             { "pass": 4,  "fail": 2  },
+      "P01-smoke":              { "pass": 5,  "fail": 1  },
+      "P02-parser-display":     { "pass": "TBD" },
+      "P03-spaces":             { "pass": 4,  "fail": 5  },
+      "P04-translation":        { "pass": 1,  "fail": 12, "skip": 1 },
+      "P05-nondeterminism":     { "pass": 3,  "fail": 2  },
+      "P06-types-dispatch":     { "pass": "TBD" },
+      "P07-builtins":           { "pass": 47, "fail": 14, "xfail": 1 },
+      "P08-import-ffi":         { "pass": "TBD" },
+      "P09-he-compat":          { "pass": "TBD" },
+      "P10-bisim-diff":         { "pass": "TBD" },
+      "P11-host-core":          { "pass": "TBD" },
+      "P12-dynamic-db-effects": { "pass": "TBD" },
+      "P13-transactions":       { "pass": "TBD" },
+      "P14-janus-python":       { "pass": "TBD", "user_excluded": true },
+      "P15-host-ffi-effects":   { "pass": "TBD", "user_excluded": true },
+      "P17-python-api":         { "pass": "TBD", "user_excluded": true },
+      "P18-tabling":            { "pass": 0,  "fail": 1  },
+      "P19-clpfd":              { "pass": 0,  "fail": 1  },
+      "P20-indexing":           { "pass": 0,  "fail": 1  },
+      "P21-lco":                { "pass": 1,  "fail": 0  }
+    },
+    "notes": "Pre-Phase-1 baseline. P04-translation and P03-spaces are the biggest failure areas (PHE-006 unify + PHE-007 case Empty). P07-builtins already 76% pass thanks to existing native ports. Phase 1 (aggressive error shape + permissive if-2arg + bool lowercase + lazy &name) projected to lift P00-P04 substantially."
+  },
+  "cross_tier_t0_t1": {
+    "fixtures_discovered": 73,
+    "compared": 61,
+    "skipped_tier_inapplicable": 12,
+    "diverged": 30,
+    "notes": "Per tests/cross_tier_pt_bisim_proptest.rs. 30 M11-PT fixtures show T0/T1 disagreement pre-migration. Any PT phase must keep this baseline stable (no NEW divergences) or document the new divergence in the PR."
+  },
+  "nextest": {
+    "context": "Per memory MEMORY.md: cargo nextest 4199/4199 PASS + 4 memory-constancy tests = 4203/4203. Not re-measured in this baseline run since baseline is bounded by conformance, not unit tests.",
+    "expected_pass": 4203
+  },
+  "summary": {
+    "before_migration": {
+      "M11-PT": "57/73 (78.1%)",
+      "M11-HE": "40/40 (100%)",
+      "nextest": "4203/4203 (100%)"
+    },
+    "migration_targets": {
+      "M11-PT": "220/220 (100%) [Phase 10 fixture authoring]",
+      "M11-HE protected": "100% PASS or XFailExpected",
+      "PeTTa P00-P09": ">= 95%",
+      "PeTTa P10-P21": ">= 80%"
+    }
+  }
+}

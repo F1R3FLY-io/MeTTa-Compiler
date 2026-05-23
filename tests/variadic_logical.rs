@@ -23,44 +23,44 @@ fn run_one(source: &str) -> Vec<String> {
 
 #[test]
 fn and_three_args_short_circuits_on_false() {
-    assert_eq!(run_one("!(and True True False)"), vec!["False"]);
+    assert_eq!(run_one("!(and True True False)"), vec!["false"]);
 }
 
 #[test]
 fn or_three_args_short_circuits_on_true() {
-    assert_eq!(run_one("!(or False False True)"), vec!["True"]);
+    assert_eq!(run_one("!(or False False True)"), vec!["true"]);
 }
 
 #[test]
 fn and_empty_returns_identity_true() {
-    assert_eq!(run_one("!(and)"), vec!["True"]);
+    assert_eq!(run_one("!(and)"), vec!["true"]);
 }
 
 #[test]
 fn or_empty_returns_identity_false() {
-    assert_eq!(run_one("!(or)"), vec!["False"]);
+    assert_eq!(run_one("!(or)"), vec!["false"]);
 }
 
 #[test]
 fn and_single_arg_returns_arg() {
-    assert_eq!(run_one("!(and True)"), vec!["True"]);
-    assert_eq!(run_one("!(and False)"), vec!["False"]);
+    assert_eq!(run_one("!(and True)"), vec!["true"]);
+    assert_eq!(run_one("!(and False)"), vec!["false"]);
 }
 
 #[test]
 fn or_single_arg_returns_arg() {
-    assert_eq!(run_one("!(or True)"), vec!["True"]);
-    assert_eq!(run_one("!(or False)"), vec!["False"]);
+    assert_eq!(run_one("!(or True)"), vec!["true"]);
+    assert_eq!(run_one("!(or False)"), vec!["false"]);
 }
 
 #[test]
 fn and_all_true_returns_true() {
-    assert_eq!(run_one("!(and True True True True)"), vec!["True"]);
+    assert_eq!(run_one("!(and True True True True)"), vec!["true"]);
 }
 
 #[test]
 fn or_all_false_returns_false() {
-    assert_eq!(run_one("!(or False False False False)"), vec!["False"]);
+    assert_eq!(run_one("!(or False False False False)"), vec!["false"]);
 }
 
 #[test]
@@ -71,7 +71,7 @@ fn and_with_nondet_operand_carries_cartesian_product() {
     assert_eq!(r.len(), 2);
     let mut sorted = r.clone();
     sorted.sort();
-    assert_eq!(sorted, vec!["False", "True"]);
+    assert_eq!(sorted, vec!["false", "true"]);
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn or_with_nondet_operand_carries_cartesian_product() {
     assert_eq!(r.len(), 2);
     let mut sorted = r.clone();
     sorted.sort();
-    assert_eq!(sorted, vec!["False", "True"]);
+    assert_eq!(sorted, vec!["false", "true"]);
 }
 
 #[test]
@@ -109,10 +109,10 @@ fn or_non_bool_arg_returns_runtime_error() {
 fn nested_variadic_logical_evaluates() {
     assert_eq!(
         run_one("!(and (or False True) (and True True True))"),
-        vec!["True"]
+        vec!["true"]
     );
     assert_eq!(
         run_one("!(or (and True False) (and False False))"),
-        vec!["False"]
+        vec!["false"]
     );
 }

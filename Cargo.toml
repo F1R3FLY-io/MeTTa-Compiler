@@ -12,6 +12,13 @@ license = "Apache-2.0"
 repository = "https://github.com/F1R3FLY-io/MeTTa-Compiler"
 keywords = ["metta", "evaluator", "lisp", "pattern-matching"]
 categories = ["compilers", "parser-implementations"]
+# Disable autodiscovery so src/bin/conformance_common.rs (a shared module
+# included via #[path = ...] by mtt_conformance.rs and petta_conformance.rs)
+# is not treated as a stand-alone binary.
+autobins = false
+autotests = true
+autoexamples = true
+autobenches = false
 
 [lib]
 name = "mettatron"
@@ -25,6 +32,10 @@ path = "src/main.rs"
 [[bin]]
 name = "mtt-conformance"
 path = "src/bin/mtt_conformance.rs"
+
+[[bin]]
+name = "petta-conformance"
+path = "src/bin/petta_conformance.rs"
 
 [[bench]]
 name = "rule_matching"

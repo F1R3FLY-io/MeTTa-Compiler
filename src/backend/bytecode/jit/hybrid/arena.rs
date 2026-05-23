@@ -22,6 +22,7 @@
 //! environment access - it properly threads the environment through execution and
 //! returns the updated environment.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::sync::Arc;
 
 use tracing::{debug, trace};
@@ -473,7 +474,7 @@ fn jit_to_value(jit_val: u64, factory: &GcFactory) -> MettaValue {
             if !ptr.is_null() {
                 unsafe { MettaValue::from_inner(&*ptr) }
             } else {
-                factory.error(factory.unit(), factory.string("unknown error"))
+                factory.error( factory.string("unknown error"),factory.unit())
             }
         }
         _ => {

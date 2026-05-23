@@ -8,6 +8,7 @@
 //!
 //! Also includes the grounded function fast path optimization.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use super::helpers::value_to_jit_generic;
 use super::metta_to_jit;
 use crate::backend::bytecode::jit::types::{
@@ -314,7 +315,8 @@ pub unsafe extern "C" fn jit_runtime_call(
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => {
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => {
             // Head must be an atom
             ctx_ref.bailout = true;
             ctx_ref.bailout_ip = ip as usize;
@@ -344,7 +346,7 @@ pub unsafe extern "C" fn jit_runtime_call(
                 items.push(JitValue::from_raw(*args_ptr.add(i)).to_metta());
             }
             let call_expr = MettaValue::SExpr(items);
-            let err = factory.error(call_expr, factory.string(&format!("All types for '{}' are errors", head)));
+            let err = factory.error( factory.string(&format!("All types for '{}' are errors", head)),call_expr);
             return value_to_jit_generic(&err).to_bits();
         }
     }
@@ -590,7 +592,8 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => {
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => {
             ctx_ref.bailout = true;
             ctx_ref.bailout_ip = ip as usize;
             ctx_ref.bailout_reason = JitBailoutReason::TypeError;

@@ -20,6 +20,7 @@
 //! the value type and factory. The production implementation uses `StaticEvalContext`
 //! with arena-allocated `MettaValue` values.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -254,6 +255,7 @@ use super::types::{
     bv, bv_with, empty_shared_bindings, values_of, BoundValue, Continuation,
     EvalResult, SharedBindings, WorkItem,
 };
+use crate::backend::environment::rule_management::extract_rule_parts;
 use crate::backend::models::gc_allocator::RootProvider;
 
 use crate::backend::eval::types::{
@@ -743,6 +745,7 @@ fn dispatch_rule_matches<C: EvalContext>(
     continuations: &mut Vec<Continuation>,
     demand: Option<crate::backend::eval::cesk::coroutine::Demand>,
     outer_carrying: &crate::backend::models::GenericBindings<MettaValue>,
+    op_lhs_head_all_meta_typed: bool,
 ) {
     // Task #6 Phase 3 (2026-05-18): `env` arrives as `SharedEnv` (Arc-
     // wrapped) directly from the caller, instead of being passed by value
@@ -952,7 +955,56 @@ fn dispatch_rule_matches<C: EvalContext>(
         } else {
             std::sync::Arc::new(bindings)
         };
-        if rhs.has_variables_fast() {
+        if op_lhs_head_all_meta_typed {
+            // PT-canonical "data-in / data-out" rule (Phase 1+2+3, 2026-05-21):
+            // when the LHS head is declared with all-meta arrow type (e.g.
+            // `(: ? (-> Expression Atom))`, `(: my-quote (-> Expression
+            // Expression))`), PeTTa preserves the substituted bindings AS
+            // DATA — they do not get re-evaluated.
+            //
+            // Three-part implementation:
+            // - The arg pre-eval gate in `step/sexpr.rs` (`wants_lazy ||=
+            //   lhs_head_all_meta_typed`) ensures the rule's args arrive
+            //   unevaluated, so the rule LHS matches the literal call form.
+            // - The rule-management instantiation site (rule_management.rs
+            //   `match_rules_native_inner` call sites) uses
+            //   `apply_bindings_with_rename_scoped_lazy` when the rule's
+            //   `lhs_head_all_meta_typed` is set, producing an
+            //   `instantiated_rhs` whose substituted vars are wrapped in
+            //   `Lazy(...)` (INVISIBLE for display/hash/eq).
+            // - The body is then EVALUATED here (the same `Eval` push as the
+            //   non-gated path) so that `unique-atom`/`collapse` and other
+            //   operator dispatch inside the body still runs — but the
+            //   Lazy-wrapped substituted variables are inert: the trampoline
+            //   `Eval` arm's Lazy short-circuit returns them as-is without
+            //   rule dispatch.
+            //
+            // Since the instantiation is already lazy-aware, this branch is
+            // structurally identical to the eager rule-RHS push below — no
+            // additional substitution needed. We retain the explicit branch
+            // for clarity / future special handling.
+            if rhs.has_variables_fast() {
+                work_stack.push(WorkItem::EvalWithBindings {
+                    template: rhs,
+                    bindings: bindings_arc,
+                    env,
+                    depth: depth + 1,
+                    is_tail_call: true,
+                    expected_type: None,
+                    carrying_bindings: rhs_carrying_arc,
+                });
+            } else {
+                work_stack.push(WorkItem::Eval {
+                    value: rhs,
+                    env,
+                    depth: depth + 1,
+                    is_tail_call: true,
+                    expected_type: None,
+                    demand: None,
+                    carrying_bindings: rhs_carrying_arc,
+                });
+            }
+        } else if rhs.has_variables_fast() {
             work_stack.push(WorkItem::EvalWithBindings {
                 template: rhs,
                 bindings: bindings_arc,
@@ -3093,6 +3145,48 @@ fn eval_trampoline_inner<C: EvalContext>(
             } => {
                 trace!(target: "mettatron::backend::eval::eval_trampoline", ?value, depth, "eval work item");
 
+                // PT-canonical Lazy short-circuit (2026-05-21): if the value
+                // is wrapped in `Lazy(...)`, treat it as already-normal-form
+                // DATA. Unwrap and Resume with the inner value directly —
+                // no rule dispatch, no special-form lookup, no memoization
+                // probe. This is the rule-inhibitor primitive that lets
+                // `apply_bindings_lazy_scoped_generic` mark substituted vars
+                // as inert during outer body evaluation, preserving PeTTa's
+                // "data-in / data-out" semantic for `op_lhs_head_all_meta_typed`
+                // rules (e.g. PLN's `(? $term)` with body
+                // `(unique-atom (collapse ($term ...)))`).
+                if let crate::backend::models::ValueView::Lazy(_) = value.view() {
+                    // PT-canonical Lazy is in normal form (2026-05-21):
+                    // Resume with the Lazy value VERBATIM (not unwrapped).
+                    //
+                    // Why VERBATIM (not unwrapping to inner):
+                    // - Some continuations (e.g. ProcessCollapseEvalResults)
+                    //   push each result back through `WorkItem::Eval` to
+                    //   ensure normal form. If we unwrapped here, those
+                    //   re-eval pushes would lose the marker and the inner
+                    //   value would be subject to ordinary rule dispatch
+                    //   (e.g. `(grandfather a c)` would match the rule for
+                    //   that ground fact and produce `(stv 0.5 0.5)`).
+                    // - Keeping the Lazy through all eval passes is a
+                    //   fixpoint: Eval(Lazy(x)) → Resume([Lazy(x)]) → ...
+                    //   any number of times.
+                    // - Display delegates to inner, so user-visible output
+                    //   shows the substituted value (e.g. `(grandfather a c)`)
+                    //   without the marker.
+                    let cb = &*carrying_bindings;
+                    work_stack.push(WorkItem::Resume {
+                        result: (
+                            smallvec![if cb.is_empty() {
+                                bv(value)
+                            } else {
+                                bv_with(value, cb.clone())
+                            }],
+                            env,
+                        ),
+                    });
+                    continue;
+                }
+
                 // Publish the current eval's demand on the thread-local so
                 // downstream parallel-dispatch sites (StartAmb / superpose,
                 // dispatch_rule_matches) can read it. Sticky semantics:
@@ -3184,9 +3278,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                         }
                         if user_set_pragma {
                             let stack_overflow_err = ctx.factory().error(
-                                value.clone(),
                                 ctx.factory().atom("StackOverflow"),
-                            );
+                                value.clone(),);
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(stack_overflow_err)], env),
                             });
@@ -3672,6 +3765,58 @@ fn eval_trampoline_inner<C: EvalContext>(
                         }
                     }
 
+                    // PT outer-form-is-data: head is sub-SExpr — preserve verbatim,
+                    // evaluate only tail elements. Pre-seeds `collected` with a
+                    // single-alternative EvalResult containing items[0] unchanged.
+                    GenericEvalStep::EvalSExprTail {
+                        items,
+                        env: step_env,
+                        depth,
+                    } => {
+                        let env: SharedEnv = Arc::new(step_env);
+                        debug_assert!(
+                            items.len() >= 2,
+                            "EvalSExprTail requires items.len() >= 2; gate at dispatch ensures this"
+                        );
+                        let mut items_iter = items.into_iter();
+                        let collect_capacity = items_iter.len();
+                        let head = items_iter
+                            .next()
+                            .expect("EvalSExprTail guaranteed non-empty");
+                        let first_tail = items_iter
+                            .next()
+                            .expect("EvalSExprTail guaranteed >= 2 items");
+                        // Pre-seed `collected` with a single-alternative result
+                        // wrapping the head verbatim (no rule firing).
+                        let cb = &*carrying_bindings;
+                        let head_bv = if cb.is_empty() {
+                            bv(head)
+                        } else {
+                            bv_with(head, cb.clone())
+                        };
+                        let head_result: EvalResult = (smallvec![head_bv], env.clone());
+                        let mut collected = Vec::with_capacity(collect_capacity);
+                        collected.push(head_result);
+
+                        continuations.push(Continuation::CollectSExpr {
+                            remaining: items_iter,
+                            collected,
+                            original_env: env.clone(),
+                            depth,
+                            outer_carrying: carrying_bindings.clone(),
+                        });
+
+                        work_stack.push(WorkItem::Eval {
+                            value: first_tail,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
+                        });
+                    }
+
                     // Start a TCO grounded operation
                     // Uses static dispatch - works with any V: MettaValueTrait (NO conversion)
                     GenericEvalStep::StartGroundedOp {
@@ -3862,12 +4007,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // generic registry. Custom operations should be added there, not to the
                             // legacy registry.
                             let error_value = ctx.factory().error(
-                                ctx.factory().atom("OperationNotFoundError"),
                                 ctx.factory().string(&format!(
                                     "Grounded operation '{}' not found in generic registry",
                                     op_name
                                 )),
-                            );
+                                ctx.factory().atom("OperationNotFoundError"),);
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(error_value)], env),
                             });
@@ -3930,6 +4074,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         mut matches,
                         env: step_env,
                         depth,
+                        op_lhs_head_all_meta_typed,
                     } => {
                         let env: SharedEnv = Arc::new(step_env);
                         // 8.7: Branch pruning — filter out matches whose rhs_type
@@ -4006,6 +4151,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 &mut continuations,
                                 demand,
                                 &*carrying_bindings,
+                                op_lhs_head_all_meta_typed,
                             );
                         }
                     }
@@ -4455,11 +4601,22 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // EvalEval is for non-`eval` forms (capture/reduce/progn)
                     // which do NOT undergo HE `metta_call_return`'s
                     // NotReducible→original conversion at this level.
+                    //
+                    // PT-canonical Lazy (2026-05-21): `reduce` is the user's
+                    // explicit "force evaluation" primitive. If its argument
+                    // is wrapped in `Lazy(...)` (a PT-canonical inert-data
+                    // marker), we unwrap it here so the inner value is
+                    // subjected to normal rule dispatch. Without this
+                    // unwrap, `(reduce $term)` where `$term` was lazy-
+                    // substituted would short-circuit at the trampoline's
+                    // Lazy arm and return the Lazy wrapper verbatim,
+                    // defeating the user's intent.
                     GenericEvalStep::EvalEval {
                         arg,
                         env: step_env,
                         depth,
                     } => {
+                        let arg = arg.unwrap_lazy();
                         let env: SharedEnv = Arc::new(step_env);
                         continuations.push(Continuation::ProcessEvalEval {
                             env: env.clone(),
@@ -4601,16 +4758,32 @@ fn eval_trampoline_inner<C: EvalContext>(
                         };
 
                         if immediate_not_reducible {
-                            // HE eval_impl line 555 query → NotReducible.
-                            // If nested under outer eval, propagate NotReducible
-                            // (outer ProcessEvalEval will convert at its level).
-                            // Otherwise, convert here (HE metta_call_return
-                            // semantics: NotReducible → original eval call).
+                            // Phase 3.1 PT re-translation (PHE-005, 2026-05-22):
+                            // PT's `(eval X)` re-translates X through the
+                            // translator pipeline before evaluation. For
+                            // scalars/vars/Empty/NotReducible, the translation is
+                            // idempotent and the value is its own result.
+                            // For `(quote X)`, PT's translator unwraps to X.
+                            // MTT now returns the resolved value (or unquoted
+                            // inner) directly instead of the HE-style wrapping
+                            // `(eval X)` for these terminal cases.
                             let env: SharedEnv = Arc::new(step_env);
                             let result_value = if nested_in_eval {
                                 ctx.factory().not_reducible()
                             } else {
-                                original_eval_expr
+                                // PT re-translation: return the resolved arg
+                                // (or unquoted inner for `(quote X)`).
+                                let resolved_for_result =
+                                    original_eval_expr.as_sexpr().and_then(|items| {
+                                        items.get(1).cloned()
+                                    });
+                                let arg_resolved = resolved_for_result
+                                    .unwrap_or(original_eval_expr);
+                                if let Some(inner) = arg_resolved.as_quoted() {
+                                    inner
+                                } else {
+                                    arg_resolved
+                                }
                             };
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(result_value)], env),
@@ -4750,6 +4923,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         &mut continuations,
                                         None,
                                         &*carrying_bindings,
+                                        false,
                                     );
                                     continue;
                                 }
@@ -6128,9 +6302,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                         crate::backend::eval::cesk::ThunkLookup::Blackhole => {
                             // Infinite recursion detected — return error
                             let error_val = ctx.factory().error(
-                                ctx.factory().atom("infinite recursion in EvalWithBindings"),
                                 ctx.factory().string("blackhole"),
-                            );
+                                ctx.factory().atom("infinite recursion in EvalWithBindings"),);
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(error_val)], env),
                             });
@@ -6700,6 +6873,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                         &mut continuations,
                                         None,
                                         &*carrying_bindings,
+                                        false,
                                     );
                                     continue;
                                 }
@@ -6809,13 +6983,19 @@ fn resolve_space_or_autobind<C: EvalContext>(
         return Some(handle.clone());
     }
     let name = value.as_atom()?;
-    if !name.starts_with('&')
-        || name == "&"
-        || name == "&self"
-        || name == "&kb"
-        || name == "&stack"
-    {
+    // PT semantics (Phase 1.3): any `&<name>` atom is a space reference and
+    // lazily creates a fresh named space on first use. `&self` is reserved —
+    // its resolution goes through the module-space path, not lazy creation.
+    // The bare `&` token (with no name suffix) is never a space.
+    if !name.starts_with('&') || name == "&" || name == "&self" {
         return None;
+    }
+    // First, check if `&<name>` is already bound via tokenizer. This avoids
+    // duplicate space allocation for repeated references.
+    if let Some(existing) = env_after.lookup_token(name) {
+        if let Some(handle) = existing.as_space() {
+            return Some(handle.clone());
+        }
     }
     // Auto-bind: lazy SpaceHandle creation and env registration.
     let env_mut = Arc::make_mut(env_after);
@@ -6964,6 +7144,7 @@ fn process_continuation<C: EvalContext>(
                                     continuations,
                                     None,
                                     &combo_b,
+                                    false,
                                 );
                             }
                         }
@@ -7090,6 +7271,7 @@ fn process_continuation<C: EvalContext>(
                                     continuations,
                                     None,
                                     &mb,
+                                    false,
                                 );
                             }
                         }
@@ -7786,12 +7968,11 @@ fn process_continuation<C: EvalContext>(
                 }
             } else {
                 let error_value = ctx.factory().error(
-                    ctx.factory().atom("OperationNotFoundError"),
                     ctx.factory().string(&format!(
                         "Grounded operation '{}' not found in generic registry",
                         state.op_name
                     )),
-                );
+                    ctx.factory().atom("OperationNotFoundError"),);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(error_value)], result_env),
                 });
@@ -7931,12 +8112,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let error_value = ctx.factory().error(
-                        ctx.factory().atom("OperationNotFoundError"),
                         ctx.factory().string(&format!(
                             "Grounded operation '{}' not found in generic registry",
                             state_i.op_name
                         )),
-                    );
+                        ctx.factory().atom("OperationNotFoundError"),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(error_value)], result_env),
                     });
@@ -8072,6 +8252,7 @@ fn process_continuation<C: EvalContext>(
                         continuations,
                         None,
                         &*outer_carrying,
+                        false,
                     );
                 }
             } else {
@@ -8224,6 +8405,7 @@ fn process_continuation<C: EvalContext>(
                         continuations,
                         None,
                         &combo_bindings,
+                        false,
                     );
                 }
             } else {
@@ -8968,6 +9150,7 @@ fn process_continuation<C: EvalContext>(
                                     continuations,
                                     None,
                                     &combo_carrying,
+                                    false,
                                 );
                             } else {
                                 work_stack.push(WorkItem::Resume {
@@ -10279,7 +10462,7 @@ fn process_continuation<C: EvalContext>(
                         ctx.factory().atom("Bool"),
                         ctx.factory().atom(actual_type_name),
                     ]);
-                    let err = ctx.factory().error(if_call, bad_arg);
+                    let err = ctx.factory().error( bad_arg,if_call);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after_cond),
                     });
@@ -10673,7 +10856,31 @@ fn process_continuation<C: EvalContext>(
                     }
                 }
             } else {
-                // All atoms processed
+                // All atoms processed. Phase 6/PHE-007 PT canonical: if no
+                // case arm matched any scrutinee atom AND the cases include
+                // an `(Empty <default>)` arm, fire the default (negation-as-
+                // failure). PeTTa src/translator.pl:161-174 implements this
+                // for case's `Empty` last-arm. MTT's prior behavior was to
+                // return empty results on no-match; under V14 PT-canonical
+                // we fire the Empty default per PHE-007.
+                if collected.is_empty() {
+                    let empty_atom = ctx.factory().atom("Empty");
+                    match eval_switch(&empty_atom, &cases, ctx.factory()) {
+                        SwitchResult::Match(template, _bindings) => {
+                            work_stack.push(WorkItem::Eval {
+                                value: template,
+                                env,
+                                depth,
+                                is_tail_call: true,
+                                expected_type: None,
+                                demand: None,
+                                carrying_bindings: outer_carrying,
+                            });
+                            return;
+                        }
+                        SwitchResult::Error(_) | SwitchResult::NoMatch => {}
+                    }
+                }
                 work_stack.push(WorkItem::Resume {
                     result: (SmallVec::from_vec(collected), env),
                 });
@@ -11059,6 +11266,33 @@ fn process_continuation<C: EvalContext>(
                                             phase: "case-no-match".to_string(),
                                         },
                                     );
+                                }
+                            }
+
+                            // Phase 6/PHE-007 PT canonical: when the
+                            // scrutinee doesn't match any case arm, fire the
+                            // `(Empty <default>)` arm if present (negation-
+                            // as-failure per PeTTa src/translator.pl:161-174).
+                            // This applies only when this is the LAST atom
+                            // (eval_atoms.len() == 0) since multi-atom
+                            // scrutinees that miss don't qualify for
+                            // negation-as-failure (PT's NAF fires on
+                            // exhausted SLD failure).
+                            if eval_atoms.len() == 0 {
+                                let empty_atom = ctx.factory().atom("Empty");
+                                if let SwitchResult::Match(template, _) =
+                                    eval_switch(&empty_atom, &cases, ctx.factory())
+                                {
+                                    work_stack.push(WorkItem::Eval {
+                                        value: template,
+                                        env: eval_env,
+                                        depth,
+                                        is_tail_call: true,
+                                        expected_type: None,
+                                        demand: None,
+                                        carrying_bindings: first_carrying,
+                                    });
+                                    return;
                                 }
                             }
 
@@ -13646,12 +13880,11 @@ fn process_continuation<C: EvalContext>(
                 Some((v, _)) => {
                     // Type error - condition must be Bool
                     let err = ctx.factory().error(
-                        v.clone(),
                         ctx.factory().string(&format!(
                             "guard: condition must evaluate to Bool, got {}",
                             v.friendly_repr()
                         )),
-                    );
+                        v.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], result_env),
                     });
@@ -13798,9 +14031,8 @@ fn process_continuation<C: EvalContext>(
 
             if space_results.is_empty() {
                 let err = ctx.factory().error(
-                    space_ref,
                     ctx.factory().string("get-atoms: space evaluated to empty"),
-                );
+                    space_ref,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], result_env),
                 });
@@ -13834,12 +14066,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "get-atoms: first argument must be a space, got {}",
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], result_env),
                     });
@@ -13859,9 +14090,8 @@ fn process_continuation<C: EvalContext>(
 
             if space_results.is_empty() {
                 let err = ctx.factory().error(
-                    space_arg,
                     ctx.factory().string("match: space evaluated to empty"),
-                );
+                    space_arg,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -13949,6 +14179,11 @@ fn process_continuation<C: EvalContext>(
                         // and any nested-template chains. Literal-value results
                         // (e.g. floats, atoms) still self-evaluate to themselves with
                         // negligible overhead.
+                        //
+                        // Match no-result: return zero results (empty multiset).
+                        // The Phase 6 case-Empty-default fallback handles
+                        // `(case (match ...) ((Empty default) ...))` by
+                        // firing the (Empty default) arm on no-match.
                         if generic_results.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), env_after),
@@ -14014,6 +14249,7 @@ fn process_continuation<C: EvalContext>(
                             }
                         }
 
+                        // Match no-result on owned space: zero results.
                         if instantiated_templates.is_empty() {
                             work_stack.push(WorkItem::Resume {
                                 result: (SmallVec::new(), env_after),
@@ -14056,12 +14292,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "match: first argument must be a space, got {}. Usage: (match space pattern template)",
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -14117,9 +14352,8 @@ fn process_continuation<C: EvalContext>(
 
             if space_results.is_empty() {
                 let err = ctx.factory().error(
-                    space_ref,
                     ctx.factory().string("add-atom: space evaluated to empty"),
-                );
+                    space_ref,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14144,6 +14378,16 @@ fn process_continuation<C: EvalContext>(
                         // Named space: add to SpaceHandle (match queries SpaceHandle
                         // for non-&self spaces via handle.collapse_generic()).
                         handle.add_atom_generic(&atom);
+                        // Phase 1.4 PT dual-storage (2026-05-22): when the atom
+                        // is a `(= H B)` rule, ALSO compile it into the global
+                        // RuleIndex so it fires from top-level evaluation. PT's
+                        // `assertz/2` from `add-atom &kb (= H B)` populates the
+                        // global Prolog clause database; MTT mirrors this by
+                        // routing the rule through env.add_to_space(), which
+                        // detects (= H B) shape and calls add_rule().
+                        if extract_rule_parts(&atom).is_some() {
+                            Arc::make_mut(&mut env_after).add_to_space(&atom);
+                        }
                     }
                     // Phase 3.2: Bump mutation_epoch alone. EVAL_MEMO and
                     // MATCH_RESULT_CACHE both gate lookups on mutation_epoch, so
@@ -14156,12 +14400,11 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "add-atom: first argument must be a space reference, got {}. Usage: (add-atom space atom)",
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -14210,9 +14453,8 @@ fn process_continuation<C: EvalContext>(
 
             if space_results.is_empty() {
                 let err = ctx.factory().error(
-                    space_ref,
                     ctx.factory().string("remove-atom: space evaluated to empty"),
-                );
+                    space_ref,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14245,12 +14487,11 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "remove-atom: first argument must be a space reference, got {}. Usage: (remove-atom space atom)",
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -14300,9 +14541,8 @@ fn process_continuation<C: EvalContext>(
 
             if init_results.is_empty() {
                 let err = ctx.factory().error(
-                    initial_value,
                     ctx.factory().string("new-state: initial value evaluated to empty"),
-                );
+                    initial_value,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14327,9 +14567,8 @@ fn process_continuation<C: EvalContext>(
 
             if state_results.is_empty() {
                 let err = ctx.factory().error(
-                    state_ref,
                     ctx.factory().string("get-state: state reference evaluated to empty"),
-                );
+                    state_ref,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14343,24 +14582,22 @@ fn process_continuation<C: EvalContext>(
                         });
                     } else {
                         let err = ctx.factory().error(
-                            first.clone(),
                             ctx.factory().string(&format!(
                                 "get-state: state {} not found",
                                 state_id
                             )),
-                        );
+                            first.clone(),);
                         work_stack.push(WorkItem::Resume {
                             result: (smallvec![bv(err)], env_after),
                         });
                     }
                 } else {
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "get-state: argument must be a state reference, got {}",
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -14379,9 +14616,8 @@ fn process_continuation<C: EvalContext>(
 
             if state_results.is_empty() {
                 let err = ctx.factory().error(
-                    state_ref,
                     ctx.factory().string("change-state!: state reference evaluated to empty"),
-                );
+                    state_ref,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14407,12 +14643,11 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "change-state!: first argument must be a state reference, got {}",
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -14432,9 +14667,8 @@ fn process_continuation<C: EvalContext>(
             let (state_results, env_after) = result;
             if state_results.is_empty() {
                 let err = ctx.factory().error(
-                    state_ref,
                     ctx.factory().string("compare-and-swap-state!: state ref evaluated to empty"),
-                );
+                    state_ref,);
                 work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
             } else {
                 let (state_value, _) = &state_results[0];
@@ -14458,12 +14692,11 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        state_value.clone(),
                         ctx.factory().string(&format!(
                             "compare-and-swap-state!: first argument must be a state reference, got {}",
                             state_value.friendly_repr()
                         )),
-                    );
+                        state_value.clone(),);
                     work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
                 }
             }
@@ -14480,9 +14713,8 @@ fn process_continuation<C: EvalContext>(
             let (exp_results, env_after) = result;
             if exp_results.is_empty() {
                 let err = ctx.factory().error(
-                    state_value,
                     ctx.factory().string("compare-and-swap-state!: expected value evaluated to empty"),
-                );
+                    state_value,);
                 work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
             } else {
                 let (exp_val, _) = &exp_results[0];
@@ -14515,9 +14747,8 @@ fn process_continuation<C: EvalContext>(
             let (new_results, mut env_after) = result;
             if new_results.is_empty() {
                 let err = ctx.factory().error(
-                    state_value,
                     ctx.factory().string("compare-and-swap-state!: new value evaluated to empty"),
-                );
+                    state_value,);
                 work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
             } else {
                 let (new_val, _) = &new_results[0];
@@ -14540,9 +14771,8 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        state_value,
                         ctx.factory().string("compare-and-swap-state!: expected state value"),
-                    );
+                        state_value,);
                     work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
                 }
             }
@@ -14559,9 +14789,8 @@ fn process_continuation<C: EvalContext>(
             let (state_results, env_after) = result;
             if state_results.is_empty() {
                 let err = ctx.factory().error(
-                    state_ref,
                     ctx.factory().string("loop-until-state: state ref evaluated to empty"),
-                );
+                    state_ref,);
                 work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
             } else {
                 let (state_value, _) = &state_results[0];
@@ -14584,9 +14813,8 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        state_value.clone(),
                         ctx.factory().string("loop-until-state: first argument must be a state reference"),
-                    );
+                        state_value.clone(),);
                     work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
                 }
             }
@@ -14602,9 +14830,8 @@ fn process_continuation<C: EvalContext>(
             let (target_results, env_after) = result;
             if target_results.is_empty() {
                 let err = ctx.factory().error(
-                    state_value,
                     ctx.factory().string("loop-until-state: target evaluated to empty"),
-                );
+                    state_value,);
                 work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
             } else {
                 let (target_val, _) = &target_results[0];
@@ -14644,9 +14871,8 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        state_value,
                         ctx.factory().string("loop-until-state: expected state value"),
-                    );
+                        state_value,);
                     work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
                 }
             }
@@ -14663,9 +14889,8 @@ fn process_continuation<C: EvalContext>(
 
             if value_results.is_empty() {
                 let err = ctx.factory().error(
-                    new_value,
                     ctx.factory().string("change-state!: new value evaluated to empty"),
-                );
+                    new_value,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14681,9 +14906,8 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        state_value,
                         ctx.factory().string("change-state!: expected state value"),
-                    );
+                        state_value,);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -14722,9 +14946,8 @@ fn process_continuation<C: EvalContext>(
 
             if format_results.is_empty() {
                 let err = ctx.factory().error(
-                    format_arg,
                     ctx.factory().string("format-args: format string evaluated to empty"),
-                );
+                    format_arg,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14750,12 +14973,11 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "format-args: first argument must be a string, got {}",
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -14774,9 +14996,8 @@ fn process_continuation<C: EvalContext>(
 
             if args_results.is_empty() {
                 let err = ctx.factory().error(
-                    args_arg,
                     ctx.factory().string("format-args: args evaluated to empty"),
-                );
+                    args_arg,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14907,9 +15128,8 @@ fn process_continuation<C: EvalContext>(
 
             if atom_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().atom(&token),
                     ctx.factory().string("bind!: atom evaluated to empty"),
-                );
+                    ctx.factory().atom(&token),);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15188,12 +15408,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "match-or: first argument must be a space, got {}",
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -15214,9 +15433,8 @@ fn process_continuation<C: EvalContext>(
 
             if memo_results.is_empty() {
                 let err = ctx.factory().error(
-                    memo_ref,
                     ctx.factory().string("memo/memo!: memo reference evaluated to empty"),
-                );
+                    memo_ref,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15251,12 +15469,11 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "memo/memo!: first argument must be a memo table, got {}",
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -15303,9 +15520,8 @@ fn process_continuation<C: EvalContext>(
 
             if name_results.is_empty() {
                 let err = ctx.factory().error(
-                    name_arg,
                     ctx.factory().string("new-memo: name evaluated to empty"),
-                );
+                    name_arg,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15359,9 +15575,8 @@ fn process_continuation<C: EvalContext>(
 
             if size_results.is_empty() {
                 let err = ctx.factory().error(
-                    size_arg,
                     ctx.factory().string("new-memo: size evaluated to empty"),
-                );
+                    size_arg,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15391,12 +15606,11 @@ fn process_continuation<C: EvalContext>(
                     "memo-stats"
                 };
                 let err = ctx.factory().error(
-                    memo_ref,
                     ctx.factory().string(&format!(
                         "{}: memo reference evaluated to empty",
                         op_name
                     )),
-                );
+                    memo_ref,);
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15430,9 +15644,8 @@ fn process_continuation<C: EvalContext>(
                                 .factory()
                                 .atom("Rebuild with: cargo build --features track-stats");
                             let err = ctx.factory().error(
-                                detail_atom,
                                 ctx.factory().string("memo-stats requires track-stats feature"),
-                            );
+                                detail_atom,);
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(err)], env_after),
                             });
@@ -15445,13 +15658,12 @@ fn process_continuation<C: EvalContext>(
                         "memo-stats"
                     };
                     let err = ctx.factory().error(
-                        first.clone(),
                         ctx.factory().string(&format!(
                             "{}: argument must be a memo table, got {}",
                             op_name,
                             first.friendly_repr()
                         )),
-                    );
+                        first.clone(),);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });

@@ -21,6 +21,7 @@
 //! // then computes [1+10, 2+10] = [11, 12]
 //! ```
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 pub mod arithmetic;
 pub mod comparison;
 pub mod fileio;
@@ -41,6 +42,8 @@ use super::models::MettaValue;
 // Re-export operation types
 pub use arithmetic::{AbsOp, AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp};
 pub use comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
+pub mod math;
+pub mod pt_parser;
 pub use fileio::{
     FileGetSizeOp, FileOpenOp, FileReadExactOp, FileReadToStringOp, FileSeekOp, FileWriteOp,
 };
@@ -137,6 +140,13 @@ where
     V: crate::backend::models::MettaValueTrait + Clone,
     F: crate::backend::models::MettaValueFactory<V>,
 {
+    // Phase 1.1 (PT migration): tagged-style errors emit PT-canonical
+    // `(Error <Type-atom> <Ctx>)` shape. Message-bearing variants
+    // (Runtime/Arithmetic/IncorrectArgument) retain the legacy two-tuple
+    // `(Error <call> <msg-string>)` because the message string isn't a
+    // single Type atom — flipping those would just put a string in the
+    // Type position. A future Phase 1.1.B sweep will introduce dedicated
+    // Type atoms (e.g. `RuntimeError`, `ArithmeticError`) for these.
     match err {
         ExecError::NoReduce => {
             // Per Plan: callers must short-circuit NoReduce before reaching
@@ -144,9 +154,9 @@ where
             // not an Error atom; the trampoline returns the unreduced form.
             // We still produce a sensible fallback rather than panic to keep
             // production robust.
-            factory.error(call_form, factory.atom("NoReduce"))
+            factory.error_pt(factory.atom("NoReduce"), call_form)
         }
-        ExecError::Tagged(tag) => factory.error(call_form, factory.atom(tag)),
+        ExecError::Tagged(tag) => factory.error_pt(factory.atom(tag), call_form),
         ExecError::BadArgType {
             pos,
             expected,
@@ -158,10 +168,10 @@ where
                 factory.atom(expected),
                 factory.atom(got),
             ]);
-            factory.error(call_form, detail)
+            factory.error_pt(detail, call_form)
         }
-        ExecError::Runtime(msg) => factory.error(call_form, factory.string(msg)),
-        ExecError::Arithmetic(msg) => factory.error(call_form, factory.string(msg)),
-        ExecError::IncorrectArgument(msg) => factory.error(call_form, factory.string(msg)),
+        ExecError::Runtime(msg) => factory.error( factory.string(msg),call_form),
+        ExecError::Arithmetic(msg) => factory.error( factory.string(msg),call_form),
+        ExecError::IncorrectArgument(msg) => factory.error( factory.string(msg),call_form),
     }
 }

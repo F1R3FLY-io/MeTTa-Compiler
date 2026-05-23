@@ -366,7 +366,8 @@ pub unsafe extern "C" fn jit_runtime_space_match(
         | ValueView::Conjunction(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => {
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => {
             // Type error - return empty (HE: empty nondet on non-space)
             return TAG_UNIT;
         }
@@ -510,8 +511,12 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
         | ValueView::Conjunction(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => {
-            // Type error - not a space
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => {
+            // Type error - not a space.
+            // PT-canonical Lazy is INVISIBLE: a lazy-wrapped non-space is
+            // still a non-space (2026-05-21). The trampoline-side Lazy
+            // short-circuit normally unwraps before reaching this JIT path.
             ctx_ref.bailout = true;
             ctx_ref.bailout_reason = JitBailoutReason::TypeError;
             ctx_ref.bailout_ip = ip as usize;

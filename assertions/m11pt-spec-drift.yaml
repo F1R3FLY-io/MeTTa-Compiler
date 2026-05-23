@@ -1,0 +1,215 @@
+# m11pt-spec-drift.yaml — Phase 0a.3 cross-validation
+#
+# Compares mettatron-specification/conformance/M11-bisimilarity-pt/'s
+# recorded `petta_observation` field against live PeTTa REPL output.
+#
+# Classes:
+#   AGREE             — recorded matches live PeTTa
+#   DRIFT-STDOUT      — recorded stdout differs from live
+#   DRIFT-EXIT        — recorded exit_code differs from live
+#   DRIFT-BOTH        — both differ
+#   MISSING-PETTA-OBS — fixture lacks petta_observation; live output below
+#   MISSING-RAW       — validator didn't produce output (timeout etc.)
+
+total_fixtures: 80
+summary:
+  AGREE: 71
+  DRIFT-STDOUT: 3
+  DRIFT-EXIT: 1
+  MISSING-PETTA-OBS: 4
+  DRIFT-BOTH: 1
+  MISSING-RAW: 0
+
+rows:
+  - fixture: '0xx-parser-display/001-simple-atom-roundtrip.metta'
+    class: MISSING-PETTA-OBS
+    live_petta_stdout: '(foo)\n(simple-name)\n'
+    live_petta_exit: 0
+    live_petta_stderr_preview: []
+  - fixture: '0xx-parser-display/002-let-2-arg-form.metta'
+    class: MISSING-PETTA-OBS
+    live_petta_stdout: ''
+    live_petta_exit: 2
+    live_petta_stderr_preview: ['ERROR: [Thread main] /home/dylon/Workspace/f1r3fly.io/PeTTa/src/main.pl:23: user:main is/2: Arguments are not sufficiently instantiated']
+  - fixture: '0xx-parser-display/003-let-2-arg-multi-binding.metta'
+    class: MISSING-PETTA-OBS
+    live_petta_stdout: ''
+    live_petta_exit: 2
+    live_petta_stderr_preview: ['ERROR: [Thread main] /home/dylon/Workspace/f1r3fly.io/PeTTa/src/main.pl:23: user:main is/2: Arguments are not sufficiently instantiated']
+  - fixture: '1xx-spaces-dyndb/001-add-and-get.metta'
+    class: MISSING-PETTA-OBS
+    live_petta_stdout: 'true\ntrue\n(foo 1)\n(foo 2)\n'
+    live_petta_exit: 0
+    live_petta_stderr_preview: []
+  - fixture: '3xx-translator-forms/001-eval.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/002-superpose-static.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/003-collapse.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/004-once.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/005-progn.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/006-prog1.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/007-if-3arg.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/008-if-2arg.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/009-case.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/010-let.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/011-chain.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/012-let-star.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/013-sealed.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/014-quote.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/015-call.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/016-reduce.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/017-cut.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/018-test.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/019-forall.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/020-catch.metta'
+    class: DRIFT-EXIT
+    recorded_stdout: ''
+    live_petta_stdout: ''
+    recorded_exit: 0
+    live_petta_exit: 2
+  - fixture: '3xx-translator-forms/021-hyperpose.metta'
+    class: DRIFT-STDOUT
+    recorded_stdout: '1\n3\n2\n'
+    live_petta_stdout: '1\n2\n3\n'
+    recorded_exit: 0
+    live_petta_exit: 0
+  - fixture: '3xx-translator-forms/022-with-mutex.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/023-transaction.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/024-foldall.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/025-foldl-atom.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/026-map-atom.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/027-filter-atom.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/028-lambda.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/029-add-atom.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/030-remove-atom.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/031-match.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/032-translate-predicate.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/033-trace-rewrite.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/034-unique-rewrite.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/035-union-rewrite.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/036-intersection-rewrite.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/037-subtraction-rewrite.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/038-smart-dispatch-fall-through.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/039-phe-001-exec-model.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/040-phe-002-vars.metta'
+    class: DRIFT-BOTH
+    recorded_stdout: '7\n'
+    live_petta_stdout: ''
+    recorded_exit: 0
+    live_petta_exit: 2
+  - fixture: '3xx-translator-forms/041-phe-004-grounded-symbols.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/042-phe-005-eval.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/043-phe-006-chain-let.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/044-phe-007-case-default.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/045-phe-008-types.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/046-phe-009-errors.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/047-phe-011-random.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/048-phe-012-side-effects.metta'
+    class: DRIFT-STDOUT
+    recorded_stdout: 'side-effect\ntrue\n'
+    live_petta_stdout: '"side-effect"\ntrue\n'
+    recorded_exit: 0
+    live_petta_exit: 0
+  - fixture: '3xx-translator-forms/049-phe-013-printing.metta'
+    class: AGREE
+  - fixture: '3xx-translator-forms/050-phe-010-imports.metta'
+    class: AGREE
+  - fixture: '4xx-control/401-cut-superpose-cross.metta'
+    class: AGREE
+  - fixture: '4xx-control/402-empty-as-fail.metta'
+    class: AGREE
+  - fixture: '4xx-control/403-findall-exhaust.metta'
+    class: AGREE
+  - fixture: '4xx-control/404-transaction-once-pruning.metta'
+    class: AGREE
+  - fixture: '4xx-control/405-with-mutex-typeerror.metta'
+    class: AGREE
+  - fixture: '4xx-control/406-disjunction-or.metta'
+    class: AGREE
+  - fixture: '4xx-control/407-soft-cut-arrow.metta'
+    class: AGREE
+  - fixture: '4xx-control/408-negation-as-failure.metta'
+    class: AGREE
+  - fixture: '4xx-control/409-mutex-serializes.metta'
+    class: AGREE
+  - fixture: '4xx-control/410-hyperpose-empty-fail.metta'
+    class: AGREE
+  - fixture: '4xx-control/411-superpose-empty.metta'
+    class: AGREE
+  - fixture: '4xx-control/412-collapse-empty.metta'
+    class: AGREE
+  - fixture: '4xx-control/413-progn-empty.metta'
+    class: AGREE
+  - fixture: '4xx-control/414-forall-quantify.metta'
+    class: AGREE
+  - fixture: '4xx-control/415-import-silent-fail.metta'
+    class: AGREE
+  - fixture: '4xx-control/416-noreduce-eq-native.metta'
+    class: AGREE
+  - fixture: '4xx-control/417-2arg-if-pt.metta'
+    class: AGREE
+  - fixture: '4xx-control/418-lazy-name-space.metta'
+    class: AGREE
+  - fixture: '4xx-control/419-cons-silent-fail.metta'
+    class: AGREE
+  - fixture: '4xx-control/420-let-unify-fail.metta'
+    class: AGREE
+  - fixture: '4xx-control/421-catch-3arg-pt.metta'
+    class: AGREE
+  - fixture: '9xx-classification-canary/901-canary-same.metta'
+    class: AGREE
+  - fixture: '9xx-classification-canary/902-canary-petta-semantic-difference.metta'
+    class: AGREE
+  - fixture: '9xx-classification-canary/904-canary-retired-feature-gating.metta'
+    class: AGREE
+  - fixture: '9xx-classification-canary/905-canary-host-dependent.metta'
+    class: AGREE
+  - fixture: '9xx-classification-canary/906-canary-host-scheduler-dependent.metta'
+    class: DRIFT-STDOUT
+    recorded_stdout: '1\n2\n3\n'
+    live_petta_stdout: '1\n3\n2\n'
+    recorded_exit: 0
+    live_petta_exit: 0

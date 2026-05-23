@@ -47,6 +47,15 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
     /// Need to evaluate S-expression items (iteratively)
     EvalSExpr { items: Vec<V>, env: E, depth: usize },
 
+    /// Evaluate an SExpr whose head is itself a sub-SExpr — preserve the head
+    /// verbatim as data and evaluate only the tail elements. This matches
+    /// PeTTa's outer-form-is-data semantics for `((F A1 ...) X Y ...)`: PeTTa's
+    /// `reduce/2` does not recursively reduce a non-atom head at the outer
+    /// level; the head is preserved as syntactic data while the tail elements
+    /// are reduced. This enables PLN-main `(? $term)` to produce
+    /// `((grandfather a c) (stv ...))` rather than `((stv ...) (stv ...))`.
+    EvalSExprTail { items: Vec<V>, env: E, depth: usize },
+
     /// Start TCO grounded operation (e.g., +, -, and, or)
     /// This defers evaluation to the trampoline for proper tail call handling.
     ///
@@ -102,6 +111,12 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         env: E,
         /// Evaluation depth
         depth: usize,
+        /// PT-canonical meta-typed signature gate: when true, the rule firing
+        /// path returns the substituted RHS VERBATIM (no re-eval), matching
+        /// PeTTa's `(-> Expression Atom)` semantics. Computed once in Step 3
+        /// per (head, arity) via the operator cache; threaded here so the
+        /// trampoline handler can consult it without re-querying.
+        op_lhs_head_all_meta_typed: bool,
     },
 
     /// Evaluate grounded arguments before rule matching.

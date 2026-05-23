@@ -142,7 +142,7 @@ fn let_pattern_conflict_with_outer_bindings_drops_branch() {
     "#;
     let results = eval_last(source);
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0], "False");
+    assert_eq!(results[0], "false");
 }
 
 // Note: `(let* (($x 1) ($x 2)) $x)` correctly returns 2 — let*'s sequential

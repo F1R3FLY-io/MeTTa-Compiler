@@ -18,7 +18,8 @@ use crate::backend::models::{MettaState, MettaValue};
 use super::trampoline::MettaEnvironment;
 use super::{
     execute_jit_arena_with_env, expression_has_declared_meta_typed_params,
-    expression_has_overridden_grounded_op, expression_involves_impure_rules,
+    expression_has_overridden_grounded_op, expression_has_t0_only_form,
+    expression_involves_impure_rules,
 };
 
 /// User-facing tier selection. Maps to internal `ExecutionTier` plus an `Auto`
@@ -91,6 +92,11 @@ pub enum TierUnavailableReason {
     /// Tier ≥ T1: expression fails `can_compile_with_env`
     /// (e.g., contains `State`/`Space`/`Conjunction`/`Memo`).
     CannotCompileToBytecode,
+    /// Tier ≥ T1: expression contains a PT-canonical translator form
+    /// (`prog1`/`forall`/`foldall`/`|->`/`translatePredicate`) or a
+    /// top-level grounded op whose T1 lowering diverges from T0 (e.g.
+    /// `println!`/`get-type`). T0-only by design.
+    T0OnlyForm,
     /// Tier ≥ T2: expression fails the more restrictive `can_compile`
     /// (JIT requires inline-resolvable bytecode).
     CannotCompileToJit,
@@ -193,6 +199,11 @@ pub fn tier_applicable(
             if expression_has_declared_meta_typed_params(value, env) {
                 return Err(TierUnavailableReason::MetaTypedParams);
             }
+            // PT-canonical translator forms + side-effecting top-level ops
+            // that have no T1 lowering compatible with T0 — route to T0.
+            if expression_has_t0_only_form(value) {
+                return Err(TierUnavailableReason::T0OnlyForm);
+            }
             if !can_compile_with_env(value) {
                 return Err(TierUnavailableReason::CannotCompileToBytecode);
             }
@@ -204,6 +215,9 @@ pub fn tier_applicable(
             }
             if expression_has_overridden_grounded_op(value, env) {
                 return Err(TierUnavailableReason::OverriddenGrounded);
+            }
+            if expression_has_t0_only_form(value) {
+                return Err(TierUnavailableReason::T0OnlyForm);
             }
             if !can_compile(value) {
                 return Err(TierUnavailableReason::CannotCompileToJit);

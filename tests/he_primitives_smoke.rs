@@ -67,25 +67,25 @@ fn pi_usable_in_arithmetic() {
 #[test]
 fn alpha_eq_true_for_consistent_rename() {
     let r = run_one("!(=alpha ($x $y) ($a $b))");
-    assert_eq!(r, vec!["True"]);
+    assert_eq!(r, vec!["true"]);
 }
 
 #[test]
 fn alpha_eq_false_for_inconsistent_rename() {
     let r = run_one("!(=alpha ($x $x) ($a $b))");
-    assert_eq!(r, vec!["False"]);
+    assert_eq!(r, vec!["false"]);
 }
 
 #[test]
 fn alpha_eq_false_for_different_atoms() {
     let r = run_one("!(=alpha (foo $x) (bar $x))");
-    assert_eq!(r, vec!["False"]);
+    assert_eq!(r, vec!["false"]);
 }
 
 #[test]
 fn alpha_eq_true_for_same_atom() {
     let r = run_one("!(=alpha (foo $x) (foo $y))");
-    assert_eq!(r, vec!["True"]);
+    assert_eq!(r, vec!["true"]);
 }
 
 #[test]
@@ -145,16 +145,18 @@ fn capture_preserves_nondet_results() {
 
 #[test]
 fn register_module_routes_via_import() {
-    // register-module! is HE's path-based module loader; MeTTaTron now
-    // aliases to `import!` (separately-namespaced module registration),
-    // matching HE's `metta.load_module_at_path(path, None)` semantics
-    // (NOT include — include splices contents into the current scope).
-    // Nonexistent file returns an Error atom.
+    // register-module! is HE's path-based module loader; MeTTaTron aliases
+    // to `import!` (separately-namespaced module registration), matching
+    // HE's `metta.load_module_at_path(path, None)` semantics.
+    //
+    // Phase 6.1 (PT migration, 2026-05-21): per PHE-010 PT canonical,
+    // `import!` (and its `register-module!` alias) silently fails on a
+    // missing file — returns an empty result set rather than an Error atom.
+    // PeTTa's `import!` uses `catch_and_fail` at the translator level.
     let r = run_one(r#"!(register-module! "this-file-does-not-exist.metta")"#);
-    assert_eq!(r.len(), 1);
     assert!(
-        r[0].starts_with("(Error"),
-        "register-module! on nonexistent file should return Error atom, got: {}",
-        r[0]
+        r.is_empty(),
+        "register-module! on nonexistent file should silently fail (empty results) per PHE-010, got: {:?}",
+        r
     );
 }

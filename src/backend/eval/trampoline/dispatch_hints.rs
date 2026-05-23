@@ -822,6 +822,20 @@ pub struct OperatorCacheEntry {
     pub all_structural: bool,
     /// Number of rule candidates for this (head, arity).
     pub candidate_count: usize,
+    /// PT-canonical rule-body preservation gate. True iff ANY candidate
+    /// rule's RHS top-level head is in `is_lazy_body_form` (e.g. `add-atom`,
+    /// `quote`, `if`, `case`, `let`, `chain`, `match`, ...). When true, the
+    /// dispatcher skips Step-2 pre-evaluation of the call's args so that the
+    /// rule body sees them verbatim. Required for PLN's `=>` macro pattern.
+    pub any_rule_wants_lazy_args: bool,
+    /// PT-canonical meta-typed signature gate. True iff ANY candidate rule
+    /// for this (head, arity) has `RuleEntry::lhs_head_all_meta_typed=true`
+    /// — i.e. the head has at least one declared arrow type where all args
+    /// AND the return type are meta-types. When true, the rule-firing path
+    /// returns the substituted RHS VERBATIM (no re-evaluation), matching
+    /// PeTTa's data-in / data-out semantic for `(-> Expression Atom)`-class
+    /// predicates. Required for PLN's `(? $term)` pattern.
+    pub lhs_head_all_meta_typed: bool,
 }
 
 thread_local! {
@@ -917,8 +931,10 @@ pub(crate) fn is_embedded_kernel_op(head: &str) -> bool {
     matches!(
         head,
         // Spec §06.3.6 embedded kernel ops
+        // PT-canonical (2026-05-21): `cons`/`decons` are PeTTa aliases
+        // (PeTTa src/metta.pl:142-143).
         "eval" | "capture" | "evalc" | "chain" | "unify"
-        | "cons-atom" | "decons-atom"
+        | "cons-atom" | "decons-atom" | "cons" | "decons"
         | "function" | "return"
         | "collapse-bind" | "superpose-bind"
         | "metta" | "call-native" | "context-space"
@@ -983,7 +999,9 @@ pub(crate) fn is_reducible_head(head: &str) -> bool {
         | "is-function" | "type-cast" | "metta"
         | "match-types" | "match-type-or" | "first-from-pair"
         | "map-atom" | "filter-atom" | "foldl-atom"
+        // PT-canonical (2026-05-21): `cons`/`decons` are PeTTa aliases.
         | "car-atom" | "cdr-atom" | "cons-atom" | "decons-atom" | "size-atom"
+        | "cons" | "decons"
         | "max-atom" | "min-atom" | "index-atom"
         | "tuple-concat" | "tuple-count" | "without" | "element-of"
         | "range" | "reverse-atom" | "flatten-atom" | "zip-atom"

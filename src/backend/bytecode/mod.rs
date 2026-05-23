@@ -395,6 +395,13 @@ pub fn can_compile(expr: &MettaValue) -> bool {
 
                 items.iter().skip(1).all(can_compile)
             } else {
+                // PT outer-form-is-data: when items[0] is a sub-SExpr (not an
+                // atom), the OUTER form is structural data — the head must be
+                // preserved verbatim. The bytecode VM would eagerly evaluate
+                // it. Route to T0 trampoline where EvalSExprTail handles it.
+                if items[0].as_sexpr().is_some() {
+                    return false;
+                }
                 items.iter().all(can_compile)
             }
         }
@@ -411,6 +418,9 @@ pub fn can_compile(expr: &MettaValue) -> bool {
         | ValueView::Type(_)
         | ValueView::Conjunction(_)
         | ValueView::Memo(_) => false,
+
+        // PT-canonical Lazy: transparent — delegate to the wrapped value.
+        ValueView::Lazy(inner) => can_compile(&inner),
     }
 }
 
@@ -641,6 +651,13 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
 
                 items.iter().skip(1).all(can_compile_with_env)
             } else {
+                // PT outer-form-is-data: when items[0] is a sub-SExpr (not an
+                // atom), the OUTER form is structural data — the head must be
+                // preserved verbatim. The bytecode VM would eagerly evaluate
+                // it. Route to T0 trampoline where EvalSExprTail handles it.
+                if items[0].as_sexpr().is_some() {
+                    return false;
+                }
                 items.iter().all(can_compile_with_env)
             }
         }
@@ -657,6 +674,9 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
         | ValueView::Type(_)
         | ValueView::Conjunction(_)
         | ValueView::Memo(_) => false,
+
+        // PT-canonical Lazy: transparent — delegate to the wrapped value.
+        ValueView::Lazy(inner) => can_compile_with_env(&inner),
     }
 }
 

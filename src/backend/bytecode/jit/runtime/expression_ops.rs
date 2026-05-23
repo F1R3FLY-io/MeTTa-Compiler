@@ -65,7 +65,8 @@ pub unsafe extern "C" fn jit_runtime_index_atom(
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => {
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
                 ctx_ref.bailout = true;
@@ -138,7 +139,8 @@ pub unsafe extern "C" fn jit_runtime_min_atom(ctx: *mut JitContext, expr: u64, i
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => {
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
                 ctx_ref.bailout = true;
@@ -209,7 +211,8 @@ pub unsafe extern "C" fn jit_runtime_max_atom(ctx: *mut JitContext, expr: u64, i
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => {
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => {
             // Type error
             if let Some(ctx_ref) = ctx.as_mut() {
                 ctx_ref.bailout = true;

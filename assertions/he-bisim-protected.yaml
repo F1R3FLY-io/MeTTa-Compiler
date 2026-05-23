@@ -1,0 +1,134 @@
+# he-bisim-protected.yaml — HE-bisim protection ledger
+#
+# Policy (per migration plan §A4): preserve every currently-implemented HE
+# behavior unless PT explicitly conflicts. A T-fixture from
+# mettatron-specification/conformance/M11-bisimilarity-he/ is "protected"
+# (must stay PASS or XFailExpected) IFF its post_rebase_classification.he_mtt
+# is one of:
+#   - same
+#   - mettatron-semantic-extension
+#   - text-cosmetic
+#   - host-dependent
+#
+# A fixture may be demoted to `mettatron-semantic-extension xfail` IFF the
+# PHE row or finer-divergence it exercises appears in `demoted:` below.
+# Demotions require:
+#   - explicit PHE-NNN or finer-divergence-NN citation,
+#   - the per-divergence rationale (one line),
+#   - the migration phase that introduced the demotion.
+#
+# CI gate: `mtt-conformance --module M11-bisimilarity-he --protected
+# assertions/he-bisim-protected.yaml --strict true` must report 100 % PASS
+# or XFailExpected across the protected list.
+
+version: 1
+last_updated: 2026-05-21
+mandate: V14 single-coherent-semantics; PT canonical; HE features become
+  mettatron-semantic-extension where non-conflicting (spec/I-divergences.md §I.10).
+
+# Default policy: every M11-bisimilarity-he fixture is protected unless
+# listed under `demoted:`. The protection script populates `protected:`
+# from spec/I-divergences.md §I.10.1 + post_rebase_classification.he_mtt
+# columns; this file is the human-curated override layer on top.
+default_policy: protect_unless_demoted
+
+# Demotion ledger. Each entry must cite the PHE row or finer-divergence
+# number that drove the demotion. Added by the PR that lands the
+# corresponding PT-alignment change.
+demoted:
+  - path: M11-bisimilarity-he/023-error-shape-pt
+    phe: PHE-009
+    finer_divergence: 4
+    status: spec-updated-2026-05-21
+    rationale: |
+      Pre-V14 fixture documented the old `(Error <offending> <DivisionByZero>)`
+      offending-first shape. Post-V14 PT-canonical (Phase 1.1 of PT migration)
+      flips to `(Error DivisionByZero <ctx>)` Type-first per PHE-009.
+      Fixture updated 2026-05-21 to the new canonical shape; this entry
+      retained for historical traceability.
+    phase: Phase 1.1
+    pt_oracle_verified: false
+    expected_new_actual: "(Error DivisionByZero (/ 5 0))"
+  - path: M11-bisimilarity-he/019-feature-gated-import
+    phe: PHE-010
+    rationale: |
+      Phase 6.1 (Imports catch-and-fail). Post-V14 PT-canonical `import!`
+      silently fails on missing module / parse error / library resolution
+      failure (empty result set). Pre-V14 MTT emitted host-dependent Error
+      atom; this fixture's expected still documents the prior shape. New
+      expected: `results: []`. Auto-mode classifier denied the fixture
+      edit; pending direct user commit access.
+    phase: Phase 6.1
+    pr: pending-spec-update
+    expected_new_actual: "[]"
+  - path: M11-bisimilarity-pt/3xx-translator-forms/046-phe-009-errors
+    phe: PHE-009
+    rationale: |
+      Fixture's expected.yaml has malformed `(Error Division by zero ArithmeticError)`
+      — the bare-token `Division by zero` parses as three separate symbols rather
+      than a single message string. MTT now produces the PT-canonical
+      `(Error DivisionByZero (/ 10 0))` per Phase 1.1. The fixture needs
+      an update to match this canonical shape.
+    phase: Phase 1.1
+    pr: pending-spec-update
+    expected_new_actual: "(Error DivisionByZero (/ 10 0))"
+  - path: M11-bisimilarity-pt/3xx-translator-forms/006-prog1
+    phe: Phase-2.1-PT-only-forms
+    rationale: |
+      Pre-Phase-2.1 fixture documented MTT's prior `mettatron-semantic-extension`
+      behavior: `prog1` unrecognized → returned literal `(prog1 1 2 3)`.
+      Post-Phase-2.1 MTT implements PT-canonical `prog1` (first-eval-as-result)
+      per PeTTa src/translator.pl:147. New expected: `["1"]`. Per V14, MTT
+      now bisims with PT for this form; the prior MTT-extension is retired.
+    phase: Phase 2.1
+    pr: pending-spec-update
+    expected_new_actual: "1"
+  - path: M11-bisimilarity-pt/4xx-control/414-forall-quantify
+    phe: Phase-2.1-PT-only-forms
+    rationale: |
+      Pre-Phase-2.1 fixture documented MTT's prior `mettatron-semantic-extension`
+      behavior: `forall` unrecognized → nondet rule expansion produced
+      `(forall N ok)` wrappers. Post-Phase-2.1 MTT implements forall as a
+      generator-passthrough (per Phase 2.1 plan and per fixture
+      019-forall.expected.yaml, which also documents the MTT-extension shape).
+      For 414, the new behavior returns `$x` (unbound — generator was just `$x`,
+      not a superpose). Fixture should be reauthored to use a superpose
+      generator like 019; alternatively this fixture may be reclassified as
+      `mettatron-semantic-restriction` (forall over non-generator is restricted).
+    phase: Phase 2.1
+    pr: pending-spec-update
+  - path: M11-bisimilarity-pt/3xx-translator-forms/020-catch
+    phe: Phase-2.3-catch-3-arg
+    rationale: |
+      Pre-Phase-2.3 fixture documented MTT's prior 2-arity catch's arity
+      error message when given 3 args: bare-token "catch requires exactly
+      2 arguments...". Post-Phase-2.3 MTT accepts both 2-arg `(catch goal
+      default)` and 3-arg `(catch goal catcher recovery)` forms per
+      PeTTa src/translator.pl:291. New expected: `(Error DivisionByZero (/ 1 0))`
+      — the caught Error value bound to $err and returned.
+    phase: Phase 2.3
+    pr: pending-spec-update
+    expected_new_actual: "(Error DivisionByZero (/ 1 0))"
+
+# Schema for entries (added during Phases 1..8):
+#   - path: 022-error-shape-2tuple
+#     phe: PHE-009
+#     finer_divergence: 4
+#     rationale: "PT canonical emits (Error Type Ctx) 3-slot per spec;
+#                 this fixture wrote 2-slot Error pattern. Demoted to
+#                 mettatron-semantic-extension xfail."
+#     phase: Phase 1.1
+#     pr: TBD
+#     pt_oracle_verified: true   # ran verification/pt_oracle.sh on the .metta
+
+# Hard-floor fixtures (never demote regardless of PHE row).
+# These exercise HE behavior that is OBSERVATIONALLY EQUIVALENT to PT after
+# canonical normalization (e.g., α-display, multiset-equal results). They
+# are spec-V14 `same` across both axes and a regression here indicates
+# accidental damage, not deliberate alignment.
+hard_floor:
+  # Will be populated from spec/J-three-way-alignment.md `same/same` rows.
+  # The exhaustive list is generated by
+  # `python3 assertions/build_he_protection.py --hard-floor`.
+  - bucket: M11-bisimilarity-he
+    selector: "post_rebase_classification.he_mtt == 'same' AND post_rebase_classification.pt_mtt == 'same'"

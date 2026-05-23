@@ -10,6 +10,7 @@
 //! `StaticEvalContext` is the production context using the global slab allocator
 //! via `GcFactory` for zero-conversion evaluation.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::cell::{Cell, RefCell};
 
 use crate::backend::environment::GenericEnvironment;
@@ -460,7 +461,7 @@ mod tests {
 
     fn generic_create_error<C: EvalContext>(ctx: &C, msg: &str) -> MettaValue {
         let offending = ctx.factory().atom("details");
-        ctx.factory().error(offending, ctx.factory().string(msg))
+        ctx.factory().error( ctx.factory().string(msg),offending)
     }
 
     #[test]

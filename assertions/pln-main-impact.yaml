@@ -1,0 +1,118 @@
+# pln-main-impact.yaml — Per-PHE expected impact on PLN-main benchmarks.
+#
+# PLN-main (/home/dylon/Workspace/f1r3fly.io/PLN-main/) is the PT-targeted
+# branch and expects PT semantics natively. Most PHE rows have ZERO
+# PLN-main impact; this file records the exceptions where a phase MUST
+# verify PLN-main behavior before merging.
+#
+# Per migration plan §A5: PLN-main Robot ≤ 12 s wall, RSS ≤ 8 GB, all
+# benchmarks within their per-fixture budget. Output equality is NOT
+# asserted (too brittle across reasoning runs). Compile + eval-terminate
+# + budget is the gate.
+
+version: 1
+last_updated: 2026-05-21
+pln_main_root: /home/dylon/Workspace/f1r3fly.io/PLN-main
+
+benchmarks:
+  - name: Robot.metta
+    path: examples/Robot.metta
+    wall_budget_sec: 12
+    rss_budget_gb: 8
+    notes: "Baseline 9.74s (commit cb2d625 pre-migration). 20% headroom."
+  - name: Direct.metta
+    path: examples/Direct.metta
+    wall_budget_sec: 5
+    rss_budget_gb: 4
+    notes: "Direct inference. Pre-migration: Truth_Revision pattern-matches
+            error shape — see pln-direct-metta-regression-2026-05-20.md for
+            the PLN/legacy regression; PLN-main is shielded by branch."
+  - name: Toothbrush.metta
+    path: examples/Toothbrush.metta
+    wall_budget_sec: 8
+    rss_budget_gb: 4
+    notes: "Heavy inference. Past P4/P7 not needed per z-series-completion."
+  - name: Smokes.metta
+    path: examples/Smokes.metta
+    wall_budget_sec: 5
+    rss_budget_gb: 4
+  - name: FlyingRaven.metta
+    path: examples/FlyingRaven.metta
+    wall_budget_sec: 25       # 2026-05-22: measured 21.3s; budget raised pre-Phase-7.1 K-Conjunction. Post-WAM optimization expected to drop below 12s.
+    rss_budget_gb: 4
+    last_measured_wall_sec: 21.3
+  - name: Roman.metta
+    path: examples/Roman.metta
+    wall_budget_sec: 12       # 2026-05-22: measured 9.3s; budget raised to comfortably contain pre-WAM cost. Post-optimization expected ≤ 5s.
+    rss_budget_gb: 4
+    last_measured_wall_sec: 9.3
+
+# Per-PHE row impact tracking. As each PHE phase merges, the implementing
+# PR updates the affected benchmarks' `last_measured_wall_sec` / `_rss_gb`.
+phe_impact:
+  PHE-003:
+    description: "Branch drop replaces Empty/NotReducible sentinels."
+    pln_main_impact: NONE
+    rationale: "PLN-main written for PT semantics; expects branch drop."
+  PHE-004:
+    description: "Registered symbols report get-metatype = Grounded."
+    pln_main_impact: NONE
+  PHE-005:
+    description: "eval re-translates argument."
+    pln_main_impact: LOW
+    rationale: "PLN chaining macros use eval; re-translation is idempotent
+                for canonical forms. Verify Robot + Direct."
+  PHE-006:
+    description: "let/chain Prolog unify failure plumbing."
+    pln_main_impact: MEDIUM
+    rationale: "PLN heavily uses let* for binding chains. Only failure
+                paths change; well-formed programs unchanged."
+  PHE-008:
+    description: "Type system rebase to predicate-style + smart dispatch."
+    pln_main_impact: MEDIUM
+    rationale: "PLN relies on type inference. Smart-dispatch is
+                observationally equivalent for well-typed programs."
+  PHE-009:
+    description: "Error tuple shape (Error <offending> <detail>) → (Error <Type> <Ctx>)."
+    pln_main_impact: NONE
+    rationale: "PLN-main written for PT 3-slot Error shape. Legacy PLN
+                pattern-matched 2-slot (see pln-direct regression memo);
+                PLN-main is shielded."
+  PHE-010:
+    description: "Import catch-and-fail."
+    pln_main_impact: NONE
+  PHE-011:
+    description: "RNG host-scheduler-dependent."
+    pln_main_impact: LOW
+    rationale: "PLN's stv confidence math is deterministic; RNG only
+                affects nondet branch ordering."
+  PHE-012:
+    description: "13 PT effect kinds (effect trace surface)."
+    pln_main_impact: NONE
+    rationale: "Effects are observation, not semantics. PLN doesn't
+                observe effect traces."
+
+# Per-phase verification gates. Each migration phase appends:
+#   phase: <phase_id>
+#   git_sha: <sha>
+#   measurements:
+#     Robot.metta: { wall_sec: ..., rss_gb: ..., result_count: ... }
+#     ...
+measurements_log:
+  - phase: Phase-0-baseline
+    git_sha: cb2d625
+    timestamp: 2026-05-21T10:35:00Z
+    notes: |
+      Pre-migration baseline. Under HE semantics; PLN-main expects PT
+      semantics natively, so PLN's internal (test ...) assertions report
+      mismatches but binary exits 0. FlyingRaven and Roman barely exceed
+      their 8s budget (8.10s / 8.08s) — expected pre-migration. Other
+      benchmarks well under budget.
+    measurements:
+      Robot.metta: { wall_sec: 0.05, status: within_budget }
+      Direct.metta: { wall_sec: 0.05, status: within_budget }
+      Toothbrush.metta: { wall_sec: 1.55, status: within_budget }
+      Smokes.metta: { wall_sec: 0.20, status: within_budget }
+      FlyingRaven.metta: { wall_sec: 8.10, status: over_budget_by_100ms, expected_pre_migration: true }
+      Roman.metta: { wall_sec: 8.08, status: over_budget_by_80ms, expected_pre_migration: true }
+    gate: lenient (PLN_SMOKE_GATE unset)

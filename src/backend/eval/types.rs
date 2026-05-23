@@ -12,6 +12,7 @@
 //! - Uses `MettaValueTrait` methods for type checking
 //! - Uses `MettaValueFactory` for constructing new values
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::collections::HashMap;
 
 use smallvec::SmallVec;
@@ -371,6 +372,15 @@ where
             #[cfg(feature = "trace")]
             {
                 _trace_source = "quoted";
+            }
+            vec![factory.atom("Expression")]
+        }
+        MettaValueInner::Lazy(_) => {
+            // PT-canonical Lazy is INVISIBLE — treat as Expression metatype,
+            // matching the Quoted arm (also a data wrapper).
+            #[cfg(feature = "trace")]
+            {
+                _trace_source = "lazy";
             }
             vec![factory.atom("Expression")]
         }
@@ -1825,9 +1835,8 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -1859,9 +1868,8 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -1920,9 +1928,8 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -2251,9 +2258,8 @@ where
 {
     if items.len() != 2 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let expr = &items[1];
@@ -2284,9 +2290,8 @@ where
 {
     if items.len() != 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let space_arg = &items[1];
@@ -2407,9 +2412,8 @@ where
 {
     if items.len() != 4 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     let atom = &items[1];

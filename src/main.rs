@@ -312,10 +312,11 @@ fn format_bindings_he_style(pairs: &[MettaValue]) -> String {
 fn format_result(value: &MettaValue) -> String {
     match value.view() {
         ValueView::Bool(b) => {
+            // Phase 1.5 PT alignment (2026-05-22): lowercase per PHE-finer #10.
             if b {
-                "True".to_string()
+                "true".to_string()
             } else {
-                "False".to_string()
+                "false".to_string()
             }
         }
         ValueView::Long(n) => n.to_string(),
@@ -361,6 +362,8 @@ fn format_result(value: &MettaValue) -> String {
         ValueView::State(id) => format!("(State {})", id),
         ValueView::Quoted(inner) => format!("(quote {})", format_result(&inner)),
         ValueView::Memo(handle) => format!("(Memo {} \"{}\")", handle.id, handle.name),
+        // PT-canonical Lazy is INVISIBLE for display — delegate to the inner.
+        ValueView::Lazy(inner) => format_result(&inner),
     }
 }
 
@@ -651,27 +654,16 @@ fn eval_metta(
         // style) were resolved lockstep in metta-specification
         // (2026-05-15) by removing the spurious `- atoms: []`
         // entries — HE-Kernel +15, HE-Core +31, HE-Full +38.
-        // Phase A (HE bisim, 2026-05-20): `!` directive emits a `[...]`
-        // output line ONLY when its body is an Expression (S-expression,
-        // quoted form, or empty `()`), per HE empirical (metta-repl 0.2.10)
-        // and §E.9.2. Bare scalars (Long, Float, String, Bool) and bare
-        // Atoms (incl. variables and sigils) are silently consumed — no
-        // output line at all. The body's syntactic shape — NOT its
-        // evaluated value — determines emission.
-        //   - `!"hello"`   body = String   → suppress
-        //   - `!42`        body = Long     → suppress
-        //   - `!atom`      body = Atom     → suppress
-        //   - `!$x`        body = Atom     → suppress
-        //   - `!&self`     body = Atom     → suppress
-        //   - `!True`      body = Bool     → suppress
-        //   - `!()`        body = Unit     → emit `[()]` (MTT collapses
-        //                                    empty `()` to Unit in
-        //                                    `GcFactory::sexpr` 5655-5658;
-        //                                    HE represents `()` as an
-        //                                    empty Expression — observably
-        //                                    identical via `!()` → `[()]`)
-        //   - `!(+ 1 2)`   body = SExpr    → emit `[3]`
-        //   - `!(quote x)` body = Quoted   → emit `[(quote x)]` (compile.rs:198)
+        // V14 PT-canonical (Phase 6.X, 2026-05-21): `!` directive emits a
+        // `[...]` output line for EVERY body shape — bare scalars, bare
+        // atoms, S-expressions, Quoted forms, and Unit all produce output.
+        // PT's `!a` returns `[a]`; PT's `!42` returns `[42]`; etc.
+        //
+        // Pre-V14 (Phase A, 2026-05-20) suppressed bare-value bangs to match
+        // HE-empirical (metta-repl 0.2.10) suppression. V14 single-coherent-
+        // semantics policy makes PT canonical; PeTTa P00-kernel/003-eval-
+        // symbol and 004-eval-int explicitly expect output for `!a` and `!42`
+        // — superseding the prior HE-aligned suppression.
         let should_output = expr
             .as_sexpr()
             .and_then(|items| {
@@ -679,12 +671,8 @@ fn eval_metta(
                 if head != "!" {
                     return None;
                 }
-                items.get(1).map(|body| {
-                    matches!(
-                        body.view(),
-                        ValueView::SExpr(_) | ValueView::Quoted(_) | ValueView::Unit
-                    )
-                })
+                // Emit for every body shape (PT canonical).
+                Some(true)
             })
             .unwrap_or(false);
 

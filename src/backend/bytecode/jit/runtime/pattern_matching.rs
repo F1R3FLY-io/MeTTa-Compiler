@@ -445,7 +445,8 @@ pub unsafe extern "C" fn jit_runtime_match_arity(
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => false,
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => false,
     };
 
     if matches {
@@ -507,7 +508,8 @@ pub unsafe extern "C" fn jit_runtime_match_head(
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => false,
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => false,
     };
 
     if matches {

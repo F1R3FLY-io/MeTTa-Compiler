@@ -63,6 +63,21 @@ pub(crate) fn pattern_match_impl(
     work_stack.push((*pattern, *value));
 
     while let Some((pat, val)) = work_stack.pop() {
+        // PT-canonical Lazy semantics (2026-05-21): a Lazy-wrapped VALUE
+        // means "this is data, do not dispatch rules on it". Rule matching
+        // probes structural equality against literal rule LHSs — so a Lazy
+        // value should NOT match any rule (rule dispatch is inhibited).
+        //
+        // We do NOT strip Lazy here. Instead, a Lazy-wrapped value fails
+        // to match anything except wildcards (handled below). The trampoline
+        // `Eval` arm's Lazy short-circuit returns the inner value before
+        // rule lookup would even reach pattern_match.
+        //
+        // The Lazy on the PATTERN side is unusual (rules are user-authored
+        // and wouldn't contain Lazy markers); leave that case as-is — bare
+        // structural equality against a Lazy pattern fails for any non-Lazy
+        // value, which is the conservative correct behavior.
+
         // Process each pattern-value pair
         let matches = match (pat.view(), val.view()) {
             // Wildcard matches anything (both `_` and `$_`)
@@ -149,10 +164,29 @@ pub(crate) fn pattern_match_impl(
 
             // S-expressions: push children onto work stack (replaces recursion).
             //
+            // Phase 2.x PT/PLN cons-pattern (restored 2026-05-22):
+            // `(cons HEAD TAIL)` pattern matches any SExpr where the value's
+            // first element matches HEAD and the value's remaining elements
+            // (as an SExpr) match TAIL. This is needed by PLN's `=>` macro:
+            //   `(= (=> (cons , $args) $C $stvImp) ...)` expects $args to
+            //   bind to the tail of a `(, A B ...)` value.
+            //
             // Dotted-pair pattern support (2026-05-11): `($x . $rest)` patterns
             // bind $x to the first value and $rest to an SExpr of the rest.
             // The pattern is recognized by `.` at position n-2 in p_items.
             (ValueView::SExpr(p_items), ValueView::SExpr(v_items)) => {
+                if p_items.len() == 3
+                    && p_items[0].as_atom() == Some("cons")
+                    && !v_items.is_empty()
+                {
+                    // (cons HEAD TAIL) destructure: HEAD matches v_items[0],
+                    // TAIL matches the SExpr of v_items[1..].
+                    let factory = crate::backend::models::gc_allocator::global_factory();
+                    let tail_sexpr = factory.sexpr(v_items[1..].to_vec());
+                    work_stack.push((p_items[2], tail_sexpr));
+                    work_stack.push((p_items[1], v_items[0]));
+                    continue;
+                }
                 if p_items.len() >= 2
                     && p_items[p_items.len() - 2].as_atom() == Some(".")
                 {

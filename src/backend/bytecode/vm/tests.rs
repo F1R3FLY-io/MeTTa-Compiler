@@ -5324,7 +5324,8 @@ fn test_vm_repr_bool() {
     let result = vm.run().expect("VM should succeed");
 
     assert_eq!(result.len(), 1);
-    assert_eq!(result[0], MettaValue::String("True".to_string()));
+    // Phase 1.5 PT alignment: lowercase per PHE-finer #10.
+    assert_eq!(result[0], MettaValue::String("true".to_string()));
 }
 
 #[test]

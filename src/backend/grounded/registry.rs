@@ -43,7 +43,13 @@ use super::fileio::{
 };
 use super::json::{JsonDecodeOp, JsonEncodeOp};
 use super::logical::{AndOp, NotOp, OrOp, XorOp};
+use super::math::{
+    AbsMathOp, AcosMathOp, AsinMathOp, AtanMathOp, CeilMathOp, CosMathOp, FloorMathOp,
+    IsInfMathOp, IsNanMathOp, LogMathOp, MaxAtomOp, MinAtomOp, PowMathOp, SinMathOp,
+    SqrtMathOp, TanMathOp, TruncMathOp,
+};
 use super::meta::IdOp;
+use super::pt_parser::{ParseOp, ReprOp, SreadOp, SwriteOp};
 use super::random::{
     FlipOp, NewRandomGeneratorOp, RandomFloatOp, RandomIntOp, ResetRandomGeneratorOp,
     SetRandomSeedOp,
@@ -94,6 +100,29 @@ where
         "min" => Some(MinOp.execute_step(state, factory)),
         "max" => Some(MaxOp.execute_step(state, factory)),
         "abs" => Some(AbsOp.execute_step(state, factory)),
+        // PT *-math suite (Phase 6.X, 2026-05-21)
+        "sqrt-math" => Some(SqrtMathOp.execute_step(state, factory)),
+        "abs-math" => Some(AbsMathOp.execute_step(state, factory)),
+        "trunc-math" => Some(TruncMathOp.execute_step(state, factory)),
+        "ceil-math" => Some(CeilMathOp.execute_step(state, factory)),
+        "floor-math" => Some(FloorMathOp.execute_step(state, factory)),
+        "sin-math" => Some(SinMathOp.execute_step(state, factory)),
+        "cos-math" => Some(CosMathOp.execute_step(state, factory)),
+        "tan-math" => Some(TanMathOp.execute_step(state, factory)),
+        "asin-math" => Some(AsinMathOp.execute_step(state, factory)),
+        "acos-math" => Some(AcosMathOp.execute_step(state, factory)),
+        "atan-math" => Some(AtanMathOp.execute_step(state, factory)),
+        "pow-math" => Some(PowMathOp.execute_step(state, factory)),
+        "log-math" => Some(LogMathOp.execute_step(state, factory)),
+        "isnan-math" => Some(IsNanMathOp.execute_step(state, factory)),
+        "isinf-math" => Some(IsInfMathOp.execute_step(state, factory)),
+        "min-atom" => Some(MinAtomOp.execute_step(state, factory)),
+        "max-atom" => Some(MaxAtomOp.execute_step(state, factory)),
+        // PT parser ops (Phase 6.X, 2026-05-21)
+        "parse" => Some(ParseOp.execute_step(state, factory)),
+        "sread" => Some(SreadOp.execute_step(state, factory)),
+        "swrite" => Some(SwriteOp.execute_step(state, factory)),
+        "repr" => Some(ReprOp.execute_step(state, factory)),
         // Comparison operations
         "<" => Some(LessOp.execute_step(state, factory)),
         "<=" => Some(LessEqOp.execute_step(state, factory)),
@@ -116,8 +145,9 @@ where
         // Meta / polymorphic operations (T06/037 — id, HE-aligned)
         "id" => Some(IdOp.execute_step(state, factory)),
         // JSON module (T07/019-020, HE-aligned: `json` builtin)
-        "json-encode" => Some(JsonEncodeOp.execute_step(state, factory)),
-        "json-decode" => Some(JsonDecodeOp.execute_step(state, factory)),
+        // Phase 8.3 PT-canonical aliases: parse_json/format_json
+        "json-encode" | "format_json" => Some(JsonEncodeOp.execute_step(state, factory)),
+        "json-decode" | "parse_json" => Some(JsonDecodeOp.execute_step(state, factory)),
         // FileIO module (T07/021, HE-aligned: `fileio` builtin)
         "file-open!" => Some(FileOpenOp.execute_step(state, factory)),
         "file-read-to-string!" => Some(FileReadToStringOp.execute_step(state, factory)),
@@ -132,6 +162,24 @@ where
         "set-random-seed" => Some(SetRandomSeedOp.execute_step(state, factory)),
         "reset-random-generator" => Some(ResetRandomGeneratorOp.execute_step(state, factory)),
         "flip" => Some(FlipOp.execute_step(state, factory)),
+        // Phase 8.5 CLP(FD) — PT exposes #+/#-/#*/#div/#//mod/#min/#max/
+        // #</#>/#=/#\= for integer constraints. PT never labels (spec/15.12);
+        // for ground integer args MTT routes to the underlying arithmetic/
+        // comparison op so ground evaluation is identity (CLP(FD) is the
+        // residual-constraint model). For non-ground args the operations
+        // pass through unreduced (residual constraint leakage per spec).
+        "#+" => Some(AddOp.execute_step(state, factory)),
+        "#-" => Some(SubOp.execute_step(state, factory)),
+        "#*" => Some(MulOp.execute_step(state, factory)),
+        "#div" => Some(DivOp.execute_step(state, factory)),
+        "#//" => Some(DivOp.execute_step(state, factory)),
+        "#mod" => Some(ModOp.execute_step(state, factory)),
+        "#min" => Some(MinOp.execute_step(state, factory)),
+        "#max" => Some(MaxOp.execute_step(state, factory)),
+        "#<" => Some(LessOp.execute_step(state, factory)),
+        "#>" => Some(GreaterOp.execute_step(state, factory)),
+        "#=" => Some(EqualOp.execute_step(state, factory)),
+        "#\\=" => Some(NotEqualOp.execute_step(state, factory)),
         // Unknown operation - not a grounded op
         _ => None,
     }
@@ -159,6 +207,29 @@ pub fn has_grounded_op(name: &str) -> bool {
             | "min"
             | "max"
             | "abs"
+            // PT *-math suite (Phase 6.X, 2026-05-21)
+            | "sqrt-math"
+            | "abs-math"
+            | "trunc-math"
+            | "ceil-math"
+            | "floor-math"
+            | "sin-math"
+            | "cos-math"
+            | "tan-math"
+            | "asin-math"
+            | "acos-math"
+            | "atan-math"
+            | "pow-math"
+            | "log-math"
+            | "isnan-math"
+            | "isinf-math"
+            | "min-atom"
+            | "max-atom"
+            // PT parser ops (Phase 6.X, 2026-05-21)
+            | "parse"
+            | "sread"
+            | "swrite"
+            | "repr"
             | "<"
             | "<="
             | ">"
@@ -174,9 +245,11 @@ pub fn has_grounded_op(name: &str) -> bool {
             | "stringToChars"
             | "sort-strings"
             | "id"
-            // JSON module (T07/019-020)
+            // JSON module (T07/019-020) + PT-canonical aliases
             | "json-encode"
             | "json-decode"
+            | "format_json"
+            | "parse_json"
             // FileIO module (T07/021)
             | "file-open!"
             | "file-read-to-string!"
@@ -191,6 +264,19 @@ pub fn has_grounded_op(name: &str) -> bool {
             | "set-random-seed"
             | "reset-random-generator"
             | "flip"
+            // Phase 8.5 CLP(FD) — PT integer constraint operations
+            | "#+"
+            | "#-"
+            | "#*"
+            | "#div"
+            | "#//"
+            | "#mod"
+            | "#min"
+            | "#max"
+            | "#<"
+            | "#>"
+            | "#="
+            | "#\\="
     )
 }
 

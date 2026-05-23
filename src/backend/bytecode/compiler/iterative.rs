@@ -660,6 +660,14 @@ impl Compiler {
                     cont_id,
                 });
             }
+            // PT-canonical Lazy is transparent — descend into the inner.
+            ValueView::Lazy(inner) => {
+                work_stack.push(CompileWork::CompileExpr {
+                    expr: inner,
+                    in_tail_position: false,
+                    cont_id,
+                });
+            }
         }
         Ok(())
     }
@@ -3204,7 +3212,9 @@ impl Compiler {
                     cont_id,
                 });
             }
-            // Other values (including inline types) can be compiled normally
+            // Other values (including inline types) can be compiled normally.
+            // Lazy is INVISIBLE (2026-05-21): compile-quoted handles it
+            // identically to bare values — the inner data is what matters.
             ValueView::Float(_)
             | ValueView::Bool(_)
             | ValueView::Long(_)
@@ -3218,7 +3228,8 @@ impl Compiler {
             | ValueView::Space(_)
             | ValueView::State(_)
             | ValueView::Memo(_)
-            | ValueView::Quoted(_) => {
+            | ValueView::Quoted(_)
+            | ValueView::Lazy(_) => {
                 work_stack.push(CompileWork::CompileExpr {
                     expr,
                     in_tail_position: false,
@@ -3353,7 +3364,8 @@ impl Compiler {
                     | ValueView::Space(_)
                     | ValueView::State(_)
                     | ValueView::Memo(_)
-                    | ValueView::Quoted(_) => {
+                    | ValueView::Quoted(_)
+                    | ValueView::Lazy(_) => {
                         self.builder.emit(Opcode::Pop);
                     }
                 }

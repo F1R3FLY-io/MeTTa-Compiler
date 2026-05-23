@@ -9,6 +9,7 @@
 //! - `sealed` - Create locally scoped variables
 //! - `atom-subst` - Variable substitution through pattern matching
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -280,7 +281,7 @@ where
             "sealed requires 2 arguments, got {}. Usage: (sealed ignore-vars expr)",
             items.len() - 1
         );
-        return vec![factory.error(factory.sexpr(items.to_vec()), factory.string(&arity_msg))];
+        return vec![factory.error( factory.string(&arity_msg),factory.sexpr(items.to_vec()))];
     }
 
     let ignore_vars = &items[1];
@@ -407,6 +408,7 @@ impl<V: MettaValueTrait + Clone> MettaValueFactory<V> for NoFactory<V> {
         unreachable!("NoFactory::memo invoked")
     }
     fn quote(&self, _v: V) -> V { unreachable!("NoFactory::quote invoked") }
+    fn lazy(&self, _v: V) -> V { unreachable!("NoFactory::lazy invoked") }
     fn unit(&self) -> V { unreachable!("NoFactory::unit invoked") }
     fn empty(&self) -> V { unreachable!("NoFactory::empty invoked") }
     fn conjunction_from_slice(&self, _goals: &[V]) -> V {
@@ -442,6 +444,15 @@ where
     work_stack.push((pattern.clone(), value.clone()));
 
     while let Some((pat_owned, val_owned)) = work_stack.pop() {
+        // PT-canonical Lazy semantics (2026-05-21): Lazy-wrapped VALUES are
+        // data — rule dispatch is inhibited on them. The trampoline's `Eval`
+        // arm short-circuits before reaching pattern_match for Lazy values;
+        // we do NOT strip Lazy here, so a Lazy value won't match any
+        // structural rule LHS (the bare `Atom` / `SExpr` arms below will
+        // see the Lazy ValueView and fall through to the catch-all `_ =>
+        // false`). The behavior is: Lazy values are NEVER unified against
+        // arbitrary rule LHSs — they remain inert data.
+
         // Borrow the owned pair for trait-method calls (`as_atom()` etc).
         let pat = &pat_owned;
         let val = &val_owned;
@@ -1072,6 +1083,362 @@ where
                 } else {
                     result_stack.push(factory.quote(new_inner));
                 }
+            }
+        }
+    }
+
+    result_stack
+        .pop()
+        .expect("Result stack should not be empty")
+}
+
+// ============================================================================
+// PT-canonical lazy variable resolution (2026-05-21)
+// ============================================================================
+
+/// Lazy variant of [`apply_bindings_scoped_generic`]: wraps each substituted
+/// bound value in `Lazy` (via `factory.lazy(...)`), preserving the
+/// "data-in / data-out" semantics of PeTTa for rules whose LHS head is
+/// declared with an all-meta arrow type (e.g. `(: ? (-> Expression Atom))`).
+///
+/// The `Lazy` wrapper is INVISIBLE for `Display` / hash / equality, but the
+/// evaluation dispatch checks for it and short-circuits (`Eval` of `Lazy(x)`
+/// produces `[x]` without firing rule lookup). This preserves PeTTa's
+/// "data-in / data-out" semantic faithfully: the body can still evaluate
+/// (so `unique-atom`/`collapse` etc. run), but substituted args are inert
+/// data — no rule application happens on them.
+///
+/// Behaviour vs. [`apply_bindings_scoped_generic`]:
+///
+/// * Transitive substitution inside a bound value continues to resolve inner
+///   variables normally (e.g. `$B → (Cons $1 Nil)` and `$1 → Anna` produces
+///   `(Cons Anna Nil)` internally). Only the OUTERMOST result of each
+///   variable lookup in the original template is wrapped in `Lazy(...)`.
+/// * The outer template walk preserves shape: nested s-expressions /
+///   conjunctions / quoted wrappers are rebuilt as usual. Only direct `$var`
+///   substitutions emit a `Lazy` wrapper.
+///
+/// Example (template `(unique-atom (collapse ($term ...)))`, bindings
+/// `{$term → (grandfather a c)}`):
+///
+/// ```text
+/// (unique-atom (collapse (Lazy((grandfather a c)) ...)))
+/// ```
+///
+/// The body `unique-atom` is still evaluated, but `$term` is preserved as
+/// data (wrapped in `Lazy`) so that inner dispatch treats it opaquely.
+pub fn apply_bindings_lazy_scoped_generic<V, F>(
+    template: &V,
+    bindings: &GenericBindings<V>,
+    scope_chain: &[crate::backend::models::generic_bindings::ScopeId],
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    // Fast path: if no bindings, nothing to substitute → nothing to wrap.
+    if bindings.is_empty() {
+        return template.clone();
+    }
+
+    // Peel Spanned: process inner, re-wrap with same span. Mirrors the
+    // non-lazy `apply_bindings_scoped_generic` exactly.
+    if let Some(span) = template.span() {
+        let span = *span;
+        let stripped = template.strip_one_span();
+        let result =
+            apply_bindings_lazy_scoped_generic(&stripped, bindings, scope_chain, factory);
+        if result.span().is_some() {
+            return result;
+        }
+        return factory.spanned(result, span);
+    }
+
+    apply_bindings_iterative_lazy_generic(template, bindings, scope_chain, factory)
+}
+
+/// Iterative lazy implementation mirroring [`apply_bindings_iterative_generic`].
+///
+/// Key difference: when an outer-template `$var` lookup hits, we
+/// (1) push a `WrapInLazy` marker, then
+/// (2) push the bound value as a NON-LAZY transitive walk
+///     (via the standard `Work::ProcessOwned` semantics —
+///     inner `$var` hits inside the bound value do NOT wrap).
+///
+/// The `WrapInLazy` marker pops the assembled transitive-walk result and
+/// pushes `factory.lazy(result)`. This preserves the spec: only the final
+/// outermost result of each variable substitution gets wrapped — intermediate
+/// transitive bindings (e.g. `$1 → Anna` inside `$B → (... $1 ...)`)
+/// resolve normally without per-step wrapping.
+///
+/// Stack safety: the implementation uses an explicit work stack (no
+/// recursive function calls into self), matching the trampoline-safety
+/// mandate. The transitive walk uses the SAME `Work::ProcessOwned` variant
+/// as the existing non-lazy iterative path, so stack growth characteristics
+/// are identical between the two.
+///
+/// Precondition: `template` is not Spanned (caller peels it).
+fn apply_bindings_iterative_lazy_generic<V, F>(
+    template: &V,
+    bindings: &GenericBindings<V>,
+    scope_chain: &[crate::backend::models::generic_bindings::ScopeId],
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    // Scope-aware lookup: identical to the non-lazy path.
+    let lookup = |bindings: &GenericBindings<V>, name: &str| -> Option<V> {
+        if scope_chain.is_empty() {
+            bindings.get(name).cloned()
+        } else {
+            bindings.get_chain(scope_chain, name).cloned()
+        }
+    };
+
+    enum Work<'a, V> {
+        /// Outer-template walk: borrowed value from the original template.
+        /// A `$var` hit here is a TOP-LEVEL substitution and emits a
+        /// `WrapInLazy` marker around the transitively-resolved result.
+        Process(&'a V),
+        /// Transitive walk inside a bound value: a `$var` hit here continues
+        /// transitive substitution WITHOUT emitting a wrap (matches the
+        /// non-lazy iterative semantics exactly — bound-value internals are
+        /// data we've already committed to wrapping at the outer site).
+        ProcessOwned(V),
+        BuildSExpr {
+            count: usize,
+            original: V,
+        },
+        BuildConjunction {
+            count: usize,
+            original: V,
+        },
+        /// Quoted wrapper rebuild (mirrors the non-lazy `Work::BuildQuoted`).
+        BuildQuoted {
+            original: V,
+        },
+        /// Pop the most recent `result_stack` entry, wrap in `Lazy(...)`,
+        /// push back. Emitted when the outer template walk hits a `$var` that
+        /// has a binding — the bound value's transitive resolution finalises
+        /// before this marker runs.
+        WrapInLazy,
+    }
+
+    let mut work_stack: SmallVec<[Work<V>; 16]> = SmallVec::new();
+    let mut result_stack: SmallVec<[V; 16]> = SmallVec::new();
+
+    work_stack.push(Work::Process(template));
+
+    while let Some(work) = work_stack.pop() {
+        match work {
+            Work::Process(val) => {
+                // Structural sharing fast path: no variables → no substitution
+                // possible → no wrapping needed. Pass through verbatim.
+                if !val.has_variables_fast() {
+                    result_stack.push(val.clone());
+                    continue;
+                }
+                if val.is_spanned() {
+                    // Peel-and-re-wrap by recursing through the lazy-scoped
+                    // entry. Same single-layer guarantee as the non-lazy path.
+                    let result =
+                        apply_bindings_lazy_scoped_generic(val, bindings, scope_chain, factory);
+                    result_stack.push(result);
+                    continue;
+                }
+
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$') {
+                        if let Some(bound) = lookup(bindings, name) {
+                            // Self-referential binding ($a → $a): emit the
+                            // atom directly (no quote — there's nothing to
+                            // substitute). Matches the non-lazy guard.
+                            if bound.as_atom() == Some(name) {
+                                result_stack.push(bound);
+                                continue;
+                            }
+                            // Outer-template var hit: push WrapInLazy AFTER
+                            // the transitive walk completes. LIFO order means
+                            // ProcessOwned runs first, finalises its result on
+                            // result_stack, then WrapInLazy wraps that result.
+                            work_stack.push(Work::WrapInLazy);
+                            work_stack.push(Work::ProcessOwned(bound));
+                        } else {
+                            // Unbound $var: emit as-is (no wrap; nothing was
+                            // substituted, so there's nothing to mark as data).
+                            result_stack.push(val.clone());
+                        }
+                    } else {
+                        result_stack.push(val.clone());
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(Work::BuildSExpr {
+                            count: items.len(),
+                            original: val.clone(),
+                        });
+                        for item in items.iter().rev() {
+                            work_stack.push(Work::Process(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val.clone());
+                    } else {
+                        work_stack.push(Work::BuildConjunction {
+                            count: goals.len(),
+                            original: val.clone(),
+                        });
+                        for goal in goals.iter().rev() {
+                            work_stack.push(Work::Process(goal));
+                        }
+                    }
+                } else if let Some(inner) = val.as_quoted_ref() {
+                    // Descend INTO the quoted body so any `$var` substitutions
+                    // inside still wrap (HE-faithful: `(quote $x)` with
+                    // `$x → foo` becomes `(quote (quote foo))` under lazy
+                    // semantics, since the substitution itself is data).
+                    work_stack.push(Work::BuildQuoted {
+                        original: val.clone(),
+                    });
+                    work_stack.push(Work::Process(inner));
+                } else {
+                    result_stack.push(val.clone());
+                }
+            }
+            Work::ProcessOwned(val) => {
+                // Transitive walk inside a bound value. Identical to the
+                // non-lazy `Work::ProcessOwned` arm: var hits push further
+                // `ProcessOwned` (no wrap) to continue transitive resolution.
+                if !val.has_variables_fast() {
+                    result_stack.push(val);
+                    continue;
+                }
+                if val.is_spanned() {
+                    // Note: this peel-and-recurse goes through the NON-lazy
+                    // entry point because we're inside a transitive walk and
+                    // the bound value's internals should NOT wrap. Switching
+                    // entries here is the cleanest way to honour the "only
+                    // outer template substitutions wrap" rule.
+                    let result = apply_bindings_scoped_generic(
+                        &val,
+                        bindings,
+                        scope_chain,
+                        factory,
+                    );
+                    result_stack.push(result);
+                    continue;
+                }
+
+                if let Some(name) = val.as_atom() {
+                    if name.starts_with('$') {
+                        if let Some(bound) = lookup(bindings, name) {
+                            if bound.as_atom() == Some(name) {
+                                result_stack.push(bound);
+                                continue;
+                            }
+                            // Transitive only — no wrap.
+                            work_stack.push(Work::ProcessOwned(bound));
+                        } else {
+                            result_stack.push(val);
+                        }
+                    } else {
+                        result_stack.push(val);
+                    }
+                } else if let Some(items) = val.as_sexpr() {
+                    if items.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        let len = items.len();
+                        let owned_children: Vec<V> = items.iter().cloned().collect();
+                        work_stack.push(Work::BuildSExpr {
+                            count: len,
+                            original: val,
+                        });
+                        for item in owned_children.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(item));
+                        }
+                    }
+                } else if let Some(goals) = val.as_conjunction() {
+                    if goals.is_empty() {
+                        result_stack.push(val);
+                    } else {
+                        let len = goals.len();
+                        let owned_goals: Vec<V> = goals.iter().cloned().collect();
+                        work_stack.push(Work::BuildConjunction {
+                            count: len,
+                            original: val,
+                        });
+                        for goal in owned_goals.into_iter().rev() {
+                            work_stack.push(Work::ProcessOwned(goal));
+                        }
+                    }
+                } else if let Some(inner) = val.as_quoted() {
+                    work_stack.push(Work::BuildQuoted { original: val });
+                    work_stack.push(Work::ProcessOwned(inner));
+                } else {
+                    result_stack.push(val);
+                }
+            }
+            Work::BuildSExpr { count, original } => {
+                let start = result_stack.len() - count;
+                let items = original
+                    .as_sexpr()
+                    .expect("BuildSExpr original must be sexpr");
+                let changed =
+                    (0..count).any(|i| !result_stack[start + i].identity_eq(&items[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                } else {
+                    let result = factory.sexpr_from_slice(&result_stack[start..]);
+                    result_stack.truncate(start);
+                    result_stack.push(result);
+                }
+            }
+            Work::BuildConjunction { count, original } => {
+                let start = result_stack.len() - count;
+                let goals = original
+                    .as_conjunction()
+                    .expect("BuildConjunction original must be conjunction");
+                let changed =
+                    (0..count).any(|i| !result_stack[start + i].identity_eq(&goals[i]));
+                if !changed {
+                    result_stack.truncate(start);
+                    result_stack.push(original);
+                } else {
+                    let result = factory.conjunction_from_slice(&result_stack[start..]);
+                    result_stack.truncate(start);
+                    result_stack.push(result);
+                }
+            }
+            Work::BuildQuoted { original } => {
+                let new_inner = result_stack
+                    .pop()
+                    .expect("Result stack must hold the processed Quoted inner");
+                let original_inner = original
+                    .as_quoted()
+                    .expect("BuildQuoted original must be Quoted");
+                if new_inner.identity_eq(&original_inner) {
+                    result_stack.push(original);
+                } else {
+                    result_stack.push(factory.quote(new_inner));
+                }
+            }
+            Work::WrapInLazy => {
+                // Pop the transitive-walk result, wrap it in `Lazy(...)`.
+                // The Lazy wrapper is INVISIBLE for display/hash/equality but
+                // inhibits rule lookup during evaluation, preserving PT's
+                // "data-in / data-out" semantic.
+                let inner = result_stack
+                    .pop()
+                    .expect("Result stack must hold the substituted inner for WrapInLazy");
+                result_stack.push(factory.lazy(inner));
             }
         }
     }
@@ -2434,7 +2801,7 @@ where
             "atom-subst requires 3 arguments, got {}. Usage: (atom-subst value $var template)",
             items.len() - 1
         );
-        return vec![factory.error(factory.sexpr(items.to_vec()), factory.string(&arity_msg))];
+        return vec![factory.error( factory.string(&arity_msg),factory.sexpr(items.to_vec()))];
     }
 
     let value = &items[1];
@@ -3182,6 +3549,78 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
+    apply_bindings_with_rename_scoped_maybe_lazy(
+        template,
+        bindings,
+        scope_chain,
+        body_local_epoch,
+        outer_carrying,
+        factory,
+        /* lazy_wrap */ false,
+    )
+}
+
+/// PT-canonical lazy-wrap variant of [`apply_bindings_with_rename_scoped`]:
+/// when a top-level (outer-template) `$var` lookup hits, the final
+/// transitively-resolved value is wrapped in `(quote ...)` before being
+/// emitted. Used by the rule-firing dispatcher for rules whose LHS head
+/// has an all-meta arrow type (e.g. `(: ? (-> Expression Atom))`), so the
+/// substituted bindings are preserved as data and never re-evaluated.
+///
+/// Transitive substitution inside a bound value still resolves inner
+/// variables NORMALLY — only the OUTERMOST result of each variable lookup
+/// in the original template is wrapped. Matches the spec exactly:
+/// `$B → (Cons $1 Nil)` with `$1 → Anna` produces `(quote (Cons Anna Nil))`
+/// (single wrap), not `(quote (Cons (quote Anna) Nil))`.
+///
+/// Active in the production dispatch path (2026-05-21): the rule-management
+/// `match_rules_native_inner` call sites switch to this variant when the
+/// matching rule's `lhs_head_all_meta_typed` flag is set. The result has each
+/// substituted variable wrapped in `Lazy(...)` (the INVISIBLE-for-display/hash/
+/// eq PT-canonical marker), inhibiting rule lookup on it during downstream
+/// evaluation while leaving the body's outer form fully evaluable.
+pub fn apply_bindings_with_rename_scoped_lazy<V, F>(
+    template: &V,
+    bindings: &GenericBindings<V>,
+    scope_chain: &[crate::backend::models::generic_bindings::ScopeId],
+    body_local_epoch: u64,
+    outer_carrying: &GenericBindings<V>,
+    factory: &F,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
+    apply_bindings_with_rename_scoped_maybe_lazy(
+        template,
+        bindings,
+        scope_chain,
+        body_local_epoch,
+        outer_carrying,
+        factory,
+        /* lazy_wrap */ true,
+    )
+}
+
+/// Shared implementation of [`apply_bindings_with_rename_scoped`] (eager)
+/// and [`apply_bindings_with_rename_scoped_lazy`] (PT-canonical wrap-on-
+/// top-level-var-hit). The `lazy_wrap` flag is threaded into the iterative
+/// driver and ONLY influences the `Work::ProcessTemplate` arm: when a
+/// `$var` lookup hits, a `Work::WrapInQuote` marker is interposed before
+/// the transitive walk's result lands on `result_stack`.
+fn apply_bindings_with_rename_scoped_maybe_lazy<V, F>(
+    template: &V,
+    bindings: &GenericBindings<V>,
+    scope_chain: &[crate::backend::models::generic_bindings::ScopeId],
+    body_local_epoch: u64,
+    outer_carrying: &GenericBindings<V>,
+    factory: &F,
+    lazy_wrap: bool,
+) -> V
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V>,
+{
     use crate::backend::eval::freshening::CachingRename;
 
     // Fast path: nothing to substitute, nothing to rename, nothing to fall back to.
@@ -3193,13 +3632,14 @@ where
     if let Some(span) = template.span() {
         let span = *span;
         let stripped = template.strip_one_span();
-        let result = apply_bindings_with_rename_scoped(
+        let result = apply_bindings_with_rename_scoped_maybe_lazy(
             &stripped,
             bindings,
             scope_chain,
             body_local_epoch,
             outer_carrying,
             factory,
+            lazy_wrap,
         );
         if result.span().is_some() {
             return result;
@@ -3220,9 +3660,18 @@ where
         rename.as_ref(),
         outer_carrying,
         factory,
+        lazy_wrap,
     )
 }
 
+/// Iterative driver for [`apply_bindings_with_rename_scoped`] and
+/// [`apply_bindings_with_rename_scoped_lazy`].
+///
+/// The `lazy_wrap: bool` parameter (PT-canonical, 2026-05-21): when true,
+/// every successful top-level (outer-template) `$var` lookup wraps the
+/// transitively-resolved bound value in `(quote ...)` before pushing to
+/// `result_stack`. Inner var hits inside bound values continue transitive
+/// resolution WITHOUT additional wrapping.
 fn apply_bindings_with_rename_scoped_iterative<V, F>(
     template: &V,
     bindings: &GenericBindings<V>,
@@ -3230,6 +3679,7 @@ fn apply_bindings_with_rename_scoped_iterative<V, F>(
     rename: Option<&crate::backend::eval::freshening::CachingRename>,
     outer_carrying: &GenericBindings<V>,
     factory: &F,
+    lazy_wrap: bool,
 ) -> V
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
@@ -3250,6 +3700,12 @@ where
         /// after freshening, and the bindings map keyed on $a_E/$b_E
         /// never finds them.
         BuildQuoted { original: V },
+        /// PT-canonical lazy wrap marker (2026-05-21): pop the most recent
+        /// `result_stack` entry, wrap in `(quote ...)`, push back. Emitted
+        /// when `lazy_wrap=true` and the outer template walk hits a `$var`
+        /// that has a successful binding — the bound value's transitive
+        /// resolution finalises before this marker runs (LIFO order).
+        WrapInQuote,
     }
 
     // Lookup probes rule-side first (scope-aware), then falls back to
@@ -3284,13 +3740,17 @@ where
                     continue;
                 }
                 if val.is_spanned() {
-                    let result = apply_bindings_with_rename_scoped(
+                    // PT-canonical lazy wrap: preserve `lazy_wrap` through the
+                    // Spanned peel-and-recurse so inner var hits inside the
+                    // span still wrap when the caller asked for lazy semantics.
+                    let result = apply_bindings_with_rename_scoped_maybe_lazy(
                         val,
                         bindings,
                         scope_chain,
                         rename.map_or(0, |r| r.epoch()),
                         outer_carrying,
                         factory,
+                        lazy_wrap,
                     );
                     result_stack.push(result);
                     continue;
@@ -3298,7 +3758,8 @@ where
                 if let Some(name) = val.as_atom() {
                     if name.starts_with('$') && name != "$_" {
                         if let Some(bound) = lookup(bindings, name) {
-                            // Self-referential guard
+                            // Self-referential guard. No wrap — nothing was
+                            // substituted (the binding is its own atom).
                             if bound.as_atom() == Some(name) {
                                 if let Some(r) = rename {
                                     result_stack.push(r.fresh_atom(name, factory));
@@ -3306,6 +3767,15 @@ where
                                     result_stack.push(bound);
                                 }
                                 continue;
+                            }
+                            // PT-canonical lazy wrap (2026-05-21): when the
+                            // caller asked for lazy substitution, wrap the
+                            // transitively-resolved bound value in `(quote ...)`
+                            // before it lands on `result_stack`. LIFO order:
+                            // ProcessOwned runs first (resolves transitively),
+                            // WrapInQuote runs second (wraps the result).
+                            if lazy_wrap {
+                                work_stack.push(Work::WrapInQuote);
                             }
                             // Transitive: descend into bound value (owned mode — no rename)
                             work_stack.push(Work::ProcessOwned(bound));
@@ -3484,6 +3954,18 @@ where
                 } else {
                     result_stack.push(factory.quote(new_inner));
                 }
+            }
+            Work::WrapInQuote => {
+                // PT-canonical lazy wrap (2026-05-21): pop the transitive-walk
+                // result and wrap it in `Lazy(...)`. Only emitted from the
+                // `Work::ProcessTemplate` arm when `lazy_wrap=true` and a
+                // `$var` lookup succeeded. The Lazy wrapper is INVISIBLE for
+                // display/hash/equality but inhibits rule lookup during
+                // evaluation, preserving PeTTa's "data-in / data-out" semantic.
+                let inner = result_stack
+                    .pop()
+                    .expect("Result stack must hold the substituted inner for WrapInQuote");
+                result_stack.push(factory.lazy(inner));
             }
         }
     }

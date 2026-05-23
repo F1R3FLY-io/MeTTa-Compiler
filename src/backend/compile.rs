@@ -562,8 +562,10 @@ mod tests {
 
     #[test]
     fn test_boolean_case_sensitivity() {
-        // Lowercase should be treated as atoms, not booleans
-        // MeTTa uses capitalized True/False per hyperon-experimental
+        // Phase 1.5 PT alignment (2026-05-22): parser is permissive —
+        // both `True`/`False` and `true`/`false` parse as Bool literals.
+        // PT translator emits lowercase canonical; capitalized retained
+        // for backward compatibility.
         let src = "(true false)";
         let state = compile(src).unwrap();
 
@@ -574,10 +576,10 @@ mod tests {
         .inner()
         {
             assert_eq!(items.len(), 2);
-            assert_eq!(items[0], MettaValue::Atom("true".to_string()));
-            assert_eq!(items[1], MettaValue::Atom("false".to_string()));
+            assert_eq!(items[0], MettaValue::Bool(true));
+            assert_eq!(items[1], MettaValue::Bool(false));
         } else {
-            panic!("Expected SExpr with lowercase boolean atoms");
+            panic!("Expected SExpr with Bool literals");
         }
 
         // Verify capitalized versions ARE treated as booleans
@@ -773,12 +775,12 @@ mod tests {
         );
 
         assert_eq!(results.len(), 1);
-        // HE-bisimilar shape: source `(error <message-atom> <offending>)`
-        // maps to internal Error(offending=42, detail=failure-code-atom).
+        // Phase 1.1 PT-canonical: source `(error <message-atom> <offending>)`
+        // maps to internal Error(Type=failure-code-atom, Ctx=42).
         // The (error) special form preserves atom-vs-string distinction —
-        // the user passed an atom, so detail stays an atom.
-        if let MettaValueInner::Error(_, detail) = results[0].inner() {
-            assert_eq!(detail.as_atom(), Some("failure-code"));
+        // the user passed an atom for the message, so Type stays an atom.
+        if let MettaValueInner::Error(type_val, _) = results[0].inner() {
+            assert_eq!(type_val.as_atom(), Some("failure-code"));
         } else {
             panic!("Expected error, got: {:?}", results[0]);
         }

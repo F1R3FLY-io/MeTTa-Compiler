@@ -102,24 +102,24 @@ mod tests {
     // Comparisons
     // =========================================================================
 
-    eval_test!(comparison_lt_true, "!(< 1 2)", &["True"]);
-    eval_test!(comparison_lt_false, "!(< 2 1)", &["False"]);
-    eval_test!(comparison_le_true, "!(<= 2 2)", &["True"]);
-    eval_test!(comparison_gt_true, "!(> 5 3)", &["True"]);
-    eval_test!(comparison_ge_true, "!(>= 3 3)", &["True"]);
-    eval_test!(comparison_eq_true, "!(== 42 42)", &["True"]);
-    eval_test!(comparison_eq_false, "!(== 1 2)", &["False"]);
+    eval_test!(comparison_lt_true, "!(< 1 2)", &["true"]);
+    eval_test!(comparison_lt_false, "!(< 2 1)", &["false"]);
+    eval_test!(comparison_le_true, "!(<= 2 2)", &["true"]);
+    eval_test!(comparison_gt_true, "!(> 5 3)", &["true"]);
+    eval_test!(comparison_ge_true, "!(>= 3 3)", &["true"]);
+    eval_test!(comparison_eq_true, "!(== 42 42)", &["true"]);
+    eval_test!(comparison_eq_false, "!(== 1 2)", &["false"]);
 
     // =========================================================================
     // Boolean Operations
     // =========================================================================
 
-    eval_test!(boolean_and_true, "!(and True True)", &["True"]);
-    eval_test!(boolean_and_false, "!(and True False)", &["False"]);
-    eval_test!(boolean_or_true, "!(or False True)", &["True"]);
-    eval_test!(boolean_or_false, "!(or False False)", &["False"]);
-    eval_test!(boolean_not_true, "!(not False)", &["True"]);
-    eval_test!(boolean_not_false, "!(not True)", &["False"]);
+    eval_test!(boolean_and_true, "!(and True True)", &["true"]);
+    eval_test!(boolean_and_false, "!(and True False)", &["false"]);
+    eval_test!(boolean_or_true, "!(or False True)", &["true"]);
+    eval_test!(boolean_or_false, "!(or False False)", &["false"]);
+    eval_test!(boolean_not_true, "!(not False)", &["true"]);
+    eval_test!(boolean_not_false, "!(not True)", &["false"]);
 
     // =========================================================================
     // Control Flow
@@ -149,21 +149,24 @@ mod tests {
     // returned the unreduced residual. The collapse-bind check_alternatives
     // filter (same commit) preserves PLN cardinality bounds so this default
     // is PLN-safe.
+    // Phase 1.1 PT-canonical: Error tuple is (Type, Ctx) — type first.
     eval_test!(
         if_non_bool_number,
         "!(if 1 yes no)",
-        &["(Error (if 1 yes no) (BadArgType 1 Bool Number))"]
+        &["(Error (BadArgType 1 Bool Number) (if 1 yes no))"]
     );
     eval_test!(
         if_with_atom_condition,
         "!(if foo then else)",
-        &["(Error (if foo then else) (BadArgType 1 Bool Symbol))"]
+        &["(Error (BadArgType 1 Bool Symbol) (if foo then else))"]
     );
-    // MeTTa HE: Unit is NOT boolean — emits BadArgType per Phase 2 C5
+    // MeTTa HE: Unit is NOT boolean — emits BadArgType per Phase 2 C5.
+    // Phase 1.5 PT alignment: Bool display lowercase (`true`/`false`).
+    // Phase 1.1 PT-canonical: Error(Type, Ctx) — type first.
     eval_test!(
         if_unit_condition_unreduced,
         "!(if () True False)",
-        &["(Error (if () True False) (BadArgType 1 Bool Expression))"]
+        &["(Error (BadArgType 1 Bool Expression) (if () true false))"]
     );
 
     // =========================================================================
@@ -233,20 +236,24 @@ mod tests {
     // reduction behavior and raw kernel sentinel exposure. Per the user's
     // HE-bisim mandate, the tests are now aligned with HE empirical
     // output; spec fixture T04/069 was updated in lockstep.
-    eval_test!(eval_quoted, "!(eval (quote (+ 1 2)))", &["(eval (quote (+ 1 2)))"]);
+    // Phase 3.1 PT-canonical: `(eval (quote X))` unwraps to X.
+    eval_test!(eval_quoted, "!(eval (quote (+ 1 2)))", &["(+ 1 2)"]);
     eval_test!(
         quote_nested,
         "!(quote (+ (+ 1 2) 3))",
         &["(quote (+ (+ 1 2) 3))"]
     );
-    eval_test!(eval_force_quoted, "!(eval (quote (* 6 7)))", &["(eval (quote (* 6 7)))"]);
-    eval_test!(eval_on_value, "!(eval 42)", &["(eval 42)"]);
+    // Phase 3.1 PT-canonical: eval re-translates argument. `(quote X)` unwraps to X.
+    eval_test!(eval_force_quoted, "!(eval (quote (* 6 7)))", &["(* 6 7)"]);
+    // Phase 3.1: scalar arg returns the scalar (idempotent re-translation).
+    eval_test!(eval_on_value, "!(eval 42)", &["42"]);
     eval_test!(
         quote_nested_structure,
         "!(quote ((+ 1 2) (* 3 4)))",
         &["(quote ((+ 1 2) (* 3 4)))"]
     );
-    eval_test!(eval_nested_quote, "!(eval (quote (+ 1 (+ 2 3))))", &["(eval (quote (+ 1 (+ 2 3))))"]);
+    // Phase 3.1 PT-canonical: `(eval (quote X))` unwraps to X.
+    eval_test!(eval_nested_quote, "!(eval (quote (+ 1 (+ 2 3))))", &["(+ 1 (+ 2 3))"]);
 
     // unquote: unwraps Quoted variant without evaluating the inner expression
     eval_test!(unquote_quoted, "!(unquote (quote (+ 1 2)))", &["(+ 1 2)"]);
@@ -458,10 +465,10 @@ mod tests {
         "!(Error test-msg details)",
         &["(Error test-msg details)"]
     );
-    eval_test!(is_error_normal, "!(is-error 42)", &["False"]);
-    eval_test!(is_error_string, "!(is-error \"hello\")", &["False"]);
-    eval_test!(is_error_bool, "!(is-error True)", &["False"]);
-    eval_test!(is_error_nil, "!(is-error Nil)", &["False"]);
+    eval_test!(is_error_normal, "!(is-error 42)", &["false"]);
+    eval_test!(is_error_string, "!(is-error \"hello\")", &["false"]);
+    eval_test!(is_error_bool, "!(is-error True)", &["false"]);
+    eval_test!(is_error_nil, "!(is-error Nil)", &["false"]);
     eval_test!(catch_normal, "!(catch 42 default)", &["42"]);
     eval_test!(catch_complex_default, "!(catch 42 (+ 10 20))", &["42"]);
     eval_test!(catch_no_error, "!(catch (+ 1 2) \"default\")", &["3"]);
@@ -707,7 +714,7 @@ mod tests {
         "(= (even $n) (if (== $n 0) True (odd (- $n 1))))
          (= (odd $n) (if (== $n 0) False (even (- $n 1))))
          !(even 4)",
-        &["True"]
+        &["true"]
     );
 
     eval_test!(
@@ -837,17 +844,17 @@ mod tests {
     // Boolean Short-Circuit
     // =========================================================================
 
-    eval_test!(and_short_circuit, "!(and False (/ 1 0))", &["False"]);
-    eval_test!(or_short_circuit, "!(or True (/ 1 0))", &["True"]);
+    eval_test!(and_short_circuit, "!(and False (/ 1 0))", &["false"]);
+    eval_test!(or_short_circuit, "!(or True (/ 1 0))", &["true"]);
 
     // =========================================================================
     // String Equality
     // =========================================================================
 
-    eval_test!(string_eq, "!(== \"a\" \"a\")", &["True"]);
-    eval_test!(string_neq, "!(== \"a\" \"b\")", &["False"]);
-    eval_test!(string_hello_eq, "!(== \"hello\" \"hello\")", &["True"]);
-    eval_test!(string_hello_neq, "!(== \"hello\" \"world\")", &["False"]);
+    eval_test!(string_eq, "!(== \"a\" \"a\")", &["true"]);
+    eval_test!(string_neq, "!(== \"a\" \"b\")", &["false"]);
+    eval_test!(string_hello_eq, "!(== \"hello\" \"hello\")", &["true"]);
+    eval_test!(string_hello_neq, "!(== \"hello\" \"world\")", &["false"]);
 
     // =========================================================================
     // Arithmetic Edge Cases
@@ -866,7 +873,7 @@ mod tests {
     // =========================================================================
 
     eval_test!(empty_sexpr, "!()", &["()"]);
-    eval_test!(nil_comparison, "!(== Nil Nil)", &["True"]);
+    eval_test!(nil_comparison, "!(== Nil Nil)", &["true"]);
 
     // MeTTa HE: (empty) produces zero results (branch annihilation)
     eval_test!(empty_produces_zero_results, "!(empty)", &[]);
@@ -908,10 +915,10 @@ mod tests {
     // Equality and Identity
     // =========================================================================
 
-    eval_test!(eq_atoms, "!(== foo foo)", &["True"]);
-    eval_test!(eq_different_atoms, "!(== foo bar)", &["False"]);
-    eval_test!(eq_sexpr, "!(== (a b) (a b))", &["True"]);
-    eval_test!(eq_sexpr_different, "!(== (a b) (a c))", &["False"]);
+    eval_test!(eq_atoms, "!(== foo foo)", &["true"]);
+    eval_test!(eq_different_atoms, "!(== foo bar)", &["false"]);
+    eval_test!(eq_sexpr, "!(== (a b) (a b))", &["true"]);
+    eval_test!(eq_sexpr_different, "!(== (a b) (a c))", &["false"]);
 
     // =========================================================================
     // Complex Patterns
@@ -948,7 +955,7 @@ mod tests {
     eval_test!(
         sexpr_mixed_types,
         "!(cons-atom 1 (True \"hello\" 3.14))",
-        &["(1 True \"hello\" 3.14)"]
+        &["(1 true \"hello\" 3.14)"]
     );
 
     eval_test!(sexpr_index_atom, "!(index-atom (a b c d e) 2)", &["c"]);
@@ -1029,7 +1036,7 @@ mod tests {
             fn prop_comparison_lt(a in -100i64..100, b in -100i64..100) {
                 let src = format!("!(< {} {})", a, b);
                 let results = run_eval(&src);
-                let expected = if a < b { "True" } else { "False" };
+                let expected = if a < b { "true" } else { "false" };
                 prop_assert_eq!(results[0].as_str(), expected);
             }
 
@@ -1052,10 +1059,10 @@ mod tests {
             #[test]
             fn prop_boolean_and(a: bool, b: bool) {
                 let src = format!("!(and {} {})",
-                    if a { "True" } else { "False" },
-                    if b { "True" } else { "False" });
+                    if a { "true" } else { "false" },
+                    if b { "true" } else { "false" });
                 let results = run_eval(&src);
-                let expected = if a && b { "True" } else { "False" };
+                let expected = if a && b { "true" } else { "false" };
                 prop_assert_eq!(results[0].as_str(), expected);
             }
 
@@ -1077,7 +1084,7 @@ mod tests {
 
             #[test]
             fn prop_if_then_else(cond in prop::bool::ANY, then_val in 0i64..100, else_val in 0i64..100) {
-                let cond_str = if cond { "True" } else { "False" };
+                let cond_str = if cond { "true" } else { "false" };
                 let src = format!("!(if {} {} {})", cond_str, then_val, else_val);
                 let results = run_eval(&src);
                 let expected = if cond { format!("{}", then_val) } else { format!("{}", else_val) };
@@ -1110,7 +1117,7 @@ mod tests {
 
             #[test]
             fn prop_deep_if(a: bool, b: bool, c: bool) {
-                let cond = |x: bool| if x { "True" } else { "False" };
+                let cond = |x: bool| if x { "true" } else { "false" };
                 let src = format!("!(if {} (if {} (if {} 1 2) 3) 4)", cond(a), cond(b), cond(c));
                 let results = run_eval(&src);
                 let expected = if a { if b { if c { "1" } else { "2" } } else { "3" } } else { "4" };
@@ -1127,14 +1134,13 @@ mod tests {
 
             // T04/105 (2026-05-17): the "round-trip" arithmetic property no
             // longer holds under HE one-step `eval` semantics. HE empirical:
-            //   !(eval (quote (+ a b))) → [(eval (quote (+ a b)))]
-            // (NotReducible wrapped back to the original eval form at the
-            // user-visible `!` boundary). Assert the wrapped form instead.
+            // Phase 3.1 PT alignment (2026-05-22): `(eval (quote X))` unwraps
+            // to X (PT re-translation). `(eval (quote (+ a b)))` → `(+ a b)`.
             #[test]
             fn prop_quote_eval_roundtrip(a in 1i64..100, b in 1i64..100) {
                 let src = format!("!(eval (quote (+ {} {})))", a, b);
                 let results = run_eval(&src);
-                let expected = format!("(eval (quote (+ {} {})))", a, b);
+                let expected = format!("(+ {} {})", a, b);
                 prop_assert_eq!(results[0].as_str(), expected.as_str());
             }
 
@@ -1266,18 +1272,19 @@ mod tests {
 
     eval_test!(
         test_meta_type_expression_not_preevaluated,
-        // Type-driven dispatch: my-quote has (-> Expression Expression),
-        // so `(+ 1 2)` is NOT pre-evaluated at the my-quote call site.
-        // However, the rule body `(quoted $e)` instantiates to `(quoted (+ 1 2))`,
-        // and then the tuple path evaluates sub-elements: `(+ 1 2)` → `3`.
-        // To preserve unevaluated exprs, use `quote`: `(quoted (quote $e))`.
-        // This behavior matches MeTTa HE's interpret_tuple path.
+        // PT-canonical (Phase D): when a rule's LHS head has type
+        // `(-> Expression Expression)` (or any all-meta arrow), the rule's
+        // substituted RHS is returned VERBATIM (no re-evaluation). This
+        // matches PeTTa's data-in / data-out semantic for meta-typed
+        // predicates. Verified directly against PeTTa REPL on this fixture.
+        // Pre-V14 expectation `(quoted 3)` was HE-canonical (interpret_tuple
+        // path re-evaluated sub-elements); the PT migration retires that.
         r#"
             (: my-quote (-> Expression Expression))
             (= (my-quote $e) (quoted $e))
             !(my-quote (+ 1 2))
         "#,
-        &["(quoted 3)"]
+        &["(quoted (+ 1 2))"]
     );
 
     eval_test!(
@@ -1292,14 +1299,11 @@ mod tests {
 
     eval_test_unordered!(
         test_meta_type_prevents_bloom_filter_preeval,
-        // Verify that when a typed function has Expression-typed args,
-        // the bloom filter does NOT pre-evaluate those args even if the
-        // arg's head has rules. Without the type system, `(f)` would be
-        // pre-evaluated to {1,2,3} by the bloom filter. With the type
-        // system marking the arg as Expression, `(f)` is passed unevaluated.
-        // The rule body `(head $e)` captures `$e = (f)` and wraps it.
-        // Then the tuple path evaluates `(f)` inside `(head (f))` → {1,2,3}.
-        // Order is nondeterministic (parallel eval may reorder).
+        // PT-canonical (Phase D): all-meta arrow type → return substituted RHS
+        // VERBATIM. `(wrap-expr (f))` → `(head (f))` unreduced. Verified
+        // against live PeTTa. Pre-V14 expectation `{(head 1), (head 2),
+        // (head 3)}` was HE-canonical (tuple-path re-evaluated `(f)` ⇒ 3
+        // results); PT migration retires that — `(f)` stays verbatim.
         r#"
             (= (f) 1)
             (= (f) 2)
@@ -1308,7 +1312,7 @@ mod tests {
             (= (wrap-expr $e) (head $e))
             !(wrap-expr (f))
         "#,
-        &["(head 1)", "(head 2)", "(head 3)"]
+        &["(head (f))"]
     );
 
     eval_test!(
@@ -1409,9 +1413,8 @@ mod tests {
 
     #[test]
     fn test_tiered_meta_type_preservation() {
-        // Same as test_meta_type_expression_not_preevaluated but through
-        // the tiered eval() path. The tuple path evaluates sub-elements,
-        // so `(quoted (+ 1 2))` → `(quoted 3)` per MeTTa HE semantics.
+        // PT-canonical (Phase D): rule with `(-> Expression Expression)` returns
+        // substituted RHS verbatim. Verified against live PeTTa REPL.
         let results = run_eval_tiered(
             r#"
             (: my-quote (-> Expression Expression))
@@ -1419,7 +1422,7 @@ mod tests {
             !(my-quote (+ 1 2))
         "#,
         );
-        assert_eq!(results, vec!["(quoted 3)"]);
+        assert_eq!(results, vec!["(quoted (+ 1 2))"]);
     }
 
     #[test]
@@ -1486,21 +1489,21 @@ mod tests {
     eval_test!(
         if_reducible_reduces,
         "!(if-reducible (+ 1 2) True False)",
-        &["True"]
+        &["true"]
     );
 
     // Irreducible atom: foo has no rules, evaluates to itself
     eval_test!(
         if_reducible_irreducible_atom,
         "!(if-reducible foo True False)",
-        &["False"]
+        &["false"]
     );
 
     // Irreducible variable: $x has no binding, stays as-is
     eval_test!(
         if_reducible_irreducible_var,
         "!(if-reducible $x True False)",
-        &["False"]
+        &["false"]
     );
 
     // Nested reducible: inner reduction makes it reducible
@@ -1686,13 +1689,13 @@ mod tests {
     #[test]
     fn test_tiered_if_reducible_reduces() {
         let results = run_eval_tiered("!(if-reducible (+ 1 2) True False)");
-        assert_eq!(results, vec!["True"]);
+        assert_eq!(results, vec!["true"]);
     }
 
     #[test]
     fn test_tiered_if_reducible_irreducible() {
         let results = run_eval_tiered("!(if-reducible foo True False)");
-        assert_eq!(results, vec!["False"]);
+        assert_eq!(results, vec!["false"]);
     }
 
     #[test]
@@ -1852,7 +1855,7 @@ mod tests {
             (= (h $x) (< $x 0))
             !(h 5)
         "#,
-        &["False"]
+        &["false"]
     );
 
     // Variable-only RHS — type depends on binding
@@ -2738,7 +2741,7 @@ mod tests {
             !(check-type (f 42) Bool)
         "#,
         );
-        assert_eq!(results, vec!["True"]);
+        assert_eq!(results, vec!["true"]);
     }
 
     /// Meta-type Symbol should accept symbol arguments
@@ -2751,7 +2754,7 @@ mod tests {
             !(check-type (f foo) Bool)
         "#,
         );
-        assert_eq!(results, vec!["True"]);
+        assert_eq!(results, vec!["true"]);
     }
 
     /// Meta-type Expression should accept S-expression arguments
@@ -2764,7 +2767,7 @@ mod tests {
             !(check-type (f (a b)) Bool)
         "#,
         );
-        assert_eq!(results, vec!["True"]);
+        assert_eq!(results, vec!["true"]);
     }
 
     /// get-type with meta-type Atom parameter should not be filtered out
@@ -2852,7 +2855,7 @@ mod tests {
             !(is-function (-> A B))
         "#,
         );
-        assert_eq!(results, vec!["True"]);
+        assert_eq!(results, vec!["true"]);
     }
 
     /// is-function should return False for non-arrow atoms
@@ -2863,7 +2866,7 @@ mod tests {
             !(is-function Number)
         "#,
         );
-        assert_eq!(results, vec!["False"]);
+        assert_eq!(results, vec!["false"]);
     }
 
     /// is-function should handle nested arrows
@@ -2874,7 +2877,7 @@ mod tests {
             !(is-function (-> (-> A B) C))
         "#,
         );
-        assert_eq!(results, vec!["True"]);
+        assert_eq!(results, vec!["true"]);
     }
 
     /// is-function should return False for empty expression
@@ -2885,7 +2888,7 @@ mod tests {
             !(is-function ())
         "#,
         );
-        assert_eq!(results, vec!["False"]);
+        assert_eq!(results, vec!["false"]);
     }
 
     // ====================================================================
@@ -3184,7 +3187,7 @@ mod tests {
             !(match-type-or False Number Number)
         "#,
         );
-        assert_eq!(results, vec!["True"]);
+        assert_eq!(results, vec!["true"]);
     }
 
     /// match-type-or with True folded, non-matching type → True (or semantics)
@@ -3195,7 +3198,7 @@ mod tests {
             !(match-type-or True Number String)
         "#,
         );
-        assert_eq!(results, vec!["True"]);
+        assert_eq!(results, vec!["true"]);
     }
 
     /// match-type-or with False folded, non-matching type → False
@@ -3206,7 +3209,7 @@ mod tests {
             !(match-type-or False Number String)
         "#,
         );
-        assert_eq!(results, vec!["False"]);
+        assert_eq!(results, vec!["false"]);
     }
 
     /// match-type-or with %Undefined% → always True
@@ -3217,7 +3220,7 @@ mod tests {
             !(match-type-or False %Undefined% String)
         "#,
         );
-        assert_eq!(results, vec!["True"]);
+        assert_eq!(results, vec!["true"]);
     }
 
     // ====================================================================

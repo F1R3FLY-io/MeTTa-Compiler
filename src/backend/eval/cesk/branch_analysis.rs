@@ -98,7 +98,8 @@ fn is_known_pure_head(name: &str) -> bool {
         | "!" | "eval" | "quote" | "unquote" | "return"
         // Pattern matching
         | "match" | "unify" | "match-or"
-        // List operations
+        // List operations. NOTE: `cons`/`decons` are user-defined data
+        // constructors (see test_simple_list_length), NOT built-ins.
         | "car-atom" | "cdr-atom" | "cons-atom" | "size-atom"
         | "decons-atom" | "empty" | "list"
         // Type system

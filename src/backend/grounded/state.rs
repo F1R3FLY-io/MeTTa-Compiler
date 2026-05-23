@@ -21,6 +21,7 @@
 //! This eliminates the need for conversion between heap and arena types during
 //! grounded operation execution.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -184,7 +185,7 @@ where
         factory.atom(expected_type),
         factory.atom("ErrorType"),
     ]);
-    factory.error(call, detail)
+    factory.error( detail,call)
 }
 
 /// Get a friendly type name for error messages.

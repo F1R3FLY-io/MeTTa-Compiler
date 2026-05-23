@@ -1,0 +1,225 @@
+# petta-stdlib-gap.yaml — Registry of PT-canonical stdlib helpers and their
+# implementation status in MTT.
+#
+# Per the mandate, MTT cannot load PeTTa's lib_he.metta at runtime
+# (no MeTTa code in built-ins). Every PT helper must be hand-ported to
+# native Rust. This file tracks the port status and is the authoritative
+# checklist for stdlib completeness.
+
+version: 1
+last_updated: 2026-05-21
+mandate: |
+  PeTTa's lib_he.metta is 80 LOC of pure MeTTa. The MTT mandate
+  (.claude/CLAUDE.md, [[feedback-stack-safety-mandate]]) forbids MeTTa-source
+  built-ins. Each PT helper below must be implemented in native Rust under
+  src/backend/grounded/ (or as a trampoline-resident special form under
+  src/backend/eval/step/sexpr.rs).
+petta_libhe_source: /home/dylon/Workspace/f1r3fly.io/PeTTa/lib/lib_he.metta
+
+# Status values:
+#   ported    — native Rust impl exists and matches PT semantics
+#   partial   — exists but with HE-divergent semantics; needs PT alignment
+#   missing   — not in MTT; must be added
+#   excluded  — out-of-scope (FFI, security)
+
+helpers:
+  # Phase 2.2 design decision (2026-05-21): OverridableOpId NOT extended for
+  # new PT-only forms (progn/prog1/forall/foldall/catch-3arg/cut/etc.).
+  # Rationale: OverridableOpId is a per-environment bitset that lets user
+  # rules `(= (name args...) body)` shadow MTT's grounded fast-path
+  # helpers. The new PT-only forms in Phase 2.1/2.3 are SPECIAL FORMS
+  # dispatched at the `eval_sexpr_step_generic` arm level — they consume
+  # all their args structurally before any rule lookup. User rules with
+  # those heads would not be reached at the dispatch arm level today;
+  # adding them to OverridableOpId would be premature optimization.
+  # If user-rule shadowing of these forms becomes a need, OverridableOpId
+  # can be extended (currently has 3 slots free under the AtomicU32 cap;
+  # beyond that requires promotion to AtomicU64).
+
+  # Phase 1.4 audit result (2026-05-21): NO CODE CHANGE.
+  # `add-atom &self (= (head) body)` already auto-compiles to a queryable
+  # rule via env.add_to_space (which routes equations through add_rule).
+  # `add-atom &kb (= ...)` stores as data only — matching PT per-space
+  # semantics where rules are scoped to their containing predicate space.
+
+  # Phase 1.7 audit results (2026-05-21):
+  #
+  # The per-divergence agent claimed five rows were "already PT-aligned":
+  #   #1  let unify-failure   — REFUTED. `(let (S $x) 5 $x)` emits
+  #       (Error BadArgType (BadArgType 0 ...)) instead of branch drop.
+  #       Needs Phase 3.2 let/chain unify failure plumbing.
+  #   #2  case (Empty default) — REFUTED. `(case (foo-undefined) ((Empty d)
+  #       ($x $x)))` returns `[(foo-undefined)]` not `[d]`. The HE behavior
+  #       requires the scrutinee to *evaluate to* Empty for the Empty arm
+  #       to fire. PT matches when scrutinee has no result. Needs PHE-007
+  #       work in Phase 3 / Phase 6.
+  #   #11 unify lazy-branch    — CONFIRMED. `(unify foo foo matched not)` → [matched].
+  #   #12 add-reduct evaluates — AMBIGUOUS. `(add-reduct &s (= (greet) hello))`
+  #       stores the rule definition; the body-evaluation distinction only
+  #       matters when the body is a reducible expression with rules. Needs
+  #       targeted fixture.
+  #   #13 superpose permissive — CONFIRMED. `(superpose (1 2 3))` → [1, 2, 3].
+
+  # Phase 1.5 audit result (2026-05-21): MeTTa Bool atoms are PT-canonical
+  # as `True`/`False` (capitalized) in BOTH PT and MTT. Evidence:
+  # 18 PT fixtures expect `"True"` (e.g. P07-builtins/014-num-eq, /016-not).
+  # Lowercase `"true"`/`"false"` in PT spec ARE NOT MeTTa Booleans — they
+  # are Prolog truth values returned by PT's side-effect ops (e.g.
+  # `remove-atom` in P03-spaces/001-remove-function). That divergence is
+  # tracked under PHE-012 (effect surface) in Phase 6, not Phase 1.5.
+  # Conclusion: NO CODE CHANGE for Phase 1.5. MTT is already aligned.
+
+  # Helpers already in MTT (per tests/petta_helpers.rs smoke):
+  - name: is-member
+    status: ported
+    site: src/backend/grounded/atoms.rs
+  - name: append
+    status: ported
+    site: src/backend/grounded/atoms.rs
+  - name: length
+    status: ported
+    site: src/backend/grounded/atoms.rs
+  - name: exclude-item
+    status: ported
+    site: src/backend/grounded/atoms.rs
+  - name: msort
+    status: ported
+    site: src/backend/grounded/atoms.rs
+  - name: progn
+    status: ported
+    site: src/backend/eval/step/sexpr.rs
+  - name: reduce
+    status: ported
+  - name: cut
+    status: ported
+    site: src/backend/environment/dispatch_overrides.rs (OverridableOpId::Cut)
+  - name: struct-unique-atom
+    status: ported
+  - name: unique-atom
+    status: ported
+  - name: alpha-unique-atom
+    status: ported
+  - name: test
+    status: ported
+    site: src/backend/environment/dispatch_overrides.rs (OverridableOpId::Test)
+
+  # PT-canonical helpers — need verification or porting:
+  - name: if-equal
+    status: partial
+    notes: "MTT has `==`; verify (= (if-equal $a $b $T $F) ...) alias exists"
+  - name: if-equal2
+    status: missing
+  - name: assertEqual
+    status: ported
+    site: src/backend/grounded/testing_ops.rs
+  - name: assertAlphaEqual
+    status: ported
+    site: src/backend/grounded/testing_ops.rs
+  - name: unify
+    status: ported
+    notes: "MTT has 4-arg (unify p1 p2 then else); verify against PT lib_he.metta:18-30"
+  - name: add-reduct
+    status: ported
+    notes: "MTT desugars to (chain $atom $r (add-atom $space $r)) — PT-compatible per per-divergence audit #12"
+  - name: if-error
+    status: ported
+    site: src/backend/eval/step/sexpr.rs
+    notes: "Phase 1.1 will sweep pattern order for new (Error Type Ctx) shape"
+  - name: return-on-error
+    status: ported
+  - name: noreduce-eq
+    status: partial
+    notes: "Phase 1.6: MTT emits (== (quote A) (quote B)); PT emits (== A B). Plan to flip."
+  - name: evalc
+    status: missing
+    notes: "PT has it via lib_he.metta:54-58; MTT lacks. Add as native op."
+  - name: unquote
+    status: missing
+    notes: "PT-only via lib_he.metta. Add."
+  - name: is-function
+    status: ported
+    site: src/backend/grounded/types.rs
+  - name: get-type-space
+    status: ported
+    notes: "Phase 4 trampoline Start/Process per session-handoff 2026-05-19"
+  - name: match-types
+    status: ported
+  - name: match-type-or
+    status: ported
+  - name: for-each-in-atom
+    status: ported
+  - name: map-atom
+    status: ported
+  - name: foldl-atom
+    status: ported
+
+  # PT-canonical primitives (not in lib_he.metta — translator-form additions):
+  - name: prog1
+    status: missing
+    target_phase: Phase 2.1
+  - name: forall
+    status: missing
+    target_phase: Phase 2.1
+  - name: hyperpose
+    status: missing
+    target_phase: Phase 2.1
+  - name: foldall
+    status: missing
+    target_phase: Phase 2.1
+  - name: with_mutex
+    status: ported
+    notes: "Phase I/K (commit cb2d625) — verify and document"
+  - name: transaction
+    status: ported
+    notes: "Phase I/K — verify"
+  - name: '|->'
+    status: missing
+    target_phase: Phase 2.1
+    notes: "PT lambda — translates to fresh predicate + partial(F, Args) closure"
+  - name: =alpha
+    status: ported
+  - name: =@=
+    status: partial
+    notes: "PT structural-equiv; verify against alpha-unique-atom semantics"
+  - name: =?
+    status: missing
+  - name: '!='
+    status: missing
+    notes: "PT lib uses both `not-equal` and `!=`; MTT has `not-equal`. Add `!=` alias."
+
+  # PT host-dependent (in scope per user constraint #6):
+  - name: random-int
+    status: ported
+    site: stdlib/random.metta
+    notes: "Phase J.2 commit 165b9cb &rng global handle; verify PHE-011 alignment"
+  - name: random-float
+    status: ported
+  - name: parse_json
+    status: missing
+    target_phase: Phase 8.3
+  - name: format_json
+    status: missing
+    target_phase: Phase 8.3
+  - name: see
+    status: missing
+    target_phase: Phase 8.2
+  - name: tell
+    status: missing
+    target_phase: Phase 8.2
+
+  # PT FFI — EXCLUDED by user constraint #4 (security):
+  - name: py-call
+    status: excluded
+    reason: "Python FFI excluded for security per user constraint #4"
+  - name: callPredicate
+    status: excluded
+    reason: "Prolog FFI excluded; MTT implements WAM natively"
+  - name: assertzPredicate
+    status: excluded
+    reason: "Prolog FFI"
+  - name: translatePredicate
+    status: excluded
+    reason: "Prolog FFI"
+  - name: add-translator-rule!
+    status: excluded
+    reason: "Translator-extension via FFI"

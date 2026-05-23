@@ -284,30 +284,42 @@ impl<'src> MettaParser<'src> {
             return Ok(emitter.emit_atom(op, span));
         }
 
-        // S2 BANG-WORD (2026-05-13): `!` followed by a non-delimiter
-        // character is a WORD continuation — scan the whole token as a
-        // single atom. This covers `!foo` (atom `!foo`), `!bar` (atom
-        // `!bar`), and `!=` / `!==` (the legacy comparison operator atoms
-        // previously handled by a special-case branch).
+        // Phase 6.X (PT migration, 2026-05-21): `!` followed by a non-
+        // delimiter is parsed as a PREFIX directive `(! <body>)`, EXCEPT
+        // when `!` is the head of an operator atom like `!=` or `!==`.
+        // The `=`-extension special case preserves the legacy comparison
+        // ops; everything else (`!a`, `!42`, `!foo`) becomes a bang
+        // directive per PT canonical (PeTTa P00-kernel/003-eval-symbol,
+        // 004-eval-int explicitly expect `!a` → `[a]`, `!42` → `[42]`).
         //
-        // `?` and `'` keep the legacy unary-prefix semantics below.
+        // Pre-V14 (Phase 6 retired) treated `!foo` as a WORD continuation
+        // emitting the atom `!foo`; under V14 single-coherent-semantics
+        // the bang sigil takes priority over symbol continuation.
+        //
+        // `?` and `'` keep the unary-prefix semantics below.
         if op == "!" {
-            let atom_start = start_byte;
-            while self.pos < self.src.len() && !is_delimiter(self.src[self.pos]) {
-                if self.src[self.pos] & 0xC0 != 0x80 {
-                    self.col += 1;
+            // Special case: `!=` / `!==` / `!=any-eq-extension` — single
+            // atom for comparison operators. The next char must be `=`.
+            if self.src[self.pos] == b'=' {
+                let atom_start = start_byte;
+                while self.pos < self.src.len() && !is_delimiter(self.src[self.pos]) {
+                    if self.src[self.pos] & 0xC0 != 0x80 {
+                        self.col += 1;
+                    }
+                    self.pos += 1;
                 }
-                self.pos += 1;
+                let atom_bytes = &self.src[atom_start..self.pos];
+                let span = Span::new(
+                    Position::new(start_line, start_col, start_byte),
+                    Position::new(self.line, self.col, self.pos),
+                );
+                let s = std::str::from_utf8(atom_bytes).map_err(|_| {
+                    self.error(SyntaxErrorKind::Generic, "invalid UTF-8 in atom")
+                })?;
+                return Ok(emitter.emit_atom(s, span));
             }
-            let atom_bytes = &self.src[atom_start..self.pos];
-            let span = Span::new(
-                Position::new(start_line, start_col, start_byte),
-                Position::new(self.line, self.col, self.pos),
-            );
-            let s = std::str::from_utf8(atom_bytes).map_err(|_| {
-                self.error(SyntaxErrorKind::Generic, "invalid UTF-8 in atom")
-            })?;
-            return Ok(emitter.emit_atom(s, span));
+            // Otherwise: prefix directive — parse the next atom/expression
+            // as the body. Falls through to the prefix-parse path below.
         }
 
         // Parse the argument expression (CLS_OPEN/CLS_OPEN_SQ/CLS_OPEN_BR/CLS_QUOTE
@@ -490,10 +502,13 @@ impl<'src> MettaParser<'src> {
         let text = std::str::from_utf8(atom_bytes)
             .map_err(|_| self.error(SyntaxErrorKind::Generic, "invalid UTF-8 in atom"))?;
 
-        // Check for boolean literals
+        // Check for boolean literals. Phase 1.5 PT alignment: accept both
+        // `True`/`False` and `true`/`false` (lowercase is PT canonical;
+        // capitalized retained for backward compatibility per migration
+        // plan §1.5 "Parser remains permissive").
         match text {
-            "True" => Ok(emitter.emit_bool(true, span)),
-            "False" => Ok(emitter.emit_bool(false, span)),
+            "True" | "true" => Ok(emitter.emit_bool(true, span)),
+            "False" | "false" => Ok(emitter.emit_bool(false, span)),
             _ => Ok(emitter.emit_atom(text, span)),
         }
     }

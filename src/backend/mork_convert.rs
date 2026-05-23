@@ -760,6 +760,15 @@ fn write_metta_value_inner(
                             v.inner_ref() as *const MettaValueInner,
                         ));
                     }
+                    MettaValueInner::Lazy(v) => {
+                        // PT-canonical Lazy is INVISIBLE for MORK conversion
+                        // (2026-05-21): mirror Spanned and pass through the
+                        // inner value transparently. The Lazy wrapper has no
+                        // MORK representation — it's a runtime-only marker.
+                        work.push(IterWork::Process(
+                            v.inner_ref() as *const MettaValueInner,
+                        ));
+                    }
                 }
             }
         }
@@ -1055,6 +1064,11 @@ fn debruijn_dispatch(
             write_symbol(b"NotReducible", pdp, ez, symbol_cache)?;
         }
         MettaValueInner::Spanned(v, _) => {
+            work.push(W::Process(v.inner_ref() as *const MettaValueInner));
+        }
+        MettaValueInner::Lazy(v) => {
+            // PT-canonical Lazy is INVISIBLE for MORK conversion (2026-05-21):
+            // mirror Spanned and pass through the inner value transparently.
             work.push(W::Process(v.inner_ref() as *const MettaValueInner));
         }
     }

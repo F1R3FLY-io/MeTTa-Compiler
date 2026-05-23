@@ -8,7 +8,7 @@
 //! The `step` and `sexpr` modules provide generic versions of the
 //! step evaluation functions that work with any value type implementing `MettaValueTrait`.
 
-mod grounded;
+pub(crate) mod grounded;
 mod sexpr;
 mod step;
 mod types;

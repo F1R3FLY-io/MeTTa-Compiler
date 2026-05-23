@@ -40,6 +40,7 @@
 //! Idempotent: if the local cache directory already exists, the clone is
 //! skipped and the path is just registered (or re-registered as a no-op).
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -57,9 +58,8 @@ where
 {
     if items.len() < 2 || items.len() > 3 {
         return vec![factory.error(
-            factory.sexpr(items.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        )];
+            factory.sexpr(items.to_vec()),)];
     }
 
     // Argument 1: URL string. Accept both String literals and atoms (a bare
@@ -70,18 +70,16 @@ where
             Some(s) => s.to_string(),
             None => {
                 return vec![factory.error(
-                    items[1].clone(),
                     factory.string("git-import!: first argument must be a URL string"),
-                )];
+                    items[1].clone(),)];
             }
         },
     };
 
     if url.is_empty() {
         return vec![factory.error(
-            items[1].clone(),
             factory.string("git-import!: URL string is empty"),
-        )];
+            items[1].clone(),)];
     }
 
     // Optional second arg: build command, also accepted as String or atom.
@@ -106,12 +104,11 @@ where
         Some(n) => n.to_string(),
         None => {
             return vec![factory.error(
-                items[1].clone(),
                 factory.string(&format!(
                     "git-import!: could not extract repo name from URL '{}'",
                     url
                 )),
-            )];
+                items[1].clone(),)];
         }
     };
 
@@ -122,13 +119,12 @@ where
         // Ensure the parent cache directory exists.
         if let Err(e) = std::fs::create_dir_all(&cache_dir) {
             return vec![factory.error(
-                items[1].clone(),
                 factory.string(&format!(
                     "git-import!: failed to create cache directory '{}': {}",
                     cache_dir.display(),
                     e
                 )),
-            )];
+                items[1].clone(),)];
         }
 
         // Run `git clone --depth 1 <url> <local>`.
@@ -142,23 +138,21 @@ where
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
                 return vec![factory.error(
-                    items[1].clone(),
                     factory.string(&format!(
                         "git-import!: 'git clone {}' failed (exit {}): {}",
                         url,
                         o.status.code().unwrap_or(-1),
                         stderr.trim()
                     )),
-                )];
+                    items[1].clone(),)];
             }
             Err(e) => {
                 return vec![factory.error(
-                    items[1].clone(),
                     factory.string(&format!(
                         "git-import!: failed to invoke 'git' (is it installed and on PATH?): {}",
                         e
                     )),
-                )];
+                    items[1].clone(),)];
             }
         }
 
@@ -174,7 +168,6 @@ where
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr);
                     return vec![factory.error(
-                        items[2].clone(),
                         factory.string(&format!(
                             "git-import!: build step '{}' failed (exit {}) in '{}': {}",
                             cmd,
@@ -182,16 +175,15 @@ where
                             local.display(),
                             stderr.trim()
                         )),
-                    )];
+                        items[2].clone(),)];
                 }
                 Err(e) => {
                     return vec![factory.error(
-                        items[2].clone(),
                         factory.string(&format!(
                             "git-import!: failed to spawn build shell for '{}': {}",
                             cmd, e
                         )),
-                    )];
+                        items[2].clone(),)];
                 }
             }
         }

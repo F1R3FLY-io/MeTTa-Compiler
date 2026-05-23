@@ -19,6 +19,7 @@
 //! - `eval_lookup_generic`: Conditional fact lookup with success/failure branches
 //! - `eval_rulify_generic`: Meta-programming for runtime rule generation
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::eval::bindings::{apply_bindings_generic, pattern_match_generic};
 use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait};
@@ -159,9 +160,8 @@ where
 
     if args.len() < 3 {
         let err = factory.error(
-            factory.sexpr(args.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        );
+            factory.sexpr(args.to_vec()),);
         return (vec![err], env);
     }
 
@@ -180,9 +180,8 @@ where
         Some(goals) => goals,
         None => {
             let err = factory.error(
-                antecedent.clone(),
                 factory.string("exec antecedent must be a conjunction (,)"),
-            );
+                antecedent.clone(),);
             return (vec![err], env);
         }
     };
@@ -222,16 +221,14 @@ where
                 final_env = op_env;
             } else {
                 let err = factory.error(
-                    instantiated_consequent.clone(),
                     factory.string("exec consequent must be a conjunction or operation (O ...)"),
-                );
+                    instantiated_consequent.clone(),);
                 all_results.push(err);
             }
         } else {
             let err = factory.error(
-                instantiated_consequent.clone(),
                 factory.string("exec consequent must be a conjunction or operation (O ...)"),
-            );
+                instantiated_consequent.clone(),);
             all_results.push(err);
         }
     }
@@ -507,9 +504,8 @@ where
 
     if args.len() < 2 {
         let err = factory.error(
-            factory.sexpr(args.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        );
+            factory.sexpr(args.to_vec()),);
         return (vec![err], env);
     }
 
@@ -521,9 +517,8 @@ where
         Some(temps) => temps.to_vec(),
         None => {
             let err = factory.error(
-                templates.clone(),
                 factory.string("coalg templates must be a conjunction (,)"),
-            );
+                templates.clone(),);
             return (vec![err], env);
         }
     };
@@ -568,9 +563,8 @@ where
 
     if args.len() < 3 {
         let err = factory.error(
-            factory.sexpr(args.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        );
+            factory.sexpr(args.to_vec()),);
         return (vec![err], env);
     }
 
@@ -581,17 +575,15 @@ where
     // Validate branches are conjunctions
     if success_goals.as_conjunction().is_none() {
         let err = factory.error(
-            success_goals.clone(),
             factory.string("lookup success branch must be a conjunction (,)"),
-        );
+            success_goals.clone(),);
         return (vec![err], env);
     }
 
     if failure_goals.as_conjunction().is_none() {
         let err = factory.error(
-            failure_goals.clone(),
             factory.string("lookup failure branch must be a conjunction (,)"),
-        );
+            failure_goals.clone(),);
         return (vec![err], env);
     }
 
@@ -731,9 +723,8 @@ where
 
     if args.len() < 5 {
         let err = factory.error(
-            factory.sexpr(args.to_vec()),
             factory.atom("IncorrectNumberOfArguments"),
-        );
+            factory.sexpr(args.to_vec()),);
         return (vec![err], env);
     }
 
@@ -748,9 +739,8 @@ where
         Some(ps) if ps.len() == 1 => ps[0].clone(),
         _ => {
             let err = factory.error(
-                pattern_conj.clone(),
                 factory.string("rulify pattern must be a unary conjunction (, $p0)"),
-            );
+                pattern_conj.clone(),);
             return (vec![err], env);
         }
     };
@@ -760,9 +750,8 @@ where
         Some(ts) => ts.to_vec(),
         None => {
             let err = factory.error(
-                templates_conj.clone(),
                 factory.string("rulify templates must be a conjunction (, $t0 ...)"),
-            );
+                templates_conj.clone(),);
             return (vec![err], env);
         }
     };

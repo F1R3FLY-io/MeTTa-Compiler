@@ -68,7 +68,8 @@ pub unsafe extern "C" fn jit_runtime_decons_atom(_ctx: *mut JitContext, val: u64
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => {
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => {
             // Non-S-expression - return Unit
             JitValue::unit().to_bits()
         }

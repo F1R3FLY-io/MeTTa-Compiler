@@ -16,6 +16,7 @@
 //! All references within MettaValue are `'static`, tied to the global slab allocator.
 //! Values live for the program duration and are reclaimed by the GC when no longer reachable.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
@@ -296,6 +297,16 @@ fn hash_value_cached_inner(value: &MettaValue, cache: &mut TieredHashCache) -> u
                             key: ck,
                         });
                     }
+                    MettaValueInner::Lazy(inner) => {
+                        // PT-canonical Lazy is INVISIBLE for hashing
+                        // (2026-05-21): mirror Spanned — descend into inner
+                        // with no combine, so `hash(Lazy(x)) == hash(x)`.
+                        let ck = inner.inner_ptr() as usize;
+                        work.push(Work::Process {
+                            val: *inner,
+                            key: ck,
+                        });
+                    }
                     MettaValueInner::Error(..) => {
                         let h = 8u64.wrapping_mul(HASH_GOLDEN_RATIO);
                         cache.insert(key, h);
@@ -364,6 +375,16 @@ fn hash_value_for_trait_inner<H: Hasher>(inner: &MettaValueInner, hasher: &mut H
         // Plan S0a (2026-05-13) — unique tag 1u8 for NotReducible sentinel.
         MettaValueInner::NotReducible => 1u8.hash(hasher),
         MettaValueInner::Quoted(_) => 10u8.hash(hasher),
+        MettaValueInner::Lazy(inner) => {
+            // PT-canonical Lazy is INVISIBLE for hashing (2026-05-21):
+            // delegate to the inner value so `Lazy(x).hash() == x.hash()`.
+            // This branch is hit by the rare-variants fall-through arm in
+            // `hash_value_cached_inner` (see "other =>" arm at line ~304).
+            // The iterative driver normally handles SExpr/Quoted/Spanned
+            // recursively; for Lazy we want the same transparent semantics
+            // as Spanned — no tag emission, recurse into the inner.
+            hash_value_for_trait_inner(inner.inner_ref(), hasher);
+        }
         MettaValueInner::Spanned(_, _) => 11u8.hash(hasher),
         MettaValueInner::Space(handle) => {
             12u8.hash(hasher);
@@ -531,6 +552,21 @@ pub enum MettaValueInner {
     /// Quoted expression — prevents evaluation, preserves the quote wrapper.
     /// Transparent to introspection: car-atom sees "quote", get-metatype sees "Expression".
     Quoted(MettaValue),
+    /// PT-canonical lazy-substituted value marker (2026-05-21).
+    ///
+    /// The inner value is DATA — do not trigger rule lookup on it during
+    /// evaluation. This wrapper is INVISIBLE for `Display` (delegates to inner),
+    /// `Hash`, and `PartialEq`. It exists only to inhibit the rule-application
+    /// path while keeping the substituted value transparent to introspection
+    /// (car-atom / get-metatype / formatting) — implementing PeTTa's
+    /// "data-in / data-out" semantic for rules whose LHS head is declared with
+    /// an all-meta arrow type (e.g. `(: ? (-> Expression Atom))`).
+    ///
+    /// Emitted by [`apply_bindings_lazy_scoped_generic`] under the
+    /// `op_lhs_head_all_meta_typed` gate. Eval treats `Lazy(x)` as already in
+    /// normal form: the trampoline `Eval` arm immediately resumes with `x`
+    /// (no rule dispatch) and the step dispatcher returns `Done([x])`.
+    Lazy(MettaValue),
     /// Empty sentinel
     Empty,
     /// `NotReducible` sentinel — Plan S0a (2026-05-13).
@@ -620,6 +656,9 @@ pub enum ValueView {
     State(u64),
     Memo(&'static MemoHandle),
     Quoted(MettaValue),
+    /// PT-canonical lazy-substituted value marker — INVISIBLE to display/hash/eq.
+    /// See [`MettaValueInner::Lazy`] for full semantics.
+    Lazy(MettaValue),
 }
 
 impl ValueView {
@@ -669,6 +708,9 @@ impl ValueView {
             // Expression: S-expressions and Quoted wrappers (Quoted is
             // transparent at the metatype level)
             ValueView::SExpr(_) | ValueView::Quoted(_) => "Expression",
+            // Lazy is INVISIBLE — delegate to inner. PT-canonical
+            // data-in / data-out marker (2026-05-21).
+            ValueView::Lazy(inner) => inner.view().metatype(),
         }
     }
 }
@@ -917,6 +959,7 @@ impl MettaValue {
             MettaValueInner::State(id) => ValueView::State(*id),
             MettaValueInner::Memo(handle) => ValueView::Memo(handle),
             MettaValueInner::Quoted(inner_val) => ValueView::Quoted(*inner_val),
+            MettaValueInner::Lazy(inner_val) => ValueView::Lazy(*inner_val),
             MettaValueInner::NotReducible => ValueView::NotReducible,
             // Spanned is stripped by inner() — this is unreachable
             MettaValueInner::Spanned(..) => unreachable!("inner() strips Spanned"),
@@ -1346,7 +1389,13 @@ impl MettaValue {
         }
     }
 
-    /// Try to extract as sexpr items (transparent through Spanned)
+    /// Try to extract as sexpr items (transparent through Spanned).
+    ///
+    /// NOTE: NOT transparent through Lazy — that's intentional. Lazy is a
+    /// rule-dispatch inhibitor (a substituted value wrapped in Lazy must not
+    /// match any rule LHS even if structurally an SExpr). Callers that want
+    /// the structural shape of a Lazy-wrapped value should call
+    /// `unwrap_lazy()` first. See PT-canonical Lazy semantics (2026-05-21).
     #[inline]
     pub fn as_sexpr(&self) -> Option<&[MettaValue]> {
         if self.is_inline() {
@@ -1359,11 +1408,15 @@ impl MettaValue {
         }
     }
 
-    /// Try to extract as error (offending, detail) (transparent through Spanned).
+    /// Try to extract as error `(type, ctx)` (transparent through Spanned).
     ///
-    /// HE-bisimilar shape: returns `(offending_expr, detail)`. The detail is
-    /// typically a `String` value carrying the human message, or a structured
-    /// atom like `BadType` / `IncorrectNumberOfArguments`.
+    /// Phase 1.1 PT alignment (2026-05-22): the tuple is `(error_type, ctx)`
+    /// per PT canonical `(Error <Type> <Ctx>)` shape (PHE-009, finer #4).
+    /// Previously the shape was `(offending, detail)` (offending first); the
+    /// argument order has been flipped throughout the codebase. The Error
+    /// variant fields hold `(type, ctx)` where `type` is typically an atom
+    /// like `BadType` / `IncorrectNumberOfArguments` / `BadArgType` and `ctx`
+    /// is the offending expression / context info.
     #[inline]
     pub fn as_error(&self) -> Option<(MettaValue, MettaValue)> {
         if self.is_inline() {
@@ -1467,6 +1520,63 @@ impl MettaValue {
         }
     }
 
+    /// Try to extract the inner value of a Lazy variant (owned copy)
+    /// (transparent through Spanned). PT-canonical lazy-substitution marker
+    /// (2026-05-21).
+    #[inline]
+    pub fn as_lazy(&self) -> Option<MettaValue> {
+        if self.is_inline() {
+            return None;
+        }
+        match self.inner_ref() {
+            MettaValueInner::Lazy(inner) => Some(*inner),
+            MettaValueInner::Spanned(v, _) => v.as_lazy(),
+            _ => None,
+        }
+    }
+
+    /// Try to extract a reference to the inner value of a Lazy variant
+    /// (transparent through Spanned). PT-canonical lazy-substitution marker
+    /// (2026-05-21).
+    #[inline]
+    pub fn as_lazy_ref(&self) -> Option<&MettaValue> {
+        if self.is_inline() {
+            return None;
+        }
+        match self.inner_ref() {
+            MettaValueInner::Lazy(inner) => Some(inner),
+            MettaValueInner::Spanned(v, _) => v.as_lazy_ref(),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a Lazy variant (transparent through Spanned).
+    /// PT-canonical lazy-substitution marker (2026-05-21).
+    #[inline]
+    pub fn is_lazy(&self) -> bool {
+        if self.is_inline() {
+            return false;
+        }
+        match self.inner_ref() {
+            MettaValueInner::Lazy(_) => true,
+            MettaValueInner::Spanned(v, _) => v.is_lazy(),
+            _ => false,
+        }
+    }
+
+    /// Unwrap any number of Lazy layers, returning the innermost
+    /// non-Lazy value. Spanned-transparent. PT-canonical (2026-05-21).
+    #[inline]
+    pub fn unwrap_lazy(&self) -> MettaValue {
+        let mut current = *self;
+        loop {
+            match current.inner_ref() {
+                MettaValueInner::Lazy(inner) => current = *inner,
+                _ => return current,
+            }
+        }
+    }
+
     /// Get the type name of this value as a string slice (transparent through Spanned)
     pub fn type_name(&self) -> &'static str {
         if self.is_inline() {
@@ -1493,6 +1603,10 @@ impl MettaValue {
             MettaValueInner::Space(_) => "Space",
             MettaValueInner::State(_) => "State",
             MettaValueInner::Quoted(_) => "Expression",
+            // PT-canonical Lazy is INVISIBLE for type_name (2026-05-21):
+            // delegate to inner so introspection sees the substituted value's
+            // shape, not the lazy wrapper.
+            MettaValueInner::Lazy(inner) => inner.type_name(),
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
             MettaValueInner::NotReducible => "NotReducible",
@@ -1560,8 +1674,9 @@ impl MettaValue {
     /// atom like `BadType` / `IncorrectNumberOfArguments`.
     #[allow(non_snake_case)]
     #[inline]
-    pub fn Error(offending: MettaValue, detail: MettaValue) -> Self {
-        super::gc_allocator::global_factory().error(offending, detail)
+    pub fn Error(error_type: MettaValue, ctx: MettaValue) -> Self {
+        // Phase 1.1 PT-canonical: Error(Type, Ctx) — pass through verbatim.
+        super::gc_allocator::global_factory().error(error_type, ctx)
     }
 
     /// Create a Type variant via global allocator.
@@ -1641,6 +1756,15 @@ impl MettaValue {
     #[inline]
     pub fn Quoted(inner: Self) -> Self {
         super::gc_allocator::global_factory().quote(inner)
+    }
+
+    /// Create a PT-canonical Lazy variant via global allocator (2026-05-21).
+    /// The Lazy wrapper is INVISIBLE for display/hash/equality — it exists
+    /// only to inhibit rule lookup during evaluation.
+    #[allow(non_snake_case)]
+    #[inline]
+    pub fn Lazy(inner: Self) -> Self {
+        super::gc_allocator::global_factory().lazy(inner)
     }
 
     /// Create a Spanned variant wrapping a value with its source location.
@@ -1751,6 +1875,11 @@ impl MettaValue {
             MettaValueInner::Quoted(inner) => {
                 format!(r#"{{"type":"quoted","value":{}}}"#, inner.to_json_string())
             }
+            MettaValueInner::Lazy(inner) => {
+                // PT-canonical Lazy is INVISIBLE for JSON output
+                // (2026-05-21): delegate to inner.
+                inner.to_json_string()
+            }
             MettaValueInner::Empty => r#"{"type":"empty"}"#.to_string(),
             MettaValueInner::NotReducible => r#"{"type":"not_reducible"}"#.to_string(),
             MettaValueInner::Spanned(v, _) => v.to_json_string(),
@@ -1829,12 +1958,15 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                 if val.is_inline() {
                     result_stack.push(match val.inline_tag() {
                         NB_TAG_LONG => val.inline_long_value().to_string(),
+                        // Phase 1.5 PT alignment (2026-05-22): lowercase per
+                        // PT translator (PHE-finer #10). Parser accepts both
+                        // `True`/`False` and `true`/`false` as input.
                         NB_TAG_BOOL => match style {
                             FormatStyle::MettaString | FormatStyle::Display => {
                                 if (val.tagged as u64 & 1) != 0 {
-                                    "True"
+                                    "true"
                                 } else {
-                                    "False"
+                                    "false"
                                 }
                                 .to_string()
                             }
@@ -1860,8 +1992,12 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                         FormatStyle::MorkString => f.to_string(),
                     }),
                     MettaValueInner::Bool(b) => result_stack.push(match style {
+                        // Phase 1.5 PT alignment (2026-05-22): lowercase per
+                        // PT translator (PHE-finer #10). Parser remains
+                        // permissive — `True`/`False` and `true`/`false` are
+                        // both accepted as input (see parser/mod.rs).
                         FormatStyle::MettaString | FormatStyle::Display => {
-                            if *b { "True" } else { "False" }.to_string()
+                            if *b { "true" } else { "false" }.to_string()
                         }
                         FormatStyle::MorkString => b.to_string(),
                     }),
@@ -1962,6 +2098,12 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                             separator: "",
                             memo_key: Some(memo_key),
                         });
+                        work_stack.push(FmtWork::Process(inner));
+                    }
+                    MettaValueInner::Lazy(inner) => {
+                        // PT-canonical Lazy is INVISIBLE for display
+                        // (2026-05-21): delegate to inner so users see
+                        // the substituted value verbatim. No wrapping.
                         work_stack.push(FmtWork::Process(inner));
                     }
                     MettaValueInner::SExpr(items) => {
@@ -2227,8 +2369,10 @@ impl PartialEq for MettaValue {
 
 impl PartialEq for MettaValueInner {
     fn eq(&self, other: &Self) -> bool {
-        // Strip Spanned wrappers for comparison — spans don't affect structural equality.
-        // This ensures Spanned(v, s1) == Spanned(v, s2) and Spanned(v, s) == v.
+        // Strip Spanned AND Lazy wrappers for comparison — both are
+        // transparent (Spanned: source-position metadata; Lazy: PT-canonical
+        // data-in / data-out marker, 2026-05-21). This ensures
+        // `Lazy(x) == y` iff `x == y`, mirroring Spanned's behavior.
         let a = strip_spanned(self);
         let b = strip_spanned(other);
         // If both point to the same non-Spanned inner, they're equal
@@ -2259,14 +2403,20 @@ impl PartialEq for MettaValueInner {
     }
 }
 
-/// Strip all Spanned layers from a MettaValueInner reference.
-/// Returns a reference to the innermost non-Spanned variant.
+/// Strip all Spanned (and PT-canonical Lazy) layers from a MettaValueInner reference.
+/// Returns a reference to the innermost transparent-wrapper variant.
+///
+/// Lazy is invisible for equality and hashing per PT-canonical semantics
+/// (2026-05-21) — `Lazy(x) == y` iff `x == y`. Eval-side dispatch
+/// (`step/sexpr.rs`, `eval_loop.rs`) checks for Lazy BEFORE this strip via
+/// `view()`, so the inhibit-rule-lookup behavior is preserved.
 #[inline]
 fn strip_spanned(inner: &MettaValueInner) -> &MettaValueInner {
     let mut current = inner;
     loop {
         match current {
             MettaValueInner::Spanned(v, _) => current = v.inner_ref(),
+            MettaValueInner::Lazy(v) => current = v.inner_ref(),
             _ => return current,
         }
     }
@@ -2602,6 +2752,30 @@ impl MettaValueTrait for MettaValue {
         }
     }
 
+    #[inline]
+    fn as_lazy(&self) -> Option<Self> {
+        if self.is_inline() {
+            return None;
+        }
+        match self.inner_ref() {
+            MettaValueInner::Lazy(inner) => Some(*inner),
+            MettaValueInner::Spanned(v, _) => v.as_lazy(),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn as_lazy_ref(&self) -> Option<&Self> {
+        if self.is_inline() {
+            return None;
+        }
+        match self.inner_ref() {
+            MettaValueInner::Lazy(inner) => Some(inner),
+            MettaValueInner::Spanned(v, _) => v.as_lazy_ref(),
+            _ => None,
+        }
+    }
+
     fn type_name(&self) -> &'static str {
         if self.is_inline() {
             return match self.inline_tag() {
@@ -2627,6 +2801,8 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::Space(_) => "Space",
             MettaValueInner::State(_) => "State",
             MettaValueInner::Quoted(_) => "Expression",
+            // PT-canonical Lazy is INVISIBLE (2026-05-21).
+            MettaValueInner::Lazy(inner) => inner.type_name(),
             MettaValueInner::Memo(_) => "Memo",
             MettaValueInner::Empty => "Empty",
             MettaValueInner::NotReducible => "NotReducible",
@@ -2653,6 +2829,8 @@ impl MettaValueTrait for MettaValue {
             MettaValueInner::Unit => "Unit",
             MettaValueInner::SExpr(_) => "S-expression",
             MettaValueInner::Quoted(_) => "Quoted expression",
+            // PT-canonical Lazy is INVISIBLE (2026-05-21).
+            MettaValueInner::Lazy(inner) => inner.friendly_type_name(),
             MettaValueInner::Error(_, _) => "Error",
             MettaValueInner::Type(_) => "Type",
             MettaValueInner::Conjunction(_) => "Conjunction",
@@ -2786,10 +2964,11 @@ impl MettaValueTrait for MettaValue {
                     if val.is_inline() {
                         result_stack.push(match val.inline_tag() {
                             NB_TAG_LONG => val.inline_long_value().to_string(),
+                            // Phase 1.5 PT alignment: lowercase per PHE-finer #10.
                             NB_TAG_BOOL => if (val.tagged as u64 & 1) != 0 {
-                                "True"
+                                "true"
                             } else {
-                                "False"
+                                "false"
                             }
                             .to_string(),
                             NB_TAG_UNIT => "()".to_string(),
@@ -2802,7 +2981,7 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Long(n) => result_stack.push(n.to_string()),
                         MettaValueInner::Float(f) => result_stack.push(float_canonical(*f)),
                         MettaValueInner::Bool(b) => {
-                            result_stack.push(if *b { "True" } else { "False" }.to_string());
+                            result_stack.push(if *b { "true" } else { "false" }.to_string());
                         }
                         MettaValueInner::String(s) => result_stack.push(format!("\"{}\"", s)),
                         MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
@@ -2851,6 +3030,12 @@ impl MettaValueTrait for MettaValue {
                                 suffix: ")",
                                 separator: "",
                             });
+                            work_stack.push(ReprWork::Process(inner));
+                        }
+                        MettaValueInner::Lazy(inner) => {
+                            // PT-canonical Lazy is INVISIBLE (2026-05-21):
+                            // delegate to inner so users see substituted
+                            // values verbatim, no wrapping in friendly_repr.
                             work_stack.push(ReprWork::Process(inner));
                         }
                         MettaValueInner::SExpr(items) => {
@@ -3021,10 +3206,11 @@ impl MettaValueTrait for MettaValue {
                     if val.is_inline() {
                         result_stack.push(match val.inline_tag() {
                             NB_TAG_LONG => val.inline_long_value().to_string(),
+                            // Phase 1.5 PT alignment: lowercase per PHE-finer #10.
                             NB_TAG_BOOL => if (val.tagged as u64 & 1) != 0 {
-                                "True"
+                                "true"
                             } else {
-                                "False"
+                                "false"
                             }
                             .to_string(),
                             NB_TAG_UNIT => "()".to_string(),
@@ -3043,7 +3229,7 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Long(n) => result_stack.push(n.to_string()),
                         MettaValueInner::Float(f) => result_stack.push(float_canonical(*f)),
                         MettaValueInner::Bool(b) => {
-                            result_stack.push(if *b { "True" } else { "False" }.to_string());
+                            result_stack.push(if *b { "true" } else { "false" }.to_string());
                         }
                         // Key difference: strings printed without quotes for display
                         MettaValueInner::String(s) => result_stack.push(s.to_string()),
@@ -3096,6 +3282,12 @@ impl MettaValueTrait for MettaValue {
                                 separator: "",
                                 memo_key: Some(memo_key),
                             });
+                            work_stack.push(ReprWork::Process(inner));
+                        }
+                        MettaValueInner::Lazy(inner) => {
+                            // PT-canonical Lazy is INVISIBLE (2026-05-21):
+                            // delegate to inner so users see substituted
+                            // values verbatim — no `(quote ...)` wrap.
                             work_stack.push(ReprWork::Process(inner));
                         }
                         MettaValueInner::SExpr(items) => {
@@ -3402,6 +3594,15 @@ fn serialize_value(value: &MettaValue, buf: &mut Vec<u8>) {
                 buf.push(QUOTED);
                 work.push(inner.clone());
             }
+            MettaValueInner::Lazy(inner) => {
+                // PT-canonical Lazy is INVISIBLE for serialization
+                // (2026-05-21): mirror Spanned and serialize the inner
+                // value verbatim. The Lazy marker is purely a runtime
+                // eval-inhibitor for substituted values and has no
+                // persisted shape — its inner round-trips through the
+                // byte stream as itself.
+                work.push(inner.clone());
+            }
             MettaValueInner::Memo(handle) => {
                 buf.push(MEMO);
                 buf.extend_from_slice(&handle.id.to_le_bytes());
@@ -3530,15 +3731,15 @@ mod tests {
 
     #[test]
     fn test_arena_error() {
-        // HE-bisimilar Error(offending, detail).
+        // Phase 1.1 PT-canonical: Error(Type, Ctx).
         let factory = global_factory();
-        let offending = factory.atom("details");
-        let detail = factory.string("test error");
-        let v = factory.error(offending, detail);
+        let error_type = factory.atom("BadType");
+        let ctx_val = factory.string("test error context");
+        let v = factory.error(error_type, ctx_val);
         assert!(v.is_error());
-        let (off, det) = v.as_error().expect("should be error");
-        assert_eq!(off.as_atom(), Some("details"));
-        assert_eq!(det.as_string(), Some("test error"));
+        let (type_v, ctx_v) = v.as_error().expect("should be error");
+        assert_eq!(type_v.as_atom(), Some("BadType"));
+        assert_eq!(ctx_v.as_string(), Some("test error context"));
     }
 
     #[test]
@@ -3709,8 +3910,8 @@ mod tests {
         let off2 = factory.atom("d");
         let det1 = factory.string("err");
         let det2 = factory.string("err");
-        let v1 = factory.error(off1, det1);
-        let v2 = factory.error(off2, det2);
+        let v1 = factory.error( det1,off1);
+        let v2 = factory.error( det2,off2);
         assert_eq!(v1, v2);
     }
 
@@ -3847,7 +4048,7 @@ mod tests {
         let factory = global_factory();
         let offending = factory.unit();
         let detail = factory.string("err");
-        let v = factory.error(offending, detail);
+        let v = factory.error( detail,offending);
         assert_eq!(v.type_name(), "Error");
     }
 
@@ -3895,14 +4096,15 @@ mod tests {
     fn test_display_bool_true() {
         let factory = global_factory();
         let v = factory.bool(true);
-        assert_eq!(format!("{}", v), "True");
+        // Phase 1.5 PT alignment: lowercase per PHE-finer #10.
+        assert_eq!(format!("{}", v), "true");
     }
 
     #[test]
     fn test_display_bool_false() {
         let factory = global_factory();
         let v = factory.bool(false);
-        assert_eq!(format!("{}", v), "False");
+        assert_eq!(format!("{}", v), "false");
     }
 
     #[test]
@@ -3958,12 +4160,12 @@ mod tests {
 
     #[test]
     fn test_display_error() {
-        // HE-bisimilar Error(offending, detail). Display emits `(Error <off> <det>)`.
+        // Phase 1.1 PT-canonical: Error(Type, Ctx). Display emits `(Error <Type> <Ctx>)`.
         let factory = global_factory();
-        let offending = factory.atom("details");
-        let detail = factory.string("msg");
-        let v = factory.error(offending, detail);
-        assert_eq!(format!("{}", v), "(Error details \"msg\")");
+        let error_type = factory.atom("BadType");
+        let ctx_val = factory.string("msg");
+        let v = factory.error(error_type, ctx_val);
+        assert_eq!(format!("{}", v), "(Error BadType \"msg\")");
     }
 
     #[test]
@@ -4085,10 +4287,11 @@ mod tests {
 
     #[test]
     fn test_serialize_roundtrip_error() {
+        // Phase 1.1 PT-canonical: Error(Type, Ctx) — roundtrip preserves field order.
         let factory = global_factory();
-        let offending = factory.atom("details");
-        let detail = factory.string("test error");
-        let original = factory.error(offending, detail);
+        let error_type = factory.atom("BadType");
+        let ctx_val = factory.string("test error");
+        let original = factory.error(error_type, ctx_val);
         let bytes = original.serialize();
         let (decoded, _) = factory.deserialize(&bytes).expect("deserialize");
         assert_eq!(original, decoded);

@@ -107,28 +107,28 @@ fn ext4_unary_minus_float_returns_negated() {
 fn ext5_lt_strings_returns_true() {
     let results = run_one(r#"!(< "abc" "abd")"#);
     let s = fmt_results(&results);
-    assert!(s.contains("True"), "Expected True, got: {}", s);
+    assert!(s.contains("true"), "Expected True, got: {}", s);
 }
 
 #[test]
 fn ext5_le_eq_strings_returns_true() {
     let results = run_one(r#"!(<= "abc" "abc")"#);
     let s = fmt_results(&results);
-    assert!(s.contains("True"), "Expected True, got: {}", s);
+    assert!(s.contains("true"), "Expected True, got: {}", s);
 }
 
 #[test]
 fn ext5_gt_strings_returns_true() {
     let results = run_one(r#"!(> "abd" "abc")"#);
     let s = fmt_results(&results);
-    assert!(s.contains("True"), "Expected True, got: {}", s);
+    assert!(s.contains("true"), "Expected True, got: {}", s);
 }
 
 #[test]
 fn ext5_lt_diff_length_strings() {
     let results = run_one(r#"!(< "a" "ab")"#);
     let s = fmt_results(&results);
-    assert!(s.contains("True"), "Expected True, got: {}", s);
+    assert!(s.contains("true"), "Expected True, got: {}", s);
 }
 
 // ============================================================================

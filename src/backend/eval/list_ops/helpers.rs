@@ -3,6 +3,7 @@
 //! This module provides utility functions for list operations including
 //! generic variable substitution and variable format suggestions.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
 /// Suggest variable format when user provides a plain atom instead of `$var`
@@ -173,13 +174,13 @@ where
                     continue;
                 }
 
-                // Handle error: HE-bisimilar `(offending, detail)`. Process is
-                // LIFO — push detail first (popped second), offending last
-                // (popped first) so BuildError pops them in the same order.
-                if let Some((offending, detail)) = val.as_error() {
+                // Handle error: Phase 1.1 PT-canonical `(Type, Ctx)`. Process
+                // is LIFO — push Ctx first (popped second), Type last (popped
+                // first) so BuildError pops them in the same order.
+                if let Some((error_type, ctx_val)) = val.as_error() {
                     work_stack.push(SubstituteWorkGeneric::BuildError);
-                    work_stack.push(SubstituteWorkGeneric::Process(detail.clone()));
-                    work_stack.push(SubstituteWorkGeneric::Process(offending.clone()));
+                    work_stack.push(SubstituteWorkGeneric::Process(ctx_val.clone()));
+                    work_stack.push(SubstituteWorkGeneric::Process(error_type.clone()));
                     continue;
                 }
 
@@ -208,17 +209,17 @@ where
             }
 
             SubstituteWorkGeneric::BuildError => {
-                // Order on result_stack: [offending_result, detail_result]
-                // (offending pushed first via earlier work, detail pushed
-                // second since it was at the top of work_stack at push time).
-                // Pop in reverse to recover (offending, detail).
-                let detail = result_stack
+                // Phase 1.1 PT-canonical Error(Type, Ctx). Order on result_stack:
+                // [type_result, ctx_result] — Type pushed first (popped last),
+                // Ctx pushed last (popped first). Pop in reverse to recover
+                // (Type, Ctx).
+                let ctx_val = result_stack
                     .pop()
-                    .expect("BuildError should have detail on result stack");
-                let offending = result_stack
+                    .expect("BuildError should have Ctx on result stack");
+                let error_type = result_stack
                     .pop()
-                    .expect("BuildError should have offending on result stack");
-                result_stack.push(factory.error(offending, detail));
+                    .expect("BuildError should have Type on result stack");
+                result_stack.push(factory.error(error_type, ctx_val));
             }
 
             SubstituteWorkGeneric::BuildQuoted => {
@@ -334,19 +335,19 @@ mod tests {
     #[test]
     fn test_substitute_variable_generic_error() {
         let factory = GcFactory::default();
-        // HE-bisimilar: Error(offending, detail). Put `$x` in the offending slot
-        // so substitution rewrites it, and `"test error"` in the detail slot.
+        // Phase 1.1 PT-canonical: Error(Type, Ctx). Put `$x` in the Ctx slot
+        // so substitution rewrites it, and `BadType` in the Type slot.
         let expr = MettaValue::Error(
+            MettaValue::Atom("BadType"),
             MettaValue::Atom("$x"),
-            MettaValue::String("test error"),
         );
         let value = MettaValue::Long(42);
 
         let result = substitute_variable_generic(&expr, "$x", &value, &factory);
         assert!(result.is_error());
-        let (offending, detail) = result.as_error().expect("should be error");
-        assert_eq!(offending.as_long(), Some(42));
-        assert_eq!(detail.as_string(), Some("test error"));
+        let (type_v, ctx_v) = result.as_error().expect("should be error");
+        assert_eq!(type_v.as_atom(), Some("BadType"));
+        assert_eq!(ctx_v.as_long(), Some(42));
     }
 
     #[test]

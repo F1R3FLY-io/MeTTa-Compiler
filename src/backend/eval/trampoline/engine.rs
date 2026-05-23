@@ -16,6 +16,7 @@
 //! - `eval_switch` - Switch/case evaluation
 //! - `is_boolean_check_pattern` - Detect boolean check optimization patterns
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use smallvec::SmallVec;
 
 use crate::backend::environment::GenericEnvironment;
@@ -309,7 +310,7 @@ fn apply_bindings_inner(
                 {
                     result_stack.push(original);
                 } else {
-                    result_stack.push(factory.error(new_offending, new_detail));
+                    result_stack.push(factory.error( new_detail,new_offending));
                 }
             }
             Work::BuildSpanned { span, original } => {
@@ -1736,12 +1737,11 @@ pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -
     // Cases must be an S-expression
     let Some(case_items) = cases.as_sexpr() else {
         let err = factory.error(
-            *cases,
             factory.string(&format!(
                 "switch-minimal expects expression as second argument, got: {}",
                 cases.friendly_type_name()
             )),
-        );
+            *cases,);
         return SwitchResult::Error(err);
     };
 
@@ -1755,22 +1755,20 @@ pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -
         // Each case must be an S-expression (pattern template)
         let Some(case_parts) = case.as_sexpr() else {
             let err = factory.error(
-                *case,
                 factory.string("switch case should be an expression (pattern-template pair)"),
-            );
+                *case,);
             return SwitchResult::Error(err);
         };
 
         // Each case must have exactly 2 elements: pattern and template
         if case_parts.len() != 2 {
             let err = factory.error(
-                *case,
                 factory.string(&format!(
                     "switch case should be a pattern-template pair with exactly 2 elements, got {}. \
                     Usage: (switch expr (pattern1 result1) (pattern2 result2) ...)",
                     case_parts.len()
                 )),
-            );
+                *case,);
             return SwitchResult::Error(err);
         }
 

@@ -257,7 +257,7 @@ where
                 } else if let Some(n) = arg.as_long() {
                     print!("{}", n);
                 } else if let Some(b) = arg.as_bool() {
-                    print!("{}", if b { "True" } else { "False" });
+                    print!("{}", if b { "true" } else { "false" });
                 } else if arg.is_unit() {
                     print!("()");
                 } else if let Some(name) = arg.as_atom() {
@@ -281,7 +281,7 @@ where
                     } else if let Some(n) = arg.as_long() {
                         result.push_str(&n.to_string());
                     } else if let Some(b) = arg.as_bool() {
-                        result.push_str(if b { "True" } else { "False" });
+                        result.push_str(if b { "true" } else { "false" });
                     } else if let Some(name) = arg.as_atom() {
                         result.push_str(name);
                     } else {

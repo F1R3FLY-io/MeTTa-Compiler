@@ -6,6 +6,7 @@
 //! - Trigonometric: sin, cos, tan, asin, acos, atan
 //! - Predicates: isnan, isinf
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::cell::Cell;
 
 use super::helpers::{box_long, extract_long_signed, metta_to_jit};
@@ -105,7 +106,7 @@ pub unsafe extern "C" fn jit_runtime_pow_math(base: u64, exp: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            return metta_to_jit(&factory.error(factory.atom("BadType"), factory.string("JIT type error"))).to_bits();
+            return metta_to_jit(&factory.error( factory.string("JIT type error"),factory.atom("BadType"))).to_bits();
         }
     };
 
@@ -119,7 +120,7 @@ pub unsafe extern "C" fn jit_runtime_pow_math(base: u64, exp: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            return metta_to_jit(&factory.error(factory.atom("BadType"), factory.string("JIT type error"))).to_bits();
+            return metta_to_jit(&factory.error( factory.string("JIT type error"),factory.atom("BadType"))).to_bits();
         }
     };
 
@@ -176,7 +177,7 @@ pub unsafe extern "C" fn jit_runtime_sqrt(val: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            factory.error(factory.atom("BadType"), factory.string("JIT type error"))
+            factory.error( factory.string("JIT type error"),factory.atom("BadType"))
         }
     };
 
@@ -206,7 +207,7 @@ pub unsafe extern "C" fn jit_runtime_log(base: u64, val: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            factory.error(factory.atom("BadType"), factory.string("JIT type error"))
+            factory.error( factory.string("JIT type error"),factory.atom("BadType"))
         }
     };
 
@@ -314,7 +315,7 @@ pub unsafe extern "C" fn jit_runtime_sin(val: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            factory.error(factory.atom("BadType"), factory.string("JIT type error"))
+            factory.error( factory.string("JIT type error"),factory.atom("BadType"))
         }
     };
 
@@ -338,7 +339,7 @@ pub unsafe extern "C" fn jit_runtime_cos(val: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            factory.error(factory.atom("BadType"), factory.string("JIT type error"))
+            factory.error( factory.string("JIT type error"),factory.atom("BadType"))
         }
     };
 
@@ -362,7 +363,7 @@ pub unsafe extern "C" fn jit_runtime_tan(val: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            factory.error(factory.atom("BadType"), factory.string("JIT type error"))
+            factory.error( factory.string("JIT type error"),factory.atom("BadType"))
         }
     };
 
@@ -386,7 +387,7 @@ pub unsafe extern "C" fn jit_runtime_asin(val: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            factory.error(factory.atom("BadType"), factory.string("JIT type error"))
+            factory.error( factory.string("JIT type error"),factory.atom("BadType"))
         }
     };
 
@@ -410,7 +411,7 @@ pub unsafe extern "C" fn jit_runtime_acos(val: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            factory.error(factory.atom("BadType"), factory.string("JIT type error"))
+            factory.error( factory.string("JIT type error"),factory.atom("BadType"))
         }
     };
 
@@ -434,7 +435,7 @@ pub unsafe extern "C" fn jit_runtime_atan(val: u64) -> u64 {
             signal_jit_type_error();
             let factory = crate::backend::models::global_factory();
             use crate::backend::models::MettaValueFactory;
-            factory.error(factory.atom("BadType"), factory.string("JIT type error"))
+            factory.error( factory.string("JIT type error"),factory.atom("BadType"))
         }
     };
 

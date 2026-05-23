@@ -16,6 +16,7 @@
 //! `eval_loop.rs`) prevents infinite loops when the bloom filter
 //! produces false positives on data constructors.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{MettaValueFactory, MettaValueInner, MettaValueTrait};
 
@@ -161,6 +162,14 @@ where
                     // Tier 3: Bloom filter fallback for untyped operators with rules.
                     // False positives are handled by fixpoint detection in
                     // CollectGroundedArg (eval_loop.rs).
+                    //
+                    // Note: the dispatcher's Step-2 gate in `sexpr.rs` checks
+                    // the PT-canonical `any_rule_wants_lazy_args` flag BEFORE
+                    // this function is called for the parent — when a rule
+                    // body's head is lazy (add-atom, quote, if, ...), pre-eval
+                    // of THE PARENT'S ARGS is skipped. That's the correct
+                    // surgical point. This Tier-3 fallback remains so non-lazy
+                    // parents still see applicative argument evaluation.
                     else if env.may_have_rules_for(op, sub_items.len() - 1) {
                         indices.push(i);
                     }
@@ -362,7 +371,7 @@ where
                 factory.atom(expected_name),
                 factory.atom(actual_type),
             ]);
-            return Some(factory.error(call_form, bad_arg_type));
+            return Some(factory.error( bad_arg_type,call_form));
         }
     }
     None

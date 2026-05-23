@@ -520,6 +520,8 @@ impl SchedulerAutomaton {
             ValueView::Space(_) => CostClass::ImpureSequential,
             ValueView::State(_) => CostClass::ImpureSequential,
             ValueView::Memo(_) => CostClass::GroundCheap,
+            // PT-canonical Lazy is data — never reduces, treat as ground.
+            ValueView::Lazy(_) => CostClass::GroundCheap,
         }
     }
 

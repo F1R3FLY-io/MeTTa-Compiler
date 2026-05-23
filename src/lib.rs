@@ -596,9 +596,11 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let MettaValueInner::Error(offending, detail) = r.inner() {
-                assert_eq!(detail.as_string(), Some("negative value"));
-                assert!(matches!(offending.inner(), MettaValueInner::Long(-5)));
+            // Phase 1.1 PT-canonical: Error variant is (Type, Ctx).
+            // `(error "negative value" -5)` → Type="negative value", Ctx=-5.
+            if let MettaValueInner::Error(type_val, ctx_val) = r.inner() {
+                assert_eq!(type_val.as_string(), Some("negative value"));
+                assert!(matches!(ctx_val.inner(), MettaValueInner::Long(-5)));
             } else {
                 panic!("Expected error from function call");
             }
@@ -631,8 +633,9 @@ mod tests {
         }
 
         if let Some(r) = result {
-            if let MettaValueInner::Error(_, detail) = r.inner() {
-                assert_eq!(detail.as_string(), Some("division by zero"));
+            // Phase 1.1 PT-canonical: Error(Type, Ctx). Type is the message.
+            if let MettaValueInner::Error(type_val, _) = r.inner() {
+                assert_eq!(type_val.as_string(), Some("division by zero"));
             } else {
                 panic!("Expected error from recursive function");
             }
@@ -695,8 +698,9 @@ mod tests {
         let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        if let MettaValueInner::Error(_, detail) = results[0].inner() {
-            assert_eq!(detail.as_string(), Some("condition failed"));
+        // Phase 1.1 PT-canonical: Error(Type, Ctx). Type is the message.
+        if let MettaValueInner::Error(type_val, _) = results[0].inner() {
+            assert_eq!(type_val.as_string(), Some("condition failed"));
         } else {
             panic!("Expected error from condition evaluation");
         }
@@ -785,8 +789,9 @@ mod tests {
             let (expr_results, new_env) = eval(expr, env, &state);
             env = new_env;
             if let Some(r) = expr_results.first() {
-                if let MettaValueInner::Error(_, detail) = r.inner() {
-                    if let Some(s) = detail.as_string() {
+                // Phase 1.1 PT-canonical: Error(Type, Ctx). Type is message.
+                if let MettaValueInner::Error(type_val, _) = r.inner() {
+                    if let Some(s) = type_val.as_string() {
                         errors.push(s.to_string());
                     }
                 }
@@ -850,9 +855,10 @@ mod tests {
         let (results, _env) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
-        if let MettaValueInner::Error(offending, detail) = results[0].inner() {
-            assert_eq!(detail.as_string(), Some("complex"));
-            assert!(matches!(offending.inner(), MettaValueInner::SExpr(_)));
+        // Phase 1.1 PT-canonical: Error(Type, Ctx) where Type=message, Ctx=offending.
+        if let MettaValueInner::Error(type_val, ctx_val) = results[0].inner() {
+            assert_eq!(type_val.as_string(), Some("complex"));
+            assert!(matches!(ctx_val.inner(), MettaValueInner::SExpr(_)));
         } else {
             panic!("Expected error with complex details");
         }

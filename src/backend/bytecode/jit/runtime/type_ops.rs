@@ -344,6 +344,8 @@ where
                     MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                     // Quoted is transparent to get-metatype — it appears as "Expression"
                     MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
+                    // Lazy is INVISIBLE — delegate to inner MettaValue's type_name().
+                    MettaValueInner::Lazy(v) => v.type_name(),
                     // Spanned: strip span and inspect inner value
                     MettaValueInner::Spanned(inner, _) => {
                         // Recurse through inner — use .inner_ref() field (raw access)
@@ -366,6 +368,8 @@ where
                             MettaValueInner::Unit => TYPE_NAME_UNIT,
                             MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                             MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
+                            // Lazy is INVISIBLE — delegate to inner MettaValue's type_name().
+                            MettaValueInner::Lazy(v) => v.type_name(),
                             // Nested Spanned: delegate to the inner MettaValue's type_name()
                             MettaValueInner::Spanned(v, _) => v.type_name(),
                         }
@@ -432,6 +436,8 @@ unsafe fn get_type_name(val: u64) -> &'static str {
                 MettaValueInner::Error(_, _) => TYPE_NAME_ERROR,
                 // Quoted is transparent to get-metatype — it appears as "Expression"
                 MettaValueInner::Quoted(_) => TYPE_NAME_EXPRESSION,
+                // Lazy is INVISIBLE — delegate to inner MettaValue's type_name().
+                MettaValueInner::Lazy(v) => v.type_name(),
                 // Spanned: delegate to the inner MettaValue's type_name()
                 MettaValueInner::Spanned(v, _) => v.type_name(),
             }

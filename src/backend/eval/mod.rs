@@ -10,7 +10,7 @@ pub mod cesk;
 pub(crate) mod frame_chain;
 pub(crate) mod freshening;
 pub(crate) mod git_import;
-mod helpers;
+pub(crate) mod helpers;
 mod list_ops;
 pub(crate) mod modules;
 pub mod monad_registry;
@@ -1058,6 +1058,69 @@ fn expression_has_overridden_grounded_op_recursive(
         return items
             .iter()
             .any(|item| expression_has_overridden_grounded_op_recursive(item, overrides));
+    }
+    false
+}
+
+/// Gate: skip the bytecode VM path when the expression tree contains any
+/// PT-canonical translator form (`prog1`, `forall`, `foldall`, `|->`,
+/// `translatePredicate`) or any side-effecting top-level grounded op
+/// (`println!`) whose T1 lowering does not match T0.
+///
+/// The T0 trampoline (`eval/step/sexpr.rs`) implements these forms via
+/// rewrite-to-let or rewrite-to-eval. T1's bytecode compiler has no
+/// matching opcodes, so the VM falls through to the data-constructor
+/// path and returns the raw S-expression. To preserve T0↔T1 bisimilarity
+/// without duplicating logic across tiers, route any expression that
+/// mentions these forms through T0.
+///
+/// Mandate compliance: this is compile-time tier selection, not a
+/// runtime gate or env-var/feature/CLI switch.
+pub(crate) fn expression_has_t0_only_form(value: &MettaValue) -> bool {
+    if let Some(items) = value.as_sexpr() {
+        if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+            match head {
+                "prog1" | "forall" | "foldall" | "|->" | "translatePredicate"
+                // PHE-012: top-level (println! ...) must return Unit ((); T0's
+                // dispatch arm at `step/sexpr.rs` handles this) — T1's
+                // compile_call emits an (println! ...) SExpr that the VM
+                // never reduces to Unit.
+                | "println!"
+                // PHE-008 fixture 045: get-type on a declared symbol should
+                // return just the declared type, not also the declaration
+                // itself. T0's special-form arm at `step/sexpr.rs` handles
+                // this correctly via `infer_type_generic`. T1's GetType
+                // opcode + the directive-loop's auto-add behavior emits
+                // both the `(: foo Number)` declaration AND the inferred
+                // `Number` — duplicating the surface output.
+                | "get-type" => return true,
+                // PHE-007 fixture 044: `(case (no-rule) ((1 first) (Empty fallback)))`
+                // — T0 implements PT-canonical case-Empty-default fallback
+                // (`trampoline/eval_loop.rs:10801-10817`): when no scrutinee atom
+                // matches any case arm AND the cases include an `(Empty default)`
+                // arm, fire the default via negation-as-failure. T1's compile_case
+                // emits Pop+Fail on no-match, never consulting the `(Empty …)`
+                // arm. Route case-with-Empty-arm expressions through T0 to
+                // preserve PT-canonical fallback semantics.
+                "case" => {
+                    if items.len() >= 3 {
+                        if let Some(arms) = items[2].as_sexpr() {
+                            for arm in arms {
+                                if let Some(arm_items) = arm.as_sexpr() {
+                                    if arm_items.len() == 2
+                                        && arm_items[0].as_atom() == Some("Empty")
+                                    {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        return items.iter().any(expression_has_t0_only_form);
     }
     false
 }

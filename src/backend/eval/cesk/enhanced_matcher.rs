@@ -627,6 +627,14 @@ impl EnhancedMatcher {
             if items.len() >= 2 && items[items.len() - 2].as_atom() == Some(".") {
                 return false;
             }
+            // Cons-pattern detection (2026-05-21, PLN-Direct fix): `(cons HEAD
+            // TAIL)` is a PT-canonical destructuring pattern binding HEAD↦v1
+            // and TAIL↦(v2 ... vn). EnhancedMatcher assumes fixed arity; bail
+            // to the factory-aware pattern_match fallback. See StructuralMatcher
+            // bail-out for full PT-semantic citation.
+            if items.len() == 3 && items[0].as_atom() == Some("cons") {
+                return false;
+            }
             arity_checks.push(ECheck::Arity {
                 path: path.clone(),
                 expected: items.len() as u16,

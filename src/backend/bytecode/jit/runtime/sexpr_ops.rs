@@ -362,7 +362,8 @@ pub unsafe extern "C" fn jit_runtime_get_arity(_ctx: *mut JitContext, val: u64, 
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => JitValue::from_long(0).to_bits(),
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => JitValue::from_long(0).to_bits(),
     }
 }
 
@@ -425,6 +426,7 @@ pub unsafe extern "C" fn jit_runtime_get_element(
         | ValueView::Space(_)
         | ValueView::State(_)
         | ValueView::Memo(_)
-        | ValueView::Quoted(_) => TAG_UNIT,
+        | ValueView::Quoted(_)
+        | ValueView::Lazy(_) => TAG_UNIT,
     }
 }

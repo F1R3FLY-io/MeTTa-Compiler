@@ -6,6 +6,7 @@
 //! This enables zero-conversion bytecode compilation for both heap-allocated
 //! (`MettaValue`) and arena-allocated (`MettaValue`) values.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::sync::Arc;
 
 use super::context::CompileContext;
@@ -1530,7 +1531,12 @@ where
         if args.len() == 3 {
             self.compile(&args[2])?;
         } else {
-            self.builder.emit(Opcode::PushUnit);
+            // 2-arg `(if Cond Then)`: emit `Empty` sentinel atom on False so the
+            // trampoline branch-drops the directive (PT translator.pl:149-153;
+            // PHE-finer #3). Matches the T0 step path which emits factory.empty().
+            let empty_atom = self.factory.atom("Empty");
+            let idx = self.builder.add_constant(empty_atom);
+            self.builder.emit_u16(Opcode::PushAtom, idx);
         }
 
         self.builder.patch_jump(end_jump);
@@ -1552,6 +1558,23 @@ where
         let pattern = &args[0];
         let value = &args[1];
         let body = &args[2];
+
+        // Phase 3.2 (PT migration, 2026-05-21): if the pattern is an
+        // S-expression (structural destructuring), bail out of bytecode
+        // compilation and fall back to T0 trampoline dispatch. The bytecode
+        // path uses `GetElement` (op_index_atom) for SExpr destructuring,
+        // which errors with `(Error BadArgType (BadArgType 0 S-expression
+        // with valid index other))` when the value doesn't structurally
+        // match the pattern. T0's `pattern_match` correctly silent-fails
+        // (zero results) — the PT canonical behavior per PHE-006 finer
+        // divergence #1. Atom patterns (variables, wildcards) are still
+        // compiled inline since they unconditionally bind.
+        if pattern.as_sexpr().is_some() {
+            return Err(CompileError::InvalidExpression(
+                "let with S-expression pattern: falling back to T0 for PT-faithful unify failure"
+                    .to_string(),
+            ));
+        }
 
         // Compile the value (not in tail position)
         let saved_tail = self.in_tail_position;
@@ -1599,14 +1622,39 @@ where
         // and the fixture's "caught" branch fires.
         if bindings.as_sexpr().is_none() && !bindings.is_unit() {
             let err = self.factory.error(
-                bindings.clone(),
                 self.factory.string(
                     "let* bindings must be a list. Usage: (let* ((pattern value) ...) body)",
                 ),
-            );
+                bindings.clone(),);
             let idx = self.builder.add_constant(err);
             self.builder.emit_u16(Opcode::PushConstant, idx);
             return Ok(());
+        }
+
+        // Phase 3.2 (PT migration, 2026-05-21): mirror compile_let. If ANY
+        // binding pattern is an S-expression (structural destructuring), bail
+        // out of bytecode compilation and fall back to T0 trampoline dispatch.
+        // The bytecode `bind_pattern` path uses `GetElement` (op_index_atom)
+        // for SExpr destructuring, which errors with `(Error BadArgType
+        // (BadArgType 0 S-expression with valid index other))` when the
+        // value doesn't structurally match the pattern. T0's `pattern_match`
+        // correctly silent-fails (zero results) — the PT canonical behavior
+        // per PHE-006 finer divergence #1. Without this guard PLN-main
+        // examples returning `(Sentence $T $E)` from `(superpose $beliefs)`
+        // emit BadArgType where T0 silently drops the failed clause, causing
+        // PLN.Derive to enumerate only a fraction of valid (|- $x $y) firings
+        // and PLN.Query to return the wrong (stv ...) on the final answer.
+        if let Some(items) = bindings.as_sexpr() {
+            for binding in items {
+                if let Some(pair) = binding.as_sexpr() {
+                    if pair.len() == 2 && pair[0].as_sexpr().is_some() {
+                        return Err(CompileError::InvalidExpression(
+                            "let* with S-expression binding pattern: falling back to T0 for PT-faithful unify failure"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
         }
 
         self.context.begin_scope();

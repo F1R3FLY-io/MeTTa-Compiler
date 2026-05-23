@@ -17,6 +17,7 @@
 //! - `eval_mod_space_generic`: Module space operations
 //! - `eval_print_mods_generic`: Print loaded modules
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::hash::{Hash, Hasher};
 
 use crate::backend::compile::compile_generic;
@@ -47,9 +48,8 @@ where
 
     if items.len() < 2 {
         let err = factory.error(
-            factory.sexpr(items),
             factory.atom("IncorrectNumberOfArguments"),
-        );
+            factory.sexpr(items),);
         return (vec![err], env);
     }
 
@@ -62,9 +62,8 @@ where
         s.to_string()
     } else {
         let err = factory.error(
-            path_arg.clone(),
             factory.string("include: expected string or symbol path"),
-        );
+            path_arg.clone(),);
         return (vec![err], env);
     };
 
@@ -90,13 +89,12 @@ where
         Err(e) => {
             env.unmark_module_loading(content_hash);
             let err = factory.error(
-                factory.atom(&path_str),
                 factory.string(&format!(
                     "include: failed to read file '{}': {}",
                     resolved_path.display(),
                     e
                 )),
-            );
+                factory.atom(&path_str),);
             return (vec![err], env);
         }
     };
@@ -107,13 +105,12 @@ where
         Err(e) => {
             env.unmark_module_loading(content_hash);
             let err = factory.error(
-                factory.atom(&path_str),
                 factory.string(&format!(
                     "include: failed to parse file '{}': {}",
                     resolved_path.display(),
                     e
                 )),
-            );
+                factory.atom(&path_str),);
             return (vec![err], env);
         }
     };
@@ -205,9 +202,8 @@ where
 
     if items.len() < 2 {
         let err = factory.error(
-            factory.sexpr(items),
             factory.atom("IncorrectNumberOfArguments"),
-        );
+            factory.sexpr(items),);
         return (vec![err], env);
     }
 
@@ -266,33 +262,17 @@ where
                     (p, d)
                 }
                 None => {
-                    let err = factory.error(
-                        path_arg.clone(),
-                        factory.string(
-                            "import!: (library ...) form did not resolve to an existing file. \
-                             Check METTA_LIBRARY_PATH and that any required `git-import!` has been called.",
-                        ),
-                    );
-                    return (vec![err], env);
+                    // PT silent fail (Phase 6.1).
+                    return (Vec::new(), env);
                 }
             }
         } else {
-            let err = factory.error(
-                path_arg.clone(),
-                factory.string(
-                    "import!: expected string, symbol, or (library ...) S-expression for module path",
-                ),
-            );
-            return (vec![err], env);
+            // PT silent fail (Phase 6.1).
+            return (Vec::new(), env);
         }
     } else {
-        let err = factory.error(
-            path_arg.clone(),
-            factory.string(
-                "import!: expected string, symbol, or (library ...) S-expression for module path",
-            ),
-        );
-        return (vec![err], env);
+        // PT silent fail (Phase 6.1).
+        return (Vec::new(), env);
     };
     let path_str = path_display;
 
@@ -309,20 +289,12 @@ where
     }
     env.mark_module_loading(content_hash);
 
-    // Read the file contents
+    // Read the file contents — Phase 6.1: PT silent fail on missing file.
     let contents = match std::fs::read_to_string(&resolved_path) {
         Ok(c) => c,
-        Err(e) => {
+        Err(_) => {
             env.unmark_module_loading(content_hash);
-            let err = factory.error(
-                factory.atom(&path_str),
-                factory.string(&format!(
-                    "import!: failed to read file '{}': {}",
-                    resolved_path.display(),
-                    e
-                )),
-            );
-            return (vec![err], env);
+            return (Vec::new(), env);
         }
     };
 
@@ -332,24 +304,16 @@ where
         env.set_current_module_path(Some(parent.to_path_buf()));
     }
 
-    // Compile the file contents
+    // Compile the file contents — Phase 6.1: PT silent fail on parse error.
     let expressions: Vec<MettaValue> = match compile_generic(&contents, factory) {
         Ok(exprs) => exprs,
-        Err(e) => {
-            // Restore module dir and unmark before returning
+        Err(_) => {
             env.set_current_module_path(prev_module_dir);
             env.unmark_module_loading(content_hash);
-            let err = factory.error(
-                factory.atom(&path_str),
-                factory.string(&format!(
-                    "import!: failed to parse file '{}': {}",
-                    resolved_path.display(),
-                    e
-                )),
-            );
-            return (vec![err], env);
+            return (Vec::new(), env);
         }
     };
+    let _ = path_str; // path_str retained for future telemetry / strict mode
 
     // Push a frame guard protecting compiled expressions from GC during nested eval.
     // SAFETY: `expressions` outlives `_frame_guard` (both are locals in this scope).
@@ -414,9 +378,8 @@ where
 {
     if items.len() < 2 {
         let err = factory.error(
-            factory.sexpr(items),
             factory.atom("IncorrectNumberOfArguments"),
-        );
+            factory.sexpr(items),);
         return (vec![err], env);
     }
 
@@ -425,9 +388,8 @@ where
         s.to_string()
     } else {
         let err = factory.error(
-            module_arg.clone(),
             factory.string("mod-space!: expected symbol for module name"),
-        );
+            module_arg.clone(),);
         return (vec![err], env);
     };
 

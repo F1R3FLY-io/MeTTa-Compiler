@@ -19,6 +19,7 @@
 //! 4. **Zero-cost abstractions**: All trait methods are `#[inline]`, enabling
 //!    monomorphization and direct field access after inlining.
 
+// Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::fmt::Debug;
 
 use super::{MemoHandle, MettaValue, MettaValueInner, SpaceHandle, ValueView};
@@ -118,6 +119,14 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// Check if this is a Quoted variant
     fn is_quoted(&self) -> bool;
 
+    /// Check if this is a PT-canonical Lazy variant (2026-05-21).
+    /// The Lazy wrapper is INVISIBLE for display/hash/equality.
+    /// Default impl returns false — backends without Lazy support pass through.
+    #[inline]
+    fn is_lazy(&self) -> bool {
+        false
+    }
+
     /// Check if this is an Empty variant
     fn is_empty(&self) -> bool;
 
@@ -204,6 +213,21 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     /// constraints (e.g., alpha_equiv with shared HashMap entries).
     fn as_quoted_ref(&self) -> Option<&Self>;
 
+    /// Try to extract the inner value of a PT-canonical Lazy variant (owned).
+    /// The Lazy wrapper is INVISIBLE for display/hash/equality (2026-05-21).
+    /// Default impl returns None — backends without Lazy support pass through.
+    #[inline]
+    fn as_lazy(&self) -> Option<Self> {
+        None
+    }
+
+    /// Try to extract a reference to the inner value of a Lazy variant.
+    /// Default impl returns None.
+    #[inline]
+    fn as_lazy_ref(&self) -> Option<&Self> {
+        None
+    }
+
     // =========================================================================
     // Utility methods
     // =========================================================================
@@ -274,6 +298,7 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
                 ValueView::Memo(unsafe { &*(handle as *const MemoHandle) })
             }
             MettaValueInner::Quoted(inner_val) => ValueView::Quoted(*inner_val),
+            MettaValueInner::Lazy(inner_val) => ValueView::Lazy(*inner_val),
             MettaValueInner::NotReducible => ValueView::NotReducible,
             MettaValueInner::Spanned(..) => unreachable!("Spanned stripped above"),
         }
@@ -841,7 +866,7 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
 ///     msg: &str,
 ///     detail: V,
 /// ) -> V {
-///     factory.error(msg, detail)
+///     factory.error( detail,msg)
 /// }
 /// ```
 pub trait MettaValueFactory<V: MettaValueTrait> {
@@ -871,7 +896,35 @@ pub trait MettaValueFactory<V: MettaValueTrait> {
     /// HE-bisimilar shape: `Error(offending_expr, detail)`. The detail is
     /// typically a `String` value carrying the human message, or a structured
     /// atom like `BadType` / `IncorrectNumberOfArguments`.
+    ///
+    /// Legacy MTT convention: `(Error <offending> <detail>)`. For new PT-canonical
+    /// emission, prefer `error_pt(type, ctx)` per PHE-009.
     fn error(&self, offending: V, detail: V) -> V;
+
+    /// PT-canonical error constructor per PHE-009.
+    ///
+    /// Builds `Error(<Type>, <Ctx>)` where Type is the error category code
+    /// (e.g. `BadArgType`, `IncorrectNumberOfArguments`, `DivisionByZero`)
+    /// and Ctx is the offending S-expression or context. Output shape:
+    /// `(Error <Type> <Ctx>)`.
+    ///
+    /// This is the recommended constructor for all new error emission sites.
+    /// Legacy `error(offending, detail)` callers continue working and produce
+    /// the prior MTT shape `(Error <offending> <detail>)`. Both APIs construct
+    /// the same `MettaValueInner::Error` variant; the difference is purely
+    /// caller-side convention and the resulting display order.
+    ///
+    /// Migration: as Phase 1.1 of the PT-canonical sweep proceeds, callers
+    /// of `error()` that emit type-tag-first-conceptually errors should be
+    /// converted to `error_pt(type, ctx)` so the displayed slot order matches
+    /// PT's `(Error Type Ctx)` canonical form.
+    #[inline]
+    fn error_pt(&self, type_code: V, ctx: V) -> V {
+        // Same underlying variant construction as error(); the slot semantics
+        // differ purely in caller convention. Concrete factory impls may
+        // override this if they want to tag PT-canonical errors specially.
+        self.error(type_code, ctx)
+    }
 
     /// Create a Type variant
     fn type_value(&self, inner: V) -> V;
@@ -930,6 +983,19 @@ pub trait MettaValueFactory<V: MettaValueTrait> {
 
     /// Create a quoted expression using the Quoted variant.
     fn quote(&self, inner: V) -> V;
+
+    /// Create a PT-canonical lazy-substituted value (2026-05-21).
+    ///
+    /// The Lazy wrapper is INVISIBLE for `Display` / hash / equality — it
+    /// exists only to inhibit rule lookup during evaluation, preserving
+    /// PeTTa's "data-in / data-out" semantic for rules whose LHS head is
+    /// declared with an all-meta arrow type (e.g. `(: ? (-> Expression Atom))`).
+    ///
+    /// Idempotent: `lazy(lazy(x))` is equivalent to `lazy(x)` semantically
+    /// (the outer marker dominates), but the implementation does NOT collapse
+    /// the layers — both are equally invisible. Inner Lazy markers are
+    /// stripped on access via [`MettaValueTrait::unwrap_lazy`].
+    fn lazy(&self, inner: V) -> V;
 
     /// Create a Spanned variant wrapping a value with a source location.
     ///
@@ -1057,6 +1123,11 @@ impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
     #[inline]
     fn quote(&self, inner: V) -> V {
         (*self).quote(inner)
+    }
+
+    #[inline]
+    fn lazy(&self, inner: V) -> V {
+        (*self).lazy(inner)
     }
 
     #[inline]

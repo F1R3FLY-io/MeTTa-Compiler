@@ -101,6 +101,45 @@ pub fn is_eager_special_form(op: &str) -> bool {
     )
 }
 
+/// Check whether `op` is a special form whose argument is treated as DATA
+/// (not eagerly reduced). When a user-defined rule's RHS has `op` as its
+/// head, the substituted rule body must NOT pre-evaluate sub-expressions of
+/// the args — they are intended as syntactic templates that the special
+/// form handles itself.
+///
+/// PeTTa preserves rule bodies verbatim during binding substitution. MTT's
+/// historical bloom-filter pre-eval (`find_grounded_arg_indices_generic`
+/// tier-3 fallback) over-eager-evaluates sub-expressions, breaking PLN
+/// patterns like `(=> $A $C $stv) → (add-atom &self (= $C (Truth_MP $A $stv)))`
+/// — when `$A = (father $a $b)` and father has rules, MTT reduces it to
+/// concrete bindings and registers a single concretized rule instead of the
+/// PT-canonical variable-preserving rule.
+///
+/// Heads listed here cause the dispatcher to skip Step-2 pre-eval and go
+/// straight to rule matching / special-form dispatch with args verbatim.
+#[inline(always)]
+pub fn is_lazy_body_form(op: &str) -> bool {
+    matches!(
+        op,
+        // Quoting: explicitly preserves args verbatim
+        "quote" | "unquote" | "noeval" | "noreduce" | "noreduce-eq"
+        // Declaration heads: `(=` defines a rule, `(:` defines a type.
+        // Args are template syntax, never values.
+        | "=" | ":" | ":<"
+        // NOTE: `add-atom`/`remove-atom`/`add-reduct[s]` are intentionally
+        // NOT listed. PeTTa's `=>` macro relies on EAGER evaluation of the
+        // add-atom argument so that conjunctions inside the rule body
+        // (e.g., `(, (father $a $b) (father $b $c))`) enumerate their
+        // bindings at registration time. PT registers one concretized rule
+        // per evidence chain; MTT must do the same.
+        //
+        // NOTE: `if`, `let`, `chain`, `case`, `match`, etc. also NOT listed.
+        // Their internal arg semantics are handled by their own dispatch
+        // arms; the rule-firing path can safely pre-eval the rule's caller
+        // args without affecting those special forms' lazy branches.
+    )
+}
+
 /// Check if an atom name is a grounded operation that should be eagerly evaluated.
 #[inline(always)]
 pub fn is_grounded_op(name: &str) -> bool {
@@ -129,7 +168,12 @@ pub fn is_grounded_op(name: &str) -> bool {
         | "not" | "and" | "or" | "xor"
         // Type operations that return concrete values
         | "get-type" | "get-metatype" | "validate-atom" | "get-type-space"
-        // Atom/expression manipulation operations (all return immediate values)
+        // Atom/expression manipulation operations (all return immediate values).
+        // NOTE: `cons` / `decons` are NOT listed — they are user-defined data
+        // constructors in the wild (see test_simple_list_length and many
+        // PLN-internal pattern destructurings: `(cons $x $xs)`). Including
+        // them as grounded ops would pre-evaluate every `(cons ...)` arg
+        // and break pattern matching on cons-cells.
         | "car-atom" | "cdr-atom" | "cons-atom" | "decons-atom" | "size-atom"
         | "max-atom" | "min-atom" | "index-atom"
         // Tuple operations (all return immediate values)
@@ -222,6 +266,9 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
         | MettaValueInner::State(_)
         | MettaValueInner::Type(_)
         | MettaValueInner::Quoted(_)
+        // Lazy is data — substitutions have already been applied when the
+        // wrapper was emitted; treat as a terminal leaf.
+        | MettaValueInner::Lazy(_)
         | MettaValueInner::Memo(_)
         | MettaValueInner::Empty
         | MettaValueInner::NotReducible => return Cow::Borrowed(value),

@@ -3611,8 +3611,8 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             if compilable_with_env {
                                 let compilation_hash = compilation_state.expr_hash;
-                                if let Some((results, new_env)) =
-                                    crate::backend::bytecode::tiered_cache::try_sub_expr_env_dispatch_with_hash(
+                                if let Some((paired_results, new_env)) =
+                                    crate::backend::bytecode::tiered_cache::try_sub_expr_env_dispatch_with_hash_bindings(
                                         compilation_hash,
                                         &value,
                                         &env,
@@ -3621,8 +3621,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                             #[cfg(feature = "trace")]
                             {
                                 if let Some(tc) = ctx.trace_collector() {
-                                    let output_tvs: Vec<trace_format::TraceValue> = results.iter()
-                                        .map(|v| crate::backend::trace::trace_value_generic(v))
+                                    let output_tvs: Vec<trace_format::TraceValue> = paired_results.iter()
+                                        .map(|(v, _)| crate::backend::trace::trace_value_generic(v))
                                         .collect();
                                     tc.emit_converted(
                                         trace_format::TraceTier::BytecodeVM,
@@ -3638,8 +3638,25 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     );
                                 }
                             }
+                            // 2026-05-23 PT-canonical: compose per-result bindings under carrying_bindings.
+                            let cb = &*carrying_bindings;
+                            let bv_results: smallvec::SmallVec<[BoundValue; 2]> = paired_results
+                                .into_iter()
+                                .map(|(v, b)| {
+                                    if b.is_empty() && cb.is_empty() {
+                                        bv(v)
+                                    } else if cb.is_empty() {
+                                        bv_with(v, b)
+                                    } else {
+                                        let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                                            cb, &b, ctx.factory(),
+                                        );
+                                        bv_with(v, composed)
+                                    }
+                                })
+                                .collect();
                             work_stack.push(WorkItem::Resume {
-                                result: (results.into_iter().map(bv).collect(), Arc::new(new_env)),
+                                result: (bv_results, Arc::new(new_env)),
                             });
                                     continue;
                                 }

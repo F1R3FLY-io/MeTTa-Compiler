@@ -2206,6 +2206,20 @@ pub fn try_sub_expr_env_dispatch_with_hash(
     _value: &MettaValue,
     env: &MettaEnvironment,
 ) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
+    try_sub_expr_env_dispatch_with_hash_bindings(hash, _value, env)
+        .map(|(paired, env)| (paired.into_iter().map(|(v, _)| v).collect(), env))
+}
+
+/// 2026-05-23 PT-canonical binding-thread variant. See
+/// `try_sub_expr_dispatch_with_hash_bindings` for full rationale.
+pub fn try_sub_expr_env_dispatch_with_hash_bindings(
+    hash: u64,
+    _value: &MettaValue,
+    env: &MettaEnvironment,
+) -> Option<(
+    Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+    MettaEnvironment,
+)> {
     let cache = global_tiered_cache();
     let state_ref = cache.entries.get(&hash)?;
     let state = std::sync::Arc::clone(state_ref.value());
@@ -2221,7 +2235,7 @@ pub fn try_sub_expr_env_dispatch_with_hash(
         super::GenericBytecodeVM::with_env_and_factory(chunk, env.clone(), factory.clone());
     vm.yield_on_top_return = true;
 
-    let results = vm.run().ok()?;
+    let paired = vm.run_with_bindings().ok()?;
     if vm.unreduced || vm.had_unreduced_result || vm.choice_points_len() > 0 {
         return None;
     }
@@ -2230,7 +2244,7 @@ pub fn try_sub_expr_env_dispatch_with_hash(
         .env
         .take()
         .unwrap_or_else(|| MettaEnvironment::new(factory));
-    Some((results, final_env))
+    Some((paired, final_env))
 }
 
 /// Helper: dispatch to JIT-compiled native code with environment.

@@ -88,6 +88,25 @@ fn alpha_equiv_inner<'a, V: MettaValueTrait>(
     work.push((left, right));
 
     while let Some((left, right)) = work.pop() {
+        // PT-canonical Lazy transparency (2026-05-23): Lazy wrappers are
+        // invisible to alpha-equivalence — they're substitution markers,
+        // not semantic content. Peel both sides via as_lazy_ref before
+        // dispatch. Without this, PLN-main's `(? $term)` collapse produces
+        // N identical-but-Lazy-wrapped items that unique-atom fails to
+        // dedup, causing the test directive to report N-duplicate output.
+        if let Some(linner) = left.as_lazy_ref() {
+            if let Some(rinner) = right.as_lazy_ref() {
+                work.push((linner, rinner));
+                continue;
+            }
+            work.push((linner, right));
+            continue;
+        }
+        if let Some(rinner) = right.as_lazy_ref() {
+            work.push((left, rinner));
+            continue;
+        }
+
         // Both atoms?
         if let (Some(la), Some(ra)) = (left.as_atom(), right.as_atom()) {
             if is_variable(la) && is_variable(ra) {

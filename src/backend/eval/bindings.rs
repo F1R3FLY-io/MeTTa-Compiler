@@ -2025,6 +2025,267 @@ pub fn bidirectional_unify_generic<V: MettaValueTrait + Clone>(
     }
 }
 
+/// Variant of [`bidirectional_unify_generic`] that supports dotted-pair
+/// patterns like `($x . $rest)` on EITHER side. The factory is used solely
+/// to construct the SExpr value bound to the rest-var; for non-dotted-pair
+/// patterns it's unused. This is the path used by rule matching where the
+/// rule LHS may contain a dotted-pair (PT-canonical: `(cons HEAD TAIL)` is
+/// rewritten to `(HEAD . TAIL)` at add_rule time).
+pub fn bidirectional_unify_generic_with_factory<V, F>(
+    a: &V,
+    b: &V,
+    factory: &F,
+) -> Option<GenericBindings<V>>
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    let mut bindings = GenericBindings::new();
+    if bidirectional_unify_generic_with_factory_impl(a, b, &mut bindings, factory) {
+        Some(bindings)
+    } else {
+        None
+    }
+}
+
+fn bidirectional_unify_generic_with_factory_impl<V, F>(
+    a: &V,
+    b: &V,
+    bindings: &mut GenericBindings<V>,
+    factory: &F,
+) -> bool
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    let mut work_stack: Vec<(V, V)> = Vec::with_capacity(16);
+    work_stack.push((a.clone(), b.clone()));
+
+    while let Some((lhs_raw, rhs_raw)) = work_stack.pop() {
+        let lhs = deref_value_owned(&lhs_raw, bindings);
+        let rhs = deref_value_owned(&rhs_raw, bindings);
+
+        if lhs == rhs {
+            continue;
+        }
+
+        if let Some(name) = lhs.as_atom() {
+            if is_wildcard_atom(name) {
+                continue;
+            }
+        }
+        if let Some(name) = rhs.as_atom() {
+            if is_wildcard_atom(name) {
+                continue;
+            }
+        }
+
+        if let Some(l_name) = lhs.as_atom() {
+            if is_unification_variable(l_name) {
+                if let Some(existing) = bindings.get(l_name) {
+                    let existing = existing.clone();
+                    work_stack.push((existing, rhs));
+                    continue;
+                }
+                if occurs_in_generic(l_name, &rhs, bindings) {
+                    return false;
+                }
+                bindings.insert(l_name, rhs);
+                continue;
+            }
+        }
+        if let Some(r_name) = rhs.as_atom() {
+            if is_unification_variable(r_name) {
+                if let Some(existing) = bindings.get(r_name) {
+                    let existing = existing.clone();
+                    work_stack.push((existing, lhs));
+                    continue;
+                }
+                if occurs_in_generic(r_name, &lhs, bindings) {
+                    return false;
+                }
+                bindings.insert(r_name, lhs);
+                continue;
+            }
+        }
+
+        if let Some(l_name) = lhs.as_atom() {
+            if let Some(r_name) = rhs.as_atom() {
+                if l_name == r_name {
+                    continue;
+                }
+            }
+            if l_name == "Empty" && rhs.is_empty() {
+                continue;
+            }
+            return false;
+        }
+        if let Some(r_name) = rhs.as_atom() {
+            if r_name == "Empty" && lhs.is_empty() {
+                continue;
+            }
+            return false;
+        }
+
+        if let Some(l_bool) = lhs.as_bool() {
+            if let Some(r_bool) = rhs.as_bool() {
+                if l_bool == r_bool {
+                    continue;
+                }
+            }
+            return false;
+        }
+
+        match (lhs.as_long(), lhs.as_float(), rhs.as_long(), rhs.as_float()) {
+            (Some(l), _, Some(r), _) => {
+                if l == r { continue; }
+                return false;
+            }
+            (_, Some(l), _, Some(r)) => {
+                if l == r { continue; }
+                return false;
+            }
+            (Some(l), _, _, Some(r)) => {
+                if (l as f64) == r { continue; }
+                return false;
+            }
+            (_, Some(l), Some(r), _) => {
+                if l == (r as f64) { continue; }
+                return false;
+            }
+            _ => {}
+        }
+        if lhs.as_long().is_some() || lhs.as_float().is_some() {
+            return false;
+        }
+        if rhs.as_long().is_some() || rhs.as_float().is_some() {
+            return false;
+        }
+
+        if let Some(l_str) = lhs.as_string() {
+            if let Some(r_str) = rhs.as_string() {
+                if l_str == r_str { continue; }
+            }
+            return false;
+        }
+
+        if lhs.is_unit() {
+            if rhs.is_unit() { continue; }
+            if let Some(r_items) = rhs.as_sexpr() {
+                if r_items.is_empty() { continue; }
+            }
+            return false;
+        }
+        if rhs.is_unit() {
+            if let Some(l_items) = lhs.as_sexpr() {
+                if l_items.is_empty() { continue; }
+            }
+            return false;
+        }
+
+        // SExprs with dotted-pair support on either side.
+        if let Some(l_items) = lhs.as_sexpr() {
+            if let Some(r_items) = rhs.as_sexpr() {
+                // Dotted-pair on LHS: `(H1 H2 ... . TAIL)` matches a value
+                // whose first N elements unify with H1..HN and remaining
+                // elements bind to TAIL as an SExpr.
+                let lhs_dotted = l_items.len() >= 2
+                    && l_items[l_items.len() - 2].as_atom() == Some(".");
+                let rhs_dotted = r_items.len() >= 2
+                    && r_items[r_items.len() - 2].as_atom() == Some(".");
+                if lhs_dotted {
+                    let head_len = l_items.len() - 2;
+                    if r_items.len() < head_len {
+                        return false;
+                    }
+                    for i in (0..head_len).rev() {
+                        work_stack.push((l_items[i].clone(), r_items[i].clone()));
+                    }
+                    let rest_pattern = l_items[l_items.len() - 1].clone();
+                    let rest_value = factory.sexpr_from_slice(&r_items[head_len..]);
+                    work_stack.push((rest_pattern, rest_value));
+                    continue;
+                }
+                if rhs_dotted {
+                    let head_len = r_items.len() - 2;
+                    if l_items.len() < head_len {
+                        return false;
+                    }
+                    for i in (0..head_len).rev() {
+                        work_stack.push((l_items[i].clone(), r_items[i].clone()));
+                    }
+                    let rest_pattern = r_items[r_items.len() - 1].clone();
+                    let rest_value = factory.sexpr_from_slice(&l_items[head_len..]);
+                    work_stack.push((rest_pattern, rest_value));
+                    continue;
+                }
+                if l_items.len() != r_items.len() {
+                    return false;
+                }
+                if l_items.is_empty() {
+                    continue;
+                }
+                for (l, r) in l_items.iter().zip(r_items.iter()).rev() {
+                    work_stack.push((l.clone(), r.clone()));
+                }
+                continue;
+            }
+            return false;
+        }
+
+        if let Some(l_goals) = lhs.as_conjunction() {
+            if let Some(r_goals) = rhs.as_conjunction() {
+                if l_goals.len() != r_goals.len() {
+                    return false;
+                }
+                for (l, r) in l_goals.iter().zip(r_goals.iter()).rev() {
+                    work_stack.push((l.clone(), r.clone()));
+                }
+                continue;
+            }
+            return false;
+        }
+
+        if let Some((l_offending, l_detail)) = lhs.as_error() {
+            if let Some((r_offending, r_detail)) = rhs.as_error() {
+                work_stack.push((l_detail.clone(), r_detail.clone()));
+                work_stack.push((l_offending.clone(), r_offending.clone()));
+                continue;
+            }
+            return false;
+        }
+
+        if let Some(l_handle) = lhs.as_space() {
+            if let Some(r_handle) = rhs.as_space() {
+                if l_handle.id == r_handle.id { continue; }
+            }
+            return false;
+        }
+
+        if let Some(l_id) = lhs.as_state() {
+            if let Some(r_id) = rhs.as_state() {
+                if l_id == r_id { continue; }
+            }
+            return false;
+        }
+
+        if let Some(l_inner) = lhs.as_type() {
+            if let Some(r_inner) = rhs.as_type() {
+                work_stack.push((l_inner.clone(), r_inner.clone()));
+                continue;
+            }
+            return false;
+        }
+
+        if lhs.is_empty() && rhs.is_empty() {
+            continue;
+        }
+
+        return false;
+    }
+    true
+}
+
 /// Check if `name` is a wildcard atom that matches anything without binding.
 ///
 /// Both bare `_` and `$_` are wildcards in MeTTaTron: they match any value

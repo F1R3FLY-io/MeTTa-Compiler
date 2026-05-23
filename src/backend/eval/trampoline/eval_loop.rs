@@ -3488,18 +3488,28 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // Try dispatching to compiled bytecode/JIT.
                             // hash != 0 guard short-circuits before any trait dispatch / DashMap lookup for cold code.
                             if compilation_hash != 0 {
-                                if let Some((results, new_env)) =
-                                    ctx.try_compiled_dispatch(&value, &env, compilation_hash)
+                                // 2026-05-23 PT-canonical binding-thread fix:
+                                // use the bindings-aware variant so VM-tier
+                                // per-alt caller-scope bindings (e.g. $b=b vs
+                                // $b=y from vm_type_driven_pre_eval fanout)
+                                // flow up to T0's continuation context.
+                                if let Some((paired_results, new_env)) = ctx
+                                    .try_compiled_dispatch_with_bindings(
+                                        &value,
+                                        &env,
+                                        compilation_hash,
+                                    )
                                 {
                                     #[cfg(feature = "trace")]
                                     {
                                         if let Some(tc) = ctx.trace_collector() {
-                                            let output_tvs: Vec<trace_format::TraceValue> = results
-                                                .iter()
-                                                .map(|v| {
-                                                    crate::backend::trace::trace_value_generic(v)
-                                                })
-                                                .collect();
+                                            let output_tvs: Vec<trace_format::TraceValue> =
+                                                paired_results
+                                                    .iter()
+                                                    .map(|(v, _)| {
+                                                        crate::backend::trace::trace_value_generic(v)
+                                                    })
+                                                    .collect();
                                             tc.emit_converted(
                                                 trace_format::TraceTier::BytecodeVM,
                                                 depth as u32,
@@ -3515,11 +3525,28 @@ fn eval_trampoline_inner<C: EvalContext>(
                                             );
                                         }
                                     }
+                                    // Compose per-result bindings under the
+                                    // caller's carrying_bindings via the
+                                    // existing bv_with helper.
+                                    let cb = &*carrying_bindings;
+                                    let bv_results: smallvec::SmallVec<[BoundValue; 2]> =
+                                        paired_results
+                                            .into_iter()
+                                            .map(|(v, b)| {
+                                                if b.is_empty() && cb.is_empty() {
+                                                    bv(v)
+                                                } else if cb.is_empty() {
+                                                    bv_with(v, b)
+                                                } else {
+                                                    let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                                                        cb, &b, ctx.factory(),
+                                                    );
+                                                    bv_with(v, composed)
+                                                }
+                                            })
+                                            .collect();
                                     work_stack.push(WorkItem::Resume {
-                                        result: (
-                                            results.into_iter().map(bv).collect(),
-                                            Arc::new(new_env),
-                                        ),
+                                        result: (bv_results, Arc::new(new_env)),
                                     });
                                     continue; // Skip eval_step_generic — compiled code handled it
                                 }

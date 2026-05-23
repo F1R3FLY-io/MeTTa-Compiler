@@ -1036,6 +1036,27 @@ pub fn execute_arena(
     Ok((results, final_env, unreduced))
 }
 
+/// 2026-05-23 PT-canonical binding-thread variant of `execute_arena`.
+/// Returns each result paired with its per-result bindings snapshot.
+pub fn execute_arena_with_bindings(
+    chunk: std::sync::Arc<GenericBytecodeChunk<MettaValue>>,
+    env: MettaEnvironment,
+) -> VmResult<(
+    Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+    MettaEnvironment,
+    bool,
+)> {
+    let factory = env.factory().clone();
+    let mut vm = GenericBytecodeVM::with_env_and_factory(chunk, env, factory.clone());
+    let paired = vm.run_with_bindings()?;
+    let unreduced = vm.unreduced || vm.had_unreduced_result;
+    let final_env = vm
+        .env
+        .take()
+        .unwrap_or_else(|| MettaEnvironment::new(factory));
+    Ok((paired, final_env, unreduced))
+}
+
 /// Evaluate MettaValue expression with environment threading.
 ///
 /// This is the arena equivalent of `eval_bytecode_with_env()`.

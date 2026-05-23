@@ -236,6 +236,23 @@ impl<'s> EvalContext for SessionContext<'s> {
             env,
         )
     }
+
+    #[inline]
+    fn try_compiled_dispatch_with_bindings(
+        &self,
+        value: &MettaValue,
+        env: &MettaEnvironment,
+        compilation_hash: u64,
+    ) -> Option<(
+        Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+        MettaEnvironment,
+    )> {
+        crate::backend::bytecode::tiered_cache::try_sub_expr_dispatch_with_hash_bindings(
+            compilation_hash,
+            value,
+            env,
+        )
+    }
 }
 
 // ============================================================================

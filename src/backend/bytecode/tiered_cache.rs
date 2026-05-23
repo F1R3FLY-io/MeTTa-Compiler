@@ -2129,20 +2129,39 @@ pub fn try_sub_expr_dispatch_with_hash(
     _value: &MettaValue,
     env: &MettaEnvironment,
 ) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
-    // hash is already known non-zero (checked by caller)
+    try_sub_expr_dispatch_with_hash_bindings(hash, _value, env)
+        .map(|(paired, env)| (paired.into_iter().map(|(v, _)| v).collect(), env))
+}
+
+/// 2026-05-23 PT-canonical: variant of `try_sub_expr_dispatch_with_hash`
+/// that returns per-result bindings paired with values. Used by T0 trampoline
+/// to thread VM-tier per-alt bindings (e.g. caller-scope `$b=b` vs `$b=y`
+/// from `vm_type_driven_pre_eval` fanout) up to the continuation context.
+pub fn try_sub_expr_dispatch_with_hash_bindings(
+    hash: u64,
+    _value: &MettaValue,
+    env: &MettaEnvironment,
+) -> Option<(
+    Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+    MettaEnvironment,
+)> {
     let cache = global_tiered_cache();
     let state_ref = cache.entries.get(&hash)?;
     let state = std::sync::Arc::clone(state_ref.value());
-    drop(state_ref); // release DashMap read guard
+    drop(state_ref);
 
-    // Cascade: JIT Stage 2 > JIT Stage 1 > Bytecode VM
-    // env.clone() deferred to dispatch site — only when a tier is actually invoked.
+    // JIT tiers don't yet expose per-result bindings (todo). For now, pair
+    // each JIT result with empty bindings — preserves current JIT behavior.
     if state.jit2_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit2_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
                 #[cfg(feature = "track-stats")]
                 cache.record_tier_execution(ExecutionTier::JitStage2);
-                return Some((results, new_env));
+                let paired = results
+                    .into_iter()
+                    .map(|v| (v, crate::backend::models::GenericBindings::new()))
+                    .collect();
+                return Some((paired, new_env));
             }
         }
     }
@@ -2151,17 +2170,21 @@ pub fn try_sub_expr_dispatch_with_hash(
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
                 #[cfg(feature = "track-stats")]
                 cache.record_tier_execution(ExecutionTier::JitStage1);
-                return Some((results, new_env));
+                let paired = results
+                    .into_iter()
+                    .map(|v| (v, crate::backend::models::GenericBindings::new()))
+                    .collect();
+                return Some((paired, new_env));
             }
         }
     }
     if state.bytecode_status() == TierStatusKind::Ready {
         if let Some(chunk) = state.bytecode_chunk() {
-            match super::execute_arena(chunk, env.clone()) {
-                Ok((results, new_env, unreduced)) if !unreduced => {
+            match super::execute_arena_with_bindings(chunk, env.clone()) {
+                Ok((paired, new_env, unreduced)) if !unreduced => {
                     #[cfg(feature = "track-stats")]
                     cache.record_tier_execution(ExecutionTier::Bytecode);
-                    return Some((results, new_env));
+                    return Some((paired, new_env));
                 }
                 _ => {}
             }

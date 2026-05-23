@@ -94,6 +94,22 @@ pub trait EvalContext {
     ) -> Option<(Vec<MettaValue>, MettaEnvironment)> {
         None
     }
+
+    /// 2026-05-23 PT-canonical binding-thread variant of `try_compiled_dispatch`.
+    /// Returns per-result bindings so the T0 trampoline can thread VM-tier
+    /// per-alt caller-scope bindings into its continuation context.
+    #[inline]
+    fn try_compiled_dispatch_with_bindings(
+        &self,
+        _value: &MettaValue,
+        _env: &MettaEnvironment,
+        _compilation_hash: u64,
+    ) -> Option<(
+        Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+        MettaEnvironment,
+    )> {
+        None
+    }
 }
 
 // ============================================================================

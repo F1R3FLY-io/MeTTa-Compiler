@@ -1239,6 +1239,34 @@ where
         Ok((results, env))
     }
 
+    /// 2026-05-23 PT-canonical binding-thread: Run the VM, returning each
+    /// result paired with its per-result bindings snapshot. Unlike `run()`,
+    /// this exposes the per-alt caller-scope bindings (e.g. $b=b vs $b=y
+    /// from `vm_type_driven_pre_eval` fanout) up to the T0 trampoline.
+    /// `self.results` and `self.per_result_bindings` are drained in lockstep
+    /// (they're maintained as parallel arrays by every push-to-results site).
+    pub fn run_with_bindings(
+        &mut self,
+    ) -> VmResult<Vec<(V, crate::backend::models::GenericBindings<V>)>> {
+        let results = self.run()?;
+        // per_result_bindings parallels self.results; both are owned by self.
+        // After run(), self.results was drained via std::mem::take and returned;
+        // self.per_result_bindings still holds the parallel bindings vec.
+        let bindings = std::mem::take(&mut self.per_result_bindings);
+        // Defensive: if alignment lost (defensive against legacy call sites
+        // that may not yet record bindings), pad with empty bindings.
+        let n = results.len();
+        let mut paired = Vec::with_capacity(n);
+        let mut bindings_iter = bindings.into_iter();
+        for v in results {
+            let b = bindings_iter
+                .next()
+                .unwrap_or_else(|| crate::backend::models::GenericBindings::new());
+            paired.push((v, b));
+        }
+        Ok(paired)
+    }
+
     /// Exhaust all remaining choice points by repeatedly backtracking and
     /// re-running the VM. Each alternative is executed through the full
     /// chunk instruction sequence, producing one result set per alternative.
@@ -2367,7 +2395,13 @@ where
                 if self.unreduced {
                     self.had_unreduced_result = true;
                 }
+                let n = self.value_stack.len();
                 self.results.extend(self.value_stack.drain(..));
+                // 2026-05-23 PT-canonical binding-thread fix: align
+                // per_result_bindings with self.results.
+                for _ in 0..n {
+                    self.per_result_bindings.push(self.current_bindings.clone());
+                }
             }
             // yield_on_top_return: exhaust remaining alternatives
             if self.yield_on_top_return && !self.choice_points.is_empty() {
@@ -2924,9 +2958,15 @@ where
                 self.had_unreduced_result = true;
             }
             self.results.push(value);
-            if !self.collapse_bind_frames.is_empty() {
-                self.per_result_bindings.push(self.current_bindings.clone());
-            }
+            // 2026-05-23 PT-canonical binding-thread fix: unconditionally
+            // record per-result bindings (previously gated only on collapse-
+            // bind scope). Required so VM-tier pre-eval fanout (e.g.
+            // `(father a $b)` enumerating $b=b vs $b=y) exposes per-alt
+            // caller-scope bindings up to the T0 trampoline's continuation
+            // context (foldl-atom iteration N+1 needs $b binding from
+            // iteration N). The collapse-bind sidecar swaps preserve scope
+            // correctness across nested collapse-binds.
+            self.per_result_bindings.push(self.current_bindings.clone());
             // yield_on_top_return: exhaust all nondeterministic alternatives
             // within this single run() call — no VM exit/re-enter overhead.
             if self.yield_on_top_return && !self.choice_points.is_empty() {
@@ -2991,12 +3031,11 @@ where
             }
             Ok(ControlFlow::Continue(()))
         } else {
-            // Phase C: record each result's bindings snapshot when inside a
-            // collapse-bind scope so the sidecar encoding pairs them later.
-            if !self.collapse_bind_frames.is_empty() {
-                for _ in 0..values.len() {
-                    self.per_result_bindings.push(self.current_bindings.clone());
-                }
+            // 2026-05-23 PT-canonical binding-thread fix (matches op_return):
+            // unconditionally record each result's bindings snapshot so VM-
+            // tier per-alt bindings flow to the T0 trampoline.
+            for _ in 0..values.len() {
+                self.per_result_bindings.push(self.current_bindings.clone());
             }
             self.results.extend(values);
             Ok(ControlFlow::Break(std::mem::take(&mut self.results)))
@@ -5252,9 +5291,8 @@ where
                     self.had_unreduced_result = true;
                 }
                 self.results.push(value);
-                if !self.collapse_bind_frames.is_empty() {
-                    self.per_result_bindings.push(self.current_bindings.clone());
-                }
+                // 2026-05-23 PT-canonical: align per_result_bindings.
+                self.per_result_bindings.push(self.current_bindings.clone());
             }
         }
 
@@ -6453,10 +6491,8 @@ where
             self.had_unreduced_result = true;
         }
         self.results.push(value);
-        // Phase C: record bindings snapshot inside a collapse-bind scope.
-        if !self.collapse_bind_frames.is_empty() {
-            self.per_result_bindings.push(self.current_bindings.clone());
-        }
+        // 2026-05-23 PT-canonical binding-thread fix: unconditionally record.
+        self.per_result_bindings.push(self.current_bindings.clone());
         // Continue to next alternative — respect collapse-bind barrier if active.
         if !self.collapse_bind_frames.is_empty() {
             self.op_fail_within_collapse_bind()

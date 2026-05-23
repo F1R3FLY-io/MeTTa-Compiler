@@ -52,6 +52,36 @@ use super::rule_management::extract_rule_parts;
 use super::scope::ScopeTracker;
 use crate::backend::eval::bindings::{apply_bindings_generic, pattern_match_generic};
 use crate::backend::fuzzy_match::FuzzyMatcher;
+
+/// Recursively strip all `Lazy(...)` wrappers from a value, peeling through
+/// SExpr children. PT-canonical Lazy is invisible to display/hash/MORK; this
+/// helper produces a structurally clean form for rule storage where the
+/// "rule-inhibitor" Lazy semantic must not persist.
+fn deep_unwrap_lazy<V, F>(value: &V, factory: &F) -> V
+where
+    V: MettaValueTrait + Clone,
+    F: MettaValueFactory<V>,
+{
+    let peeled = value.unwrap_lazy();
+    if let Some(items) = peeled.as_sexpr() {
+        let mut any_changed = false;
+        let mut new_items = Vec::with_capacity(items.len());
+        for child in items.iter() {
+            let new_child = deep_unwrap_lazy(child, factory);
+            if !any_changed && !std::ptr::eq(
+                child as *const _ as *const (),
+                &new_child as *const _ as *const (),
+            ) {
+                any_changed = true;
+            }
+            new_items.push(new_child);
+        }
+        let _ = any_changed; // Always rebuild for safety; ptr-eq check is heuristic
+        factory.sexpr(new_items)
+    } else {
+        peeled
+    }
+}
 use crate::backend::grounded::GroundedRegistry;
 use crate::backend::hash_utils::IdentityU64BuildHasher;
 use crate::backend::models::gc_allocator::{try_register_env_roots, RootProvider};
@@ -2212,6 +2242,26 @@ where
         // Check if this is a rule (= lhs rhs) — route through add_rule() which handles
         // BOTH PathMap insertion (De Bruijn) AND RuleIndex population.
         if let Some((lhs, rhs)) = extract_rule_parts(value) {
+            // PT-canonical Lazy peel (2026-05-23): when a rule is registered
+            // via add-atom from inside a meta-typed rule body, the substituted
+            // (lhs, rhs) come back wrapped in `Lazy(...)` because
+            // `apply_bindings_with_rename_scoped_lazy` (lazy substitution path
+            // used by meta-typed rules) marks each substituted variable as
+            // Lazy to inhibit downstream rule firing. Lazy is documented
+            // invisible for display / hash / PartialEq / MORK conversion, but
+            // structural accessors (`as_sexpr`, `get_head_symbol`, `get_arity`)
+            // on the underlying MettaValue type do NOT see through it. Deep-
+            // unwrap recursively because lazy substitution also wraps INNER
+            // substituted values (e.g. `(Truth_ModusPonens Lazy((father a b))
+            // Lazy((stv 1.0 0.9)))`). Without deep peel, rule firing succeeds
+            // but the RHS body's Lazy markers inhibit downstream rule firing
+            // on the inner subterms when the rule body re-evaluates (see PLN-
+            // main `=>` repro: rule registered correctly but `(close-relative
+            // a b)` body fails to reduce `(father a b)` because the inner
+            // Lazy wrapper prevents Truth_ModusPonens from receiving (stv 1.0
+            // 0.9) as its argument). Strip ALL Lazy markers before storing.
+            let lhs = deep_unwrap_lazy(&lhs, &self.factory);
+            let rhs = deep_unwrap_lazy(&rhs, &self.factory);
             self.add_rule(lhs, rhs);
             // add_rule() inserts the LHS head/arity into the bloom filter (for match_rules_native),
             // but match_space() queries by the full expression head ("=", arity 3).

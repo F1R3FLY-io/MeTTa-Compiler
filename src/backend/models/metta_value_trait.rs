@@ -228,6 +228,24 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
         None
     }
 
+    /// Unwrap any number of `Lazy` layers and return the innermost non-Lazy
+    /// value. PT-canonical Lazy is invisible to display, hash, and `PartialEq`
+    /// (see `MettaValue::PartialEq`); it must also be invisible at storage
+    /// boundaries so structural accessors (`as_sexpr`, `get_head_symbol`)
+    /// see through it. Default impl peels via `as_lazy`; concrete types with
+    /// inline Lazy storage should override.
+    #[inline]
+    fn unwrap_lazy(&self) -> Self
+    where
+        Self: Sized + Clone,
+    {
+        let mut current = self.clone();
+        while let Some(inner) = current.as_lazy() {
+            current = inner;
+        }
+        current
+    }
+
     // =========================================================================
     // Utility methods
     // =========================================================================

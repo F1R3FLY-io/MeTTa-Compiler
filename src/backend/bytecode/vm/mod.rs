@@ -7302,24 +7302,15 @@ where
 
             if has_any_rules {
                 // Function with no matching rules at nested depth → empty.
-                // HE-bisimilar silent pruning: the branch dies and contributes
-                // nothing to the caller's result set.
+                // HE-bisimilar silent pruning: branch dies, contributes no
+                // result to the caller's bag. 2026-05-23: do NOT memoize as
+                // normal-form (would poison the bloom causing future T0
+                // dispatches to short-circuit at `eval_loop.rs:3207` and
+                // skip the proper depth>0 Empty gate at
+                // `processing/ops.rs:304`). Push Empty so foldl-atom's
+                // combinator sees the failed conjunct as no-contribution.
                 self.unreduced = true;
-                // Do NOT push. Caller (outer dispatch or choice-point consumer)
-                // will observe an empty value stack entry for this call.
-                // Convention: push the expr with unreduced flag so downstream
-                // can distinguish "no result" from "unhandled case" by the
-                // flag; but semantic callers should treat unreduced + no-rule
-                // as "this branch dies".
-                //
-                // Pragmatic choice: retain the push (backwards compatibility
-                // with existing callers that expect a value on the stack)
-                // but flag unreduced. Future cleanup: switch to a true empty
-                // push when all VM consumers handle the unreduced flag.
-                if expr.as_sexpr().is_some() {
-                    crate::backend::eval::trampoline::memoize_normal_form(&expr);
-                }
-                self.push(expr);
+                self.push(self.factory.empty());
                 return Ok(());
             }
 

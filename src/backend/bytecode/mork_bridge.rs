@@ -226,6 +226,17 @@ impl MorkBridge {
         compiled
     }
 
+    /// Check whether ANY rule exists for the given (head, arity).
+    /// Used by the depth>0 Empty gate in JIT call_support to distinguish
+    /// "function-with-no-match-fires" (return Empty) from "data constructor
+    /// with no rules" (return literal unreduced).
+    pub fn has_any_rules(&self, head: &str, arity: usize) -> bool {
+        let env = self.env.read();
+        let rule_index = env.shared.rule_index.read();
+        let mut iter = rule_index.get_candidates(head, arity, None);
+        iter.next().is_some()
+    }
+
     /// Find matching rules using native byte-level matching via RuleIndex + extract_data.
     fn find_matching_rules(
         &self,

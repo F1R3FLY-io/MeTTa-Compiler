@@ -418,8 +418,31 @@ pub unsafe extern "C" fn jit_runtime_call(
             if let Some(err_bits) = jit_check_call_site_types(ctx_ref, &expr) {
                 return err_bits;
             }
+            // 2026-05-23 PT-canonical fix: at nested call_depth (>0), if the
+            // head HAS rules for this arity but no match fires, return Empty
+            // (HE-bisimilar branch-death) AND do NOT memoize as normal form.
+            // Memoizing would poison `is_memoized_normal_form` so future T0
+            // dispatches short-circuit at `eval_loop.rs:3207` and skip the
+            // depth>0 Empty gate at `processing/ops.rs:304`. Without this,
+            // PLN-main conjunction enumeration in foldl-atom produces a
+            // spurious duplicate for failed-conjunct paths.
+            if ctx_ref.call_depth > 0 {
+                if let Some(items) = expr.as_sexpr() {
+                    if let Some(head_atom) =
+                        items.first().and_then(|v| v.as_atom())
+                    {
+                        let arity = items.len().saturating_sub(1);
+                        let has_any_rules = bridge
+                            .has_any_rules(head_atom, arity);
+                        if has_any_rules {
+                            return JitValue::empty().to_bits();
+                        }
+                    }
+                }
+            }
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
+            // Only safe at top-level or for true data constructors (no rules).
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
             // S1 TOPLEVEL (2026-05-13): HE ADD-mode emits NOTHING at the
             // top level (call_depth==0, !interpret_mode). The T1 path is
@@ -663,6 +686,20 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
             if let Some(err_bits) = jit_check_call_site_types(ctx_ref, &expr) {
                 return err_bits;
             }
+            // 2026-05-23 PT-canonical Empty gate (see primary site for full
+            // rationale): at nested call_depth, has-rules-no-match → Empty.
+            if ctx_ref.call_depth > 0 {
+                if let Some(items) = expr.as_sexpr() {
+                    if let Some(head_atom) =
+                        items.first().and_then(|v| v.as_atom())
+                    {
+                        let arity = items.len().saturating_sub(1);
+                        if bridge.has_any_rules(head_atom, arity) {
+                            return JitValue::empty().to_bits();
+                        }
+                    }
+                }
+            }
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
@@ -787,6 +824,19 @@ pub unsafe extern "C" fn jit_runtime_call_n(
             if let Some(err_bits) = jit_check_call_site_types(ctx_ref, &expr) {
                 return err_bits;
             }
+            // 2026-05-23 PT-canonical Empty gate (see primary site).
+            if ctx_ref.call_depth > 0 {
+                if let Some(items) = expr.as_sexpr() {
+                    if let Some(head_atom) =
+                        items.first().and_then(|v| v.as_atom())
+                    {
+                        let arity = items.len().saturating_sub(1);
+                        if bridge.has_any_rules(head_atom, arity) {
+                            return JitValue::empty().to_bits();
+                        }
+                    }
+                }
+            }
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.
             crate::backend::eval::trampoline::memoize_normal_form(&expr);
@@ -904,6 +954,19 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
             // See `jit_check_call_site_types` for full rationale.
             if let Some(err_bits) = jit_check_call_site_types(ctx_ref, &expr) {
                 return err_bits;
+            }
+            // 2026-05-23 PT-canonical Empty gate (see primary site).
+            if ctx_ref.call_depth > 0 {
+                if let Some(items) = expr.as_sexpr() {
+                    if let Some(head_atom) =
+                        items.first().and_then(|v| v.as_atom())
+                    {
+                        let arity = items.len().saturating_sub(1);
+                        if bridge.has_any_rules(head_atom, arity) {
+                            return JitValue::empty().to_bits();
+                        }
+                    }
+                }
             }
             // No rules match - return expression unchanged (irreducible)
             // Phase 9.5: Memoize as normal form for future fast-path.

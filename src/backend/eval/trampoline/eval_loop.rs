@@ -630,6 +630,25 @@ fn release_budget(n: u32, depth: u32) {
 /// invocation, so equivalent names don't collide). The
 /// `propagate_keys` set is the ITEMS' free variables — those are
 /// shared across iterations by construction and must thread.
+/// 2026-05-23 PT-canonical: extract the user-level original from a freshened
+/// variable name. The freshening convention is `$__fr_<epoch>_<orig>` where
+/// `<orig>` is the user-level name without the leading `$`. Returns Some
+/// with the `$`-prefixed original, or None if `name` is not freshened.
+#[inline]
+fn extract_freshened_original(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("$__fr_")?;
+    // rest format: `<epoch>_<orig>` — split on first underscore.
+    let underscore_idx = rest.find('_')?;
+    let orig = &rest[underscore_idx + 1..];
+    // The original may have its own `%N` suffix from inner freshening
+    // (e.g. `$__fr_218_a%247`); strip it to get `a`.
+    let base = orig.split('%').next().unwrap_or(orig);
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("${}", base))
+}
+
 #[inline]
 fn filter_fold_propagating_bindings(
     bindings: &crate::backend::models::GenericBindings<MettaValue>,
@@ -639,7 +658,31 @@ fn filter_fold_propagating_bindings(
     for (name, val) in bindings.iter() {
         let is_user = !name.starts_with("$__fr_");
         let is_caller_freshened = propagate_keys.iter().any(|key| key.matches(name));
-        if is_user || is_caller_freshened {
+        // 2026-05-23 PT-canonical binding-thread fix: freshened variable
+        // names like `$__fr_4_b` are the rule-instantiation form of a
+        // caller-scope variable `$b`. Recognize the original name and
+        // match against propagate_keys so the binding flows across foldl
+        // iterations (required for PLN-main `(? $term)` conjunction paths
+        // where iteration N's `$b=b` must influence iteration N+1's
+        // `(father $b c)`).
+        let is_freshened_caller = if is_user {
+            false
+        } else if let Some(orig) = extract_freshened_original(name) {
+            propagate_keys.iter().any(|key| key.matches(&orig))
+        } else {
+            false
+        };
+        if is_user || is_caller_freshened || is_freshened_caller {
+            // For freshened-caller bindings, rewrite the key to the
+            // original user-level name so downstream consumers
+            // (compose_outer_inner_generic, apply_chain_generic) can
+            // unify with the user-level `$b` correctly.
+            if is_freshened_caller {
+                if let Some(orig) = extract_freshened_original(name) {
+                    out.insert_or_replace(&orig, val.clone());
+                    continue;
+                }
+            }
             out.insert_or_replace(name, val.clone());
         }
     }

@@ -252,8 +252,8 @@ use super::engine::{
     try_deferred_deterministic_chain, try_match_all_rules, DeferredChainResult, SwitchResult,
 };
 use super::types::{
-    bv, bv_with, empty_shared_bindings, values_of, BoundValue, Continuation,
-    EvalResult, SharedBindings, WorkItem,
+    bv, bv_with, empty_shared_bindings, values_of, BoundValue, Continuation, EvalResult,
+    SharedBindings, WorkItem,
 };
 use crate::backend::environment::rule_management::extract_rule_parts;
 use crate::backend::models::gc_allocator::RootProvider;
@@ -699,21 +699,44 @@ fn format_args_he(fmt: &str, args: &[&MettaValue]) -> String {
     let mut next_pos = 0usize;
     while let Some(c) = iter.next() {
         match c {
-            '{' if iter.peek() == Some(&'{') => { iter.next(); out.push('{'); }
-            '}' if iter.peek() == Some(&'}') => { iter.next(); out.push('}'); }
+            '{' if iter.peek() == Some(&'{') => {
+                iter.next();
+                out.push('{');
+            }
+            '}' if iter.peek() == Some(&'}') => {
+                iter.next();
+                out.push('}');
+            }
             '{' => {
                 let mut idx_str = String::new();
                 let mut closed = false;
                 for nc in iter.by_ref() {
-                    if nc == '}' { closed = true; break; }
+                    if nc == '}' {
+                        closed = true;
+                        break;
+                    }
                     idx_str.push(nc);
                 }
-                if !closed { out.push('{'); out.push_str(&idx_str); continue; }
+                if !closed {
+                    out.push('{');
+                    out.push_str(&idx_str);
+                    continue;
+                }
                 let idx = if idx_str.is_empty() {
-                    let i = next_pos; next_pos += 1; i
-                } else if let Ok(n) = idx_str.parse::<usize>() { n }
-                else { out.push('{'); out.push_str(&idx_str); out.push('}'); continue; };
-                if let Some(a) = args.get(idx) { out.push_str(&a.to_display_string()); }
+                    let i = next_pos;
+                    next_pos += 1;
+                    i
+                } else if let Ok(n) = idx_str.parse::<usize>() {
+                    n
+                } else {
+                    out.push('{');
+                    out.push_str(&idx_str);
+                    out.push('}');
+                    continue;
+                };
+                if let Some(a) = args.get(idx) {
+                    out.push_str(&a.to_display_string());
+                }
             }
             _ => out.push(c),
         }
@@ -1061,18 +1084,12 @@ fn dispatch_rule_matches<C: EvalContext>(
             // Normal-form short-circuit for ground RHS
             if is_memoized_normal_form(&rhs) {
                 work_stack.push(WorkItem::Resume {
-                    result: (
-                        smallvec![bv_with(rhs, (*rhs_carrying_arc).clone())],
-                        env,
-                    ),
+                    result: (smallvec![bv_with(rhs, (*rhs_carrying_arc).clone())], env),
                 });
             } else if is_normal_form_bounded(&rhs, &*env, 2) {
                 memoize_normal_form(&rhs);
                 work_stack.push(WorkItem::Resume {
-                    result: (
-                        smallvec![bv_with(rhs, (*rhs_carrying_arc).clone())],
-                        env,
-                    ),
+                    result: (smallvec![bv_with(rhs, (*rhs_carrying_arc).clone())], env),
                 });
             } else {
                 // Phase F: Tight deterministic chain — if the ground RHS is itself
@@ -1716,7 +1733,10 @@ impl WorkerCaptureScope {
         } else {
             false
         };
-        Self { pushed, _not_send: std::marker::PhantomData }
+        Self {
+            pushed,
+            _not_send: std::marker::PhantomData,
+        }
     }
 }
 
@@ -2028,8 +2048,7 @@ fn parallel_dispatch(
         branches: (*branches).clone(),
         results: Arc::clone(&results),
     });
-    let root_frame_ptr =
-        &*root_frame as *const ParallelBranchRootFrame as *const ();
+    let root_frame_ptr = &*root_frame as *const ParallelBranchRootFrame as *const ();
     // SAFETY: `root_frame` lives as long as the returned handle (stored
     // inside it). The frame_chain entry is popped on `_root_guard` drop,
     // which happens before `root_frame` (declaration order in the struct).
@@ -2181,9 +2200,7 @@ fn parallel_dispatch(
         );
     }
 
-    let started_at_alloc_count = AtomicU64::new(
-        crate::backend::models::alloc_count_snapshot(),
-    );
+    let started_at_alloc_count = AtomicU64::new(crate::backend::models::alloc_count_snapshot());
 
     // Register a GC root provider for this dispatch. Closes the
     // worker-write vs GC-pool-walker race (workers write into
@@ -2192,15 +2209,18 @@ fn parallel_dispatch(
     // other threads). The Arc stays alive while the handle does;
     // dropping the handle on the trampoline thread frees the provider
     // and the Weak in ROOT_REGISTRY is auto-pruned on next root walk.
-    let root_provider = Arc::new(crate::backend::eval::trampoline::types::ParallelDispatchRootProvider {
-        results: Arc::clone(&results),
-        // Phase 8: share the SAME Arc the caller will use for
-        // `WaitForParallel.stable_branches_snapshot`. Single allocation,
-        // two strong refs — closes the worker-INPUT root-coverage gap.
-        branches: Arc::clone(&branches),
-    });
+    let root_provider = Arc::new(
+        crate::backend::eval::trampoline::types::ParallelDispatchRootProvider {
+            results: Arc::clone(&results),
+            // Phase 8: share the SAME Arc the caller will use for
+            // `WaitForParallel.stable_branches_snapshot`. Single allocation,
+            // two strong refs — closes the worker-INPUT root-coverage gap.
+            branches: Arc::clone(&branches),
+        },
+    );
     crate::backend::models::gc_allocator::register_root_provider(
-        &(Arc::clone(&root_provider) as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
+        &(Arc::clone(&root_provider)
+            as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
     );
 
     // Phase 10.A: capture the parent's tracked-vars union BEFORE spawning
@@ -2304,15 +2324,15 @@ fn pump_parallel_wait(
     // (2) Periodic cooperative GC drop — gated by alloc-delta or explicit
     //     gc-request. Mirrors the original wait loop's logic at
     //     parallel_branch_eval:1975-2037.
-    if super::context::parallel_gc_coop_enabled()
-        && handle.remaining.load(Ordering::Acquire) > 0
-    {
+    if super::context::parallel_gc_coop_enabled() && handle.remaining.load(Ordering::Acquire) > 0 {
         let current_allocs = crate::backend::models::alloc_count_snapshot();
         let last = handle.started_at_alloc_count.load(Ordering::Relaxed);
         let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
         let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
         if gc_pending || delta_crossed {
-            handle.started_at_alloc_count.store(current_allocs, Ordering::Relaxed);
+            handle
+                .started_at_alloc_count
+                .store(current_allocs, Ordering::Relaxed);
 
             let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
             crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
@@ -2347,7 +2367,10 @@ fn pump_parallel_wait(
 
     // (4) Stall detection + overflow spawn — state in `handle.stall_state`.
     let curr_remaining = handle.remaining.load(Ordering::Acquire);
-    let mut stall_state = handle.stall_state.lock().expect("stall_state mutex poisoned");
+    let mut stall_state = handle
+        .stall_state
+        .lock()
+        .expect("stall_state mutex poisoned");
     if curr_remaining > 0 && curr_remaining == stall_state.prev_remaining {
         stall_state.stall_count += 1;
         if stall_state.stall_count >= 20 && !stall_state.overflow_requested {
@@ -2365,7 +2388,6 @@ fn pump_parallel_wait(
     }
     stall_state.prev_remaining = curr_remaining;
 }
-
 
 /// **Stack-safety mandate (2026-05-15)**: trampolinized one-tick pump for
 /// `parallel_collapse_dispatch`. Mirrors `pump_parallel_wait` but operates
@@ -2403,15 +2425,15 @@ fn pump_parallel_collapse_wait(
     }
 
     // (2) Periodic cooperative GC drop (no work-stealing per mandate).
-    if super::context::parallel_gc_coop_enabled()
-        && handle.remaining.load(Ordering::Acquire) > 0
-    {
+    if super::context::parallel_gc_coop_enabled() && handle.remaining.load(Ordering::Acquire) > 0 {
         let current_allocs = crate::backend::models::alloc_count_snapshot();
         let last = handle.started_at_alloc_count.load(Ordering::Relaxed);
         let gc_pending = crate::backend::models::gc_allocator::is_gc_requested();
         let delta_crossed = current_allocs.wrapping_sub(last) >= 500_000;
         if gc_pending || delta_crossed {
-            handle.started_at_alloc_count.store(current_allocs, Ordering::Relaxed);
+            handle
+                .started_at_alloc_count
+                .store(current_allocs, Ordering::Relaxed);
 
             let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
             crate::backend::eval::frame_chain::collect_frame_chain_roots(&mut parent_roots);
@@ -2443,7 +2465,10 @@ fn pump_parallel_collapse_wait(
 
     // (3) Stall detection + overflow.
     let curr_remaining = handle.remaining.load(Ordering::Acquire);
-    let mut stall_state = handle.stall_state.lock().expect("stall_state mutex poisoned");
+    let mut stall_state = handle
+        .stall_state
+        .lock()
+        .expect("stall_state mutex poisoned");
     if curr_remaining > 0 && curr_remaining == stall_state.prev_remaining {
         stall_state.stall_count += 1;
         if stall_state.stall_count >= 20 && !stall_state.overflow_requested {
@@ -2506,8 +2531,7 @@ fn parallel_collapse_dispatch(
         items: (*items).clone(),
         results: Arc::clone(&results),
     });
-    let root_frame_ptr =
-        &*root_frame as *const ParallelCollapseRootFrame as *const ();
+    let root_frame_ptr = &*root_frame as *const ParallelCollapseRootFrame as *const ();
     // SAFETY: see analogous block in `parallel_dispatch`.
     let root_guard = unsafe {
         crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
@@ -2566,8 +2590,7 @@ fn parallel_collapse_dispatch(
             // Phase 9.1: register `item_expr` as a per-thread current-iter
             // GC root for the worker's lifetime (mirrors branch worker at
             // `:1730`). See `current_iter_root` module docs.
-            let _current_iter_scope =
-                super::current_iter_root::CurrentIterScope::enter(item_expr);
+            let _current_iter_scope = super::current_iter_root::CurrentIterScope::enter(item_expr);
             // Phase 10.A — Stage 1e closure: re-establish the parent's
             // collapse-bind tracked-vars on the worker thread so
             // `in_collapse_bind_scope()` and `active_tracked_vars()` return
@@ -2651,14 +2674,17 @@ fn parallel_collapse_dispatch(
 
     // Register a GC root provider for this dispatch.
     // See `parallel_dispatch` for the rationale and lifetime invariants.
-    let root_provider = Arc::new(crate::backend::eval::trampoline::types::ParallelCollapseRootProvider {
-        results: Arc::clone(&results),
-        // Phase 8: share the Arc the caller will use for
-        // `WaitForParallelCollapse.stable_items_snapshot`.
-        items: Arc::clone(&items),
-    });
+    let root_provider = Arc::new(
+        crate::backend::eval::trampoline::types::ParallelCollapseRootProvider {
+            results: Arc::clone(&results),
+            // Phase 8: share the Arc the caller will use for
+            // `WaitForParallelCollapse.stable_items_snapshot`.
+            items: Arc::clone(&items),
+        },
+    );
     crate::backend::models::gc_allocator::register_root_provider(
-        &(Arc::clone(&root_provider) as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
+        &(Arc::clone(&root_provider)
+            as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
     );
 
     ParallelCollapseDispatchHandle {
@@ -2669,9 +2695,7 @@ fn parallel_collapse_dispatch(
         num_branches: num_items,
         root_frame,
         _root_guard: Some(root_guard),
-        started_at_alloc_count: AtomicU64::new(
-            crate::backend::models::alloc_count_snapshot(),
-        ),
+        started_at_alloc_count: AtomicU64::new(crate::backend::models::alloc_count_snapshot()),
         stall_state: Mutex::new(StallState::default()),
         _root_provider_arc: root_provider,
         // Phase 10.A: handed off to the WaitForParallelCollapse continuation
@@ -2700,7 +2724,6 @@ fn parallel_collapse_threshold() -> usize {
             .unwrap_or(8)
     })
 }
-
 
 /// Generic trampoline evaluation entry point.
 ///
@@ -3298,10 +3321,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     //     fixture `(pragma! max-stack-depth 20) (= (rec) (rec)) !(rec)`
                     //     asserts the Error.
                     if crate::backend::eval::cesk::is_actively_evaluating(tabling_hash) {
-                        let user_set_pragma = env
-                            .get_max_stack_depth()
-                            .map(|d| d != 1000)
-                            .unwrap_or(true); // None = (pragma! max-stack-depth 0) → unlimited, treat as user-set
+                        let user_set_pragma =
+                            env.get_max_stack_depth().map(|d| d != 1000).unwrap_or(true); // None = (pragma! max-stack-depth 0) → unlimited, treat as user-set
                         #[cfg(feature = "trace")]
                         {
                             if let Some(tc) = ctx.trace_collector() {
@@ -3320,9 +3341,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                             }
                         }
                         if user_set_pragma {
-                            let stack_overflow_err = ctx.factory().error(
-                                ctx.factory().atom("StackOverflow"),
-                                value.clone(),);
+                            let stack_overflow_err = ctx
+                                .factory()
+                                .error(ctx.factory().atom("StackOverflow"), value.clone());
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(stack_overflow_err)], env),
                             });
@@ -3550,7 +3571,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                                                 paired_results
                                                     .iter()
                                                     .map(|(v, _)| {
-                                                        crate::backend::trace::trace_value_generic(v)
+                                                        crate::backend::trace::trace_value_generic(
+                                                            v,
+                                                        )
                                                     })
                                                     .collect();
                                             tc.emit_converted(
@@ -3610,14 +3633,16 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // visit returns in O(1)).
                             let cache = crate::backend::bytecode::global_tiered_cache();
                             let compilation_state = cache.record_execution(&value);
-                            let rule_epoch = crate::backend::environment::rule_management::RULE_EPOCH
-                                .load(Ordering::Acquire);
+                            let rule_epoch =
+                                crate::backend::environment::rule_management::RULE_EPOCH
+                                    .load(Ordering::Acquire);
                             let has_overridden = compilation_state
                                 .cached_has_overridden_grounded_op(rule_epoch)
                                 .unwrap_or_else(|| {
-                                    let r = crate::backend::eval::expression_has_overridden_grounded_op(
-                                        &value, &*env,
-                                    );
+                                    let r =
+                                        crate::backend::eval::expression_has_overridden_grounded_op(
+                                            &value, &*env,
+                                        );
                                     compilation_state.set_has_overridden_grounded_op(rule_epoch, r);
                                     r
                                 });
@@ -3630,27 +3655,30 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     compilation_state.set_has_declared_meta_typed(rule_epoch, r);
                                     r
                                 });
-                            let involves_impure = !has_overridden && !has_meta_typed && compilation_state
-                                .cached_involves_impure_rules(rule_epoch)
-                                .unwrap_or_else(|| {
-                                    let r = crate::backend::eval::expression_involves_impure_rules(
-                                        &value, &*env,
-                                    );
-                                    compilation_state.set_involves_impure_rules(rule_epoch, r);
-                                    r
-                                });
-                            let safe_to_dispatch = !has_overridden
+                            let involves_impure = !has_overridden
                                 && !has_meta_typed
-                                && !involves_impure;
+                                && compilation_state
+                                    .cached_involves_impure_rules(rule_epoch)
+                                    .unwrap_or_else(|| {
+                                        let r =
+                                            crate::backend::eval::expression_involves_impure_rules(
+                                                &value, &*env,
+                                            );
+                                        compilation_state.set_involves_impure_rules(rule_epoch, r);
+                                        r
+                                    });
+                            let safe_to_dispatch =
+                                !has_overridden && !has_meta_typed && !involves_impure;
 
-                            let compilable_with_env = safe_to_dispatch && compilation_state
-                                .cached_compilable_with_env()
-                                .unwrap_or_else(|| {
-                                    let result =
-                                        crate::backend::bytecode::can_compile_with_env(&value);
-                                    compilation_state.set_compilable_with_env(result);
-                                    result
-                                });
+                            let compilable_with_env = safe_to_dispatch
+                                && compilation_state
+                                    .cached_compilable_with_env()
+                                    .unwrap_or_else(|| {
+                                        let result =
+                                            crate::backend::bytecode::can_compile_with_env(&value);
+                                        compilation_state.set_compilable_with_env(result);
+                                        result
+                                    });
 
                             if compilable_with_env {
                                 let compilation_hash = compilation_state.expr_hash;
@@ -4098,7 +4126,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     "Grounded operation '{}' not found in generic registry",
                                     op_name
                                 )),
-                                ctx.factory().atom("OperationNotFoundError"),);
+                                ctx.factory().atom("OperationNotFoundError"),
+                            );
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(error_value)], env),
                             });
@@ -4770,10 +4799,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                         // substitutions HE would apply via apply_bindings_to_atom_move
                         // before quoting back. Empirical HE: `(eval (eval 5))`
                         // → `[(eval (eval 5))]` — bindings-applied inner.
-                        let original_eval_expr = ctx.factory().sexpr(vec![
-                            ctx.factory().atom("eval"),
-                            resolved,
-                        ]);
+                        let original_eval_expr = ctx
+                            .factory()
+                            .sexpr(vec![ctx.factory().atom("eval"), resolved]);
 
                         // Detect nesting: if the top continuation is already
                         // a ProcessEvalEval, this eval is nested under another
@@ -4821,13 +4849,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                             //   metta-repl '!(eval (quote (+ 1 2)))'
                             //   → [(eval (quote (+ 1 2)))]
                             crate::backend::models::metta_value::ValueView::SExpr(items) => {
-                                items.first().map_or(false, |head| {
-                                    match head.view() {
-                                        crate::backend::models::metta_value::ValueView::Atom(n) => {
-                                            n.starts_with('$') || n == "quote"
-                                        }
-                                        _ => false,
+                                items.first().map_or(false, |head| match head.view() {
+                                    crate::backend::models::metta_value::ValueView::Atom(n) => {
+                                        n.starts_with('$') || n == "quote"
                                     }
+                                    _ => false,
                                 })
                             }
                             // NotReducible argument is itself NotReducible (idempotent).
@@ -4860,12 +4886,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                             } else {
                                 // PT re-translation: return the resolved arg
                                 // (or unquoted inner for `(quote X)`).
-                                let resolved_for_result =
-                                    original_eval_expr.as_sexpr().and_then(|items| {
-                                        items.get(1).cloned()
-                                    });
-                                let arg_resolved = resolved_for_result
-                                    .unwrap_or(original_eval_expr);
+                                let resolved_for_result = original_eval_expr
+                                    .as_sexpr()
+                                    .and_then(|items| items.get(1).cloned());
+                                let arg_resolved =
+                                    resolved_for_result.unwrap_or(original_eval_expr);
                                 if let Some(inner) = arg_resolved.as_quoted() {
                                     inner
                                 } else {
@@ -5596,8 +5621,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 // **Stack-safety mandate (2026-05-15)**:
                                 // trampolinized dispatch via WaitForParallel.
                                 // Phase 8: share Arc with RootProvider.
-                                let stable_branches_snapshot =
-                                    std::sync::Arc::new(branches);
+                                let stable_branches_snapshot = std::sync::Arc::new(branches);
                                 let handle = parallel_dispatch(
                                     std::sync::Arc::clone(&stable_branches_snapshot),
                                     metta_env,
@@ -6390,7 +6414,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // Infinite recursion detected — return error
                             let error_val = ctx.factory().error(
                                 ctx.factory().string("blackhole"),
-                                ctx.factory().atom("infinite recursion in EvalWithBindings"),);
+                                ctx.factory().atom("infinite recursion in EvalWithBindings"),
+                            );
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(error_val)], env),
                             });
@@ -7778,7 +7803,10 @@ fn process_continuation<C: EvalContext>(
                         work_stack.push(WorkItem::Resume {
                             result: (smallvec![bv_with(rhs, rot_carrying)], env),
                         });
-                    } else if is_normal_form_bounded(&rhs, &env, 2) {
+                    } else if is_normal_form_bounded(&rhs, &*env, 2) {
+                        // 2026-05-23 PT-canonical binding-thread fix:
+                        // mirror line 1522's `&*env` dereference to match
+                        // the first-branch normal-form check signature.
                         memoize_normal_form(&rhs);
                         work_stack.push(WorkItem::Resume {
                             result: (smallvec![bv_with(rhs, rot_carrying)], env),
@@ -8044,8 +8072,7 @@ fn process_continuation<C: EvalContext>(
                                 // ERR-shape align (2026-05-16): centralized
                                 // converter, HE-aligned (Error <call> <detail>).
                                 let call_form = state.call_form(ctx.factory());
-                                let error_value =
-                                    exec_error_to_value(&e, call_form, ctx.factory());
+                                let error_value = exec_error_to_value(&e, call_form, ctx.factory());
                                 work_stack.push(WorkItem::Resume {
                                     result: (smallvec![(error_value, tag)], result_env),
                                 });
@@ -8059,7 +8086,8 @@ fn process_continuation<C: EvalContext>(
                         "Grounded operation '{}' not found in generic registry",
                         state.op_name
                     )),
-                    ctx.factory().atom("OperationNotFoundError"),);
+                    ctx.factory().atom("OperationNotFoundError"),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(error_value)], result_env),
                 });
@@ -8203,7 +8231,8 @@ fn process_continuation<C: EvalContext>(
                             "Grounded operation '{}' not found in generic registry",
                             state_i.op_name
                         )),
-                        ctx.factory().atom("OperationNotFoundError"),);
+                        ctx.factory().atom("OperationNotFoundError"),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(error_value)], result_env),
                     });
@@ -8497,8 +8526,37 @@ fn process_continuation<C: EvalContext>(
                 }
             } else {
                 // All combinations processed.
+                // 2026-05-23 PT-canonical binding-thread fix: re-tag each
+                // accumulated combo result with the outer SExpr's ambient
+                // carrying bindings. Without this, results from combo N
+                // (which may have lost their per-combo bindings somewhere
+                // in the body-Done→Resume→PRM chain) reach
+                // ProcessFoldlAtom with empty bindings, breaking foldl's
+                // cross-iteration binding propagation. Composing with
+                // outer_carrying restores the ambient ancestry that should
+                // accompany every combo's result. See plan-agent diagnosis.
+                let oc = &*outer_carrying;
+                let tagged: SmallVec<[BoundValue; 2]> = if oc.is_empty() {
+                    SmallVec::from_vec(results)
+                } else {
+                    results
+                        .into_iter()
+                        .map(|(v, b)| {
+                            if b.is_empty() {
+                                bv_with(v, oc.clone())
+                            } else {
+                                let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
+                                    oc,
+                                    &b,
+                                    ctx.factory(),
+                                );
+                                bv_with(v, composed)
+                            }
+                        })
+                        .collect()
+                };
                 work_stack.push(WorkItem::Resume {
-                    result: (SmallVec::from_vec(results), env),
+                    result: (tagged, env),
                 });
             }
         }
@@ -8783,8 +8841,7 @@ fn process_continuation<C: EvalContext>(
                         // **Stack-safety mandate (2026-05-15)**:
                         // trampolinized dispatch via WaitForParallel.
                         // Phase 8: share Arc with RootProvider.
-                        let stable_branches_snapshot =
-                            std::sync::Arc::new(branches);
+                        let stable_branches_snapshot = std::sync::Arc::new(branches);
                         let handle = parallel_dispatch(
                             std::sync::Arc::clone(&stable_branches_snapshot),
                             metta_env,
@@ -8792,8 +8849,7 @@ fn process_continuation<C: EvalContext>(
                             current_depth,
                             crate::backend::eval::cesk::coroutine::Demand::All,
                         );
-                        let base_results: SmallVec<[BoundValue; 2]> =
-                            SmallVec::from_vec(results);
+                        let base_results: SmallVec<[BoundValue; 2]> = SmallVec::from_vec(results);
                         let env_for_resume = result_env.clone();
                         continuations.push(Continuation::WaitForParallel {
                             handle,
@@ -10289,8 +10345,7 @@ fn process_continuation<C: EvalContext>(
                     .collect();
 
                 let mut alts_iter = alts.into_iter();
-                let (first_val, first_b) =
-                    alts_iter.next().expect("cond_results.len() > 1");
+                let (first_val, first_b) = alts_iter.next().expect("cond_results.len() > 1");
 
                 continuations.push(Continuation::ProcessAmb {
                     remaining_alts: alts_iter,
@@ -10549,7 +10604,7 @@ fn process_continuation<C: EvalContext>(
                         ctx.factory().atom("Bool"),
                         ctx.factory().atom(actual_type_name),
                     ]);
-                    let err = ctx.factory().error( bad_arg,if_call);
+                    let err = ctx.factory().error(bad_arg, if_call);
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after_cond),
                     });
@@ -10991,7 +11046,11 @@ fn process_continuation<C: EvalContext>(
 
             // Collect non-empty evaluated results (broader sentinel check —
             // catches both `ValueView::Empty` and `Atom("Empty")`)
-            evaluated.extend(eval_results.into_iter().filter(|(v, _)| !v.is_empty_sentinel()));
+            evaluated.extend(
+                eval_results
+                    .into_iter()
+                    .filter(|(v, _)| !v.is_empty_sentinel()),
+            );
 
             if let Some((next_raw, next_raw_bindings)) = remaining_raw.next() {
                 // Task #68 gap-fix: preserve next_raw's bindings (previously
@@ -11885,11 +11944,10 @@ fn process_continuation<C: EvalContext>(
             fn fresh_function_result<C: EvalContext>(ctx: &C) -> MettaValue {
                 static FUNCTION_RESULT_COUNTER: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
-                let n = FUNCTION_RESULT_COUNTER
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let n = FUNCTION_RESULT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let name = format!("$__function_result_{}", n);
-                let interned: &'static str = crate::backend::models::global_allocator()
-                    .alloc_str(&name);
+                let interned: &'static str =
+                    crate::backend::models::global_allocator().alloc_str(&name);
                 ctx.factory().atom(interned)
             }
 
@@ -12878,13 +12936,14 @@ fn process_continuation<C: EvalContext>(
                 // class members (HE M-VAR-VAR-DISTINCT, spec §4.3.1).
                 use crate::backend::eval::trampoline::engine::apply_bindings_with_classes;
                 use crate::backend::models::UnifyMode;
-                let mut all_bindings: Vec<
-                    crate::backend::models::BindingsWithClasses<MettaValue>,
-                > = Vec::new();
+                let mut all_bindings: Vec<crate::backend::models::BindingsWithClasses<MettaValue>> =
+                    Vec::new();
                 for (p2_result, _b) in &pattern2_results {
                     if let Some(bindings) =
                         crate::backend::eval::trampoline::unification::bidirectional_unify_with_mode(
-                            &val1, p2_result, UnifyMode::Unify,
+                            &val1,
+                            p2_result,
+                            UnifyMode::Unify,
                         )
                     {
                         all_bindings.push(bindings);
@@ -12902,11 +12961,8 @@ fn process_continuation<C: EvalContext>(
                         carrying_bindings: outer_carrying.clone(),
                     });
                 } else if all_bindings.len() == 1 {
-                    let instantiated = apply_bindings_with_classes(
-                        &success_body,
-                        &all_bindings[0],
-                        ctx.factory(),
-                    );
+                    let instantiated =
+                        apply_bindings_with_classes(&success_body, &all_bindings[0], ctx.factory());
 
                     // T04/035 (2026-05-17): HE Bindings propagation parity.
                     // unify produces new bindings (e.g. `(unify B $a ...)` binds
@@ -13097,7 +13153,7 @@ fn process_continuation<C: EvalContext>(
                     merge_mode: crate::backend::eval::trampoline::types::CollapseMergeMode::Plain,
                     stable_items_snapshot,
                     outer_carrying: outer_carrying.clone(),
-                    tracked_vars_hint: None,  // Plain mode discards bindings
+                    tracked_vars_hint: None, // Plain mode discards bindings
                     env: result_env,
                     depth,
                     budget_acquired: par_budget,
@@ -13582,9 +13638,7 @@ fn process_continuation<C: EvalContext>(
                     let mut values: Vec<MettaValue> =
                         evaluated.into_iter().map(|(v, _)| v).collect();
                     if sort_results {
-                        values.sort_by(|a, b| {
-                            a.to_metta_string().cmp(&b.to_metta_string())
-                        });
+                        values.sort_by(|a, b| a.to_metta_string().cmp(&b.to_metta_string()));
                     }
                     ctx.factory().sexpr(values)
                 };
@@ -13698,8 +13752,8 @@ fn process_continuation<C: EvalContext>(
             stable_branches_snapshot,
         } => {
             // (a) done check
-            let done_now = handle.remaining.load(Ordering::Acquire) == 0
-                || handle.cancel_token.is_satisfied();
+            let done_now =
+                handle.remaining.load(Ordering::Acquire) == 0 || handle.cancel_token.is_satisfied();
             if done_now {
                 // Trace: ParallelDispatch done (mirrors enter trace from parallel_dispatch).
                 #[cfg(feature = "trace")]
@@ -13805,15 +13859,19 @@ fn process_continuation<C: EvalContext>(
             sort_results,
         } => {
             // (a) done check
-            let done_now = handle.remaining.load(Ordering::Acquire) == 0
-                || handle.cancel_token.is_satisfied();
+            let done_now =
+                handle.remaining.load(Ordering::Acquire) == 0 || handle.cancel_token.is_satisfied();
             if done_now {
                 #[cfg(feature = "trace")]
                 {
                     if let Some(tc) = ctx.trace_collector() {
                         let form_name = match merge_mode {
-                            crate::backend::eval::trampoline::types::CollapseMergeMode::Plain => "collapse",
-                            crate::backend::eval::trampoline::types::CollapseMergeMode::Bind => "collapse-bind",
+                            crate::backend::eval::trampoline::types::CollapseMergeMode::Plain => {
+                                "collapse"
+                            }
+                            crate::backend::eval::trampoline::types::CollapseMergeMode::Bind => {
+                                "collapse-bind"
+                            }
                         };
                         tc.emit_converted(
                             trace_format::TraceTier::TreeWalker,
@@ -13857,16 +13915,13 @@ fn process_continuation<C: EvalContext>(
                         let mut values: Vec<MettaValue> =
                             evaluated.into_iter().map(|(v, _)| v).collect();
                         if sort_results {
-                            values.sort_by(|a, b| {
-                                a.to_metta_string().cmp(&b.to_metta_string())
-                            });
+                            values.sort_by(|a, b| a.to_metta_string().cmp(&b.to_metta_string()));
                         }
                         ctx.factory().sexpr(values)
                     }
                     crate::backend::eval::trampoline::types::CollapseMergeMode::Bind => {
                         // collapse-bind: per-result (value (Bindings ...)) sidecar.
-                        let tracked_slice =
-                            tracked_vars_hint.as_deref().map(|tv| tv.as_slice());
+                        let tracked_slice = tracked_vars_hint.as_deref().map(|tv| tv.as_slice());
                         let pairs: Vec<MettaValue> = evaluated
                             .into_iter()
                             .map(|(result_val, bindings)| {
@@ -13971,7 +14026,8 @@ fn process_continuation<C: EvalContext>(
                             "guard: condition must evaluate to Bool, got {}",
                             v.friendly_repr()
                         )),
-                        v.clone(),);
+                        v.clone(),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], result_env),
                     });
@@ -14050,12 +14106,10 @@ fn process_continuation<C: EvalContext>(
                         } else {
                             // External handle: query its PathMap directly.
                             if let Some(ref name) = atom_name {
-                                let mut types =
-                                    handle.query_types_generic(name, ctx.factory());
+                                let mut types = handle.query_types_generic(name, ctx.factory());
                                 if types.is_empty() {
-                                    let all_atoms = handle.collapse_generic::<MettaValue, _>(
-                                        ctx.factory(),
-                                    );
+                                    let all_atoms =
+                                        handle.collapse_generic::<MettaValue, _>(ctx.factory());
                                     for a in &all_atoms {
                                         if let Some(parts) = a.as_sexpr() {
                                             if parts.len() == 3 {
@@ -14119,7 +14173,8 @@ fn process_continuation<C: EvalContext>(
             if space_results.is_empty() {
                 let err = ctx.factory().error(
                     ctx.factory().string("get-atoms: space evaluated to empty"),
-                    space_ref,);
+                    space_ref,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], result_env),
                 });
@@ -14157,7 +14212,8 @@ fn process_continuation<C: EvalContext>(
                             "get-atoms: first argument must be a space, got {}",
                             first.friendly_repr()
                         )),
-                        first.clone(),);
+                        first.clone(),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], result_env),
                     });
@@ -14178,7 +14234,8 @@ fn process_continuation<C: EvalContext>(
             if space_results.is_empty() {
                 let err = ctx.factory().error(
                     ctx.factory().string("match: space evaluated to empty"),
-                    space_arg,);
+                    space_arg,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14440,7 +14497,8 @@ fn process_continuation<C: EvalContext>(
             if space_results.is_empty() {
                 let err = ctx.factory().error(
                     ctx.factory().string("add-atom: space evaluated to empty"),
-                    space_ref,);
+                    space_ref,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14540,8 +14598,10 @@ fn process_continuation<C: EvalContext>(
 
             if space_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("remove-atom: space evaluated to empty"),
-                    space_ref,);
+                    ctx.factory()
+                        .string("remove-atom: space evaluated to empty"),
+                    space_ref,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14628,8 +14688,10 @@ fn process_continuation<C: EvalContext>(
 
             if init_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("new-state: initial value evaluated to empty"),
-                    initial_value,);
+                    ctx.factory()
+                        .string("new-state: initial value evaluated to empty"),
+                    initial_value,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14654,8 +14716,10 @@ fn process_continuation<C: EvalContext>(
 
             if state_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("get-state: state reference evaluated to empty"),
-                    state_ref,);
+                    ctx.factory()
+                        .string("get-state: state reference evaluated to empty"),
+                    state_ref,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14669,11 +14733,10 @@ fn process_continuation<C: EvalContext>(
                         });
                     } else {
                         let err = ctx.factory().error(
-                            ctx.factory().string(&format!(
-                                "get-state: state {} not found",
-                                state_id
-                            )),
-                            first.clone(),);
+                            ctx.factory()
+                                .string(&format!("get-state: state {} not found", state_id)),
+                            first.clone(),
+                        );
                         work_stack.push(WorkItem::Resume {
                             result: (smallvec![bv(err)], env_after),
                         });
@@ -14684,7 +14747,8 @@ fn process_continuation<C: EvalContext>(
                             "get-state: argument must be a state reference, got {}",
                             first.friendly_repr()
                         )),
-                        first.clone(),);
+                        first.clone(),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -14703,8 +14767,10 @@ fn process_continuation<C: EvalContext>(
 
             if state_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("change-state!: state reference evaluated to empty"),
-                    state_ref,);
+                    ctx.factory()
+                        .string("change-state!: state reference evaluated to empty"),
+                    state_ref,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14734,7 +14800,8 @@ fn process_continuation<C: EvalContext>(
                             "change-state!: first argument must be a state reference, got {}",
                             first.friendly_repr()
                         )),
-                        first.clone(),);
+                        first.clone(),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -14754,9 +14821,13 @@ fn process_continuation<C: EvalContext>(
             let (state_results, env_after) = result;
             if state_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("compare-and-swap-state!: state ref evaluated to empty"),
-                    state_ref,);
-                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                    ctx.factory()
+                        .string("compare-and-swap-state!: state ref evaluated to empty"),
+                    state_ref,
+                );
+                work_stack.push(WorkItem::Resume {
+                    result: (smallvec![bv(err)], env_after),
+                });
             } else {
                 let (state_value, _) = &state_results[0];
                 if state_value.as_state().is_some() {
@@ -14784,7 +14855,9 @@ fn process_continuation<C: EvalContext>(
                             state_value.friendly_repr()
                         )),
                         state_value.clone(),);
-                    work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(err)], env_after),
+                    });
                 }
             }
         }
@@ -14800,9 +14873,13 @@ fn process_continuation<C: EvalContext>(
             let (exp_results, env_after) = result;
             if exp_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("compare-and-swap-state!: expected value evaluated to empty"),
-                    state_value,);
-                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                    ctx.factory()
+                        .string("compare-and-swap-state!: expected value evaluated to empty"),
+                    state_value,
+                );
+                work_stack.push(WorkItem::Resume {
+                    result: (smallvec![bv(err)], env_after),
+                });
             } else {
                 let (exp_val, _) = &exp_results[0];
                 continuations.push(Continuation::ProcessCasNewValue {
@@ -14834,9 +14911,13 @@ fn process_continuation<C: EvalContext>(
             let (new_results, mut env_after) = result;
             if new_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("compare-and-swap-state!: new value evaluated to empty"),
-                    state_value,);
-                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                    ctx.factory()
+                        .string("compare-and-swap-state!: new value evaluated to empty"),
+                    state_value,
+                );
+                work_stack.push(WorkItem::Resume {
+                    result: (smallvec![bv(err)], env_after),
+                });
             } else {
                 let (new_val, _) = &new_results[0];
                 if let Some(state_id) = state_value.as_state() {
@@ -14858,9 +14939,13 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        ctx.factory().string("compare-and-swap-state!: expected state value"),
-                        state_value,);
-                    work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                        ctx.factory()
+                            .string("compare-and-swap-state!: expected state value"),
+                        state_value,
+                    );
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(err)], env_after),
+                    });
                 }
             }
         }
@@ -14876,9 +14961,13 @@ fn process_continuation<C: EvalContext>(
             let (state_results, env_after) = result;
             if state_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("loop-until-state: state ref evaluated to empty"),
-                    state_ref,);
-                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                    ctx.factory()
+                        .string("loop-until-state: state ref evaluated to empty"),
+                    state_ref,
+                );
+                work_stack.push(WorkItem::Resume {
+                    result: (smallvec![bv(err)], env_after),
+                });
             } else {
                 let (state_value, _) = &state_results[0];
                 if state_value.as_state().is_some() {
@@ -14900,9 +14989,13 @@ fn process_continuation<C: EvalContext>(
                     });
                 } else {
                     let err = ctx.factory().error(
-                        ctx.factory().string("loop-until-state: first argument must be a state reference"),
-                        state_value.clone(),);
-                    work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                        ctx.factory()
+                            .string("loop-until-state: first argument must be a state reference"),
+                        state_value.clone(),
+                    );
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(err)], env_after),
+                    });
                 }
             }
         }
@@ -14917,9 +15010,13 @@ fn process_continuation<C: EvalContext>(
             let (target_results, env_after) = result;
             if target_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("loop-until-state: target evaluated to empty"),
-                    state_value,);
-                work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                    ctx.factory()
+                        .string("loop-until-state: target evaluated to empty"),
+                    state_value,
+                );
+                work_stack.push(WorkItem::Resume {
+                    result: (smallvec![bv(err)], env_after),
+                });
             } else {
                 let (target_val, _) = &target_results[0];
                 if let Some(state_id) = state_value.as_state() {
@@ -14937,13 +15034,13 @@ fn process_continuation<C: EvalContext>(
                     // already at target on first read. Sequential happens-
                     // before makes this single-shot, no spinning required.
                     let current = env_after.get_state(state_id);
-                    let matched = current
-                        .as_ref()
-                        .map(|c| c == target_val)
-                        .unwrap_or(false);
+                    let matched = current.as_ref().map(|c| c == target_val).unwrap_or(false);
                     if matched {
                         work_stack.push(WorkItem::Resume {
-                            result: (smallvec![bv(current.unwrap_or_else(|| ctx.factory().unit()))], env_after),
+                            result: (
+                                smallvec![bv(current.unwrap_or_else(|| ctx.factory().unit()))],
+                                env_after,
+                            ),
                         });
                     } else {
                         // Cell hasn't reached target yet — under sequential
@@ -14958,9 +15055,13 @@ fn process_continuation<C: EvalContext>(
                     }
                 } else {
                     let err = ctx.factory().error(
-                        ctx.factory().string("loop-until-state: expected state value"),
-                        state_value,);
-                    work_stack.push(WorkItem::Resume { result: (smallvec![bv(err)], env_after) });
+                        ctx.factory()
+                            .string("loop-until-state: expected state value"),
+                        state_value,
+                    );
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(err)], env_after),
+                    });
                 }
             }
         }
@@ -14976,8 +15077,10 @@ fn process_continuation<C: EvalContext>(
 
             if value_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("change-state!: new value evaluated to empty"),
-                    new_value,);
+                    ctx.factory()
+                        .string("change-state!: new value evaluated to empty"),
+                    new_value,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -14994,7 +15097,8 @@ fn process_continuation<C: EvalContext>(
                 } else {
                     let err = ctx.factory().error(
                         ctx.factory().string("change-state!: expected state value"),
-                        state_value,);
+                        state_value,
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -15033,8 +15137,10 @@ fn process_continuation<C: EvalContext>(
 
             if format_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("format-args: format string evaluated to empty"),
-                    format_arg,);
+                    ctx.factory()
+                        .string("format-args: format string evaluated to empty"),
+                    format_arg,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15064,7 +15170,8 @@ fn process_continuation<C: EvalContext>(
                             "format-args: first argument must be a string, got {}",
                             first.friendly_repr()
                         )),
-                        first.clone(),);
+                        first.clone(),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -15084,7 +15191,8 @@ fn process_continuation<C: EvalContext>(
             if args_results.is_empty() {
                 let err = ctx.factory().error(
                     ctx.factory().string("format-args: args evaluated to empty"),
-                    args_arg,);
+                    args_arg,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15216,7 +15324,8 @@ fn process_continuation<C: EvalContext>(
             if atom_results.is_empty() {
                 let err = ctx.factory().error(
                     ctx.factory().string("bind!: atom evaluated to empty"),
-                    ctx.factory().atom(&token),);
+                    ctx.factory().atom(&token),
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15499,7 +15608,8 @@ fn process_continuation<C: EvalContext>(
                             "match-or: first argument must be a space, got {}",
                             first.friendly_repr()
                         )),
-                        first.clone(),);
+                        first.clone(),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -15520,8 +15630,10 @@ fn process_continuation<C: EvalContext>(
 
             if memo_results.is_empty() {
                 let err = ctx.factory().error(
-                    ctx.factory().string("memo/memo!: memo reference evaluated to empty"),
-                    memo_ref,);
+                    ctx.factory()
+                        .string("memo/memo!: memo reference evaluated to empty"),
+                    memo_ref,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15560,7 +15672,8 @@ fn process_continuation<C: EvalContext>(
                             "memo/memo!: first argument must be a memo table, got {}",
                             first.friendly_repr()
                         )),
-                        first.clone(),);
+                        first.clone(),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });
@@ -15608,7 +15721,8 @@ fn process_continuation<C: EvalContext>(
             if name_results.is_empty() {
                 let err = ctx.factory().error(
                     ctx.factory().string("new-memo: name evaluated to empty"),
-                    name_arg,);
+                    name_arg,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15663,7 +15777,8 @@ fn process_continuation<C: EvalContext>(
             if size_results.is_empty() {
                 let err = ctx.factory().error(
                     ctx.factory().string("new-memo: size evaluated to empty"),
-                    size_arg,);
+                    size_arg,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15693,11 +15808,10 @@ fn process_continuation<C: EvalContext>(
                     "memo-stats"
                 };
                 let err = ctx.factory().error(
-                    ctx.factory().string(&format!(
-                        "{}: memo reference evaluated to empty",
-                        op_name
-                    )),
-                    memo_ref,);
+                    ctx.factory()
+                        .string(&format!("{}: memo reference evaluated to empty", op_name)),
+                    memo_ref,
+                );
                 work_stack.push(WorkItem::Resume {
                     result: (smallvec![bv(err)], env_after),
                 });
@@ -15731,8 +15845,10 @@ fn process_continuation<C: EvalContext>(
                                 .factory()
                                 .atom("Rebuild with: cargo build --features track-stats");
                             let err = ctx.factory().error(
-                                ctx.factory().string("memo-stats requires track-stats feature"),
-                                detail_atom,);
+                                ctx.factory()
+                                    .string("memo-stats requires track-stats feature"),
+                                detail_atom,
+                            );
                             work_stack.push(WorkItem::Resume {
                                 result: (smallvec![bv(err)], env_after),
                             });
@@ -15750,7 +15866,8 @@ fn process_continuation<C: EvalContext>(
                             op_name,
                             first.friendly_repr()
                         )),
-                        first.clone(),);
+                        first.clone(),
+                    );
                     work_stack.push(WorkItem::Resume {
                         result: (smallvec![bv(err)], env_after),
                     });

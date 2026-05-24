@@ -3537,8 +3537,22 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // result would have been wrapped via `bv()` (empty
                     // bindings) anyway, so the VM path stays correct in
                     // the common case.
-                    let bindings_load_bearing =
-                        in_collapse_bind_scope() || !carrying_bindings.is_empty();
+                    // 2026-05-23 PT-canonical binding-thread fix (per
+                    // Explore agent RANK 1 diagnosis): when the value
+                    // contains FREE VARIABLES, pre-eval enumeration may
+                    // produce N alternatives each carrying a distinct
+                    // per-alt binding (e.g. `(father a $b)` → 2 alts
+                    // with $b=b and $b=y). The VM bytecode path preserves
+                    // those per-alt bindings via `run_with_bindings`, but
+                    // the JIT tier (tiered_cache.rs:2169-2186) pairs every
+                    // result with `GenericBindings::new()` (empty), losing
+                    // the per-alt distinction. Treat free-variable values
+                    // as binding-load-bearing so they route through the
+                    // tree-walker (which threads per-alt bindings correctly).
+                    let has_free_vars = value.has_variables_fast();
+                    let bindings_load_bearing = in_collapse_bind_scope()
+                        || !carrying_bindings.is_empty()
+                        || has_free_vars;
 
                     let has_grounded_args = if let Some(items) = value.as_sexpr() {
                         items

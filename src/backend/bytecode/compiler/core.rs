@@ -1625,7 +1625,8 @@ where
                 self.factory.string(
                     "let* bindings must be a list. Usage: (let* ((pattern value) ...) body)",
                 ),
-                bindings.clone(),);
+                bindings.clone(),
+            );
             let idx = self.builder.add_constant(err);
             self.builder.emit_u16(Opcode::PushConstant, idx);
             return Ok(());

@@ -105,7 +105,10 @@ pub trait EvalContext {
         _env: &MettaEnvironment,
         _compilation_hash: u64,
     ) -> Option<(
-        Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+        Vec<(
+            MettaValue,
+            crate::backend::models::GenericBindings<MettaValue>,
+        )>,
         MettaEnvironment,
     )> {
         None
@@ -477,7 +480,7 @@ mod tests {
 
     fn generic_create_error<C: EvalContext>(ctx: &C, msg: &str) -> MettaValue {
         let offending = ctx.factory().atom("details");
-        ctx.factory().error( ctx.factory().string(msg),offending)
+        ctx.factory().error(ctx.factory().string(msg), offending)
     }
 
     #[test]

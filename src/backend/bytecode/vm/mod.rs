@@ -890,7 +890,7 @@ where
     /// value sits in the first slot of `Error(offending, detail)`.
     #[inline]
     pub fn make_error(&self, msg: &str, offending: V) -> V {
-        self.factory.error( self.factory.string(msg),offending)
+        self.factory.error(self.factory.string(msg), offending)
     }
 
     // === Binding Operations ===
@@ -918,9 +918,7 @@ where
     /// the ~95% of expressions that never form an equivalence class.
     #[inline]
     pub(crate) fn class_table_is_empty(&self) -> bool {
-        self.class_table
-            .as_ref()
-            .map_or(true, |t| t.is_empty())
+        self.class_table.as_ref().map_or(true, |t| t.is_empty())
     }
 
     /// Push a new binding frame.
@@ -1167,11 +1165,13 @@ where
                 self.factory.atom(expected),
                 self.factory.atom(got),
             ]);
-            return self.factory.error( bad_arg_tuple,self.factory.atom("BadArgType"));
+            return self
+                .factory
+                .error(bad_arg_tuple, self.factory.atom("BadArgType"));
         }
         let (msg, kind) = err.as_error_strings();
         let offending = self.factory.atom(kind);
-        self.factory.error( self.factory.string(&msg),offending)
+        self.factory.error(self.factory.string(&msg), offending)
     }
 
     /// Run the VM to completion, returning all results.
@@ -1328,10 +1328,7 @@ where
                 let n = self.read_i8()? as i64;
                 self.push(self.make_long(n));
             }
-            Opcode::PushLong
-            | Opcode::PushString
-            | Opcode::PushUri
-            | Opcode::PushConstant => {
+            Opcode::PushLong | Opcode::PushString | Opcode::PushUri | Opcode::PushConstant => {
                 let index = self.read_u16()?;
                 let value = self
                     .chunk
@@ -1591,45 +1588,49 @@ where
                 // X.4 MTT-EMPTY-ANNIHILATION: recognise the literal `Empty`
                 // symbol in addition to the Empty sentinel (HE
                 // interpret_tuple return_on_error semantics).
-                if a.is_empty() || b.is_empty()
-                    || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty") {
+                if a.is_empty()
+                    || b.is_empty()
+                    || a.as_atom() == Some("Empty")
+                    || b.as_atom() == Some("Empty")
+                {
                     self.push(self.factory.empty());
                 } else {
-                match (a.as_long(), b.as_long()) {
-                    (Some(_), Some(0)) => {
-                        // Phase 1.1 (PT migration, 2026-05-21): emit
-                        // PT-canonical `(Error DivisionByZero (/ a b))`
-                        // shape per PHE-009. Slot order: Type-first, Ctx-second.
-                        // Supersedes the prior `(Error (/ a b) DivisionByZero)`
-                        // offending-first shape.
-                        let call = self.make_sexpr(vec![
-                            self.make_atom("/"),
-                            a.clone(),
-                            b.clone(),
-                        ]);
-                        let err = self.factory.error_pt(self.make_atom("DivisionByZero"), call);
-                        self.push(err);
-                    }
-                    (Some(x), Some(y)) => self.push(self.make_long(x.wrapping_div(y))),
-                    _ => match (a.as_float(), b.as_float()) {
-                        (Some(x), Some(y)) => self.push(self.make_float(x / y)),
-                        _ => {
-                            // Mixed Long/Float type promotion → IEEE 754
-                            match (a.as_long(), b.as_float()) {
-                                (Some(x), Some(y)) => self.push(self.make_float(x as f64 / y)),
-                                _ => match (a.as_float(), b.as_long()) {
-                                    (Some(x), Some(y)) => self.push(self.make_float(x / y as f64)),
-                                    _ => {
-                                        return Err(VmError::TypeError {
-                                            expected: "number",
-                                            got: "other",
-                                        })
-                                    }
-                                },
-                            }
+                    match (a.as_long(), b.as_long()) {
+                        (Some(_), Some(0)) => {
+                            // Phase 1.1 (PT migration, 2026-05-21): emit
+                            // PT-canonical `(Error DivisionByZero (/ a b))`
+                            // shape per PHE-009. Slot order: Type-first, Ctx-second.
+                            // Supersedes the prior `(Error (/ a b) DivisionByZero)`
+                            // offending-first shape.
+                            let call =
+                                self.make_sexpr(vec![self.make_atom("/"), a.clone(), b.clone()]);
+                            let err = self
+                                .factory
+                                .error_pt(self.make_atom("DivisionByZero"), call);
+                            self.push(err);
                         }
-                    },
-                }
+                        (Some(x), Some(y)) => self.push(self.make_long(x.wrapping_div(y))),
+                        _ => match (a.as_float(), b.as_float()) {
+                            (Some(x), Some(y)) => self.push(self.make_float(x / y)),
+                            _ => {
+                                // Mixed Long/Float type promotion → IEEE 754
+                                match (a.as_long(), b.as_float()) {
+                                    (Some(x), Some(y)) => self.push(self.make_float(x as f64 / y)),
+                                    _ => match (a.as_float(), b.as_long()) {
+                                        (Some(x), Some(y)) => {
+                                            self.push(self.make_float(x / y as f64))
+                                        }
+                                        _ => {
+                                            return Err(VmError::TypeError {
+                                                expected: "number",
+                                                got: "other",
+                                            })
+                                        }
+                                    },
+                                }
+                            }
+                        },
+                    }
                 }
             }
             Opcode::Mod => {
@@ -1641,20 +1642,20 @@ where
                 // X.4 MTT-EMPTY-ANNIHILATION: recognise the literal `Empty`
                 // symbol in addition to the Empty sentinel (HE
                 // interpret_tuple return_on_error semantics).
-                if a.is_empty() || b.is_empty()
-                    || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty") {
+                if a.is_empty()
+                    || b.is_empty()
+                    || a.as_atom() == Some("Empty")
+                    || b.as_atom() == Some("Empty")
+                {
                     self.push(self.factory.empty());
                 } else {
                     match (a.as_long(), a.as_float(), b.as_long(), b.as_float()) {
                         (Some(_), _, Some(0), _) => {
                             // ERR-shape align (2026-05-16): same HE shape
                             // as `/` — `(Error (% a b) DivisionByZero)`.
-                            let call = self.make_sexpr(vec![
-                                self.make_atom("%"),
-                                a.clone(),
-                                b.clone(),
-                            ]);
-                            let err = self.factory.error( self.make_atom("DivisionByZero"),call);
+                            let call =
+                                self.make_sexpr(vec![self.make_atom("%"), a.clone(), b.clone()]);
+                            let err = self.factory.error(self.make_atom("DivisionByZero"), call);
                             self.push(err);
                         }
                         (Some(x), _, Some(y), _) => self.push(self.make_long(x.wrapping_rem(y))),
@@ -1711,12 +1712,8 @@ where
                 // the operand context intact across all four 0-divisor
                 // arms.
                 let push_div_by_zero = |vm: &mut Self| {
-                    let call = vm.make_sexpr(vec![
-                        vm.make_atom("//"),
-                        a.clone(),
-                        b.clone(),
-                    ]);
-                    let err = vm.factory.error( vm.make_atom("DivisionByZero"),call);
+                    let call = vm.make_sexpr(vec![vm.make_atom("//"), a.clone(), b.clone()]);
+                    let err = vm.factory.error(vm.make_atom("DivisionByZero"), call);
                     vm.push(err);
                 };
                 match (a.as_long(), b.as_long()) {
@@ -1740,9 +1737,7 @@ where
                                     if y == 0.0 {
                                         push_div_by_zero(self);
                                     } else {
-                                        self.push(
-                                            self.make_long((x as f64 / y).floor() as i64),
-                                        );
+                                        self.push(self.make_long((x as f64 / y).floor() as i64));
                                     }
                                 }
                                 _ => match (a.as_float(), b.as_long()) {
@@ -1777,8 +1772,11 @@ where
                 // X.4 MTT-EMPTY-ANNIHILATION: recognise the literal `Empty`
                 // symbol in addition to the Empty sentinel (HE
                 // interpret_tuple return_on_error semantics).
-                if a.is_empty() || b.is_empty()
-                    || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty") {
+                if a.is_empty()
+                    || b.is_empty()
+                    || a.as_atom() == Some("Empty")
+                    || b.as_atom() == Some("Empty")
+                {
                     self.push(self.factory.empty());
                 } else {
                     match (a.as_long(), b.as_long()) {
@@ -1814,8 +1812,11 @@ where
                 // Float(1024.0), not Long(1024).
                 let b = self.pop()?;
                 let a = self.pop()?;
-                if a.is_empty() || b.is_empty()
-                    || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty") {
+                if a.is_empty()
+                    || b.is_empty()
+                    || a.as_atom() == Some("Empty")
+                    || b.as_atom() == Some("Empty")
+                {
                     self.push(self.factory.empty());
                 } else {
                     // Promote both to f64; powf for Float exp, powi for Long exp.
@@ -2440,18 +2441,16 @@ where
         // runtime Error has been raised by another opcode).
         if a.is_error_sentinel() || b.is_error_sentinel() {
             let arg_idx = if a.is_error_sentinel() { 1 } else { 2 };
-            let call = self.factory.sexpr(vec![
-                self.factory.atom(op_name),
-                a.clone(),
-                b.clone(),
-            ]);
+            let call = self
+                .factory
+                .sexpr(vec![self.factory.atom(op_name), a.clone(), b.clone()]);
             let detail = self.factory.sexpr(vec![
                 self.factory.atom("BadArgType"),
                 self.factory.long(arg_idx as i64),
                 self.factory.atom("Number"),
                 self.factory.atom("ErrorType"),
             ]);
-            let err = self.factory.error( detail,call);
+            let err = self.factory.error(detail, call);
             self.push(err);
             return Ok(());
         }
@@ -2463,8 +2462,10 @@ where
         //
         // X.4 MTT-EMPTY-ANNIHILATION: also recognise the literal `Empty`
         // symbol (HE interpret_tuple return_on_error semantics).
-        if a.is_empty() || b.is_empty()
-            || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty")
+        if a.is_empty()
+            || b.is_empty()
+            || a.as_atom() == Some("Empty")
+            || b.as_atom() == Some("Empty")
         {
             self.push(self.factory.empty());
             return Ok(());
@@ -2536,8 +2537,10 @@ where
         }
         // BUG-T0-T1-003: Empty annihilation in comparisons per spec §14.2.1.
         // X.4 MTT-EMPTY-ANNIHILATION: also recognise the literal `Empty` symbol.
-        if a.is_empty() || b.is_empty()
-            || a.as_atom() == Some("Empty") || b.as_atom() == Some("Empty")
+        if a.is_empty()
+            || b.is_empty()
+            || a.as_atom() == Some("Empty")
+            || b.as_atom() == Some("Empty")
         {
             self.push(self.factory.empty());
             return Ok(());
@@ -3080,9 +3083,7 @@ where
                 // Fan out alternatives via choice points so the VM enumerates
                 // all declared types under nondet (HE superpose semantics).
                 if types.len() > 1 {
-                    let remaining: Vec<
-                        GenericAlternative<V, GenericBytecodeChunk<V>>,
-                    > = types[1..]
+                    let remaining: Vec<GenericAlternative<V, GenericBytecodeChunk<V>>> = types[1..]
                         .iter()
                         .cloned()
                         .map(GenericAlternative::Value)
@@ -4021,8 +4022,10 @@ where
             match self.step() {
                 Ok(ControlFlow::Continue(())) => {}
                 Ok(ControlFlow::Break(results)) => {
-                    let template_bindings =
-                        std::mem::replace(&mut self.current_bindings, saved_current_bindings.clone());
+                    let template_bindings = std::mem::replace(
+                        &mut self.current_bindings,
+                        saved_current_bindings.clone(),
+                    );
                     let value = results
                         .into_iter()
                         .next()
@@ -4151,8 +4154,10 @@ where
             match self.step() {
                 Ok(ControlFlow::Continue(())) => {}
                 Ok(ControlFlow::Break(results)) => {
-                    let template_bindings =
-                        std::mem::replace(&mut self.current_bindings, saved_current_bindings.clone());
+                    let template_bindings = std::mem::replace(
+                        &mut self.current_bindings,
+                        saved_current_bindings.clone(),
+                    );
                     let value = results
                         .into_iter()
                         .next()
@@ -4859,7 +4864,11 @@ where
             } else if outer.is_empty() {
                 b
             } else {
-                crate::backend::eval::bindings::compose_outer_inner_generic(&outer, &b, &self.factory)
+                crate::backend::eval::bindings::compose_outer_inner_generic(
+                    &outer,
+                    &b,
+                    &self.factory,
+                )
             };
             composed_pairs.push((atom, composed));
         }
@@ -7005,8 +7014,10 @@ where
                         })
                     {
                         let err = self.factory.error(
-                            self.factory.string(&format!("All types for '{}' are errors", head)),
-                            expr,);
+                            self.factory
+                                .string(&format!("All types for '{}' are errors", head)),
+                            expr,
+                        );
                         self.push(err);
                         return Ok(());
                     }
@@ -7154,8 +7165,7 @@ where
         // Replaces Y.5's "always run both and prefer unify" — which paid
         // 2× dispatch cost on every free-var query AND lost `compiled_rhs`
         // by routing native-eligible RHS through the trampoline.
-        let matches =
-            env.match_rules_native(&expr, apply_bindings_generic, &self.current_bindings);
+        let matches = env.match_rules_native(&expr, apply_bindings_generic, &self.current_bindings);
         let native_count = matches.len() as u32;
         let expr_has_variables = expr.has_variables_fast();
         let mut unify_count: u32 = 0;
@@ -7277,9 +7287,11 @@ where
             // or `(Error <call-form> IncorrectNumberOfArguments)`.
             if let Some(items) = expr.as_sexpr() {
                 if let Some(env) = &self.env {
-                    if let Some(err) =
-                        crate::backend::eval::types::check_call_site_types(items, &self.factory, env)
-                    {
+                    if let Some(err) = crate::backend::eval::types::check_call_site_types(
+                        items,
+                        &self.factory,
+                        env,
+                    ) {
                         self.push(err);
                         return Ok(());
                     }
@@ -7368,7 +7380,8 @@ where
                 if let Some(env_mut) = self.env.as_mut() {
                     if !env_mut.match_space_exists(&expr) {
                         env_mut.add_to_space(&expr);
-                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
+                        crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch(
+                        );
                     }
                 }
                 // S1 TOPLEVEL (2026-05-13): HE ADD-mode emits NOTHING for
@@ -7945,9 +7958,11 @@ where
                 // shapes) and may independently trigger BadArgType /
                 // IncorrectNumberOfArguments.
                 if let Some(items) = combo_expr.as_sexpr() {
-                    if let Some(err) =
-                        crate::backend::eval::types::check_call_site_types(items, &self.factory, &env)
-                    {
+                    if let Some(err) = crate::backend::eval::types::check_call_site_types(
+                        items,
+                        &self.factory,
+                        &env,
+                    ) {
                         // Emit the error as this combination's outcome with
                         // its per-combo bindings, then continue to the next
                         // combination. The error flows through the choice-
@@ -8211,12 +8226,16 @@ where
                     .and_then(|items| items.first())
                     .and_then(|h| h.as_atom())
                     .map(|op| {
-                        let is_grounded_or_eager =
-                            is_grounded_op(op) || is_eager_special_form(op);
+                        let is_grounded_or_eager = is_grounded_op(op) || is_eager_special_form(op);
                         let has_rules = self
                             .env
                             .as_ref()
-                            .map(|e| e.may_have_rules_for(op, item_to_eval.as_sexpr().map_or(0, |i| i.len() - 1)))
+                            .map(|e| {
+                                e.may_have_rules_for(
+                                    op,
+                                    item_to_eval.as_sexpr().map_or(0, |i| i.len() - 1),
+                                )
+                            })
                             .unwrap_or(false);
                         is_grounded_or_eager && !has_rules
                     })
@@ -8554,7 +8573,6 @@ where
         }
     }
 
-
     // === Space Operations ===
 
     /// Add an atom to a space.
@@ -8586,8 +8604,7 @@ where
                 // fires from top-level evaluation. Mirrors PT's assertz/2 from
                 // `add-atom &kb (= H B)` populating the global Prolog clause
                 // database. Trampoline mirror: ProcessAddAtomSpace handler.
-                if crate::backend::environment::rule_management::extract_rule_parts(&atom)
-                    .is_some()
+                if crate::backend::environment::rule_management::extract_rule_parts(&atom).is_some()
                 {
                     if let Some(env) = self.env.as_mut() {
                         env.add_to_space(&atom);
@@ -8653,8 +8670,7 @@ where
                 // Phase 1.4 PT dual-storage (2026-05-22): when the atom is
                 // `(= H B)`, also compile globally so rule fires from
                 // top-level evaluation. Mirrors PT's assertz/2 semantics.
-                if crate::backend::environment::rule_management::extract_rule_parts(&atom)
-                    .is_some()
+                if crate::backend::environment::rule_management::extract_rule_parts(&atom).is_some()
                 {
                     env_mut.add_to_space(&atom);
                 }
@@ -8890,7 +8906,8 @@ where
             // than returning VmError, so downstream opcodes can short-circuit.
             let err = self.factory.error(
                 self.factory.string("match: first argument must be a space"),
-                space,);
+                space,
+            );
             self.push(err);
             Ok(())
         }

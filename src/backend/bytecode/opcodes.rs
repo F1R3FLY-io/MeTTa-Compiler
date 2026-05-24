@@ -1501,7 +1501,7 @@ mod tests {
                                                     // (EnterInterpretMode, ExitInterpretMode — S1 TOPLEVEL 2026-05-13).
                                                     // 0x2F = SuperposeBind (S5: HE-bisimilar nondet fan-out).
                                                     // No free slots remain in 0x28-0x2F.
-        // 0x2F is now SuperposeBind (S5).
+                                                    // 0x2F is now SuperposeBind (S5).
         assert!(Opcode::from_byte(0x2F).is_some());
     }
 

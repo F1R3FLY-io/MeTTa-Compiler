@@ -19,8 +19,8 @@
 //! The ghost-preservation guard tests confirm Fix 1 (shadow strip) does
 //! NOT reintroduce ghost branches at other compose sites.
 
-use mettatron::backend::models::MettaValueTrait;
 use mettatron::backend::eval::eval_trampoline as eval_tree;
+use mettatron::backend::models::MettaValueTrait;
 use mettatron::{compile, eval, new_env};
 
 fn eval_last(source: &str) -> Vec<String> {

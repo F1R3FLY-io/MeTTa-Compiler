@@ -93,8 +93,7 @@ pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _i
             use super::helpers::jit_to_value_generic;
             use crate::backend::bytecode::jit::types::JitValue;
             use crate::backend::eval::types::{infer_types_generic, SkipInferredGuard};
-            let env =
-                &*(env_ptr as *const crate::backend::bytecode::MettaEnvironment);
+            let env = &*(env_ptr as *const crate::backend::bytecode::MettaEnvironment);
             // Reconstruct MettaValue from NaN-boxed payload.
             let value: MettaValue =
                 jit_to_value_generic::<MettaValue, GcFactory>(JitValue::from_raw(val), &factory);

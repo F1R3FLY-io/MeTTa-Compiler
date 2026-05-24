@@ -175,9 +175,7 @@ pub(crate) fn pattern_match_impl(
             // bind $x to the first value and $rest to an SExpr of the rest.
             // The pattern is recognized by `.` at position n-2 in p_items.
             (ValueView::SExpr(p_items), ValueView::SExpr(v_items)) => {
-                if p_items.len() == 3
-                    && p_items[0].as_atom() == Some("cons")
-                    && !v_items.is_empty()
+                if p_items.len() == 3 && p_items[0].as_atom() == Some("cons") && !v_items.is_empty()
                 {
                     // (cons HEAD TAIL) destructure: HEAD matches v_items[0],
                     // TAIL matches the SExpr of v_items[1..].
@@ -187,9 +185,7 @@ pub(crate) fn pattern_match_impl(
                     work_stack.push((p_items[1], v_items[0]));
                     continue;
                 }
-                if p_items.len() >= 2
-                    && p_items[p_items.len() - 2].as_atom() == Some(".")
-                {
+                if p_items.len() >= 2 && p_items[p_items.len() - 2].as_atom() == Some(".") {
                     let head_len = p_items.len() - 2;
                     if v_items.len() < head_len {
                         return false;
@@ -205,8 +201,7 @@ pub(crate) fn pattern_match_impl(
                         // Zero remaining → empty SExpr.
                         crate::backend::models::global_factory().sexpr(Vec::new())
                     } else {
-                        crate::backend::models::global_factory()
-                            .sexpr(v_items[head_len..].to_vec())
+                        crate::backend::models::global_factory().sexpr(v_items[head_len..].to_vec())
                     };
                     work_stack.push((rest_pattern, rest_value));
                     return true;
@@ -335,10 +330,7 @@ mod tests {
         let pattern = f.sexpr(vec![f.atom("foo"), f.atom("$a"), f.atom("$a")]);
         let value = f.sexpr(vec![f.atom("foo"), f.long(1), f.long(2)]);
         let bindings = pattern_match(&pattern, &value);
-        assert!(
-            bindings.is_none(),
-            "repeated-var rejects mismatched repeat"
-        );
+        assert!(bindings.is_none(), "repeated-var rejects mismatched repeat");
     }
 
     /// BUG-T0-006 deeper case: the second occurrence of `$a` should unify
@@ -397,9 +389,7 @@ mod tests {
         let value = f.sexpr(vec![f.atom("leaf1"), f.atom("leaf2")]);
         let bindings = pattern_match_generic(&pattern, &value);
         let b = bindings.expect("pattern_match_generic succeeds");
-        let bound = b
-            .get("$x")
-            .expect("$x is bound by pattern_match_generic");
+        let bound = b.get("$x").expect("$x is bound by pattern_match_generic");
         assert_eq!(bound.as_atom(), Some("leaf1"));
     }
 

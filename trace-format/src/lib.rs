@@ -150,9 +150,9 @@ impl std::fmt::Display for TraceValue {
                     }
                     match val {
                         TraceValue::Atom(s) => result.push(s.to_string()),
-                        TraceValue::Bool(b) => result.push(
-                            if *b { "True" } else { "False" }.to_string(),
-                        ),
+                        TraceValue::Bool(b) => {
+                            result.push(if *b { "True" } else { "False" }.to_string())
+                        }
                         TraceValue::Long(n) => result.push(n.to_string()),
                         TraceValue::Float(v) => result.push(v.to_string()),
                         TraceValue::String(s) => result.push(format!("\"{}\"", s)),
@@ -219,8 +219,7 @@ impl std::fmt::Display for TraceValue {
                 } => {
                     let start = result.len() - count;
                     let parts: Vec<String> = result.drain(start..).collect();
-                    let formatted =
-                        format!("{}{}{}", prefix, parts.join(separator), suffix);
+                    let formatted = format!("{}{}{}", prefix, parts.join(separator), suffix);
                     if let Some(k) = memo_key {
                         memo.insert(k, formatted.clone());
                     }

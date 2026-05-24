@@ -101,12 +101,8 @@ impl VmError {
                 format!("Type error: expected {}, got {}", expected, got),
                 "BadType",
             ),
-            Self::DivisionByZero => {
-                ("Division by zero".to_string(), "DivisionByZero")
-            }
-            Self::ArithmeticOverflow => {
-                ("Arithmetic overflow".to_string(), "ArithmeticOverflow")
-            }
+            Self::DivisionByZero => ("Division by zero".to_string(), "DivisionByZero"),
+            Self::ArithmeticOverflow => ("Arithmetic overflow".to_string(), "ArithmeticOverflow"),
             _ => ("Unexpected error".to_string(), "Unknown"),
         }
     }

@@ -189,10 +189,7 @@ impl<T> ArithmeticInit for T {
         let pow_math_func_id = module
             .declare_function("jit_runtime_pow_math", Linkage::Import, &binary_sig)
             .map_err(|e| {
-                JitError::CompilationError(format!(
-                    "Failed to declare jit_runtime_pow_math: {}",
-                    e
-                ))
+                JitError::CompilationError(format!("Failed to declare jit_runtime_pow_math: {}", e))
             })?;
 
         // Declare unary math functions

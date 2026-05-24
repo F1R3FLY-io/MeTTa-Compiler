@@ -58,7 +58,7 @@ pub unsafe extern "C" fn jit_runtime_eval_if(
     else_val: u64,
     _ip: u64,
 ) -> u64 {
-    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_MASK, TAG_ERROR};
+    use crate::backend::bytecode::jit::types::{TAG_BOOL, TAG_ERROR, TAG_MASK};
 
     // True is TAG_BOOL | 1, False is TAG_BOOL | 0
     let tag_bool_true = TAG_BOOL | 1;

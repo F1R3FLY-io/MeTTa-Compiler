@@ -266,7 +266,7 @@ mod tests {
         let env = StaticEvalContext::new_env();
         let factory = ctx.factory();
 
-        let error = factory.error( factory.string("test error"),factory.atom("TestError"));
+        let error = factory.error(factory.string("test error"), factory.atom("TestError"));
         match eval_step_generic(error, env, 0, &ctx) {
             GenericEvalStep::Done((results, _)) => {
                 assert_eq!(results.len(), 1);
@@ -387,7 +387,7 @@ mod tests {
                 byte_offset: 30,
             },
         };
-        let error = factory.error( factory.string("test error"),factory.atom("TestError"));
+        let error = factory.error(factory.string("test error"), factory.atom("TestError"));
         let spanned_error = factory.spanned(error, span);
 
         match eval_step_generic(spanned_error, env, 0, &ctx) {

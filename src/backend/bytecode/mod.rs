@@ -1042,7 +1042,10 @@ pub fn execute_arena_with_bindings(
     chunk: std::sync::Arc<GenericBytecodeChunk<MettaValue>>,
     env: MettaEnvironment,
 ) -> VmResult<(
-    Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+    Vec<(
+        MettaValue,
+        crate::backend::models::GenericBindings<MettaValue>,
+    )>,
     MettaEnvironment,
     bool,
 )> {

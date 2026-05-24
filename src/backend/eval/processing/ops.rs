@@ -246,8 +246,10 @@ pub fn process_single_combination_generic(
                             // as args are already evaluated. Return as-is for now.
                         }
                         GroundedWork::Error(e) => {
-                            let err =
-                                factory.error( factory.string(&format!("{:?}", e)),factory.atom("GroundedError"));
+                            let err = factory.error(
+                                factory.string(&format!("{:?}", e)),
+                                factory.atom("GroundedError"),
+                            );
                             return GenericProcessedSExpr::Done((smallvec![err], unified_env));
                         }
                     }
@@ -696,8 +698,10 @@ pub fn process_single_combination_bound_generic(
                             // through to the rule-match / data path below.
                         }
                         GroundedWork::Error(e) => {
-                            let err =
-                                factory.error( factory.string(&format!("{:?}", e)),factory.atom("GroundedError"));
+                            let err = factory.error(
+                                factory.string(&format!("{:?}", e)),
+                                factory.atom("GroundedError"),
+                            );
                             return GenericProcessedSExprBound::Done((
                                 smallvec![bv_with(err, combo_bindings)],
                                 unified_env,

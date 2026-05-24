@@ -154,9 +154,7 @@ where
             .map(|c| rewrite_cons_to_dotted_pair(c.clone(), factory))
             .collect();
         // Then check this SExpr itself for the cons-pattern shape.
-        if rewritten_children.len() == 3
-            && rewritten_children[0].as_atom() == Some("cons")
-        {
+        if rewritten_children.len() == 3 && rewritten_children[0].as_atom() == Some("cons") {
             // Only rewrite if HEAD is a literal atom (not a variable like $x).
             // PT's idiom is `(cons <literal> $args)` for destructure; user
             // code's `(cons $x $xs)` is structural (cons literal head + args).
@@ -1145,7 +1143,10 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         use crate::backend::models::gc_allocator::global_allocator;
         let interned: &'static str = global_allocator().alloc_str(head);
         if let Some(group) = self.by_head_arity.get(&(interned, arity)) {
-            if group.get_candidates(None).any(|e| e.lhs_head_all_meta_typed) {
+            if group
+                .get_candidates(None)
+                .any(|e| e.lhs_head_all_meta_typed)
+            {
                 return true;
             }
         }
@@ -2220,8 +2221,7 @@ pub(crate) fn lhs_specificity<V: MettaValueTrait + Clone>(lhs: &V) -> u32 {
             } else if name != "_" {
                 // Constructor or head atom — concrete constraint at this depth.
                 total = total.saturating_add(
-                    SPECIFICITY_W_CONSTRUCTOR
-                        .saturating_mul(depth.saturating_add(1)),
+                    SPECIFICITY_W_CONSTRUCTOR.saturating_mul(depth.saturating_add(1)),
                 );
             }
             // `_` wildcard contributes 0.
@@ -2234,9 +2234,8 @@ pub(crate) fn lhs_specificity<V: MettaValueTrait + Clone>(lhs: &V) -> u32 {
             || val.as_bool().is_some()
             || val.as_string().is_some()
         {
-            total = total.saturating_add(
-                SPECIFICITY_W_CONSTRUCTOR.saturating_mul(depth.saturating_add(1)),
-            );
+            total = total
+                .saturating_add(SPECIFICITY_W_CONSTRUCTOR.saturating_mul(depth.saturating_add(1)));
             continue;
         }
         // Other value types (Type, Quoted, Space, etc.) — treat as opaque
@@ -2418,7 +2417,10 @@ pub(crate) fn rhs_head_is_lazy_form<V: MettaValueTrait>(rhs: &V) -> bool {
 /// at least one declared arrow type where ALL arg types AND the return
 /// type are meta-types per `is_meta_type`. Consulted at rule insertion
 /// time to cache `RuleEntry::lhs_head_all_meta_typed`.
-pub(crate) fn lhs_head_signature_all_meta_typed<V, F>(lhs: &V, env: &GenericEnvironment<V, F>) -> bool
+pub(crate) fn lhs_head_signature_all_meta_typed<V, F>(
+    lhs: &V,
+    env: &GenericEnvironment<V, F>,
+) -> bool
 where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: crate::backend::models::MettaValueFactory<V> + Clone,
@@ -2427,7 +2429,11 @@ where
         extract_arg_types, extract_return_type, is_arrow_type, is_meta_type,
     };
 
-    let head = match lhs.as_sexpr().and_then(|items| items.first()).and_then(|h| h.as_atom()) {
+    let head = match lhs
+        .as_sexpr()
+        .and_then(|items| items.first())
+        .and_then(|h| h.as_atom())
+    {
         Some(h) => h,
         None => return false,
     };
@@ -3342,10 +3348,7 @@ where
     /// HE-nondet for genuinely incomparable patterns — Ernst et al. (1998)
     /// Theorem 5.3 endorses this fallback).
     #[inline]
-    pub(crate) fn apply_rule_fire_mode_filter(
-        &self,
-        results: &mut Vec<RuleMatchResult<V>>,
-    ) {
+    pub(crate) fn apply_rule_fire_mode_filter(&self, results: &mut Vec<RuleMatchResult<V>>) {
         if results.len() < 2 {
             return;
         }
@@ -3376,8 +3379,7 @@ where
         // IncorrectNumberOfArguments) are registered via
         // `MettaEnvironment::register_corelib_types()` invoked at
         // `new_env()` time. No MeTTa source file is involved.
-        let mut results =
-            self.match_rules_native_inner(expr, &apply_bindings, outer_carrying);
+        let mut results = self.match_rules_native_inner(expr, &apply_bindings, outer_carrying);
         self.apply_rule_fire_mode_filter(&mut results);
         results
     }
@@ -3532,8 +3534,7 @@ where
             // RHS top-level head is a lazy form (add-atom, quote, if, ...),
             // the caller's args must NOT be pre-evaluated. See `RuleEntry::
             // body_wants_lazy_args`.
-            let any_rule_wants_lazy_args =
-                candidates.iter().any(|e| e.body_wants_lazy_args);
+            let any_rule_wants_lazy_args = candidates.iter().any(|e| e.body_wants_lazy_args);
             // PT-canonical meta-typed signature gate (Plan agent Phase B):
             // ANY candidate with `(-> meta* meta)` signature triggers the
             // dispatcher's "return verbatim" path.
@@ -3930,13 +3931,12 @@ where
                         let needs_transitive_resolution = {
                             let keys: SmallVec<[&str; 8]> =
                                 bindings.iter().map(|(k, _)| k).collect();
-                            bindings.iter().any(|(_, v)| {
-                                value_contains_any_key(v, &keys)
-                            })
+                            bindings
+                                .iter()
+                                .any(|(_, v)| value_contains_any_key(v, &keys))
                         };
                         let original_bindings = if needs_transitive_resolution {
-                            let mut resolved =
-                                crate::backend::models::GenericBindings::new();
+                            let mut resolved = crate::backend::models::GenericBindings::new();
                             for (name, value) in bindings.iter() {
                                 let r = crate::backend::eval::bindings::apply_bindings_generic(
                                     value,
@@ -5742,9 +5742,7 @@ mod bloom_depopulation_tests {
                 return entry.full_debruijn.clone();
             }
         }
-        panic!(
-            "no entry with rhs atom = {rhs_atom:?} under head={head:?} arity={arity}"
-        );
+        panic!("no entry with rhs atom = {rhs_atom:?} under head={head:?} arity={arity}");
     }
 
     #[test]
@@ -5752,8 +5750,7 @@ mod bloom_depopulation_tests {
         // Rule: (= (foo arg-val) bloom_witness_atom)
         // Head = "foo", arity = 1 (one arg), RHS atom = "bloom_witness_atom"
         let mut env = MettaEnvironment::default();
-        let head = crate::backend::models::gc_allocator::global_allocator()
-            .alloc_str("foo");
+        let head = crate::backend::models::gc_allocator::global_allocator().alloc_str("foo");
         let lhs = MettaValue::SExpr(vec![
             MettaValue::Atom("foo".to_string()),
             MettaValue::Atom("arg-val".to_string()),
@@ -5807,8 +5804,7 @@ mod bloom_depopulation_tests {
         // decrements; the bloom MUST remain populated. Second removal
         // drops the entry and the bloom.
         let mut env = MettaEnvironment::default();
-        let bar = crate::backend::models::gc_allocator::global_allocator()
-            .alloc_str("bar");
+        let bar = crate::backend::models::gc_allocator::global_allocator().alloc_str("bar");
         let lhs = MettaValue::SExpr(vec![
             MettaValue::Atom("bar".to_string()),
             MettaValue::Atom("arg-val".to_string()),
@@ -5916,10 +5912,7 @@ mod bloom_depopulation_tests {
                 .by_head_arity
                 .get(&("baz", 1))
                 .expect("baz/2 group still exists");
-            let entry = group
-                .all_entries()
-                .next()
-                .expect("rule 2 still present");
+            let entry = group.all_entries().next().expect("rule 2 still present");
             // Materialize the clone into a new binding so the iterator
             // temporary is dropped before the read-guard. Without this,
             // the impl-Iterator destructor's borrow of `group` (which

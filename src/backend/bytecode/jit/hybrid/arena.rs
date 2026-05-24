@@ -474,7 +474,7 @@ fn jit_to_value(jit_val: u64, factory: &GcFactory) -> MettaValue {
             if !ptr.is_null() {
                 unsafe { MettaValue::from_inner(&*ptr) }
             } else {
-                factory.error( factory.string("unknown error"),factory.unit())
+                factory.error(factory.string("unknown error"), factory.unit())
             }
         }
         _ => {

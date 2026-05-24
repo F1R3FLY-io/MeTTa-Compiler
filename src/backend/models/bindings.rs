@@ -67,9 +67,7 @@ impl SmartBindings {
                     None
                 }
             }
-            SmartBindings::Small(vec) => {
-                vec.iter().find(|(n, _)| n.matches(name)).map(|(_, v)| v)
-            }
+            SmartBindings::Small(vec) => vec.iter().find(|(n, _)| n.matches(name)).map(|(_, v)| v),
         }
     }
 

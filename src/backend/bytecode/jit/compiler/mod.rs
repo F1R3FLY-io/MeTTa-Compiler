@@ -2467,9 +2467,10 @@ impl JitCompiler {
             // flips JitContext::interpret_mode. No value-stack effect.
             // =====================================================================
             Opcode::EnterInterpretMode => {
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.debug.enter_interpret_mode_func_id, codegen.builder.func);
+                let func_ref = self.module.declare_func_in_func(
+                    self.debug.enter_interpret_mode_func_id,
+                    codegen.builder.func,
+                );
                 let ctx_ptr = codegen.ctx_ptr();
                 let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
                 codegen.builder.ins().call(func_ref, &[ctx_ptr, ip_val]);
@@ -2477,9 +2478,10 @@ impl JitCompiler {
             }
 
             Opcode::ExitInterpretMode => {
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(self.debug.exit_interpret_mode_func_id, codegen.builder.func);
+                let func_ref = self.module.declare_func_in_func(
+                    self.debug.exit_interpret_mode_func_id,
+                    codegen.builder.func,
+                );
                 let ctx_ptr = codegen.ctx_ptr();
                 let ip_val = codegen.builder.ins().iconst(types::I64, offset as i64);
                 codegen.builder.ins().call(func_ref, &[ctx_ptr, ip_val]);

@@ -18,8 +18,13 @@ fn eval_t0(source: &str) -> Vec<MettaValue> {
     let mut all: Vec<MettaValue> = Vec::new();
     let exprs: Vec<MettaValue> = state.source().iter().copied().collect();
     for expr in exprs {
-        let outcome =
-            eval_with_tier(expr, env, &state, TierSelection::Treewalker, FallbackPolicy::SilentDemote);
+        let outcome = eval_with_tier(
+            expr,
+            env,
+            &state,
+            TierSelection::Treewalker,
+            FallbackPolicy::SilentDemote,
+        );
         let (results, new_env) = match outcome {
             TierEvalOutcome::Ok { results, env, .. } => (results, env),
             TierEvalOutcome::Demoted { results, env, .. } => (results, env),
@@ -57,7 +62,12 @@ fn if_single_result_false_returns_else() {
 #[test]
 fn if_multi_result_condition_fans_out() {
     let results = eval_t0("!(if (superpose (True False)) yes no)");
-    assert_eq!(results.len(), 2, "expected fan-out into 2 results; got {:?}", results);
+    assert_eq!(
+        results.len(),
+        2,
+        "expected fan-out into 2 results; got {:?}",
+        results
+    );
     let s = results_to_strings(&results);
     assert!(s.iter().any(|r| r.contains("yes")), "missing yes: {:?}", s);
     assert!(s.iter().any(|r| r.contains("no")), "missing no: {:?}", s);

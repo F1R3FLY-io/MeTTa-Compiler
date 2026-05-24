@@ -147,9 +147,7 @@ where
 
         // Short-circuit: every result equals the sentinel.
         let sentinel = kind.short_circuit_sentinel();
-        let all_sentinel = prev_results
-            .iter()
-            .all(|v| v.as_bool() == Some(sentinel));
+        let all_sentinel = prev_results.iter().all(|v| v.as_bool() == Some(sentinel));
         if all_sentinel {
             return GroundedWork::Done(vec![(factory.bool(sentinel), None)]);
         }

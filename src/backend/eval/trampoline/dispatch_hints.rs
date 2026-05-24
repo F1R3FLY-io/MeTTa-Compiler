@@ -1380,8 +1380,28 @@ mod tests {
 
         // Check has_grounded_op coverage
         let generic_grounded = [
-            "+", "-", "*", "/", "%", "min", "max", "<", "<=", ">", ">=", "==", "!=", "and", "or",
-            "not", "xor", "/safe", "clamp", "stringToChars", "sort-strings", "id",
+            "+",
+            "-",
+            "*",
+            "/",
+            "%",
+            "min",
+            "max",
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "==",
+            "!=",
+            "and",
+            "or",
+            "not",
+            "xor",
+            "/safe",
+            "clamp",
+            "stringToChars",
+            "sort-strings",
+            "id",
         ];
         for op in &generic_grounded {
             assert!(

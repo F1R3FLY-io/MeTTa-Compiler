@@ -12,8 +12,8 @@
 //! - Bindings use `GenericBindings<MettaValue>` (heap-allocated binding map)
 //! - Names retain the `Generic` prefix for now; renaming is a separate step
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use smallvec::SmallVec;
@@ -232,7 +232,10 @@ impl std::fmt::Debug for ParallelDispatchHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParallelDispatchHandle")
             .field("num_branches", &self.num_branches)
-            .field("remaining", &self.remaining.load(std::sync::atomic::Ordering::Relaxed))
+            .field(
+                "remaining",
+                &self.remaining.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .field("stall_state", &self.stall_state.lock().ok().map(|g| *g))
             .finish()
     }
@@ -345,7 +348,10 @@ impl std::fmt::Debug for ParallelCollapseDispatchHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ParallelCollapseDispatchHandle")
             .field("num_branches", &self.num_branches)
-            .field("remaining", &self.remaining.load(std::sync::atomic::Ordering::Relaxed))
+            .field(
+                "remaining",
+                &self.remaining.load(std::sync::atomic::Ordering::Relaxed),
+            )
             .field("stall_state", &self.stall_state.lock().ok().map(|g| *g))
             .finish()
     }

@@ -222,11 +222,7 @@ fn hash_value_cached_inner(value: &MettaValue, cache: &mut TieredHashCache) -> u
         // Combine children. `key` is the parent's slab pointer for cache insert.
         // `tag`: 7 = SExpr, 10 = Quoted. `count` is number of child hashes
         // pending on the result stack.
-        Combine {
-            key: usize,
-            tag: u64,
-            count: usize,
-        },
+        Combine { key: usize, tag: u64, count: usize },
     }
     let mut work: Vec<Work> = Vec::with_capacity(8);
     let mut hashes: Vec<u64> = Vec::with_capacity(8);
@@ -1805,18 +1801,12 @@ impl MettaValue {
     /// Was recursive and exponentially vulnerable; now uses a heap work-list
     /// and memo keyed by slab pointer. See `to_display_string` for rationale.
     pub fn to_metta_string(&self) -> String {
-        format_value_iterative(
-            self,
-            FormatStyle::MettaString,
-        )
+        format_value_iterative(self, FormatStyle::MettaString)
     }
 
     /// **Stack-safety + memory-safety fix (2026-05-15)**: iterative + memoized.
     pub fn to_mork_string(&self) -> String {
-        format_value_iterative(
-            self,
-            FormatStyle::MorkString,
-        )
+        format_value_iterative(self, FormatStyle::MorkString)
     }
 
     /// Convert to a JSON-like string representation.
@@ -1970,9 +1960,7 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                                 }
                                 .to_string()
                             }
-                            FormatStyle::MorkString => {
-                                ((val.tagged as u64 & 1) != 0).to_string()
-                            }
+                            FormatStyle::MorkString => ((val.tagged as u64 & 1) != 0).to_string(),
                         },
                         NB_TAG_UNIT => "()".to_string(),
                         NB_TAG_EMPTY => "Empty".to_string(),
@@ -2112,10 +2100,7 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                             memo.insert(memo_key, s.clone());
                             result_stack.push(s);
                         } else if matches!(style, FormatStyle::Display)
-                            && items
-                                .first()
-                                .and_then(|h| h.as_atom())
-                                == Some("Bindings")
+                            && items.first().and_then(|h| h.as_atom()) == Some("Bindings")
                         {
                             // Workstream B: HE-style `{ }` / `{ $x <- val, … }`
                             // render — Display-only (MettaString/MorkString
@@ -2126,17 +2111,13 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                                 memo.insert(memo_key, s.clone());
                                 result_stack.push(s);
                             } else {
-                                let mut var_names: Vec<String> =
-                                    Vec::with_capacity(pairs.len());
-                                let mut malformed: Vec<bool> =
-                                    Vec::with_capacity(pairs.len());
+                                let mut var_names: Vec<String> = Vec::with_capacity(pairs.len());
+                                let mut malformed: Vec<bool> = Vec::with_capacity(pairs.len());
                                 for p in pairs {
                                     let (name, ok) = match p.inner_ref() {
                                         MettaValueInner::SExpr(kv) if kv.len() == 2 => {
                                             match kv[0].inner_ref() {
-                                                MettaValueInner::Atom(n) => {
-                                                    (n.to_string(), true)
-                                                }
+                                                MettaValueInner::Atom(n) => (n.to_string(), true),
                                                 _ => (String::new(), false),
                                             }
                                         }
@@ -2153,9 +2134,7 @@ pub(crate) fn format_value_iterative(root: &MettaValue, style: FormatStyle) -> S
                                 for (i, p) in pairs.iter().enumerate().rev() {
                                     let to_render: &MettaValue = if malformed[i] {
                                         p
-                                    } else if let MettaValueInner::SExpr(kv) =
-                                        p.inner_ref()
-                                    {
+                                    } else if let MettaValueInner::SExpr(kv) = p.inner_ref() {
                                         &kv[1]
                                     } else {
                                         p
@@ -2987,7 +2966,9 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
                         MettaValueInner::Unit => result_stack.push("()".to_string()),
                         MettaValueInner::Empty => result_stack.push("Empty".to_string()),
-                        MettaValueInner::NotReducible => result_stack.push("NotReducible".to_string()),
+                        MettaValueInner::NotReducible => {
+                            result_stack.push("NotReducible".to_string())
+                        }
                         MettaValueInner::Space(handle) => {
                             // Phase C (HE bisim, 2026-05-20): HE-aligned space
                             // print form per fixture T04/028 / §06.15.
@@ -3041,11 +3022,7 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::SExpr(items) => {
                             if items.is_empty() {
                                 result_stack.push("()".to_string());
-                            } else if items
-                                .first()
-                                .and_then(|h| h.as_atom())
-                                == Some("Bindings")
-                            {
+                            } else if items.first().and_then(|h| h.as_atom()) == Some("Bindings") {
                                 // Workstream B: HE-style `{ }` / `{ $x <- val, … }`
                                 // render for `(Bindings ($x val) …)` SExpr.
                                 let pairs = &items[1..];
@@ -3054,18 +3031,16 @@ impl MettaValueTrait for MettaValue {
                                 } else {
                                     let mut var_names: Vec<String> =
                                         Vec::with_capacity(pairs.len());
-                                    let mut malformed: Vec<bool> =
-                                        Vec::with_capacity(pairs.len());
+                                    let mut malformed: Vec<bool> = Vec::with_capacity(pairs.len());
                                     for p in pairs {
                                         let (name, ok) = match p.inner_ref() {
-                                            MettaValueInner::SExpr(kv) if kv.len() == 2 => {
-                                                match kv[0].inner_ref() {
-                                                    MettaValueInner::Atom(n) => {
-                                                        (n.to_string(), true)
-                                                    }
-                                                    _ => (String::new(), false),
-                                                }
-                                            }
+                                            MettaValueInner::SExpr(kv) if kv.len() == 2 => match kv
+                                                [0]
+                                            .inner_ref()
+                                            {
+                                                MettaValueInner::Atom(n) => (n.to_string(), true),
+                                                _ => (String::new(), false),
+                                            },
                                             _ => (String::new(), false),
                                         };
                                         var_names.push(name);
@@ -3078,9 +3053,7 @@ impl MettaValueTrait for MettaValue {
                                     for (i, p) in pairs.iter().enumerate().rev() {
                                         let to_render: &MettaValue = if malformed[i] {
                                             p
-                                        } else if let MettaValueInner::SExpr(kv) =
-                                            p.inner_ref()
-                                        {
+                                        } else if let MettaValueInner::SExpr(kv) = p.inner_ref() {
                                             &kv[1]
                                         } else {
                                             p
@@ -3236,7 +3209,9 @@ impl MettaValueTrait for MettaValue {
                         MettaValueInner::Atom(a) => result_stack.push(a.to_string()),
                         MettaValueInner::Unit => result_stack.push("()".to_string()),
                         MettaValueInner::Empty => result_stack.push("Empty".to_string()),
-                        MettaValueInner::NotReducible => result_stack.push("NotReducible".to_string()),
+                        MettaValueInner::NotReducible => {
+                            result_stack.push("NotReducible".to_string())
+                        }
                         MettaValueInner::Space(handle) => {
                             // Phase C (HE bisim, 2026-05-20): HE-aligned space
                             // print form per fixture T04/028 / §06.15.
@@ -3295,11 +3270,7 @@ impl MettaValueTrait for MettaValue {
                                 let s = "()".to_string();
                                 memo.insert(memo_key, s.clone());
                                 result_stack.push(s);
-                            } else if items
-                                .first()
-                                .and_then(|h| h.as_atom())
-                                == Some("Bindings")
-                            {
+                            } else if items.first().and_then(|h| h.as_atom()) == Some("Bindings") {
                                 // Workstream B: HE-style `{ }` / `{ $x <- val, … }`.
                                 let pairs = &items[1..];
                                 if pairs.is_empty() {
@@ -3309,18 +3280,16 @@ impl MettaValueTrait for MettaValue {
                                 } else {
                                     let mut var_names: Vec<String> =
                                         Vec::with_capacity(pairs.len());
-                                    let mut malformed: Vec<bool> =
-                                        Vec::with_capacity(pairs.len());
+                                    let mut malformed: Vec<bool> = Vec::with_capacity(pairs.len());
                                     for p in pairs {
                                         let (name, ok) = match p.inner_ref() {
-                                            MettaValueInner::SExpr(kv) if kv.len() == 2 => {
-                                                match kv[0].inner_ref() {
-                                                    MettaValueInner::Atom(n) => {
-                                                        (n.to_string(), true)
-                                                    }
-                                                    _ => (String::new(), false),
-                                                }
-                                            }
+                                            MettaValueInner::SExpr(kv) if kv.len() == 2 => match kv
+                                                [0]
+                                            .inner_ref()
+                                            {
+                                                MettaValueInner::Atom(n) => (n.to_string(), true),
+                                                _ => (String::new(), false),
+                                            },
                                             _ => (String::new(), false),
                                         };
                                         var_names.push(name);
@@ -3334,9 +3303,7 @@ impl MettaValueTrait for MettaValue {
                                     for (i, p) in pairs.iter().enumerate().rev() {
                                         let to_render: &MettaValue = if malformed[i] {
                                             p
-                                        } else if let MettaValueInner::SExpr(kv) =
-                                            p.inner_ref()
-                                        {
+                                        } else if let MettaValueInner::SExpr(kv) = p.inner_ref() {
                                             &kv[1]
                                         } else {
                                             p
@@ -3910,8 +3877,8 @@ mod tests {
         let off2 = factory.atom("d");
         let det1 = factory.string("err");
         let det2 = factory.string("err");
-        let v1 = factory.error( det1,off1);
-        let v2 = factory.error( det2,off2);
+        let v1 = factory.error(det1, off1);
+        let v2 = factory.error(det2, off2);
         assert_eq!(v1, v2);
     }
 
@@ -4048,7 +4015,7 @@ mod tests {
         let factory = global_factory();
         let offending = factory.unit();
         let detail = factory.string("err");
-        let v = factory.error( detail,offending);
+        let v = factory.error(detail, offending);
         assert_eq!(v.type_name(), "Error");
     }
 

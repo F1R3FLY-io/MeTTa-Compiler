@@ -12,9 +12,7 @@
 //! Audit reference: see [[parallel-dispatch-trampolinization]] in user
 //! memory and `/home/dylon/.claude/plans/i-got-the-following-idempotent-globe.md`.
 
-use mettatron::backend::models::{
-    global_factory, MettaValue, MettaValueFactory, MettaValueTrait,
-};
+use mettatron::backend::models::{global_factory, MettaValue, MettaValueFactory, MettaValueTrait};
 
 /// Build a left-nested SExpr of the given depth.
 /// Result has shape `(f (f (f ... (f leaf))))` with `depth+1` levels.

@@ -52,8 +52,7 @@ impl Compiler {
                     if count <= 255 {
                         self.builder.emit_byte(Opcode::MakeSExpr, count as u8);
                     } else {
-                        self.builder
-                            .emit_u16(Opcode::MakeSExprLarge, count as u16);
+                        self.builder.emit_u16(Opcode::MakeSExprLarge, count as u16);
                     }
                 }
             }

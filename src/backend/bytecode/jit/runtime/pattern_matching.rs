@@ -697,9 +697,7 @@ fn pattern_match_bind_impl(
         match (p.view(), v.view()) {
             (ValueView::Atom(s), _) if s == "_" || s == "$_" => continue,
             (ValueView::Atom(name), _)
-                if (name.starts_with('$')
-                    || name.starts_with('&')
-                    || name.starts_with('\''))
+                if (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
                     && name != "&"
                     && name != "&self"
                     && name != "&kb"

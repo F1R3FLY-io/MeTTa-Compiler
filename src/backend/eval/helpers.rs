@@ -125,18 +125,17 @@ pub fn is_lazy_body_form(op: &str) -> bool {
         "quote" | "unquote" | "noeval" | "noreduce" | "noreduce-eq"
         // Declaration heads: `(=` defines a rule, `(:` defines a type.
         // Args are template syntax, never values.
-        | "=" | ":" | ":<"
-        // NOTE: `add-atom`/`remove-atom`/`add-reduct[s]` are intentionally
-        // NOT listed. PeTTa's `=>` macro relies on EAGER evaluation of the
-        // add-atom argument so that conjunctions inside the rule body
-        // (e.g., `(, (father $a $b) (father $b $c))`) enumerate their
-        // bindings at registration time. PT registers one concretized rule
-        // per evidence chain; MTT must do the same.
-        //
-        // NOTE: `if`, `let`, `chain`, `case`, `match`, etc. also NOT listed.
-        // Their internal arg semantics are handled by their own dispatch
-        // arms; the rule-firing path can safely pre-eval the rule's caller
-        // args without affecting those special forms' lazy branches.
+        | "=" | ":" | ":<" // NOTE: `add-atom`/`remove-atom`/`add-reduct[s]` are intentionally
+                           // NOT listed. PeTTa's `=>` macro relies on EAGER evaluation of the
+                           // add-atom argument so that conjunctions inside the rule body
+                           // (e.g., `(, (father $a $b) (father $b $c))`) enumerate their
+                           // bindings at registration time. PT registers one concretized rule
+                           // per evidence chain; MTT must do the same.
+                           //
+                           // NOTE: `if`, `let`, `chain`, `case`, `match`, etc. also NOT listed.
+                           // Their internal arg semantics are handled by their own dispatch
+                           // arms; the rule-firing path can safely pre-eval the rule's caller
+                           // args without affecting those special forms' lazy branches.
     )
 }
 

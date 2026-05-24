@@ -161,7 +161,8 @@ where
     if args.len() < 3 {
         let err = factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(args.to_vec()),);
+            factory.sexpr(args.to_vec()),
+        );
         return (vec![err], env);
     }
 
@@ -181,7 +182,8 @@ where
         None => {
             let err = factory.error(
                 factory.string("exec antecedent must be a conjunction (,)"),
-                antecedent.clone(),);
+                antecedent.clone(),
+            );
             return (vec![err], env);
         }
     };
@@ -222,13 +224,15 @@ where
             } else {
                 let err = factory.error(
                     factory.string("exec consequent must be a conjunction or operation (O ...)"),
-                    instantiated_consequent.clone(),);
+                    instantiated_consequent.clone(),
+                );
                 all_results.push(err);
             }
         } else {
             let err = factory.error(
                 factory.string("exec consequent must be a conjunction or operation (O ...)"),
-                instantiated_consequent.clone(),);
+                instantiated_consequent.clone(),
+            );
             all_results.push(err);
         }
     }
@@ -505,7 +509,8 @@ where
     if args.len() < 2 {
         let err = factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(args.to_vec()),);
+            factory.sexpr(args.to_vec()),
+        );
         return (vec![err], env);
     }
 
@@ -518,7 +523,8 @@ where
         None => {
             let err = factory.error(
                 factory.string("coalg templates must be a conjunction (,)"),
-                templates.clone(),);
+                templates.clone(),
+            );
             return (vec![err], env);
         }
     };
@@ -564,7 +570,8 @@ where
     if args.len() < 3 {
         let err = factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(args.to_vec()),);
+            factory.sexpr(args.to_vec()),
+        );
         return (vec![err], env);
     }
 
@@ -576,14 +583,16 @@ where
     if success_goals.as_conjunction().is_none() {
         let err = factory.error(
             factory.string("lookup success branch must be a conjunction (,)"),
-            success_goals.clone(),);
+            success_goals.clone(),
+        );
         return (vec![err], env);
     }
 
     if failure_goals.as_conjunction().is_none() {
         let err = factory.error(
             factory.string("lookup failure branch must be a conjunction (,)"),
-            failure_goals.clone(),);
+            failure_goals.clone(),
+        );
         return (vec![err], env);
     }
 
@@ -724,7 +733,8 @@ where
     if args.len() < 5 {
         let err = factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(args.to_vec()),);
+            factory.sexpr(args.to_vec()),
+        );
         return (vec![err], env);
     }
 
@@ -740,7 +750,8 @@ where
         _ => {
             let err = factory.error(
                 factory.string("rulify pattern must be a unary conjunction (, $p0)"),
-                pattern_conj.clone(),);
+                pattern_conj.clone(),
+            );
             return (vec![err], env);
         }
     };
@@ -751,7 +762,8 @@ where
         None => {
             let err = factory.error(
                 factory.string("rulify templates must be a conjunction (, $t0 ...)"),
-                templates_conj.clone(),);
+                templates_conj.clone(),
+            );
             return (vec![err], env);
         }
     };
@@ -1220,16 +1232,10 @@ mod tests {
     fn test_has_variables_error() {
         // HE-bisimilar Error(offending, detail). A variable in either slot
         // must make the whole Error report having variables.
-        let err_with_var = MettaValue::Error(
-            MettaValue::Atom("$x"),
-            MettaValue::String("test"),
-        );
+        let err_with_var = MettaValue::Error(MettaValue::Atom("$x"), MettaValue::String("test"));
         assert!(has_variables_generic(&err_with_var));
 
-        let err_no_var = MettaValue::Error(
-            MettaValue::Atom("foo"),
-            MettaValue::String("test"),
-        );
+        let err_no_var = MettaValue::Error(MettaValue::Atom("foo"), MettaValue::String("test"));
         assert!(!has_variables_generic(&err_no_var));
     }
 

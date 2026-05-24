@@ -808,8 +808,7 @@ fn instantiate_template_impl(
                     } else {
                         // We need stable references to children for Process(&)
                         // — clone into an owned Vec held by `owned_children`.
-                        let children: Vec<MettaValue> =
-                            items.iter().cloned().collect();
+                        let children: Vec<MettaValue> = items.iter().cloned().collect();
                         let idx = owned_children.len();
                         owned_children.push(children);
                         work_stack.push(Work::BuildSExpr(idx));
@@ -819,9 +818,8 @@ fn instantiate_template_impl(
                         for i in (0..len).rev() {
                             // SAFETY: owned_children[idx] is owned and not
                             // mutated after this point until BuildSExpr drains it.
-                            let r: &MettaValue = unsafe {
-                                &*(&owned_children[idx][i] as *const MettaValue)
-                            };
+                            let r: &MettaValue =
+                                unsafe { &*(&owned_children[idx][i] as *const MettaValue) };
                             work_stack.push(Work::Process(r));
                         }
                     }
@@ -830,16 +828,14 @@ fn instantiate_template_impl(
                     if items.is_empty() {
                         result_stack.push(t.clone());
                     } else {
-                        let children: Vec<MettaValue> =
-                            items.iter().cloned().collect();
+                        let children: Vec<MettaValue> = items.iter().cloned().collect();
                         let idx = owned_children.len();
                         owned_children.push(children);
                         work_stack.push(Work::BuildConjunction(idx));
                         let len = owned_children[idx].len();
                         for i in (0..len).rev() {
-                            let r: &MettaValue = unsafe {
-                                &*(&owned_children[idx][i] as *const MettaValue)
-                            };
+                            let r: &MettaValue =
+                                unsafe { &*(&owned_children[idx][i] as *const MettaValue) };
                             work_stack.push(Work::Process(r));
                         }
                     }
@@ -863,7 +859,9 @@ fn instantiate_template_impl(
         }
     }
 
-    result_stack.pop().expect("instantiate_template_impl: empty result")
+    result_stack
+        .pop()
+        .expect("instantiate_template_impl: empty result")
 }
 
 /// Resume space match from a SpaceMatch alternative during backtracking.

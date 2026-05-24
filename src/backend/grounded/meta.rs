@@ -42,9 +42,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for IdOp {
                 // `(Error <call> IncorrectNumberOfArguments)` — tagged atom,
                 // not a string. Match exactly via `ExecError::Tagged`.
                 if state.args.len() != 1 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {

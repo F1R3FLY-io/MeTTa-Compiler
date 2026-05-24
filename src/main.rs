@@ -447,11 +447,13 @@ fn run_cross_tier_check(
         FallbackPolicy::SilentDemote,
     );
     let (t0_results, t0_env) = match t0_outcome {
-        TierEvalOutcome::Ok { results, env, .. } | TierEvalOutcome::Demoted { results, env, .. } => {
-            (results, env)
-        }
+        TierEvalOutcome::Ok { results, env, .. }
+        | TierEvalOutcome::Demoted { results, env, .. } => (results, env),
         TierEvalOutcome::NotApplicable { reason } => {
-            eprintln!("Internal error: T0 should always be applicable; got {:?}", reason);
+            eprintln!(
+                "Internal error: T0 should always be applicable; got {:?}",
+                reason
+            );
             process::exit(5);
         }
     };
@@ -466,13 +468,8 @@ fn run_cross_tier_check(
     ] {
         match tier_applicable(&expr, &env, tier) {
             Ok(()) => {
-                let outcome = eval_with_tier(
-                    expr,
-                    env.clone(),
-                    state,
-                    tier,
-                    FallbackPolicy::SilentDemote,
-                );
+                let outcome =
+                    eval_with_tier(expr, env.clone(), state, tier, FallbackPolicy::SilentDemote);
                 match outcome {
                     TierEvalOutcome::Ok { results, .. }
                     | TierEvalOutcome::Demoted { results, .. } => {
@@ -489,11 +486,7 @@ fn run_cross_tier_check(
                         }
                     }
                     TierEvalOutcome::NotApplicable { reason } => {
-                        eprintln!(
-                            "[cross-tier] {} skipped: {:?}",
-                            tier.label(),
-                            reason
-                        );
+                        eprintln!("[cross-tier] {} skipped: {:?}", tier.label(), reason);
                     }
                 }
             }
@@ -698,13 +691,8 @@ fn eval_metta(
             } else if matches!(options.tier, TierSelection::Auto) {
                 eval(expr, env, &state)
             } else {
-                let outcome = eval_with_tier(
-                    expr,
-                    env,
-                    &state,
-                    options.tier,
-                    options.on_tier_unavailable,
-                );
+                let outcome =
+                    eval_with_tier(expr, env, &state, options.tier, options.on_tier_unavailable);
                 outcome_to_results(outcome, options.tier)
             }
         };
@@ -718,13 +706,8 @@ fn eval_metta(
         } else if matches!(options.tier, TierSelection::Auto) {
             eval(expr, env, &state)
         } else {
-            let outcome = eval_with_tier(
-                expr,
-                env,
-                &state,
-                options.tier,
-                options.on_tier_unavailable,
-            );
+            let outcome =
+                eval_with_tier(expr, env, &state, options.tier, options.on_tier_unavailable);
             outcome_to_results(outcome, options.tier)
         };
 

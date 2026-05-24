@@ -497,7 +497,10 @@ impl ExprCompilationState {
     /// `RULE_EPOCH`. Returns `None` when unset or stale.
     #[inline]
     pub fn cached_involves_impure_rules(&self, current_epoch: u64) -> Option<bool> {
-        decode_epoch_bool(self.cached_impure_rules.load(Ordering::Acquire), current_epoch)
+        decode_epoch_bool(
+            self.cached_impure_rules.load(Ordering::Acquire),
+            current_epoch,
+        )
     }
 
     /// Phase 11.B — write the `expression_involves_impure_rules` cache
@@ -529,7 +532,10 @@ impl ExprCompilationState {
     /// `expression_has_declared_meta_typed_params` result.
     #[inline]
     pub fn cached_has_declared_meta_typed(&self, current_epoch: u64) -> Option<bool> {
-        decode_epoch_bool(self.cached_meta_typed.load(Ordering::Acquire), current_epoch)
+        decode_epoch_bool(
+            self.cached_meta_typed.load(Ordering::Acquire),
+            current_epoch,
+        )
     }
 
     /// Phase 11.B — write the `expression_has_declared_meta_typed_params` cache.
@@ -2142,7 +2148,10 @@ pub fn try_sub_expr_dispatch_with_hash_bindings(
     _value: &MettaValue,
     env: &MettaEnvironment,
 ) -> Option<(
-    Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+    Vec<(
+        MettaValue,
+        crate::backend::models::GenericBindings<MettaValue>,
+    )>,
     MettaEnvironment,
 )> {
     let cache = global_tiered_cache();
@@ -2217,7 +2226,10 @@ pub fn try_sub_expr_env_dispatch_with_hash_bindings(
     _value: &MettaValue,
     env: &MettaEnvironment,
 ) -> Option<(
-    Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+    Vec<(
+        MettaValue,
+        crate::backend::models::GenericBindings<MettaValue>,
+    )>,
     MettaEnvironment,
 )> {
     let cache = global_tiered_cache();

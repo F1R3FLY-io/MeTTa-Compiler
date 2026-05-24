@@ -213,8 +213,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::backend::bytecode::ChunkBuilder;
     use crate::backend::bytecode::jit::types::{JitAlternative, JitChoicePoint};
+    use crate::backend::bytecode::ChunkBuilder;
 
     fn chunk_with_constant(
         name: &str,
@@ -246,10 +246,8 @@ mod tests {
         choice_points[0].alt_count = 2;
         choice_points[0].alternatives_inline[0] =
             JitAlternative::chunk(Arc::as_ptr(&alt_chunk) as *const ());
-        choice_points[0].alternatives_inline[1] = JitAlternative::rule_match(
-            Arc::as_ptr(&rule_chunk) as *const (),
-            std::ptr::null(),
-        );
+        choice_points[0].alternatives_inline[1] =
+            JitAlternative::rule_match(Arc::as_ptr(&rule_chunk) as *const (), std::ptr::null());
 
         let mut ctx = unsafe {
             JitContext::with_nondet(

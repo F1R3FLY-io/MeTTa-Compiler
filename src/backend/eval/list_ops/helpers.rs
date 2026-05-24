@@ -337,10 +337,7 @@ mod tests {
         let factory = GcFactory::default();
         // Phase 1.1 PT-canonical: Error(Type, Ctx). Put `$x` in the Ctx slot
         // so substitution rewrites it, and `BadType` in the Type slot.
-        let expr = MettaValue::Error(
-            MettaValue::Atom("BadType"),
-            MettaValue::Atom("$x"),
-        );
+        let expr = MettaValue::Error(MettaValue::Atom("BadType"), MettaValue::Atom("$x"));
         let value = MettaValue::Long(42);
 
         let result = substitute_variable_generic(&expr, "$x", &value, &factory);

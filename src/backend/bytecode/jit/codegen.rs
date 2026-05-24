@@ -365,9 +365,10 @@ impl<'a, 'b> CodegenContext<'a, 'b> {
         let ip_val = self.builder.ins().iconst(types::I64, ip as i64);
         let expected_val = self.builder.ins().iconst(types::I64, 0); // placeholder for expected type
 
-        self.builder
-            .ins()
-            .call(self.error_func_refs.type_error, &[ctx, ip_val, expected_val]);
+        self.builder.ins().call(
+            self.error_func_refs.type_error,
+            &[ctx, ip_val, expected_val],
+        );
 
         // Return from function - VM will check bailout flag
         let zero = self.builder.ins().iconst(types::I64, 0);

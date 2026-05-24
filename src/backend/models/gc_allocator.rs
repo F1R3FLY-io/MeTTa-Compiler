@@ -5272,9 +5272,7 @@ pub fn mark_snapshot(snapshot: &mut GcSnapshot) {
             MettaValueInner::Error(offending, detail) => {
                 for child in [offending, detail] {
                     let cp = child.inner_ptr();
-                    if !cp.is_null()
-                        && snapshot_mark_value(snapshot, cp as *const u8, slot_size)
-                    {
+                    if !cp.is_null() && snapshot_mark_value(snapshot, cp as *const u8, slot_size) {
                         worklist.push(cp);
                     }
                 }
@@ -6511,7 +6509,7 @@ mod tests {
         let factory = test_factory(&alloc);
         let offending = factory.atom("bad-input");
         let detail = factory.string("oops");
-        let err = factory.error( detail,offending);
+        let err = factory.error(detail, offending);
         mark_from_roots(std::iter::once(err), &alloc);
         assert!(alloc.is_value_marked(err.inner_ptr() as *const u8));
         // GC must trace BOTH slots; verify offending and detail are reachable.

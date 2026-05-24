@@ -123,11 +123,9 @@ pub unsafe extern "C" fn jit_runtime_dispatch_rules(
     // HE parity: `hyperon-experimental/lib/src/metta/types.rs::check_type`.
     if count == 0 && !ctx_ref.env_ptr.is_null() {
         if let Some(items) = expr_metta.as_sexpr() {
-            let env =
-                &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
+            let env = &*(ctx_ref.env_ptr as *const crate::backend::bytecode::MettaEnvironment);
             let factory = crate::backend::models::global_factory();
-            if crate::backend::eval::types::check_call_site_types(items, &factory, env).is_some()
-            {
+            if crate::backend::eval::types::check_call_site_types(items, &factory, env).is_some() {
                 ctx_ref.bailout = true;
                 ctx_ref.bailout_ip = ip as usize;
                 ctx_ref.bailout_reason = JitBailoutReason::Call;

@@ -89,7 +89,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -135,7 +136,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -200,7 +202,8 @@ where
                 "test mismatch: is {}, should {}",
                 actual_str, expected_str
             )),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         GenericEvalStep::Done((smallvec![err], env))
     }
 }
@@ -222,7 +225,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -244,8 +248,10 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
-                ctx.factory().string(&format!("assertEqual failed: {}", diff)),
-                ctx.factory().sexpr(items),);
+                ctx.factory()
+                    .string(&format!("assertEqual failed: {}", diff)),
+                ctx.factory().sexpr(items),
+            );
             GenericEvalStep::Done((smallvec![err], env))
         }
     }
@@ -264,7 +270,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -285,8 +292,10 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
-                ctx.factory().string(&format!("assertAlphaEqual failed: {}", diff)),
-                ctx.factory().sexpr(items),);
+                ctx.factory()
+                    .string(&format!("assertAlphaEqual failed: {}", diff)),
+                ctx.factory().sexpr(items),
+            );
             GenericEvalStep::Done((smallvec![err], env))
         }
     }
@@ -309,7 +318,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -329,9 +339,9 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
             let msg = extract_message(&items[3]);
-            let err = ctx.factory().error(
-                ctx.factory().string(&msg),
-                ctx.factory().sexpr(items),);
+            let err = ctx
+                .factory()
+                .error(ctx.factory().string(&msg), ctx.factory().sexpr(items));
             GenericEvalStep::Done((smallvec![err], env))
         }
     }
@@ -350,7 +360,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -370,9 +381,9 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
             let msg = extract_message(&items[3]);
-            let err = ctx.factory().error(
-                ctx.factory().string(&msg),
-                ctx.factory().sexpr(items),);
+            let err = ctx
+                .factory()
+                .error(ctx.factory().string(&msg), ctx.factory().sexpr(items));
             GenericEvalStep::Done((smallvec![err], env))
         }
     }
@@ -395,7 +406,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -417,8 +429,10 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
-                ctx.factory().string(&format!("assertEqualToResult failed: {}", diff)),
-                ctx.factory().sexpr(items),);
+                ctx.factory()
+                    .string(&format!("assertEqualToResult failed: {}", diff)),
+                ctx.factory().sexpr(items),
+            );
             GenericEvalStep::Done((smallvec![err], env))
         }
     }
@@ -437,7 +451,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -460,8 +475,10 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(diff) => {
             let err = ctx.factory().error(
-                ctx.factory().string(&format!("assertAlphaEqualToResult failed: {}", diff)),
-                ctx.factory().sexpr(items),);
+                ctx.factory()
+                    .string(&format!("assertAlphaEqualToResult failed: {}", diff)),
+                ctx.factory().sexpr(items),
+            );
             GenericEvalStep::Done((smallvec![err], env))
         }
     }
@@ -484,7 +501,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -506,9 +524,9 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
             let msg = extract_message(&items[3]);
-            let err = ctx.factory().error(
-                ctx.factory().string(&msg),
-                ctx.factory().sexpr(items),);
+            let err = ctx
+                .factory()
+                .error(ctx.factory().string(&msg), ctx.factory().sexpr(items));
             GenericEvalStep::Done((smallvec![err], env))
         }
     }
@@ -527,7 +545,8 @@ where
         let _arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -550,9 +569,9 @@ where
         None => GenericEvalStep::Done((smallvec![ctx.factory().unit()], env)),
         Some(_diff) => {
             let msg = extract_message(&items[3]);
-            let err = ctx.factory().error(
-                ctx.factory().string(&msg),
-                ctx.factory().sexpr(items),);
+            let err = ctx
+                .factory()
+                .error(ctx.factory().string(&msg), ctx.factory().sexpr(items));
             GenericEvalStep::Done((smallvec![err], env))
         }
     }

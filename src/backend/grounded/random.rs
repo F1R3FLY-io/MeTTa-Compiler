@@ -102,9 +102,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for NewRandomGeneratorO
         match state.step {
             0 => {
                 if state.args.len() != 1 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -161,9 +159,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for RandomIntOp {
         match state.step {
             0 => {
                 if state.args.len() != 3 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -227,9 +223,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for RandomIntOp {
                                 return GroundedWork::Error(ExecError::Tagged("RangeIsEmpty"));
                             }
 
-                            let mut reg = registry()
-                                .lock()
-                                .expect("rng registry mutex poisoned");
+                            let mut reg = registry().lock().expect("rng registry mutex poisoned");
                             let rng = match reg.get_mut(&id) {
                                 Some(r) => r,
                                 None => {
@@ -267,9 +261,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for RandomFloatOp {
         match state.step {
             0 => {
                 if state.args.len() != 3 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -310,8 +302,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for RandomFloatOp {
                 for rngv in rng_arg {
                     let Some(id) = extract_rng_id(rngv) else {
                         return GroundedWork::Error(ExecError::Runtime(
-                            "random-float expects a random generator as its argument"
-                                .to_string(),
+                            "random-float expects a random generator as its argument".to_string(),
                         ));
                     };
                     for sv in start_arg {
@@ -342,9 +333,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for RandomFloatOp {
                                 return GroundedWork::Error(ExecError::Tagged("RangeIsEmpty"));
                             }
 
-                            let mut reg = registry()
-                                .lock()
-                                .expect("rng registry mutex poisoned");
+                            let mut reg = registry().lock().expect("rng registry mutex poisoned");
                             let rng = match reg.get_mut(&id) {
                                 Some(r) => r,
                                 None => {
@@ -382,9 +371,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SetRandomSeedOp {
         match state.step {
             0 => {
                 if state.args.len() != 2 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -427,9 +414,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SetRandomSeedOp {
                             });
                         };
 
-                        let mut reg = registry()
-                            .lock()
-                            .expect("rng registry mutex poisoned");
+                        let mut reg = registry().lock().expect("rng registry mutex poisoned");
                         let entry = reg.get_mut(&id);
                         match entry {
                             Some(r) => {
@@ -447,10 +432,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SetRandomSeedOp {
                 }
                 GroundedWork::Done(results)
             }
-            _ => unreachable!(
-                "Invalid step {} for set-random-seed operation",
-                state.step
-            ),
+            _ => unreachable!("Invalid step {} for set-random-seed operation", state.step),
         }
     }
 }
@@ -474,9 +456,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for ResetRandomGenerato
         match state.step {
             0 => {
                 if state.args.len() != 1 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -499,9 +479,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for ResetRandomGenerato
                         ));
                     };
 
-                    let mut reg = registry()
-                        .lock()
-                        .expect("rng registry mutex poisoned");
+                    let mut reg = registry().lock().expect("rng registry mutex poisoned");
                     let entry = reg.get_mut(&id);
                     match entry {
                         Some(r) => {
@@ -550,9 +528,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for FlipOp {
         match state.step {
             0 => {
                 if !state.args.is_empty() {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 let val = rand::thread_rng().gen::<bool>();
                 GroundedWork::Done(vec![(factory.bool(val), None)])

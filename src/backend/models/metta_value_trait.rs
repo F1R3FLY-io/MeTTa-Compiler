@@ -601,9 +601,7 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
                     && name != "&kb"
                     && name != "&stack"
                     && name.len() > 1
-                    && (name.starts_with('$')
-                        || name.starts_with('&')
-                        || name.starts_with('\''))
+                    && (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
                 {
                     if !out.contains(&name) {
                         out.push(name);
@@ -663,8 +661,7 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
                 if s == "&" || s == "&self" || s == "&kb" || s == "&stack" {
                     continue;
                 }
-                if s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'')
-                {
+                if s == "_" || s.starts_with('$') || s.starts_with('&') || s.starts_with('\'') {
                     return true;
                 }
                 continue;

@@ -1273,7 +1273,10 @@ mod tests {
         // `is_long()` (which checks TAG_LONG) returns false. The full
         // i64::MAX is preserved via the MettaValueInner::Long round-trip.
         let max = JitValue::from_long(i64::MAX);
-        assert!(!max.is_long(), "i64::MAX should be heap-allocated, not inline");
+        assert!(
+            !max.is_long(),
+            "i64::MAX should be heap-allocated, not inline"
+        );
         let metta = unsafe { max.to_metta() };
         assert_eq!(metta.as_long(), Some(i64::MAX));
     }
@@ -1282,7 +1285,10 @@ mod tests {
     fn test_jit_value_min_long() {
         // Z.A.2: see test_jit_value_max_long for rationale.
         let min = JitValue::from_long(i64::MIN);
-        assert!(!min.is_long(), "i64::MIN should be heap-allocated, not inline");
+        assert!(
+            !min.is_long(),
+            "i64::MIN should be heap-allocated, not inline"
+        );
         let metta = unsafe { min.to_metta() };
         assert_eq!(metta.as_long(), Some(i64::MIN));
     }

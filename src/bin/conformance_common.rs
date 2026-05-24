@@ -27,10 +27,7 @@ use mettatron::MettaValue;
 ///
 /// `module_filter` matches against top-level directory names by prefix
 /// (e.g. filter `"M11-"` matches both `M11-bisimilarity-pt` and `M11-bisimilarity-he`).
-pub fn discover_fixtures(
-    dir: &Path,
-    module_filter: Option<&str>,
-) -> Vec<(PathBuf, PathBuf)> {
+pub fn discover_fixtures(dir: &Path, module_filter: Option<&str>) -> Vec<(PathBuf, PathBuf)> {
     let mut fixtures: Vec<(PathBuf, PathBuf)> = Vec::new();
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -179,9 +176,7 @@ pub fn format_value(v: &MettaValue) -> String {
                         result.push(canonical);
                     }
                     ValueView::State(id) => result.push(format!("(State {})", id)),
-                    ValueView::Memo(h) => {
-                        result.push(format!("(Memo {} \"{}\")", h.id, h.name))
-                    }
+                    ValueView::Memo(h) => result.push(format!("(Memo {} \"{}\")", h.id, h.name)),
                     ValueView::Error(msg, details) => {
                         work.push(Work::Join {
                             count: 2,
@@ -210,9 +205,7 @@ pub fn format_value(v: &MettaValue) -> String {
                                 memo.insert(k, s.clone());
                             }
                             result.push(s);
-                        } else if items.first().and_then(|h| h.as_atom())
-                            == Some("Bindings")
-                        {
+                        } else if items.first().and_then(|h| h.as_atom()) == Some("Bindings") {
                             let pairs = &items[1..];
                             if pairs.is_empty() {
                                 let s = "{ }".to_string();
@@ -221,17 +214,13 @@ pub fn format_value(v: &MettaValue) -> String {
                                 }
                                 result.push(s);
                             } else {
-                                let mut var_names: Vec<String> =
-                                    Vec::with_capacity(pairs.len());
-                                let mut malformed: Vec<bool> =
-                                    Vec::with_capacity(pairs.len());
+                                let mut var_names: Vec<String> = Vec::with_capacity(pairs.len());
+                                let mut malformed: Vec<bool> = Vec::with_capacity(pairs.len());
                                 for p in pairs {
                                     let (name, ok) = match p.view() {
                                         ValueView::SExpr(kv) if kv.len() == 2 => {
                                             match kv[0].view() {
-                                                ValueView::Atom(n) => {
-                                                    (n.to_string(), true)
-                                                }
+                                                ValueView::Atom(n) => (n.to_string(), true),
                                                 _ => (String::new(), false),
                                             }
                                         }
@@ -316,8 +305,7 @@ pub fn format_value(v: &MettaValue) -> String {
             } => {
                 let start = result.len() - count;
                 let parts: Vec<String> = result.drain(start..).collect();
-                let formatted =
-                    format!("{}{}{}", prefix, parts.join(separator), suffix);
+                let formatted = format!("{}{}{}", prefix, parts.join(separator), suffix);
                 if let Some(k) = memo_key {
                     memo.insert(k, formatted.clone());
                 }
@@ -455,7 +443,12 @@ pub fn read_status(yaml_path: &Path) -> Option<String> {
         }
         let body = trimmed.trim_start();
         if let Some(value) = body.strip_prefix("status:") {
-            return Some(value.trim().trim_matches(|c| c == '"' || c == '\'').to_string());
+            return Some(
+                value
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .to_string(),
+            );
         }
     }
     None
@@ -475,7 +468,12 @@ pub fn read_top_level_scalar(yaml_path: &Path, key: &str) -> Option<String> {
         }
         let body = trimmed.trim_start();
         if let Some(value) = body.strip_prefix(&prefix) {
-            return Some(value.trim().trim_matches(|c| c == '"' || c == '\'').to_string());
+            return Some(
+                value
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .to_string(),
+            );
         }
     }
     None
@@ -515,7 +513,9 @@ pub enum FixtureOutcome {
     /// Fixture declares status: xfail; expected mismatch was confirmed.
     XFailExpected,
     /// Fixture declares xfail but actually matched expected.
-    XPassUnexpected { expected: Vec<String> },
+    XPassUnexpected {
+        expected: Vec<String>,
+    },
 }
 
 impl FixtureOutcome {

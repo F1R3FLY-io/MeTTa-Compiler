@@ -53,10 +53,7 @@ pub unsafe extern "C" fn jit_runtime_trace(
 /// # Safety
 /// `ctx` must point to a live `JitContext` for the duration of the call.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_enter_interpret_mode(
-    ctx: *mut JitContext,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_enter_interpret_mode(ctx: *mut JitContext, _ip: u64) -> u64 {
     let ctx_ref = unsafe { &mut *ctx };
     ctx_ref.interpret_mode = true;
     // S2 BANG-WORD (2026-05-13): toggle bang_body in lockstep so JIT-side
@@ -74,10 +71,7 @@ pub unsafe extern "C" fn jit_runtime_enter_interpret_mode(
 /// # Safety
 /// `ctx` must point to a live `JitContext` for the duration of the call.
 #[no_mangle]
-pub unsafe extern "C" fn jit_runtime_exit_interpret_mode(
-    ctx: *mut JitContext,
-    _ip: u64,
-) -> u64 {
+pub unsafe extern "C" fn jit_runtime_exit_interpret_mode(ctx: *mut JitContext, _ip: u64) -> u64 {
     let ctx_ref = unsafe { &mut *ctx };
     ctx_ref.interpret_mode = false;
     // S2 BANG-WORD (2026-05-13): clear bang_body in lockstep.

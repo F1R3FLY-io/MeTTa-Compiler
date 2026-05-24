@@ -26,8 +26,8 @@ use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::backend::symbol::{intern as intern_symbol, Symbol};
 
@@ -274,9 +274,10 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
                     None
                 }
             }
-            GenericBindings::Small(vec) => {
-                vec.iter().find(|(_, n, _)| n.matches(name)).map(|(_, _, v)| v)
-            }
+            GenericBindings::Small(vec) => vec
+                .iter()
+                .find(|(_, n, _)| n.matches(name))
+                .map(|(_, _, v)| v),
         }
     }
 
@@ -503,7 +504,11 @@ impl<V: MettaValueTrait + Clone> GenericBindings<V> {
                 if *existing_scope == scope && existing_name == &name {
                     *existing_value = value;
                 } else {
-                    let triple = (*existing_scope, existing_name.clone(), existing_value.clone());
+                    let triple = (
+                        *existing_scope,
+                        existing_name.clone(),
+                        existing_value.clone(),
+                    );
                     let mut vec = SmallVec::new();
                     vec.push(triple);
                     vec.push((scope, name, value));

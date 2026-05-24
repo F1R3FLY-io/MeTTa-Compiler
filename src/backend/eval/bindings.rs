@@ -281,7 +281,7 @@ where
             "sealed requires 2 arguments, got {}. Usage: (sealed ignore-vars expr)",
             items.len() - 1
         );
-        return vec![factory.error( factory.string(&arity_msg),factory.sexpr(items.to_vec()))];
+        return vec![factory.error(factory.string(&arity_msg), factory.sexpr(items.to_vec()))];
     }
 
     let ignore_vars = &items[1];
@@ -388,29 +388,57 @@ enum NoFactory<V: MettaValueTrait> {
     _Phantom(std::marker::PhantomData<V>),
 }
 impl<V: MettaValueTrait + Clone> MettaValueFactory<V> for NoFactory<V> {
-    fn atom(&self, _s: &str) -> V { unreachable!("NoFactory::atom invoked") }
-    fn bool(&self, _b: bool) -> V { unreachable!("NoFactory::bool invoked") }
-    fn long(&self, _n: i64) -> V { unreachable!("NoFactory::long invoked") }
-    fn float(&self, _f: f64) -> V { unreachable!("NoFactory::float invoked") }
-    fn string(&self, _s: &str) -> V { unreachable!("NoFactory::string invoked") }
-    fn sexpr(&self, _items: Vec<V>) -> V { unreachable!("NoFactory::sexpr invoked") }
+    fn atom(&self, _s: &str) -> V {
+        unreachable!("NoFactory::atom invoked")
+    }
+    fn bool(&self, _b: bool) -> V {
+        unreachable!("NoFactory::bool invoked")
+    }
+    fn long(&self, _n: i64) -> V {
+        unreachable!("NoFactory::long invoked")
+    }
+    fn float(&self, _f: f64) -> V {
+        unreachable!("NoFactory::float invoked")
+    }
+    fn string(&self, _s: &str) -> V {
+        unreachable!("NoFactory::string invoked")
+    }
+    fn sexpr(&self, _items: Vec<V>) -> V {
+        unreachable!("NoFactory::sexpr invoked")
+    }
     fn sexpr_from_slice(&self, _items: &[V]) -> V {
         unreachable!("NoFactory::sexpr_from_slice invoked")
     }
-    fn error(&self, _offending: V, _detail: V) -> V { unreachable!("NoFactory::error invoked") }
-    fn type_value(&self, _t: V) -> V { unreachable!("NoFactory::type_value invoked") }
-    fn conjunction(&self, _goals: Vec<V>) -> V { unreachable!("NoFactory::conjunction invoked") }
+    fn error(&self, _offending: V, _detail: V) -> V {
+        unreachable!("NoFactory::error invoked")
+    }
+    fn type_value(&self, _t: V) -> V {
+        unreachable!("NoFactory::type_value invoked")
+    }
+    fn conjunction(&self, _goals: Vec<V>) -> V {
+        unreachable!("NoFactory::conjunction invoked")
+    }
     fn space(&self, _h: crate::backend::models::SpaceHandle) -> V {
         unreachable!("NoFactory::space invoked")
     }
-    fn state(&self, _id: u64) -> V { unreachable!("NoFactory::state invoked") }
+    fn state(&self, _id: u64) -> V {
+        unreachable!("NoFactory::state invoked")
+    }
     fn memo(&self, _h: crate::backend::models::MemoHandle) -> V {
         unreachable!("NoFactory::memo invoked")
     }
-    fn quote(&self, _v: V) -> V { unreachable!("NoFactory::quote invoked") }
-    fn lazy(&self, _v: V) -> V { unreachable!("NoFactory::lazy invoked") }
-    fn unit(&self) -> V { unreachable!("NoFactory::unit invoked") }
-    fn empty(&self) -> V { unreachable!("NoFactory::empty invoked") }
+    fn quote(&self, _v: V) -> V {
+        unreachable!("NoFactory::quote invoked")
+    }
+    fn lazy(&self, _v: V) -> V {
+        unreachable!("NoFactory::lazy invoked")
+    }
+    fn unit(&self) -> V {
+        unreachable!("NoFactory::unit invoked")
+    }
+    fn empty(&self) -> V {
+        unreachable!("NoFactory::empty invoked")
+    }
     fn conjunction_from_slice(&self, _goals: &[V]) -> V {
         unreachable!("NoFactory::conjunction_from_slice invoked")
     }
@@ -600,9 +628,7 @@ where
                 // Requires a factory to build the rest-var binding; if factory
                 // is None we fall through to strict length matching.
                 if let Some(f) = factory {
-                    if p_items.len() >= 2
-                        && p_items[p_items.len() - 2].as_atom() == Some(".")
-                    {
+                    if p_items.len() >= 2 && p_items[p_items.len() - 2].as_atom() == Some(".") {
                         let head_len = p_items.len() - 2;
                         if v_items.len() < head_len {
                             return false;
@@ -1147,8 +1173,7 @@ where
     if let Some(span) = template.span() {
         let span = *span;
         let stripped = template.strip_one_span();
-        let result =
-            apply_bindings_lazy_scoped_generic(&stripped, bindings, scope_chain, factory);
+        let result = apply_bindings_lazy_scoped_generic(&stripped, bindings, scope_chain, factory);
         if result.span().is_some() {
             return result;
         }
@@ -1325,12 +1350,8 @@ where
                     // the bound value's internals should NOT wrap. Switching
                     // entries here is the cleanest way to honour the "only
                     // outer template substitutions wrap" rule.
-                    let result = apply_bindings_scoped_generic(
-                        &val,
-                        bindings,
-                        scope_chain,
-                        factory,
-                    );
+                    let result =
+                        apply_bindings_scoped_generic(&val, bindings, scope_chain, factory);
                     result_stack.push(result);
                     continue;
                 }
@@ -1390,8 +1411,7 @@ where
                 let items = original
                     .as_sexpr()
                     .expect("BuildSExpr original must be sexpr");
-                let changed =
-                    (0..count).any(|i| !result_stack[start + i].identity_eq(&items[i]));
+                let changed = (0..count).any(|i| !result_stack[start + i].identity_eq(&items[i]));
                 if !changed {
                     result_stack.truncate(start);
                     result_stack.push(original);
@@ -1406,8 +1426,7 @@ where
                 let goals = original
                     .as_conjunction()
                     .expect("BuildConjunction original must be conjunction");
-                let changed =
-                    (0..count).any(|i| !result_stack[start + i].identity_eq(&goals[i]));
+                let changed = (0..count).any(|i| !result_stack[start + i].identity_eq(&goals[i]));
                 if !changed {
                     result_stack.truncate(start);
                     result_stack.push(original);
@@ -2138,19 +2157,27 @@ where
 
         match (lhs.as_long(), lhs.as_float(), rhs.as_long(), rhs.as_float()) {
             (Some(l), _, Some(r), _) => {
-                if l == r { continue; }
+                if l == r {
+                    continue;
+                }
                 return false;
             }
             (_, Some(l), _, Some(r)) => {
-                if l == r { continue; }
+                if l == r {
+                    continue;
+                }
                 return false;
             }
             (Some(l), _, _, Some(r)) => {
-                if (l as f64) == r { continue; }
+                if (l as f64) == r {
+                    continue;
+                }
                 return false;
             }
             (_, Some(l), Some(r), _) => {
-                if l == (r as f64) { continue; }
+                if l == (r as f64) {
+                    continue;
+                }
                 return false;
             }
             _ => {}
@@ -2164,21 +2191,29 @@ where
 
         if let Some(l_str) = lhs.as_string() {
             if let Some(r_str) = rhs.as_string() {
-                if l_str == r_str { continue; }
+                if l_str == r_str {
+                    continue;
+                }
             }
             return false;
         }
 
         if lhs.is_unit() {
-            if rhs.is_unit() { continue; }
+            if rhs.is_unit() {
+                continue;
+            }
             if let Some(r_items) = rhs.as_sexpr() {
-                if r_items.is_empty() { continue; }
+                if r_items.is_empty() {
+                    continue;
+                }
             }
             return false;
         }
         if rhs.is_unit() {
             if let Some(l_items) = lhs.as_sexpr() {
-                if l_items.is_empty() { continue; }
+                if l_items.is_empty() {
+                    continue;
+                }
             }
             return false;
         }
@@ -2189,10 +2224,10 @@ where
                 // Dotted-pair on LHS: `(H1 H2 ... . TAIL)` matches a value
                 // whose first N elements unify with H1..HN and remaining
                 // elements bind to TAIL as an SExpr.
-                let lhs_dotted = l_items.len() >= 2
-                    && l_items[l_items.len() - 2].as_atom() == Some(".");
-                let rhs_dotted = r_items.len() >= 2
-                    && r_items[r_items.len() - 2].as_atom() == Some(".");
+                let lhs_dotted =
+                    l_items.len() >= 2 && l_items[l_items.len() - 2].as_atom() == Some(".");
+                let rhs_dotted =
+                    r_items.len() >= 2 && r_items[r_items.len() - 2].as_atom() == Some(".");
                 if lhs_dotted {
                     let head_len = l_items.len() - 2;
                     if r_items.len() < head_len {
@@ -2257,14 +2292,18 @@ where
 
         if let Some(l_handle) = lhs.as_space() {
             if let Some(r_handle) = rhs.as_space() {
-                if l_handle.id == r_handle.id { continue; }
+                if l_handle.id == r_handle.id {
+                    continue;
+                }
             }
             return false;
         }
 
         if let Some(l_id) = lhs.as_state() {
             if let Some(r_id) = rhs.as_state() {
-                if l_id == r_id { continue; }
+                if l_id == r_id {
+                    continue;
+                }
             }
             return false;
         }
@@ -2783,8 +2822,7 @@ where
                 // Unify mode: var-var-distinct → equivalence class.
                 if mode == UnifyMode::Unify {
                     if let Some(r_name) = rhs.as_atom() {
-                        if is_unification_variable(r_name)
-                            && bindings.entries.get(r_name).is_none()
+                        if is_unification_variable(r_name) && bindings.entries.get(r_name).is_none()
                         {
                             // Class membership check on RHS (might be in a class
                             // already; insert_equivalence handles all 4 cases).
@@ -3062,7 +3100,7 @@ where
             "atom-subst requires 3 arguments, got {}. Usage: (atom-subst value $var template)",
             items.len() - 1
         );
-        return vec![factory.error( factory.string(&arity_msg),factory.sexpr(items.to_vec()))];
+        return vec![factory.error(factory.string(&arity_msg), factory.sexpr(items.to_vec()))];
     }
 
     let value = &items[1];
@@ -3951,8 +3989,14 @@ where
     enum Work<'a, V> {
         ProcessTemplate(&'a V),
         ProcessOwned(V),
-        BuildSExpr { count: usize, original: V },
-        BuildConjunction { count: usize, original: V },
+        BuildSExpr {
+            count: usize,
+            original: V,
+        },
+        BuildConjunction {
+            count: usize,
+            original: V,
+        },
         /// Re-wrap the next result as a Quoted value. HE-faithful
         /// (T06/129 noreduce-eq): freshen/rename + bindings must descend
         /// into `(quote $x)` so the inner variable resolves via the same
@@ -3960,7 +4004,9 @@ where
         /// rule body `(== (quote $a) (quote $b))` keeps literal $a/$b
         /// after freshening, and the bindings map keyed on $a_E/$b_E
         /// never finds them.
-        BuildQuoted { original: V },
+        BuildQuoted {
+            original: V,
+        },
         /// PT-canonical lazy wrap marker (2026-05-21): pop the most recent
         /// `result_stack` entry, wrap in `(quote ...)`, push back. Emitted
         /// when `lazy_wrap=true` and the outer template walk hits a `$var`
@@ -4512,7 +4558,10 @@ mod tests {
         assert!(vars.contains("$x"), "$x should be collected");
         assert!(vars.contains("&y"), "&y should be collected (BUG-T0-007)");
         assert!(vars.contains("'z"), "'z should be collected (BUG-T0-007)");
-        assert!(!vars.contains("&self"), "&self is a space reference, not a variable");
+        assert!(
+            !vars.contains("&self"),
+            "&self is a space reference, not a variable"
+        );
         assert!(!vars.contains("foo"), "foo is a literal atom");
     }
 
@@ -4533,8 +4582,16 @@ mod tests {
         let items = sealed.as_sexpr().expect("sealed expr is sexpr");
         assert_eq!(items[0].as_atom(), Some("foo"));
         assert_eq!(items[1].as_atom(), Some("$x_42"), "$x should be freshened");
-        assert_eq!(items[2].as_atom(), Some("&y_42"), "&y should be freshened (BUG-T0-007)");
-        assert_eq!(items[3].as_atom(), Some("'z_42"), "'z should be freshened (BUG-T0-007)");
+        assert_eq!(
+            items[2].as_atom(),
+            Some("&y_42"),
+            "&y should be freshened (BUG-T0-007)"
+        );
+        assert_eq!(
+            items[3].as_atom(),
+            Some("'z_42"),
+            "'z should be freshened (BUG-T0-007)"
+        );
     }
 
     #[test]

@@ -30,9 +30,8 @@ use std::process;
 mod conformance_common;
 
 use conformance_common::{
-    atom_kind_prefix, canonicalize, collect_fixtures_recursive, discover_fixtures,
-    parse_base_args, read_status, split_yaml_list_inner, strip_yaml_quotes,
-    BaseOptions, FixtureOutcome,
+    atom_kind_prefix, canonicalize, collect_fixtures_recursive, discover_fixtures, parse_base_args,
+    read_status, split_yaml_list_inner, strip_yaml_quotes, BaseOptions, FixtureOutcome,
 };
 
 use mettatron::backend::eval::tier_forced::{
@@ -49,7 +48,9 @@ fn print_usage() {
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("    --conformance-dir <PATH>  Root of the conformance/ directory");
-    eprintln!("    --module <NAME>           Only run fixtures in this subdir (e.g. M11-bisimilarity-he)");
+    eprintln!(
+        "    --module <NAME>           Only run fixtures in this subdir (e.g. M11-bisimilarity-he)"
+    );
     eprintln!("    --fixture <NAME>          Only run fixtures whose path-tail contains <NAME>");
     eprintln!("    --tier <T1,T2,...>        Restrict to specific tiers (default: all)");
     eprintln!("    --strict                  Exit code 3 on any divergence (default: lenient)");

@@ -64,10 +64,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for StringToCharsOp {
                 }
                 GroundedWork::Done(results)
             }
-            _ => unreachable!(
-                "Invalid step {} for stringToChars operation",
-                state.step
-            ),
+            _ => unreachable!("Invalid step {} for stringToChars operation", state.step),
         }
     }
 }
@@ -101,9 +98,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SortStringsOp {
                 // `(Error (sort-strings) IncorrectNumberOfArguments)` —
                 // tagged atom detail, not a string.
                 if state.args.len() != 1 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -157,10 +152,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for SortStringsOp {
                 }
                 GroundedWork::Done(results)
             }
-            _ => unreachable!(
-                "Invalid step {} for sort-strings operation",
-                state.step
-            ),
+            _ => unreachable!("Invalid step {} for sort-strings operation", state.step),
         }
     }
 }

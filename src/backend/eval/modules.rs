@@ -49,7 +49,8 @@ where
     if items.len() < 2 {
         let err = factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items),);
+            factory.sexpr(items),
+        );
         return (vec![err], env);
     }
 
@@ -63,7 +64,8 @@ where
     } else {
         let err = factory.error(
             factory.string("include: expected string or symbol path"),
-            path_arg.clone(),);
+            path_arg.clone(),
+        );
         return (vec![err], env);
     };
 
@@ -94,7 +96,8 @@ where
                     resolved_path.display(),
                     e
                 )),
-                factory.atom(&path_str),);
+                factory.atom(&path_str),
+            );
             return (vec![err], env);
         }
     };
@@ -110,7 +113,8 @@ where
                     resolved_path.display(),
                     e
                 )),
-                factory.atom(&path_str),);
+                factory.atom(&path_str),
+            );
             return (vec![err], env);
         }
     };
@@ -203,7 +207,8 @@ where
     if items.len() < 2 {
         let err = factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items),);
+            factory.sexpr(items),
+        );
         return (vec![err], env);
     }
 
@@ -222,8 +227,15 @@ where
     // (native Rust dispatch + type registry per Phase F), no MeTTa
     // source to load. Return Unit silently.
     const NATIVE_BUILTIN_MODULES: &[&str] = &[
-        "stdlib", "corelib", "random", "fileio", "json",
-        "das", "catalog", "math", "concurrency",
+        "stdlib",
+        "corelib",
+        "random",
+        "fileio",
+        "json",
+        "das",
+        "catalog",
+        "math",
+        "concurrency",
     ];
     let builtin_match = path_arg
         .as_atom()
@@ -243,37 +255,36 @@ where
     //      `<MeTTaTron>/stdlib`, plus runtime additions from `git-import!`).
     //
     // All failure paths return a graceful error MettaValue (never panic).
-    let (resolved_path, path_display): (std::path::PathBuf, String) = if let Some(s) =
-        path_arg.as_string()
-    {
-        let p = resolve_module_path(s, env.current_module_dir());
-        let d = s.to_string();
-        (p, d)
-    } else if let Some(s) = path_arg.as_atom() {
-        let p = resolve_module_path(s, env.current_module_dir());
-        let d = s.to_string();
-        (p, d)
-    } else if let Some(items_ref) = path_arg.as_sexpr() {
-        // PeTTa-compatible (library X) / (library X Y) form.
-        if items_ref.first().and_then(|h| h.as_atom()) == Some("library") {
-            match resolve_library_form_with_importer(items_ref, env.current_module_dir()) {
-                Some(p) => {
-                    let d = format!("{:?}", path_arg);
-                    (p, d)
+    let (resolved_path, path_display): (std::path::PathBuf, String) =
+        if let Some(s) = path_arg.as_string() {
+            let p = resolve_module_path(s, env.current_module_dir());
+            let d = s.to_string();
+            (p, d)
+        } else if let Some(s) = path_arg.as_atom() {
+            let p = resolve_module_path(s, env.current_module_dir());
+            let d = s.to_string();
+            (p, d)
+        } else if let Some(items_ref) = path_arg.as_sexpr() {
+            // PeTTa-compatible (library X) / (library X Y) form.
+            if items_ref.first().and_then(|h| h.as_atom()) == Some("library") {
+                match resolve_library_form_with_importer(items_ref, env.current_module_dir()) {
+                    Some(p) => {
+                        let d = format!("{:?}", path_arg);
+                        (p, d)
+                    }
+                    None => {
+                        // PT silent fail (Phase 6.1).
+                        return (Vec::new(), env);
+                    }
                 }
-                None => {
-                    // PT silent fail (Phase 6.1).
-                    return (Vec::new(), env);
-                }
+            } else {
+                // PT silent fail (Phase 6.1).
+                return (Vec::new(), env);
             }
         } else {
             // PT silent fail (Phase 6.1).
             return (Vec::new(), env);
-        }
-    } else {
-        // PT silent fail (Phase 6.1).
-        return (Vec::new(), env);
-    };
+        };
     let path_str = path_display;
 
     // Cycle detection: hash the resolved path
@@ -379,7 +390,8 @@ where
     if items.len() < 2 {
         let err = factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items),);
+            factory.sexpr(items),
+        );
         return (vec![err], env);
     }
 
@@ -389,7 +401,8 @@ where
     } else {
         let err = factory.error(
             factory.string("mod-space!: expected symbol for module name"),
-            module_arg.clone(),);
+            module_arg.clone(),
+        );
         return (vec![err], env);
     };
 

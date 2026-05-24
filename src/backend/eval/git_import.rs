@@ -59,7 +59,8 @@ where
     if items.len() < 2 || items.len() > 3 {
         return vec![factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items.to_vec()),)];
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
     // Argument 1: URL string. Accept both String literals and atoms (a bare
@@ -71,7 +72,8 @@ where
             None => {
                 return vec![factory.error(
                     factory.string("git-import!: first argument must be a URL string"),
-                    items[1].clone(),)];
+                    items[1].clone(),
+                )];
             }
         },
     };
@@ -79,7 +81,8 @@ where
     if url.is_empty() {
         return vec![factory.error(
             factory.string("git-import!: URL string is empty"),
-            items[1].clone(),)];
+            items[1].clone(),
+        )];
     }
 
     // Optional second arg: build command, also accepted as String or atom.
@@ -108,7 +111,8 @@ where
                     "git-import!: could not extract repo name from URL '{}'",
                     url
                 )),
-                items[1].clone(),)];
+                items[1].clone(),
+            )];
         }
     };
 
@@ -124,7 +128,8 @@ where
                     cache_dir.display(),
                     e
                 )),
-                items[1].clone(),)];
+                items[1].clone(),
+            )];
         }
 
         // Run `git clone --depth 1 <url> <local>`.
@@ -144,7 +149,8 @@ where
                         o.status.code().unwrap_or(-1),
                         stderr.trim()
                     )),
-                    items[1].clone(),)];
+                    items[1].clone(),
+                )];
             }
             Err(e) => {
                 return vec![factory.error(
@@ -152,7 +158,8 @@ where
                         "git-import!: failed to invoke 'git' (is it installed and on PATH?): {}",
                         e
                     )),
-                    items[1].clone(),)];
+                    items[1].clone(),
+                )];
             }
         }
 
@@ -175,7 +182,8 @@ where
                             local.display(),
                             stderr.trim()
                         )),
-                        items[2].clone(),)];
+                        items[2].clone(),
+                    )];
                 }
                 Err(e) => {
                     return vec![factory.error(
@@ -183,7 +191,8 @@ where
                             "git-import!: failed to spawn build shell for '{}': {}",
                             cmd, e
                         )),
-                        items[2].clone(),)];
+                        items[2].clone(),
+                    )];
                 }
             }
         }

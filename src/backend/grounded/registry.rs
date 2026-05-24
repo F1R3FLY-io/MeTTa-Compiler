@@ -36,7 +36,9 @@
 
 use std::collections::HashMap;
 
-use super::arithmetic::{AbsOp, AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp};
+use super::arithmetic::{
+    AbsOp, AddOp, ClampOp, DivOp, MaxOp, MinOp, ModOp, MulOp, SafeDivOp, SubOp,
+};
 use super::comparison::{EqualOp, GreaterEqOp, GreaterOp, LessEqOp, LessOp, NotEqualOp};
 use super::fileio::{
     FileGetSizeOp, FileOpenOp, FileReadExactOp, FileReadToStringOp, FileSeekOp, FileWriteOp,
@@ -44,9 +46,9 @@ use super::fileio::{
 use super::json::{JsonDecodeOp, JsonEncodeOp};
 use super::logical::{AndOp, NotOp, OrOp, XorOp};
 use super::math::{
-    AbsMathOp, AcosMathOp, AsinMathOp, AtanMathOp, CeilMathOp, CosMathOp, FloorMathOp,
-    IsInfMathOp, IsNanMathOp, LogMathOp, MaxAtomOp, MinAtomOp, PowMathOp, SinMathOp,
-    SqrtMathOp, TanMathOp, TruncMathOp,
+    AbsMathOp, AcosMathOp, AsinMathOp, AtanMathOp, CeilMathOp, CosMathOp, FloorMathOp, IsInfMathOp,
+    IsNanMathOp, LogMathOp, MaxAtomOp, MinAtomOp, PowMathOp, SinMathOp, SqrtMathOp, TanMathOp,
+    TruncMathOp,
 };
 use super::meta::IdOp;
 use super::pt_parser::{ParseOp, ReprOp, SreadOp, SwriteOp};

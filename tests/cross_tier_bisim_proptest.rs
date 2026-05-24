@@ -23,10 +23,7 @@ fn arb_small_int() -> impl Strategy<Value = String> {
 
 /// Generate a small arithmetic expression — guaranteed to compile on both T0 and T1.
 fn arb_arith_expr() -> impl Strategy<Value = String> {
-    let leaf = prop_oneof![
-        arb_small_int(),
-        arb_small_int(),
-    ];
+    let leaf = prop_oneof![arb_small_int(), arb_small_int(),];
     leaf.prop_recursive(3, 16, 4, |inner| {
         prop_oneof![
             (inner.clone(), inner.clone()).prop_map(|(a, b)| format!("(+ {} {})", a, b)),

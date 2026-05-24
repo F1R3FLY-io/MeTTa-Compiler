@@ -254,9 +254,7 @@ pub fn eval_with_tier(
     if let Err(reason) = tier_applicable(&value, &env, tier) {
         return match policy {
             FallbackPolicy::SilentDemote => {
-                let tier_requested = tier
-                    .execution_tier()
-                    .unwrap_or(ExecutionTier::Interpreter);
+                let tier_requested = tier.execution_tier().unwrap_or(ExecutionTier::Interpreter);
                 run_t0(value, env, state, tier_requested, reason)
             }
             FallbackPolicy::StrictNoFallback => TierEvalOutcome::NotApplicable { reason },
@@ -299,11 +297,7 @@ fn prepare_per_directive_env(env: MettaEnvironment) -> MettaEnvironment {
     env
 }
 
-fn run_t0_direct(
-    value: MettaValue,
-    env: MettaEnvironment,
-    state: &MettaState,
-) -> TierEvalOutcome {
+fn run_t0_direct(value: MettaValue, env: MettaEnvironment, state: &MettaState) -> TierEvalOutcome {
     let env = prepare_per_directive_env(env);
     let (results, shared_env) = eval_trampoline(value, env, state);
     TierEvalOutcome::Ok {

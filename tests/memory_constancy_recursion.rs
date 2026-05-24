@@ -38,7 +38,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mettatron::backend::eval::tier_forced::{eval_with_tier, FallbackPolicy, TierEvalOutcome, TierSelection};
+use mettatron::backend::eval::tier_forced::{
+    eval_with_tier, FallbackPolicy, TierEvalOutcome, TierSelection,
+};
 use mettatron::backend::models::MettaValue;
 use mettatron::{compile, eval, new_env};
 
@@ -99,8 +101,16 @@ fn eval_t0_with_timeout(source: &'static str, label: &'static str) -> Vec<MettaV
                     FallbackPolicy::SilentDemote,
                 );
                 match outcome {
-                    TierEvalOutcome::Ok { results, env: new_env, .. }
-                    | TierEvalOutcome::Demoted { results, env: new_env, .. } => {
+                    TierEvalOutcome::Ok {
+                        results,
+                        env: new_env,
+                        ..
+                    }
+                    | TierEvalOutcome::Demoted {
+                        results,
+                        env: new_env,
+                        ..
+                    } => {
                         last_results = results.into_iter().collect();
                         env = new_env;
                     }
@@ -125,10 +135,7 @@ fn eval_t0_with_timeout(source: &'static str, label: &'static str) -> Vec<MettaV
 #[test]
 fn self_recursive_ground_rule_terminates_empty_t0() {
     let rss_before = rss_mb();
-    let results = eval_t0_with_timeout(
-        "(= (rec) (rec))\n!(rec)\n",
-        "rec-ground",
-    );
+    let results = eval_t0_with_timeout("(= (rec) (rec))\n!(rec)\n", "rec-ground");
     let rss_after = rss_mb();
     let delta = rss_after.saturating_sub(rss_before);
 
@@ -152,10 +159,7 @@ fn self_recursive_ground_rule_terminates_empty_t0() {
 #[test]
 fn self_recursive_variable_arg_rule_terminates_empty_t0() {
     let rss_before = rss_mb();
-    let results = eval_t0_with_timeout(
-        "(= (rec $x) (rec $x))\n!(rec 0)\n",
-        "rec-var",
-    );
+    let results = eval_t0_with_timeout("(= (rec $x) (rec $x))\n!(rec 0)\n", "rec-var");
     let rss_after = rss_mb();
     let delta = rss_after.saturating_sub(rss_before);
 
@@ -179,10 +183,7 @@ fn self_recursive_variable_arg_rule_terminates_empty_t0() {
 #[test]
 fn mutual_recursion_terminates_empty_t0() {
     let rss_before = rss_mb();
-    let results = eval_t0_with_timeout(
-        "(= (a) (b))\n(= (b) (a))\n!(a)\n",
-        "mutual",
-    );
+    let results = eval_t0_with_timeout("(= (a) (b))\n(= (b) (a))\n!(a)\n", "mutual");
     let rss_after = rss_mb();
     let delta = rss_after.saturating_sub(rss_before);
 
@@ -243,10 +244,7 @@ fn eval_auto_with_timeout(source: &'static str, label: &'static str) -> Vec<Mett
 #[test]
 fn self_recursive_ground_rule_terminates_empty_auto() {
     let rss_before = rss_mb();
-    let results = eval_auto_with_timeout(
-        "(= (rec) (rec))\n!(rec)\n",
-        "rec-ground",
-    );
+    let results = eval_auto_with_timeout("(= (rec) (rec))\n!(rec)\n", "rec-ground");
     let rss_after = rss_mb();
     let delta = rss_after.saturating_sub(rss_before);
 
@@ -268,10 +266,7 @@ fn self_recursive_ground_rule_terminates_empty_auto() {
 #[test]
 fn self_recursive_variable_arg_rule_terminates_empty_auto() {
     let rss_before = rss_mb();
-    let results = eval_auto_with_timeout(
-        "(= (rec $x) (rec $x))\n!(rec 0)\n",
-        "rec-var",
-    );
+    let results = eval_auto_with_timeout("(= (rec $x) (rec $x))\n!(rec 0)\n", "rec-var");
     let rss_after = rss_mb();
     let delta = rss_after.saturating_sub(rss_before);
 
@@ -293,10 +288,7 @@ fn self_recursive_variable_arg_rule_terminates_empty_auto() {
 #[test]
 fn mutual_recursion_terminates_empty_auto() {
     let rss_before = rss_mb();
-    let results = eval_auto_with_timeout(
-        "(= (a) (b))\n(= (b) (a))\n!(a)\n",
-        "mutual",
-    );
+    let results = eval_auto_with_timeout("(= (a) (b))\n(= (b) (a))\n!(a)\n", "mutual");
     let rss_after = rss_mb();
     let delta = rss_after.saturating_sub(rss_before);
 

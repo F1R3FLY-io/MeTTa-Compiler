@@ -92,8 +92,14 @@ pub fn new_env() -> MettaEnvironment {
     let mut env = MettaEnvironment::new(global_factory());
     env.register_corelib_types();
     let f = global_factory();
-    env.register_token("PI", crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::PI));
-    env.register_token("EXP", crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::E));
+    env.register_token(
+        "PI",
+        crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::PI),
+    );
+    env.register_token(
+        "EXP",
+        crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::E),
+    );
     // Plan Phase J.2 (2026-05-20): `&rng` global RandomGenerator handle.
     // HE's stdlib pre-binds `&rng` to a process-wide seeded generator.
     // Deterministic seed (0) so bisim fixtures are reproducible.
@@ -112,10 +118,7 @@ pub fn new_env() -> MettaEnvironment {
         "&shared",
         crate::backend::models::MettaValueFactory::space(
             &f,
-            crate::backend::models::SpaceHandle::new(
-                shared_id,
-                "shared".to_string(),
-            ),
+            crate::backend::models::SpaceHandle::new(shared_id, "shared".to_string()),
         ),
     );
     env

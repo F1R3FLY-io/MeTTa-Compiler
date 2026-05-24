@@ -185,7 +185,7 @@ where
         factory.atom(expected_type),
         factory.atom("ErrorType"),
     ]);
-    factory.error( detail,call)
+    factory.error(detail, call)
 }
 
 /// Get a friendly type name for error messages.

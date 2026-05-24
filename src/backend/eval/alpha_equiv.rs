@@ -174,9 +174,7 @@ fn alpha_equiv_inner<'a, V: MettaValueTrait>(
         }
 
         // Both errors? Error(offending, detail).
-        if let (Some((l_off, l_det)), Some((r_off, r_det))) =
-            (left.as_error(), right.as_error())
-        {
+        if let (Some((l_off, l_det)), Some((r_off, r_det))) = (left.as_error(), right.as_error()) {
             work.push((l_det, r_det));
             work.push((l_off, r_off));
             continue;

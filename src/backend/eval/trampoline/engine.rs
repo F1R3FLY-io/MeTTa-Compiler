@@ -310,7 +310,7 @@ fn apply_bindings_inner(
                 {
                     result_stack.push(original);
                 } else {
-                    result_stack.push(factory.error( new_detail,new_offending));
+                    result_stack.push(factory.error(new_detail, new_offending));
                 }
             }
             Work::BuildSpanned { span, original } => {
@@ -1741,7 +1741,8 @@ pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -
                 "switch-minimal expects expression as second argument, got: {}",
                 cases.friendly_type_name()
             )),
-            *cases,);
+            *cases,
+        );
         return SwitchResult::Error(err);
     };
 
@@ -1756,7 +1757,8 @@ pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -
         let Some(case_parts) = case.as_sexpr() else {
             let err = factory.error(
                 factory.string("switch case should be an expression (pattern-template pair)"),
-                *case,);
+                *case,
+            );
             return SwitchResult::Error(err);
         };
 

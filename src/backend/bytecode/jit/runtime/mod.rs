@@ -90,8 +90,9 @@ pub use arithmetic::{
     jit_runtime_numeric_div, jit_runtime_numeric_eq, jit_runtime_numeric_ge,
     jit_runtime_numeric_gt, jit_runtime_numeric_le, jit_runtime_numeric_lt,
     jit_runtime_numeric_mod, jit_runtime_numeric_mul, jit_runtime_numeric_neg,
-    jit_runtime_numeric_sub, jit_runtime_pow, jit_runtime_pow_math, jit_runtime_round, jit_runtime_signum,
-    jit_runtime_sin, jit_runtime_sqrt, jit_runtime_tan, jit_runtime_trunc, signal_jit_type_error,
+    jit_runtime_numeric_sub, jit_runtime_pow, jit_runtime_pow_math, jit_runtime_round,
+    jit_runtime_signum, jit_runtime_sin, jit_runtime_sqrt, jit_runtime_tan, jit_runtime_trunc,
+    signal_jit_type_error,
 };
 
 // Stack operations

@@ -41,7 +41,10 @@ fn t1_exec_form_routes_to_t0_via_compile_time_gate() {
         "#,
     );
     assert_eq!(r[0], vec!["()"], "add-atom should return Unit");
-    assert!(r[1].is_empty(), "exec at v1.0 returns no results (per §23.3)");
+    assert!(
+        r[1].is_empty(),
+        "exec at v1.0 returns no results (per §23.3)"
+    );
     assert_eq!(
         r[2],
         vec!["(parent alice bob)"],

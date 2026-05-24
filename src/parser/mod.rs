@@ -313,9 +313,8 @@ impl<'src> MettaParser<'src> {
                     Position::new(start_line, start_col, start_byte),
                     Position::new(self.line, self.col, self.pos),
                 );
-                let s = std::str::from_utf8(atom_bytes).map_err(|_| {
-                    self.error(SyntaxErrorKind::Generic, "invalid UTF-8 in atom")
-                })?;
+                let s = std::str::from_utf8(atom_bytes)
+                    .map_err(|_| self.error(SyntaxErrorKind::Generic, "invalid UTF-8 in atom"))?;
                 return Ok(emitter.emit_atom(s, span));
             }
             // Otherwise: prefix directive — parse the next atom/expression

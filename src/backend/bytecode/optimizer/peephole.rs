@@ -136,9 +136,9 @@ impl PeepholeOptimizer {
                     }
 
                     // Short jumps
-                Opcode::JumpShort => {
-                    if offset + 1 < code.len() {
-                        let jump_offset = code[offset + 1] as i8;
+                    Opcode::JumpShort => {
+                        if offset + 1 < code.len() {
+                            let jump_offset = code[offset + 1] as i8;
                             let jump_from = offset + 2;
                             let target = (jump_from as isize + jump_offset as isize) as usize;
 

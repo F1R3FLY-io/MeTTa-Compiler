@@ -157,11 +157,7 @@ where
             factory.error_pt(factory.atom("NoReduce"), call_form)
         }
         ExecError::Tagged(tag) => factory.error_pt(factory.atom(tag), call_form),
-        ExecError::BadArgType {
-            pos,
-            expected,
-            got,
-        } => {
+        ExecError::BadArgType { pos, expected, got } => {
             let detail = factory.sexpr(vec![
                 factory.atom("BadType"),
                 factory.long(*pos as i64),
@@ -170,8 +166,8 @@ where
             ]);
             factory.error_pt(detail, call_form)
         }
-        ExecError::Runtime(msg) => factory.error( factory.string(msg),call_form),
-        ExecError::Arithmetic(msg) => factory.error( factory.string(msg),call_form),
-        ExecError::IncorrectArgument(msg) => factory.error( factory.string(msg),call_form),
+        ExecError::Runtime(msg) => factory.error(factory.string(msg), call_form),
+        ExecError::Arithmetic(msg) => factory.error(factory.string(msg), call_form),
+        ExecError::IncorrectArgument(msg) => factory.error(factory.string(msg), call_form),
     }
 }

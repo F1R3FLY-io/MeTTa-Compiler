@@ -125,7 +125,6 @@ fn has_unclosed_string(source: &str) -> bool {
     in_string
 }
 
-
 /// Parser that uses Tree-Sitter with semantic node type decomposition
 pub struct TreeSitterMettaParser {
     parser: Parser,

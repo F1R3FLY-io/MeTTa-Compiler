@@ -85,9 +85,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for FileOpenOp {
         match state.step {
             0 => {
                 if state.args.len() != 2 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -183,9 +181,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for FileReadToStringOp 
         match state.step {
             0 => {
                 if state.args.len() != 1 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -203,8 +199,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for FileReadToStringOp 
                 for value in arg {
                     let Some(id) = extract_handle_id(value) else {
                         return GroundedWork::Error(ExecError::Runtime(
-                            "file-read-to-string! expects filehandle as an argument"
-                                .to_string(),
+                            "file-read-to-string! expects filehandle as an argument".to_string(),
                         ));
                     };
 
@@ -257,9 +252,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for FileWriteOp {
         match state.step {
             0 => {
                 if state.args.len() != 2 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -347,9 +340,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for FileSeekOp {
         match state.step {
             0 => {
                 if state.args.len() != 2 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -436,9 +427,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for FileReadExactOp {
         match state.step {
             0 => {
                 if state.args.len() != 2 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -528,10 +517,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for FileReadExactOp {
                 }
                 GroundedWork::Done(results)
             }
-            _ => unreachable!(
-                "Invalid step {} for file-read-exact! operation",
-                state.step
-            ),
+            _ => unreachable!("Invalid step {} for file-read-exact! operation", state.step),
         }
     }
 }
@@ -552,9 +538,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for FileGetSizeOp {
         match state.step {
             0 => {
                 if state.args.len() != 1 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {

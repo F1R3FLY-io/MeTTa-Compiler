@@ -235,10 +235,7 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
 /// # Safety
 /// `ctx_ref.env_ptr`, if non-null, must point to a valid `MettaEnvironment`.
 #[inline]
-unsafe fn jit_check_call_site_types(
-    ctx_ref: &JitContext,
-    expr: &MettaValue,
-) -> Option<u64> {
+unsafe fn jit_check_call_site_types(ctx_ref: &JitContext, expr: &MettaValue) -> Option<u64> {
     if ctx_ref.env_ptr.is_null() {
         return None;
     }
@@ -346,7 +343,10 @@ pub unsafe extern "C" fn jit_runtime_call(
                 items.push(JitValue::from_raw(*args_ptr.add(i)).to_metta());
             }
             let call_expr = MettaValue::SExpr(items);
-            let err = factory.error( factory.string(&format!("All types for '{}' are errors", head)),call_expr);
+            let err = factory.error(
+                factory.string(&format!("All types for '{}' are errors", head)),
+                call_expr,
+            );
             return value_to_jit_generic(&err).to_bits();
         }
     }
@@ -428,12 +428,9 @@ pub unsafe extern "C" fn jit_runtime_call(
             // spurious duplicate for failed-conjunct paths.
             if ctx_ref.call_depth > 0 {
                 if let Some(items) = expr.as_sexpr() {
-                    if let Some(head_atom) =
-                        items.first().and_then(|v| v.as_atom())
-                    {
+                    if let Some(head_atom) = items.first().and_then(|v| v.as_atom()) {
                         let arity = items.len().saturating_sub(1);
-                        let has_any_rules = bridge
-                            .has_any_rules(head_atom, arity);
+                        let has_any_rules = bridge.has_any_rules(head_atom, arity);
                         if has_any_rules {
                             return JitValue::empty().to_bits();
                         }
@@ -690,9 +687,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call(
             // rationale): at nested call_depth, has-rules-no-match → Empty.
             if ctx_ref.call_depth > 0 {
                 if let Some(items) = expr.as_sexpr() {
-                    if let Some(head_atom) =
-                        items.first().and_then(|v| v.as_atom())
-                    {
+                    if let Some(head_atom) = items.first().and_then(|v| v.as_atom()) {
                         let arity = items.len().saturating_sub(1);
                         if bridge.has_any_rules(head_atom, arity) {
                             return JitValue::empty().to_bits();
@@ -827,9 +822,7 @@ pub unsafe extern "C" fn jit_runtime_call_n(
             // 2026-05-23 PT-canonical Empty gate (see primary site).
             if ctx_ref.call_depth > 0 {
                 if let Some(items) = expr.as_sexpr() {
-                    if let Some(head_atom) =
-                        items.first().and_then(|v| v.as_atom())
-                    {
+                    if let Some(head_atom) = items.first().and_then(|v| v.as_atom()) {
                         let arity = items.len().saturating_sub(1);
                         if bridge.has_any_rules(head_atom, arity) {
                             return JitValue::empty().to_bits();
@@ -958,9 +951,7 @@ pub unsafe extern "C" fn jit_runtime_tail_call_n(
             // 2026-05-23 PT-canonical Empty gate (see primary site).
             if ctx_ref.call_depth > 0 {
                 if let Some(items) = expr.as_sexpr() {
-                    if let Some(head_atom) =
-                        items.first().and_then(|v| v.as_atom())
-                    {
+                    if let Some(head_atom) = items.first().and_then(|v| v.as_atom()) {
                         let arity = items.len().saturating_sub(1);
                         if bridge.has_any_rules(head_atom, arity) {
                             return JitValue::empty().to_bits();

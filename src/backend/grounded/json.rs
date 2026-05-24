@@ -53,9 +53,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for JsonEncodeOp {
         match state.step {
             0 => {
                 if state.args.len() != 1 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -100,9 +98,7 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for JsonDecodeOp {
         match state.step {
             0 => {
                 if state.args.len() != 1 {
-                    return GroundedWork::Error(ExecError::Tagged(
-                        "IncorrectNumberOfArguments",
-                    ));
+                    return GroundedWork::Error(ExecError::Tagged("IncorrectNumberOfArguments"));
                 }
                 state.step = 1;
                 GroundedWork::EvalArg {
@@ -155,24 +151,20 @@ fn encode_value<V: MettaValueTrait>(value: &V) -> Result<String, ExecError> {
     // Scalars are encoded via serde_json directly so escaping/precision
     // match the HE format exactly.
     if let Some(n) = value.as_long() {
-        return serde_json::to_string(&n).map_err(|err| {
-            ExecError::Runtime(format!("Encode integer failed: {}", err))
-        });
+        return serde_json::to_string(&n)
+            .map_err(|err| ExecError::Runtime(format!("Encode integer failed: {}", err)));
     }
     if let Some(f) = value.as_float() {
-        return serde_json::to_string(&f).map_err(|err| {
-            ExecError::Runtime(format!("Encode float failed: {}", err))
-        });
+        return serde_json::to_string(&f)
+            .map_err(|err| ExecError::Runtime(format!("Encode float failed: {}", err)));
     }
     if let Some(b) = value.as_bool() {
-        return serde_json::to_string(&b).map_err(|err| {
-            ExecError::Runtime(format!("Encode bool failed: {}", err))
-        });
+        return serde_json::to_string(&b)
+            .map_err(|err| ExecError::Runtime(format!("Encode bool failed: {}", err)));
     }
     if let Some(s) = value.as_string() {
-        return serde_json::to_string(s).map_err(|err| {
-            ExecError::Runtime(format!("Encode string failed: {}", err))
-        });
+        return serde_json::to_string(s)
+            .map_err(|err| ExecError::Runtime(format!("Encode string failed: {}", err)));
     }
     if let Some(items) = value.as_sexpr() {
         // SExpr -> JSON array. Preallocate capacity for HE-bisim
@@ -196,9 +188,8 @@ fn encode_value<V: MettaValueTrait>(value: &V) -> Result<String, ExecError> {
         } else {
             format!("sym!:{}", name)
         };
-        return serde_json::to_string(&prefixed).map_err(|err| {
-            ExecError::Runtime(format!("Encode symbol failed: {}", err))
-        });
+        return serde_json::to_string(&prefixed)
+            .map_err(|err| ExecError::Runtime(format!("Encode symbol failed: {}", err)));
     }
 
     Err(ExecError::Runtime(format!(

@@ -58,10 +58,14 @@ fn print_usage() {
     eprintln!("petta-conformance — drives PeTTa's conformance corpus against MTT");
     eprintln!();
     eprintln!("USAGE:");
-    eprintln!("    petta-conformance --conformance-dir <PATH> [--module <NAME>] [--profile <NAME>]");
+    eprintln!(
+        "    petta-conformance --conformance-dir <PATH> [--module <NAME>] [--profile <NAME>]"
+    );
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("    --conformance-dir <PATH>  Root of the petta-specification/conformance/ directory");
+    eprintln!(
+        "    --conformance-dir <PATH>  Root of the petta-specification/conformance/ directory"
+    );
     eprintln!("    --module <NAME>           Only run fixtures in this subdir (e.g. P00-kernel)");
     eprintln!("    --profile <NAME>          Only run fixtures matching this profile");
     eprintln!("                              (PeTTa-Kernel, PeTTa-Core, PeTTa-HE-Compat)");
@@ -184,13 +188,10 @@ fn parse_petta_expected(yaml_path: &Path) -> Option<PettaExpected> {
     expected.results_explicit_empty = results_explicit_empty;
     expected.exit_code = read_top_level_int(yaml_path, "exit_code").unwrap_or(0);
     expected.order_significant =
-        conformance_common::read_top_level_bool(yaml_path, "order_significant")
-            .unwrap_or(false);
+        conformance_common::read_top_level_bool(yaml_path, "order_significant").unwrap_or(false);
     expected.alpha_equivalent =
-        conformance_common::read_top_level_bool(yaml_path, "alpha_equivalent")
-            .unwrap_or(true);
-    expected.profile =
-        read_top_level_scalar(yaml_path, "profile").unwrap_or_default();
+        conformance_common::read_top_level_bool(yaml_path, "alpha_equivalent").unwrap_or(true);
+    expected.profile = read_top_level_scalar(yaml_path, "profile").unwrap_or_default();
     expected.classification =
         read_top_level_scalar(yaml_path, "classification").unwrap_or_default();
 
@@ -214,10 +215,7 @@ fn is_ffi_excluded_feature(feat: &str) -> bool {
 /// is unstable — order_significant here means "across-directive ordering
 /// matters", which our canonicalize already preserves at the directive
 /// boundary by extending results in order).
-fn pt_outcome(
-    expected: &PettaExpected,
-    actual_canon: &[String],
-) -> FixtureOutcome {
+fn pt_outcome(expected: &PettaExpected, actual_canon: &[String]) -> FixtureOutcome {
     let mut exp_sorted: Vec<String> = expected.results.clone();
     let mut act_sorted: Vec<String> = actual_canon.to_vec();
     exp_sorted.sort();
@@ -228,13 +226,12 @@ fn pt_outcome(
     // User constraint #4 — no FFI: fixtures requiring `prolog-ffi`, `janus`,
     // `python-ffi`, or `process-create` are MTT-restriction by design.
     // Mark XFailExpected unless the test happens to pass anyway.
-    let is_ffi_gated = expected
-        .features
-        .iter()
-        .any(|f| is_ffi_excluded_feature(f));
+    let is_ffi_gated = expected.features.iter().any(|f| is_ffi_excluded_feature(f));
     if is_ffi_gated {
         return if matches {
-            FixtureOutcome::XPassUnexpected { expected: exp_sorted }
+            FixtureOutcome::XPassUnexpected {
+                expected: exp_sorted,
+            }
         } else {
             FixtureOutcome::XFailExpected
         };
@@ -252,7 +249,9 @@ fn pt_outcome(
             // and MTT (or MTT and the corpus). Pre-migration, divergence is
             // confirmed-xfail; an unexpected PASS means migration progress.
             if matches {
-                FixtureOutcome::XPassUnexpected { expected: exp_sorted }
+                FixtureOutcome::XPassUnexpected {
+                    expected: exp_sorted,
+                }
             } else {
                 FixtureOutcome::XFailExpected
             }
@@ -260,7 +259,9 @@ fn pt_outcome(
         "he-compat-library-gap" => {
             // PT helper missing in MTT but documented as gap. XFail until ported.
             if matches {
-                FixtureOutcome::XPassUnexpected { expected: exp_sorted }
+                FixtureOutcome::XPassUnexpected {
+                    expected: exp_sorted,
+                }
             } else {
                 FixtureOutcome::XFailExpected
             }
@@ -411,7 +412,6 @@ fn main() {
     if let Some(needle) = &options.fixture_filter {
         fixtures.retain(|(m, _)| m.to_string_lossy().contains(needle));
     }
-
 
     if fixtures.is_empty() {
         eprintln!(

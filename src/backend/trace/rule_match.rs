@@ -222,10 +222,9 @@ where
                     .map(trace_value_generic)
                     .unwrap_or(TraceValue::Empty),
             },
-            LiveOutcome::PathNavigateFailed { path, var } => RuleMatchOutcome::PathNavigateFailed {
-                path,
-                var,
-            },
+            LiveOutcome::PathNavigateFailed { path, var } => {
+                RuleMatchOutcome::PathNavigateFailed { path, var }
+            }
             LiveOutcome::EqualCheckFailed {
                 var,
                 first_value,
@@ -413,10 +412,9 @@ where
                     .unwrap_or(TraceValue::Empty),
             }
         }
-        DetailedFailure::PathNavigateFailed { path, var } => RuleMatchOutcome::PathNavigateFailed {
-            path,
-            var,
-        },
+        DetailedFailure::PathNavigateFailed { path, var } => {
+            RuleMatchOutcome::PathNavigateFailed { path, var }
+        }
         DetailedFailure::EqualCheckFailed {
             var,
             first_value,

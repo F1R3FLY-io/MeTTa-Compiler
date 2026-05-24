@@ -186,7 +186,10 @@ pub unsafe extern "C" fn jit_runtime_msort(_ctx: *mut JitContext, tuple: u64, _i
         ValueView::Unit => Vec::new(),
         _ => {
             // Non-list, non-Unit input — return an error sentinel.
-            let err = MettaValue::Error(metta_tuple, MettaValue::String("msort: argument must be an expression"));
+            let err = MettaValue::Error(
+                metta_tuple,
+                MettaValue::String("msort: argument must be an expression"),
+            );
             return metta_to_jit(&err).to_bits();
         }
     };
@@ -198,7 +201,10 @@ pub unsafe extern "C" fn jit_runtime_msort(_ctx: *mut JitContext, tuple: u64, _i
         } else if let Some(f) = e.as_float() {
             f
         } else {
-            let err = MettaValue::Error(e, MettaValue::String("msort: all elements must be numeric (Long or Float)"));
+            let err = MettaValue::Error(
+                e,
+                MettaValue::String("msort: all elements must be numeric (Long or Float)"),
+            );
             return metta_to_jit(&err).to_bits();
         };
         keyed.push((key, e));

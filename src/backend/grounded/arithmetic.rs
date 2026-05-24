@@ -722,12 +722,10 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for AbsOp {
                             if a.is_empty() {
                                 continue;
                             }
-                            return GroundedWork::Error(ExecError::IncorrectArgument(
-                                format!(
-                                    "abs requires Number argument, got {}",
-                                    a.friendly_type_name()
-                                ),
-                            ));
+                            return GroundedWork::Error(ExecError::IncorrectArgument(format!(
+                                "abs requires Number argument, got {}",
+                                a.friendly_type_name()
+                            )));
                         }
                     }
                 }

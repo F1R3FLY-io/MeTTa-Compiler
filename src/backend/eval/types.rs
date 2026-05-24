@@ -185,29 +185,18 @@ where
             //   `(PartitionedSpace <space> <ns>)` → `Space`
             // get-type recognises these tags so T08/122, T08/133 etc.
             // produce the expected parametric / nominal type atoms.
-            else if items.first().and_then(|v| v.as_atom())
-                == Some("ThreadHandle")
+            else if items.first().and_then(|v| v.as_atom()) == Some("ThreadHandle")
                 && items.len() == 2
             {
                 let body_type = infer_type_generic(&items[1], factory, env);
                 vec![factory.sexpr(vec![factory.atom("ThreadHandle"), body_type])]
-            }
-            else if items.first().and_then(|v| v.as_atom())
-                == Some("DistributedSpace")
-            {
+            } else if items.first().and_then(|v| v.as_atom()) == Some("DistributedSpace") {
                 vec![factory.atom("DistributedSpace")]
-            }
-            else if items.first().and_then(|v| v.as_atom())
-                == Some("SpaceSnapshot")
-            {
+            } else if items.first().and_then(|v| v.as_atom()) == Some("SpaceSnapshot") {
                 vec![factory.atom("Space")]
-            }
-            else if items.first().and_then(|v| v.as_atom())
-                == Some("PartitionedSpace")
-            {
+            } else if items.first().and_then(|v| v.as_atom()) == Some("PartitionedSpace") {
                 vec![factory.atom("Space")]
-            }
-            else if let Some(op) = items.first().and_then(|v| v.as_atom()) {
+            } else if let Some(op) = items.first().and_then(|v| v.as_atom()) {
                 // Phase 10.6: Control-flow tracing first (let, let*, if, if-reducible, case)
                 if let Some((types, source)) =
                     infer_types_control_flow(op, items, factory, env, seen)
@@ -229,7 +218,8 @@ where
                 // (`+`, `==`, etc.) have NO `OverridableOpId` so the static
                 // signature still wins for them.
                 else if env.may_have_type(op)
-                    && crate::backend::environment::dispatch_overrides::overridable_op_id(op).is_some()
+                    && crate::backend::environment::dispatch_overrides::overridable_op_id(op)
+                        .is_some()
                     && env.get_types_generic(op).iter().any(|t| {
                         t.as_sexpr()
                             .and_then(|items| items.first().and_then(|v| v.as_atom()))
@@ -1836,7 +1826,8 @@ where
     if items.len() != 2 {
         return vec![factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items.to_vec()),)];
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
     let expr = &items[1];
@@ -1869,7 +1860,8 @@ where
     if items.len() != 2 {
         return vec![factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items.to_vec()),)];
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
     let expr = &items[1];
@@ -1929,7 +1921,8 @@ where
     if items.len() != 3 {
         return vec![factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items.to_vec()),)];
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
     let expr = &items[1];
@@ -2036,63 +2029,62 @@ where
     // typing or are syntactic forms (no `(-> ...)` declaration to check).
     if matches!(
         head_name,
-        "="
-        | "!"
-        | ":"
-        | ":<"
-        | "->"
-        | "quote"
-        | "unquote"
-        | "match"
-        | "if"
-        | "if-reducible"
-        | "if-equal"
-        | "let"
-        | "let*"
-        | "case"
-        | "switch"
-        | "chain"
-        | "function"
-        | "return"
-        | "eval"
-        | "evalc"
-        | "metta"
-        | "lambda"
-        | "lambda-form"
-        | "pragma!"
-        | "bind!"
-        | "import!"
-        | "include!"
-        | "load-ascii!"
-        | "new-space"
-        | "add-atom"
-        | "remove-atom"
-        | "add-reduct"
-        | "add-reducts"
-        | "add-atoms"
-        | "collapse"
-        | "collapse-bind"
-        | "superpose"
-        | "superpose-bind"
-        | "get-type"
-        | "get-type-space"
-        | "get-metatype"
-        | "infer-type"
-        | "check-type"
-        | "type-cast"
-        | "is-function"
-        | "validate-atom"
-        | "trace!"
-        | "println!"
-        | "print!"
-        | "format-args"
-        | "format-message"
-        | "context-space"
-        | "noreduce-error"
-        | "nop"
-        | "and"
-        | "or"
-        | "not"
+        "=" | "!"
+            | ":"
+            | ":<"
+            | "->"
+            | "quote"
+            | "unquote"
+            | "match"
+            | "if"
+            | "if-reducible"
+            | "if-equal"
+            | "let"
+            | "let*"
+            | "case"
+            | "switch"
+            | "chain"
+            | "function"
+            | "return"
+            | "eval"
+            | "evalc"
+            | "metta"
+            | "lambda"
+            | "lambda-form"
+            | "pragma!"
+            | "bind!"
+            | "import!"
+            | "include!"
+            | "load-ascii!"
+            | "new-space"
+            | "add-atom"
+            | "remove-atom"
+            | "add-reduct"
+            | "add-reducts"
+            | "add-atoms"
+            | "collapse"
+            | "collapse-bind"
+            | "superpose"
+            | "superpose-bind"
+            | "get-type"
+            | "get-type-space"
+            | "get-metatype"
+            | "infer-type"
+            | "check-type"
+            | "type-cast"
+            | "is-function"
+            | "validate-atom"
+            | "trace!"
+            | "println!"
+            | "print!"
+            | "format-args"
+            | "format-message"
+            | "context-space"
+            | "noreduce-error"
+            | "nop"
+            | "and"
+            | "or"
+            | "not"
     ) {
         return None;
     }
@@ -2107,9 +2099,7 @@ where
     // Edge case: a user explicitly overriding a grounded-op type via
     // `(: + (-> Number String))` — `may_have_type` returns true, falling
     // through to the check. HE-bisim parity preserved.
-    if crate::backend::grounded::has_grounded_op(head_name)
-        && !env.may_have_type(head_name)
-    {
+    if crate::backend::grounded::has_grounded_op(head_name) && !env.may_have_type(head_name) {
         return None;
     }
 
@@ -2126,9 +2116,7 @@ where
     // finds; multiple arrows would be ambiguous so we conservatively skip.
     let arrow_items = head_types.iter().find_map(|t| {
         let sexpr_items = t.as_sexpr()?;
-        if sexpr_items.first().and_then(|v| v.as_atom()) == Some("->")
-            && sexpr_items.len() >= 2
-        {
+        if sexpr_items.first().and_then(|v| v.as_atom()) == Some("->") && sexpr_items.len() >= 2 {
             Some(sexpr_items)
         } else {
             None
@@ -2259,7 +2247,8 @@ where
     if items.len() != 2 {
         return vec![factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items.to_vec()),)];
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
     let expr = &items[1];
@@ -2291,7 +2280,8 @@ where
     if items.len() != 3 {
         return vec![factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items.to_vec()),)];
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
     let space_arg = &items[1];
@@ -2320,7 +2310,8 @@ where
     let resolved_space: V = if space_arg.as_space().is_some() {
         space_arg.clone()
     } else if let Some(space_token) = space_arg.as_atom() {
-        env.get_binding(space_token).unwrap_or_else(|| space_arg.clone())
+        env.get_binding(space_token)
+            .unwrap_or_else(|| space_arg.clone())
     } else {
         space_arg.clone()
     };
@@ -2413,7 +2404,8 @@ where
     if items.len() != 4 {
         return vec![factory.error(
             factory.atom("IncorrectNumberOfArguments"),
-            factory.sexpr(items.to_vec()),)];
+            factory.sexpr(items.to_vec()),
+        )];
     }
 
     let atom = &items[1];

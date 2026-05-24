@@ -371,7 +371,7 @@ where
                 factory.atom(expected_name),
                 factory.atom(actual_type),
             ]);
-            return Some(factory.error( bad_arg_type,call_form));
+            return Some(factory.error(bad_arg_type, call_form));
         }
     }
     None

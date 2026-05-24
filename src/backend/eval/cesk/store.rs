@@ -165,8 +165,7 @@ pub trait Store<V: MettaValueTrait>: Debug + Send + Sync {
     /// arg becomes the offending expression in slot 1.
     #[inline]
     fn alloc_error(&self, msg: &str, details: V, _hint: AllocHint) -> V {
-        self.factory()
-            .error(details, self.factory().string(msg))
+        self.factory().error(details, self.factory().string(msg))
     }
 
     /// Allocate a unit value.

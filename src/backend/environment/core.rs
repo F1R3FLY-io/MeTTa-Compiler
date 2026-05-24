@@ -68,10 +68,12 @@ where
         let mut new_items = Vec::with_capacity(items.len());
         for child in items.iter() {
             let new_child = deep_unwrap_lazy(child, factory);
-            if !any_changed && !std::ptr::eq(
-                child as *const _ as *const (),
-                &new_child as *const _ as *const (),
-            ) {
+            if !any_changed
+                && !std::ptr::eq(
+                    child as *const _ as *const (),
+                    &new_child as *const _ as *const (),
+                )
+            {
                 any_changed = true;
             }
             new_items.push(new_child);
@@ -431,7 +433,6 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// `pragma!` arm makes a `make_owned()` clone implicitly when it writes;
     /// reads are lock-free `Acquire` loads on the inner atomic.
     pub(crate) pragma_settings: Arc<RwLock<PragmaSettings>>,
-
     // Plan Phase F (2026-05-20): the `corelib_mod` field has been removed.
     // MeTTaTron's corelib is now entirely native Rust:
     //   - Built-in helpers (if-decons-expr, if-error, return-on-error,
@@ -610,7 +611,6 @@ where
             dispatch_overrides: Arc::new(super::dispatch_overrides::DispatchOverrides::default()),
             // Pragma settings start at defaults (type_check_mode = Permissive)
             pragma_settings: Arc::new(RwLock::new(PragmaSettings::default())),
-
             // Corelib chain: attach if the global corelib is already loaded.
             // Returns None when:
             //   (a) we're inside `corelib::load_corelib()` on this thread
@@ -1843,8 +1843,7 @@ where
             // batch merges. If any contributing env was in interpret mode,
             // the merged env stays in interpret mode (matches the binary
             // union semantics).
-            interpret_mode: self.interpret_mode
-                || others.iter().any(|e| e.interpret_mode),
+            interpret_mode: self.interpret_mode || others.iter().any(|e| e.interpret_mode),
             // S2 BANG-WORD (2026-05-13): same merge for bang_body.
             bang_body: self.bang_body || others.iter().any(|e| e.bang_body),
         }
@@ -1942,7 +1941,11 @@ where
 
     /// Has the user explicitly set this pragma key via the write form?
     pub fn pragma_user_set(&self, key: &str) -> bool {
-        self.shared.pragma_settings.read().user_set_keys.contains(key)
+        self.shared
+            .pragma_settings
+            .read()
+            .user_set_keys
+            .contains(key)
     }
 
     /// Store an arbitrary pragma key/value pair (no semantic effect, HE-bisim).

@@ -214,7 +214,7 @@ fn test_trace_value_generic_matches_concrete() {
         factory.string("world"),
         factory.unit(),
         factory.sexpr(vec![factory.atom("+"), factory.long(1), factory.long(2)]),
-        factory.error( factory.unit(),"oops"),
+        factory.error(factory.unit(), "oops"),
     ];
 
     for val in &test_cases {

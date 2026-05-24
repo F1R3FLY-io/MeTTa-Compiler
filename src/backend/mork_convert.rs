@@ -537,17 +537,20 @@ fn write_metta_value_inner(
             ));
         }
         match iw {
-            IterWork::FinalizeFragment { start_loc, key, key_ptr } => {
+            IterWork::FinalizeFragment {
+                start_loc,
+                key,
+                key_ptr,
+            } => {
                 let end_loc = ez.loc;
                 let frag_len = end_loc - start_loc;
                 if frag_len > 0 && frag_len <= 256 {
                     let alloc_epoch = global_allocator()
                         .get_slot_epoch(key_ptr as *const u8)
                         .unwrap_or(0);
-                    let frag = unsafe {
-                        std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
-                    }
-                    .to_vec();
+                    let frag =
+                        unsafe { std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len) }
+                            .to_vec();
                     ground_cache.insert(
                         key,
                         GroundCacheEntry {
@@ -593,13 +596,17 @@ fn write_metta_value_inner(
                     }
                     // Cache miss: schedule serialization, then finalize fragment.
                     let start_loc = ez.loc;
-                    work.push(IterWork::FinalizeFragment { start_loc, key, key_ptr });
+                    work.push(IterWork::FinalizeFragment {
+                        start_loc,
+                        key,
+                        key_ptr,
+                    });
                     work.push(IterWork::Process(
-                        child_value.inner_ref() as *const MettaValueInner,
+                        child_value.inner_ref() as *const MettaValueInner
                     ));
                 } else {
                     work.push(IterWork::Process(
-                        child_value.inner_ref() as *const MettaValueInner,
+                        child_value.inner_ref() as *const MettaValueInner
                     ));
                 }
                 continue;
@@ -686,23 +693,21 @@ fn write_metta_value_inner(
                         // Push detail first so offending is processed first
                         // (LIFO pop order).
                         work.push(IterWork::Process(
-                            detail.inner_ref() as *const MettaValueInner,
+                            detail.inner_ref() as *const MettaValueInner
                         ));
                         work.push(IterWork::Process(
-                            offending.inner_ref() as *const MettaValueInner,
+                            offending.inner_ref() as *const MettaValueInner
                         ));
                     }
                     MettaValueInner::Type(t) => {
-                        work.push(IterWork::Process(
-                            t.inner_ref() as *const MettaValueInner,
-                        ));
+                        work.push(IterWork::Process(t.inner_ref() as *const MettaValueInner));
                     }
                     MettaValueInner::Quoted(qinner) => {
                         ez.write_arity(2);
                         ez.loc += 1;
                         write_symbol(b"quote", pdp, ez, symbol_cache)?;
                         work.push(IterWork::Process(
-                            qinner.inner_ref() as *const MettaValueInner,
+                            qinner.inner_ref() as *const MettaValueInner
                         ));
                     }
                     MettaValueInner::Conjunction(goals) => {
@@ -756,18 +761,14 @@ fn write_metta_value_inner(
                         write_symbol(b"NotReducible", pdp, ez, symbol_cache)?;
                     }
                     MettaValueInner::Spanned(v, _) => {
-                        work.push(IterWork::Process(
-                            v.inner_ref() as *const MettaValueInner,
-                        ));
+                        work.push(IterWork::Process(v.inner_ref() as *const MettaValueInner));
                     }
                     MettaValueInner::Lazy(v) => {
                         // PT-canonical Lazy is INVISIBLE for MORK conversion
                         // (2026-05-21): mirror Spanned and pass through the
                         // inner value transparently. The Lazy wrapper has no
                         // MORK representation — it's a runtime-only marker.
-                        work.push(IterWork::Process(
-                            v.inner_ref() as *const MettaValueInner,
-                        ));
+                        work.push(IterWork::Process(v.inner_ref() as *const MettaValueInner));
                     }
                 }
             }
@@ -775,7 +776,6 @@ fn write_metta_value_inner(
     }
     Ok(())
 }
-
 
 /// Iteratively write MettaValueInner to ExprZipper using De Bruijn encoding for variables.
 ///
@@ -810,17 +810,20 @@ fn write_metta_value_debruijn_inner(
             ));
         }
         match iw {
-            DebruijnIterWork::FinalizeFragment { start_loc, key, key_ptr } => {
+            DebruijnIterWork::FinalizeFragment {
+                start_loc,
+                key,
+                key_ptr,
+            } => {
                 let end_loc = ez.loc;
                 let frag_len = end_loc - start_loc;
                 if frag_len > 0 && frag_len <= 256 {
                     let alloc_epoch = global_allocator()
                         .get_slot_epoch(key_ptr as *const u8)
                         .unwrap_or(0);
-                    let frag = unsafe {
-                        std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len)
-                    }
-                    .to_vec();
+                    let frag =
+                        unsafe { std::slice::from_raw_parts(ez.root.ptr.add(start_loc), frag_len) }
+                            .to_vec();
                     ground_cache.insert(
                         key,
                         GroundCacheEntry {
@@ -865,13 +868,17 @@ fn write_metta_value_debruijn_inner(
                         }
                     }
                     let start_loc = ez.loc;
-                    work.push(DebruijnIterWork::FinalizeFragment { start_loc, key, key_ptr });
+                    work.push(DebruijnIterWork::FinalizeFragment {
+                        start_loc,
+                        key,
+                        key_ptr,
+                    });
                     work.push(DebruijnIterWork::Process(
-                        child_value.inner_ref() as *const MettaValueInner,
+                        child_value.inner_ref() as *const MettaValueInner
                     ));
                 } else {
                     work.push(DebruijnIterWork::Process(
-                        child_value.inner_ref() as *const MettaValueInner,
+                        child_value.inner_ref() as *const MettaValueInner
                     ));
                 }
                 continue;
@@ -1392,10 +1399,7 @@ mod tests {
         // HE-bisimilar Error(offending, detail): offending is the (details here)
         // sexpr, detail is the message string.
         let error = MettaValue::Error(
-            MettaValue::SExpr(vec![
-                MettaValue::Atom("details"),
-                MettaValue::Atom("here"),
-            ]),
+            MettaValue::SExpr(vec![MettaValue::Atom("details"), MettaValue::Atom("here")]),
             MettaValue::String("test error"),
         );
 

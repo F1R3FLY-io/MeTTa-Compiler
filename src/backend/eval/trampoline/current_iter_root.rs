@@ -60,7 +60,9 @@ pub struct CurrentIterRootProvider {
 
 impl CurrentIterRootProvider {
     pub fn new() -> Self {
-        Self { tagged: AtomicUsize::new(0) }
+        Self {
+            tagged: AtomicUsize::new(0),
+        }
     }
 
     /// Store the current MettaValue. Cheap: one atomic store.
@@ -99,7 +101,10 @@ impl RootProvider for CurrentIterRootProvider {
 impl std::fmt::Debug for CurrentIterRootProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CurrentIterRootProvider")
-            .field("tagged", &format_args!("0x{:x}", self.tagged.load(Ordering::Relaxed)))
+            .field(
+                "tagged",
+                &format_args!("0x{:x}", self.tagged.load(Ordering::Relaxed)),
+            )
             .finish()
     }
 }
@@ -120,9 +125,7 @@ fn get_or_init() -> Arc<CurrentIterRootProvider> {
     CURRENT_ITER_CELL.with(|cell| {
         cell.get_or_init(|| {
             let provider = Arc::new(CurrentIterRootProvider::new());
-            register_root_provider(
-                &(Arc::clone(&provider) as Arc<dyn RootProvider>),
-            );
+            register_root_provider(&(Arc::clone(&provider) as Arc<dyn RootProvider>));
             provider
         })
         .clone()

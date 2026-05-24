@@ -672,11 +672,7 @@ impl EnhancedMatcher {
                     let name = BindingName::from(atom);
                     seen_vars.push((name.clone(), slot));
                     *slot_count += 1;
-                    slot_ops.push(SlotOp::Bind {
-                        path,
-                        slot,
-                        name,
-                    });
+                    slot_ops.push(SlotOp::Bind { path, slot, name });
                 }
                 return true;
             }

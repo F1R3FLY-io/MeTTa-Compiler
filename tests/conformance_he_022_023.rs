@@ -18,8 +18,13 @@ fn eval_t0(source: &str) -> Vec<MettaValue> {
     let mut all: Vec<MettaValue> = Vec::new();
     let exprs: Vec<MettaValue> = state.source().iter().copied().collect();
     for expr in exprs {
-        let outcome =
-            eval_with_tier(expr, env, &state, TierSelection::Treewalker, FallbackPolicy::SilentDemote);
+        let outcome = eval_with_tier(
+            expr,
+            env,
+            &state,
+            TierSelection::Treewalker,
+            FallbackPolicy::SilentDemote,
+        );
         let (results, new_env) = match outcome {
             TierEvalOutcome::Ok { results, env, .. } => (results, env),
             TierEvalOutcome::Demoted { results, env, .. } => (results, env),

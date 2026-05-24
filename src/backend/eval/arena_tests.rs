@@ -253,7 +253,11 @@ mod tests {
         &["(quote ((+ 1 2) (* 3 4)))"]
     );
     // Phase 3.1 PT-canonical: `(eval (quote X))` unwraps to X.
-    eval_test!(eval_nested_quote, "!(eval (quote (+ 1 (+ 2 3))))", &["(+ 1 (+ 2 3))"]);
+    eval_test!(
+        eval_nested_quote,
+        "!(eval (quote (+ 1 (+ 2 3))))",
+        &["(+ 1 (+ 2 3))"]
+    );
 
     // unquote: unwraps Quoted variant without evaluating the inner expression
     eval_test!(unquote_quoted, "!(unquote (quote (+ 1 2)))", &["(+ 1 2)"]);

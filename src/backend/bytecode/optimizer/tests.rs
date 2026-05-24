@@ -341,9 +341,17 @@ mod tests {
     #[test]
     fn test_peephole_does_not_scan_fork_inline_target_table() {
         let code = make_code(&[
-            Opcode::ForkInline.to_byte(), 0, 2, 0, 7, 0, 9,
-            Opcode::PushLongSmall.to_byte(), 1,
-            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::ForkInline.to_byte(),
+            0,
+            2,
+            0,
+            7,
+            0,
+            9,
+            Opcode::PushLongSmall.to_byte(),
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            2,
             Opcode::Return.to_byte(),
         ]);
 
@@ -358,9 +366,17 @@ mod tests {
     fn test_peephole_remaps_fork_inline_targets_after_prior_removal() {
         let code = make_code(&[
             Opcode::Nop.to_byte(),
-            Opcode::ForkInline.to_byte(), 0, 2, 0, 8, 0, 10,
-            Opcode::PushLongSmall.to_byte(), 1,
-            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::ForkInline.to_byte(),
+            0,
+            2,
+            0,
+            8,
+            0,
+            10,
+            Opcode::PushLongSmall.to_byte(),
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            2,
             Opcode::Return.to_byte(),
         ]);
 
@@ -374,11 +390,19 @@ mod tests {
     #[test]
     fn test_peephole_remaps_fork_inline_targets_after_branch_removal() {
         let code = make_code(&[
-            Opcode::ForkInline.to_byte(), 0, 2, 0, 7, 0, 11,
+            Opcode::ForkInline.to_byte(),
+            0,
+            2,
+            0,
+            7,
+            0,
+            11,
             Opcode::PushTrue.to_byte(),
             Opcode::Pop.to_byte(),
-            Opcode::PushLongSmall.to_byte(), 1,
-            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::PushLongSmall.to_byte(),
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            2,
             Opcode::Return.to_byte(),
         ]);
 
@@ -717,10 +741,18 @@ mod tests {
     #[test]
     fn test_dce_keeps_fork_inline_branch_targets_reachable() {
         let code = make_code(&[
-            Opcode::ForkInline.to_byte(), 0, 2, 0, 7, 0, 10,
-            Opcode::PushLongSmall.to_byte(), 1,
+            Opcode::ForkInline.to_byte(),
+            0,
+            2,
+            0,
+            7,
+            0,
+            10,
+            Opcode::PushLongSmall.to_byte(),
+            1,
             Opcode::Return.to_byte(),
-            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::PushLongSmall.to_byte(),
+            2,
             Opcode::Return.to_byte(),
         ]);
 
@@ -733,13 +765,23 @@ mod tests {
     #[test]
     fn test_dce_remaps_fork_inline_targets_after_prior_dead_code() {
         let code = make_code(&[
-            Opcode::Jump.to_byte(), 0, 3,
+            Opcode::Jump.to_byte(),
+            0,
+            3,
             Opcode::PushTrue.to_byte(),
             Opcode::Pop.to_byte(),
             Opcode::Nop.to_byte(),
-            Opcode::ForkInline.to_byte(), 0, 2, 0, 13, 0, 15,
-            Opcode::PushLongSmall.to_byte(), 1,
-            Opcode::PushLongSmall.to_byte(), 2,
+            Opcode::ForkInline.to_byte(),
+            0,
+            2,
+            0,
+            13,
+            0,
+            15,
+            Opcode::PushLongSmall.to_byte(),
+            1,
+            Opcode::PushLongSmall.to_byte(),
+            2,
             Opcode::Return.to_byte(),
         ]);
 

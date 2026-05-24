@@ -1289,7 +1289,11 @@ fn test_vm_space_match_opcode() {
     // S5 (ATOMS-AS-DATA un-wrap): match now returns bare nondet results
     // (not a tuple wrap). Two facts match (fact 1) and (fact 2), so the
     // VM accumulates two top-level results via choice-point fan-out.
-    assert_eq!(results.len(), 2, "Expected 2 bare nondet results from match");
+    assert_eq!(
+        results.len(),
+        2,
+        "Expected 2 bare nondet results from match"
+    );
     // Both results should be the matched atoms (template = $x, so substituting
     // the binding from each match yields the atom itself).
     // Order is choice-point insertion order: first match first.
@@ -3991,7 +3995,10 @@ fn test_vm_lt_mixed_types() {
         result.is_err_or_error_atom()
             || result
                 .as_ref()
-                .map(|r| r.first().map(|v| matches!(v.inner(), MettaValueInner::Bool(false))).unwrap_or(true))
+                .map(|r| r
+                    .first()
+                    .map(|v| matches!(v.inner(), MettaValueInner::Bool(false)))
+                    .unwrap_or(true))
                 .unwrap_or(false)
     );
 }
@@ -4274,7 +4281,8 @@ fn test_vm_pow_negative_exponent() {
                 v.is_error()
                     || matches!(v.inner(), MettaValueInner::Long(0))
                     || matches!(v.inner(), MettaValueInner::Float(f) if (*f - 0.5).abs() < f64::EPSILON),
-                "Unexpected pow(-1) result: {:?}", v.view()
+                "Unexpected pow(-1) result: {:?}",
+                v.view()
             );
         }
         Err(_) => {} // Error is also acceptable

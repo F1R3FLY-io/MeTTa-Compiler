@@ -140,7 +140,8 @@ where
                 "unique-atom requires exactly 1 argument, got {}. Usage: (unique-atom list)",
                 arg_count
             )),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -149,7 +150,8 @@ where
         Err(()) => {
             let err = ctx.factory().error(
                 ctx.factory().string("unique-atom: argument must be a list"),
-                items[1].clone(),);
+                items[1].clone(),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -206,7 +208,8 @@ where
                  Usage: (struct-unique-atom list)",
                 arg_count
             )),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -214,8 +217,10 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                ctx.factory().string("struct-unique-atom: argument must be a list"),
-                items[1].clone(),);
+                ctx.factory()
+                    .string("struct-unique-atom: argument must be a list"),
+                items[1].clone(),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -278,7 +283,8 @@ where
                  Usage: (alpha-unique-atom list)",
                 arg_count
             )),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -286,8 +292,10 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                ctx.factory().string("alpha-unique-atom: argument must be a list"),
-                items[1].clone(),);
+                ctx.factory()
+                    .string("alpha-unique-atom: argument must be a list"),
+                items[1].clone(),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -322,7 +330,8 @@ where
         let arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -330,8 +339,10 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                ctx.factory().string("union-atom: left argument must be a list"),
-                items[1].clone(),);
+                ctx.factory()
+                    .string("union-atom: left argument must be a list"),
+                items[1].clone(),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -340,8 +351,10 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                ctx.factory().string("union-atom: right argument must be a list"),
-                items[2].clone(),);
+                ctx.factory()
+                    .string("union-atom: right argument must be a list"),
+                items[2].clone(),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -371,7 +384,8 @@ where
         let arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -379,8 +393,10 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                ctx.factory().string("intersection-atom: left argument must be a list"),
-                items[1].clone(),);
+                ctx.factory()
+                    .string("intersection-atom: left argument must be a list"),
+                items[1].clone(),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -389,8 +405,10 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                ctx.factory().string("intersection-atom: right argument must be a list"),
-                items[2].clone(),);
+                ctx.factory()
+                    .string("intersection-atom: right argument must be a list"),
+                items[2].clone(),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -451,7 +469,8 @@ where
         let arg_count = items.len() - 1;
         let err = ctx.factory().error(
             ctx.factory().atom("IncorrectNumberOfArguments"),
-            ctx.factory().sexpr(items),);
+            ctx.factory().sexpr(items),
+        );
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
@@ -459,8 +478,10 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                ctx.factory().string("subtraction-atom: left argument must be a list"),
-                items[1].clone(),);
+                ctx.factory()
+                    .string("subtraction-atom: left argument must be a list"),
+                items[1].clone(),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };
@@ -469,8 +490,10 @@ where
         Ok(elems) => elems,
         Err(()) => {
             let err = ctx.factory().error(
-                ctx.factory().string("subtraction-atom: right argument must be a list"),
-                items[2].clone(),);
+                ctx.factory()
+                    .string("subtraction-atom: right argument must be a list"),
+                items[2].clone(),
+            );
             return GenericEvalStep::Done((smallvec![err], env));
         }
     };

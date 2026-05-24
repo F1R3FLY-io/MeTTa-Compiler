@@ -244,7 +244,10 @@ impl<'s> EvalContext for SessionContext<'s> {
         env: &MettaEnvironment,
         compilation_hash: u64,
     ) -> Option<(
-        Vec<(MettaValue, crate::backend::models::GenericBindings<MettaValue>)>,
+        Vec<(
+            MettaValue,
+            crate::backend::models::GenericBindings<MettaValue>,
+        )>,
         MettaEnvironment,
     )> {
         crate::backend::bytecode::tiered_cache::try_sub_expr_dispatch_with_hash_bindings(

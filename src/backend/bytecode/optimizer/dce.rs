@@ -409,8 +409,7 @@ impl DeadCodeEliminator {
                             i16::from_be_bytes([code[offset + 1], code[offset + 2]]);
 
                         // Find original position of this instruction
-                        let old_instr_pos =
-                            self.old_offset_for_new(offset, instruction_offset_map);
+                        let old_instr_pos = self.old_offset_for_new(offset, instruction_offset_map);
                         let old_jump_from = old_instr_pos + 3;
                         let old_target =
                             (old_jump_from as isize + old_jump_offset as isize) as usize;
@@ -436,8 +435,7 @@ impl DeadCodeEliminator {
                     if offset + 1 < code.len() {
                         let old_jump_offset = code[offset + 1] as i8;
 
-                        let old_instr_pos =
-                            self.old_offset_for_new(offset, instruction_offset_map);
+                        let old_instr_pos = self.old_offset_for_new(offset, instruction_offset_map);
                         let old_jump_from = old_instr_pos + 2;
                         let old_target =
                             (old_jump_from as isize + old_jump_offset as isize) as usize;

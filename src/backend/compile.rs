@@ -81,10 +81,9 @@ where
             // body end. If either side lacks a span (degenerate factory
             // construction), fall back to no span on the wrapper.
             let wrapped = match (bang_span, body_span) {
-                (Some(bs), Some(es)) => factory.spanned(
-                    wrapped_inner,
-                    crate::ir::Span::new(bs.start, es.end),
-                ),
+                (Some(bs), Some(es)) => {
+                    factory.spanned(wrapped_inner, crate::ir::Span::new(bs.start, es.end))
+                }
                 _ => wrapped_inner,
             };
             out.push(wrapped);

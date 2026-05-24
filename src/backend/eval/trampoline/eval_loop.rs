@@ -3478,6 +3478,20 @@ fn eval_trampoline_inner<C: EvalContext>(
                         let h = value.hash_value();
                         if let Some(cached_results) = eval_memo_get(h) {
                             // Cache hit — skip evaluation entirely.
+                            //
+                            // 2026-05-23 binding-thread fix: attach the FULL
+                            // `carrying_bindings` to each cached result, mirroring
+                            // the `WorkItem::Eval` Done arm (`:3860`). The prior
+                            // code projected `carrying_bindings` onto each result
+                            // VALUE's free variables, which silently dropped
+                            // fold-propagated caller-scope bindings (e.g. `$b=y`)
+                            // whenever the cached result is ground — producing
+                            // spurious duplicate fold branches (the foldl-atom
+                            // conjunction dedup bug). A memo hit must be
+                            // observationally identical to a fresh evaluation, and
+                            // a fresh eval's Done arm does NOT project — by design,
+                            // projection is deferred to the observation point in
+                            // `ProcessCollapseEvalResults` (see `:7538`).
                             let cb = &*carrying_bindings;
                             work_stack.push(WorkItem::Resume {
                                 result: (
@@ -3486,22 +3500,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     } else {
                                         cached_results
                                             .into_iter()
-                                            .filter_map(|v| {
-                                                let tracked = active_tracked_vars();
-                                                project_carrying_for_consumer(
-                                                    &carrying_bindings,
-                                                    &v,
-                                                    tracked.as_deref(),
-                                                    ctx.factory(),
-                                                )
-                                                .map(|projected| {
-                                                    if projected.is_empty() {
-                                                        bv(v)
-                                                    } else {
-                                                        bv_with(v, (*projected).clone())
-                                                    }
-                                                })
-                                            })
+                                            .map(|v| bv_with(v, cb.clone()))
                                             .collect()
                                     },
                                     env,

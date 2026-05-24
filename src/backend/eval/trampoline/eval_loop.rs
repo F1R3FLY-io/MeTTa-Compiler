@@ -3397,25 +3397,28 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // within the same branch (or pre-fork visible to
                             // all branches), so tagging with the retrieving
                             // branch's carrying_bindings is HE-bisimilar.
-                            let resumed: smallvec::SmallVec<[BoundValue; 2]> = cached
-                                .into_iter()
-                                .filter_map(|v| {
-                                    let tracked = active_tracked_vars();
-                                    project_carrying_for_consumer(
-                                        &carrying_bindings,
-                                        &v,
-                                        tracked.as_deref(),
-                                        ctx.factory(),
-                                    )
-                                    .map(|projected| {
-                                        if projected.is_empty() {
-                                            bv(v)
-                                        } else {
-                                            bv_with(v, (*projected).clone())
-                                        }
-                                    })
-                                })
-                                .collect();
+                            // 2026-05-23 binding-thread fix — sibling of the
+                            // eval-memo cache-hit fix (commit 73c0653, the
+                            // `eval_memo_get` branch below). Attach the FULL
+                            // `carrying_bindings` to each tabled result instead of
+                            // projecting it onto the result VALUE's free variables.
+                            // The projection dropped fold-propagated caller-scope
+                            // bindings (e.g. `$b=y`) whenever the tabled result is
+                            // ground, so a second subgoal invocation with the same
+                            // value-hash but different carrying lost its per-branch
+                            // binding — manufacturing spurious duplicate fold
+                            // derivations (PLN conjunction strength bug). The
+                            // comment above already deems tagging with the
+                            // retrieving branch's carrying HE-bisimilar; projection
+                            // is deferred to the observation point in
+                            // ProcessCollapseEvalResults, matching the Done arm.
+                            let cb = &*carrying_bindings;
+                            let resumed: smallvec::SmallVec<[BoundValue; 2]> = if cb.is_empty()
+                            {
+                                cached.into_iter().map(bv).collect()
+                            } else {
+                                cached.into_iter().map(|v| bv_with(v, cb.clone())).collect()
+                            };
                             work_stack.push(WorkItem::Resume {
                                 result: (resumed, env),
                             });
@@ -4494,15 +4497,46 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 ctx.factory(),
                             );
 
-                            work_stack.push(WorkItem::Eval {
-                                value: instantiated,
-                                env,
-                                depth: depth + 1,
-                                is_tail_call: false,
-                                expected_type: None,
-                                demand: None,
-                                carrying_bindings: carrying_bindings.clone(),
-                            });
+                            // Mirror the ProcessFoldlAtom single-match arm
+                            // (eval_loop.rs:~10028): when `carrying_bindings` is
+                            // non-empty — e.g. a shared fold variable threaded in
+                            // from an enclosing iteration or from a multi-branch
+                            // sub-fold's per-branch composed bindings — dispatch
+                            // via EvalWithBindings so those bindings are
+                            // SUBSTITUTED into `instantiated` before rule matching.
+                            //
+                            // Plain Eval carries them only as a side channel that
+                            // the deeper free-variable rule match ignores: the
+                            // re-instantiated premise (e.g. `(father $b c)`) keeps
+                            // `$b` free and re-binds it independently, matching
+                            // `(father b c)` and manufacturing a spurious duplicate
+                            // derivation. This is the value-equality-dependent
+                            // foldl-conjunction dup that surfaced as PLN-main
+                            // Direct.metta's strength 1.0 (should be 0.51). The
+                            // single-match arm already does this; the multi-branch
+                            // sub_foldl re-enters here, so making the first-element
+                            // dispatch binding-aware covers every fan-out branch.
+                            if carrying_bindings.is_empty() {
+                                work_stack.push(WorkItem::Eval {
+                                    value: instantiated,
+                                    env,
+                                    depth: depth + 1,
+                                    is_tail_call: false,
+                                    expected_type: None,
+                                    demand: None,
+                                    carrying_bindings: carrying_bindings.clone(),
+                                });
+                            } else {
+                                work_stack.push(WorkItem::EvalWithBindings {
+                                    template: instantiated,
+                                    bindings: carrying_bindings.clone(),
+                                    env,
+                                    depth: depth + 1,
+                                    is_tail_call: false,
+                                    expected_type: None,
+                                    carrying_bindings: carrying_bindings.clone(),
+                                });
+                            }
                         }
                     }
 
@@ -6409,25 +6443,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     if cb.is_empty() {
                                         cached.into_iter().map(bv).collect()
                                     } else {
-                                        cached
-                                            .into_iter()
-                                            .filter_map(|v| {
-                                                let tracked = active_tracked_vars();
-                                                project_carrying_for_consumer(
-                                                    &carrying_bindings,
-                                                    &v,
-                                                    tracked.as_deref(),
-                                                    ctx.factory(),
-                                                )
-                                                .map(|projected| {
-                                                    if projected.is_empty() {
-                                                        bv(v)
-                                                    } else {
-                                                        bv_with(v, (*projected).clone())
-                                                    }
-                                                })
-                                            })
-                                            .collect()
+                                        // 2026-05-23 binding-thread fix — same as
+                                        // the subgoal-tabling and eval-memo
+                                        // cache-hit fixes: attach the FULL carrying
+                                        // rather than projecting onto the cached
+                                        // result value (which dropped ground
+                                        // results' fold-propagated bindings,
+                                        // spawning spurious duplicate derivations).
+                                        cached.into_iter().map(|v| bv_with(v, cb.clone())).collect()
                                     },
                                     env,
                                 ),

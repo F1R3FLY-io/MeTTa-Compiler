@@ -764,3 +764,55 @@ fn foldl_atom_threads_freshened_var_through_rule_match_compose() {
         combined
     );
 }
+
+// ============================================================================
+// Bug fix (2026-05-23): foldl multi-MATCH spurious-duplicate via cache-hit
+// carrying-projection + multi-branch dispatch mode.
+// ============================================================================
+//
+// The single-match foldl path threads a shared variable correctly (covered
+// by `foldl_atom_threads_freshened_var_through_rule_match_compose` above).
+// The MULTI-match path did not: when fold iteration 1 produced two matches
+// with IDENTICAL result values, the second branch lost its shared-variable
+// binding and re-bound it freely in iteration 2, matching spuriously and
+// yielding a DUPLICATE surviving branch. This is the foldl-conjunction shape
+// behind PLN-main Direct.metta's strength bug (`(grandfather a c)`).
+//
+// Root cause was a value-equality-dependent binding drop in THREE sibling
+// cache-hit paths that projected `carrying_bindings` onto the cached RESULT
+// VALUE (dropping ground results' fold-propagated bindings): the
+// subgoal-tabling hit (`eval_loop.rs` TableLookup::Hit), the thunk-table hit
+// (ThunkLookup::Evaluated), and — for the surviving branch's re-dispatch —
+// `StartFoldlAtom` using plain `Eval` instead of `EvalWithBindings`. The
+// eval-memo hit had the same bug (fixed earlier in commit 73c0653).
+//
+// Fix: cache-hits attach the FULL carrying (matching the `Eval` Done arm at
+// `eval_loop.rs:~3860`); `StartFoldlAtom` dispatches via `EvalWithBindings`
+// when carrying is non-empty so the threaded var is substituted into the
+// next premise. The `$b=y` branch then becomes `(father y c)`, has no rule,
+// and dies cleanly — leaving exactly ONE result.
+#[test]
+fn foldl_atom_multi_match_identical_values_no_spurious_dup() {
+    // Both `(father a $b)` rules return the IDENTICAL value `SAME`, so the
+    // two fold branches ($b=b, $b=y) carry the same value and differ only in
+    // their $b binding — the exact condition that triggered the drop.
+    let source = r#"
+        (= (father a b) SAME)
+        (= (father a y) SAME)
+        (= (father b c) BC)
+        (= (combine $acc $x) ($acc $x))
+        !(collapse (foldl-atom ((father a $b) (father $b c)) START combine))
+    "#;
+    let results = eval_last(source);
+    let combined = results.join(" ");
+    // Post-fix: collapse yields the single-element tuple `(((START SAME) BC))`.
+    // Pre-fix:  `(((START SAME) BC) ((START SAME) BC))` — spurious duplicate.
+    // Count `BC` occurrences: exactly 1 surviving branch (the $b=y branch
+    // dies at `(father y c)`); a duplicate would show 2.
+    let bc_count = combined.matches("BC").count();
+    assert_eq!(
+        bc_count, 1,
+        "expected exactly one surviving fold branch (no spurious duplicate), got: {}",
+        combined
+    );
+}

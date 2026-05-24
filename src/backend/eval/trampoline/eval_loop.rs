@@ -1483,10 +1483,21 @@ fn dispatch_rule_matches<C: EvalContext>(
         // next. This is the SEQUENTIAL-first-branch path — the ProcessRuleMatches
         // continuation has already been pushed, so emitting empty Resume
         // advances to the next branch via the continuation's iterator.
+        // 2026-05-23 PT-canonical binding-thread fix (per Explore agent
+        // RANK 2 diagnosis): drop the asymmetric `!in_collapse_bind_scope()`
+        // gate. Previously the FIRST branch of a multi-match dispatch at
+        // top-level (outer_carrying empty, !collapse-bind) got an EMPTY
+        // seq_carrying, while the rotated SECOND branch at line ~7672+
+        // unconditionally used `current_branch_bindings` (= raw_bindings).
+        // This asymmetry caused branch 0's body Eval to lose its match
+        // bindings (e.g. `$b=b` from `(father a $b)` enumeration), so
+        // ProcessFoldlAtom's iter 2 saw alt[0] with empty bindings and
+        // alt[1] with `$b=y` — preventing proper per-alt binding
+        // propagation across foldl iterations and producing spurious
+        // duplicate stv results in PLN-main `(? $term)` queries.
+        // Mirror line ~7647-7655's logic: compose unconditionally.
         let seq_carrying: crate::backend::models::GenericBindings<MettaValue> =
-            if outer_carrying.is_empty() && !in_collapse_bind_scope() {
-                crate::backend::models::GenericBindings::new()
-            } else if outer_carrying.is_empty() {
+            if outer_carrying.is_empty() {
                 bindings.clone()
             } else {
                 match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
@@ -8545,11 +8556,12 @@ fn process_continuation<C: EvalContext>(
                             if b.is_empty() {
                                 bv_with(v, oc.clone())
                             } else {
-                                let composed = crate::backend::eval::bindings::compose_outer_inner_generic(
-                                    oc,
-                                    &b,
-                                    ctx.factory(),
-                                );
+                                let composed =
+                                    crate::backend::eval::bindings::compose_outer_inner_generic(
+                                        oc,
+                                        &b,
+                                        ctx.factory(),
+                                    );
                                 bv_with(v, composed)
                             }
                         })

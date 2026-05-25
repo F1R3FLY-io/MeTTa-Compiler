@@ -32,6 +32,10 @@
 //! No conversions between value types are performed.
 
 mod arena_engine;
+// WAM trail-based binding store (docs/wam/trail-binding-model.md). Increment 1
+// is inert scaffolding — declared + unit-tested but not yet wired into eval;
+// later increments read/write it at the cache-hit / rule-match / fork sites.
+pub(crate) mod binding_store;
 mod context;
 pub(crate) mod current_iter_root;
 pub(crate) mod dispatch_hints;

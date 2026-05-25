@@ -3718,7 +3718,25 @@ where
                 .unwrap_or(false);
         if caller_visible && val.has_variables_fast() {
             for var in collect_variables_generic(val) {
+                // A caller-visible binding's value references a freshened
+                // (`$__fr_*`) variable that the projection did not retain.
+                //
+                // Only reject (None) when that freshened var is actually BOUND
+                // in the input bindings — i.e. it has a value we are dropping,
+                // so the retained binding would reference a now-dangling
+                // resolution (a genuine partial/incomplete projection).
+                //
+                // If the freshened var is UNBOUND, it is a free logic variable
+                // — e.g. a rule body's universally-quantified local (`$1` in
+                // `(= (kb) (… (Implication (Inheritance $1 …) …) …))`) that
+                // escaped its rule application as an open variable and must
+                // remain open for later unification (PLN ModusPonens binds it
+                // to `Edward`). Such a value is legitimately variable-bearing,
+                // exactly like one mentioning a user query var; dropping it
+                // here silently empties `(let $B (kb) … (superpose $B) …)` and
+                // every PLN.Query that ranges over a kb of quantified rules.
                 if var.starts_with("$__fr_")
+                    && resolved.get(var.as_str()).is_some()
                     && !projected
                         .iter_full()
                         .any(|(_, projected_name, _)| projected_name == var)
@@ -4570,8 +4588,21 @@ mod tests {
         assert!(projected.get("$__fr_head").is_none());
     }
 
+    /// A caller-visible binding whose value references an UNBOUND freshened
+    /// variable (`$__fr_missing` has no binding of its own) is KEPT, not
+    /// rejected. The freshened var is a free logic variable — e.g. a rule
+    /// body's universally-quantified local (`$1` in
+    /// `(= (kb) (… (Implication (Inheritance $1 …) …) …))`) that escaped its
+    /// rule application as an open variable and must stay open for later
+    /// unification (PLN ModusPonens binds it). Rejecting it (the prior
+    /// behavior) silently emptied `(let $B (kb) … (superpose $B) …)` and every
+    /// PLN.Query over a kb of quantified rules.
+    ///
+    /// The canary still rejects (`None`) when the referenced freshened var is
+    /// actually BOUND in the input but dropped by the projection — a genuine
+    /// dangling resolution, not a free variable.
     #[test]
-    fn test_project_bindings_for_consumer_rejects_dangling_visible_fresh_ref() {
+    fn test_project_bindings_for_consumer_keeps_unbound_visible_fresh_ref() {
         let factory = GcFactory::default();
         let mut bindings = GenericBindings::new();
         bindings.insert("$who", MettaValue::Atom("$__fr_missing".to_string()));
@@ -4582,9 +4613,14 @@ mod tests {
             &[&consumer],
             Some(&["$who"]),
             &factory,
-        );
+        )
+        .expect("unbound freshened ref is a free logic variable — keep, do not reject");
 
-        assert!(projected.is_none());
+        assert_eq!(
+            projected.get("$who"),
+            Some(&MettaValue::Atom("$__fr_missing".to_string())),
+            "the caller-visible binding to a free freshened var must be retained"
+        );
     }
 
     /// BUG-T0-007 regression: `collect_variables_generic` must include

@@ -4334,6 +4334,26 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                             matches.retain(|(_rhs, _bindings, rhs_type)| {
                                 let keep = match rhs_type {
+                                    // A meta-typed RHS (Expression/Atom/Symbol/
+                                    // Variable/Grounded) is an UNEVALUATED expression
+                                    // that may reduce to any concrete type, so it must
+                                    // NOT be pruned against a concrete expected type —
+                                    // treat it like an unknown (None) type. Without
+                                    // this, an `Expression`-typed RHS such as
+                                    // `(is-member $a (10))` — which reduces to a Bool —
+                                    // is wrongly pruned when an if-condition demands
+                                    // `Bool`, silently emptying the branch and breaking
+                                    // every rule-bodied if-condition (e.g. PLN.Query's
+                                    // `StampDisjoint` guards). Only a concrete,
+                                    // known-incompatible rhs_type may prune.
+                                    Some(rt)
+                                        if rt
+                                            .as_atom()
+                                            .map(crate::backend::eval::types::is_meta_type)
+                                            .unwrap_or(false) =>
+                                    {
+                                        true
+                                    }
                                     Some(rt) => types_match_generic(rt, expected),
                                     None => true, // Unknown type — don't prune (conservative)
                                 };

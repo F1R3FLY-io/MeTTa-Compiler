@@ -137,6 +137,15 @@ fn apply_bindings_inner(
         /// After processing 1 inner value, re-wrap as `(quote inner)`.
         /// HE-faithful: `(quote $x)` with `$x → foo` becomes `(quote foo)`.
         BuildQuoted { original: MettaValue },
+        /// After processing 1 inner value, re-wrap as `Lazy(inner)`.
+        /// Substitution descends INTO a Lazy (transparent to variable
+        /// substitution) and re-wraps (still inert / opaque to rule dispatch).
+        /// Mirrors the generic `apply_bindings_iterative_generic` BuildLazy arm
+        /// (commit 3fe1d2a) — needed here because the collapse-substitute /
+        /// rule-RHS path goes through THIS concrete `apply_bindings_inner`, not
+        /// the generic one. Without it, PLN's `?` macro `$term` (Expression-typed
+        /// → Lazy) kept its query variable unbound in the collapse key.
+        BuildLazy { original: MettaValue },
     }
 
     let mut work_stack: Vec<Work> = Vec::with_capacity(32);
@@ -261,6 +270,19 @@ fn apply_bindings_inner(
                     continue;
                 }
 
+                // Lazy: substitute INSIDE the Lazy body, then re-wrap. The
+                // re-wrapped value stays Lazy (opaque to rule dispatch — the
+                // eval-loop ValueView::Lazy short-circuit still fires), so e.g.
+                // a collapse key Lazy((grandfather $who c)) with $who=a available
+                // becomes Lazy((grandfather a c)) without re-reducing. (commit
+                // 3fe1d2a added the same to the generic substitution path.)
+                if let Some(inner) = v.as_lazy_ref() {
+                    let inner = *inner;
+                    work_stack.push(Work::BuildLazy { original: v });
+                    work_stack.push(Work::Process(inner));
+                    continue;
+                }
+
                 // Ground / unknown values: return as-is.
                 result_stack.push(v);
             }
@@ -335,6 +357,17 @@ fn apply_bindings_inner(
                     result_stack.push(original);
                 } else {
                     result_stack.push(factory.quote(new_inner));
+                }
+            }
+            Work::BuildLazy { original } => {
+                let new_inner = result_stack.pop().expect("BuildLazy needs inner");
+                let original_inner = original.as_lazy().expect("BuildLazy original must be Lazy");
+                if new_inner.identity_eq(&original_inner) {
+                    result_stack.push(original);
+                } else {
+                    // factory.lazy is idempotent — re-wrapping keeps a single
+                    // Lazy layer and preserves opacity to rule dispatch.
+                    result_stack.push(factory.lazy(new_inner));
                 }
             }
         }

@@ -1002,12 +1002,20 @@ pub enum Continuation {
         /// consumer's free variables via `project_carrying_for_consumer`
         /// before dispatch (the default, `true`).
         ///
-        /// Set to `false` only by the `foldl-atom` multi-branch fan-out
-        /// (`ProcessFoldlAtom`): there each alt's per-branch bindings are
-        /// fold-continuation SOLUTION bindings that must propagate to the
-        /// fold's OUTPUT even when they are not free variables of the
-        /// re-instantiated sub-foldl consumer (e.g. an outer query var
-        /// `$who` bound by premise 1 that no later premise references).
+        /// Set to `false` by the two fan-out sites that re-dispatch an alt's
+        /// own already-evaluated VALUE as the consumer (often a ground value
+        /// with no variables), rather than a template that mentions the
+        /// carried vars:
+        ///   1. the `foldl-atom` multi-branch fan-out (`ProcessFoldlAtom`),
+        ///   2. the `EvalEval` (reduce/progn/metta/capture) multi-result
+        ///      fan-out (`ProcessEvalEval`).
+        /// In both, each alt's per-branch bindings are SOLUTION bindings that
+        /// must propagate to the OUTPUT even when they are not free variables
+        /// of the re-dispatched consumer (e.g. an outer query var `$who` bound
+        /// by a premise / a multi-clause rule match that no later consumer
+        /// references). With projection on, `project_carrying_for_consumer`
+        /// returns an empty map for a ground consumer (its `live` set is
+        /// empty), dropping such a var.
         /// Projection would drop such a var, and because the first alt is
         /// dispatched WITHOUT projection (at the fan-out site) while the
         /// rest flow through here, the surviving binding's fate would

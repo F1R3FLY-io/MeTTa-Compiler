@@ -11809,8 +11809,21 @@ fn process_continuation<C: EvalContext>(
                     results: Vec::with_capacity(amb_capacity),
                     env: result_env.clone(),
                     depth,
+                    // Preserve each alt's FULL solution bindings (no projection):
+                    // EvalEval (reduce/progn/metta/capture) re-dispatches each
+                    // alt's already-evaluated VALUE as the consumer, which is
+                    // frequently ground. A user-level solution binding (e.g.
+                    // `$who=a` from a multi-clause rule match inside `reduce`)
+                    // that the value does not mention would be projected away
+                    // for the 2nd+ alt (project_carrying_for_consumer's
+                    // `live.is_empty()` early return), while the 1st alt
+                    // (dispatched without projection just below) keeps it — an
+                    // order-dependent drop that manufactures a spurious free
+                    // copy in the enclosing tuple (PLN-main `(? (grandfather
+                    // $who c))`). Identical invariant to the foldl fan-out site;
+                    // see the field doc on `Continuation::ProcessAmb`.
                     outer_carrying: outer_carrying.clone(),
-                    project_alt_carrying: true,
+                    project_alt_carrying: false,
                 });
 
                 let first_carrying: crate::backend::eval::trampoline::types::SharedBindings =

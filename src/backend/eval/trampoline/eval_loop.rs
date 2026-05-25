@@ -13843,13 +13843,37 @@ fn process_continuation<C: EvalContext>(
                         .collect();
                     ctx.factory().sexpr(pairs)
                 } else {
-                    // Plan Phase E (2026-05-20): plain `collapse` sorts
-                    // the assembled tuple by canonical printable form
-                    // (HE behavior, fixture T04/063 / §06.11). The new
-                    // MTT-only `collapse-defined-order` opts out by
-                    // setting `sort_results: false` at dispatch time.
-                    let mut values: Vec<MettaValue> =
-                        evaluated.into_iter().map(|(v, _)| v).collect();
+                    // Plain `collapse`: instantiate each collected result with
+                    // its OWN per-result sidecar bindings before emitting —
+                    // Prolog `findall` instantiates the template per solution.
+                    // Without this, a tuple like `((q $who) (reduce …))` whose
+                    // sibling `reduce` bound `$who=a` was emitted with `$who`
+                    // still free (the binding sat in the discarded sidecar).
+                    // The bindings are CONSUMED into the value here and do NOT
+                    // leak to the outer scope (findall semantics preserved).
+                    // `apply_chain_generic` FIRST resolves alias chains like
+                    // `$__fr_* = $who` + `$__fr_* = a` into `$who = a` (mirrors
+                    // the `is_bind` path above and HE `bindings.resolve`).
+                    //
+                    // Plan Phase E (2026-05-20): plain `collapse` then sorts the
+                    // assembled tuple by canonical printable form (HE behavior,
+                    // fixture T04/063 / §06.11). `collapse-defined-order` opts
+                    // out via `sort_results: false` at dispatch time.
+                    let mut values: Vec<MettaValue> = evaluated
+                        .into_iter()
+                        .map(|(v, b)| {
+                            if b.is_empty() {
+                                v
+                            } else {
+                                let mut resolved = b;
+                                crate::backend::eval::bindings::apply_chain_generic(
+                                    &mut resolved,
+                                    ctx.factory(),
+                                );
+                                apply_bindings(&v, &resolved, ctx.factory())
+                            }
+                        })
+                        .collect();
                     if sort_results {
                         values.sort_by(|a, b| a.to_metta_string().cmp(&b.to_metta_string()));
                     }
@@ -14120,13 +14144,32 @@ fn process_continuation<C: EvalContext>(
                 // Merge per mode.
                 let result_list = match merge_mode {
                     crate::backend::eval::trampoline::types::CollapseMergeMode::Plain => {
-                        // Plain collapse: emit values only, bindings discarded.
-                        // Plan Phase E (2026-05-20): sort by canonical
-                        // printable form (HE behavior) when
-                        // `sort_results` is true (default for `collapse`).
-                        // `collapse-defined-order` opts out.
-                        let mut values: Vec<MettaValue> =
-                            evaluated.into_iter().map(|(v, _)| v).collect();
+                        // Plain collapse: instantiate each collected result with
+                        // its own per-result sidecar bindings before emitting
+                        // (Prolog `findall` instantiates the template per
+                        // solution; bindings are consumed into the value and do
+                        // NOT leak to the outer scope). Mirrors the serial
+                        // ProcessCollapseEvalResults plain path. `apply_chain_generic`
+                        // first resolves `$__fr_*` alias chains into user vars.
+                        // Plan Phase E (2026-05-20): then sort by canonical
+                        // printable form (HE behavior) when `sort_results` is
+                        // true (default for `collapse`); `collapse-defined-order`
+                        // opts out.
+                        let mut values: Vec<MettaValue> = evaluated
+                            .into_iter()
+                            .map(|(v, b)| {
+                                if b.is_empty() {
+                                    v
+                                } else {
+                                    let mut resolved = b;
+                                    crate::backend::eval::bindings::apply_chain_generic(
+                                        &mut resolved,
+                                        ctx.factory(),
+                                    );
+                                    apply_bindings(&v, &resolved, ctx.factory())
+                                }
+                            })
+                            .collect();
                         if sort_results {
                             values.sort_by(|a, b| a.to_metta_string().cmp(&b.to_metta_string()));
                         }

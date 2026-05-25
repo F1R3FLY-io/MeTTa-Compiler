@@ -1525,6 +1525,31 @@ pub enum Continuation {
         depth: usize,
     },
 
+    /// Re-export scrutinee free-variable bindings onto a `let`/`progn`/`chain`
+    /// body's RESULT sidecar (PeTTa clause-global unification).
+    ///
+    /// When a `let`/`progn` scrutinee evaluation binds a free variable other
+    /// than the let-bound pattern variable — e.g. the non-final `progn`
+    /// statement `(reduce (grandfather $who c))` binds `$who=a` — Prolog's
+    /// clause-global unification keeps that binding visible to sibling goals
+    /// in the enclosing clause. MeTTaTron consumes the scrutinee binding to
+    /// instantiate the body but otherwise drops it, so the bare-`$term`
+    /// sibling in PLN's `?` macro `(collapse ($term (progn (reduce $term) …)))`
+    /// stays unbound. This continuation composes the captured `reexport` set
+    /// into each body-result's sidecar so it threads back out through the
+    /// enclosing `CollectSExpr` to the sibling.
+    ///
+    /// Pushed BELOW the body's evaluation only when `reexport` is non-empty;
+    /// the let pattern variable(s) are already removed and freshened
+    /// (`$__fr_*`) names filtered out when `reexport` is built.
+    ReexportLetBindings {
+        /// Scrutinee free-variable bindings to re-export (pattern var removed,
+        /// `$__fr_*` canary-filtered). Never pushed when empty.
+        reexport: GenericBindings<MettaValue>,
+        /// Evaluation depth (for depth_hint accounting).
+        depth: usize,
+    },
+
     /// Processing `let*` sequential bindings as a tight loop.
     ///
     /// Instead of desugaring `(let* ((p1 v1) (p2 v2) ...) body)` to nested
@@ -2637,6 +2662,10 @@ impl Continuation {
                 // No MettaValue values to collect — only stores a u64 hash key.
             }
 
+            Self::ReexportLetBindings { reexport, .. } => {
+                collect_bindings_values(reexport, out);
+            }
+
             Self::ProcessLetStar {
                 current_pattern,
                 remaining_pairs,
@@ -2774,6 +2803,7 @@ impl Continuation {
             | Self::ProcessCaseMultiResults { depth, .. }
             | Self::ProcessCaseEvalScrutineeResults { depth, .. }
             | Self::MemoizeResult { depth, .. }
+            | Self::ReexportLetBindings { depth, .. }
             | Self::ProcessLetStar { depth, .. }
             | Self::CompleteSubgoal { depth, .. }
             | Self::CompleteThunk { depth, .. }
@@ -2857,6 +2887,7 @@ impl Continuation {
             Self::ProcessCaseMultiResults { .. } => "ProcessCaseMultiResults",
             Self::ProcessCaseEvalScrutineeResults { .. } => "ProcessCaseEvalScrutineeResults",
             Self::MemoizeResult { .. } => "MemoizeResult",
+            Self::ReexportLetBindings { .. } => "ReexportLetBindings",
             Self::ProcessLetStar { .. } => "ProcessLetStar",
             Self::CompleteSubgoal { .. } => "CompleteSubgoal",
             Self::CompleteThunk { .. } => "CompleteThunk",

@@ -784,6 +784,73 @@ fn project_owned_bindings_for_consumer(
     )
 }
 
+/// True iff a `let`/`progn`/`chain` scrutinee result sidecar `b` carries a
+/// free-variable binding that must be RE-EXPORTED past the body (PeTTa
+/// clause-global unification). Re-exportable means the binding is *new* — i.e.
+/// produced by evaluating the scrutinee, not merely inherited from the ambient
+/// carrying. Specifically: NOT a name already bound in `ambient` (those are
+/// already visible to the caller — re-routing on them spuriously diverts e.g.
+/// `prog1`'s nested lets, whose result var rides in as ambient carrying), NOT
+/// the let-bound pattern variable (local to the `let`), NOT an evaluator-
+/// internal freshened (`$__fr_*`) name, and NOT a value that still references a
+/// freshened name. Mirrors the caller-visibility canary in
+/// `project_bindings_for_consumer_generic`. Cheap — short-circuits on the
+/// common ground-scrutinee (`b.is_empty()`) case.
+#[inline]
+fn scrutinee_has_reexportable_freevar(
+    b: &crate::backend::models::GenericBindings<MettaValue>,
+    pattern_vars: &std::collections::HashSet<String>,
+    ambient: &crate::backend::models::GenericBindings<MettaValue>,
+) -> bool {
+    if b.is_empty() {
+        return false;
+    }
+    b.iter().any(|(name, val)| {
+        !pattern_vars.contains(name)
+            && ambient.get(name).is_none()
+            && !name.starts_with("$__fr_")
+            && !(val.has_variables_fast()
+                && crate::backend::eval::bindings::collect_variables_generic(val)
+                    .iter()
+                    .any(|v| v.starts_with("$__fr_")))
+    })
+}
+
+/// Build the set of scrutinee free-variable bindings a `let`/`progn`/`chain`
+/// must re-export onto its body's result sidecar (PeTTa clause-global
+/// unification). Starts from the scrutinee result sidecar `b`, drops bindings
+/// already present in the ambient carrying (`ambient` — already visible, not
+/// new), the let-bound pattern variable(s) (local to the `let`), and freshened
+/// (`$__fr_*`) names — both as keys and as variables referenced by retained
+/// values — matching [`scrutinee_has_reexportable_freevar`]. Returns an empty
+/// map when there is nothing caller-visible to re-export.
+fn build_scrutinee_reexport(
+    b: &crate::backend::models::GenericBindings<MettaValue>,
+    pattern: &MettaValue,
+    ambient: &crate::backend::models::GenericBindings<MettaValue>,
+) -> crate::backend::models::GenericBindings<MettaValue> {
+    let mut out = crate::backend::models::GenericBindings::new();
+    if b.is_empty() {
+        return out;
+    }
+    let pattern_vars = crate::backend::eval::bindings::collect_variables_generic(pattern);
+    for (name, val) in b.iter() {
+        if pattern_vars.contains(name) || ambient.get(name).is_some() || name.starts_with("$__fr_")
+        {
+            continue;
+        }
+        if val.has_variables_fast()
+            && crate::backend::eval::bindings::collect_variables_generic(val)
+                .iter()
+                .any(|v| v.starts_with("$__fr_"))
+        {
+            continue;
+        }
+        out.insert(name, val.clone());
+    }
+    out
+}
+
 /// # Precondition
 ///
 /// `matches` must be non-empty. The caller must handle the empty-matches case
@@ -3340,7 +3407,17 @@ fn eval_trampoline_inner<C: EvalContext>(
                     && should_memoize_with_env(&value, &*env)
                 {
                     subgoal_path_taken = true;
-                    let tabling_hash = value.hash_value();
+                    // PeTTa-align: namespace subgoal tabling by collapse-bind
+                    // context — an expression's result (and the confidences it
+                    // threads) depends on the active collapse-bind tracked_vars,
+                    // so a result tabled under one context must NOT be reused
+                    // under another. Without this, PLN's `?` macro
+                    // `(progn (reduce $term) <fold>)` lets the first (bare) reduce
+                    // table a derivation whose confidence is projected to 0.0,
+                    // which then poisons the `<fold>`'s `(collapse (reduce …))`.
+                    // Cycle detection stays correct: a recursion is same-context
+                    // (same key), so `(rec)` self-cycles are still detected.
+                    let tabling_hash = value.hash_value() ^ current_memo_tracked_key();
 
                     // Step 1: Cycle detection via active evaluation set.
                     // True cycle = expression is on its own call stack.
@@ -8685,6 +8762,47 @@ fn process_continuation<C: EvalContext>(
                         }
                     }
 
+                    // ── PeTTa clause-global re-export routing ──
+                    // If any scrutinee result bound a free variable other than
+                    // the let-bound pattern variable (e.g. `$who=a` from the
+                    // non-final `progn` statement `(reduce (grandfather $who c))`),
+                    // route through the sequential per-value path (the
+                    // `Some(pending_values)` arm below), which re-exports those
+                    // bindings onto the body's result sidecar via
+                    // `ReexportLetBindings` so they thread back to a sibling —
+                    // the bare `$term` in PLN's `?` macro
+                    // `(collapse ($term (progn (reduce $term) …)))`. The common
+                    // ground-scrutinee case (no free-var export) is untouched and
+                    // keeps the single-match TCO / multi-match parallel fast paths.
+                    let pattern_vars =
+                        crate::backend::eval::bindings::collect_variables_generic(&pattern);
+                    let needs_reexport = result_values
+                        .iter()
+                        .any(|(_, b)| scrutinee_has_reexportable_freevar(b, &pattern_vars, &outer_carrying));
+                    if needs_reexport {
+                        let mut cont_values: Vec<(
+                            MettaValue,
+                            crate::backend::models::GenericBindings<MettaValue>,
+                        )> = result_values.into_iter().collect();
+                        // The `Some` arm pops from the end; reverse to preserve
+                        // original scrutinee-result order in the merged output.
+                        cont_values.reverse();
+                        continuations.push(Continuation::ProcessLet {
+                            pending_values: Some(cont_values),
+                            pattern,
+                            body,
+                            outer_bindings,
+                            results,
+                            env: result_env.clone(),
+                            depth,
+                            outer_carrying,
+                        });
+                        work_stack.push(WorkItem::Resume {
+                            result: (SmallVec::new(), result_env),
+                        });
+                        return;
+                    }
+
                     // Collect ALL matching values and their bound bodies.
                     // When outer_bindings is present, we compose bindings and
                     // defer body materialization via EvalWithBindings.
@@ -9025,6 +9143,16 @@ fn process_continuation<C: EvalContext>(
                                         Some(b) => b,
                                         None => continue, // scrutinee/pattern conflict → drop
                                     };
+                                    // PeTTa clause-global re-export: the scrutinee
+                                    // free-variable bindings (minus the let pattern
+                                    // var, freshened names filtered) must thread out
+                                    // onto the body's result sidecar so a binding
+                                    // produced by a non-final statement (e.g. `$who=a`)
+                                    // reaches a sibling. Pushed below ProcessLet so it
+                                    // composes into the body result before the let
+                                    // resumes (see Continuation::ReexportLetBindings).
+                                    let reexport =
+                                        build_scrutinee_reexport(&scrutinee_b, &pattern, &outer_carrying);
                                     // Trace: pattern-match phase (subsequent resumption)
                                     #[cfg(feature = "trace")]
                                     {
@@ -9100,6 +9228,12 @@ fn process_continuation<C: EvalContext>(
                                             depth,
                                             outer_carrying: outer_carrying.clone(),
                                         });
+                                        if !reexport.is_empty() {
+                                            continuations.push(Continuation::ReexportLetBindings {
+                                                reexport: reexport.clone(),
+                                                depth,
+                                            });
+                                        }
                                         work_stack.push(WorkItem::EvalWithBindings {
                                             template: body,
                                             bindings: std::sync::Arc::new(composed),
@@ -9134,6 +9268,12 @@ fn process_continuation<C: EvalContext>(
                                             depth,
                                             outer_carrying: outer_carrying.clone(),
                                         });
+                                        if !reexport.is_empty() {
+                                            continuations.push(Continuation::ReexportLetBindings {
+                                                reexport: reexport.clone(),
+                                                depth,
+                                            });
+                                        }
                                         work_stack.push(WorkItem::Eval {
                                             value: instantiated_body,
                                             env: result_env,
@@ -15981,6 +16121,33 @@ fn process_continuation<C: EvalContext>(
 
             work_stack.push(WorkItem::Resume {
                 result: (result_values, result_env),
+            });
+        }
+
+        Continuation::ReexportLetBindings { reexport, depth: _ } => {
+            // PeTTa clause-global re-export: compose the captured scrutinee
+            // free-variable bindings into each `let`/`progn` body-result's
+            // sidecar, so a variable bound by a non-final statement (e.g.
+            // `$who=a` from `(reduce (grandfather $who c))`) threads back out
+            // to a sibling — the bare `$term` in PLN's `?` macro. The
+            // `reexport` set already has the let pattern var removed and
+            // freshened names filtered, so this is purely additive provenance
+            // (non-strict compose — never a branch-killing unification).
+            let (result_values, result_env) = result;
+            let composed = result_values
+                .into_iter()
+                .map(|(v, b)| {
+                    let mut c = crate::backend::eval::bindings::compose_outer_inner_generic(
+                        &reexport,
+                        &b,
+                        ctx.factory(),
+                    );
+                    crate::backend::eval::bindings::apply_chain_generic(&mut c, ctx.factory());
+                    (v, c)
+                })
+                .collect();
+            work_stack.push(WorkItem::Resume {
+                result: (composed, result_env),
             });
         }
 

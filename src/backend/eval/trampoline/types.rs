@@ -998,6 +998,26 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+        /// Whether to project each alt's carrying bindings down to the
+        /// consumer's free variables via `project_carrying_for_consumer`
+        /// before dispatch (the default, `true`).
+        ///
+        /// Set to `false` only by the `foldl-atom` multi-branch fan-out
+        /// (`ProcessFoldlAtom`): there each alt's per-branch bindings are
+        /// fold-continuation SOLUTION bindings that must propagate to the
+        /// fold's OUTPUT even when they are not free variables of the
+        /// re-instantiated sub-foldl consumer (e.g. an outer query var
+        /// `$who` bound by premise 1 that no later premise references).
+        /// Projection would drop such a var, and because the first alt is
+        /// dispatched WITHOUT projection (at the fan-out site) while the
+        /// rest flow through here, the surviving binding's fate would
+        /// depend on nondeterministic alt ORDER — a HashMap-order flake
+        /// (PLN-main `(? (grandfather $who c))`). Preserving the full
+        /// per-branch bindings for every alt makes propagation
+        /// order-independent. The dropped vars are never re-bound by the
+        /// consumer (it does not reference them), so preserving them
+        /// cannot introduce a spurious conflict.
+        project_alt_carrying: bool,
     },
 
     /// **Stack-safety mandate (2026-05-15)**: wait state for a trampolinized

@@ -5663,6 +5663,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 env: env.clone(),
                                 depth,
                                 outer_carrying: carrying_bindings.clone(),
+                                project_alt_carrying: true,
                             });
 
                             // Compose outer_carrying with the first pair's
@@ -5826,6 +5827,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     env: env.clone(),
                                     depth,
                                     outer_carrying: carrying_bindings.clone(),
+                                    project_alt_carrying: true,
                                 });
 
                                 work_stack.push(WorkItem::Eval {
@@ -9077,6 +9079,7 @@ fn process_continuation<C: EvalContext>(
                             env: result_env.clone(),
                             depth,
                             outer_carrying: shadowed_outer_carrying.clone(),
+                            project_alt_carrying: true,
                         });
 
                         let tracked = active_tracked_vars();
@@ -10313,6 +10316,11 @@ fn process_continuation<C: EvalContext>(
                 env: result_env.clone(),
                 depth,
                 outer_carrying: crate::backend::eval::trampoline::types::empty_shared_bindings(),
+                // Preserve each branch's FULL solution bindings (no projection):
+                // an outer var bound by an earlier premise (e.g. `$who`) that no
+                // later premise references must still reach the fold's output.
+                // See the field doc on `Continuation::ProcessAmb`.
+                project_alt_carrying: false,
             });
 
             work_stack.push(WorkItem::Eval {
@@ -10566,6 +10574,7 @@ fn process_continuation<C: EvalContext>(
                     env: env_after_cond.clone(),
                     depth,
                     outer_carrying: outer_carrying.clone(),
+                    project_alt_carrying: true,
                 });
 
                 // Compose outer_carrying with this alt's bindings for the
@@ -11801,6 +11810,7 @@ fn process_continuation<C: EvalContext>(
                     env: result_env.clone(),
                     depth,
                     outer_carrying: outer_carrying.clone(),
+                    project_alt_carrying: true,
                 });
 
                 let first_carrying: crate::backend::eval::trampoline::types::SharedBindings =
@@ -13911,6 +13921,7 @@ fn process_continuation<C: EvalContext>(
             env,
             depth,
             outer_carrying,
+            project_alt_carrying,
         } => {
             let (alt_results, result_env) = result;
             results.extend(alt_results);
@@ -13925,6 +13936,7 @@ fn process_continuation<C: EvalContext>(
                     env: env.clone(),
                     depth,
                     outer_carrying: outer_carrying.clone(),
+                    project_alt_carrying,
                 });
 
                 // Compose outer_carrying with this alt's per-branch bindings
@@ -13944,17 +13956,28 @@ fn process_continuation<C: EvalContext>(
                             ),
                         )
                     };
-                let tracked = active_tracked_vars();
-                let Some(alt_carrying) = project_carrying_for_consumer(
-                    &alt_carrying,
-                    &next_val,
-                    tracked.as_deref(),
-                    ctx.factory(),
-                ) else {
-                    work_stack.push(WorkItem::Resume {
-                        result: (SmallVec::new(), env),
-                    });
-                    return;
+                // Foldl fan-out alts (project_alt_carrying == false) preserve
+                // their FULL per-branch solution bindings — see the field doc
+                // on `Continuation::ProcessAmb`. Other callers project down to
+                // the consumer's free vars (the default).
+                let alt_carrying = if project_alt_carrying {
+                    let tracked = active_tracked_vars();
+                    match project_carrying_for_consumer(
+                        &alt_carrying,
+                        &next_val,
+                        tracked.as_deref(),
+                        ctx.factory(),
+                    ) {
+                        Some(c) => c,
+                        None => {
+                            work_stack.push(WorkItem::Resume {
+                                result: (SmallVec::new(), env),
+                            });
+                            return;
+                        }
+                    }
+                } else {
+                    alt_carrying
                 };
 
                 work_stack.push(WorkItem::Eval {
@@ -16516,6 +16539,7 @@ fn process_continuation<C: EvalContext>(
                         env: result_env.clone(),
                         depth,
                         outer_carrying: accumulated_bindings.clone(),
+                        project_alt_carrying: true,
                     });
 
                     work_stack.push(WorkItem::Eval {

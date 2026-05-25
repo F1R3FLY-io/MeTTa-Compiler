@@ -366,13 +366,23 @@ where
             vec![factory.atom("Expression")]
         }
         MettaValueInner::Lazy(_) => {
-            // PT-canonical Lazy is INVISIBLE — treat as Expression metatype,
-            // matching the Quoted arm (also a data wrapper).
+            // PT-canonical Lazy is a TRANSPARENT inert/rule-inhibitor marker —
+            // unlike Quoted (which genuinely makes data), Lazy wraps an already-
+            // evaluated value, so its TYPE is the inner value's type. Strip the
+            // Lazy layer(s) and infer the inner's type, so a Lazy-wrapped number
+            // still satisfies a `Number`-typed parameter — e.g. PLN's
+            // `(: Truth_c2w (-> Number Number))` applied to an stv confidence
+            // threaded through the `?` macro's Truth_Revision fold. Without this,
+            // Lazy(Float) was inferred as Expression, the typed numeric call
+            // rejected it, and the confidence silently collapsed to 0.0
+            // (the Direct.metta D2 conf=0.0 phantom). Mirrors the Spanned arm
+            // and the Lazy-transparent `as_float`/`as_long` coercions.
             #[cfg(feature = "trace")]
             {
-                _trace_source = "lazy";
+                _trace_source = "lazy-strip";
             }
-            vec![factory.atom("Expression")]
+            let stripped = expr.unwrap_lazy();
+            infer_types_generic_inner(&stripped, factory, env, seen)
         }
         MettaValueInner::Spanned(..) => {
             #[cfg(feature = "trace")]

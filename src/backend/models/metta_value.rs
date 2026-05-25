@@ -1355,6 +1355,14 @@ impl MettaValue {
         match self.inner_ref() {
             MettaValueInner::Long(n) => Some(*n),
             MettaValueInner::Spanned(v, _) => v.as_long(),
+            // PT-canonical Lazy is a transparent inert/rule-inhibitor marker
+            // (see eval_loop.rs:~3235); its numeric value is the inner's, just
+            // as Display delegates to the inner. Without this, arithmetic and
+            // comparisons on a substituted-then-Lazy-wrapped number (e.g. an
+            // stv confidence threaded through PLN's Truth_Revision) saw `None`
+            // and silently treated it as non-numeric — collapsing confidences
+            // to 0.0 (the Direct.metta D2 conf=0.0 phantom).
+            MettaValueInner::Lazy(v) => v.as_long(),
             _ => None,
         }
     }
@@ -1368,6 +1376,10 @@ impl MettaValue {
         match self.inner_ref() {
             MettaValueInner::Float(f) => Some(*f),
             MettaValueInner::Spanned(v, _) => v.as_float(),
+            // Lazy-transparent (see as_long above): a Lazy-wrapped float must
+            // coerce to its number so threaded stv confidences arithmetic-
+            // correctly (Direct.metta D2 conf=0.0 phantom fix).
+            MettaValueInner::Lazy(v) => v.as_float(),
             _ => None,
         }
     }

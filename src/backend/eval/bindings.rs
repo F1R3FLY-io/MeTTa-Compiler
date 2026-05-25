@@ -132,6 +132,12 @@ pub fn collect_variables_generic<V: MettaValueTrait>(expr: &V) -> HashSet<String
             // those bindings through projection.
             work_stack.push(detail);
             work_stack.push(offending);
+        } else if let Some(inner) = val.as_lazy_ref() {
+            // Lazy is transparent to variable OBSERVATION (commit 8032687
+            // principle): a `Lazy((grandfather $who c))` still references `$who`,
+            // which must be tracked so cross-sibling binding projection keeps
+            // `$who=a` (PLN's `?` macro `$term` is Expression-typed → Lazy).
+            work_stack.push(inner);
         }
     }
 
@@ -865,6 +871,18 @@ where
         BuildQuoted {
             original: V,
         },
+        /// Rebuild a `Lazy(X)` wrapper after substituting INTO the inner value.
+        /// Lazy is transparent to variable SUBSTITUTION (resolve `$x`) while
+        /// staying opaque to rule DISPATCH (the re-wrapped value is still
+        /// `Lazy`, so e.g. `Lazy((grandfather a c))` is NOT re-reduced — the
+        /// `ValueView::Lazy` short-circuit in the eval loop still matches it).
+        /// Mirrors commit 8032687's Lazy-transparency principle (as_float /
+        /// infer_types), extended to apply_bindings. Without this, PLN's `?`
+        /// macro `$term` (Expression-typed → Lazy) kept its query variable
+        /// unbound in the collapse key (`(grandfather $who c)` not `… a c`).
+        BuildLazy {
+            original: V,
+        },
     }
 
     // Inline-storage stacks: most calls process small expressions and
@@ -984,6 +1002,13 @@ where
                         original: val.clone(),
                     });
                     work_stack.push(Work::Process(inner));
+                } else if let Some(inner) = val.as_lazy_ref() {
+                    // Substitute INSIDE Lazy, then rebuild the wrapper (see
+                    // Work::BuildLazy). Resolves vars without re-dispatching.
+                    work_stack.push(Work::BuildLazy {
+                        original: val.clone(),
+                    });
+                    work_stack.push(Work::Process(inner));
                 } else {
                     result_stack.push(val.clone());
                 }
@@ -1056,6 +1081,10 @@ where
                     // descent — see comment on Work::BuildQuoted.
                     work_stack.push(Work::BuildQuoted { original: val });
                     work_stack.push(Work::ProcessOwned(inner));
+                } else if let Some(inner) = val.as_lazy() {
+                    // Owned-value variant of the Lazy descent — see Work::BuildLazy.
+                    work_stack.push(Work::BuildLazy { original: val });
+                    work_stack.push(Work::ProcessOwned(inner));
                 } else {
                     result_stack.push(val);
                 }
@@ -1108,6 +1137,22 @@ where
                     result_stack.push(original);
                 } else {
                     result_stack.push(factory.quote(new_inner));
+                }
+            }
+            Work::BuildLazy { original } => {
+                // Rebuild `Lazy(X)` with the substituted inner. Re-wrapping in
+                // Lazy keeps the value opaque to rule dispatch (the eval-loop
+                // `ValueView::Lazy` short-circuit still fires) while the inner
+                // now has its variables resolved. Identity-equality reuse skips
+                // the alloc when the inner was unchanged (mirrors BuildQuoted).
+                let new_inner = result_stack
+                    .pop()
+                    .expect("Result stack must hold the processed Lazy inner");
+                let original_inner = original.as_lazy().expect("BuildLazy original must be Lazy");
+                if new_inner.identity_eq(&original_inner) {
+                    result_stack.push(original);
+                } else {
+                    result_stack.push(factory.lazy(new_inner));
                 }
             }
         }

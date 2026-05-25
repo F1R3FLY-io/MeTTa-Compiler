@@ -637,6 +637,16 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
 
             if let Some(q) = v.as_quoted_ref() {
                 work.push(q);
+                continue;
+            }
+
+            if let Some(inner) = v.as_lazy_ref() {
+                // Lazy is transparent to variable OBSERVATION (commit 8032687):
+                // `Lazy((grandfather $who c))` still references `$who`, which
+                // must be collected so cross-sibling binding projection keeps
+                // `$who=a` (PLN's `?` `$term` is Expression-typed → Lazy).
+                work.push(inner);
+                continue;
             }
         }
     }

@@ -605,8 +605,24 @@ pub fn should_memoize_with_env(
 /// GC safety: Before accessing cached values, checks the GC sweep epoch.
 /// If GC freed slab slots since the cache was populated, the entire cache
 /// is cleared (returning `None`) to avoid use-after-free on stale pointers.
+/// Fold the collapse-bind tracked-vars state into the eval-memo key.
+///
+/// An expression's evaluation result depends on the active collapse-bind
+/// `tracked_vars` (they govern which match bindings survive projection, and
+/// thus the numeric result threaded through e.g. PLN's truth-value formulas).
+/// Results computed under DIFFERENT collapse-bind contexts must therefore NOT
+/// be shared. Without this, a bare `(reduce X)` evaluated with NO collapse-bind
+/// active poisons a later `(collapse (reduce X))` evaluated WITH collapse-bind
+/// active — exactly PLN's `?` macro `(progn (reduce $term) <fold>)` double-reduce,
+/// which collapsed the mother-branch confidence to 0.0 (Direct.metta phantom).
 #[inline]
-pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
+pub fn eval_memo_key(expr_hash: u64, tracked_key: u64) -> u64 {
+    expr_hash ^ tracked_key.wrapping_mul(0x9e3779b97f4a7c15)
+}
+
+#[inline]
+pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>> {
+    let expr_hash = eval_memo_key(expr_hash, tracked_key);
     let current_epoch = mutation_epoch();
     let current_query_gen = query_generation();
     EVAL_MEMO.with(|memo_cell| {
@@ -634,7 +650,8 @@ pub fn eval_memo_get(expr_hash: u64) -> Option<Vec<MettaValue>> {
 
 /// Store evaluation results in the memo cache.
 #[inline]
-pub fn eval_memo_put(expr_hash: u64, results: &[MettaValue]) {
+pub fn eval_memo_put(expr_hash: u64, tracked_key: u64, results: &[MettaValue]) {
+    let expr_hash = eval_memo_key(expr_hash, tracked_key);
     let query_gen = query_generation();
     let epoch = mutation_epoch();
     let gen = cache_generation();

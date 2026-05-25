@@ -329,7 +329,7 @@ mod tests {
         let cached = MettaValue::sym("thread-local-cache-root");
 
         trampoline::dispatch_hints::clear_eval_memo();
-        trampoline::dispatch_hints::eval_memo_put(0xfeed_cafe, &[cached]);
+        trampoline::dispatch_hints::eval_memo_put(0xfeed_cafe, 0, &[cached]);
         refresh_thread_local_cache_roots();
 
         let roots = crate::backend::models::collect_all_roots();

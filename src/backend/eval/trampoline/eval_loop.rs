@@ -1787,6 +1787,30 @@ fn active_tracked_vars() -> Option<SmallVec<[&'static str; 4]>> {
     })
 }
 
+/// Content hash of the active collapse-bind `tracked_vars`, used to namespace
+/// the eval-memo by collapse-bind context. `0` when no collapse-bind is active;
+/// any active set yields a non-zero key (so None and Some never collide). An
+/// expression's evaluated result depends on the active tracked_vars (binding
+/// projection), so memo entries must not be shared across differing contexts —
+/// see `dispatch_hints::eval_memo_key`.
+#[inline]
+fn current_memo_tracked_key() -> u64 {
+    match active_tracked_vars() {
+        None => 0,
+        Some(tv) => {
+            let mut h = 0xcbf29ce484222325u64; // FNV-1a offset basis
+            for s in tv.iter() {
+                for b in s.bytes() {
+                    h ^= b as u64;
+                    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+                h = h.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(1); // field separator
+            }
+            h | 1 // ensure non-zero: a non-empty collapse-bind is never key 0
+        }
+    }
+}
+
 /// Stage 1b no-op: capture logic was removed. Retained as a stub to
 /// minimize churn at dispatch sites during the migration. Per-branch
 /// bindings now flow via `ProcessRuleMatches.current_branch_match_bindings`
@@ -3479,7 +3503,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                 let memo_hash =
                     if is_sexpr && should_memoize_with_env(&value, &*env) {
                         let h = value.hash_value();
-                        if let Some(cached_results) = eval_memo_get(h) {
+                        if let Some(cached_results) = eval_memo_get(h, current_memo_tracked_key())
+                        {
                             // Cache hit — skip evaluation entirely.
                             //
                             // 2026-05-23 binding-thread fix: attach the FULL
@@ -15936,15 +15961,17 @@ fn process_continuation<C: EvalContext>(
             // so the result may depend on mutable state and must not be cached.
             //
             // Values-only cache contract (intentional discard of bindings):
-            // `eval_memo_put` stores values independent of caller context.
-            // On cache hit (line ~2241), consumer re-tags with the retrieving
-            // caller's carrying_bindings. Storing bindings here would leak
-            // cross-caller within the same query. The `should_memoize` gate
-            // restricts caching to ground-input expressions, so cached
-            // values are themselves ground.
+            // `eval_memo_put` stores values; on cache hit the consumer re-tags
+            // with the retrieving caller's carrying_bindings. The cache IS,
+            // however, namespaced by the active collapse-bind tracked_vars
+            // (`current_memo_tracked_key()`), because an expression's evaluated
+            // result depends on that context (binding projection). Without the
+            // namespace, a bare `(reduce X)` (no collapse-bind) poisoned a
+            // later `(collapse (reduce X))` — PLN's `?` macro double-reduce.
             if mutation_epoch() == saved_epoch {
                 eval_memo_put(
                     expr_hash,
+                    current_memo_tracked_key(),
                     &result_values
                         .iter()
                         .map(|(v, _)| v.clone())

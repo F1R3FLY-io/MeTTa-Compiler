@@ -311,3 +311,34 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   multi-element forms) for ONE niche corpus example (match with a side-effecting tuple template +
   remove-during-match). Precisely localized; a careful, separately-benchmarked follow-on. reduce-all
   (the user's decided fork resolution) stands as a verified, PeTTa-faithful improvement.
+- 2026-05-26: **matchnested2 COMPLETE root-cause: blocked by TWO fundamental architecture forks
+  (proven, gate-safe state restored).** After reduce-all (`0448b52`), an exhaustive empirical trace
+  (each step gate-checked) localized the remaining failure to env/space-commit machinery, then proved
+  it is NOT a localized bug but two core eval-strategy differences between MTT and PeTTa:
+  (1) **Global atomspace vs COW per-branch env.** A side-effecting `match` template
+  (`((add-atom &self (transitive …)) (remove-atom &self (friend …)) …)`) must have its `&self`
+  mutations ACCUMULATE across match branches and COMMIT. The fix chain that made this work in
+  isolation — `add_to_space` `mark_modified` + a flag-preserving clone + `CollectSExpr`/
+  `ProcessMatchTemplates` env-THREADING (replacing `fork_for_nondeterminism`) — made
+  `match`+tuple-template side effects commit (verified: `m_tuple`/`m_conj` → `((seen …))`/
+  `((transitive tim tom tam))`), BUT REGRESSED 3 conformance tests (`M04-spaces/001-self-add-get`,
+  `002-match-self`, `031-match`): threading destroys the match-branch binding ISOLATION those tests
+  rely on. MTT's `&self` is COW (per-env, forked for nondeterminism); PeTTa/HE use a GLOBAL atomspace
+  where mutations are inherently visible across branches while bindings stay branch-local. Matching
+  PeTTa needs `&self` made globally-shared (e.g. `add_to_space_shared`-style in-place mutation of the
+  shared atom_space) WITHOUT breaking COW binding isolation — a major env/space-model change. The
+  threading approach was REVERTED (regressions); gate restored to 481.
+  (2) **Eager vs lazy impure-arg eval.** matchnested2's directive 1 `(hide (tuple-of-add-atoms))` and
+  even `(hide (add-atom &self (friend a b)))` must RUN the arg's side effects, but MTT is LAZY (the
+  rule `(= (hide $1) (empty))` discards `$1` without forcing it, so the arg is never evaluated → no
+  friends added → directive 2's match finds nothing). PeTTa is EAGER (args reduced before the rule
+  applies). Proven: MTT `(hide (add-atom …))` → atom NOT added; PeTTa → added. Matching PeTTa needs
+  eager evaluation of impure rule args (run side effects even when the body discards them) — a
+  fundamental eval-strategy change (MTT is lazy by design).
+  Both are MAJOR architectural forks (like the SExpr-as-callable fork the user decided as reduce-all),
+  not localized bugs or deferrable patches; the localized threading patch provably trades one
+  correctness property (side-effect commit) for another (branch isolation). matchnested2 is ONE niche
+  corpus example (match with a side-effecting tuple template + remove-during-match + a lazy-discarding
+  `hide` wrapper). Current state: reduce-all committed + gate-green; the two forks await a strategic
+  decision (re-architect &self to a global atomspace + make impure args eager — a whole-evaluator
+  change affecting PLN and all tests).

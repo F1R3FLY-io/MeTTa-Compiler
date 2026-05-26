@@ -1299,6 +1299,16 @@ pub fn try_deterministic_chain(
     if !cache_entry.all_structural || cache_entry.candidate_count != 1 {
         return None;
     }
+    // Phase 1 cut-barrier: a rule whose body can fire `(cut)` MUST go through
+    // the trampoline, where `dispatch_rule_matches` opens a cut barrier and the
+    // fan-out advance arms observe the signal. This inline deterministic-chain
+    // fast path bypasses that machinery entirely (it never pushes a
+    // `ProcessRuleMatches`/`ProcessAmb`), so a cut here would be silently lost.
+    // Bail to the trampoline for cut-carrying heads. (`any_rule_body_contains_cut`
+    // is the O(1) precomputed aggregate of `RuleEntry::body_contains_cut`.)
+    if cache_entry.any_rule_body_contains_cut {
+        return None;
+    }
 
     // Seed the seen-set with the entry expression's hash so a self-
     // recursive RHS that returns the same form (e.g. `(rec) → (rec)`)
@@ -1341,8 +1351,17 @@ pub fn try_deterministic_chain(
 
         let next_arity = next_items.len() - 1;
         let next_cache = match operator_cache_get(next_head, next_arity) {
-            Some(c) if c.all_structural && c.candidate_count == 1 => c,
-            _ => return Some(current), // Non-deterministic or no cache -> return current for trampoline
+            // Phase 1 cut-barrier: a cut-carrying head encountered mid-chain
+            // must be handed back to the trampoline (the inline chain has no
+            // barrier machinery), exactly like a non-deterministic head.
+            Some(c)
+                if c.all_structural
+                    && c.candidate_count == 1
+                    && !c.any_rule_body_contains_cut =>
+            {
+                c
+            }
+            _ => return Some(current), // Non-deterministic / cut / no cache -> return current for trampoline
         };
         let _ = next_cache;
 
@@ -1482,6 +1501,12 @@ pub fn try_deferred_deterministic_chain(
     if !cache_entry.all_structural || cache_entry.candidate_count != 1 {
         return None;
     }
+    // Phase 1 cut-barrier: bail to the trampoline for cut-carrying heads — the
+    // inline chain bypasses the barrier machinery (see the sibling guard in
+    // `try_deterministic_chain`).
+    if cache_entry.any_rule_body_contains_cut {
+        return None;
+    }
 
     // First step: materialize and match
     let materialized = apply_bindings(template, bindings, factory);
@@ -1524,7 +1549,15 @@ pub fn try_deferred_deterministic_chain(
 
             let next_arity = next_items.len() - 1;
             let next_cache = match operator_cache_get(next_head, next_arity) {
-                Some(c) if c.all_structural && c.candidate_count == 1 => c,
+                // Phase 1 cut-barrier: stop the inline chain at a cut-carrying
+                // head so the trampoline handles its barrier (see sibling guard).
+                Some(c)
+                    if c.all_structural
+                        && c.candidate_count == 1
+                        && !c.any_rule_body_contains_cut =>
+                {
+                    c
+                }
                 _ => break,
             };
             let _ = next_cache;

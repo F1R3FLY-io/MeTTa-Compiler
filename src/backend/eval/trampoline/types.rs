@@ -494,9 +494,24 @@ pub enum Continuation {
         /// to isolate cache entries between nondeterministic branches without
         /// clearing caches.
         pre_fork_gen: u64,
-        /// Fork depth for Prolog-style cut semantics. When `(cut)` is evaluated
-        /// inside a branch's RHS, the cut signal is targeted at this depth.
+        /// Fork depth — retained for trace/scope bookkeeping (BranchStart/End
+        /// pairing, `leave_fork`). The Prolog-style cut linkage now lives in
+        /// `cut_barrier`/`saved_barrier` (Phase 1 cut-barrier), not here.
         fork_depth: u32,
+        /// Phase 1 cut-barrier: the cut-scope barrier id this fan-out belongs
+        /// to. If the matched rule body can fire `(cut)`, `dispatch_rule_matches`
+        /// opens a FRESH barrier and stores it here; otherwise this INHERITS
+        /// the enclosing `current_barrier()` so an inner non-cut fan-out still
+        /// commits to an outer cut scope. The advance arm calls
+        /// `cut_fired_for(cut_barrier)` before pulling the next match and, if
+        /// it fired, drops `remaining_matches` and commits. `0` = no scope.
+        cut_barrier: u64,
+        /// Phase 1 cut-barrier: the `current_barrier()` value that was active
+        /// immediately BEFORE this dispatch opened/inherited `cut_barrier`.
+        /// Restored via `set_current_barrier(saved_barrier)` when this fan-out
+        /// completes (all matches consumed or cut fired), so the enclosing
+        /// scope's barrier is correctly re-established for sibling work.
+        saved_barrier: u64,
         /// Stage 1c: The match unification bindings for the branch whose RHS
         /// is CURRENTLY being evaluated, composed with the outer ambient
         /// `outer_carrying` (Stage 1d-revised). When the RHS result arrives,
@@ -861,6 +876,11 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+        /// Phase 1 cut-barrier: the cut-scope barrier id active when this
+        /// goal-sequence fan-out was constructed. Captured via
+        /// `current_barrier()` so a `(cut)` evaluated while resolving a goal
+        /// prunes the enclosing clause. `0` = no active cut scope.
+        cut_barrier: u64,
     },
 
     /// Processing unify pattern1
@@ -1026,6 +1046,14 @@ pub enum Continuation {
         /// consumer (it does not reference them), so preserving them
         /// cannot introduce a spurious conflict.
         project_alt_carrying: bool,
+        /// Phase 1 cut-barrier: the cut-scope barrier id active when this
+        /// disjunction fan-out was constructed (`current_barrier()`). This is
+        /// the exact `cut.metta` path: the `let*` multi-result fallback spawns
+        /// a `ProcessAmb` while the cut-carrying rule body's barrier is
+        /// current, so a `(cut)` in a later `let*` pair prunes the value-expr
+        /// fan-out. The advance arm calls `cut_fired_for(cut_barrier)` before
+        /// pulling the next alternative. `0` = no active cut scope.
+        cut_barrier: u64,
     },
 
     /// **Stack-safety mandate (2026-05-15)**: wait state for a trampolinized
@@ -1194,6 +1222,12 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+        /// Phase 1 cut-barrier: the cut-scope barrier id active when this
+        /// match dispatch was constructed (`current_barrier()`). Propagated to
+        /// the `ProcessMatchTemplates` fan-out this handler spawns so a `(cut)`
+        /// evaluated while reducing a matched template prunes the enclosing
+        /// clause's remaining template alternatives. `0` = no active cut scope.
+        cut_barrier: u64,
     },
 
     /// Processing match templates
@@ -1204,6 +1238,12 @@ pub enum Continuation {
         depth: usize,
         /// Stage 1d-revised: ambient bindings from the caller's context.
         outer_carrying: SharedBindings,
+        /// Phase 1 cut-barrier: the cut-scope barrier id active when this
+        /// template fan-out was constructed (`current_barrier()`). The advance
+        /// arm calls `cut_fired_for(cut_barrier)` before pulling the next
+        /// matched template, committing to the matches collected so far when a
+        /// `(cut)` fired this barrier. `0` = no active cut scope.
+        cut_barrier: u64,
     },
 
     /// Processing add-atom space
@@ -3065,6 +3105,7 @@ mod tests {
             env: env(),
             depth: 0,
             outer_carrying: empty_shared_bindings(),
+            cut_barrier: 0,
         };
         let mut roots = Vec::new();
         cont.collect_values(&mut roots);

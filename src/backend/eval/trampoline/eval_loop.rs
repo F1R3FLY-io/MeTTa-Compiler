@@ -557,6 +557,25 @@ fn try_acquire_budget(n: u32, depth: u32) -> u32 {
     // must spin its own veto at the callsite (the gate API stays
     // minimal).
 
+    // Phase 1 cut-barrier (2026-05-26): centralized veto for cut scopes.
+    // The cut-scope barrier (`CURRENT_BARRIER`) and pending-cut signal
+    // (`CUT_SIGNAL`) are thread-locals that are NOT propagated to work-pool
+    // worker threads — each worker runs a fresh `eval_trampoline_with_carrying`
+    // activation that resets them to 0. Parallelizing a fan-out inside an
+    // active cut scope would therefore (a) silently lose the cut signal (the
+    // `(cut)` would latch barrier 0 on the worker and no continuation would
+    // observe it) and (b) be semantically ill-defined anyway — Prolog cut
+    // commits to the FIRST matching branch in source order, which requires
+    // sequential evaluation. So whenever a cut scope is active, force the
+    // sequential path by granting zero parallel budget. This is the SAME
+    // chokepoint the old `in_collapse_bind_scope()` veto used, and it covers
+    // ALL five `parallel_dispatch` / `parallel_collapse_dispatch` callers
+    // (`dispatch_rule_matches`, superpose/`StartAmb`, `ProcessLet` body
+    // fan-out, `ProcessCollapse`, `ProcessCollapseBind`) with one guard.
+    if current_barrier() != 0 {
+        return 0;
+    }
+
     let budgets = depth_budgets();
 
     // Dynamic budget gate: check queue pressure.
@@ -895,6 +914,41 @@ fn dispatch_rule_matches<C: EvalContext>(
         "dispatch_rule_matches called with empty matches"
     );
 
+    // ── Phase 1 cut-barrier: open or inherit a cut scope for this dispatch ──
+    //
+    // If ANY matched rule body can fire `(cut)` (detected via the same
+    // `expr_contains_cut` predicate that precomputes `RuleEntry::
+    // body_contains_cut` at add-time — applied here to the instantiated RHS,
+    // which is what will actually execute), open a FRESH barrier and make it
+    // the innermost active cut scope. The rule's RHS WorkItem is pushed right
+    // after, so it evaluates with `CURRENT_BARRIER == cut_barrier` and every
+    // fan-out produced while evaluating the body (this dispatch's own
+    // multi-match fork, AND any match/superpose/let* fan-out inside the body)
+    // captures `cut_barrier`. A `(cut)` then prunes exactly THIS clause.
+    //
+    // When no matched body can cut, INHERIT the enclosing `current_barrier()`
+    // so an inner non-cut fan-out still belongs to an outer cut scope (an
+    // outer rule's `(cut)` commits through nested deterministic dispatches).
+    //
+    // `saved_barrier` records the scope active immediately before this
+    // dispatch; the `ProcessRuleMatches` completion arm restores it via
+    // `set_current_barrier(saved_barrier)` so sibling work sees the correct
+    // enclosing scope. (The scan is O(matches × rhs_size), runs once per
+    // dispatch over a small set, and never recurses on the Rust stack —
+    // `expr_contains_cut` uses an explicit work-list.)
+    let any_match_cuts = matches.iter().any(|(rhs, _)| {
+        crate::backend::environment::rule_management::expr_contains_cut(rhs)
+    });
+    let (cut_barrier, saved_barrier) = if any_match_cuts {
+        let b = alloc_barrier();
+        let saved = current_barrier();
+        set_current_barrier(b);
+        (b, saved)
+    } else {
+        let cur = current_barrier();
+        (cur, cur)
+    };
+
     // ── Single-match fast path ──
     // 93.3% of rule matches produce exactly 1 result. When there's exactly 1
     // match and no accumulated base_results, skip the ProcessRuleMatches
@@ -936,31 +990,52 @@ fn dispatch_rule_matches<C: EvalContext>(
         // outer_carrying (ambient from caller, e.g., CollectSExpr's merged
         // child bindings) with this match's bindings — so the RHS result
         // gets tagged with the UNION of both.
-        if in_collapse_bind_scope() || !outer_carrying.is_empty() {
-            let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
-            // Phase 2.B Issue #5 fix: strict compose — conflict between
-            // outer_carrying and this match's bindings means the branch is
-            // inconsistent. Emit zero results and return (HE-bisimilar
-            // silent pruning). The old unchecked compose produced empty
-            // bindings that attached to the RHS → ghost branch downstream.
-            let composed = if outer_carrying.is_empty() {
-                bindings.clone()
-            } else {
-                match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
-                    outer_carrying,
-                    &bindings,
-                    ctx.factory(),
-                ) {
-                    Some(b) => b,
-                    None => {
-                        work_stack.push(WorkItem::Resume {
-                            result: (base_results, env),
-                        });
-                        return;
+        // Phase 1 cut-barrier: the single-match path also pushes this shim when
+        // `any_match_cuts` is set — even outside a collapse-bind / empty-outer
+        // context — so the shim's completion arm can RESTORE `saved_barrier`
+        // (the barrier this dispatch opened must be torn down once the RHS and
+        // its inner fan-outs finish). When the shim exists ONLY for the barrier
+        // (no collapse-bind, empty outer_carrying), it carries EMPTY
+        // `current_branch_bindings` + `None` tracked_vars_hint, so its
+        // COMPOSE_MATCH step is a pure pass-through (the fast-path branch at the
+        // handler) and binding propagation is byte-identical to the no-shim
+        // path. This is the cut.metta path: `match-single` is a single rule
+        // whose body's `let*` fans out and cuts.
+        let needs_binding_shim = in_collapse_bind_scope() || !outer_carrying.is_empty();
+        if needs_binding_shim || any_match_cuts {
+            let (current_branch_bindings, tracked_vars_hint) = if needs_binding_shim {
+                let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
+                // Phase 2.B Issue #5 fix: strict compose — conflict between
+                // outer_carrying and this match's bindings means the branch is
+                // inconsistent. Emit zero results and return (HE-bisimilar
+                // silent pruning). The old unchecked compose produced empty
+                // bindings that attached to the RHS → ghost branch downstream.
+                let composed = if outer_carrying.is_empty() {
+                    bindings.clone()
+                } else {
+                    match crate::backend::eval::bindings::compose_outer_inner_strict_generic(
+                        outer_carrying,
+                        &bindings,
+                        ctx.factory(),
+                    ) {
+                        Some(b) => b,
+                        None => {
+                            work_stack.push(WorkItem::Resume {
+                                result: (base_results, env),
+                            });
+                            return;
+                        }
                     }
-                }
+                };
+                (std::sync::Arc::new(composed), tracked_vars_hint)
+            } else {
+                // Barrier-only shim: pure pass-through (empty bindings ⇒ the
+                // handler's COMPOSE_MATCH fast path returns results unchanged).
+                (
+                    crate::backend::eval::trampoline::types::empty_shared_bindings(),
+                    None,
+                )
             };
-            let current_branch_bindings = std::sync::Arc::new(composed);
             continuations.push(Continuation::ProcessRuleMatches {
                 remaining_matches: Vec::new().into_iter(),
                 results: Vec::new(),
@@ -968,7 +1043,14 @@ fn dispatch_rule_matches<C: EvalContext>(
                 depth,
                 pre_fork_epoch: mutation_epoch(),
                 pre_fork_gen: 0, // not entering a fork scope — no CP to restore
-                fork_depth: 0,   // no fork — cut targeting irrelevant
+                fork_depth: 0,   // no fork — only used for trace bookkeeping
+                // Phase 1 cut-barrier: a single-match shim never prunes (no
+                // remaining matches), but it OWNS the barrier this dispatch
+                // opened: its completion restores `saved_barrier`. The RHS
+                // evaluates with `CURRENT_BARRIER == cut_barrier`, so inner
+                // fan-outs (the body's let*/match) capture it.
+                cut_barrier,
+                saved_barrier,
                 current_branch_bindings,
                 outer_carrying: std::sync::Arc::new(outer_carrying.clone()),
                 tracked_vars_hint,
@@ -1197,7 +1279,12 @@ fn dispatch_rule_matches<C: EvalContext>(
     // Default is All (full nondeterministic evaluation) — callers opt in to
     // pruning by setting demand on their WorkItem::Eval.
     let effective_demand = demand.unwrap_or(crate::backend::eval::cesk::coroutine::Demand::All);
-    if !effective_demand.is_all() && matches.len() > 1 {
+    // Phase 1 cut-barrier: within an active cut scope, route through the
+    // SEQUENTIAL `ProcessRuleMatches` path (which carries `cut_barrier` and
+    // prunes on cut) rather than the lazy `ProcessRuleMatchesLazy` coroutine,
+    // which has no cut handling. Bounded-demand pruning is an optimization;
+    // cut correctness (ordered commit) takes precedence.
+    if cut_barrier == 0 && !effective_demand.is_all() && matches.len() > 1 {
         let mut coroutine =
             crate::backend::eval::cesk::coroutine::BranchCoroutine::new(matches, effective_demand);
         // BranchCoroutine with non-empty matches always has at least one branch.
@@ -1329,7 +1416,18 @@ fn dispatch_rule_matches<C: EvalContext>(
         false
     };
 
-    let budget = if wfst_allows_parallel
+    // Phase 1 cut-barrier: when a cut scope is active (`cut_barrier != 0` —
+    // either opened by this dispatch's cut-carrying body or INHERITED from an
+    // enclosing cut scope), force the SEQUENTIAL path. Cut is inherently
+    // ordered (it commits to the FIRST matching branch in source order) and
+    // the barrier thread-locals (`CURRENT_BARRIER`/`CUT_SIGNAL`) do not
+    // propagate to the parallel work-pool's worker threads (each worker runs
+    // a fresh `eval_trampoline_with_carrying` activation that resets them to
+    // 0). Parallel evaluation would therefore (a) have no well-defined "first"
+    // branch to commit to and (b) silently lose the cut signal — exactly the
+    // bug this phase fixes. Sequential dispatch keeps the cut observable.
+    let budget = if cut_barrier == 0
+        && wfst_allows_parallel
         && current_depth < max_parallel_depth()
         && global_eval_pool().active_workers() > 0
     {
@@ -1501,6 +1599,13 @@ fn dispatch_rule_matches<C: EvalContext>(
             pre_fork_epoch: mutation_epoch(),
             pre_fork_gen,
             fork_depth,
+            // Phase 1 cut-barrier: this multi-match fork is the clause's own
+            // nondeterminism. `cut_barrier` was opened (or inherited) at the
+            // top of `dispatch_rule_matches`; the advance arm prunes the
+            // remaining matches when a `(cut)` fires it, and the completion arm
+            // restores `saved_barrier`.
+            cut_barrier,
+            saved_barrier,
             current_branch_bindings,
             outer_carrying: std::sync::Arc::new(outer_carrying.clone()),
             tracked_vars_hint,
@@ -1649,27 +1754,48 @@ thread_local! {
     /// read by `parallel_branch_eval` to compute context-aware effective priority.
     static CONTINUATION_CONTEXT_HASH: Cell<u64> = const { Cell::new(0) };
 
-    /// Prolog-style cut depth. When `(cut)` is evaluated inside a rule's RHS,
-    /// this is set to the current fork depth. The `ProcessRuleMatches`
-    /// continuation at the matching fork depth consumes the signal and
-    /// discards remaining alternative matches.
-    ///
-    /// Value of 0 means "no cut active". Values > 0 indicate the fork depth
-    /// at which cut should fire. This depth-awareness prevents nested
-    /// `dispatch_rule_matches` calls from accidentally consuming the cut
-    /// signal meant for an outer dispatch.
-    static CUT_TARGET_DEPTH: Cell<u32> = const { Cell::new(0) };
+    /// Phase 1 cut-barrier (control substrate). A monotonic allocator for
+    /// cut-scope barrier ids. Each rule dispatch whose matched body can fire
+    /// `(cut)` allocates a fresh id from here (`alloc_barrier`). The id never
+    /// recycles within a trampoline activation, so a barrier uniquely
+    /// identifies one cut scope across the heterogeneous fan-out forest (rule
+    /// ∨ match ∨ superpose ∨ let*) — which a reusable fork DEPTH could not.
+    /// `0` is reserved to mean "no barrier". Monotonic — never save/restored.
+    /// Replaces the old depth-based `CUT_TARGET_DEPTH` linkage; see
+    /// `docs/wam/control-substrate-design.md`.
+    static NEXT_BARRIER_ID: Cell<u64> = const { Cell::new(1) };
+
+    /// Phase 1 cut-barrier: the innermost active cut-scope barrier id. Set by
+    /// `dispatch_rule_matches` when it opens a barrier for a cut-carrying rule
+    /// body (and inherited otherwise), and re-asserted by every fan-out
+    /// advance arm before dispatching an alternative so a `(cut)` evaluated
+    /// inside that alternative fires THIS clause's barrier. `0` = no active
+    /// cut scope. Saved/restored at the trampoline activation boundary.
+    static CURRENT_BARRIER: Cell<u64> = const { Cell::new(0) };
+
+    /// Phase 1 cut-barrier: the barrier id a `(cut)` has fired for, or `0` if
+    /// none is pending. `eval_cut_generic` (via `set_cut_active`) latches the
+    /// innermost `CURRENT_BARRIER` here; each fan-out advance arm consumes it
+    /// via `cut_fired_for(self.cut_barrier)`, pruning its remaining
+    /// alternatives when the ids match. Saved/restored at the activation
+    /// boundary so a nested trampoline cannot consume the outer cut.
+    static CUT_SIGNAL: Cell<u64> = const { Cell::new(0) };
 
     /// Current nondeterministic fork depth — incremented when entering a
     /// `dispatch_rule_matches` with 2+ matches, decremented when the
-    /// corresponding `ProcessRuleMatches` continuation completes.
+    /// corresponding `ProcessRuleMatches` continuation completes. Retained for
+    /// trace/scope bookkeeping only; the CUT linkage now lives in the barrier
+    /// thread-locals above (Phase 1).
     static FORK_DEPTH: Cell<u32> = const { Cell::new(0) };
 
     /// Control-substrate choice-point trail (Phase 0). The `mark()`/`undo_to()`
     /// backbone for cut/conjunction backtracking, installed once per trampoline
     /// activation and saved/restored at the activation boundary alongside
-    /// `FORK_DEPTH`/`CUT_TARGET_DEPTH` so nested activations are isolated.
-    /// Inert in Phase 0 (nothing reads/writes it); Phase 1 (cut) wires it in.
+    /// `FORK_DEPTH` and the cut-barrier thread-locals (`CURRENT_BARRIER`,
+    /// `CUT_SIGNAL`) so nested activations are isolated.
+    /// Phase 1 (cut) does not write match bindings into this trail (cut prunes
+    /// by dropping the fan-out's `remaining_*`); the trail remains available
+    /// for later phases (conjunction backtracking) that bind into it.
     /// See `docs/wam/control-substrate-design.md`.
     static CP_TRAIL: std::cell::RefCell<
         crate::backend::eval::trampoline::binding_store::BindingStore,
@@ -1962,27 +2088,79 @@ where
 /// and contribute zero roots.
 pub fn collect_binding_capture_roots(_roots: &mut Vec<MettaValue>) {}
 
-/// Set the cut signal — called by `eval_cut_generic` when `(cut)` is evaluated.
-/// Records the current fork depth so the correct `ProcessRuleMatches`
-/// continuation consumes it.
+/// Phase 1 cut-barrier: set the cut signal — called by `eval_cut_generic`
+/// when `(cut)` is evaluated. Latches the INNERMOST active cut-scope barrier
+/// (`CURRENT_BARRIER`) into `CUT_SIGNAL`. The enclosing clause's fan-out
+/// advance arm consumes it via `cut_fired_for(self.cut_barrier)`, pruning its
+/// remaining alternatives. When `CURRENT_BARRIER == 0` (no enclosing cut
+/// scope — e.g. a `(cut)` at top level with no nondeterministic clause to
+/// commit), the signal is set to `0`, which no fan-out matches: a harmless
+/// no-op, mirroring Prolog's cut-with-no-choice-points.
 #[inline]
 pub fn set_cut_active() {
-    let depth = FORK_DEPTH.with(|c| c.get());
-    CUT_TARGET_DEPTH.with(|c| c.set(depth));
+    let b = CURRENT_BARRIER.with(|c| c.get());
+    CUT_SIGNAL.with(|c| c.set(b));
 }
 
-/// Check if a cut signal is pending for the given fork depth. If so,
-/// consume it and return `true`.
+/// Phase 1 cut-barrier: allocate a fresh, never-recycled barrier id for a new
+/// cut scope. `0` is reserved for "no barrier", so the allocator starts at 1
+/// and only ever increases within a trampoline activation.
 #[inline]
-fn take_cut_at_depth(depth: u32) -> bool {
-    CUT_TARGET_DEPTH.with(|c| {
-        if c.get() == depth && depth > 0 {
-            c.set(0);
-            true
-        } else {
-            false
-        }
+fn alloc_barrier() -> u64 {
+    NEXT_BARRIER_ID.with(|c| {
+        let id = c.get();
+        c.set(id + 1);
+        id
     })
+}
+
+/// Phase 1 cut-barrier: read the innermost active cut-scope barrier id.
+#[inline]
+fn current_barrier() -> u64 {
+    CURRENT_BARRIER.with(|c| c.get())
+}
+
+/// Phase 1 cut-barrier: set the innermost active cut-scope barrier id. Called
+/// by `dispatch_rule_matches` when opening a barrier for a cut-carrying rule
+/// body, and by every fan-out advance arm before dispatching an alternative
+/// (so a `(cut)` inside that alternative targets the correct clause barrier).
+#[inline]
+fn set_current_barrier(b: u64) {
+    CURRENT_BARRIER.with(|c| c.set(b));
+}
+
+/// Phase 1 cut-barrier: PEEK whether a `(cut)` has fired for barrier `b`,
+/// WITHOUT consuming the signal. A barrier id of `0` never matches (it is the
+/// "no barrier" sentinel).
+///
+/// A single `(cut)` must prune EVERY nondeterministic fan-out belonging to its
+/// clause — and one clause can contain several (e.g. a `let*` with multiple
+/// multi-result value-exprs builds nested `(a)`-then-`(b)` fan-outs that ALL
+/// share the clause barrier). If the first fan-out to observe the signal
+/// consumed it, the sibling/parent fan-outs would not prune and stale
+/// alternatives would survive (MTT vs PeTTa divergence on
+/// `(let* (($x (a)) ($y (b)) ($t (cut))) ...)`). So every fan-out advance arm
+/// PEEKS here to decide pruning, and the signal is consumed exactly once by the
+/// barrier OWNER (see `consume_cut_for`) when its dispatch completes.
+#[inline]
+fn cut_fired_peek(b: u64) -> bool {
+    b != 0 && CUT_SIGNAL.with(|c| c.get()) == b
+}
+
+/// Phase 1 cut-barrier: CONSUME the cut signal for barrier `b` if it is fired
+/// (reset `CUT_SIGNAL` to 0) and return whether it was. Called by the barrier
+/// OWNER — the `dispatch_rule_matches` whose matched body opened the barrier
+/// (`cut_barrier != saved_barrier`) — at its `ProcessRuleMatches` completion,
+/// after the body and all its (peeking) nested fan-outs have committed. This
+/// closes the cut scope so a later sibling cut cannot observe a stale signal.
+#[inline]
+fn consume_cut_for(b: u64) -> bool {
+    if b != 0 && CUT_SIGNAL.with(|c| c.get()) == b {
+        CUT_SIGNAL.with(|c| c.set(0));
+        true
+    } else {
+        false
+    }
 }
 
 /// Increment fork depth — called when entering a nondeterministic dispatch.
@@ -2887,7 +3065,13 @@ fn eval_trampoline_with_carrying<C: EvalContext>(
     // Without this, a `(cut)` inside a `test` body could consume the
     // outer dispatch's cut target or vice versa.
     let saved_fork = FORK_DEPTH.with(|c| c.replace(0));
-    let saved_cut = CUT_TARGET_DEPTH.with(|c| c.replace(0));
+    // Phase 1 cut-barrier: isolate the cut-scope barrier + pending cut signal
+    // for this activation, exactly as fork depth is isolated. A `(cut)` inside
+    // a nested trampoline (e.g. a `test`/`assertEqual`/`collapse` body) must
+    // not consume the outer dispatch's cut, and vice versa. `NEXT_BARRIER_ID`
+    // is monotonic and intentionally NOT reset/restored — ids never recycle.
+    let saved_current_barrier = CURRENT_BARRIER.with(|c| c.replace(0));
+    let saved_cut_signal = CUT_SIGNAL.with(|c| c.replace(0));
     // Phase 0 (control substrate): install a fresh choice-point trail for this
     // activation; the outer activation's trail is restored on exit, exactly as
     // fork/cut state is. Inert in Phase 0 (eval neither reads nor writes it),
@@ -2926,9 +3110,11 @@ fn eval_trampoline_with_carrying<C: EvalContext>(
         }
     };
 
-    // Restore outer trampoline's fork/cut state + choice-point trail.
+    // Restore outer trampoline's fork depth, cut-barrier state, and the
+    // choice-point trail. (NEXT_BARRIER_ID is monotonic — not restored.)
     FORK_DEPTH.with(|c| c.set(saved_fork));
-    CUT_TARGET_DEPTH.with(|c| c.set(saved_cut));
+    CURRENT_BARRIER.with(|c| c.set(saved_current_barrier));
+    CUT_SIGNAL.with(|c| c.set(saved_cut_signal));
     CP_TRAIL.with(|t| {
         *t.borrow_mut() = saved_trail;
     });
@@ -5508,6 +5694,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 env: env.clone(),
                                 depth,
                                 outer_carrying: carrying_bindings.clone(),
+                                // Phase 1 cut-barrier: inherit the open cut
+                                // scope so a `(cut)` inside any conjunction goal
+                                // commits the enclosing clause.
+                                cut_barrier: current_barrier(),
                             });
 
                             work_stack.push(WorkItem::Eval {
@@ -5707,6 +5897,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                                 depth,
                                 outer_carrying: carrying_bindings.clone(),
                                 project_alt_carrying: true,
+                                // Phase 1 cut-barrier: inherit the currently
+                                // open cut scope so a `(cut)` evaluated within
+                                // any alt prunes the enclosing clause.
+                                cut_barrier: current_barrier(),
                             });
 
                             // Compose outer_carrying with the first pair's
@@ -5871,6 +6065,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                                     depth,
                                     outer_carrying: carrying_bindings.clone(),
                                     project_alt_carrying: true,
+                                    // Phase 1 cut-barrier: inherit the open scope.
+                                    cut_barrier: current_barrier(),
                                 });
 
                                 work_stack.push(WorkItem::Eval {
@@ -6071,6 +6267,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                             env: env.clone(),
                             depth,
                             outer_carrying: carrying_bindings.clone(),
+                            // Phase 1 cut-barrier: capture the currently open
+                            // cut scope so the match's template fan-out (spawned
+                            // by the ProcessMatchSpace handler) belongs to the
+                            // enclosing cut clause and a `(cut)` after the first
+                            // matched template prunes the rest (cut.metta).
+                            cut_barrier: current_barrier(),
                         });
 
                         work_stack.push(WorkItem::Eval {
@@ -7661,6 +7863,8 @@ fn process_continuation<C: EvalContext>(
             pre_fork_epoch,
             pre_fork_gen,
             fork_depth,
+            cut_barrier,
+            saved_barrier,
             mut current_branch_bindings,
             outer_carrying,
             tracked_vars_hint,
@@ -7828,11 +8032,15 @@ fn process_continuation<C: EvalContext>(
                 }
             }
 
-            // Check for Prolog-style cut: if (cut) was evaluated during the
-            // branch that just completed, commit to this branch's results and
-            // discard all remaining alternative matches. The cut signal is
-            // depth-targeted so nested dispatches don't accidentally consume it.
-            let cut_fired = take_cut_at_depth(fork_depth);
+            // Phase 1 cut-barrier: if a `(cut)` fired THIS dispatch's barrier
+            // during the branch that just completed, commit to the results
+            // collected so far and discard every remaining alternative match.
+            // The signal is barrier-identified (not depth) so a nested
+            // dispatch's cut cannot prune this fork and vice versa. PEEK here
+            // (do not consume) so sibling/parent fan-outs of the same clause
+            // also prune; the barrier OWNER consumes the signal at completion
+            // (see `is_barrier_owner` below).
+            let cut_fired = cut_fired_peek(cut_barrier);
 
             if remaining_matches.len() == 0 || cut_fired {
                 // Stage 1c: a `fork_depth == 0` ProcessRuleMatches is a
@@ -7845,6 +8053,27 @@ fn process_continuation<C: EvalContext>(
                     leave_fork();
                     leave_fork_scope(pre_fork_gen);
                 }
+                // Phase 1 cut-barrier: this dispatch's fan-out is finished
+                // (all matches consumed or a cut committed). If this dispatch
+                // OWNS the barrier (it allocated a fresh one for a cut-carrying
+                // body — i.e. `cut_barrier != saved_barrier`), CONSUME the cut
+                // signal now: the body and all its nested (peeking) fan-outs
+                // have committed, so the cut scope is closed. A merely
+                // inheriting dispatch (`cut_barrier == saved_barrier`) leaves
+                // the signal for its owner to consume. Then restore the
+                // enclosing cut scope so sibling work / the caller see the
+                // correct innermost barrier.
+                let is_barrier_owner = cut_barrier != saved_barrier;
+                if is_barrier_owner {
+                    consume_cut_for(cut_barrier);
+                }
+                set_current_barrier(saved_barrier);
+                // (The cut commit is realized by dropping `remaining_matches`,
+                // which goes out of scope here. Phase 1 does not record match
+                // bindings in CP_TRAIL — the rejected 2e669c0 pattern — so
+                // there is nothing to `undo_to` on the prune path; the trail
+                // lifecycle is reserved for later phases.)
+                //
                 // Defer the branch environment's deep drop. Its MettaValues
                 // are collected into root_set at the next GC safepoint via
                 // collect_roots(), then the Vec is cleared after perform_safepoint.
@@ -7921,6 +8150,12 @@ fn process_continuation<C: EvalContext>(
                 // thunk FSM.
                 crate::backend::eval::cesk::clear_thunk_table();
 
+                // Phase 1 cut-barrier: re-assert this fork's barrier as the
+                // innermost active cut scope before evaluating the next match's
+                // RHS, so a `(cut)` inside that RHS targets THIS clause (not a
+                // stale ancestor scope left by the previous branch's inner work).
+                set_current_barrier(cut_barrier);
+
                 // Stage 1d-revised: clone current_branch_bindings BEFORE
                 // moving it into the continuation, so we can use it below
                 // as the RHS WorkItem's carrying_bindings.
@@ -7934,6 +8169,8 @@ fn process_continuation<C: EvalContext>(
                     pre_fork_epoch,
                     pre_fork_gen,
                     fork_depth,
+                    cut_barrier,
+                    saved_barrier,
                     current_branch_bindings,
                     outer_carrying,
                     tracked_vars_hint,
@@ -9123,6 +9360,8 @@ fn process_continuation<C: EvalContext>(
                             depth,
                             outer_carrying: shadowed_outer_carrying.clone(),
                             project_alt_carrying: true,
+                            // Phase 1 cut-barrier: inherit the open scope.
+                            cut_barrier: current_barrier(),
                         });
 
                         let tracked = active_tracked_vars();
@@ -10364,6 +10603,8 @@ fn process_continuation<C: EvalContext>(
                 // later premise references must still reach the fold's output.
                 // See the field doc on `Continuation::ProcessAmb`.
                 project_alt_carrying: false,
+                // Phase 1 cut-barrier: inherit the open scope.
+                cut_barrier: current_barrier(),
             });
 
             work_stack.push(WorkItem::Eval {
@@ -10618,6 +10859,8 @@ fn process_continuation<C: EvalContext>(
                     depth,
                     outer_carrying: outer_carrying.clone(),
                     project_alt_carrying: true,
+                    // Phase 1 cut-barrier: inherit the open scope.
+                    cut_barrier: current_barrier(),
                 });
 
                 // Compose outer_carrying with this alt's bindings for the
@@ -11867,6 +12110,8 @@ fn process_continuation<C: EvalContext>(
                     // see the field doc on `Continuation::ProcessAmb`.
                     outer_carrying: outer_carrying.clone(),
                     project_alt_carrying: false,
+                    // Phase 1 cut-barrier: inherit the open scope.
+                    cut_barrier: current_barrier(),
                 });
 
                 let first_carrying: crate::backend::eval::trampoline::types::SharedBindings =
@@ -12405,6 +12650,7 @@ fn process_continuation<C: EvalContext>(
             env: _,
             depth,
             outer_carrying,
+            cut_barrier,
         } => {
             let (goal_results, result_env) = result;
 
@@ -12430,12 +12676,21 @@ fn process_continuation<C: EvalContext>(
             accumulated_results.extend(goal_results);
 
             if let Some(next_goal) = remaining_goals.next() {
+                // Phase 1 cut-barrier: re-assert the enclosing cut scope before
+                // resolving the next goal so a `(cut)` evaluated inside it
+                // targets the correct clause barrier. A conjunction sequences
+                // goals (it does not fan out alternatives here), so a fired cut
+                // does not abort the sequence — it commits the enclosing
+                // clause's fan-out, which is pruned by THAT fan-out's advance
+                // arm via the shared `CUT_SIGNAL`.
+                set_current_barrier(cut_barrier);
                 continuations.push(Continuation::ProcessConjunction {
                     remaining_goals,
                     accumulated_results,
                     env: result_env.clone(),
                     depth,
                     outer_carrying: outer_carrying.clone(),
+                    cut_barrier,
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -13978,11 +14233,32 @@ fn process_continuation<C: EvalContext>(
             depth,
             outer_carrying,
             project_alt_carrying,
+            cut_barrier,
         } => {
             let (alt_results, result_env) = result;
             results.extend(alt_results);
 
+            // Phase 1 cut-barrier: if a `(cut)` fired this disjunction's
+            // barrier while the alternative that just completed was being
+            // evaluated, commit to the results collected so far and discard
+            // every remaining alternative. This is the cut.metta path — the
+            // `let*` value-expr fan-out is pruned to its first answer. PEEK
+            // (do not consume): the same cut must also prune any sibling/parent
+            // fan-out of this clause; the barrier owner consumes the signal.
+            if cut_fired_peek(cut_barrier) {
+                drop(remaining_alts);
+                work_stack.push(WorkItem::Resume {
+                    result: (SmallVec::from_vec(results), result_env),
+                });
+                return;
+            }
+
             if let Some((next_val, alt_b)) = remaining_alts.next() {
+                // Phase 1 cut-barrier: re-assert this disjunction's barrier as
+                // the innermost active cut scope before dispatching the next
+                // alternative, so a `(cut)` evaluated inside it targets THIS
+                // clause (not a stale ancestor scope).
+                set_current_barrier(cut_barrier);
                 // Use the ORIGINAL env for each alternative (not result_env).
                 // Parallel path gives all branches the same pre-fork env;
                 // sequential must do the same to preserve semantics.
@@ -13993,6 +14269,7 @@ fn process_continuation<C: EvalContext>(
                     depth,
                     outer_carrying: outer_carrying.clone(),
                     project_alt_carrying,
+                    cut_barrier,
                 });
 
                 // Compose outer_carrying with this alt's per-branch bindings
@@ -14563,6 +14840,7 @@ fn process_continuation<C: EvalContext>(
             env,
             depth,
             outer_carrying,
+            cut_barrier,
         } => {
             let (space_results, mut env_after) = result;
 
@@ -14689,6 +14967,11 @@ fn process_continuation<C: EvalContext>(
                                 env: env_after.clone(),
                                 depth,
                                 outer_carrying: outer_carrying.clone(),
+                                // Phase 1 cut-barrier: propagate the match's
+                                // barrier into the template fan-out so a
+                                // `(cut)` reducing one matched template prunes
+                                // the remaining matched templates.
+                                cut_barrier,
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
@@ -14755,6 +15038,11 @@ fn process_continuation<C: EvalContext>(
                                 env: env_after.clone(),
                                 depth,
                                 outer_carrying: outer_carrying.clone(),
+                                // Phase 1 cut-barrier: propagate the match's
+                                // barrier into the template fan-out so a
+                                // `(cut)` reducing one matched template prunes
+                                // the remaining matched templates.
+                                cut_barrier,
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
@@ -14789,9 +15077,25 @@ fn process_continuation<C: EvalContext>(
             env,
             depth,
             outer_carrying,
+            cut_barrier,
         } => {
             let (template_results, _env_after) = result;
             results.extend(template_results);
+
+            // Phase 1 cut-barrier: if a `(cut)` fired this match fan-out's
+            // barrier while reducing the template that just completed, commit
+            // to the templates collected so far and discard the rest. This is
+            // the cut.metta path when the matched `(foo $1)` produces multiple
+            // templates and the rule body cuts after the first. PEEK (do not
+            // consume) — the barrier owner consumes; sibling fan-outs must also
+            // see the signal.
+            if cut_fired_peek(cut_barrier) {
+                drop(remaining_templates);
+                work_stack.push(WorkItem::Resume {
+                    result: (SmallVec::from_vec(results), env),
+                });
+                return;
+            }
 
             if remaining_templates.len() == 0 {
                 work_stack.push(WorkItem::Resume {
@@ -14800,12 +15104,17 @@ fn process_continuation<C: EvalContext>(
             } else {
                 let next_template = remaining_templates.next().unwrap();
 
+                // Phase 1 cut-barrier: re-assert this fan-out's barrier before
+                // reducing the next matched template.
+                set_current_barrier(cut_barrier);
+
                 continuations.push(Continuation::ProcessMatchTemplates {
                     remaining_templates,
                     results,
                     env: env.clone(),
                     depth,
                     outer_carrying: outer_carrying.clone(),
+                    cut_barrier,
                 });
 
                 work_stack.push(WorkItem::Eval {
@@ -15852,6 +16161,8 @@ fn process_continuation<C: EvalContext>(
                                 env: env_after.clone(),
                                 depth,
                                 outer_carrying: outer_carrying.clone(),
+                                // Phase 1 cut-barrier: inherit the open scope.
+                                cut_barrier: current_barrier(),
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
@@ -15923,6 +16234,11 @@ fn process_continuation<C: EvalContext>(
                                 env: env_after.clone(),
                                 depth,
                                 outer_carrying: outer_carrying.clone(),
+                                // Phase 1 cut-barrier: this `match`-with-default
+                                // fan-out (ProcessMatchOrSpace) inherits the
+                                // currently open cut scope so a `(cut)` reducing
+                                // one matched template prunes the rest.
+                                cut_barrier: current_barrier(),
                             });
 
                             let forked_env = env_after.fork_for_nondeterminism();
@@ -16596,6 +16912,13 @@ fn process_continuation<C: EvalContext>(
                         depth,
                         outer_carrying: accumulated_bindings.clone(),
                         project_alt_carrying: true,
+                        // Phase 1 cut-barrier: the let* multi-result fallback
+                        // fan-out belongs to whatever cut scope is currently
+                        // open (e.g. the cut-carrying `match-single` rule body
+                        // that produced this let*). Capturing the live barrier
+                        // here is exactly what lets a `(cut)` in a LATER let*
+                        // pair prune this value-expr fan-out (cut.metta).
+                        cut_barrier: current_barrier(),
                     });
 
                     work_stack.push(WorkItem::Eval {

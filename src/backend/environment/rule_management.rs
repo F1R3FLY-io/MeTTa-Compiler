@@ -357,6 +357,15 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     /// PLN's `(: ? (-> Expression Atom))` declares the canonical
     /// "preserve the term" predicate that drives Direct.metta's inference.
     pub lhs_head_all_meta_typed: bool,
+    /// Phase 1 cut-barrier (control substrate): true iff the rule RHS
+    /// lexically contains an applied `(cut ...)` head anywhere (recursively),
+    /// not shadowed inside a `quote`. Computed once at `add_rule` time via
+    /// `expr_contains_cut`. A rule whose body can fire `(cut)` must, when
+    /// dispatched, open a fresh cut barrier so the cut prunes THIS clause's
+    /// nondeterminism (the rule fan-out AND any match/superpose/let* fan-out
+    /// produced while evaluating the body). See
+    /// `docs/wam/control-substrate-design.md`.
+    pub body_contains_cut: bool,
 }
 
 /// Extract the head symbol of a value's first argument (for second-level rule indexing).
@@ -2413,6 +2422,55 @@ pub(crate) fn rhs_head_is_lazy_form<V: MettaValueTrait>(rhs: &V) -> bool {
     false
 }
 
+/// Phase 1 cut-barrier (control substrate): returns true iff `v` lexically
+/// contains the atom `cut` as an APPLIED HEAD `(cut ...)` anywhere in its
+/// tree, NOT shadowed inside a `quote` wrapper.
+///
+/// Used to precompute `RuleEntry::body_contains_cut` at `add_rule` time and,
+/// via the same predicate, to decide at dispatch time whether a rule's RHS
+/// opens a new cut barrier (`dispatch_rule_matches`). A `(cut)` inside the
+/// rule body must prune the enclosing clause's nondeterminism; this scan
+/// identifies which rule bodies carry that obligation.
+///
+/// We descend into S-expression children but NOT into `Quoted` wrappers,
+/// because `(quote (cut))` is data, not a control cut (mirrors the way the
+/// evaluator treats quoted forms as inert). Note: the legacy
+/// `contains_atom_recursive` in `core.rs` (feeding the bloom-backed
+/// `rule_rhs_contains_atom`) matches a bare `cut` atom in any position; this
+/// predicate is the precise applied-head, quote-aware variant the barrier
+/// lifecycle needs.
+///
+/// **Stack-safety mandate (2026-05-15)**: implemented with an explicit
+/// work-list (no Rust call recursion), so a deeply-nested rule body cannot
+/// overflow the native stack. Runs once per rule at load time, never in the
+/// eval hot loop.
+pub(crate) fn expr_contains_cut<V: MettaValueTrait>(v: &V) -> bool {
+    // Small inline stack; rule bodies are shallow in practice, and the
+    // SmallVec spills to the heap rather than the C stack for the rare deep
+    // body — keeping the scan stack-safe regardless of nesting depth.
+    let mut work: SmallVec<[&V; 16]> = SmallVec::new();
+    work.push(v);
+    while let Some(node) = work.pop() {
+        // Quoted forms are inert data — a `(cut)` inside `(quote ...)` is not
+        // a control cut, so we do not descend into the quoted payload.
+        if node.is_quoted() {
+            continue;
+        }
+        if let Some(items) = node.as_sexpr() {
+            // Applied head `(cut ...)` — the control cut we are looking for.
+            if let Some(head) = items.first().and_then(|h| h.as_atom()) {
+                if head == "cut" {
+                    return true;
+                }
+            }
+            for item in items {
+                work.push(item);
+            }
+        }
+    }
+    false
+}
+
 /// PT-canonical meta-typed signature check. Returns true iff the head has
 /// at least one declared arrow type where ALL arg types AND the return
 /// type are meta-types per `is_meta_type`. Consulted at rule insertion
@@ -3124,6 +3182,7 @@ where
                 let requires_non_empty_first_arg = rule_requires_non_empty_first_arg(&lhs, &rhs);
                 let body_wants_lazy_args = rhs_head_is_lazy_form(&rhs);
                 let lhs_head_all_meta_typed = lhs_head_signature_all_meta_typed(&lhs, self);
+                let body_contains_cut = expr_contains_cut(&rhs);
                 let entry = RuleEntry {
                     lhs: lhs.clone(),
                     rhs_has_variables: rhs.contains_variables(),
@@ -3145,6 +3204,7 @@ where
                     requires_non_empty_first_arg,
                     body_wants_lazy_args,
                     lhs_head_all_meta_typed,
+                    body_contains_cut,
                 };
                 // Phase 4a: Pre-seed tiered cache so first RHS evaluation
                 // immediately triggers bytecode compilation (no warmup delay)
@@ -3237,6 +3297,7 @@ where
             let requires_non_empty_first_arg = rule_requires_non_empty_first_arg(&lhs, &rhs);
             let body_wants_lazy_args = rhs_head_is_lazy_form(&rhs);
             let lhs_head_all_meta_typed = lhs_head_signature_all_meta_typed(&lhs, self);
+            let body_contains_cut = expr_contains_cut(&rhs);
             let entry = RuleEntry {
                 lhs: lhs.clone(),
                 rhs_has_variables: rhs.contains_variables(),
@@ -3258,6 +3319,7 @@ where
                 requires_non_empty_first_arg,
                 body_wants_lazy_args,
                 lhs_head_all_meta_typed,
+                body_contains_cut,
             };
             // Phase 4a: Pre-seed tiered cache for wide MORK path
             crate::backend::bytecode::tiered_cache::global_tiered_cache()
@@ -3541,6 +3603,12 @@ where
             let any_rule_lhs_head_all_meta_typed =
                 candidates.iter().any(|e| e.lhs_head_all_meta_typed);
 
+            // Phase 1 cut-barrier: O(1) precomputed aggregate of the per-rule
+            // `body_contains_cut` flag for this (head, arity). Consumed by the
+            // dispatcher as a fast precheck for whether a cut scope may need to
+            // be opened for calls to this head.
+            let any_rule_body_contains_cut = candidates.iter().any(|e| e.body_contains_cut);
+
             // Phase E: Populate operator inline cache with metadata about this
             // (head, arity) — the caller can use this to skip hash_value()
             // computation on subsequent calls.
@@ -3555,6 +3623,7 @@ where
                         candidate_count: candidates.len(),
                         any_rule_wants_lazy_args,
                         lhs_head_all_meta_typed: any_rule_lhs_head_all_meta_typed,
+                        any_rule_body_contains_cut,
                     },
                 );
             }
@@ -5344,6 +5413,7 @@ impl MettaEnvironment {
                             let body_wants_lazy_args = rhs_head_is_lazy_form(&rhs);
                             let lhs_head_all_meta_typed =
                                 lhs_head_signature_all_meta_typed(&lhs, self);
+                            let body_contains_cut = expr_contains_cut(&rhs);
                             let entry = RuleEntry {
                                 lhs: lhs.clone(),
                                 rhs_has_variables: rhs.contains_variables(),
@@ -5365,6 +5435,7 @@ impl MettaEnvironment {
                                 requires_non_empty_first_arg,
                                 body_wants_lazy_args,
                                 lhs_head_all_meta_typed,
+                                body_contains_cut,
                             };
 
                             // Phase 4a: Pre-seed tiered cache for bulk path

@@ -853,6 +853,17 @@ pub struct OperatorCacheEntry {
     /// PeTTa's data-in / data-out semantic for `(-> Expression Atom)`-class
     /// predicates. Required for PLN's `(? $term)` pattern.
     pub lhs_head_all_meta_typed: bool,
+    /// Phase 1 cut-barrier: true iff ANY candidate rule for this (head, arity)
+    /// has `RuleEntry::body_contains_cut = true` — i.e. its RHS lexically
+    /// contains an applied `(cut ...)` (quote-aware, precomputed at add time).
+    /// O(1) precomputed aggregate of the per-rule flag, mirroring
+    /// `any_rule_wants_lazy_args`. `dispatch_rule_matches` independently
+    /// re-confirms cut presence on the INSTANTIATED matched RHS (which is what
+    /// actually executes) before opening a barrier; this aggregate is the
+    /// canonical per-(head,arity) store and is consulted as an O(1) fast
+    /// precheck. PLN's `=>` macro (`(= (=> (cons , $args) ...) (progn (cut)
+    /// ...))`) sets it.
+    pub any_rule_body_contains_cut: bool,
 }
 
 thread_local! {

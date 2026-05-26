@@ -98,6 +98,15 @@ bug-fix (cut) is **Phase 1**, depending on Phase 0's mark/undo for correct backt
 - Prolog-level mutable `clause/2`/`assertz`/`retract` — host-FFI in PeTTa, absent from MeTTa corpus;
   engine analog (match-pattern conjunction + read-only RuleIndex query) is in-scope.
 - CLP(FD) — host-dependent, no corpus demand.
+- Native eval-position conjunction `(, …)` (was Phase 4) — empirically NOT needed: PeTTa returns
+  `(, A B)` as DATA in eval position too (verified 2026-05-26), exactly like MTT. `(, …)` is only
+  ever an `=>` antecedent (PLN path, works via foldl) or a `match` pattern (Phase 6, works). Building
+  an eval-position handler would diverge from PeTTa. See the 2026-05-26 ledger entry.
+- NAF `\+` and soft-cut `*->` (was Phase 2-rest / Phase 3) — ZERO corpus usage (`\+` absent; `*->`
+  only INTERNAL to PeTTa's own translator `get-type`, never a user MeTTa form). Deferred as
+  completeness-only; they are thin barrier layers (like `once`) buildable on demand if a corpus need
+  appears. Match-pattern conjunction `[, …]` likewise: the `(, P1 P2)` match form (Phase 6) already
+  works; no separate `[, …]` syntax appears in the corpus.
 
 ## Constraints (all phases)
 Heap-trampolined (marks in heap continuations; iterative path-compressed `find`); PathMap/MORK/MM2
@@ -169,3 +178,47 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   cut 8/8. (Corpus files peano/invertpeanoplus/logicprogset/hyperpose_primes still fail on UNRELATED
   pre-existing gaps — foldall, `(plus $A $B)` reverse-unification, `and`-over-non-Bool, huge-number
   `>` overflow — NOT once; the once-specific sub-tests within them pass.)
+- 2026-05-26: **Phase 4 (native conjunction `(, …)` in eval-position) — data-driven NOT NEEDED**
+  (re-classified to "explicitly NOT built, justified"). Empirical finding: PeTTa does NOT resolve
+  `(, A B)` as an eval-position goal either — `!(, (father tom $x) (father $x $y))` returns the
+  `(, …)` form as DATA (freshened vars) in BOTH PeTTa AND MTT. The corpus uses `(, …)` ONLY as
+  (a) `=>` macro antecedents (nars_direct, PLN Direct — PLN's path, already works via the foldl-atom
+  desugar, 5/5 PLN), (b) `match` PATTERNS (matchnested2 — Phase 6), (c) nested inside other forms.
+  None is eval-position goal-resolution. MTT already matches PeTTa (both return `(, …)` as data), so
+  a `K-Conjunction` eval-position handler would be unobservable / divergent. The migration-plan's
+  Phase 7 `K-Conjunction` premise rested on PLN's `=>` emitting native conjunction, which it does NOT
+  (it desugars to foldl). Conclusion: do not build eval-position `(, …)`; the `,`-as-data behavior is
+  correct and PeTTa-faithful.
+- 2026-05-26: **Phase 6 (match-pattern conjunction `(match &self (, P1 P2) tmpl)`) — CORE ALREADY
+  WORKS.** Verified: `(match &self (, (friend $1 $2) (friend $2 $3)) (transitive $1 $2 $3))` →
+  `(transitive tim tom tam)`, matching the PeTTa oracle exactly (shared-var `$2` threaded across the
+  conjuncts via the existing match machinery). Single-conjunct `(match &self (, (friend $1 $2)) …)`
+  also works. So the conjunctive match-query over PathMap/MORK threading shared vars is already
+  implemented — no new clause/2 engine needed. **However, matchnested2.metta STACK-OVERFLOWS** on a
+  SEPARATE, pre-existing bug (NOT the conjunction): a `match` TEMPLATE that is a TUPLE headed by an
+  SExpr with side-effects, e.g. `((add-atom &self …) (remove-atom &self …))`. Isolation matrix:
+  single-side-effect template `(add-atom …)` / `(remove-atom …)` works (`[()]`); non-side-effect
+  tuple template `((foo $1)(bar $2))` works; bare top-level tuple `((add-atom …)(remove-atom …))`
+  works via outer-form-is-data; ONLY `match` + tuple-headed-by-SExpr + side-effects overflows. Tight
+  2–3 frame recursion (gdb on stripped binary). NOT a regression from cut/once.
+- 2026-05-26: **matchnested2 stack overflow FIXED `10d3cf5`** (stack-safety mandate). Root cause was
+  NOT the conjunction NOR a true cycle — a **variable-hygiene name collision** causing ACYCLIC
+  UNBOUNDED substitution growth. Proven by gdb (symbol build) + Python-DWARF value decode + a rename
+  experiment: a rule whose LHS var collides by NAME with a free var in the matched argument (minimal
+  repro `(= (id $z) $z)` + `!(id (wrap $z))`, independently reproduced) binds `$z → (wrap $z)`
+  (self-referential by name); the transitive pre-resolution in `match_rules_native_inner`
+  (rule_management.rs ~4010) substituted the inner `$z → (wrap $z)` without bound → overflow via the
+  `apply_bindings_scoped ↔ apply_bindings_iterative` per-Spanned-form recursion (the key-freshening
+  that disambiguates runs AFTER pre-resolution). Fix = a **self-exclusion guard**: a value containing
+  its OWN key resolves against the OTHER bindings only (inner occurrence = caller's distinct var, stays
+  free; key-freshening then disambiguates). STRICT no-op for non-self-referential bindings → zero PLN/
+  dispatch regression (nextest 4235, --strict 481, M11-pt 221, M11-he 40, PLN 5/5 canonical).
+  REJECTED the Plan agent's primary proposal (reorder freshening BEFORE pre-resolution) — it would
+  break the legitimate transitive case `{$B → (Inheritance $1 …), $1 → Anna}` (the value's `$1` would
+  no longer match the freshened key `$__fr_E_1`); caught by supervisor analysis. REMAINING (separate,
+  tracked, NOT crashes): (1) matchnested2's FULL result needs the side-effecting-match-template
+  ("SExpr-as-callable") semantics — `((add-atom…)(remove-atom…))` is treated as data so the transitive
+  atoms aren't produced (returns `()`); documented design question. (2) Layer A (make `apply_bindings`
+  Spanned-handling iterative via a `BuildSpanned` work item) — defense-in-depth stack-safety hardening
+  for hypothetical deep nesting; deferred as a benchmarked change to the 9.5M-calls/run hot path (no
+  corpus trigger once the unbounded growth is fixed).

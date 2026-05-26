@@ -84,6 +84,24 @@ pub enum GenericEvalStep<V: MettaValueTrait, E: Clone = MettaEnvironment> {
         depth: usize,
     },
 
+    /// PeTTa `(once X)`: evaluate X, commit to its FIRST answer, and prune X's
+    /// remaining nondeterministic fan-out — Prolog `once(G) ≡ (G, !)` scoped to
+    /// G. The trampoline opens a FRESH cut barrier for this once-scope, then
+    /// evaluates the `prog1`-style desugar `body` =
+    /// `(let $r X (let $_ (cut) $r))`; a `ProcessOnceRestore` continuation
+    /// consumes the once's cut signal and restores the enclosing barrier so the
+    /// commitment is scope-local (does NOT prune the enclosing clause's other
+    /// nondeterminism). See docs/wam/control-substrate-design.md (Phase 2).
+    StartOnce {
+        /// The desugared `(let $r X (let $_ (cut) $r))` to evaluate under a
+        /// fresh once-barrier.
+        body: V,
+        /// Environment for evaluation
+        env: E,
+        /// Evaluation depth (preserved for TCO)
+        depth: usize,
+    },
+
     /// Evaluate if branch - condition has been evaluated, now evaluate selected branch.
     /// This enables if branches to participate in trampoline (TCO).
     EvalIfBranch {

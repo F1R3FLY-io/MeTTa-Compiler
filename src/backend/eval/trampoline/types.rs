@@ -672,6 +672,21 @@ pub enum Continuation {
         outer_carrying: SharedBindings,
     },
 
+    /// PeTTa `(once X)` barrier owner (Phase 2). Opened by the `StartOnce`
+    /// handler, which allocates a fresh `once_barrier`, makes it the innermost
+    /// cut scope, and dispatches the desugared `(let $r X (let $_ (cut) $r))`.
+    /// When the body's value bubbles back, this CONSUMES the once's cut signal
+    /// (it OWNS the barrier — mirrors the `is_barrier_owner` lifecycle in
+    /// ProcessRuleMatches) and restores `saved_barrier`, so the enclosing
+    /// clause's nondeterminism is untouched (scope-precision). Carries no
+    /// fan-out state — X's own fan-out continuations did the pruning by peeking
+    /// `cut_fired_peek(once_barrier)`.
+    ProcessOnceRestore {
+        saved_barrier: u64,
+        once_barrier: u64,
+        depth: usize,
+    },
+
     /// Collecting grounded arg evaluation results.
     ///
     /// `evaluated_results` stores ALL results per arg (Vec<Vec<MettaValue>>) to
@@ -1948,6 +1963,10 @@ impl Continuation {
                 collect_bindings_values(outer_carrying, out);
             }
 
+            // ProcessOnceRestore holds only barrier ids (u64) + depth — no
+            // MettaValue roots to walk.
+            Self::ProcessOnceRestore { .. } => {}
+
             Self::CollectGroundedArg {
                 items,
                 evaluated_results,
@@ -2810,6 +2829,7 @@ impl Continuation {
             | Self::ProcessCombinations { depth, .. }
             | Self::ProcessCombinationsBound { depth, .. }
             | Self::ProcessLet { depth, .. }
+            | Self::ProcessOnceRestore { depth, .. }
             | Self::CollectGroundedArg { depth, .. }
             | Self::CollectApplicativeResults { depth, .. }
             | Self::ProcessMapAtom { depth, .. }
@@ -2894,6 +2914,7 @@ impl Continuation {
             Self::ProcessCombinations { .. } => "ProcessCombinations",
             Self::ProcessCombinationsBound { .. } => "ProcessCombinationsBound",
             Self::ProcessLet { .. } => "ProcessLet",
+            Self::ProcessOnceRestore { .. } => "ProcessOnceRestore",
             Self::CollectGroundedArg { .. } => "CollectGroundedArg",
             Self::CollectApplicativeResults { .. } => "CollectApplicativeResults",
             Self::ProcessMapAtom { .. } => "ProcessMapAtom",

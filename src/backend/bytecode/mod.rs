@@ -638,7 +638,18 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     | "compare-and-swap-state!" | "loop-until-state"
                     | "new-das!" | "new-distributed-space" | "das-barrier!"
                     | "add-observer!"
-                    | "snapshot!" | "partition-space" => false,
+                    | "snapshot!" | "partition-space"
+                    // Phase 2 (2026-05-26): `(once X)` is a T0-only control
+                    // form (StartOnce/ProcessOnceRestore in eval/step/sexpr.rs +
+                    // trampoline). It has NO bytecode lowering — the T1 VM would
+                    // hit op_dispatch_rules's data-constructor fallthrough and
+                    // push the raw `(once …)` SExpr unchanged (the same
+                    // function/return/evalc bug class above, observed as
+                    // `(collapse (once (xs)))` → `((once 1) 2 3)`). Route any
+                    // expression containing `once` to T0 where the cut-barrier
+                    // substrate commits X to its first answer. Compile-time tier
+                    // selection — not a runtime down-bail.
+                    | "once" => false,
                     // User-defined functions: compiled as Call opcodes.
                     // The VM dispatches via op_dispatch_rules → match_rules_native.
                     // eval_inner completes evaluation via trampoline re-eval.

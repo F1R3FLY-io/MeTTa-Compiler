@@ -352,6 +352,13 @@ fn is_impure_head(head: &str) -> bool {
             // MTT committed to LAST not FIRST). `expression_involves_cut_rules`
             // only catches RULES whose RHS contains cut, not a bare `(cut)`.
             | "cut"
+            // Phase 2 (2026-05-26): `(once X)` desugars to a barrier-scoped
+            // `(cut)` committing X to its first answer. It must NOT be
+            // memoized: (1) the desugar fires the `(cut)` side-effect (the
+            // cut_nested class — a memoized `(once …)` returns a cached value
+            // without re-opening the barrier / re-pruning); (2) X may be impure
+            // (e.g. `(once (match &self …))` over a mutated space → stale).
+            | "once"
             | "new-memo" | "memo" | "clear-memo!" | "memo-stats"
             | "pragma!"
             | "=" | ":" | ":<"

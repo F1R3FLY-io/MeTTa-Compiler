@@ -1282,6 +1282,53 @@ where
                     };
                 }
 
+                // once - PeTTa `(once X)`: commit X to its first answer and
+                // prune the rest (Prolog `once(G) ≡ (G, !)` scoped to G).
+                // Desugar to the verified cut idiom `(prog1 X (cut))` =
+                // `(let $r X (let $_ (cut) $r))` and evaluate it under a FRESH
+                // cut barrier (opened by the StartOnce handler), so the cut
+                // commits ONLY X's fan-out, not the enclosing clause's.
+                "once" => {
+                    let factory = ctx.factory();
+                    if items.len() != 2 {
+                        let arg_count = items.len() - 1;
+                        let err = factory.error(
+                            factory.sexpr(items),
+                            factory.string(&format!(
+                                "once requires exactly 1 argument, got {}. \
+                                 Usage: (once expr)",
+                                arg_count
+                            )),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    // Hygienic fresh vars (epoch-interned, `$__fr_*` prefixed so
+                    // they interlock with the propagate_keys sidecar filter and
+                    // never collide under nested `(once (once X))`).
+                    let epoch = crate::backend::eval::freshening::allocate_epoch();
+                    let r_var = factory.atom(
+                        crate::backend::eval::freshening::intern_fresh_name(epoch, "once_r"),
+                    );
+                    let unused_var = factory.atom(
+                        crate::backend::eval::freshening::intern_fresh_name(epoch, "once_t"),
+                    );
+                    // (let $__fr_E_once_t (cut) $__fr_E_once_r)
+                    let inner = factory.sexpr(vec![
+                        factory.atom("let"),
+                        unused_var,
+                        factory.sexpr(vec![factory.atom("cut")]),
+                        r_var.clone(),
+                    ]);
+                    // (let $__fr_E_once_r X <inner>)
+                    let body = factory.sexpr(vec![
+                        factory.atom("let"),
+                        r_var,
+                        items[1].clone(),
+                        inner,
+                    ]);
+                    return GenericEvalStep::StartOnce { body, env, depth };
+                }
+
                 // function - defers evaluation to trampoline
                 "function" => {
                     if items.len() != 2 {

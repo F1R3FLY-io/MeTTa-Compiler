@@ -311,7 +311,9 @@ fn continuation_to_stack_symbol(
         | Continuation::CollectFreezeArgs { .. } => SchedulerStackSymbol::GroundedOp,
         Continuation::ProcessCombinations { .. } => SchedulerStackSymbol::Combinations,
         Continuation::ProcessCombinationsBound { .. } => SchedulerStackSymbol::Combinations,
-        Continuation::ProcessLet { .. } | Continuation::ProcessLetStar { .. } => {
+        Continuation::ProcessLet { .. }
+        | Continuation::ProcessLetStar { .. }
+        | Continuation::ProcessOnceRestore { .. } => {
             SchedulerStackSymbol::LetChain { depth: 0 }
         }
         Continuation::CollectSExpr { .. } | Continuation::CollectGroundedArg { .. } => {
@@ -4494,6 +4496,38 @@ fn eval_trampoline_inner<C: EvalContext>(
 
                         work_stack.push(WorkItem::Eval {
                             value: value_expr,
+                            env,
+                            depth: depth + 1,
+                            is_tail_call: false,
+                            expected_type: None,
+                            demand: None,
+                            carrying_bindings: carrying_bindings.clone(),
+                        });
+                    }
+
+                    // PeTTa `(once X)` (Phase 2): open a FRESH cut scope for
+                    // THIS once — distinct from any enclosing rule/once barrier
+                    // — so the desugar's `(cut)` prunes ONLY X's fan-out
+                    // (scope-precision). Evaluate the desugared body
+                    // `(let $r X (let $_ (cut) $r))`; the `ProcessOnceRestore`
+                    // owner consumes the once's cut signal and restores
+                    // `saved_barrier` after the body resolves.
+                    GenericEvalStep::StartOnce {
+                        body,
+                        env: step_env,
+                        depth,
+                    } => {
+                        let env: SharedEnv = Arc::new(step_env);
+                        let once_barrier = alloc_barrier();
+                        let saved_barrier = current_barrier();
+                        set_current_barrier(once_barrier);
+                        continuations.push(Continuation::ProcessOnceRestore {
+                            saved_barrier,
+                            once_barrier,
+                            depth,
+                        });
+                        work_stack.push(WorkItem::Eval {
+                            value: body,
                             env,
                             depth: depth + 1,
                             is_tail_call: false,
@@ -8991,6 +9025,26 @@ fn process_continuation<C: EvalContext>(
                     result: (tagged, env),
                 });
             }
+        }
+
+        // PeTTa `(once X)` barrier owner (Phase 2). The desugared body's own
+        // fan-out continuations already pruned X to its first answer by peeking
+        // `cut_fired_peek(once_barrier)`. As the OWNER of `once_barrier`, CONSUME
+        // its cut signal now (so it cannot leak to the enclosing clause), then
+        // restore the enclosing cut scope and pass the body's value through.
+        // Mirrors the `is_barrier_owner` consume+restore at ProcessRuleMatches
+        // (eval_loop.rs ~8066-8070).
+        Continuation::ProcessOnceRestore {
+            saved_barrier,
+            once_barrier,
+            depth: _,
+        } => {
+            let (values, result_env) = result;
+            consume_cut_for(once_barrier);
+            set_current_barrier(saved_barrier);
+            work_stack.push(WorkItem::Resume {
+                result: (values, result_env),
+            });
         }
 
         Continuation::ProcessLet {

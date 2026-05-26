@@ -145,3 +145,27 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   PLN-Smokes 178.7 ms ± 5.0; PLN-Toothbrush 1.725 s ± 0.031; PLN-FlyingRaven 20.883 s ± 0.361
   (perf hotspot — Phase 7 target); mmverify-demo0 6.432 s ± 0.043 (User 3.9 s / **System 17.4 s**
   → allocation/syscall pressure); PLN-Robot 6.442 s ± 0.168 (4 runs). File: /tmp/wam_baseline_5637128.txt.
+- 2026-05-26: **Phase 2 (`once`) COMPLETE** (data-driven re-prioritization: `once` has HIGH corpus
+  demand — once/matchsingle/metta4_streams/invertpeanoplus/hyperpose_primes/tilepuzzle/matespace/
+  plntestdirect — whereas NAF `\+` (Phase 2's other half) and soft-cut `*->` (Phase 3) have ZERO
+  corpus usage, so NAF/soft-cut are deferred as completeness-only). `(once X)` ≡ Prolog
+  `once(G)=(G,!)` scoped to G: commit X to its FIRST answer + PRUNE the rest (load-bearing for
+  lazy/infinite X). Built as a thin layer over the Phase-1 cut barrier: `(once X)` desugars to the
+  verified cut idiom `(prog1 X (cut))` = `(let $r X (let $_ (cut) $r))` under a FRESH barrier opened
+  by a new `StartOnce` eval-step and owned by a new `ProcessOnceRestore` continuation (consume the
+  once's cut signal + restore the enclosing barrier — the `is_barrier_owner` lifecycle). 6 edits:
+  StartOnce (step/types.rs) · `"once"` arm w/ `freshening::allocate_epoch`+`intern_fresh_name`
+  hygiene (step/sexpr.rs) · ProcessOnceRestore + 4 match arms (trampoline/types.rs +
+  continuation_to_stack_symbol) · StartOnce/ProcessOnceRestore handlers (eval_loop.rs) · `"once"` in
+  is_impure_head (never memoized — cut_nested lesson) · `"once"` → T0 in can_compile_with_env
+  (the T1 VM has no `once` lowering — caught a real bug where `(collapse (once (xs)))` returned
+  `((once 1) 2 3)` via the bytecode data-constructor fallthrough). `once` is SELF-BARRIERING: it
+  opens its own barrier, so it commits even at top level (the bare cut idiom needs an enclosing rule
+  barrier — once is strictly more self-contained). Scope-precision verified: `(once …)` in a let*
+  does NOT prune a sibling `superpose`. VERIFIED: once.metta `(bar 1)` ✅; matchsingle (once≡cut) ✅;
+  metta4_streams once-test `((num 1))` ✅ (lazy prune); nextest **4231/4231**; conformance --strict
+  **481/481** (3 once fixtures 004-once/017-cut/401-cut-superpose-cross flipped petta-semantic-
+  difference→same, now matching PeTTa); M11-pt 221 / M11-he 40; PLN 5/5; once_barrier_regression 7/7;
+  cut 8/8. (Corpus files peano/invertpeanoplus/logicprogset/hyperpose_primes still fail on UNRELATED
+  pre-existing gaps — foldall, `(plus $A $B)` reverse-unification, `and`-over-non-Bool, huge-number
+  `>` overflow — NOT once; the once-specific sub-tests within them pass.)

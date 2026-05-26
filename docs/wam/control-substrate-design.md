@@ -342,3 +342,40 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   `hide` wrapper). Current state: reduce-all committed + gate-green; the two forks await a strategic
   decision (re-architect &self to a global atomspace + make impure args eager — a whole-evaluator
   change affecting PLN and all tests).
+- 2026-05-26 (LATER): **matchnested2 RESOLVED end-to-end via the principled PeTTa-semantics
+  redesign — both forks implemented, gate fully preserved.** The user authorized the redesign and
+  reframed the risk decisively: *"With correct PeTTa semantics, PLN will not break"* — i.e. PLN is
+  itself a PeTTa program, so a faithful global-atomspace + eager-impure-arg implementation cannot
+  regress PLN; any regression would mean the implementation is wrong, not the semantics. A Plan agent
+  designed the decoupling; the key precedent it surfaced: `fork_for_nondeterminism` (core.rs ~893)
+  ALREADY `Arc::clone`s `rule_index` with the comment "rules added by one branch are visible to
+  others" — the exact global-sharing pattern, just not yet applied to the atom store.
+  **Gap A — global atomspace (`6ccee22`).** `Environment.atom_space` is now `Arc<AtomSpace<V>>`.
+  `fork_for_nondeterminism` `Arc::clone`s it (nondeterministic branches SHARE the global store, like
+  `rule_index`); explicit `clone()`/`make_owned` still DEEP-COPY (isolation preserved — this is what
+  the 18 clone-isolation property tests assert). `union`/`union_all` wrap the merged store back in
+  `Arc::new`. The `is_self_space` arms of `ProcessAddAtomSpace`/`ProcessRemoveAtomSpace`
+  (eval_loop.rs) route FACTS through the new in-place `add_to_space_shared`/`remove_from_space_shared`
+  (`&self`, mutates the shared store directly — visible across branches), while RULES/TYPES
+  (`=`/`:`/`:<`) still go through COW `add_to_space`/`remove_from_space` (RuleIndex + types map).
+  This gives PeTTa's "mutations visible across branches, bindings branch-local" without breaking COW
+  binding isolation.
+  **Gap B — eager impure args (`f004471`).** New `expr_has_space_side_effect` (grounded.rs,
+  quote-aware SmallVec work-list over heads `add-atom`/`remove-atom`/`add-reduct`/`add-reducts`/
+  `add-atoms`/`remove-all-atoms`). `find_grounded_arg_indices_generic` now ALSO forces an arg index
+  when the arg has a space side effect — so `(hide (add-atom …))` runs the add even though the rule
+  body discards `$1`. PURE args stay lazy (non-termination preserved); only space-mutating args
+  become eager — the minimal faithful slice of PeTTa eagerness.
+  **msort general-term sort (`5120dcc` T0, `2167a31` VM+JIT).** matchnested2's template sorts
+  non-numeric tuples; MTT msort was numeric-only (errored). All three tiers now sort PeTTa standard
+  order: numbers (f64) before non-numbers (by `friendly_repr`); numeric msort bit-identical.
+  **Outcome.** matchnested2 PASSES: `is ((transitive sim som sam) (transitive tim tom tam)), should
+  (…). ✅`. Gate fully preserved and re-verified after every step: nextest 4235/4235, mtt-conformance
+  --strict 481/481, M11-bisimilarity-pt 221, M11-bisimilarity-he 40, PLN 5/5 canonical
+  (Direct/Smokes/Toothbrush/FlyingRaven/Robot, exact strength-weighted values e.g. Direct
+  `(stv 1.0 0.7290000000000001)`). The user's reframing held exactly: correct PeTTa semantics did not
+  break PLN. **Empirical exoneration of the msort tier-consistency change:** the out-of-gate
+  RavenInduction example produces BYTE-IDENTICAL output before (HEAD numeric-only msort, rebuilt and
+  run) and after the VM/JIT change — its evidence bases are integer lists (numeric msort, unaffected);
+  its ❌ is a pre-existing deeper PLN forward-chaining evidence-set gap (`(1 3)` vs `(1 2 3 4)`),
+  unrelated to sorting and out of the canonical 5/5 gate.

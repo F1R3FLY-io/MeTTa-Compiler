@@ -319,6 +319,11 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   multi-element forms) for ONE niche corpus example (match with a side-effecting tuple template +
   remove-during-match). Precisely localized; a careful, separately-benchmarked follow-on. reduce-all
   (the user's decided fork resolution) stands as a verified, PeTTa-faithful improvement.
+  **[SUBSUMED 2026-05-26 by Gap A `6ccee22`.** This "follow-on" is now MOOT and was NOT needed:
+  the global-atomspace change routes facts through in-place `add_to_space_shared` on the Arc-shared
+  store, so a multi-element-eval add-atom commits without any `union_all` COW-merge fix. Verified:
+  `!((add-atom &self (x 1)) (nop))` then `!(collapse (match &self (x $v) (x $v)))` → `[((x 1))]`
+  (committed). No remaining task here.]
 - 2026-05-26: **matchnested2 COMPLETE root-cause: blocked by TWO fundamental architecture forks
   (proven, gate-safe state restored).** After reduce-all (`0448b52`), an exhaustive empirical trace
   (each step gate-checked) localized the remaining failure to env/space-commit machinery, then proved

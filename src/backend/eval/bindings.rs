@@ -883,6 +883,19 @@ where
         BuildLazy {
             original: V,
         },
+        /// Rebuild a `Spanned(X, span)` wrapper after substituting INTO the
+        /// inner value. Replaces the former recursion into
+        /// `apply_bindings_scoped_generic` for Spanned children — that mutual
+        /// recursion (`scoped ↔ iterative`) grew one Rust frame per nested
+        /// Spanned layer and could overflow on deeply-spanned values (the
+        /// matchnested2 root-cause class; the unbounded-growth trigger is fixed
+        /// at rule_management self-exclusion, but the recursion itself is made
+        /// iterative here to satisfy the stack-safety mandate). Re-wrap only if
+        /// the inner result does not already carry a span (preserving the
+        /// scoped fast-path semantics: at most one span layer in the output).
+        BuildSpanned {
+            span: &'static crate::ir::Span,
+        },
     }
 
     // Inline-storage stacks: most calls process small expressions and
@@ -908,13 +921,14 @@ where
                     result_stack.push(val.clone());
                     continue;
                 }
-                // Handle Spanned children by peeling span, processing, re-wrapping.
-                // This calls apply_bindings_generic which peels one Spanned layer,
-                // then calls apply_bindings_iterative_generic on the stripped value.
-                // Safe because MettaValue has at most one Spanned layer.
-                if val.is_spanned() {
-                    let result = apply_bindings_scoped_generic(val, bindings, scope_chain, factory);
-                    result_stack.push(result);
+                // Handle Spanned children ITERATIVELY (stack-safety mandate):
+                // peel one span, push a BuildSpanned to re-wrap after the inner
+                // is processed, and re-queue the stripped inner. Replaces the
+                // former recursion into apply_bindings_scoped_generic, which grew
+                // a Rust frame per nested Spanned layer.
+                if let Some(span) = val.span() {
+                    work_stack.push(Work::BuildSpanned { span });
+                    work_stack.push(Work::ProcessOwned(val.strip_one_span()));
                     continue;
                 }
 
@@ -1022,10 +1036,10 @@ where
                 // Same logic as `Process` but operating on an owned value
                 // (the value was popped from the bindings map, so its
                 // lifetime is no longer tied to the input template).
-                if val.is_spanned() {
-                    let result =
-                        apply_bindings_scoped_generic(&val, bindings, scope_chain, factory);
-                    result_stack.push(result);
+                // Spanned handled iteratively (see the Process arm).
+                if let Some(span) = val.span() {
+                    work_stack.push(Work::BuildSpanned { span });
+                    work_stack.push(Work::ProcessOwned(val.strip_one_span()));
                     continue;
                 }
 
@@ -1153,6 +1167,20 @@ where
                     result_stack.push(original);
                 } else {
                     result_stack.push(factory.lazy(new_inner));
+                }
+            }
+            Work::BuildSpanned { span } => {
+                // Re-wrap the processed inner in its Spanned layer. Preserves
+                // the scoped fast-path invariant (at most one span layer in the
+                // output): if the inner result already carries a span, leave it
+                // as-is rather than nesting another.
+                let inner = result_stack
+                    .pop()
+                    .expect("Result stack must hold the processed Spanned inner");
+                if inner.span().is_some() {
+                    result_stack.push(inner);
+                } else {
+                    result_stack.push(factory.spanned(inner, *span));
                 }
             }
         }

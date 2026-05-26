@@ -124,6 +124,45 @@ where
 /// When the arg's head operator has an arrow type, each formal argument type
 /// is inspected. Meta-types (`Atom`, `Expression`, etc.) are passed unevaluated.
 /// This matches MeTTa HE's `interpret_function` behavior.
+/// Gap B (PeTTa eager impure args): does evaluating `v` run a SPACE-mutating
+/// side effect ANYWHERE in its tree? Scans iteratively (stack-safe SmallVec
+/// work-list) and quote-aware (a `(quote …)` payload is inert data, never
+/// descended). Used to force eager evaluation of an impure argument so its
+/// side effects RUN before the callee fires — matching PeTTa's eager argument
+/// reduction — even when the arg's head is a sub-SExpr (reduce-all tuple,
+/// e.g. `((add-atom …)(remove-atom …))`) or a non-effect op whose body mutates
+/// (e.g. `(match … ((add-atom …)))`). ONLY space-mutating heads match, so PURE
+/// arguments stay lazy (MTT's non-termination guarantee for unused pure args
+/// is preserved).
+pub(crate) fn expr_has_space_side_effect<V: MettaValueTrait>(v: &V) -> bool {
+    let mut work: smallvec::SmallVec<[&V; 16]> = smallvec::SmallVec::new();
+    work.push(v);
+    while let Some(node) = work.pop() {
+        if node.is_quoted() {
+            continue;
+        }
+        if let Some(items) = node.as_sexpr() {
+            if let Some(head) = items.first().and_then(|h| h.as_atom()) {
+                if matches!(
+                    head,
+                    "add-atom"
+                        | "remove-atom"
+                        | "add-reduct"
+                        | "add-reducts"
+                        | "add-atoms"
+                        | "remove-all-atoms"
+                ) {
+                    return true;
+                }
+            }
+            for item in items {
+                work.push(item);
+            }
+        }
+    }
+    false
+}
+
 pub fn find_grounded_arg_indices_generic<V, F>(
     items: &[V],
     env: &GenericEnvironment<V, F>,
@@ -136,6 +175,7 @@ where
 
     // Skip the first item (operator) - we only check arguments
     for (i, item) in items.iter().enumerate().skip(1) {
+        let before = indices.len();
         if let Some(sub_items) = item.as_sexpr() {
             if let Some(first) = sub_items.first() {
                 if let Some(op) = first.as_atom() {
@@ -175,6 +215,16 @@ where
                     }
                 }
             }
+        }
+        // Gap B (PeTTa eager impure args): if this arg wasn't already marked for
+        // pre-eval and it CONTAINS a space-mutating side effect anywhere (its
+        // head may be a sub-SExpr — a reduce-all tuple `((add-atom …)…)` — or a
+        // non-effect op whose body mutates — `(match … ((add-atom …)))`), then
+        // pre-evaluate it so the effect RUNS before the callee fires, matching
+        // PeTTa's eager argument reduction. (Pure args never match, so they stay
+        // lazy: non-termination for unused pure args is preserved.)
+        if indices.len() == before && expr_has_space_side_effect(item) {
+            indices.push(i);
         }
     }
 

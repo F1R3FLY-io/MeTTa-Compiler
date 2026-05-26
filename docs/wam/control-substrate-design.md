@@ -222,3 +222,29 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   Spanned-handling iterative via a `BuildSpanned` work item) — defense-in-depth stack-safety hardening
   for hypothetical deep nesting; deferred as a benchmarked change to the 9.5M-calls/run hot path (no
   corpus trigger once the unbounded growth is fixed).
+- 2026-05-26: **Phase 7 profiling done; first optimization hypothesis REFUTED (scientific method).**
+  `perf record --call-graph fp` on FlyingRaven (CCD0-pinned `taskset -c 0-7`, perf governor, 11k
+  samples) flat self-time hotspots: `quicksort::<usize>` 5.9% · `collect_variables_generic` 5.4% ·
+  `MettaValue::as_atom` 4.3% · **`expr_contains_cut` 4.1%** (Phase-1-introduced) · `as_sexpr` 3.2% ·
+  `collect_subgoal_roots` 3.2% · libc memcpy/memset region ~20% (alloc/copy) · `Sip13 Hasher::write`
+  2.4% · `SlabAllocator::alloc_data` 2.1% · `expression_involves_rule_rhs_atom` 1.9% ·
+  `collect_thunk_roots` 1.7%. HYPOTHESIS: the #1 `quicksort::<usize>` is `incremental_gc.rs:437`
+  re-sorting the already-sorted `live_ptrs_sorted` ∪ unsorted `remembered_set`; replace with an
+  O(n+m) MERGE. Implemented + benchmarked (hyperfine -N -r 5, CCD0): BEFORE 19.848 s ± 0.059 vs AFTER
+  19.940 s ± 0.073 — **within noise, NO improvement → hypothesis REFUTED, change REVERTED.** Root
+  insight (scientific accuracy): the algorithmic O(n+m)-merge-vs-O((n+m)log)-sort win did NOT
+  materialize because Rust's `sort_unstable` is **pdqsort**, which detects the already-sorted
+  `live_ptrs_sorted` run + the tiny unsorted `remembered_set` tail and is ALREADY near-linear on this
+  mostly-sorted union — so the merge had no real edge. The residual 5.9% flat-profile cost is inherent
+  to TOUCHING that many `usize`s (the `extend_from_slice` copies + dedup + binary_search rebuild each
+  collection), not the sort algorithm; reducing it needs FEWER roots / fewer mark-set rebuilds, a
+  deeper change. (Workload is only weakly parallel — User 21.5 s / wall 19.8 s = 1.09× — so a
+  "not-on-critical-path" explanation is secondary.) **LESSON (data-driven mandate): a flat self-time
+  hotspot is necessary but not sufficient justification — always confirm with a before/after wall-clock
+  benchmark, AND check whether the stdlib primitive (pdqsort here) already exploits the data shape.**
+  The other flat hotspots (collect_variables, expr_contains_cut, memcpy) need the same before/after
+  validation before any change. `expr_contains_cut` (Phase-1 self-introduced) remains the cleanest
+  candidate IF confirmed on the critical path — fix = thread the cached `any_rule_body_contains_cut`
+  flag (precedent: `op_lhs_head_all_meta_typed`) to gate the per-dispatch scan; it is consistent with
+  the load-time `body_contains_cut` the rest of the cut machinery already uses. Baseline recorded:
+  FlyingRaven 19.848 s ± 0.059 @ d2b8a60 (symbol build, CCD0).

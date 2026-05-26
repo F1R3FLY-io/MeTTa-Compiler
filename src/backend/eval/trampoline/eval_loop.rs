@@ -1664,6 +1664,18 @@ thread_local! {
     /// `dispatch_rule_matches` with 2+ matches, decremented when the
     /// corresponding `ProcessRuleMatches` continuation completes.
     static FORK_DEPTH: Cell<u32> = const { Cell::new(0) };
+
+    /// Control-substrate choice-point trail (Phase 0). The `mark()`/`undo_to()`
+    /// backbone for cut/conjunction backtracking, installed once per trampoline
+    /// activation and saved/restored at the activation boundary alongside
+    /// `FORK_DEPTH`/`CUT_TARGET_DEPTH` so nested activations are isolated.
+    /// Inert in Phase 0 (nothing reads/writes it); Phase 1 (cut) wires it in.
+    /// See `docs/wam/control-substrate-design.md`.
+    static CP_TRAIL: std::cell::RefCell<
+        crate::backend::eval::trampoline::binding_store::BindingStore,
+    > = std::cell::RefCell::new(
+        crate::backend::eval::trampoline::binding_store::BindingStore::with_capacity(64),
+    );
 }
 
 struct DemandScope {
@@ -2876,6 +2888,14 @@ fn eval_trampoline_with_carrying<C: EvalContext>(
     // outer dispatch's cut target or vice versa.
     let saved_fork = FORK_DEPTH.with(|c| c.replace(0));
     let saved_cut = CUT_TARGET_DEPTH.with(|c| c.replace(0));
+    // Phase 0 (control substrate): install a fresh choice-point trail for this
+    // activation; the outer activation's trail is restored on exit, exactly as
+    // fork/cut state is. Inert in Phase 0 (eval neither reads nor writes it),
+    // so baselines are byte-identical; this wires the lifecycle that Phase 1
+    // (cut) builds on. See `docs/wam/control-substrate-design.md`.
+    let saved_trail = CP_TRAIL.with(|t| {
+        t.replace(crate::backend::eval::trampoline::binding_store::BindingStore::with_capacity(64))
+    });
 
     let mut outcome = eval_trampoline_inner(value, env, ctx, None, None, 0, carrying_bindings);
     let result = loop {
@@ -2906,9 +2926,12 @@ fn eval_trampoline_with_carrying<C: EvalContext>(
         }
     };
 
-    // Restore outer trampoline's fork/cut state.
+    // Restore outer trampoline's fork/cut state + choice-point trail.
     FORK_DEPTH.with(|c| c.set(saved_fork));
     CUT_TARGET_DEPTH.with(|c| c.set(saved_cut));
+    CP_TRAIL.with(|t| {
+        *t.borrow_mut() = saved_trail;
+    });
 
     result
 }

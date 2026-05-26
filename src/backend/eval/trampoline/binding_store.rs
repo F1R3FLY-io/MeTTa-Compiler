@@ -1,23 +1,31 @@
-//! WAM trail-based binding store (clause-scoped, mutable, trail-backed).
+//! Choice-point trail (clause-scoped, mutable, mark/undo-backed).
 //!
-//! See `docs/wam/trail-binding-model.md` for the full design.
+//! See `docs/wam/control-substrate-design.md` for the full design.
 //!
-//! This is **Increment 1 (inert scaffolding)**: the store, its union-find +
-//! trail operations, and the `GenericBindings` interface (`snapshot_scoped` /
-//! `seed_from`) — fully unit-tested but NOT yet wired into evaluation. Later
-//! increments read/write it at the cache-hit, rule-match, and fork sites so
-//! that variable bindings become clause-GLOBAL (held in this store, not in
-//! per-result value sidecars), which makes the values-only caches
-//! binding-neutral and eliminates the flaky "binding dropped on a cache hit"
-//! class (PLN `Direct.metta` tests 2/3).
+//! **Role (re-scoped 2026-05-26):** this is the `mark()`/`undo_to()` backbone
+//! for the logic-programming control substrate — choice-point pruning (cut),
+//! clause-global binding propagation for native conjunction, and match-pattern
+//! conjunction. It is installed once per trampoline activation as the
+//! `CP_TRAIL` thread-local (`eval_loop.rs`), saved/restored at the activation
+//! boundary alongside the fork/cut state so nested activations are isolated.
+//!
+//! It is **NOT** a cache-hit binding cache. An earlier design
+//! (`trail-binding-model.md`) proposed writing match bindings here at the
+//! values-only cache-hit sites; that is deliberately NOT done — storing
+//! `(value, bindings)` in caches was reverted (commit 2e669c0) for within-query
+//! cross-caller contamination, and the binding-drop bug that motivated it was
+//! already fixed by the sidecar fixes (663c7e1/880c415/5637128). The per-result
+//! `GenericBindings` sidecar remains the observable wire format; this store is
+//! the control/backtracking layer only.
 //!
 //! Representation mirrors the bytecode VM's trail (`bytecode/vm/mod.rs` +
 //! `vm/types.rs`): a union-find over scoped variable cells keyed by
 //! `(ScopeId, name)`, plus a trail recording each mutation so a choice point
 //! can `mark()` the trail height and `undo_to(mark)` on backtrack.
 
-// Increment 1 is inert: the store is unit-tested but not yet called from the
-// evaluator, so its public API is dead code until Increment 2 wires it in.
+// Phase 0 installs the store inertly (the activation boundary saves/restores it
+// but nothing reads/writes it yet); later phases (cut, conjunction) call the
+// mutation/lookup API. Until then most of the API is dead code.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -69,6 +77,18 @@ impl BindingStore {
     /// Create an empty store.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create an empty store with preallocated cell/trail capacity. A clause
+    /// activation typically touches a handful to a few dozen variables; we
+    /// preallocate to avoid reallocation churn on the hot path (preallocation
+    /// is a best practice, not a premature optimization).
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            cell_of: HashMap::with_capacity(cap),
+            cells: Vec::with_capacity(cap),
+            trail: Vec::with_capacity(cap),
+        }
     }
 
     /// Clear the store (reused when an activation finishes and the thread-local
@@ -264,6 +284,20 @@ mod tests {
         assert_eq!(store.lookup(&[ROOT_SCOPE], "$who"), Some(atom("a")));
         // A different name is independent.
         assert_eq!(store.lookup(&[ROOT_SCOPE], "$x"), None);
+    }
+
+    #[test]
+    fn with_capacity_behaves_like_new() {
+        // Preallocated store is empty and fully functional (Phase 0 installs
+        // the per-activation trail via with_capacity).
+        let mut store = BindingStore::with_capacity(64);
+        assert_eq!(store.cell_count(), 0);
+        assert_eq!(store.mark(), 0);
+        let m = store.mark();
+        store.bind(ROOT_SCOPE, "$who", atom("a"));
+        assert_eq!(store.lookup(&[ROOT_SCOPE], "$who"), Some(atom("a")));
+        store.undo_to(m);
+        assert_eq!(store.lookup(&[ROOT_SCOPE], "$who"), None);
     }
 
     #[test]

@@ -312,7 +312,16 @@ pub struct GenericEnvironmentShared<V: MettaValueTrait + Clone + Send + Sync + U
     /// Unified atom storage: MORK PathMap (ground atoms) + variable atom Vec.
     /// Contains btm, wide_btm, shared_mapping, head_arity_bloom,
     /// total_atoms, and variable_atoms.
-    pub(crate) atom_space: super::atom_space::AtomSpace<V>,
+    // Gap A (2026-05-26, PeTTa global atomspace): the `&self` atom store is a
+    // single GLOBALLY-SHARED `Arc<AtomSpace>`, mirroring `rule_index` (which is
+    // already `Arc::clone`d across nondeterministic branches). `fork_for_
+    // nondeterminism` and `make_owned` `Arc::clone` it (not deep-copy), so a
+    // side-effecting `add-atom`/`remove-atom` in any match/superpose branch is
+    // globally visible and commits to the directive — while BINDINGS/states stay
+    // per-branch COW-forked (isolation preserved). AtomSpace is fully
+    // interior-mutable (RwLock/atomic/Arc fields), so `&self` mutation through
+    // the shared Arc is sound.
+    pub(crate) atom_space: std::sync::Arc<super::atom_space::AtomSpace<V>>,
 
     // ========================================================================
     // Mutable State
@@ -573,7 +582,10 @@ where
 
         let shared = Arc::new(GenericEnvironmentShared {
             // Unified atom storage
-            atom_space: super::atom_space::AtomSpace::new(shared_mapping.clone(), 10000),
+            atom_space: std::sync::Arc::new(super::atom_space::AtomSpace::new(
+                shared_mapping.clone(),
+                10000,
+            )),
 
             // Mutable state
             states: RwLock::new(HashMap::with_hasher(IdentityU64BuildHasher)),
@@ -745,9 +757,17 @@ where
 
         let new_shared = Arc::new(GenericEnvironmentShared {
             // Deep-copy atom storage (make_owned needs exclusive copies for mutation)
-            atom_space: {
+            // EXPLICIT clones (owns_data=false) DEEP-COPY the atom store here so
+            // the Rust `clone()` + `add_rule`/`add_to_space` API stays COW-isolated
+            // (the env clone-isolation invariant; tests in environment::tests).
+            // The PeTTa GLOBAL-atomspace semantics for EVALUATION are achieved
+            // separately: `fork_for_nondeterminism` (owns_data=true) `Arc::clone`s
+            // the store, and the eval-path `add-atom`/`remove-atom`
+            // (ProcessAddAtomSpace) mutate that shared store IN PLACE via
+            // `add_to_space_shared`/`remove_from_space_shared` — so a branch's
+            // write is globally visible, while a direct-API clone still isolates.
+            atom_space: std::sync::Arc::new({
                 let forked = self.shared.atom_space.fork();
-                // Extract values before constructing (avoid borrow-of-moved issues)
                 let forked_btm = forked.btm.read().clone();
                 let forked_mapping = forked.shared_mapping.clone();
                 let forked_wide = forked.wide_btm.read().clone();
@@ -756,18 +776,15 @@ where
                 let forked_type_btm = forked.type_btm.read().clone();
                 let forked_subtype_btm = forked.subtype_btm.read().clone();
                 let forked_inferred_type_btm = forked.inferred_type_btm.read().clone();
-                // Deep-clone bloom filter into a new Arc for exclusive mutation
                 super::atom_space::AtomSpace {
                     btm: RwLock::new(forked_btm),
                     wide_btm: RwLock::new(forked_wide),
                     type_btm: RwLock::new(forked_type_btm),
                     subtype_btm: RwLock::new(forked_subtype_btm),
-                    // Phase 10.1: deep-clone inferred type PathMap and bloom for exclusive mutation
                     inferred_type_btm: RwLock::new(forked_inferred_type_btm),
                     inferred_type_bloom: std::sync::Arc::new(
                         self.shared.atom_space.inferred_type_bloom.snapshot(),
                     ),
-                    // Phase 10.5: snapshot generation counters for exclusive mutation
                     inferred_type_generation: AtomicU64::new(
                         self.shared
                             .atom_space
@@ -792,10 +809,9 @@ where
                     )),
                     total_atoms: AtomicUsize::new(forked_count),
                     variable_atoms: RwLock::new(forked_var_atoms),
-                    // Same symbol mapping → same epoch (cache entries remain valid)
                     mork_cache_epoch: self.shared.atom_space.mork_cache_epoch,
                 }
-            },
+            }),
             // RwLock<HashMap> - read lock + clone
             states: RwLock::new(self.shared.states.read().clone()),
             // Atomic - load and create new
@@ -858,8 +874,15 @@ where
         trace!(target: "mettatron::generic_environment::fork", "Forking environment for nondeterminism");
 
         let new_shared = Arc::new(GenericEnvironmentShared {
-            // Fork atom storage (PathMap CoW + bloom Arc::clone)
-            atom_space: self.shared.atom_space.fork(),
+            // Gap A (PeTTa global atomspace): SHARE the atom store across
+            // nondeterministic branches via Arc::clone — mirroring `rule_index`
+            // below (already Arc-shared so "rules added by one branch are
+            // visible to others"). A side-effecting `add-atom`/`remove-atom` in
+            // a match/superpose branch now commits to the single global store
+            // and is visible to sibling branches + the directive, while each
+            // branch's BINDINGS stay isolated (states/bindings/types are still
+            // deep-forked below).
+            atom_space: std::sync::Arc::clone(&self.shared.atom_space),
 
             states: RwLock::new(self.shared.states.read().clone()),
             next_state_id: AtomicU64::new(self.shared.next_state_id.load(Ordering::Acquire)),
@@ -1146,7 +1169,10 @@ where
 
         // Create new shared state with merged data
         let new_shared = Arc::new(GenericEnvironmentShared {
-            atom_space: super::atom_space::AtomSpace {
+            // Gap A: atom_space is Arc<AtomSpace>; wrap the merged store in a
+            // fresh Arc (full merge preserved for distinct module spaces; for
+            // branch-unions both inputs share the global store → idempotent).
+            atom_space: std::sync::Arc::new(super::atom_space::AtomSpace {
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(
@@ -1214,7 +1240,7 @@ where
                 variable_atoms: RwLock::new(Vec::new()),
                 // Same SharedMapping as self → same epoch (cache entries remain valid)
                 mork_cache_epoch: self.mork_cache_epoch,
-            },
+            }),
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
 
@@ -1606,7 +1632,10 @@ where
 
         // Create new shared state with merged data
         let new_shared = Arc::new(GenericEnvironmentShared {
-            atom_space: super::atom_space::AtomSpace {
+            // Gap A: atom_space is Arc<AtomSpace>; wrap the merged store in a
+            // fresh Arc (full merge preserved for distinct module spaces; for
+            // branch-unions both inputs share the global store → idempotent).
+            atom_space: std::sync::Arc::new(super::atom_space::AtomSpace {
                 btm: RwLock::new(merged_btm),
                 shared_mapping: self.shared.atom_space.shared_mapping.clone(),
                 head_arity_bloom: std::sync::Arc::new(RwLock::new(HeadArityBloomFilter::new(
@@ -1708,7 +1737,7 @@ where
                 variable_atoms: RwLock::new(Vec::new()),
                 // Same SharedMapping as self → same epoch (cache entries remain valid)
                 mork_cache_epoch: self.mork_cache_epoch,
-            },
+            }),
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
 

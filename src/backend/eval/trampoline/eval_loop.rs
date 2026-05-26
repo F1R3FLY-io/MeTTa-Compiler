@@ -15206,12 +15206,29 @@ fn process_continuation<C: EvalContext>(
                     let is_self_space = handle.is_module_space() || handle.name == "self";
 
                     if is_self_space {
-                        // &self space: add directly to environment's PathMap/RuleIndex.
-                        // match &self and get-atoms query env.match_space() / env.get_all_atoms(),
-                        // NOT the SpaceHandle, so atoms must live in the environment.
-                        // add_to_space() handles routing: rules → add_rule() (PathMap + RuleIndex),
-                        // type assertions → types HashMap, all atoms → PathMap.
-                        Arc::make_mut(&mut env_after).add_to_space(&atom);
+                        // Gap A (PeTTa global atomspace): a FACT goes to the
+                        // globally-shared atom_space IN PLACE (`add_to_space_shared`,
+                        // &self, no CoW) so a side-effecting `add-atom` in a match/
+                        // superpose branch commits globally and is visible to
+                        // sibling branches + the directive (the PeTTa model). A
+                        // RULES `(= H B)`, TYPE assertions `(: e t)`, and SUBTYPE
+                        // decls `(:< s p)` keep the `add_to_space` path so they
+                        // populate the RuleIndex / types / subtypes registries
+                        // (PLN registers truth-function rules this way;
+                        // `add_to_space_shared` stores only PathMap atoms, not
+                        // those registries).
+                        let routes_to_registry = extract_rule_parts(&atom).is_some()
+                            || matches!(
+                                atom.as_sexpr()
+                                    .and_then(|items| items.first())
+                                    .and_then(|h| h.as_atom()),
+                                Some(":") | Some(":<")
+                            );
+                        if routes_to_registry {
+                            Arc::make_mut(&mut env_after).add_to_space(&atom);
+                        } else {
+                            env_after.add_to_space_shared(&atom);
+                        }
                     } else {
                         // Named space: add to SpaceHandle (match queries SpaceHandle
                         // for non-&self spaces via handle.collapse_generic()).
@@ -15308,12 +15325,18 @@ fn process_continuation<C: EvalContext>(
                     let is_self_space = handle.is_module_space() || handle.name == "self";
 
                     if is_self_space {
-                        // &self space: remove from environment's PathMap/RuleIndex.
-                        // Mirrors the add-atom routing: match &self queries the
-                        // environment, so removals must target the environment.
-                        // remove_from_space() handles routing: rules → De Bruijn removal
-                        // + RuleIndex sync, type assertions → types HashMap, all atoms → PathMap.
-                        Arc::make_mut(&mut env_after).remove_from_space(&atom);
+                        // Gap A (PeTTa global atomspace): mirror the add routing —
+                        // remove a FACT from the globally-shared atom_space IN PLACE
+                        // (`remove_from_space_shared`, &self) so a `remove-atom`
+                        // inside a match/superpose branch (e.g. matchnested2's
+                        // remove-during-match) commits globally. A RULE `(= H B)`
+                        // keeps the `remove_from_space` path (De Bruijn + RuleIndex
+                        // sync).
+                        if extract_rule_parts(&atom).is_some() {
+                            Arc::make_mut(&mut env_after).remove_from_space(&atom);
+                        } else {
+                            env_after.remove_from_space_shared(&atom);
+                        }
                     } else {
                         // Named space: remove from SpaceHandle
                         handle.remove_atom_generic(&atom);

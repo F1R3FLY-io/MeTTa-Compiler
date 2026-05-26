@@ -275,9 +275,17 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   validated targets (the documented lesson) — `expr_contains_cut` (Phase-1 self-introduced) is the
   cleanest candidate if confirmed on the critical path (fix = thread cached `any_rule_body_contains_cut`
   flag). Plus discovered+fixed a GENERAL var-hygiene stack overflow `10d3cf5` + **Layer A** iterative
-  Spanned-handling ✅ `92d4f4e` (non-lazy path; lazy variant bounded post-fix + behavior-risk →
-  reasoned boundary). Gate green throughout: nextest 4235, conformance --strict 481, M11-pt 221,
-  M11-he 40, PLN 5/5 canonical.
+  Spanned-handling ✅ FULLY CLOSED in two parts: inner work-stack `BuildSpanned` `92d4f4e` (nested
+  Spanned encountered while walking SExpr children) + ALL SIX outer-wrapper top-level peels
+  de-recursed `2aac6dc` (`while`-loop peel + one bounded self-call on the non-Spanned core). NOTE:
+  this corrects `92d4f4e`'s "non-lazy path done; lazy variant bounded → reasoned boundary" claim — it
+  was inaccurate; `92d4f4e` made only the INNER path iterative, and BOTH the lazy and non-lazy OUTER
+  wrappers (plus with_classes / with_rename / with_rename_scoped_maybe_lazy and
+  `helpers.rs::apply_bindings`) still recursed once per outer span layer until `2aac6dc`. +2
+  deep-Spanned (200k) no-overflow regression tests. (`types.rs::infer_types` Spanned/Lazy recursion
+  scoped OUT — structurally recursive on SExpr depth anyway; separate broader concern.) Gate green
+  throughout: nextest 4237 (4235 + 2 new), conformance --strict 481, M11-pt 221, M11-he 40, PLN 5/5
+  canonical.
 - 2026-05-26: **matchnested2 full-result = the outer-form-is-data vs reduce-all-elements FORK
   (PROVEN; genuine user design decision, not incompletion).** Bare-sequence test
   `!((add-atom &self (x 1)) (remove-atom &self (thing a)))`: PeTTa → `(true true)` (BOTH side effects

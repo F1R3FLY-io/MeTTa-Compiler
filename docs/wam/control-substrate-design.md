@@ -379,3 +379,39 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   run) and after the VM/JIT change — its evidence bases are integer lists (numeric msort, unaffected);
   its ❌ is a pre-existing deeper PLN forward-chaining evidence-set gap (`(1 3)` vs `(1 2 3 4)`),
   unrelated to sorting and out of the canonical 5/5 gate.
+- 2026-05-26 (LATER): **"Layer A" CLOSED — every `apply_bindings`-family Spanned-peel is now
+  iterative (stack-safety mandate).** The prior entry's open item (2) "Layer A (make `apply_bindings`
+  Spanned-handling iterative)" is resolved. An audit found the per-layer Spanned RECURSION was broader
+  than the doc noted — SIX functions peeled spans recursively (one Rust frame per nested Spanned
+  layer, i.e. an overflow on adversarially deep wrapper nesting):
+  `helpers.rs:apply_bindings` (the non-generic Cow form), and in `bindings.rs`:
+  `apply_bindings_scoped_generic`, `apply_bindings_lazy_scoped_generic`,
+  `apply_bindings_with_classes_generic`, `apply_bindings_with_rename_generic`,
+  `apply_bindings_with_rename_scoped_maybe_lazy`. (The inner bodies were already work-stack iterative
+  via `BuildSpanned`; only these OUTER wrappers recursed. `engine.rs:apply_bindings` was already
+  non-recursive — it delegates straight to the iterative `apply_bindings_inner`.)
+  **Fix.** The five `bindings.rs` wrappers now peel all consecutive outer spans in a `while` loop
+  (remembering the innermost span), dispatch the now-non-Spanned `core` through the SAME function (it
+  cannot re-enter the span block → exactly one bounded self-call, preserving each function's post-span
+  guards/inner), then re-apply only the innermost span unless the core result already carries one —
+  semantically identical to the former per-layer recursion (incl. its per-level
+  `result.span().is_some()` early-return) at every nesting depth, verified by tracing depths 0/1/N and
+  the inner-already-Spanned case. `helpers.rs:apply_bindings` drops its redundant recursive Spanned
+  arm entirely and routes Spanned through the existing work-stack `apply_bindings_iterative` (whose
+  `BuildSpanned` produces byte-identical Cow results — inner-unchanged → `Borrowed(value)`,
+  inner-changed → `Owned(Spanned(new_inner, span))`).
+  **Perf:** the hot path (0 spans, ~9.5M calls/run) is byte-identical (the `if let Some(span)` guard
+  is false and falls straight through to the iterative inner, exactly as before); the 1-span case is
+  marginally cheaper (no recursive frame). So the deferral's perf concern does not arise.
+  **Tests:** `apply_bindings_scoped_deeply_nested_spanned_no_overflow` +
+  `apply_bindings_lazy_scoped_deeply_nested_spanned_no_overflow` build `Spanned^200000((foo $a))`
+  (arena-allocated GC handles → bulk-freed, no recursive Drop) and substitute `$a→7`; the former
+  recursion would overflow the ≈2 MB test-thread stack, the loop runs in constant stack.
+  **Scope note (honest, not a deferral):** `eval/types.rs:infer_types_generic_inner` ALSO peels
+  Spanned (and Lazy) recursively, but that function is STRUCTURALLY recursive on SExpr children
+  (`infer_type_generic(&items[i])`, `infer_types_generic_inner(last)`) — i.e. it recurses on
+  expression DEPTH regardless of wrappers. Its wrapper-peel arms are therefore not a separable
+  "Layer A" item; making only them iterative would not make the function stack-safe. The whole
+  type-inference path's structural recursion is a distinct, broader stack-safety concern (a separate
+  work-stack rewrite of `infer_types`), explicitly out of the `apply_bindings`-Layer-A scope and
+  recorded here rather than silently half-fixed.

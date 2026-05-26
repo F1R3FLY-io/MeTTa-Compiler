@@ -273,19 +273,19 @@ pub fn apply_bindings<'a>(value: &'a MettaValue, bindings: &Bindings) -> Cow<'a,
         | MettaValueInner::NotReducible => return Cow::Borrowed(value),
         // Regular atoms (not variables)
         MettaValueInner::Atom(_) => return Cow::Borrowed(value),
-        // Compound types need iterative processing
+        // Compound types need iterative processing. Spanned is routed here too:
+        // `apply_bindings_iterative` handles a top-level (and nested) Spanned
+        // wrapper via `BuildSpanned` (push BuildSpanned + Process(inner)),
+        // re-wrapping each layer with identical Cow semantics to the former
+        // recursive arm — inner unchanged → Borrowed(value); inner changed →
+        // Owned(Spanned(new_inner, span)) — VERIFIED equivalent at all nesting
+        // depths. Routing Spanned through the iterative path removes the last
+        // Rust recursion in `apply_bindings` (stack-safety mandate; closes the
+        // "Layer A" deferral).
         MettaValueInner::SExpr(_)
         | MettaValueInner::Conjunction(_)
-        | MettaValueInner::Error(_, _) => {}
-
-        // Spanned: apply bindings to inner value, re-wrap with same span
-        MettaValueInner::Spanned(v, span) => {
-            let result = apply_bindings(v, bindings);
-            return match result {
-                Cow::Borrowed(_) => Cow::Borrowed(value),
-                Cow::Owned(new_val) => Cow::Owned(MettaValue::Spanned(new_val, **span)),
-            };
-        }
+        | MettaValueInner::Error(_, _)
+        | MettaValueInner::Spanned(_, _) => {}
     }
 
     // Iterative implementation using explicit work stack

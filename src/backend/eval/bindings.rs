@@ -776,16 +776,28 @@ where
         return template.clone();
     }
 
-    // Peel Spanned: process inner, re-wrap with same span
+    // Peel consecutive outer Spanned layers ITERATIVELY (stack-safety mandate:
+    // no Rust frame per nested span; closes the "Layer A" deferral). Semantics
+    // are identical to the former recursion: the iterative inner runs on the
+    // fully-stripped core, then only the INNERMOST span is re-applied — an outer
+    // span is dropped once an inner layer re-wraps (because each former
+    // recursion level returned early when its child result already carried a
+    // span). The bindings-empty fast path above and the no-span fast path below
+    // are preserved (no upfront clone of a non-Spanned template).
     if let Some(span) = template.span() {
-        let span = *span; // Copy
-        let stripped = template.strip_one_span();
-        let result = apply_bindings_scoped_generic(&stripped, bindings, scope_chain, factory);
-        // Skip wrapping if result already carries a span
+        let mut innermost_span = *span;
+        let mut core = template.strip_one_span();
+        while let Some(inner) = core.span() {
+            innermost_span = *inner;
+            core = core.strip_one_span();
+        }
+        let result = apply_bindings_iterative_generic(&core, bindings, scope_chain, factory);
+        // Skip wrapping if result already carries a span (matches the former
+        // `result.span().is_some()` early-return at every recursion level).
         if result.span().is_some() {
             return result;
         }
-        return factory.spanned(result, span);
+        return factory.spanned(result, innermost_span);
     }
 
     apply_bindings_iterative_generic(template, bindings, scope_chain, factory)
@@ -1241,16 +1253,22 @@ where
         return template.clone();
     }
 
-    // Peel Spanned: process inner, re-wrap with same span. Mirrors the
-    // non-lazy `apply_bindings_scoped_generic` exactly.
+    // Peel consecutive outer Spanned layers ITERATIVELY (stack-safety mandate;
+    // closes "Layer A"). Mirrors the non-lazy `apply_bindings_scoped_generic`
+    // exactly: strip all outer spans, run the iterative inner on the core, then
+    // re-apply only the innermost span unless the result already carries one.
     if let Some(span) = template.span() {
-        let span = *span;
-        let stripped = template.strip_one_span();
-        let result = apply_bindings_lazy_scoped_generic(&stripped, bindings, scope_chain, factory);
+        let mut innermost_span = *span;
+        let mut core = template.strip_one_span();
+        while let Some(inner) = core.span() {
+            innermost_span = *inner;
+            core = core.strip_one_span();
+        }
+        let result = apply_bindings_iterative_lazy_generic(&core, bindings, scope_chain, factory);
         if result.span().is_some() {
             return result;
         }
-        return factory.spanned(result, span);
+        return factory.spanned(result, innermost_span);
     }
 
     apply_bindings_iterative_lazy_generic(template, bindings, scope_chain, factory)
@@ -1573,15 +1591,24 @@ where
         return apply_bindings_generic(template, &bindings.entries, factory);
     }
 
-    // Peel Spanned: process inner, re-wrap with same span
+    // Peel consecutive outer Spanned layers ITERATIVELY (stack-safety mandate;
+    // closes "Layer A"). Strip all outer spans, then dispatch the now-non-Spanned
+    // core through the normal post-span path (it cannot re-enter this block), and
+    // re-apply only the innermost span unless the core result already carries one.
+    // This collapses the former per-layer recursion (and its per-level
+    // `result.span().is_some()` early-return) into one bounded self-call.
     if let Some(span) = template.span() {
-        let span = *span;
-        let stripped = template.strip_one_span();
-        let result = apply_bindings_with_classes_generic(&stripped, bindings, factory);
+        let mut innermost_span = *span;
+        let mut core = template.strip_one_span();
+        while let Some(inner) = core.span() {
+            innermost_span = *inner;
+            core = core.strip_one_span();
+        }
+        let result = apply_bindings_with_classes_generic(&core, bindings, factory);
         if result.span().is_some() {
             return result;
         }
-        return factory.spanned(result, span);
+        return factory.spanned(result, innermost_span);
     }
 
     apply_bindings_iterative_with_classes_generic(template, bindings, factory)
@@ -1845,15 +1872,24 @@ where
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
     F: MettaValueFactory<V>,
 {
-    // Peel Spanned: process inner, re-wrap with same span
+    // Peel consecutive outer Spanned layers ITERATIVELY (stack-safety mandate;
+    // closes "Layer A"). Strip all outer spans, then dispatch the now-non-Spanned
+    // core through the normal post-span path (structural-sharing guard + iterative
+    // inner — it cannot re-enter this block), and re-apply only the innermost span
+    // unless the core result already carries one. Equivalent to the former
+    // per-layer recursion at every nesting depth.
     if let Some(span) = template.span() {
-        let span = *span;
-        let stripped = template.strip_one_span();
-        let result = apply_bindings_with_rename_generic(&stripped, bindings, rename, factory);
+        let mut innermost_span = *span;
+        let mut core = template.strip_one_span();
+        while let Some(inner) = core.span() {
+            innermost_span = *inner;
+            core = core.strip_one_span();
+        }
+        let result = apply_bindings_with_rename_generic(&core, bindings, rename, factory);
         if result.span().is_some() {
             return result;
         }
-        return factory.spanned(result, span);
+        return factory.spanned(result, innermost_span);
     }
 
     // Function-entry structural-sharing guard: a template with no variables
@@ -4018,12 +4054,20 @@ where
         return template.clone();
     }
 
-    // Peel Spanned: process inner, re-wrap with same span
+    // Peel consecutive outer Spanned layers ITERATIVELY (stack-safety mandate;
+    // closes "Layer A"). Strip all outer spans, then dispatch the now-non-Spanned
+    // core through the normal post-span path (it cannot re-enter this block), and
+    // re-apply only the innermost span unless the core result already carries one.
+    // Equivalent to the former per-layer recursion at every nesting depth.
     if let Some(span) = template.span() {
-        let span = *span;
-        let stripped = template.strip_one_span();
+        let mut innermost_span = *span;
+        let mut core = template.strip_one_span();
+        while let Some(inner) = core.span() {
+            innermost_span = *inner;
+            core = core.strip_one_span();
+        }
         let result = apply_bindings_with_rename_scoped_maybe_lazy(
-            &stripped,
+            &core,
             bindings,
             scope_chain,
             body_local_epoch,
@@ -4034,7 +4078,7 @@ where
         if result.span().is_some() {
             return result;
         }
-        return factory.spanned(result, span);
+        return factory.spanned(result, innermost_span);
     }
 
     let rename = if body_local_epoch != 0 {
@@ -5475,6 +5519,65 @@ mod tests {
         assert!(live.contains("$a"));
         assert!(!live.contains("$__fr_99_dead"));
         assert!(!live.contains("$other"));
+    }
+
+    /// Build `Spanned^depth( (foo $a) )` for the Layer-A stack-safety tests.
+    fn deeply_spanned_foo_a(factory: &GcFactory, depth: usize) -> MettaValue {
+        let span = crate::ir::Span::new(
+            crate::ir::Position::new(0, 0, 0),
+            crate::ir::Position::new(0, 1, 1),
+        );
+        let mut value = factory.sexpr(vec![factory.atom("foo"), factory.atom("$a")]);
+        for _ in 0..depth {
+            value = factory.spanned(value, span);
+        }
+        value
+    }
+
+    // Layer A regression: applying bindings to a DEEPLY nested Spanned wrapper
+    // must NOT recurse on the Rust stack. The former per-layer recursion would
+    // overflow the (≈2 MB) test-thread stack well before this depth; the
+    // iterative span-peel loop runs in constant stack. All six apply_bindings-
+    // family wrappers share the identical peel loop; these cover the two with
+    // the simplest signatures (the inner bodies are exercised by the rest of the
+    // suite).
+    const LAYER_A_DEPTH: usize = 200_000;
+
+    #[test]
+    fn apply_bindings_scoped_deeply_nested_spanned_no_overflow() {
+        let factory = GcFactory::default();
+        let value = deeply_spanned_foo_a(&factory, LAYER_A_DEPTH);
+        let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
+        bindings.insert_scoped(ROOT_SCOPE, "$a", factory.long(7));
+
+        // Must return without a stack overflow.
+        let result = apply_bindings_scoped_generic(&value, &bindings, &[ROOT_SCOPE], &factory);
+
+        // Innermost-span semantics: exactly one span survives, wrapping the
+        // substituted SExpr `(foo 7)`.
+        assert!(result.span().is_some(), "innermost span should be preserved");
+        let stripped = result.strip_one_span();
+        assert!(stripped.span().is_none(), "only one span layer should remain");
+        let items = stripped.as_sexpr().expect("inner should be an SExpr");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].as_long(), Some(7), "$a must be substituted to 7");
+    }
+
+    #[test]
+    fn apply_bindings_lazy_scoped_deeply_nested_spanned_no_overflow() {
+        let factory = GcFactory::default();
+        let value = deeply_spanned_foo_a(&factory, LAYER_A_DEPTH);
+        let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
+        bindings.insert_scoped(ROOT_SCOPE, "$a", factory.long(7));
+
+        let result = apply_bindings_lazy_scoped_generic(&value, &bindings, &[ROOT_SCOPE], &factory);
+
+        assert!(result.span().is_some(), "innermost span should be preserved");
+        let stripped = result.strip_one_span();
+        assert!(stripped.span().is_none(), "only one span layer should remain");
+        let items = stripped.as_sexpr().expect("inner should be an SExpr");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1].as_long(), Some(7), "$a must be substituted to 7");
     }
 }
 

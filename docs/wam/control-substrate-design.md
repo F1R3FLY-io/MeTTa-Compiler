@@ -243,7 +243,34 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   hotspot is necessary but not sufficient justification — always confirm with a before/after wall-clock
   benchmark, AND check whether the stdlib primitive (pdqsort here) already exploits the data shape.**
   The other flat hotspots (collect_variables, expr_contains_cut, memcpy) need the same before/after
-  validation before any change. `expr_contains_cut` (Phase-1 self-introduced) remains the cleanest
+  validation before any change.
+- 2026-05-26: **Phase 5 (SLG tabling audit) COMPLETE — invariants confirmed, no full-SLG needed.**
+  Audited the three Phase-5 correctness properties: (1) **resolve-before-hash**: SATISFIED by
+  construction — `should_memoize` (dispatch_hints.rs:550) returns false for any expr where
+  `has_variables_fast()`, so ONLY GROUND (fully-resolved, variable-free) expressions are ever
+  tabled/memoized. There are no unresolved variables in any tabling key, so the alpha-equivalence /
+  bound-var cross-contamination an SLG resolve-before-hash step guards against cannot arise (the
+  ground-only gate is strictly stronger). (2) **table ⊥ trail**: the Phase-0 `CP_TRAIL` thread-local
+  is referenced ONLY in eval_loop.rs (activation save/install/restore) and by NO tabling.rs / cache-hit
+  site — orthogonal by construction, deliberately avoiding the reverted-2e669c0 (value,bindings)-in-
+  cache contamination. (3) **cycle-detect, not full-SLG**: `cesk::tabling::ACTIVE_EVAL_SET`
+  (refcount map) provides cycle detection via `is_actively_evaluating`; there is no answer-subsumption
+  SLG (zero corpus demand). The one memoization-correctness GAP found this session — `(cut)` being
+  memoized (skipping its side-effect) — was closed by adding `cut`/`once` to `is_impure_head`
+  (82400d5 / 70db5d3). Values-only cache + re-tag-with-caller-bindings on hit (CompleteSubgoal)
+  handles within-query isolation. Conclusion: tabling is correct under all three invariants; no change
+  needed.
+
+## Status summary (2026-05-26)
+- **Phase 0** (trail infra) ✅ `691f226` · **Phase 1** (cut, incl cut_nested) ✅ `1fcea16`+`82400d5` ·
+  **Phase 2** (`once`) ✅ `70db5d3` · **Phase 3** (NAF/soft-cut) — justified NOT built (zero corpus
+  demand) · **Phase 4** (eval-conjunction) — justified NOT built (PeTTa returns `(,)` as data too) ·
+  **Phase 5** (SLG audit) ✅ invariants confirmed · **Phase 6** (match-conjunction) ✅ core works ·
+  **Phase 7** (perf) — profiled + baseline + 1 hypothesis tested/refuted; further work needs
+  wall-clock-validated targets. Plus discovered+fixed a general var-hygiene stack overflow `10d3cf5`.
+  Open (separate, tracked): matchnested2 SExpr-as-callable side-effect-template semantics (design Q);
+  apply_bindings iterative-span Layer-A hardening (benchmarked hot-path change). Gate green
+  throughout: nextest 4235, conformance --strict 481, M11-pt 221, M11-he 40, PLN 5/5 canonical. `expr_contains_cut` (Phase-1 self-introduced) remains the cleanest
   candidate IF confirmed on the critical path — fix = thread the cached `any_rule_body_contains_cut`
   flag (precedent: `op_lhs_head_all_meta_typed`) to gate the per-dispatch scan; it is consistent with
   the load-time `body_contains_cut` the rest of the cut machinery already uses. Baseline recorded:

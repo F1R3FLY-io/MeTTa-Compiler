@@ -290,3 +290,24 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   ([[session-handoff-2026-05-23-sexpr-callable]], 4 options A/B/C/D pending the user's choice). This
   is a core eval-semantics fork that requires the user's design intent; it is NOT a WAM-phase task and
   must not be changed unilaterally (would regress the gate).
+- 2026-05-26: **User chose "adopt PeTTa reduce-all" → IMPLEMENTED `0448b52` (gate-safe), but
+  matchnested2 still ❌ on a SECOND, deeper blocker: side-effect-commit through multi-element eval.**
+  `EvalSExprTail` now evaluates EVERY element of an SExpr-headed tuple (head included) instead of
+  pre-seeding the head verbatim — `!((add-atom…)(remove-atom…))` now reduces both elements (was
+  `((add-atom…) ())`). VERIFIED SAFE: nextest 4235, --strict 481, M11-pt 221, M11-he 40, PLN 5/5
+  (the historical no-flatten tests survive because they use NON-reducible head-SExprs that reduce to
+  themselves; PLN `(? $term)` survives because `(grandfather a c)` has no directly-applicable rule).
+  BUT matchnested2 still returns `()`: the side-effecting tuple elements now RUN (→ `()`), yet their
+  `&self` SPACE MUTATIONS DO NOT COMMIT. Minimal repro: `!((add-atom &self (x 1)) (nop))` then
+  `!(collapse (match &self (x $v) (x $v)))` → `()` (x NOT added), whereas STANDALONE
+  `!(add-atom &self (y 2))` DOES commit. So the blocker is space-mutation propagation through the
+  multi-element-eval path: `CollectSExpr` (eval_loop.rs:7614) → `process_collected_sexpr_generic`
+  (processing/ops.rs:172) → `MettaEnvironment::union_all` (environment/core.rs:1386) → directive-env
+  commit. Empirically RULED OUT the simple fix (threading the prior element's result env into the
+  next element's dispatch — eval_loop.rs:7877 — did NOT make the mutation commit), so the gap is in
+  `union_all`'s modified-detection / the COW space-layer model NOT merging a sub-eval's add-atom
+  space additions up to the committed directive env (NOT just element-to-element threading). This is
+  a deep, hot-path, broad-impact space-commit-machinery change (CollectSExpr is used by ALL
+  multi-element forms) for ONE niche corpus example (match with a side-effecting tuple template +
+  remove-during-match). Precisely localized; a careful, separately-benchmarked follow-on. reduce-all
+  (the user's decided fork resolution) stands as a verified, PeTTa-faithful improvement.

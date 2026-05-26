@@ -4007,11 +4007,46 @@ where
                         let original_bindings = if needs_transitive_resolution {
                             let mut resolved = crate::backend::models::GenericBindings::new();
                             for (name, value) in bindings.iter() {
-                                let r = crate::backend::eval::bindings::apply_bindings_generic(
-                                    value,
-                                    &bindings,
-                                    &self.factory,
-                                );
+                                // Self-exclusion guard (2026-05-26): if a value
+                                // textually contains its OWN key, the binding is
+                                // self-referential by NAME — a rule-LHS variable
+                                // (e.g. `$z` in `(= (id $z) $z)`) collided with a
+                                // same-named FREE variable inside the matched
+                                // argument (`(id (wrap $z))` binds `$z → (wrap $z)`).
+                                // Resolving such a value against the FULL map makes
+                                // `apply_bindings` substitute the inner `$z → (wrap $z)`
+                                // transitively WITHOUT BOUND → stack overflow
+                                // (matchnested2.metta; minimal repro `(= (id $z) $z)`
+                                // + `!(id (wrap $z))`). The inner occurrence is the
+                                // CALLER's distinct variable and must stay free here;
+                                // the key-freshening below (`$z` → `$__fr_E_z`, caller
+                                // `$z` unchanged) then disambiguates them. Excluding
+                                // the self key is a STRICT no-op for every
+                                // NON-self-referential binding — the legitimate
+                                // transitive case `{$B → (Inheritance $1 …), $1 → Anna}`
+                                // is unchanged (`$B`'s value does not contain `$B`), so
+                                // PLN's resolution and all normal dispatch are
+                                // unaffected.
+                                let r = if value_contains_any_key(value, &[name]) {
+                                    let mut filtered =
+                                        crate::backend::models::GenericBindings::new();
+                                    for (k, v) in bindings.iter() {
+                                        if k != name {
+                                            filtered.insert(k, v.clone());
+                                        }
+                                    }
+                                    crate::backend::eval::bindings::apply_bindings_generic(
+                                        value,
+                                        &filtered,
+                                        &self.factory,
+                                    )
+                                } else {
+                                    crate::backend::eval::bindings::apply_bindings_generic(
+                                        value,
+                                        &bindings,
+                                        &self.factory,
+                                    )
+                                };
                                 resolved.insert(name, r);
                             }
                             resolved

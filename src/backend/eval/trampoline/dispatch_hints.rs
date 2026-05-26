@@ -342,6 +342,16 @@ fn is_impure_head(head: &str) -> bool {
             | "println!" | "print-alternatives!" | "trace!" | "nop"
             | "new-space" | "mod-space!"
             | "bind!"
+            // Phase 1 cut-barrier (2026-05-26): `(cut)` is side-effecting — it
+            // latches the thread-local CUT_SIGNAL via `set_cut_active`. It must
+            // NEVER be memoized: two textually-identical `(cut)` calls in
+            // distinct cut scopes (e.g. an inner cut-rule's `(cut)` and an outer
+            // clause's `(cut)`) hash identically, so memoizing the first
+            // returns its cached `(unit)` for the second WITHOUT re-firing the
+            // signal — the outer cut then never prunes (cut_nested divergence:
+            // MTT committed to LAST not FIRST). `expression_involves_cut_rules`
+            // only catches RULES whose RHS contains cut, not a bare `(cut)`.
+            | "cut"
             | "new-memo" | "memo" | "clear-memo!" | "memo-stats"
             | "pragma!"
             | "=" | ":" | ":<"

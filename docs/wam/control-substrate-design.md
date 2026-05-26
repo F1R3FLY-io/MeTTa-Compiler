@@ -114,6 +114,33 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
 
 ## Progress ledger
 - 2026-05-26: design complete; tasks #34 (baseline)…#41 (perf) seeded. Implementation starting at Phase 0.
+- 2026-05-26: **Phase 1 (cut barrier-identity) committed `1fcea16`** (impl by general-purpose
+  agent, INDEPENDENTLY VERIFIED by supervisor). Replaces depth-cut with monotonic BarrierId
+  threaded through every fan-out + cut-scope sequential veto in try_acquire_budget. VERIFIED:
+  PeTTa cut.metta → (bar 1) ✅; rule-wrapped two-match cut (cut_seq2) → (pair 1 10) ✅; nextest
+  4222; conformance --strict 481 / M11-pt 221 / M11-he 40; PLN suite ✅. PERF: Robot A/B 6.99s(P0)
+  vs 7.19s(P1), CCD0-pinned = within noise (the earlier "10.6s" was measurement drift under
+  concurrent builds — the cut-veto fires 0× for Robot, confirmed by probe). Agent MISREPORTED
+  "cut_seq2 works" pre-verification (its inline form failed; rule-wrapped works) — supervisor
+  re-derivation caught it. KNOWN REMAINING: **cut_nested** — a clause whose let* calls a SEPARATE
+  cut-bearing rule then cuts commits its own multi-match to LAST (MTT) vs FIRST (PeTTa). Deep
+  nested cut-scope ordering in let*/ProcessAmb; corpus-absent (cut.metta is the only corpus cut);
+  real PeTTa divergence to close. Repro: /tmp/cnr.metta.
+- 2026-05-26: **cut_nested RESOLVED** (the Phase 1 "KNOWN REMAINING" above is closed). Root cause
+  was NOT a barrier-ordering flaw — it was **memoization of `(cut)`**. A barrier-lifecycle trace
+  (probes on alloc/set/peek/consume/latch over /tmp/cnr.metta) showed the inner cut-rule's `(cut)`
+  fired `set_cut_active` exactly ONCE, and the outer clause's textually-identical `(cut)` reached
+  `ProcessLet($z)` with a value already in hand — **no second `eval_cut_generic` call**. The outer
+  `(cut)` was served the inner one's memoized `(unit)`, skipping the `set_cut_active` side-effect, so
+  the outer cut never pruned `$a` (committed to LAST). Fix: add `"cut"` to
+  `dispatch_hints.rs::is_impure_head` — `should_memoize((cut))` now returns false, forcing every
+  `(cut)` to re-evaluate. `expression_involves_cut_rules` only excluded RULES whose RHS contains
+  cut (the bytecode-tier gate), never a bare `(cut)` from the memo cache. One-line semantic fix
+  (cut IS impure — it mutates CUT_SIGNAL). VERIFIED: cut_nested `(pr 1 1)` ✅; cut.metta `(bar 1)` ✅;
+  cut_seq2 `(pair 1 10)` ✅; `cut_barrier_regression` 8/8 (added `cut_nested_inner_cut_rule_not_memoized`
+  + `cut_nested_deterministic_20_runs`); M11-pt 221 / M11-he 40; PLN 5/5 ✅ (Direct/Smokes/Toothbrush
+  exact canonical strength-weighted values, FlyingRaven, Robot). **Phase 1 (cut) now COMPLETE — no
+  known cut divergence.** (nextest + conformance --strict re-confirmation in progress.)
 - 2026-05-26: **baseline @ 5637128** (CCD0 cores 0-7, perf governor, hyperfine -N --runs 8):
   PLN-Smokes 178.7 ms ± 5.0; PLN-Toothbrush 1.725 s ± 0.031; PLN-FlyingRaven 20.883 s ± 0.361
   (perf hotspot — Phase 7 target); mmverify-demo0 6.432 s ± 0.043 (User 3.9 s / **System 17.4 s**

@@ -263,6 +263,83 @@ fn quoted_cut_does_not_prune() {
     );
 }
 
+/// NESTED cut scopes with a TEXTUALLY-IDENTICAL `(cut)`: an outer clause
+/// `(topn)` whose `let*` calls a SEPARATE cut-bearing rule `(pick)` and THEN
+/// cuts. Both clauses contain the literal `(cut)`. The inner `(pick)` runs
+/// first and commits its own multi-match; the OUTER `(cut)` must still fire and
+/// commit `(topn)`'s `$a` fan-out to its FIRST answer.
+///
+/// Root cause this pins (2026-05-26): `(cut)` was NOT in `is_impure_head`, so
+/// `should_memoize((cut))` returned true. The inner `(pick)`'s `(cut)` cached
+/// its `(unit)` result; the outer `(topn)`'s identical `(cut)` then hit the
+/// memo and returned the cached `(unit)` WITHOUT re-firing `set_cut_active`, so
+/// the outer cut never pruned and `$a` committed to its LAST answer (`(pr 2 1)`
+/// instead of `(pr 1 1)`). Marking `cut` impure forces every `(cut)` to
+/// re-evaluate. Oracle (live PeTTa): the outer cut commits to the first `$a`.
+#[test]
+fn cut_nested_inner_cut_rule_not_memoized() {
+    let source = r#"
+        (foo 1)
+        (foo 2)
+        (gp 1)
+        (gp 2)
+        (= (pick) (let* (($v (match &self (gp $g) $g)) ($t (cut))) $v))
+        (= (topn) (let* (($a (match &self (foo $f) $f)) ($b (pick)) ($z (cut))) (pr $a $b)))
+        !(collapse (topn))
+    "#;
+    let results = eval_last(source);
+    assert_eq!(results.len(), 1, "expected one collapse tuple: {:?}", results);
+    let s = &results[0];
+    assert!(
+        s.contains("(pr 1 1)"),
+        "outer cut must commit $a to its FIRST answer (pr 1 1); got: {}",
+        s
+    );
+    assert!(
+        !s.contains("(pr 2"),
+        "outer cut failed to prune — the second $a answer (pr 2 _) leaked \
+         (the inner cut-rule's identical (cut) was memoized, skipping the \
+         outer cut's set_cut_active side-effect): {}",
+        s
+    );
+}
+
+/// 20-run determinism for the nested-cut case — the memoization fix must hold
+/// regardless of evaluation order / cache warmth.
+#[test]
+fn cut_nested_deterministic_20_runs() {
+    let source = r#"
+        (foo 1)
+        (foo 2)
+        (gp 1)
+        (gp 2)
+        (= (pick) (let* (($v (match &self (gp $g) $g)) ($t (cut))) $v))
+        (= (topn) (let* (($a (match &self (foo $f) $f)) ($b (pick)) ($z (cut))) (pr $a $b)))
+        !(collapse (topn))
+    "#;
+    let mut baseline: Option<Vec<String>> = None;
+    for i in 0..20 {
+        let mut results = eval_last(source);
+        results.sort();
+        if let Some(ref base) = baseline {
+            assert_eq!(
+                &results, base,
+                "iteration {}: nested-cut result differs from baseline",
+                i
+            );
+        } else {
+            baseline = Some(results);
+        }
+    }
+    let base = baseline.expect("at least one run");
+    assert_eq!(base.len(), 1, "expected one collapse tuple every run: {:?}", base);
+    assert!(
+        base[0].contains("(pr 1 1)") && !base[0].contains("(pr 2"),
+        "baseline must be the committed first answer (pr 1 1); got: {:?}",
+        base
+    );
+}
+
 /// A clause whose body does NOT contain `(cut)` must keep full
 /// nondeterminism — Phase 1 must not accidentally commit cut-free clauses.
 /// This guards against the barrier being opened/inherited too eagerly.

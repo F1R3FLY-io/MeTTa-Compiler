@@ -5586,13 +5586,14 @@ where
         Ok(())
     }
 
-    /// `msort`: numeric ascending sort of a tuple.
+    /// `msort`: ascending sort of a tuple in PeTTa standard order of terms.
     ///
     /// Stack: `[tuple] -> [sorted_tuple]`
     ///
-    /// PeTTa-compatible. Empty tuple returns empty tuple. All elements
-    /// must be numeric (Long or Float); non-numeric elements produce an
-    /// error MettaValue. Long and Float values are compared as f64.
+    /// PeTTa-compatible. Empty tuple returns empty tuple. Numbers (Long/Float,
+    /// compared as f64) sort numerically and order BEFORE non-numbers;
+    /// non-numbers sort by canonical representation. General terms are
+    /// supported (not numeric-only).
     /// Mirrors `eval_msort_generic` in `src/backend/eval/list_ops/ops.rs`.
     fn op_msort(&mut self) -> VmResult<()> {
         let tuple = self.pop()?;
@@ -5607,25 +5608,33 @@ where
             return Ok(());
         };
 
-        // Pair each element with its numeric key, propagating an error
-        // value on the first non-numeric element (matching the
-        // tree-walker's eager-error semantics).
-        let mut keyed: Vec<(f64, V)> = Vec::with_capacity(elements.len());
+        // PeTTa standard order of terms (matches eval_msort_generic): numbers
+        // sort numerically and BEFORE non-numbers; non-numbers sort by canonical
+        // representation. (Previously numeric-only — errored on non-numeric;
+        // PeTTa sorts general terms.)
+        let mut keyed: Vec<(u8, f64, String, V)> = Vec::with_capacity(elements.len());
         for e in elements {
-            let key = if let Some(n) = e.as_long() {
-                n as f64
+            let (rank, num) = if let Some(n) = e.as_long() {
+                (0u8, n as f64)
             } else if let Some(f) = e.as_float() {
-                f
+                (0u8, f)
             } else {
-                let err = self.make_error("msort: all elements must be numeric (Long or Float)", e);
-                self.push(err);
-                return Ok(());
+                (1u8, 0.0)
             };
-            keyed.push((key, e));
+            let repr = if rank == 0 {
+                String::new()
+            } else {
+                e.friendly_repr()
+            };
+            keyed.push((rank, num, repr, e));
         }
 
-        keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        let sorted: Vec<V> = keyed.into_iter().map(|(_, v)| v).collect();
+        keyed.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        let sorted: Vec<V> = keyed.into_iter().map(|(_, _, _, v)| v).collect();
         self.push(self.make_sexpr(sorted));
         Ok(())
     }

@@ -4233,25 +4233,20 @@ fn eval_trampoline_inner<C: EvalContext>(
                             items.len() >= 2,
                             "EvalSExprTail requires items.len() >= 2; gate at dispatch ensures this"
                         );
+                        // PeTTa reduce-all-elements (user decision 2026-05-26):
+                        // evaluate EVERY element of an SExpr-headed tuple,
+                        // INCLUDING the head — matching PeTTa's uniform reduce/2
+                        // (`!((add-atom…)(remove-atom…))` → `(true true)`). Each
+                        // subterm is reduced; a subterm with no applicable rule
+                        // reduces to itself, so pure-data tuples are unchanged.
                         let mut items_iter = items.into_iter();
                         let collect_capacity = items_iter.len();
                         let head = items_iter
                             .next()
                             .expect("EvalSExprTail guaranteed non-empty");
-                        let first_tail = items_iter
-                            .next()
-                            .expect("EvalSExprTail guaranteed >= 2 items");
-                        // Pre-seed `collected` with a single-alternative result
-                        // wrapping the head verbatim (no rule firing).
-                        let cb = &*carrying_bindings;
-                        let head_bv = if cb.is_empty() {
-                            bv(head)
-                        } else {
-                            bv_with(head, cb.clone())
-                        };
-                        let head_result: EvalResult = (smallvec![head_bv], env.clone());
-                        let mut collected = Vec::with_capacity(collect_capacity);
-                        collected.push(head_result);
+                        // No verbatim head pre-seed: collect starts empty and the
+                        // head is evaluated like every other element.
+                        let collected = Vec::with_capacity(collect_capacity);
 
                         continuations.push(Continuation::CollectSExpr {
                             remaining: items_iter,
@@ -4262,7 +4257,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                         });
 
                         work_stack.push(WorkItem::Eval {
-                            value: first_tail,
+                            value: head,
                             env,
                             depth: depth + 1,
                             is_tail_call: false,

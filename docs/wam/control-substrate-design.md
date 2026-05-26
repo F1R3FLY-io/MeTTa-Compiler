@@ -261,17 +261,32 @@ untouched (control-layer only); no env/CLI/pragma/feature behavioral gates; no M
   handles within-query isolation. Conclusion: tabling is correct under all three invariants; no change
   needed.
 
-## Status summary (2026-05-26)
-- **Phase 0** (trail infra) ✅ `691f226` · **Phase 1** (cut, incl cut_nested) ✅ `1fcea16`+`82400d5` ·
-  **Phase 2** (`once`) ✅ `70db5d3` · **Phase 3** (NAF/soft-cut) — justified NOT built (zero corpus
-  demand) · **Phase 4** (eval-conjunction) — justified NOT built (PeTTa returns `(,)` as data too) ·
-  **Phase 5** (SLG audit) ✅ invariants confirmed · **Phase 6** (match-conjunction) ✅ core works ·
-  **Phase 7** (perf) — profiled + baseline + 1 hypothesis tested/refuted; further work needs
-  wall-clock-validated targets. Plus discovered+fixed a general var-hygiene stack overflow `10d3cf5`.
-  Open (separate, tracked): matchnested2 SExpr-as-callable side-effect-template semantics (design Q);
-  apply_bindings iterative-span Layer-A hardening (benchmarked hot-path change). Gate green
-  throughout: nextest 4235, conformance --strict 481, M11-pt 221, M11-he 40, PLN 5/5 canonical. `expr_contains_cut` (Phase-1 self-introduced) remains the cleanest
-  candidate IF confirmed on the critical path — fix = thread the cached `any_rule_body_contains_cut`
-  flag (precedent: `op_lhs_head_all_meta_typed`) to gate the per-dispatch scan; it is consistent with
-  the load-time `body_contains_cut` the rest of the cut machinery already uses. Baseline recorded:
-  FlyingRaven 19.848 s ± 0.059 @ d2b8a60 (symbol build, CCD0).
+## Status summary (2026-05-26) — final
+- **Phase 0** trail infra ✅ `691f226` · **Phase 1** cut (incl cut_nested) ✅ `1fcea16`+`82400d5` ·
+  **Phase 2** `once` ✅ `70db5d3` · **Phase 3** NAF/soft-cut — **VACUOUS, justified NOT built**:
+  PeTTa's translator exposes NO `naf`/`not`/`\+`/`*->` MeTTa surface form (dispatch list `HV == …`
+  has cut/once/case/match/collapse/superpose/hyperpose/… only); `\+`/`*->` are INTERNAL Prolog
+  constructs, never user MeTTa — there is no feature to build · **Phase 4** eval-position `(,)` —
+  **justified NOT built**: PeTTa returns `(, A B)` as DATA in eval position too (verified) — an
+  eval handler would diverge · **Phase 5** SLG audit ✅ invariants confirmed (ground-only hash,
+  table⊥trail, cycle-detect) · **Phase 6** match-conjunction ✅ core works · **Phase 7** perf —
+  profiled + baseline (FlyingRaven 19.848 s ± 0.059 @ d2b8a60, CCD0) + 1 hypothesis tested+refuted
+  (GC merge; pdqsort already optimal); further optimization is open-ended and needs wall-clock-
+  validated targets (the documented lesson) — `expr_contains_cut` (Phase-1 self-introduced) is the
+  cleanest candidate if confirmed on the critical path (fix = thread cached `any_rule_body_contains_cut`
+  flag). Plus discovered+fixed a GENERAL var-hygiene stack overflow `10d3cf5` + **Layer A** iterative
+  Spanned-handling ✅ `92d4f4e` (non-lazy path; lazy variant bounded post-fix + behavior-risk →
+  reasoned boundary). Gate green throughout: nextest 4235, conformance --strict 481, M11-pt 221,
+  M11-he 40, PLN 5/5 canonical.
+- 2026-05-26: **matchnested2 full-result = the outer-form-is-data vs reduce-all-elements FORK
+  (PROVEN; genuine user design decision, not incompletion).** Bare-sequence test
+  `!((add-atom &self (x 1)) (remove-atom &self (thing a)))`: PeTTa → `(true true)` (BOTH side effects
+  run — reduces EVERY element of a tuple whose head is itself an SExpr); MTT → `((add-atom…) ())`
+  (head-position SExpr kept as DATA — "outer-form-is-data", only non-head args reduced). So the
+  matchnested2 `()` is NOT match-specific — it is MTT's DELIBERATE outer-form-is-data semantics
+  (load-bearing: `can_compile_with_env`/`can_compile` route head-is-SExpr forms to T0 as structural
+  data; PT-canonical; historical T04/020-061 cons/decons literal-structure tests depend on it). Adopting
+  PeTTa's reduce-all-elements would break those tests — the documented SExpr-as-callable dilemma
+  ([[session-handoff-2026-05-23-sexpr-callable]], 4 options A/B/C/D pending the user's choice). This
+  is a core eval-semantics fork that requires the user's design intent; it is NOT a WAM-phase task and
+  must not be changed unilaterally (would regress the gate).

@@ -1059,23 +1059,36 @@ where
             tuple.clone(),
         )];
     };
-    // Sort by numeric value (Long or Float). Non-numeric items error out.
-    let mut keyed: Vec<(f64, V)> = Vec::with_capacity(elements.len());
+    // PeTTa standard order of terms: numbers sort numerically and BEFORE
+    // non-numbers; non-numbers sort by canonical representation. MTT previously
+    // errored on any non-numeric element, but PeTTa's `msort` sorts GENERAL
+    // terms — e.g. `(msort ((transitive tim …)(transitive sim …)))` →
+    // `((transitive sim …)(transitive tim …))` (used by matchnested2). Numeric
+    // tuples still sort numerically (10 after 2, not lexicographically).
+    let mut keyed: Vec<(u8, f64, String, V)> = Vec::with_capacity(elements.len());
     for e in elements {
-        let key = if let Some(n) = e.as_long() {
-            n as f64
+        let (rank, num) = if let Some(n) = e.as_long() {
+            (0u8, n as f64)
         } else if let Some(f) = e.as_float() {
-            f
+            (0u8, f)
         } else {
-            return vec![factory.error(
-                factory.string("msort: all elements must be numeric (Long or Float)"),
-                e,
-            )];
+            (1u8, 0.0)
         };
-        keyed.push((key, e));
+        // Numeric elements are fully ordered by `num`; only non-numeric ones
+        // need the (allocating) representation key.
+        let repr = if rank == 0 {
+            String::new()
+        } else {
+            e.friendly_repr()
+        };
+        keyed.push((rank, num, repr, e));
     }
-    keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-    let sorted: Vec<V> = keyed.into_iter().map(|(_, v)| v).collect();
+    keyed.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    let sorted: Vec<V> = keyed.into_iter().map(|(_, _, _, v)| v).collect();
     vec![factory.sexpr(sorted)]
 }
 

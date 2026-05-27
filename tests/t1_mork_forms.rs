@@ -31,8 +31,13 @@ fn run_all_exprs(source: &str) -> Vec<Vec<String>> {
 
 #[test]
 fn t1_exec_form_routes_to_t0_via_compile_time_gate() {
-    // Trivial exec: add (parent alice bob), then exec with no firing.
-    // get-atoms must include the parent fact and NOT a self-stored exec call.
+    // add (parent alice bob), then an exec that FIRES per mm2-spec §6 R-TPL-CC: the
+    // antecedent (parent $p $c) matches → {$p=alice,$c=bob}, the consequent template
+    // (child $c $p) is instantiated to (child bob alice) and inserted into the space.
+    // (Stage 1c: previously the antecedent matcher returned no bindings, silently
+    // suppressing the directive — non-conformant with R-TPL-CC; the MM2 ProductZipper
+    // conjunction join now matches it and the directive fires. exec must NOT self-store
+    // the exec S-expression itself.)
     let r = run_all_exprs(
         r#"
         !(add-atom &self (parent alice bob))
@@ -41,14 +46,15 @@ fn t1_exec_form_routes_to_t0_via_compile_time_gate() {
         "#,
     );
     assert_eq!(r[0], vec!["()"], "add-atom should return Unit");
-    assert!(
-        r[1].is_empty(),
-        "exec at v1.0 returns no results (per §23.3)"
+    assert_eq!(
+        r[1],
+        vec!["(child bob alice)"],
+        "exec fires (R-TPL-CC): instantiated consequent (child bob alice) is inserted + returned"
     );
     assert_eq!(
         r[2],
-        vec!["(parent alice bob)"],
-        "get-atoms should include only the parent fact"
+        vec!["(parent alice bob)", "(child bob alice)"],
+        "get-atoms shows the parent fact AND the exec-inserted child (NOT a self-stored exec)"
     );
 }
 

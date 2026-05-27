@@ -3325,6 +3325,87 @@ where
         }
     }
 
+    /// Single-pattern trie-pruned match of `btm` via MORK `query_multi` (the MM2 fast
+    /// path for `match_space`). The pattern is wrapped as a 1-conjunct `(, pattern)` (the
+    /// form `query_multi` expects), so the `ProductZipper` descends only the matching
+    /// trie branches — O(matches) instead of the linear O(|btm|) scan. Each match
+    /// instantiates `template` with the namespace-0 bindings (extracted via
+    /// `mork_bindings_to_generic`) and carries the matched fact's multiplicity.
+    ///
+    /// Returns `Some` ONLY when COMPLETE for the `btm` store; the CALLER must have
+    /// established a ground space (no variable-containing facts — directional matching
+    /// would otherwise miss a stored variable). Returns `None` on a non-head pattern,
+    /// arity ≥ 64, or an encoding failure → caller falls back to the linear scan. Covers
+    /// `btm` only; the caller still scans `wide_btm` for arity-≥64 facts.
+    fn match_space_btm_query_multi(
+        &self,
+        pattern: &V,
+        template: &V,
+    ) -> Option<Vec<MultiplicityMatch<V>>> {
+        let head = pattern.get_head_symbol()?;
+        let arity = pattern.get_arity();
+        if arity == 0 || arity >= 64 {
+            return None;
+        }
+        // Rules `(= lhs rhs)` are the only De-Bruijn (variable-containing) atoms in `btm`
+        // (added via `add_rule`, NOT counted by `variable_fact_count`). Directional
+        // `query_multi` would mishandle a `=`-headed rule query, so fall back to the
+        // linear+bidirectional scan for those. Non-`=` patterns only match literal facts
+        // (which are all ground when the caller's `variable_fact_count == 0` gate holds).
+        if head == "=" {
+            return None;
+        }
+        if !self
+            .shared
+            .atom_space
+            .head_arity_bloom
+            .read()
+            .may_contain(head, arity as u8)
+        {
+            return Some(Vec::new());
+        }
+        let conj = self.factory.conjunction(vec![pattern.clone()]);
+        let space = self.create_space();
+        let sm = self.shared_mapping.clone();
+        let result = crate::backend::mork_convert::with_mork_query_bytes(
+            &conj,
+            &sm,
+            self.mork_cache_epoch,
+            |bytes, ctx| {
+                let conj_expr = mork_expr::Expr {
+                    ptr: bytes.as_ptr().cast_mut(),
+                };
+                let mut out: Vec<MultiplicityMatch<V>> = Vec::new();
+                mork::space::Space::query_multi(&space.btm, conj_expr, |res, matched_expr| {
+                    if let Err(mork_bindings) = res {
+                        if let Ok(binds) = crate::backend::mork_convert::mork_bindings_to_generic::<
+                            V,
+                            F,
+                            Multiplicity,
+                        >(
+                            &mork_bindings, ctx, &space, &self.factory
+                        ) {
+                            let instantiated =
+                                apply_bindings_generic(template, &binds, &self.factory);
+                            // Multiplicity from the matched atom's exact PathMap key.
+                            let first_byte = unsafe { *matched_expr.ptr };
+                            let mult = if mork_expr::maybe_byte_item(first_byte).is_ok() {
+                                let mork_bytes = unsafe { &*matched_expr.span() };
+                                get_multiplicity(&space.btm, mork_bytes).max(1) as usize
+                            } else {
+                                1
+                            };
+                            out.push(MultiplicityMatch::new(instantiated, mult));
+                        }
+                    }
+                    true // collect ALL matches
+                });
+                out
+            },
+        );
+        result.ok()
+    }
+
     pub fn match_space(&self, pattern: &V, template: &V) -> Vec<MultiplicityMatch<V>> {
         // Bloom filter check using trait methods (no conversion)
         if let Some(expected_head) = pattern.get_head_symbol() {
@@ -3357,39 +3438,71 @@ where
         use crate::backend::eval::space_match::space_match_bidirectional_generic;
         let pattern_vars = collect_variables_generic(pattern);
 
-        let space = self.create_space();
-        let mut rz = space.btm.read_zipper();
         let mut results = Vec::new();
 
-        // Iterate through MORK PathMap
-        while rz.to_next_val() {
-            let path_bytes = rz.path();
-            let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
+        // Stage 1b: MM2 trie-pruned fast path for the `btm` store. When the space holds
+        // NO variable-containing facts (`variable_fact_count == 0`) and no SpaceHandle
+        // variable atoms, MORK `query_multi` descends only matching trie branches
+        // (O(matches)) instead of the linear O(|btm|) scan below — turning match-heavy
+        // workloads over large ground KBs from O(|space|·queries) into O(matches·queries).
+        // Not eligible / not ground ⇒ fall through to the linear + bidirectional scan
+        // (which is required to bind variables in *stored* atoms).
+        let ground_space = self
+            .shared
+            .atom_space
+            .variable_fact_count
+            .load(Ordering::Acquire)
+            == 0
+            && self.shared.atom_space.variable_atoms.read().is_empty();
+        let btm_done = if ground_space {
+            match self.match_space_btm_query_multi(pattern, template) {
+                Some(fast) => {
+                    results = fast;
+                    true
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
 
-            // Direct MORK bytes → V conversion (no MettaValue intermediate)
-            if let Ok(atom) =
-                mork_bytes_to_generic_value::<V, F, Multiplicity>(path_bytes, &space, &self.factory)
-            {
-                if atom.has_variables_fast() {
-                    // Stored atom has variables — bidirectional match with
-                    // freshening (HE-bisim for variable-containing facts).
-                    let freshened = freshen_variables_generic(&atom, &self.factory);
-                    if let Some(bindings) =
-                        space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
-                    {
+        if !btm_done {
+            let space = self.create_space();
+            let mut rz = space.btm.read_zipper();
+
+            // Iterate through MORK PathMap (linear fallback)
+            while rz.to_next_val() {
+                let path_bytes = rz.path();
+                let multiplicity = rz.val().map(|m| m.count()).unwrap_or(1) as usize;
+
+                // Direct MORK bytes → V conversion (no MettaValue intermediate)
+                if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                    path_bytes,
+                    &space,
+                    &self.factory,
+                ) {
+                    if atom.has_variables_fast() {
+                        // Stored atom has variables — bidirectional match with
+                        // freshening (HE-bisim for variable-containing facts).
+                        let freshened = freshen_variables_generic(&atom, &self.factory);
+                        if let Some(bindings) =
+                            space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
+                        {
+                            let instantiated =
+                                apply_bindings_generic(template, &bindings, &self.factory);
+                            results.push(MultiplicityMatch::new(instantiated, multiplicity));
+                        }
+                    } else if let Some(bindings) = pattern_match_generic(pattern, &atom) {
+                        // Ground atom — fast unidirectional path.
                         let instantiated =
                             apply_bindings_generic(template, &bindings, &self.factory);
                         results.push(MultiplicityMatch::new(instantiated, multiplicity));
                     }
-                } else if let Some(bindings) = pattern_match_generic(pattern, &atom) {
-                    // Ground atom — fast unidirectional path.
-                    let instantiated = apply_bindings_generic(template, &bindings, &self.factory);
-                    results.push(MultiplicityMatch::new(instantiated, multiplicity));
                 }
             }
-        }
 
-        drop(space);
+            drop(space);
+        }
 
         // Check wide expression PathMap (arity >= 64, Wide MORK keys)
         {

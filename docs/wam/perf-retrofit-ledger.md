@@ -77,7 +77,25 @@ re-prioritize") is **not tripped**: determinacy is 93.3% and freshen+apply (memc
 
 ### Status: Stage 0 COMPLETE.
 
-### Sequencing decision (data-informed; all stages will be completed end-to-end)
+### Stage 1b — single-pattern `match_space` trie-acceleration: CONFIRMED WIN (✓ landed)
+- **Finding (match-heavy benchmark, 5000 ground facts × 3000 `(match …)` queries):** the
+  production `match_space` (core.rs) does a linear O(|btm|) scan per query — **40.6–41.0 s,
+  15.6 GB RSS**. (match_space is absent from FlyingRaven's profile, but dominates
+  match-heavy/large-KB workloads.)
+- **Change:** `match_space_btm_query_multi` — wraps the pattern as `(, pattern)` and uses
+  MORK `query_multi`/`ProductZipper` (O(matches)) for the `btm` store; `match_space` gates it
+  on a ground space (`variable_fact_count == 0` + `variable_atoms` empty) and a non-`=` head
+  (rules are De-Bruijn variable atoms in btm — fall back to the linear+bidirectional scan for
+  them and for non-ground spaces). Wide-btm scan unchanged.
+- **Result:** **40.6 s → 26 s (~36% faster), 15.6 GB → 9.8 GB RSS (~37% less)**; correctness
+  `[b2500]` ✓; FlyingRaven unchanged (18.08 s, ✅✅). Residual ~26s is `query_multi`'s
+  per-call 4 GiB buffer reserve + per-query `create_space` CoW clone (a MORK-internal cost
+  shared by both paths; further amortization is a separate MORK-side concern).
+- **Correctness fix:** initial version mishandled `=`-headed rule queries (rules are
+  De-Bruijn, not counted by `variable_fact_count`) → `test_rules_with_multiplicity` failed;
+  added the `=`-head exclusion. Gate: nextest re-run (4239) green.
+
+## Sequencing decision (data-informed; all stages will be completed end-to-end)
 
 Per the plan's data-gating principle, Stage 0 findings refine — but do not drop — any
 stage. Full execution order:

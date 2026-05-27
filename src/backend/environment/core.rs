@@ -3406,6 +3406,54 @@ where
         result.ok()
     }
 
+    /// Stage 2 — trie-pruned existence check of `btm` via MORK `query_multi` with
+    /// EARLY TERMINATION: the streaming `FnMut -> bool` callback returns `false` on the
+    /// first match, `longjmp`-ing out of the trie walk (O(depth) instead of the linear
+    /// O(|btm|) scan — the win is largest when the match is absent or late in byte order).
+    /// Same eligibility as `match_space_btm_query_multi` (ground space, non-`=` head,
+    /// arity 1..=63); `Some(true)`=match exists, `Some(false)`=none in btm, `None`=fall
+    /// back to the linear+bidirectional scan. Covers `btm` only.
+    fn match_space_btm_exists_query_multi(&self, pattern: &V) -> Option<bool> {
+        let head = pattern.get_head_symbol()?;
+        let arity = pattern.get_arity();
+        if arity == 0 || arity >= 64 || head == "=" {
+            return None;
+        }
+        if !self
+            .shared
+            .atom_space
+            .head_arity_bloom
+            .read()
+            .may_contain(head, arity as u8)
+        {
+            return Some(false);
+        }
+        let conj = self.factory.conjunction(vec![pattern.clone()]);
+        let space = self.create_space();
+        let sm = self.shared_mapping.clone();
+        let result = crate::backend::mork_convert::with_mork_query_bytes(
+            &conj,
+            &sm,
+            self.mork_cache_epoch,
+            |bytes, _ctx| {
+                let conj_expr = mork_expr::Expr {
+                    ptr: bytes.as_ptr().cast_mut(),
+                };
+                let mut found = false;
+                mork::space::Space::query_multi(&space.btm, conj_expr, |res, _matched| {
+                    if res.is_err() {
+                        found = true;
+                        false // first match — stop the trie walk (early termination)
+                    } else {
+                        true
+                    }
+                });
+                found
+            },
+        );
+        result.ok()
+    }
+
     pub fn match_space(&self, pattern: &V, template: &V) -> Vec<MultiplicityMatch<V>> {
         // Bloom filter check using trait methods (no conversion)
         if let Some(expected_head) = pattern.get_head_symbol() {
@@ -3566,30 +3614,53 @@ where
         use crate::backend::eval::space_match::space_match_bidirectional_generic;
         let pattern_vars = collect_variables_generic(pattern);
 
-        let space = self.create_space();
-        let mut rz = space.btm.read_zipper();
+        // Stage 2: trie-pruned existence early-exit for ground spaces (non-`=` patterns).
+        // `query_multi` stops at the first match (O(depth)) vs the linear scan below.
+        let ground_space = self
+            .shared
+            .atom_space
+            .variable_fact_count
+            .load(Ordering::Acquire)
+            == 0
+            && self.shared.atom_space.variable_atoms.read().is_empty();
+        let btm_checked_fast = if ground_space {
+            match self.match_space_btm_exists_query_multi(pattern) {
+                Some(true) => return true,
+                Some(false) => true, // fast path ran; no btm match → skip linear btm scan
+                None => false,
+            }
+        } else {
+            false
+        };
 
-        while rz.to_next_val() {
-            let path_bytes = rz.path();
+        if !btm_checked_fast {
+            let space = self.create_space();
+            let mut rz = space.btm.read_zipper();
 
-            // Direct MORK bytes → V conversion (no MettaValue intermediate)
-            if let Ok(atom) =
-                mork_bytes_to_generic_value::<V, F, Multiplicity>(path_bytes, &space, &self.factory)
-            {
-                if atom.has_variables_fast() {
-                    let freshened = freshen_variables_generic(&atom, &self.factory);
-                    if space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
-                        .is_some()
-                    {
+            while rz.to_next_val() {
+                let path_bytes = rz.path();
+
+                // Direct MORK bytes → V conversion (no MettaValue intermediate)
+                if let Ok(atom) = mork_bytes_to_generic_value::<V, F, Multiplicity>(
+                    path_bytes,
+                    &space,
+                    &self.factory,
+                ) {
+                    if atom.has_variables_fast() {
+                        let freshened = freshen_variables_generic(&atom, &self.factory);
+                        if space_match_bidirectional_generic(pattern, &freshened, &pattern_vars)
+                            .is_some()
+                        {
+                            return true;
+                        }
+                    } else if pattern_match_generic(pattern, &atom).is_some() {
                         return true;
                     }
-                } else if pattern_match_generic(pattern, &atom).is_some() {
-                    return true;
                 }
             }
-        }
 
-        drop(space);
+            drop(space);
+        }
 
         // Check wide expression PathMap (arity ≥ 64, Wide MORK encoding)
         {

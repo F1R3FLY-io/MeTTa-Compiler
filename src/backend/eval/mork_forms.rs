@@ -147,6 +147,104 @@ fn extract_conjunction_goals<V: MettaValueTrait + Clone>(value: &V) -> Option<Ve
 ///
 /// Executes rules with conjunction-based pattern matching using generic types.
 /// No MettaValue <-> MettaValue conversion required.
+/// MM2 §10 reduction sinks for the exec `(O (<sink> ctx slot e))` consequent. Aggregates
+/// `e` over ALL antecedent matches Θ (`binding_sets`) and inserts `ctx` with the free
+/// variable `slot` bound to `Sym(result)` — one atom (SNK-COUNT/HASH/SUM/FRED). Returns
+/// `Some(inserted)` if `consequent` is a single recognized reduction sink; `None`
+/// otherwise (caller falls through to the per-match `O`/conjunction handling). Heads:
+///   `count` → |Θ|;  `sum` → Σ decimal-u64;  `fsum`/`fmin`/`fmax`/`fprod` → f64 reduction;
+///   `and` → boolean-AND of the group;  `hash` → order-insensitive FNV-1a digest.
+/// Unparseable numeric input ⇒ `None` (graceful fall-through, not a Tier-1 panic).
+fn try_eval_reduction_sink_generic<V, F>(
+    consequent: &V,
+    binding_sets: &[GenericBindings<V>],
+    env: &GenericEnvironment<V, F>,
+    factory: &F,
+) -> Option<Vec<V>>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: MettaValueFactory<V> + Clone,
+{
+    // consequent = (O (<sink> ctx slot e))
+    let items = consequent.as_sexpr()?;
+    if items.len() != 2 || items[0].as_atom()? != "O" {
+        return None;
+    }
+    let sink = items[1].as_sexpr()?;
+    if sink.len() != 4 {
+        return None;
+    }
+    let head = sink[0].as_atom()?;
+    let ctx = &sink[1];
+    let slot_name = sink[2].as_atom()?; // slot MUST be a free variable in ctx
+    let e = &sink[3];
+
+    let result_str: String = match head {
+        // count needs only |Θ| — avoid materializing the group.
+        "count" => binding_sets.len().to_string(),
+        _ => {
+            // The matched group { θ·e : θ ∈ Θ } as textual payloads.
+            let group: Vec<String> = binding_sets
+                .iter()
+                .map(|theta| apply_bindings_generic(e, theta, factory).friendly_repr())
+                .collect();
+            match head {
+                "sum" => {
+                    let mut acc: u64 = 0;
+                    for g in &group {
+                        acc = acc.checked_add(g.trim().parse::<u64>().ok()?)?;
+                    }
+                    acc.to_string()
+                }
+                "fsum" | "fmin" | "fmax" | "fprod" => {
+                    let mut xs: Vec<f64> = Vec::with_capacity(group.len());
+                    for g in &group {
+                        xs.push(g.trim().parse::<f64>().ok()?);
+                    }
+                    let r = match head {
+                        "fsum" => xs.iter().sum::<f64>(),
+                        "fprod" => xs.iter().product::<f64>(),
+                        "fmin" => xs.iter().copied().fold(f64::INFINITY, f64::min),
+                        "fmax" => xs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                        _ => unreachable!(),
+                    };
+                    format!("{}", r)
+                }
+                "and" => {
+                    if group.iter().all(|g| g == "True") {
+                        "True".to_string()
+                    } else {
+                        "False".to_string()
+                    }
+                }
+                "hash" => {
+                    // Deterministic, order-insensitive FNV-1a digest of the group.
+                    let mut sorted = group;
+                    sorted.sort();
+                    let mut h: u64 = 0xcbf29ce484222325;
+                    for g in &sorted {
+                        for b in g.as_bytes() {
+                            h ^= *b as u64;
+                            h = h.wrapping_mul(0x100000001b3);
+                        }
+                        h ^= 0xff; // element boundary
+                        h = h.wrapping_mul(0x100000001b3);
+                    }
+                    h.to_string()
+                }
+                _ => return None, // not a reduction sink — fall through
+            }
+        }
+    };
+
+    // Σ ▷ Insert(ctx[slot ↦ Sym(result)]).
+    let mut subst = GenericBindings::new();
+    subst.insert(slot_name, factory.atom(&result_str));
+    let inserted = apply_bindings_generic(ctx, &subst, factory);
+    env.add_to_space_shared(&inserted);
+    Some(vec![inserted])
+}
+
 pub fn eval_exec_generic<V, F>(
     items: Vec<V>,
     env: GenericEnvironment<V, F>,
@@ -194,6 +292,16 @@ where
     // If antecedent failed, rule doesn't fire
     if binding_sets.is_empty() {
         return (vec![], env);
+    }
+
+    // Stage 5b (MM2 §10 reduction sinks): a consequent that is a single reduction-sink
+    // O-template `(O (<sink> ctx slot e))` (count/sum/fsum/fmin/fmax/fprod/and/hash)
+    // aggregates `e` over ALL antecedent matches Θ and inserts `ctx[slot ↦ Sym(result)]`
+    // ONCE (SNK-COUNT/SUM/FRED/…) — distinct from the per-match `O`-dispatch below.
+    if let Some(sink_results) =
+        try_eval_reduction_sink_generic(consequent, &binding_sets, &env, factory)
+    {
+        return (sink_results, env);
     }
 
     // For each binding set, evaluate consequent

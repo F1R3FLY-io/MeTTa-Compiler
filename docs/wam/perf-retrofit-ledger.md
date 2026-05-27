@@ -95,6 +95,34 @@ re-prioritize") is **not tripped**: determinacy is 93.3% and freshen+apply (memc
   De-Bruijn, not counted by `variable_fact_count`) → `test_rules_with_multiplicity` failed;
   added the `=`-head exclusion. Gate: nextest re-run (4239) green.
 
+## Stage 5b — MM2 §10 reduction sinks in exec: COMPLETE (✓ landed)
+- `try_eval_reduction_sink_generic` (mork_forms.rs): for an exec consequent that is a
+  single reduction-sink O-template `(O (<sink> ctx slot e))`, aggregate `e` over ALL
+  antecedent matches Θ and insert `ctx[slot ↦ Sym(result)]` ONCE (vs the per-match
+  O-dispatch). Heads: `count`→|Θ| (SNK-COUNT §10.7), `sum`→Σ decimal-u64 (SNK-SUM §10.9),
+  `fsum`/`fmin`/`fmax`/`fprod`→f64 reduction (SNK-FRED §10.10), `and`→boolean-AND,
+  `hash`→order-insensitive FNV-1a digest. Unparseable numeric input → graceful
+  fall-through (not a Tier-1 panic).
+- Wired into `eval_exec_generic` (the now-firing exec from 1c is the consumer). Validated:
+  exec `(O (count (result $n) $n $x))` over 3 facts → `(result 3)`; `(O (sum …))` →
+  `(total 42)`; `(O (fsum …))` → `(ft 3.75)`. **Conformance 483/483** (new fixtures
+  M14/005-exec-count-sink, M14/006-exec-sum-sink); nextest 4239; PLN 5/5.
+
+## Stage 6 — rule-index audit: justified NOT built (data-driven)
+- The index chain `by_head_arity` (HashMap) → `by_first_arg_head` (HashMap) →
+  `DiscriminationTree` → empty-first-arg prune → `PerHeadAtomIndex` bloom is already
+  **deeper than classical WAM first-argument indexing** (which only keys on arg-1's
+  principal functor).
+- FlyingRaven profile confirms it is NOT a bottleneck: `get_candidates_filtered` **0.04%**,
+  `HeadArityBloomFilter::may_contain` 0.03%, `AtomicBloomFilter::may_contain` 0.15%,
+  `DiscNode::clone` ~0%. (A separate 0.6%/0.4% `get_all_rules` FlatMap is the no-head
+  wildcard-fallback iteration, not the indexed path, and is below the optimization
+  threshold.)
+- Deepening the index (second-arg indexing, deeper disc-tree) would optimize a
+  sub-0.5% non-bottleneck — a violation of the data-driven mandate. **Justified not built**;
+  the existing index is WAM-grade+ and the determinacy data (93.3% single-match) shows it
+  already cuts candidate sets to ~1 before unification.
+
 ## Sequencing decision (data-informed; all stages will be completed end-to-end)
 
 Per the plan's data-gating principle, Stage 0 findings refine — but do not drop — any

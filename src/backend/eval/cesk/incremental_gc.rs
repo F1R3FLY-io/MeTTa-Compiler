@@ -74,7 +74,16 @@ pub struct NurseryConfig {
 impl Default for NurseryConfig {
     fn default() -> Self {
         Self {
-            threshold_bytes: 64 * 1024,
+            // Stage 3e experiment (2026-05-27): raised 64 KiB → 512 KiB. The FlyingRaven
+            // profile attributes ~13.5% to the nursery-GC root-collection cluster
+            // (collect_subgoal_roots 4.5% + collect_thunk_roots 2.0% +
+            // collect_match_result_roots 1.3% + the mark-set quicksort 5.6%), which scales
+            // with collection FREQUENCY (the mark-set sort itself is already near-linear —
+            // the merge-vs-sort optimization was refuted in Phase 7). A 64 KiB nursery
+            // collects ~every 64 KiB of churn; 8× fewer collections should cut the cluster
+            // ~proportionally. GATED on: FlyingRaven wall-clock improves, Robot/(rec)
+            // memory-constancy tests stay green, peak RSS stays bounded (revert if not).
+            threshold_bytes: 512 * 1024,
             promotion_threshold: 2,
             max_objects_per_step: 1024,
             deterministic: false,
@@ -679,7 +688,9 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = NurseryConfig::default();
-        assert_eq!(config.threshold_bytes, 64 * 1024);
+        // Stage 3e (2026-05-27): raised 64 KiB → 512 KiB (8× fewer nursery collections;
+        // ~6% FlyingRaven wall-clock, no RSS regression — see perf-retrofit-ledger.md).
+        assert_eq!(config.threshold_bytes, 512 * 1024);
         assert_eq!(config.promotion_threshold, 2);
         assert_eq!(config.max_objects_per_step, 1024);
         assert!(!config.deterministic);

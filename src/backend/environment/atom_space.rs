@@ -89,6 +89,27 @@ pub struct AtomSpace<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>
     /// O(1) total atom count (sum of all multiplicities across ground + variable atoms).
     pub(crate) total_atoms: AtomicUsize,
 
+    /// Monotonic high-water counter of variable-CONTAINING non-rule atom additions to
+    /// `btm` (literal encoding). MORK `query_multi` is directional and cannot match a
+    /// stored atom whose variable sits where the query is concrete (see the
+    /// `variable_atoms` doc below), so the conjunction ProductZipper fast path
+    /// (`match_conjunction_query_multi`) is only COMPLETE when no variable-containing
+    /// fact exists in `btm`. This counter is the gate: `== 0` ⟹ safe to use the fast
+    /// path; `> 0` ⟹ fall back to the bidirectional iterative join.
+    ///
+    /// Incremented by `add_to_space`/`add_to_space_shared` when `has_variables_fast()`
+    /// (rules are De-Bruijn-encoded and excluded — they early-return before the count
+    /// site; the conjunction gate separately rejects `=`-headed goals). It is
+    /// deliberately MONOTONIC (never decremented), exactly like the space's bloom
+    /// filters: the load-bearing safety invariant is "> 0 whenever a variable fact is
+    /// or was present", and a conservative over-estimate only ever causes the optional
+    /// fast path to (correctly) fall back. Variable-containing facts are rare in the
+    /// target workloads (ground-fact KBs, PLN), so a fresh space stays at 0 and gets
+    /// the fast path; a space that ever stores one accepts the always-correct iterative
+    /// path for its lifetime. Per-fact decrement would re-enable the fast path after
+    /// removal but is unnecessary for correctness and is intentionally omitted.
+    pub(crate) variable_fact_count: AtomicUsize,
+
     /// Phase 10.5: Generation counter for inferred type changes.
     /// Incremented by `register_inferred_type()` on each new type registration.
     /// Used with `fixpoint_generation` to detect when new types have been registered
@@ -149,6 +170,7 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
                 expected_entries / 10,
             ))),
             total_atoms: AtomicUsize::new(0),
+            variable_fact_count: AtomicUsize::new(0),
             // Phase 10.5: both start at 0 — no fixpoint needed until types are registered
             inferred_type_generation: AtomicU64::new(0),
             fixpoint_generation: AtomicU64::new(0),
@@ -176,6 +198,9 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             rule_head_bloom: std::sync::Arc::clone(&self.rule_head_bloom),
             type_bloom: std::sync::Arc::clone(&self.type_bloom),
             total_atoms: AtomicUsize::new(self.total_atoms.load(Ordering::Acquire)),
+            variable_fact_count: AtomicUsize::new(
+                self.variable_fact_count.load(Ordering::Acquire),
+            ),
             // Phase 10.5: snapshot generation counters into forked AtomSpace
             inferred_type_generation: AtomicU64::new(
                 self.inferred_type_generation.load(Ordering::Acquire),

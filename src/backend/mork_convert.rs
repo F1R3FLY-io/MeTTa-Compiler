@@ -1139,13 +1139,102 @@ fn write_symbol(
 // MORK Bindings → MeTTa Bindings
 // ============================================================================
 
-/// Convert MORK bindings to Mettatron Bindings format
+/// Convert MORK pattern-side bindings to a generic `GenericBindings<V>`.
 ///
-/// MORK uses BTreeMap<(u8, u8), ExprEnv> where the key is (old_var, new_var).
-/// We need to convert this to SmallVec<[(String, MettaValue); 8]> using the original variable names.
+/// Generic over the output value type `V` (constructed via `factory`) and the
+/// space's stored value type `M` (e.g. `Multiplicity`). This is the value-generic
+/// core; [`mork_bindings_to_metta`] is the `V = MettaValue` specialization (mirrors
+/// how `mork_expr_to_metta_value` delegates to `mork_expr_to_generic_value`).
 ///
-/// FIXED: Uses mork_expr_to_metta_value() instead of serialize2() to avoid reserved byte panic
-/// Now properly reports conversion errors instead of silently skipping bindings.
+/// Only namespace-0 (pattern-side) bindings are materialized. For a single pattern
+/// these are the query's variables; for a `(, g0 g1 …)` conjunction encoded with ONE
+/// shared `ConversionContext`, all goals' pattern variables ALSO resolve at namespace
+/// 0 with a shared De Bruijn index — MORK `query_multi_raw` keeps the pattern at
+/// namespace 0 and assigns matched factors to namespaces 1.. (see
+/// `MORK/kernel/src/space.rs` `query_multi_raw`), and `ExprEnv::args` preserves the
+/// parent namespace across conjuncts — so the same namespace-0 extraction yields the
+/// full join's variable assignment. Namespace 1+ entries (only non-empty when a
+/// STORED atom carries variables — the directional-match case) are skipped here; the
+/// caller's eligibility gate falls back to the bidirectional path when that happens.
+#[allow(unused_variables)]
+pub fn mork_bindings_to_generic<V, F, M>(
+    mork_bindings: &std::collections::BTreeMap<(u8, u8), ExprEnv>,
+    ctx: &ConversionContext,
+    space: &Space<M>,
+    factory: &F,
+) -> Result<crate::backend::models::GenericBindings<V>, String>
+where
+    V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
+    F: crate::backend::models::metta_value_trait::MettaValueFactory<V>,
+    M: Clone + Default + Send + Sync + Unpin,
+{
+    use crate::backend::environment::mork_encoding::mork_expr_to_generic_value;
+
+    let mut bindings = crate::backend::models::GenericBindings::<V>::new();
+    let mut conversion_errors: Vec<String> = Vec::new();
+
+    for (&(namespace, var_index), expr_env) in mork_bindings {
+        if namespace != 0 {
+            continue;
+        }
+
+        if (var_index as usize) >= ctx.var_names.len() {
+            warn!(
+                target: "mettatron::conversion::mork_bindings_to_generic",
+                var_index, max_vars = ctx.var_names.len(),
+                "Variable index exceeds known variables - internal inconsistency detected"
+            );
+            conversion_errors.push(format!(
+                "Variable index {} exceeds known variables (max: {})",
+                var_index,
+                ctx.var_names.len().saturating_sub(1)
+            ));
+            continue;
+        }
+        let var_name = &ctx.var_names[var_index as usize];
+
+        let expr: Expr = expr_env.subsexpr();
+        match mork_expr_to_generic_value::<V, F, M>(&expr, space, factory) {
+            Ok(value) => {
+                let interned_name: &'static str =
+                    crate::backend::models::gc_allocator::global_allocator()
+                        .alloc_str(&format!("${}", var_name));
+                bindings.insert(interned_name, value);
+            }
+            Err(e) => {
+                debug!(
+                    target: "mettatron::conversion::mork_bindings_to_generic",
+                    var_name = %var_name, error = %e, "Failed to convert individual binding"
+                );
+                conversion_errors.push(format!(
+                    "Failed to convert binding for ${}: {}",
+                    var_name, e
+                ));
+            }
+        }
+    }
+
+    if !conversion_errors.is_empty() {
+        let errors = conversion_errors.join("\n  - ");
+        warn!(
+            target: "mettatron::conversion::mork_bindings_to_generic",
+            errors, "MORK binding conversion partially failed"
+        );
+        return Err(format!("MORK binding conversion failed:\n  - {}", errors));
+    }
+
+    Ok(bindings)
+}
+
+/// Convert MORK bindings to Mettatron `Bindings` (the `SmartBindings` ADT used by
+/// the single-pattern `match_space_query_multi` / `apply_bindings` path).
+///
+/// `V = MettaValue` analogue of [`mork_bindings_to_generic`] (which produces the
+/// `GenericBindings<V>` ADT used by the conjunction / generic-eval paths). Both
+/// share the same namespace-0 extraction logic; they differ only in the binding
+/// container they build, so they are kept as two focused converters rather than one
+/// generic-over-container function. The type parameter `V` here is the SPACE's
+/// stored value type (e.g. `Multiplicity`), not the binding value type.
 #[allow(unused_variables)]
 pub fn mork_bindings_to_metta<V: Clone + Default + Send + Sync + Unpin>(
     mork_bindings: &std::collections::BTreeMap<(u8, u8), ExprEnv>,

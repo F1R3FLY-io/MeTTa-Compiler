@@ -254,6 +254,15 @@ where
         return vec![GenericBindings::new()];
     }
 
+    // NOTE (Stage 1): the MM2 ProductZipper fast path
+    // (`env.match_conjunction_query_multi`) is intentionally NOT applied here. This
+    // function backs ONLY the `(exec …)` antecedent, whose current mettatron behavior
+    // (the `t1_mork_forms` suite) is a v1.0 no-op — `thread_bindings_through_goals_generic`
+    // returns no bindings for a matching antecedent, so the directive does not fire.
+    // The functional ProductZipper join would change that observable behavior, which a
+    // performance optimization must not do; exec-firing per mm2-spec §6 R-TPL-CC is a
+    // separate conformance question tracked outside Stage 1. The fast path is wired
+    // into genuine multi-pattern join sites instead (see `match_conjunction_query_multi`).
     let initial_bindings = vec![GenericBindings::new()];
     thread_bindings_through_goals_generic(goals, initial_bindings, env, factory)
 }

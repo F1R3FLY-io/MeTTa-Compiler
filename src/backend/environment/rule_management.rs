@@ -815,6 +815,18 @@ pub(crate) struct RuleIndex<V: MettaValueTrait + Clone + 'static> {
 
     /// Phase 11.A — per-head RHS-atom membership index.
     pub(crate) rule_rhs_atoms: PerHeadAtomIndex,
+
+    /// Stage 3b / expr_contains_cut (2026-05-27): monotonic flag — `true` once ANY
+    /// added rule's body contains `(cut)` (via `RuleEntry::body_contains_cut`). Lets the
+    /// dispatcher skip the per-dispatch full-instantiated-RHS `expr_contains_cut` walk
+    /// (~4% of FlyingRaven self-time) when no rule uses cut: the instantiated RHS can
+    /// then only carry cut via a binding value (cut-as-data), so only the (small)
+    /// binding values are scanned. Set in `add_rule` (the single insertion choke point,
+    /// also hit by union/merge re-adds); propagated by `#[derive(Clone)]` (fork /
+    /// make_owned / union-clone). Monotonic (never cleared on removal): a conservative
+    /// `true` only costs the full scan, whereas a spurious `false` would MISS a cut, so
+    /// monotonic is the safe direction.
+    pub(crate) any_rule_has_cut: bool,
 }
 
 impl<V: MettaValueTrait + Clone> RuleIndex<V> {
@@ -824,7 +836,14 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
             by_head_arity: HashMap::new(),
             wildcard: Vec::new(),
             rule_rhs_atoms: PerHeadAtomIndex::new(),
+            any_rule_has_cut: false,
         }
+    }
+
+    /// Whether any rule in this index has a `(cut)` in its body. See the field doc.
+    #[inline]
+    pub(crate) fn any_rule_has_cut(&self) -> bool {
+        self.any_rule_has_cut
     }
 
     /// Insert a rule entry, or increment multiplicity if a duplicate exists.
@@ -839,6 +858,11 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         first_arg_head: Option<&'static str>,
         entry: RuleEntry<V>,
     ) {
+        // Stage 3b: maintain the global cut flag at the single insertion choke point
+        // (also covers union/merge re-adds via `merged.add_rule(...)`). Monotonic —
+        // see the `any_rule_has_cut` field doc.
+        self.any_rule_has_cut |= entry.body_contains_cut;
+
         use crate::backend::models::gc_allocator::global_allocator;
 
         match head {

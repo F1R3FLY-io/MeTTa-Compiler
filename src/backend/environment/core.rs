@@ -808,6 +808,12 @@ where
                         self.shared.atom_space.type_bloom.read().clone(),
                     )),
                     total_atoms: AtomicUsize::new(forked_count),
+                    variable_fact_count: AtomicUsize::new(
+                        self.shared
+                            .atom_space
+                            .variable_fact_count
+                            .load(Ordering::Acquire),
+                    ),
                     variable_atoms: RwLock::new(forked_var_atoms),
                     mork_cache_epoch: self.shared.atom_space.mork_cache_epoch,
                 }
@@ -1237,6 +1243,21 @@ where
                         ),
                 ),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
+                // Conservative monotonic gate (Stage 1): merged btm = union of both
+                // sources, so it holds a variable fact iff either source did → max.
+                variable_fact_count: AtomicUsize::new(
+                    self.shared
+                        .atom_space
+                        .variable_fact_count
+                        .load(Ordering::Acquire)
+                        .max(
+                            other
+                                .shared
+                                .atom_space
+                                .variable_fact_count
+                                .load(Ordering::Acquire),
+                        ),
+                ),
                 variable_atoms: RwLock::new(Vec::new()),
                 // Same SharedMapping as self → same epoch (cache entries remain valid)
                 mork_cache_epoch: self.mork_cache_epoch,
@@ -1734,6 +1755,25 @@ where
                     min_gen
                 }),
                 total_atoms: AtomicUsize::new(merged_total_atoms),
+                // Conservative monotonic gate (Stage 1): merged btm = union of self +
+                // all others, so it holds a variable fact iff any source did → max.
+                variable_fact_count: AtomicUsize::new(
+                    others
+                        .iter()
+                        .map(|o| {
+                            o.shared
+                                .atom_space
+                                .variable_fact_count
+                                .load(Ordering::Acquire)
+                        })
+                        .fold(
+                            self.shared
+                                .atom_space
+                                .variable_fact_count
+                                .load(Ordering::Acquire),
+                            usize::max,
+                        ),
+                ),
                 variable_atoms: RwLock::new(Vec::new()),
                 // Same SharedMapping as self → same epoch (cache entries remain valid)
                 mork_cache_epoch: self.mork_cache_epoch,
@@ -2309,6 +2349,18 @@ where
             return;
         }
 
+        // Stage 1 (MM2 ProductZipper gate): rules returned above, so every atom
+        // reaching here is a non-rule fact stored literally in `btm`. A variable-
+        // containing one makes the directional conjunction fast path incomplete —
+        // count it so `match_conjunction_query_multi` falls back. (Over-counts on
+        // re-adds / wide atoms, which only causes safe extra fallback.)
+        if value.has_variables_fast() {
+            self.shared
+                .atom_space
+                .variable_fact_count
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
         // Check if this is a type assertion (: name type) or subtype declaration (:<  sub super)
         // — also register in the types/subtypes HashMap for fast lookup.
         // Track whether this is a type or subtype atom for incremental PathMap updates.
@@ -2824,6 +2876,16 @@ where
             return;
         }
 
+        // Stage 1 (MM2 ProductZipper gate): non-rule var-containing fact in `btm`
+        // makes the directional conjunction fast path incomplete — count it (see
+        // `add_to_space` for rationale).
+        if value.has_variables_fast() {
+            self.shared
+                .atom_space
+                .variable_fact_count
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
         // Non-rule: use literal encoding (existing path)
         match with_mork_bytes(
             value,
@@ -3173,6 +3235,96 @@ where
             .may_contain(head, arity as u8)
     }
 
+    /// Match a CONJUNCTION of goals against `&self`'s space using MORK's `query_multi`
+    /// / `ProductZipper` (an (n−1)-factor left-deep trie join), returning the set of
+    /// consistent variable assignments — the MM2 fast path for `(, g0 g1 … gn)`.
+    ///
+    /// Returns `Some(bindings)` ONLY when the join is guaranteed COMPLETE; otherwise
+    /// `None`, and the caller must fall back to the iterative bidirectional join. The
+    /// completeness gate — `Some` requires ALL of:
+    ///   * `goals` non-empty and `goals.len() < 63` (MORK 6-bit arity cap on the
+    ///     synthesized `(, …)` wrapper, whose arity is `goals.len() + 1`);
+    ///   * every goal is a head-applied expression (has a head symbol) whose head is
+    ///     NOT `=` (rules are De-Bruijn-encoded variable atoms in `btm` that
+    ///     directional matching would mishandle);
+    ///   * `variable_fact_count == 0` (no variable-containing fact in `btm` that a
+    ///     concrete goal position could directionally miss — see that field's doc);
+    ///   * `variable_atoms` empty (the `SpaceHandle`-populated bidirectional set).
+    ///
+    /// Goals are wrapped in ONE `factory.conjunction(...)` so they share a single
+    /// De-Bruijn `ConversionContext`: a variable recurring across goals (`$y` in
+    /// `(parent $x $y)` and `(parent $y $z)`) becomes one trie variable and MORK
+    /// enforces the join. Pattern variables resolve at namespace 0, so
+    /// `mork_bindings_to_generic` extracts the full assignment (see
+    /// `MORK/kernel/src/space.rs` `query_multi_raw`). Determinism is preserved — goals
+    /// are passed in source order and all pruning is structural (byte-prefix), never
+    /// cost-reordered, matching MM2's deterministic-scheduler guarantee.
+    pub fn match_conjunction_query_multi(
+        &self,
+        goals: &[V],
+    ) -> Option<Vec<crate::backend::models::GenericBindings<V>>> {
+        // ── Completeness gate (return None → caller uses the iterative join) ──
+        if goals.is_empty() || goals.len() >= 63 {
+            return None;
+        }
+        for goal in goals {
+            match goal.get_head_symbol() {
+                Some("=") => return None, // rule head: De-Bruijn variable atom in btm
+                Some(_) => {}
+                None => return None, // bare variable / non-expression goal
+            }
+        }
+        if self
+            .shared
+            .atom_space
+            .variable_fact_count
+            .load(Ordering::Acquire)
+            != 0
+        {
+            return None;
+        }
+        if !self.shared.atom_space.variable_atoms.read().is_empty() {
+            return None;
+        }
+
+        // ── Encode `(, g0 g1 … gn)` with one shared De-Bruijn context ──────
+        let conj = self.factory.conjunction(goals.to_vec());
+        let space = self.create_space();
+        let sm = self.shared_mapping.clone();
+
+        let result = crate::backend::mork_convert::with_mork_query_bytes(
+            &conj,
+            &sm,
+            self.mork_cache_epoch,
+            |conj_bytes, ctx| {
+                let conj_expr = mork_expr::Expr {
+                    ptr: conj_bytes.as_ptr().cast_mut(),
+                };
+                let mut out: Vec<crate::backend::models::GenericBindings<V>> = Vec::new();
+                mork::space::Space::query_multi(&space.btm, conj_expr, |res, _matched| {
+                    if let Err(mork_bindings) = res {
+                        if let Ok(binds) = crate::backend::mork_convert::mork_bindings_to_generic::<
+                            V,
+                            F,
+                            Multiplicity,
+                        >(
+                            &mork_bindings, ctx, &space, &self.factory
+                        ) {
+                            out.push(binds);
+                        }
+                    }
+                    true // collect ALL join solutions (no early termination here)
+                });
+                out
+            },
+        );
+
+        match result {
+            Ok(v) => Some(v),
+            Err(_) => None, // encoding failure (e.g. arity overflow) → fall back
+        }
+    }
+
     pub fn match_space(&self, pattern: &V, template: &V) -> Vec<MultiplicityMatch<V>> {
         // Bloom filter check using trait methods (no conversion)
         if let Some(expected_head) = pattern.get_head_symbol() {
@@ -3475,6 +3627,94 @@ mod tests {
         // Should have one rule for (add, 2)
         let rules = env.get_matching_rules_for_expr(&lhs);
         assert_eq!(rules.len(), 1);
+    }
+
+    // ── Stage 1: MM2 ProductZipper conjunctive join ──────────────────────
+    // Empirically validates the binding reconciliation: a `(, (parent $x $y)
+    // (parent $y $z))` join over ground facts must return the single chained
+    // solution {$x=a, $y=b, $z=c}, with pattern variables resolved at MORK
+    // namespace 0 via the shared De-Bruijn context.
+    #[test]
+    fn test_match_conjunction_query_multi_two_goal_join() {
+        let mut env: MettaEnvironment = MettaEnvironment::default();
+        let parent = |a: &str, b: &str| {
+            MettaValue::SExpr(vec![
+                MettaValue::Atom("parent".to_string()),
+                MettaValue::Atom(a.to_string()),
+                MettaValue::Atom(b.to_string()),
+            ])
+        };
+        env.add_to_space(&parent("a", "b"));
+        env.add_to_space(&parent("b", "c"));
+
+        let g0 = MettaValue::SExpr(vec![
+            MettaValue::Atom("parent".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Atom("$y".to_string()),
+        ]);
+        let g1 = MettaValue::SExpr(vec![
+            MettaValue::Atom("parent".to_string()),
+            MettaValue::Atom("$y".to_string()),
+            MettaValue::Atom("$z".to_string()),
+        ]);
+
+        let result = env
+            .match_conjunction_query_multi(&[g0, g1])
+            .expect("ground-fact, non-=-headed goals must take the ProductZipper fast path");
+
+        assert_eq!(
+            result.len(),
+            1,
+            "expected exactly one join solution, got {:?}",
+            result
+        );
+        let b = &result[0];
+        assert_eq!(b.get("$x").and_then(|v| v.as_atom()), Some("a"));
+        assert_eq!(b.get("$y").and_then(|v| v.as_atom()), Some("b"));
+        assert_eq!(b.get("$z").and_then(|v| v.as_atom()), Some("c"));
+    }
+
+    // The completeness gate must fall back to `None` whenever the conjunction
+    // join could be incomplete (so the iterative bidirectional path is used).
+    #[test]
+    fn test_match_conjunction_query_multi_completeness_gate() {
+        let mut env: MettaEnvironment = MettaEnvironment::default();
+        let g = MettaValue::SExpr(vec![
+            MettaValue::Atom("parent".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Atom("$y".to_string()),
+        ]);
+
+        // Empty goal list → None.
+        assert!(env.match_conjunction_query_multi(&[]).is_none());
+
+        // `=`-headed goal (rules are De-Bruijn variable atoms in btm) → None.
+        let eq_goal = MettaValue::SExpr(vec![
+            MettaValue::Atom("=".to_string()),
+            MettaValue::Atom("$x".to_string()),
+            MettaValue::Atom("$y".to_string()),
+        ]);
+        assert!(env.match_conjunction_query_multi(&[eq_goal]).is_none());
+
+        // With only ground facts, the single-goal conjunction takes the fast path.
+        env.add_to_space(&MettaValue::SExpr(vec![
+            MettaValue::Atom("parent".to_string()),
+            MettaValue::Atom("a".to_string()),
+            MettaValue::Atom("b".to_string()),
+        ]));
+        assert!(env.match_conjunction_query_multi(std::slice::from_ref(&g)).is_some());
+
+        // After adding a VARIABLE-containing fact, the directional fast path could
+        // miss it, so the gate must fall back.
+        env.add_to_space(&MettaValue::SExpr(vec![
+            MettaValue::Atom("parent".to_string()),
+            MettaValue::Atom("$a".to_string()),
+            MettaValue::Atom("z".to_string()),
+        ]));
+        assert!(
+            env.match_conjunction_query_multi(std::slice::from_ref(&g)).is_none(),
+            "variable-containing fact in btm must force fallback"
+        );
     }
 
     #[test]

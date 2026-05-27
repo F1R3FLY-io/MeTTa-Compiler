@@ -938,9 +938,25 @@ fn dispatch_rule_matches<C: EvalContext>(
     // enclosing scope. (The scan is O(matches × rhs_size), runs once per
     // dispatch over a small set, and never recurses on the Rust stack —
     // `expr_contains_cut` uses an explicit work-list.)
-    let any_match_cuts = matches.iter().any(|(rhs, _)| {
-        crate::backend::environment::rule_management::expr_contains_cut(rhs)
-    });
+    // Stage 3b/expr_contains_cut optimization (2026-05-27): the full per-dispatch
+    // `expr_contains_cut` walk over every instantiated RHS is ~4% of FlyingRaven self-
+    // time. The instantiated RHS contains `(cut)` iff the rule BODY does (precomputed,
+    // aggregated into `RuleIndex::any_rule_has_cut`) OR a substituted BINDING VALUE does
+    // (cut-as-data — exotic). When no rule body in the program uses cut (the common
+    // case, e.g. all of PLN), skip the full-RHS walk and scan only the (few/small)
+    // binding values; otherwise fall back to the original full scan. Both branches are
+    // semantically identical to the original; only the cheap path differs.
+    let any_match_cuts = if env.shared.rule_index.read().any_rule_has_cut() {
+        matches.iter().any(|(rhs, _)| {
+            crate::backend::environment::rule_management::expr_contains_cut(rhs)
+        })
+    } else {
+        matches.iter().any(|(_, bindings)| {
+            bindings.iter().any(|(_, v)| {
+                crate::backend::environment::rule_management::expr_contains_cut(v)
+            })
+        })
+    };
     let (cut_barrier, saved_barrier) = if any_match_cuts {
         let b = alloc_barrier();
         let saved = current_barrier();

@@ -227,45 +227,88 @@ impl MettaEnvironment {
             }
         }
 
-        let space = self.create_space();
-        let mut rz = space.btm.read_zipper();
-
-        // OPTIMIZATION: Extract pattern's head symbol and arity for lazy pre-filtering
-        let pattern_head_bytes: Option<&[u8]> = pattern.get_head_symbol().map(|s| s.as_bytes());
-        // Note: mork_head_info() already adjusts MORK arity to match MettaValue convention
-        let pattern_arity = pattern.get_arity() as u8;
-
-        // 1. Iterate through MORK PathMap (primary storage) - EARLY EXIT on first match
-        // With value-based multiplicity, every entry is an atom (no filtering needed)
-        while rz.to_next_val() {
-            let path_bytes = rz.path();
-            let ptr = path_bytes.as_ptr();
-
-            // DISABLED: pre-filter extracts wrong data from rz.path()
-            /*
-            if let Some(expected_head) = pattern_head_bytes {
-                if let Some((mork_head, mork_arity)) = unsafe { Self::mork_head_info(ptr) } {
-                    if mork_head != expected_head || mork_arity != pattern_arity {
-                        continue; // Skip this expression entirely
+        // Stage 2: MM2 trie-pruned first-match early-exit for ground spaces (non-`=`
+        // patterns). `query_multi` returns the lex-byte-FIRST match (O(depth)) via the
+        // streaming callback's `false` return, instead of the linear early-exit scan
+        // below. Both walk byte order, so the first match agrees. Rules (`=`, De-Bruijn,
+        // not counted by `variable_fact_count`) and non-ground spaces fall through.
+        let ground_space = self
+            .shared
+            .atom_space
+            .variable_fact_count
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 0
+            && self.shared.atom_space.variable_atoms.read().is_empty();
+        let mut btm_done = false;
+        if ground_space {
+            if let Some(head) = pattern.get_head_symbol() {
+                let arity = pattern.get_arity();
+                if head != "=" && arity > 0 && arity < 64 {
+                    let conj = MettaValue::Conjunction(vec![pattern.clone()]);
+                    let space = self.create_space();
+                    let found = with_mork_query_bytes(
+                        &conj,
+                        &self.shared_mapping,
+                        self.mork_cache_epoch,
+                        |bytes, ctx| {
+                            let conj_expr = Expr {
+                                ptr: bytes.as_ptr().cast_mut(),
+                            };
+                            let mut hit: Option<MettaValue> = None;
+                            mork::space::Space::query_multi(&space.btm, conj_expr, |res, _m| {
+                                if let Err(b) = res {
+                                    if let Ok(binds) = mork_bindings_to_metta(&b, ctx, &space) {
+                                        hit =
+                                            Some(apply_bindings(template, &binds).into_owned());
+                                        return false; // first match — stop the trie walk
+                                    }
+                                }
+                                true
+                            });
+                            hit
+                        },
+                    );
+                    match found {
+                        Ok(Some(v)) => return Some(v),
+                        Ok(None) => btm_done = true, // ran; no btm match → skip linear, check wide
+                        Err(_) => {}                 // encode failure → linear fallback
                     }
-                }
-            }
-            */
-            let _ = (pattern_head_bytes, pattern_arity); // suppress unused warnings
-
-            let expr = Expr {
-                ptr: ptr.cast_mut(),
-            };
-
-            if let Ok(atom) = Self::mork_expr_to_metta_value(&expr, &space) {
-                if let Some(bindings) = pattern_match(pattern, &atom) {
-                    let instantiated = apply_bindings(template, &bindings).into_owned();
-                    return Some(instantiated); // EARLY EXIT - found first match!
                 }
             }
         }
 
-        drop(space);
+        if !btm_done {
+            let space = self.create_space();
+            let mut rz = space.btm.read_zipper();
+
+            // OPTIMIZATION: Extract pattern's head symbol and arity for lazy pre-filtering
+            let pattern_head_bytes: Option<&[u8]> =
+                pattern.get_head_symbol().map(|s| s.as_bytes());
+            // Note: mork_head_info() already adjusts MORK arity to match MettaValue convention
+            let pattern_arity = pattern.get_arity() as u8;
+
+            // 1. Iterate through MORK PathMap (primary storage) - EARLY EXIT on first match
+            // With value-based multiplicity, every entry is an atom (no filtering needed)
+            while rz.to_next_val() {
+                let path_bytes = rz.path();
+                let ptr = path_bytes.as_ptr();
+
+                let _ = (pattern_head_bytes, pattern_arity); // suppress unused warnings
+
+                let expr = Expr {
+                    ptr: ptr.cast_mut(),
+                };
+
+                if let Ok(atom) = Self::mork_expr_to_metta_value(&expr, &space) {
+                    if let Some(bindings) = pattern_match(pattern, &atom) {
+                        let instantiated = apply_bindings(template, &bindings).into_owned();
+                        return Some(instantiated); // EARLY EXIT - found first match!
+                    }
+                }
+            }
+
+            drop(space);
+        }
 
         // 2. Check wide expression PathMap (arity >= 64, Wide MORK encoding)
         // Uses byte-level pre-filter via wide_extract_data() for early rejection.

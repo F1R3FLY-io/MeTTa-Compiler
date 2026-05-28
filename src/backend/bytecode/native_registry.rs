@@ -39,9 +39,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::backend::environment::GenericEnvironment;
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
-use crate::backend::models::{
-    global_factory, GcFactory, MettaValue, MettaValueFactory, MettaValueTrait,
-};
+use crate::backend::models::{global_factory, MettaValue, MettaValueFactory, MettaValueTrait};
 
 /// Error type for native function calls
 #[derive(Debug, Clone)]
@@ -460,16 +458,16 @@ where
 pub type NativeResult = GenericNativeResult<MettaValue>;
 
 /// Context provided to native functions during execution.
-pub type NativeContext = GenericNativeContext<MettaValue, GcFactory>;
+pub type NativeContext = GenericNativeContext<MettaValue, crate::backend::models::ActiveFactory>;
 
 /// Type alias for native function signature.
-pub type NativeFn = GenericNativeFn<MettaValue, GcFactory>;
+pub type NativeFn = GenericNativeFn<MettaValue, crate::backend::models::ActiveFactory>;
 
 /// Registry for native Rust functions callable from bytecode.
 ///
 /// Functions are registered by name and assigned sequential IDs starting from 0.
 /// The registry is append-only; functions cannot be removed or reassigned.
-pub type NativeRegistry = GenericNativeRegistry<MettaValue, GcFactory>;
+pub type NativeRegistry = GenericNativeRegistry<MettaValue, crate::backend::models::ActiveFactory>;
 
 impl Default for NativeContext {
     fn default() -> Self {

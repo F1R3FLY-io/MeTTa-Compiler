@@ -293,7 +293,7 @@ mod tests {
     use crate::backend::eval::trampoline::StaticEvalContext;
     use crate::backend::models::{global_factory, MettaValueFactory};
 
-    fn f() -> crate::backend::models::GcFactory {
+    fn f() -> crate::backend::models::ActiveFactory {
         global_factory()
     }
 

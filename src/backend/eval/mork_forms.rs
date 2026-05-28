@@ -909,7 +909,9 @@ where
 mod tests {
     use super::*;
     use crate::backend::environment::MettaEnvironment;
-    use crate::backend::models::{GcFactory, MettaValue};
+    // (convert) Active factory so MORK special-form evaluation tests run under
+    // both the slab `GcFactory` and the index `IndexFactory` (GC A/B differential).
+    use crate::backend::models::{active_factory, MettaValue};
 
     #[test]
     fn test_has_variables_generic() {
@@ -943,8 +945,8 @@ mod tests {
 
     #[test]
     fn test_eval_exec_generic_empty_antecedent() {
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         let items = vec![
             MettaValue::Atom("exec".to_string()),
@@ -963,7 +965,7 @@ mod tests {
     /// with a matching fact restores results.
     #[test]
     fn test_eval_coalg_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let env = MettaEnvironment::new(factory.clone());
 
         let items = vec![
@@ -998,8 +1000,8 @@ mod tests {
 
     #[test]
     fn test_eval_lookup_generic_success() {
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         let items = vec![
             MettaValue::Atom("lookup".to_string()),
@@ -1014,8 +1016,8 @@ mod tests {
 
     #[test]
     fn test_eval_rulify_generic() {
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         let items = vec![
             MettaValue::Atom("rulify".to_string()),
@@ -1037,8 +1039,8 @@ mod tests {
     #[test]
     fn test_exec_wrong_arity() {
         // exec requires 3 arguments: priority, antecedent, consequent
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         // Only 2 arguments (missing consequent)
         let items = vec![
@@ -1063,8 +1065,8 @@ mod tests {
     #[test]
     fn test_exec_antecedent_not_conjunction() {
         // exec antecedent must be a conjunction
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         let items = vec![
             MettaValue::Atom("exec".to_string()),
@@ -1084,8 +1086,8 @@ mod tests {
     #[test]
     fn test_coalg_wrong_arity() {
         // coalg requires 2 arguments: pattern and templates
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         // Only 1 argument (missing templates)
         let items = vec![
@@ -1106,8 +1108,8 @@ mod tests {
     #[test]
     fn test_coalg_templates_not_conjunction() {
         // coalg templates must be a conjunction
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         let items = vec![
             MettaValue::Atom("coalg".to_string()),
@@ -1126,8 +1128,8 @@ mod tests {
     #[test]
     fn test_lookup_wrong_arity() {
         // lookup requires 3 arguments: pattern, success-goals, failure-goals
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         // Only 2 arguments
         let items = vec![
@@ -1152,8 +1154,8 @@ mod tests {
     #[test]
     fn test_lookup_success_not_conjunction() {
         // lookup success branch must be a conjunction
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         let items = vec![
             MettaValue::Atom("lookup".to_string()),
@@ -1173,8 +1175,8 @@ mod tests {
     #[test]
     fn test_lookup_failure_not_conjunction() {
         // lookup failure branch must be a conjunction
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         let items = vec![
             MettaValue::Atom("lookup".to_string()),
@@ -1194,8 +1196,8 @@ mod tests {
     #[test]
     fn test_lookup_variable_pattern() {
         // lookup with variable pattern takes failure branch
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         let items = vec![
             MettaValue::Atom("lookup".to_string()),
@@ -1212,8 +1214,8 @@ mod tests {
     #[test]
     fn test_rulify_wrong_arity() {
         // rulify requires 5 arguments
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         // Only 4 arguments
         let items = vec![
@@ -1242,8 +1244,8 @@ mod tests {
     #[test]
     fn test_rulify_pattern_not_unary_conjunction() {
         // rulify pattern must be a unary conjunction
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         // Empty conjunction
         let items = vec![
@@ -1293,8 +1295,8 @@ mod tests {
     #[test]
     fn test_rulify_templates_not_conjunction() {
         // rulify templates must be a conjunction
-        let env = MettaEnvironment::new(GcFactory::default());
-        let factory = GcFactory::default();
+        let env = MettaEnvironment::new(active_factory());
+        let factory = active_factory();
 
         let items = vec![
             MettaValue::Atom("rulify".to_string()),

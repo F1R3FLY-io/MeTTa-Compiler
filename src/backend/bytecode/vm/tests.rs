@@ -40,9 +40,7 @@ use crate::backend::bytecode::compiler::compile_arc;
 use crate::backend::bytecode::external_registry::{ExternalError, ExternalRegistry};
 use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{
-    GcFactory, GenericBindings, MettaValue, MettaValueInner, SpaceHandle,
-};
+use crate::backend::models::{GenericBindings, MettaValue, MettaValueInner, SpaceHandle};
 
 #[test]
 fn test_vm_push_pop() {
@@ -1152,7 +1150,7 @@ fn test_vm_has_binding() {
 #[test]
 fn test_vm_space_add_get_atoms() {
     // Add atoms to the environment's space and retrieve them via SpaceGetAtoms
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
 
     // Add atoms to the environment's default space
     env.add_to_space(&MettaValue::Long(1));
@@ -1698,7 +1696,7 @@ fn test_vm_call_no_rules() {
     // S1 TOPLEVEL (2026-05-13): set interpret_mode=true to match the
     // programmatic eval() contract — under ADD mode the VM emits empty
     // for bare top-level S-exprs (silent side-effecting fact add).
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
     env.set_interpret_mode(true);
 
     // Build bytecode for (unknown 42)
@@ -1728,7 +1726,7 @@ fn test_vm_call_no_rules() {
 #[test]
 fn test_vm_call_simple_rule() {
     // Test Call opcode with a simple rule: (double $x) -> (+ $x $x)
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
     env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("double"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
@@ -1788,7 +1786,7 @@ fn test_vm_tail_call_no_rules() {
     // Test TailCall opcode with no matching rules
     // S1 TOPLEVEL (2026-05-13): see test_vm_call_no_rules — INTERPRET mode
     // required so the VM emits the unchanged expression instead of empty.
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
     env.set_interpret_mode(true);
 
     // Build bytecode for (unknown 42) using TailCall
@@ -1818,7 +1816,7 @@ fn test_vm_tail_call_no_rules() {
 #[test]
 fn test_vm_tail_call_simple_rule() {
     // Test TailCall opcode with a simple rule: (inc $x) -> (+ $x 1)
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
     env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("inc"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
@@ -1848,7 +1846,7 @@ fn test_vm_tail_call_simple_rule() {
 #[test]
 fn test_vm_call_with_multiple_args() {
     // Test Call with multiple arguments: (add3 $a $b $c) -> (+ (+ $a $b) $c)
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
     env.add_rule(
         MettaValue::SExpr(vec![
             MettaValue::sym("add3"),
@@ -1895,7 +1893,7 @@ fn test_vm_call_with_multiple_args() {
 fn test_vm_call_multiple_rules_creates_choice_point() {
     // Set up environment with multiple rules for (choose)
     // This tests that op_call creates choice points for multiple matching rules
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
 
     // Rule 1: (= (choose) a)
     env.add_rule(
@@ -1952,7 +1950,7 @@ fn test_vm_call_multiple_rules_creates_choice_point() {
 #[test]
 fn test_vm_call_single_rule_no_choice_point() {
     // Set up environment with a single rule
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
     env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("single"), MettaValue::sym("$x")]),
         MettaValue::SExpr(vec![
@@ -2026,7 +2024,7 @@ fn test_vm_fork_nested_choice_points() {
     // When (outer) is called, it matches the rule and calls (inner).
     // (inner) has two matching rules, so a choice point is created.
     // Each result flows back through (outer) via Yield.
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
 
     env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("outer")]),
@@ -2080,7 +2078,7 @@ fn test_vm_alternative_rulematch() {
     // (= (pair $x) (cons $x $x))
     // (= (pair $x) (dup $x))
     // S1 TOPLEVEL (2026-05-13): see test_vm_call_no_rules.
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
     env.set_interpret_mode(true);
     env.add_rule(
         MettaValue::SExpr(vec![MettaValue::sym("pair"), MettaValue::sym("$x")]),
@@ -3148,10 +3146,10 @@ mod generic_vm_tests {
     use crate::backend::bytecode::opcodes::Opcode;
     use crate::backend::bytecode::vm::GenericBytecodeVM;
     use crate::backend::environment::GenericEnvironment;
-    use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory};
+    use crate::backend::models::{MettaValue, MettaValueFactory};
 
-    fn factory() -> GcFactory {
-        GcFactory::default()
+    fn factory() -> crate::backend::models::ActiveFactory {
+        crate::backend::models::active_factory()
     }
 
     /// Test basic arithmetic with the generic VM.
@@ -3486,7 +3484,8 @@ mod generic_vm_tests {
     #[test]
     fn test_generic_vm_call_native() {
         let f = factory();
-        let mut registry = GenericNativeRegistry::<MettaValue, GcFactory>::new();
+        let mut registry =
+            GenericNativeRegistry::<MettaValue, crate::backend::models::ActiveFactory>::new();
         let func_id = registry.register("add2", |args, _ctx| {
             let a = args.get(0).and_then(|v| v.as_long()).unwrap_or(0);
             let b = args.get(1).and_then(|v| v.as_long()).unwrap_or(0);
@@ -3524,7 +3523,8 @@ mod generic_vm_tests {
     #[test]
     fn test_generic_vm_call_external() {
         let f = factory();
-        let mut registry = GenericExternalRegistry::<MettaValue, GcFactory>::new();
+        let mut registry =
+            GenericExternalRegistry::<MettaValue, crate::backend::models::ActiveFactory>::new();
         registry.register("triple", |args, _ctx| {
             let n = args.get(0).and_then(|v| v.as_long()).unwrap_or(0);
             Ok(vec![MettaValue::Long(n * 3)])
@@ -5389,7 +5389,7 @@ fn test_vm_define_rule_with_env() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5437,7 +5437,7 @@ fn test_vm_load_global_exists() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5455,7 +5455,7 @@ fn test_vm_load_global_not_found() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5495,7 +5495,7 @@ fn test_vm_store_global_new() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5523,7 +5523,7 @@ fn test_vm_store_global_update() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5561,7 +5561,7 @@ fn test_vm_dispatch_rules_single_match() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5597,7 +5597,7 @@ fn test_vm_dispatch_rules_no_match() {
 
     let chunk = builder.build_arc();
     // S1 TOPLEVEL (2026-05-13): see test_vm_call_no_rules.
-    let mut env = GenericEnvironment::new(GcFactory::default());
+    let mut env = GenericEnvironment::new(crate::backend::models::active_factory());
     env.set_interpret_mode(true);
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
@@ -5628,7 +5628,7 @@ fn test_vm_dispatch_rules_non_callable() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5653,7 +5653,7 @@ fn test_vm_dispatch_rules_non_atom_head() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5714,7 +5714,7 @@ fn test_vm_dispatch_rules_atom() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5736,7 +5736,7 @@ fn test_vm_new_state_basic() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5779,7 +5779,7 @@ fn test_vm_get_state_basic() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5799,7 +5799,7 @@ fn test_vm_get_state_invalid_id() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let result = vm.run();
 
@@ -5819,7 +5819,7 @@ fn test_vm_get_state_non_state() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let result = vm.run();
 
@@ -5845,7 +5845,7 @@ fn test_vm_change_state_basic() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -5865,7 +5865,7 @@ fn test_vm_change_state_invalid_id() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let result = vm.run();
 
@@ -5885,7 +5885,7 @@ fn test_vm_change_state_non_state() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let result = vm.run();
 
@@ -5925,7 +5925,7 @@ fn test_vm_state_persistence() {
     builder.emit(Opcode::Return);
 
     let chunk = builder.build_arc();
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(crate::backend::models::active_factory());
     let mut vm = BytecodeVM::with_env(chunk, env);
     let results = vm.run().expect("VM should succeed");
 
@@ -8450,5 +8450,148 @@ fn test_trail_mark_undo_new_binding() {
         results[0],
         MettaValue::Bool(false),
         "TrailUndo should remove the new binding"
+    );
+}
+
+// ============================================================================
+// Comprehensive mid-execution rooting (2026-05-28)
+//
+// These tests validate that the nested-execution root enumeration reaches a
+// LIVE bytecode-VM frame's execution stacks while that VM is (modeled as)
+// mid-call to a nested `eval_trampoline`. The mid-loop GC safepoint
+// (`eval_loop.rs`) walks the frame chain via `collect_frame_chain_roots`; the
+// `BytecodeVm` frame pushed by `with_vm_roots_frame` decodes the VM's
+// `value_stack` / `locals` / `current_bindings` / `choice_points` / collapse-
+// frames through `collect_roots_into`. If a live value were NOT enumerated, a
+// mid-loop sweep would free it (proven separately under ASAN); here we assert
+// the *enumeration* directly, deterministically, without a collector run.
+// ============================================================================
+
+/// A single live VM frame, modeled as mid-call to a nested trampoline, must
+/// contribute every value on its `value_stack` and `locals` to the GC root set
+/// gathered by `collect_frame_chain_roots` (the exact path the mid-loop
+/// safepoint uses). After the frame guard drops, those roots disappear.
+#[test]
+fn vm_frame_under_trampoline_contributes_roots() {
+    use crate::backend::eval::frame_chain::collect_frame_chain_roots;
+
+    let mut builder = ChunkBuilder::new("vm-roots-test");
+    builder.emit(Opcode::Return);
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+
+    // Distinctive sentinel values placed on the VM's live execution stacks. In a
+    // real run these are the operands / locals the VM still needs after the
+    // nested `eval_trampoline` it is calling returns.
+    let stack_a = MettaValue::Atom("vm-stack-sentinel-A");
+    let stack_b = MettaValue::Atom("vm-stack-sentinel-B");
+    let local_c = MettaValue::Atom("vm-local-sentinel-C");
+    vm.value_stack.push(stack_a.clone());
+    vm.value_stack.push(stack_b.clone());
+    vm.locals.push(local_c.clone());
+
+    // Baseline: with no frame on the chain, the VM's stacks are invisible to the
+    // root walk (they live only on the Rust stack inside the VM struct).
+    let mut before: Vec<MettaValue> = Vec::new();
+    collect_frame_chain_roots(&mut before);
+    assert!(
+        !before.iter().any(|v| v == &stack_a),
+        "VM stack value must NOT be a frame-chain root before the guard is pushed"
+    );
+
+    {
+        // Model the VM being mid-call to a nested trampoline: push the
+        // `BytecodeVm` frame exactly as `eval_sub_expr_vm{,_all_with_bindings}`
+        // do around their `eval_trampoline` call.
+        let _vm_roots_guard = vm
+            .with_vm_roots_frame()
+            .expect("with_vm_roots_frame must register a frame for V == MettaValue");
+
+        let mut roots: Vec<MettaValue> = Vec::new();
+        collect_frame_chain_roots(&mut roots);
+
+        // Every live execution-stack value must now be reachable as a root.
+        assert!(
+            roots.iter().any(|v| v == &stack_a),
+            "value_stack[0] must be enumerated by the BytecodeVm frame collector"
+        );
+        assert!(
+            roots.iter().any(|v| v == &stack_b),
+            "value_stack[1] must be enumerated by the BytecodeVm frame collector"
+        );
+        assert!(
+            roots.iter().any(|v| v == &local_c),
+            "locals[0] must be enumerated by the BytecodeVm frame collector"
+        );
+    }
+
+    // After the guard drops (the nested trampoline returned), the VM frame's
+    // roots must be gone — the chain is empty again.
+    let mut after: Vec<MettaValue> = Vec::new();
+    collect_frame_chain_roots(&mut after);
+    assert!(
+        !after.iter().any(|v| v == &stack_a),
+        "VM stack value must NOT remain a frame-chain root after the guard drops"
+    );
+}
+
+/// The nested case: VM → trampoline → VM → trampoline. BOTH on-stack VM frames
+/// must contribute their respective live execution stacks, modeling the
+/// arbitrarily-deep VM↔trampoline nest. This is the structural guarantee that
+/// makes the whole nested execution context a complete root source.
+#[test]
+fn nested_vm_frames_each_contribute_roots() {
+    use crate::backend::eval::frame_chain::collect_frame_chain_roots;
+
+    let mut b_outer = ChunkBuilder::new("outer-vm");
+    b_outer.emit(Opcode::Return);
+    let mut outer_vm = BytecodeVM::new(b_outer.build_arc());
+    let outer_val = MettaValue::Atom("outer-vm-live-value");
+    outer_vm.value_stack.push(outer_val.clone());
+
+    // Outer VM enters a nested trampoline (guard pushed)...
+    let _outer_guard = outer_vm
+        .with_vm_roots_frame()
+        .expect("outer frame registered");
+
+    // ...which dispatches a sub-expression back into a SECOND (inner) VM, itself
+    // about to call yet another nested trampoline (second guard pushed).
+    let mut b_inner = ChunkBuilder::new("inner-vm");
+    b_inner.emit(Opcode::Return);
+    let mut inner_vm = BytecodeVM::new(b_inner.build_arc());
+    let inner_val = MettaValue::Atom("inner-vm-live-value");
+    inner_vm.locals.push(inner_val.clone());
+
+    {
+        let _inner_guard = inner_vm
+            .with_vm_roots_frame()
+            .expect("inner frame registered");
+
+        let mut roots: Vec<MettaValue> = Vec::new();
+        collect_frame_chain_roots(&mut roots);
+
+        // BOTH frames' live values must be present — the outer VM's stack is
+        // still live (it resumes after the inner nest unwinds), and the inner
+        // VM's locals are live for its own pending nested call.
+        assert!(
+            roots.iter().any(|v| v == &outer_val),
+            "outer VM frame's value_stack must still be rooted while inner nest runs"
+        );
+        assert!(
+            roots.iter().any(|v| v == &inner_val),
+            "inner VM frame's locals must be rooted"
+        );
+    }
+
+    // Inner guard dropped: only the outer VM's roots remain.
+    let mut after_inner: Vec<MettaValue> = Vec::new();
+    collect_frame_chain_roots(&mut after_inner);
+    assert!(
+        after_inner.iter().any(|v| v == &outer_val),
+        "outer VM frame's roots persist after the inner nest returns"
+    );
+    assert!(
+        !after_inner.iter().any(|v| v == &inner_val),
+        "inner VM frame's roots are gone once its guard drops"
     );
 }

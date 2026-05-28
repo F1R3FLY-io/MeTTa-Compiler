@@ -431,10 +431,12 @@ where
 mod tests {
     use super::*;
     use crate::backend::environment::MettaEnvironment;
-    use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory};
+    // (convert) Active factory so these grounded-eval tests run under both the
+    // slab `GcFactory` and the index `IndexFactory` (GC A/B differential).
+    use crate::backend::models::{active_factory, MettaValue, MettaValueFactory};
 
-    fn factory() -> GcFactory {
-        GcFactory::default()
+    fn factory() -> crate::backend::models::ActiveFactory {
+        active_factory()
     }
 
     fn env() -> MettaEnvironment {

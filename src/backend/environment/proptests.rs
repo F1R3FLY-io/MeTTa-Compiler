@@ -824,7 +824,9 @@ mod regression_tests {
                 &lhs,
                 |v: &MettaValue,
                  _: &crate::backend::GenericBindings<MettaValue>,
-                 _: &crate::backend::models::GcFactory| v.clone(),
+                 // (convert) Active factory so this property test runs under both
+                 // the slab `GcFactory` and the index `IndexFactory` (GC differential).
+                 _: &crate::backend::models::ActiveFactory| v.clone(),
                 &empty_outer,
             );
             assert!(!matching.is_empty(), "Iteration {}: should find rule", i);

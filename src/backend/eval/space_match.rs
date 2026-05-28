@@ -408,10 +408,12 @@ mod tests {
     use super::*;
     use crate::backend::eval::bindings::collect_variables_generic;
     use crate::backend::eval::freshening::freshen_variables_generic;
-    use crate::backend::models::{GcFactory, MettaValueFactory};
+    // (convert) Active factory so these space-match tests run under both the
+    // slab `GcFactory` and the index `IndexFactory` (GC A/B differential).
+    use crate::backend::models::{active_factory, MettaValueFactory};
 
-    fn factory() -> GcFactory {
-        GcFactory::default()
+    fn factory() -> crate::backend::models::ActiveFactory {
+        active_factory()
     }
 
     /// Helper: match pattern against stored (with automatic freshening),

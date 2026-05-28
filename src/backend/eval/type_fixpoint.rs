@@ -389,9 +389,11 @@ mod tests {
     #[test]
     fn test_snapshot_scc_state_deterministic() {
         use crate::backend::environment::MettaEnvironment;
-        use crate::backend::models::{GcFactory, MettaValueFactory};
+        // (convert) Active factory so this runs under both the slab `GcFactory`
+        // and the index `IndexFactory` (GC A/B differential).
+        use crate::backend::models::{active_factory, MettaValueFactory};
 
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let env = MettaEnvironment::new(factory.clone());
 
         let a = "alpha".to_string();

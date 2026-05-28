@@ -3399,6 +3399,8 @@ fn test_jit_execute_get_arity_empty() {
     assert_eq!(result.as_long(), 0, "Arity of empty S-expr should be 0");
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_get_arity_nonempty() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3440,6 +3442,8 @@ fn test_jit_execute_get_arity_nonempty() {
     assert_eq!(result.as_long(), 3, "Arity of (1 2 3) should be 3");
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_get_head() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3481,6 +3485,8 @@ fn test_jit_execute_get_head() {
     assert_eq!(result.as_long(), 42, "Head of (42 2 3) should be 42");
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_get_tail() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3523,6 +3529,8 @@ fn test_jit_execute_get_tail() {
     assert_eq!(result.as_long(), 2, "Arity of tail of (1 2 3) should be 2");
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_get_tail_get_head() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3585,6 +3593,8 @@ fn test_jit_can_compile_get_element() {
     );
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_get_element_first() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3626,6 +3636,8 @@ fn test_jit_execute_get_element_first() {
     );
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_get_element_middle() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3667,6 +3679,8 @@ fn test_jit_execute_get_element_middle() {
     );
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_get_element_last() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3708,6 +3722,8 @@ fn test_jit_execute_get_element_last() {
     );
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_get_element_combined() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3827,6 +3843,8 @@ fn test_jit_execute_get_type_bool() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_get_type_sexpr() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3872,6 +3890,8 @@ fn test_jit_execute_get_type_sexpr() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_check_type_match() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3910,6 +3930,8 @@ fn test_jit_execute_check_type_match() {
     );
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_check_type_mismatch() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3948,6 +3970,8 @@ fn test_jit_execute_check_type_mismatch() {
     );
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_is_type_match() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -3986,6 +4010,8 @@ fn test_jit_execute_is_type_match() {
     );
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_check_type_variable_matches_any() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4029,6 +4055,8 @@ fn test_jit_execute_check_type_variable_matches_any() {
 // Phase J: AssertType Tests
 // =========================================================================
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_assert_type_match() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4100,6 +4128,8 @@ fn test_jit_execute_assert_type_mismatch() {
     assert!(ctx.bailout, "JIT execution should bailout on type mismatch");
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_assert_type_variable_matches_any() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4228,6 +4258,8 @@ fn test_jit_execute_make_sexpr_empty() {
     );
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_make_sexpr_single() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4267,6 +4299,8 @@ fn test_jit_execute_make_sexpr_single() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_make_sexpr_multiple() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4310,6 +4344,8 @@ fn test_jit_execute_make_sexpr_multiple() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_cons_atom_to_nil() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4350,6 +4386,8 @@ fn test_jit_execute_cons_atom_to_nil() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_cons_atom_to_sexpr() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4397,6 +4435,8 @@ fn test_jit_execute_cons_atom_to_sexpr() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_make_sexpr_nested() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4581,6 +4621,8 @@ fn test_jit_execute_make_list_empty() {
     );
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_make_list_single() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4623,6 +4665,8 @@ fn test_jit_execute_make_list_single() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_make_list_multiple() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4669,6 +4713,8 @@ fn test_jit_execute_make_list_multiple() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_make_quote() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -4705,6 +4751,8 @@ fn test_jit_execute_make_quote() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_execute_make_quote_nested() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -5532,6 +5580,8 @@ fn test_jit_unify_simple() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_match_arity() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");
@@ -5578,6 +5628,8 @@ fn test_jit_match_arity() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_match_head() {
     let mut compiler = JitCompiler::new().expect("Failed to create compiler");

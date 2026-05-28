@@ -65,6 +65,8 @@ fn from_long_round_trips_inline() {
     }
 }
 
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn from_long_round_trips_heap_path() {
     // Values just past 2^47 force the heap path. The MettaValue::Long

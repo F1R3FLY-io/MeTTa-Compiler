@@ -21,13 +21,16 @@ use smallvec::SmallVec;
 
 use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{
-    GcFactory, GenericBindings, MettaValue, MettaValueFactory, MettaValueTrait,
+    ActiveFactory, GenericBindings, MettaValue, MettaValueFactory, MettaValueTrait,
 };
 
 use super::dispatch_hints::{match_result_get, match_result_put};
 
 /// Concrete type aliases.
-pub type Environment = GenericEnvironment<MettaValue, GcFactory>;
+///
+/// `ActiveFactory` is the GC-migration seam (currently `GcFactory`); see
+/// `crate::backend::models::ActiveFactory`.
+pub type Environment = GenericEnvironment<MettaValue, ActiveFactory>;
 pub type Bindings = GenericBindings<MettaValue>;
 pub use super::types::{Continuation, EvalResult, WorkItem};
 
@@ -53,7 +56,7 @@ pub use super::types::{Continuation, EvalResult, WorkItem};
 pub fn apply_bindings_with_classes(
     value: &MettaValue,
     bindings: &crate::backend::models::BindingsWithClasses<MettaValue>,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> MettaValue {
     crate::backend::eval::bindings::apply_bindings_with_classes_generic(value, bindings, factory)
 }
@@ -63,7 +66,11 @@ pub fn apply_bindings_with_classes(
 /// Monomorphized for MettaValue (Copy, 8-byte tagged pointer).
 /// All `*value` dereferences are zero-cost copies.
 #[inline]
-pub fn apply_bindings(value: &MettaValue, bindings: &Bindings, factory: &GcFactory) -> MettaValue {
+pub fn apply_bindings(
+    value: &MettaValue,
+    bindings: &Bindings,
+    factory: &ActiveFactory,
+) -> MettaValue {
     // Fast path: empty bindings means no substitutions possible.
     // MettaValue is Copy — returning *value is a free 8-byte copy.
     if bindings.is_empty() {
@@ -116,7 +123,7 @@ pub fn apply_bindings(value: &MettaValue, bindings: &Bindings, factory: &GcFacto
 fn apply_bindings_inner(
     value: &MettaValue,
     bindings: &Bindings,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> MettaValue {
     use crate::ir::Span;
 
@@ -658,7 +665,7 @@ pub fn pattern_match(pattern: &MettaValue, value: &MettaValue) -> Option<Binding
 pub fn try_match_all_rules(
     expr: &MettaValue,
     env: &Environment,
-    _factory: GcFactory,
+    _factory: ActiveFactory,
 ) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
     // Default entry — no caller-side outer bindings available. Forwards
     // to the with_outer variant with empty outer_carrying.
@@ -676,7 +683,7 @@ pub fn try_match_all_rules(
 pub fn try_match_all_rules_with_outer(
     expr: &MettaValue,
     env: &Environment,
-    _factory: GcFactory,
+    _factory: ActiveFactory,
     outer_carrying: &Bindings,
 ) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
     let expr_arity = expr.get_arity();
@@ -703,7 +710,7 @@ pub fn try_match_all_rules_with_outer(
                 // substituting against original-keyed bindings.
                 let results = env.match_rules_native(
                     expr,
-                    |v: &MettaValue, _: &Bindings, _: &GcFactory| *v,
+                    |v: &MettaValue, _: &Bindings, _: &ActiveFactory| *v,
                     outer_carrying,
                 );
                 return results
@@ -730,7 +737,7 @@ pub fn try_match_all_rules_with_outer(
     // match_rules_native also populates the operator cache for Phase E.
     let results = env.match_rules_native(
         expr,
-        |v: &MettaValue, _: &Bindings, _: &GcFactory| *v,
+        |v: &MettaValue, _: &Bindings, _: &ActiveFactory| *v,
         outer_carrying,
     );
     let result_vec: Vec<(MettaValue, Bindings, Option<MettaValue>)> = results
@@ -767,7 +774,7 @@ pub struct UnificationRuleMatch {
 pub fn enumerate_rules_via_unification(
     query: &MettaValue,
     env: &Environment,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> Vec<(MettaValue, Bindings, Option<MettaValue>)> {
     enumerate_rules_via_unification_detailed(query, env, factory)
         .into_iter()
@@ -802,7 +809,7 @@ pub fn enumerate_rules_via_unification(
 pub fn enumerate_rules_via_unification_detailed(
     query: &MettaValue,
     env: &Environment,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> Vec<UnificationRuleMatch> {
     use crate::backend::environment::rule_management::get_first_arg_head;
     use crate::backend::eval::bindings::{
@@ -966,7 +973,7 @@ pub fn enumerate_rules_via_unification_detailed(
 fn resolve_match_bindings_through(
     match_bindings: &mut Bindings,
     outer_bindings: &Bindings,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) {
     match match_bindings {
         GenericBindings::Empty => {}
@@ -999,7 +1006,7 @@ pub fn try_match_rules_with_bindings(
     resolved_head: &str,
     arity: usize,
     env: &Environment,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> Option<Vec<(MettaValue, Bindings)>> {
     use crate::backend::environment::rule_management::get_first_arg_head;
 
@@ -1267,7 +1274,7 @@ use super::dispatch_hints::{is_normal_form_bounded, is_reducible_head, operator_
 pub fn try_deterministic_chain(
     expr: &MettaValue,
     env: &Environment,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> Option<MettaValue> {
     // Task #6 Phase 5 (2026-05-18): the historic `MAX_CHAIN_LENGTH = 512`
     // band-aid is replaced by a principled hash-cycle bound. For
@@ -1384,7 +1391,7 @@ fn try_deterministic_step(
     head: &str,
     arity: usize,
     env: &Environment,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> Option<MettaValue> {
     use crate::backend::environment::rule_management::get_first_arg_head;
 
@@ -1464,7 +1471,7 @@ pub fn try_deferred_deterministic_chain(
     template: &MettaValue,
     bindings: &Bindings,
     env: &Environment,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> Option<DeferredChainResult> {
     const MAX_CHAIN_LENGTH: usize = 512;
 
@@ -1797,7 +1804,7 @@ pub fn template_has_grounded_arg_heads(template: &MettaValue) -> bool {
 /// - `SwitchResult::Match(template, bindings)` if a pattern matches
 /// - `SwitchResult::NoMatch` if no pattern matches
 /// - `SwitchResult::Error(err)` if there's an error (malformed case)
-pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -> SwitchResult {
+pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &ActiveFactory) -> SwitchResult {
     // Cases must be an S-expression
     let Some(case_items) = cases.as_sexpr() else {
         let err = factory.error(
@@ -1867,7 +1874,7 @@ pub fn eval_switch(atom: &MettaValue, cases: &MettaValue, factory: &GcFactory) -
 pub fn apply_bindings_iterative(
     template: &MettaValue,
     bindings: &Bindings,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> MettaValue {
     crate::backend::eval::bindings::apply_bindings_generic(template, bindings, factory)
 }
@@ -1879,6 +1886,10 @@ pub fn apply_bindings_iterative(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // (convert) These tests exercise `apply_bindings` (evaluator value behavior),
+    // so they use the feature-selected active factory and thus run under both the
+    // slab `GcFactory` and the index `IndexFactory` (the GC A/B differential).
+    use crate::backend::models::active_factory;
 
     #[test]
     fn test_pattern_match_variable() {
@@ -1917,7 +1928,7 @@ mod tests {
 
     #[test]
     fn test_apply_bindings() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings: Bindings = Bindings::new();
         bindings.insert("$x", MettaValue::Long(42));
 
@@ -2019,7 +2030,7 @@ mod tests {
     #[test]
     fn test_apply_bindings_ampersand_not_variable() {
         // Standalone "&" should NOT be substituted as a variable
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings: Bindings = Bindings::new();
         bindings.insert("&", MettaValue::Long(42));
 
@@ -2032,7 +2043,7 @@ mod tests {
     #[test]
     fn test_apply_bindings_type_no_recursion() {
         // Type variants should NOT have bindings applied to their contents
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings: Bindings = Bindings::new();
         bindings.insert("$x", MettaValue::Long(42));
 

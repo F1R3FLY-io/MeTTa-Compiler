@@ -83,12 +83,12 @@ use crate::backend::eval::trampoline::EvalContext;
 /// is generic over `V` and `F`. This adapter bridges the gap, allowing the
 /// generic VM to use the generic trampoline.
 struct VmEvalContext {
-    factory: crate::backend::models::GcFactory,
+    factory: crate::backend::models::ActiveFactory,
 }
 
 impl EvalContext for VmEvalContext {
     #[inline]
-    fn factory(&self) -> &crate::backend::models::GcFactory {
+    fn factory(&self) -> &crate::backend::models::ActiveFactory {
         &self.factory
     }
 
@@ -121,6 +121,31 @@ where
         // V is some other type — create a fresh per-VM cache
         Arc::new(super::memo_cache::MemoCache::default())
     }
+}
+
+/// Type-erased frame-chain root collector for the bytecode VM (comprehensive
+/// mid-execution rooting, 2026-05-28).
+///
+/// Casts `data` back to the concrete runtime VM type
+/// `GenericBytecodeVM<MettaValue, ActiveFactory>` and appends its complete
+/// execution-stack roots via `collect_roots_into`. Registered via
+/// [`GenericBytecodeVM::with_vm_roots_frame`] around every nested
+/// `eval_trampoline` call, and walked by `collect_frame_chain_roots` at the
+/// mid-loop GC safepoint.
+///
+/// # Safety
+///
+/// `data` MUST point to a live `GenericBytecodeVM<MettaValue, ActiveFactory>`.
+/// `with_vm_roots_frame` only registers this collector when `V == MettaValue`
+/// (TypeId-checked) and passes `self as *const Self`; the runtime monomorphizes
+/// the VM with the build's `ActiveFactory`, so the cast type matches. The
+/// pointer is valid for the guard's lifetime because the guarded VM outlives the
+/// nested call. The collector only reads `&self`.
+unsafe fn vm_roots_collector(data: *const (), out: &mut Vec<MettaValue>) {
+    type RuntimeVm =
+        GenericBytecodeVM<MettaValue, crate::backend::models::ActiveFactory>;
+    let vm = unsafe { &*(data as *const RuntimeVm) };
+    vm.collect_roots_into(out);
 }
 
 /// Generic bytecode virtual machine that works with any value type.
@@ -1121,6 +1146,62 @@ where
                 out.push(old_value.clone());
             }
         }
+    }
+
+    /// Comprehensive mid-execution rooting (2026-05-28): push a thread-local
+    /// frame-chain entry whose type-erased collector decodes THIS VM's complete
+    /// execution stacks (via [`collect_roots_into`](Self::collect_roots_into))
+    /// for the lifetime of the returned guard. The frame is walked by
+    /// [`collect_frame_chain_roots`](crate::backend::eval::frame_chain::collect_frame_chain_roots)
+    /// at the mid-loop GC safepoint AND by `worker_cooperative_safepoint`, so a
+    /// collection that fires WHILE a nested `eval_trampoline` is running
+    /// (VM → trampoline → …) sees the outer VM's `value_stack` / `locals` /
+    /// `results` / `current_bindings` / `choice_points` / call-frame / collapse-
+    /// frame values as live roots and cannot free them. This is the prerequisite
+    /// that makes mid-loop (mid-directive) store-centric collection safe; see
+    /// `docs/cesk-gc/mid-execution-rooting-RESULTS.md`.
+    ///
+    /// Wrap EVERY nested `eval_trampoline` call site with this guard (held only
+    /// for the duration of the inner call, where the inner trampoline's
+    /// safepoint may fire). Because the chain is a thread-local linked list,
+    /// arbitrarily deep VM → trampoline → VM → … nests each contribute their own
+    /// frame, and the per-thread design composes with the future per-worker
+    /// parallel collector (each parked worker has its own chain).
+    ///
+    /// TypeId-gated to `V == MettaValue`: only `MettaValue` is store-allocated
+    /// (slab/index), so only it needs rooting. For other `V` monomorphizations
+    /// this returns `None` and the branch dead-code-eliminates. The frame's
+    /// `root_data` is a raw `*const Self` that stays valid for the guard's life
+    /// because `self` outlives the nested call (the guard is a stack local in
+    /// the same scope), and the collector reads `&self` only (no aliasing with
+    /// the `&mut self` call frame — the collector runs synchronously on THIS
+    /// thread inside the nested trampoline, while no `&mut self` method of this
+    /// VM is concurrently executing).
+    #[inline]
+    fn with_vm_roots_frame(
+        &self,
+    ) -> Option<crate::backend::eval::frame_chain::EvalFrameGuard> {
+        use std::any::TypeId;
+        if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
+            return None;
+        }
+        // SAFETY: `vm_roots_collector` casts the `*const ()` back to
+        // `*const GenericBytecodeVM<MettaValue, ActiveFactory>` — the ONLY
+        // concrete runtime monomorphization that reaches a nested
+        // `eval_trampoline` (the JIT tier, the other re-entry source, is
+        // AIRTIGHT-gated OFF under index-gc; in slab mode this rooting is
+        // additive and harmless). We verified `V == MettaValue` above; the
+        // factory `F` is the build's `ActiveFactory` at every live call site.
+        // The pointer outlives the guard because `self` outlives the nested
+        // call (guard is a sibling stack local).
+        let data = self as *const Self as *const ();
+        Some(unsafe {
+            crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
+                crate::backend::eval::frame_chain::FrameLabel::BytecodeVm,
+                data,
+                vm_roots_collector,
+            )
+        })
     }
 
     /// Plan 2 helper (2026-05-06): on a parallel-branch worker thread under
@@ -5180,7 +5261,7 @@ where
         let scrutinee_concrete = (&scrutinee as &dyn std::any::Any).downcast_ref::<ConcreteMV>();
         let branches_concrete = (&case_branches as &dyn std::any::Any).downcast_ref::<ConcreteMV>();
         let factory_concrete = (&self.factory as &dyn std::any::Any)
-            .downcast_ref::<crate::backend::models::GcFactory>();
+            .downcast_ref::<crate::backend::models::ActiveFactory>();
 
         if let (Some(atom), Some(cases), Some(factory)) =
             (scrutinee_concrete, branches_concrete, factory_concrete)
@@ -8476,9 +8557,16 @@ where
         std::mem::forget(sub_expr);
         std::mem::forget(env);
 
+        // Comprehensive mid-execution rooting (2026-05-28): register THIS VM's
+        // live execution stacks as GC roots for the duration of the nested
+        // trampoline call, so a mid-loop collection inside it cannot free the
+        // outer VM's values. Dropped immediately after the call returns.
+        let _vm_roots_guard = self.with_vm_roots_frame();
+
         // Full trampoline evaluation: trampolined, TCO, CPS-based.
         // Returns (Vec<results>, final_env).
         let (results, _final_env) = eval_trampoline(metta_sub_expr.clone(), metta_env, &ctx);
+        drop(_vm_roots_guard);
 
         if let Some((first_metta, first_b_metta)) = results.into_iter().next() {
             // SAFETY: V == MettaValue verified above. Transmute back.
@@ -8566,7 +8654,13 @@ where
         std::mem::forget(sub_expr);
         std::mem::forget(env);
 
+        // Comprehensive mid-execution rooting (2026-05-28): see the companion
+        // guard in `eval_sub_expr_vm`. Roots THIS VM's live execution stacks for
+        // the nested trampoline call so a mid-loop collection cannot free them.
+        let _vm_roots_guard = self.with_vm_roots_frame();
+
         let (results, _final_env) = eval_trampoline(metta_sub_expr, metta_env, &ctx);
+        drop(_vm_roots_guard);
         // eval_trampoline returns SmallVec; materialize into Vec so the
         // caller can consume via into_iter() regardless of inline size.
         let metta_results: Vec<(MettaValue, GenericBindings<MettaValue>)> = results.into_vec();
@@ -9419,11 +9513,9 @@ fn metatype_of_view(view: ValueView) -> &'static str {
 // Type Aliases
 // ============================================================================
 
-use crate::backend::models::GcFactory;
-
 /// The primary bytecode VM type, backed by the global GC slab allocator.
 ///
 /// This is a type alias for `GenericBytecodeVM<MettaValue, GcFactory>`.
 /// All existing `BytecodeVM::new(chunk)` call sites continue to work
 /// because `GcFactory` implements `Default` (returning `global_factory()`).
-pub type BytecodeVM = GenericBytecodeVM<MettaValue, GcFactory>;
+pub type BytecodeVM = GenericBytecodeVM<MettaValue, crate::backend::models::ActiveFactory>;

@@ -1179,11 +1179,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{GcFactory, MettaValue};
+    use crate::backend::models::{active_factory, MettaValue};
 
     #[test]
     fn test_car_atom_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("car-atom".to_string()),
             MettaValue::SExpr(vec![
@@ -1199,7 +1199,7 @@ mod tests {
 
     #[test]
     fn test_cdr_atom_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("cdr-atom".to_string()),
             MettaValue::SExpr(vec![
@@ -1221,7 +1221,7 @@ mod tests {
 
     #[test]
     fn test_cons_atom_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("cons-atom".to_string()),
             MettaValue::Atom("a".to_string()),
@@ -1244,7 +1244,7 @@ mod tests {
 
     #[test]
     fn test_size_atom_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("size-atom".to_string()),
             MettaValue::SExpr(vec![
@@ -1264,7 +1264,7 @@ mod tests {
 
     #[test]
     fn test_tuple_concat_two_tuples() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("tuple-concat".to_string()),
             MettaValue::SExpr(vec![
@@ -1288,7 +1288,7 @@ mod tests {
 
     #[test]
     fn test_tuple_concat_empty_left() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("tuple-concat".to_string()),
             MettaValue::Unit(),
@@ -1303,7 +1303,7 @@ mod tests {
 
     #[test]
     fn test_tuple_concat_empty_both() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("tuple-concat".to_string()),
             MettaValue::Unit(),
@@ -1317,7 +1317,7 @@ mod tests {
 
     #[test]
     fn test_tuple_concat_empty_sexpr_left() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("tuple-concat".to_string()),
             MettaValue::SExpr(vec![]),
@@ -1332,7 +1332,7 @@ mod tests {
 
     #[test]
     fn test_tuple_concat_type_error() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("tuple-concat".to_string()),
             MettaValue::Long(42),
@@ -1349,7 +1349,7 @@ mod tests {
 
     #[test]
     fn test_tuple_count_basic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("tuple-count".to_string()),
             MettaValue::SExpr(vec![
@@ -1365,7 +1365,7 @@ mod tests {
 
     #[test]
     fn test_tuple_count_empty() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("tuple-count".to_string()),
             MettaValue::Unit(),
@@ -1377,7 +1377,7 @@ mod tests {
 
     #[test]
     fn test_tuple_count_empty_sexpr() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("tuple-count".to_string()),
             MettaValue::SExpr(vec![]),
@@ -1393,7 +1393,7 @@ mod tests {
 
     #[test]
     fn test_without_basic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("without".to_string()),
             MettaValue::SExpr(vec![
@@ -1414,7 +1414,7 @@ mod tests {
 
     #[test]
     fn test_without_not_found() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("without".to_string()),
             MettaValue::SExpr(vec![
@@ -1431,7 +1431,7 @@ mod tests {
 
     #[test]
     fn test_without_all_removed() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("without".to_string()),
             MettaValue::SExpr(vec![MettaValue::Atom("a".to_string())]),
@@ -1445,7 +1445,7 @@ mod tests {
 
     #[test]
     fn test_without_empty_tuple() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("without".to_string()),
             MettaValue::Unit(),
@@ -1463,7 +1463,7 @@ mod tests {
 
     #[test]
     fn test_element_of_found() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("element-of".to_string()),
             MettaValue::Atom("b".to_string()),
@@ -1480,7 +1480,7 @@ mod tests {
 
     #[test]
     fn test_element_of_not_found() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("element-of".to_string()),
             MettaValue::Atom("z".to_string()),
@@ -1496,7 +1496,7 @@ mod tests {
 
     #[test]
     fn test_element_of_empty_tuple() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("element-of".to_string()),
             MettaValue::Atom("a".to_string()),
@@ -1509,7 +1509,7 @@ mod tests {
 
     #[test]
     fn test_element_of_number() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("element-of".to_string()),
             MettaValue::Long(2),

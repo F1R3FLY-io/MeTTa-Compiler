@@ -855,13 +855,20 @@ pub fn eval_bytecode_with_config(
 /// ```
 pub fn eval_bytecode_with_env(
     expr: &MettaValue,
-    env: GenericEnvironment<MettaValue, GcFactory>,
-) -> Result<(Vec<MettaValue>, GenericEnvironment<MettaValue, GcFactory>), BytecodeEvalError> {
+    env: GenericEnvironment<MettaValue, crate::backend::models::ActiveFactory>,
+) -> Result<
+    (
+        Vec<MettaValue>,
+        GenericEnvironment<MettaValue, crate::backend::models::ActiveFactory>,
+    ),
+    BytecodeEvalError,
+> {
     let chunk = compile_arc("eval", expr)?;
     let mut vm = BytecodeVM::with_env(chunk, env);
     let (results, modified_env) = vm.run_with_env()?;
     // Return the environment if present, otherwise create a new one
-    let final_env = modified_env.unwrap_or_else(|| GenericEnvironment::new(GcFactory::default()));
+    let final_env = modified_env
+        .unwrap_or_else(|| GenericEnvironment::new(crate::backend::models::active_factory()));
     Ok((results, final_env))
 }
 
@@ -873,13 +880,19 @@ pub fn eval_bytecode_with_env(
 /// On failure, calls the fallback.
 pub fn try_bytecode_eval_with_env<F>(
     expr: &MettaValue,
-    env: GenericEnvironment<MettaValue, GcFactory>,
+    env: GenericEnvironment<MettaValue, crate::backend::models::ActiveFactory>,
     fallback: F,
-) -> (Vec<MettaValue>, GenericEnvironment<MettaValue, GcFactory>)
+) -> (
+    Vec<MettaValue>,
+    GenericEnvironment<MettaValue, crate::backend::models::ActiveFactory>,
+)
 where
     F: FnOnce(
-        GenericEnvironment<MettaValue, GcFactory>,
-    ) -> (Vec<MettaValue>, GenericEnvironment<MettaValue, GcFactory>),
+        GenericEnvironment<MettaValue, crate::backend::models::ActiveFactory>,
+    ) -> (
+        Vec<MettaValue>,
+        GenericEnvironment<MettaValue, crate::backend::models::ActiveFactory>,
+    ),
 {
     if can_compile_with_env(expr) {
         match eval_bytecode_with_env(expr, env.clone()) {
@@ -1019,10 +1032,10 @@ where
 // =============================================================================
 
 use crate::backend::environment::GenericEnvironment;
-use crate::backend::models::{GcFactory, MettaValueFactory, MettaValueTrait};
+use crate::backend::models::{MettaValueFactory, MettaValueTrait};
 
 /// Type alias for arena-based environment
-pub type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
+pub type MettaEnvironment = GenericEnvironment<MettaValue, crate::backend::models::ActiveFactory>;
 
 /// Execute bytecode with arena allocation (zero-conversion).
 ///

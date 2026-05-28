@@ -243,6 +243,8 @@ pub fn eval_with_tier(
     policy: FallbackPolicy,
 ) -> TierEvalOutcome {
     if matches!(tier, TierSelection::Auto) {
+        // `super::eval()` already runs the Inc-6 quiescence collector on its own
+        // EvalGuard-drop, so no extra collection is needed for the Auto path.
         let (results, env) = super::eval(value, env, state);
         return TierEvalOutcome::Ok {
             results: results.into_iter().collect(),
@@ -251,23 +253,46 @@ pub fn eval_with_tier(
         };
     }
 
-    if let Err(reason) = tier_applicable(&value, &env, tier) {
-        return match policy {
+    let outcome = if let Err(reason) = tier_applicable(&value, &env, tier) {
+        match policy {
             FallbackPolicy::SilentDemote => {
                 let tier_requested = tier.execution_tier().unwrap_or(ExecutionTier::Interpreter);
                 run_t0(value, env, state, tier_requested, reason)
             }
             FallbackPolicy::StrictNoFallback => TierEvalOutcome::NotApplicable { reason },
-        };
+        }
+    } else {
+        match tier {
+            TierSelection::Treewalker => run_t0_direct(value, env, state),
+            TierSelection::Bytecode => run_t1(value, env, state, policy),
+            TierSelection::JitStage1 => run_jit(value, env, state, ExecutionTier::JitStage1, policy),
+            TierSelection::JitStage2 => run_jit(value, env, state, ExecutionTier::JitStage2, policy),
+            TierSelection::Auto => unreachable!("handled above"),
+        }
+    };
+
+    // ── Inc 6: single-threaded store-centric GC (TRUE-quiescence reclaim) ──
+    // The forced-tier `run_*` paths above complete fully synchronously before
+    // returning — no trampoline loop or bytecode VM is live on the Rust stack
+    // here, so this is a true-quiescence reclaim point (mirrors `eval()`'s
+    // post-EvalGuard hook). The complete root set is `collect_all_roots()`
+    // UNIONED with the outcome's result values (held in the outcome, not yet in
+    // any RootProvider). Dead in the default (slab) build (gc_mode_is_index()
+    // const-folds to false). Gated on the single-threaded safety gate.
+    // Cheap pre-check (gate + watermark) avoids the `collect_all_roots()` walk on
+    // every eval; only build the root set when a collection will actually fire.
+    if crate::backend::eval::cesk::index_heap::index_gc::should_collect() {
+        let mut roots = crate::backend::models::collect_all_roots();
+        if let TierEvalOutcome::Ok { results, .. } | TierEvalOutcome::Demoted { results, .. } =
+            &outcome
+        {
+            roots.reserve(results.len());
+            roots.extend(results.iter().copied());
+        }
+        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots);
     }
 
-    match tier {
-        TierSelection::Treewalker => run_t0_direct(value, env, state),
-        TierSelection::Bytecode => run_t1(value, env, state, policy),
-        TierSelection::JitStage1 => run_jit(value, env, state, ExecutionTier::JitStage1, policy),
-        TierSelection::JitStage2 => run_jit(value, env, state, ExecutionTier::JitStage2, policy),
-        TierSelection::Auto => unreachable!("handled above"),
-    }
+    outcome
 }
 
 // -----------------------------------------------------------------------------

@@ -29,9 +29,7 @@ use tracing::{debug, trace};
 
 use crate::backend::bytecode::jit::runtime::arithmetic::check_and_clear_jit_type_error;
 use crate::backend::bytecode::{GenericBytecodeChunk, MettaEnvironment, VmError, VmResult};
-use crate::backend::models::{
-    GcFactory, MettaValue, MettaValueFactory, MettaValueInner, SlabAllocator,
-};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, SlabAllocator};
 
 use super::super::{
     JitBindingFrame, JitChoicePoint, JitContext, JitValue, TypeSignatureRegistry,
@@ -60,7 +58,7 @@ impl HybridExecutor {
         chunk: &Arc<GenericBytecodeChunk<MettaValue>>,
         native_ptr: *const (),
         allocator: &'static SlabAllocator,
-        factory: &GcFactory,
+        factory: &crate::backend::models::ActiveFactory,
     ) -> VmResult<Vec<MettaValue>> {
         self.stats.jit_runs += 1;
         self.stats.tiered_stats.jit_stage1_runs += 1;
@@ -219,7 +217,7 @@ impl HybridExecutor {
         chunk: &Arc<GenericBytecodeChunk<MettaValue>>,
         native_ptr: *const (),
         allocator: &'static SlabAllocator,
-        factory: &GcFactory,
+        factory: &crate::backend::models::ActiveFactory,
         mut env: MettaEnvironment,
     ) -> VmResult<(Vec<MettaValue>, MettaEnvironment)> {
         self.stats.jit_runs += 1;
@@ -377,7 +375,7 @@ impl HybridExecutor {
         &self,
         ctx: &JitContext,
         jit_result: i64,
-        factory: &GcFactory,
+        factory: &crate::backend::models::ActiveFactory,
     ) -> Vec<MettaValue> {
         // If there are collected results (from nondeterminism), use those
         if ctx.results_count > 0 {
@@ -417,7 +415,7 @@ impl HybridExecutor {
 /// # Arguments
 /// * `jit_val` - Raw NaN-boxed 64-bit value
 /// * `factory` - Factory for creating arena values
-fn jit_to_value(jit_val: u64, factory: &GcFactory) -> MettaValue {
+fn jit_to_value(jit_val: u64, factory: &crate::backend::models::ActiveFactory) -> MettaValue {
     let tag = jit_val & TAG_MASK;
 
     match tag {

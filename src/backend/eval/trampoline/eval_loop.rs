@@ -266,8 +266,8 @@ use crate::backend::grounded::{exec_error_to_value, execute_grounded_op, ExecErr
 use crate::backend::models::metta_value::is_variable_str;
 use crate::backend::models::work_pool::global_eval_pool;
 use crate::backend::models::{
-    EvalGuard, GcFactory, GenericMultiplicityMatch, MettaValue, MettaValueFactory, MettaValueTrait,
-    SpaceHandle,
+    ActiveFactory, EvalGuard, GenericMultiplicityMatch, MettaValue, MettaValueFactory,
+    MettaValueTrait, SpaceHandle,
 };
 use crate::backend::priority_scheduler::{priority_levels, TaskTypeId};
 
@@ -768,7 +768,7 @@ fn project_carrying_for_consumer(
     bindings: &SharedBindings,
     consumer: &MettaValue,
     tracked_vars: Option<&[&'static str]>,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> Option<SharedBindings> {
     if bindings.is_empty() {
         return Some(bindings.clone());
@@ -793,7 +793,7 @@ fn project_owned_bindings_for_consumer(
     bindings: &crate::backend::models::GenericBindings<MettaValue>,
     consumer: &MettaValue,
     tracked_vars: Option<&[&'static str]>,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> Option<crate::backend::models::GenericBindings<MettaValue>> {
     crate::backend::eval::bindings::project_bindings_for_consumer_generic(
         bindings,
@@ -2051,7 +2051,7 @@ fn capture_bindings_if_active(
 /// directly, ensuring a single encoding rule across all three tiers.
 pub(crate) fn encode_bindings_as_sexpr(
     bindings: &crate::backend::models::GenericBindings<MettaValue>,
-    factory: &crate::backend::models::gc_allocator::GcFactory,
+    factory: &crate::backend::models::ActiveFactory,
 ) -> MettaValue {
     crate::backend::eval::bindings::encode_bindings_as_sexpr_generic(bindings, factory)
 }
@@ -2061,7 +2061,7 @@ pub(crate) fn encode_bindings_as_sexpr(
 /// `superpose-bind` (S5) to reconstruct bindings from their serialized form.
 pub fn decode_bindings_from_sexpr(
     sexpr: &MettaValue,
-    factory: &crate::backend::models::gc_allocator::GcFactory,
+    factory: &crate::backend::models::ActiveFactory,
 ) -> crate::backend::models::GenericBindings<MettaValue> {
     decode_bindings_from_sexpr_generic(sexpr, factory)
 }
@@ -2499,6 +2499,11 @@ fn parallel_dispatch(
             }
         };
 
+        // Inc 6: latch the "a worker has been spawned" flag BEFORE handing the
+        // closure to the pool. This permanently closes the single-threaded index
+        // GC gate (`index_gc::gate_open`) so the by-construction-safe collector
+        // backs off the instant any parallelism is introduced.
+        crate::backend::models::note_worker_spawned();
         pool.spawn_eval_classified(
             closure,
             TaskTypeId::Eval(0),
@@ -2971,6 +2976,10 @@ fn parallel_collapse_dispatch(
             }
         };
 
+        // Inc 6: latch the "a worker has been spawned" flag (see the matching
+        // comment in `parallel_dispatch`). Closes the single-threaded index GC
+        // gate the instant collapse-parallelism is introduced.
+        crate::backend::models::note_worker_spawned();
         pool.spawn_eval_classified(
             closure,
             TaskTypeId::Eval(0),
@@ -3050,7 +3059,7 @@ fn parallel_collapse_threshold() -> usize {
 /// # Arguments
 ///
 /// - `value`: The value to evaluate
-/// - `env`: The evaluation environment (`GenericEnvironment<MettaValue, GcFactory>`)
+/// - `env`: The evaluation environment (`GenericEnvironment<MettaValue, ActiveFactory>`)
 /// - `ctx`: The evaluation context providing the factory
 ///
 /// # Returns
@@ -3061,6 +3070,53 @@ fn parallel_collapse_threshold() -> usize {
 /// This is the backward-compatible entry point used by all callers.
 /// Internally, the trampoline may yield after exhausting its reduction budget,
 /// but this wrapper loops until `Complete`.
+/// Comprehensive mid-execution rooting (2026-05-28): a frame-chain payload that
+/// exposes a SUSPENDED trampoline activation's PENDING S/C/K (`work_stack` +
+/// `continuations`) as GC roots while it is parked outside its own loop — i.e.
+/// while a tier dispatch (the bytecode VM) it launched is running a NESTED
+/// `eval_trampoline`. Without this, in a VM → trampoline → VM → trampoline nest,
+/// the inner trampoline's safepoint would walk only ITS OWN S/C/K + the on-stack
+/// VM frames (via `with_vm_roots_frame`), missing the OUTER suspended
+/// trampolines' pending work — a mid-loop collection there would free it →
+/// use-after-free.
+///
+/// Holds raw pointers to the activation's `work_stack` / `continuations`, which
+/// are declared once per activation and mutated in place (never reassigned), so
+/// their addresses are stable for the activation's lifetime. The collector
+/// reuses `WorkItem::collect_values` / `Continuation::collect_values` (the exact
+/// same decode the trampoline's own `RootSet` uses) to walk the CURRENT contents
+/// at collection time. The in-flight (just-popped) work item is intentionally
+/// NOT held here: at a VM dispatch it has been consumed into the VM (its value
+/// is reconstructed from the VM's bytecode chunk + execution stacks, rooted by
+/// `with_vm_roots_frame`), and the VM's result re-enters this activation only as
+/// a `Resume` pushed onto `work_stack` (covered from that point on).
+struct TrampolineFrameRoots {
+    work_stack: *const Vec<WorkItem>,
+    continuations: *const Vec<Continuation>,
+}
+
+/// Frame-chain collector for [`TrampolineFrameRoots`].
+///
+/// # Safety
+///
+/// `data` MUST point to a live `TrampolineFrameRoots` whose `work_stack` /
+/// `continuations` pointers name the still-live, in-scope `Vec`s of the
+/// activation that registered the frame. The RAII guard ([`EvalFrameGuard`])
+/// is dropped before those `Vec`s go out of scope (both are locals of the same
+/// `eval_trampoline_inner` activation), so the pointers are valid for the
+/// frame's whole lifetime. Read-only.
+unsafe fn collect_trampoline_frame_roots(data: *const (), out: &mut Vec<MettaValue>) {
+    let r = unsafe { &*(data as *const TrampolineFrameRoots) };
+    let work_stack = unsafe { &*r.work_stack };
+    let continuations = unsafe { &*r.continuations };
+    for w in work_stack.iter() {
+        w.collect_values(out);
+    }
+    for c in continuations.iter() {
+        c.collect_values(out);
+    }
+}
+
 pub fn eval_trampoline<C: EvalContext>(
     value: MettaValue,
     env: MettaEnvironment,
@@ -3244,6 +3300,42 @@ fn eval_trampoline_inner<C: EvalContext>(
         cs
     };
 
+    // ── Comprehensive mid-execution rooting: suspended-trampoline frame ──
+    // (index-gc only; 2026-05-28). Register THIS activation's pending S/C/K
+    // (`work_stack` + `continuations`) on the thread-local frame chain so that a
+    // mid-loop collection fired inside a NESTED `eval_trampoline` (launched by a
+    // bytecode-VM tier dispatch from this activation) sees this activation's
+    // still-live pending work and cannot free it. The frame stays alive for the
+    // whole activation (RAII drop on return); push/pop is ~2 thread-local Cell
+    // ops, and `work_stack` / `continuations` keep stable addresses (declared
+    // once, mutated in place). The collector
+    // ([`collect_trampoline_frame_roots`]) walks their CURRENT contents.
+    //
+    // Gated on `gc_mode_is_index()`: in the default (slab) build no frame is
+    // pushed, so the slab frame-chain walk is byte-identical to before. The
+    // `TrampolineFrameRoots` struct and guard are stack locals that drop at
+    // function exit; the raw pointers they hold name in-scope `Vec`s.
+    let _tramp_roots = TrampolineFrameRoots {
+        work_stack: &work_stack as *const Vec<WorkItem>,
+        continuations: &continuations as *const Vec<Continuation>,
+    };
+    let _tramp_frame_guard: Option<crate::backend::eval::frame_chain::EvalFrameGuard> =
+        if crate::backend::models::metta_value::gc_mode_is_index() {
+            // SAFETY: `_tramp_roots` outlives the guard (both are locals of this
+            // activation, dropped in reverse declaration order — guard first),
+            // and its `work_stack` / `continuations` pointers name the in-scope
+            // `Vec`s above. `collect_trampoline_frame_roots` reads them read-only.
+            Some(unsafe {
+                crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
+                    crate::backend::eval::frame_chain::FrameLabel::Eval,
+                    &_tramp_roots as *const TrampolineFrameRoots as *const (),
+                    collect_trampoline_frame_roots,
+                )
+            })
+        } else {
+            None
+        };
+
     // Final result storage
     let mut final_result: Option<EvalResult> = None;
 
@@ -3420,6 +3512,39 @@ fn eval_trampoline_inner<C: EvalContext>(
             // only inside the old-gen safepoint branch.
             clear_aba_sensitive_caches();
 
+            // ── Comprehensive mid-execution rooting: MID-LOOP store-centric GC ──
+            // (single-threaded regime only; 2026-05-28). At THIS mid-trampoline
+            // safepoint the live execution stacks ARE present — `root_set` above
+            // holds the complete trampoline S/C/K + frame chain (now including
+            // every nested bytecode-VM frame's execution stacks via
+            // `with_vm_roots_frame`) + pointer-keyed caches + deferred envs. We
+            // UNION that with `collect_all_roots()` (env / tiers / promoted) to
+            // form the COMPLETE mid-execution root set, then run an index
+            // mark+sweep — reclaiming intra-directive garbage WHILE a giant
+            // `!(...)` is still evaluating (the capability the quiescence-only
+            // collector lacked). The `gate_open_midloop()` gate (inside
+            // `should_collect_midloop` / `run_collection_if_triggered_midloop`)
+            // fires ONLY in index mode, ONLY when no eval worker has ever been
+            // spawned, and ONLY when this is the SOLE evaluator
+            // (`active_evaluator_count() == 1`) — the trivially-true instance of
+            // the proven `QuiescenceInvariant`, so it is safe by construction.
+            //
+            // Dead in the default (slab) build: `gc_mode_is_index()` (the first
+            // conjunct of the gate, checked inside the cheap pre-check) const-
+            // folds to `false` when `index-gc` is off, so this whole block is a
+            // single perfectly-predicted false branch off the reduction hot path.
+            // Independent of `ctx.should_safepoint()`: the index GC's own
+            // committed-bytes watermark drives the trigger (the slab `is_gc_
+            // requested()`-gated safepoint dance below is a separate path).
+            if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {
+                let mut midloop_roots: Vec<MettaValue> =
+                    crate::backend::models::collect_all_roots();
+                midloop_roots.extend_from_slice(root_set.roots());
+                crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered_midloop(
+                    &midloop_roots,
+                );
+            }
+
             // Phase 2.2: Incremental nursery collection (thread-local, no quiescence needed).
             // Uses the algebraic root set to determine which nursery values are live.
             //
@@ -3515,6 +3640,14 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Push the popped work item back so it can be resumed
             work_stack.push(work);
             let depth_hint = continuations.last().map(|c| c.depth_hint()).unwrap_or(0) as u32;
+            // Drop the mid-execution-rooting frame BEFORE moving `work_stack` /
+            // `continuations` into `SuspendedEval` — the frame holds raw pointers
+            // into them, so it must be unregistered from the chain first. (This
+            // yield path is the parallel-worker cooperative-yield and is
+            // unreachable in the single-threaded index-gc regime where the frame
+            // is actually pushed, but dropping explicitly keeps the raw-pointer
+            // contract sound unconditionally.)
+            drop(_tramp_frame_guard);
             return crate::backend::eval::cesk::EvalOutcome::Yielded(
                 crate::backend::eval::cesk::SuspendedEval {
                     work_stack,

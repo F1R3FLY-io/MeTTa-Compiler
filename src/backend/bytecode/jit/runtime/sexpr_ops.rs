@@ -159,7 +159,7 @@ unsafe fn jit_maybe_pre_eval_structural(ctx_ref: &JitContext, v: MettaValue) -> 
     use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
     use crate::backend::eval::trampoline::EvalContext;
     use crate::backend::eval::{is_eager_special_form, is_grounded_op};
-    use crate::backend::models::{global_factory, GcFactory};
+    use crate::backend::models::{global_factory, ActiveFactory};
 
     // Plan 3 hook H-2 (2026-05-06): cooperative GC safepoint before
     // JIT→trampoline re-entry. Same pattern as `jit_pre_eval_arg`.
@@ -200,18 +200,18 @@ unsafe fn jit_maybe_pre_eval_structural(ctx_ref: &JitContext, v: MettaValue) -> 
         || is_grounded_op(head)
         || is_eager_special_form(head)
         || is_embedded_kernel_op(head)
-        || should_pre_eval_by_type::<MettaValue, crate::backend::models::GcFactory>(head, env);
+        || should_pre_eval_by_type::<MettaValue, ActiveFactory>(head, env);
     if !should_reduce {
         return v;
     }
 
     // Reduce via the trampoline. Mirrors `jit_pre_eval_arg` in call_support.rs.
     struct JitEvalContext {
-        factory: GcFactory,
+        factory: ActiveFactory,
     }
     impl EvalContext for JitEvalContext {
         #[inline]
-        fn factory(&self) -> &GcFactory {
+        fn factory(&self) -> &ActiveFactory {
             &self.factory
         }
 

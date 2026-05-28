@@ -37,9 +37,7 @@ use std::sync::Arc;
 use crate::backend::environment::GenericEnvironment;
 #[cfg(test)]
 use crate::backend::models::MettaValueInner;
-use crate::backend::models::{
-    global_factory, GcFactory, MettaValue, MettaValueFactory, MettaValueTrait,
-};
+use crate::backend::models::{global_factory, MettaValue, MettaValueFactory, MettaValueTrait};
 
 /// Error type for external function calls
 #[derive(Debug, Clone)]
@@ -238,16 +236,18 @@ where
 pub type ExternalResult = GenericExternalResult<MettaValue>;
 
 /// Context provided to external functions during execution.
-pub type ExternalContext = GenericExternalContext<MettaValue, GcFactory>;
+pub type ExternalContext =
+    GenericExternalContext<MettaValue, crate::backend::models::ActiveFactory>;
 
 /// Type alias for external function signature.
-pub type ExternalFn = GenericExternalFn<MettaValue, GcFactory>;
+pub type ExternalFn = GenericExternalFn<MettaValue, crate::backend::models::ActiveFactory>;
 
 /// Registry for external functions callable from bytecode.
 ///
 /// External functions are registered by name and looked up by name during execution.
 /// This supports dynamic registration from external systems like Rholang.
-pub type ExternalRegistry = GenericExternalRegistry<MettaValue, GcFactory>;
+pub type ExternalRegistry =
+    GenericExternalRegistry<MettaValue, crate::backend::models::ActiveFactory>;
 
 impl Default for ExternalContext {
     fn default() -> Self {

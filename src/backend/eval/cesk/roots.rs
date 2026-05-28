@@ -212,7 +212,7 @@ mod tests {
     use crate::backend::models::{global_factory, MettaValue, MettaValueFactory};
     use smallvec::smallvec;
 
-    fn factory() -> crate::backend::models::GcFactory {
+    fn factory() -> crate::backend::models::ActiveFactory {
         global_factory()
     }
 

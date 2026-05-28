@@ -96,7 +96,7 @@ pub unsafe extern "C" fn jit_runtime_space_add(
                     crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
                     return JitValue::unit().to_bits();
                 }
-                let factory = crate::backend::models::GcFactory::default();
+                let factory = crate::backend::models::active_factory();
                 if let Some(resolved) = env_mut.lookup_token_generic(name, &factory) {
                     if let Some(handle) = resolved.as_space() {
                         if handle.is_module_space() || handle.name == "self" {
@@ -167,7 +167,7 @@ pub unsafe extern "C" fn jit_runtime_space_remove(
                     crate::backend::eval::trampoline::dispatch_hints::increment_mutation_epoch();
                     return JitValue::unit().to_bits();
                 }
-                let factory = crate::backend::models::GcFactory::default();
+                let factory = crate::backend::models::active_factory();
                 if let Some(resolved) = env_mut.lookup_token_generic(name, &factory) {
                     if let Some(handle) = resolved.as_space() {
                         if handle.is_module_space() || handle.name == "self" {
@@ -227,7 +227,7 @@ pub unsafe extern "C" fn jit_runtime_space_get_atoms(
                 if !ctx_ref.env_ptr.is_null() {
                     let env =
                         &*(ctx_ref.env_ptr as *const crate::backend::environment::MettaEnvironment);
-                    let factory = crate::backend::models::GcFactory::default();
+                    let factory = crate::backend::models::active_factory();
                     if let Some(resolved) = env.lookup_token_generic(name, &factory) {
                         if let Some(handle) = resolved.as_space() {
                             handle.collapse()

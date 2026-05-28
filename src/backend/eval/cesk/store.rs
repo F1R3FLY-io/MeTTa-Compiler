@@ -221,7 +221,7 @@ pub trait Store<V: MettaValueTrait>: Debug + Send + Sync {
 // ============================================================================
 
 use crate::backend::models::{
-    alloc_count_snapshot, committed_bytes_snapshot, global_factory, GcFactory, MettaValue,
+    alloc_count_snapshot, committed_bytes_snapshot, global_allocator, GcFactory, MettaValue,
 };
 
 /// Production Store implementation wrapping the global `GcFactory`.
@@ -246,8 +246,11 @@ impl SlabStore {
     /// Create a new `SlabStore` backed by the global slab allocator.
     #[inline]
     pub fn new() -> Self {
+        // `SlabStore` always wraps the concrete slab `GcFactory`. Construct it
+        // directly rather than via `global_factory()` (now feature-polymorphic).
+        // Byte-identical to the previous body in the default build.
         Self {
-            factory: global_factory(),
+            factory: GcFactory::new(global_allocator()),
         }
     }
 
@@ -288,7 +291,12 @@ impl Store<MettaValue> for SlabStore {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+// (cfg-gate) These tests construct `SlabStore` directly and decode the slab
+// values it allocates. Under `--features index-gc` the active store is
+// `IndexHeapStore`, so the process decodes values as index-arena handles
+// (`gc_mode_is_index()`); slab values produced here are not interpretable by
+// that runtime. They test slab-store internals and run only in the slab build.
+#[cfg(all(test, not(feature = "index-gc")))]
 mod tests {
     use super::*;
     use crate::backend::models::MettaValueTrait;

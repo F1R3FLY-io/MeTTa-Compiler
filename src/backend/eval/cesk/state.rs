@@ -180,13 +180,20 @@ impl SeckState {
     /// The `current_work` parameter is the work item that was just popped
     /// from the work stack (it's not on the stack but still holds live values).
     pub fn collect_gc_roots(&mut self, current_work: &WorkItem) {
-        self.root_set.clear();
-        self.root_set
-            .collect_from_operand_stack(&self.operand_stack);
-        self.root_set
-            .collect_from_work_items(current_work, &self.work_stack);
-        self.root_set
-            .collect_from_continuations(&self.continuations);
+        // Inc 1: single source of truth for the algebraic root formula
+        //   roots = addrs(S) ∪ addrs(C) ∪ addrs(K)
+        // via `RootSet::collect_all`. The live trampoline safepoint
+        // (`eval_loop.rs`) collects the identical {C,K} set through the same
+        // `RootSet` primitives — its S (operand stack) is always empty, so the
+        // two paths agree exactly. This equivalence is the property the later
+        // registry-narrowing (Inc 7) relies on; it is pinned by
+        // `tests::test_seckstate_roots_match_trampoline_safepoint_path`.
+        self.root_set.collect_all(
+            &self.operand_stack,
+            current_work,
+            &self.work_stack,
+            &self.continuations,
+        );
     }
 
     /// Take the collected roots as a Vec for the GC subsystem.
@@ -233,7 +240,7 @@ mod tests {
     use super::*;
     use crate::backend::models::{global_factory, MettaValueFactory};
 
-    fn factory() -> crate::backend::models::GcFactory {
+    fn factory() -> crate::backend::models::ActiveFactory {
         global_factory()
     }
 
@@ -308,6 +315,87 @@ mod tests {
         state.collect_gc_roots(&current_work);
 
         assert_eq!(state.root_set.len(), 1); // The Eval work item's value
+    }
+
+    /// Inc 1 acceptance: the structural roots collected by
+    /// `SeckState::collect_gc_roots` (S∪C∪K, via `collect_all`) are *identical*
+    /// — as a sorted address multiset — to what the live trampoline safepoint
+    /// collects (`RootSet::collect_from_work_items` + `collect_from_continuations`
+    /// over the same current-work / work-stack / continuation-stack), because the
+    /// machine's operand stack S is empty in the tree-walker. This is the
+    /// equivalence the registry-narrowing (Inc 7) depends on; if a future change
+    /// makes the two paths diverge (e.g. a `WorkItem`/`Continuation` variant whose
+    /// values one path collects and the other does not), this test fails.
+    #[test]
+    fn test_seckstate_roots_match_trampoline_safepoint_path() {
+        use crate::backend::eval::trampoline::types::{bv, empty_shared_bindings};
+        use crate::backend::models::MettaValueTrait;
+        let f = factory();
+
+        // A diverse, value-bearing machine state.
+        let v_atom = f.atom("alpha");
+        let v_long = f.long(7);
+        let v_sexpr = f.sexpr(vec![f.atom("g"), v_long]);
+        let current = WorkItem::Eval {
+            value: v_sexpr,
+            env: std::sync::Arc::new(env()),
+            depth: 3,
+            is_tail_call: false,
+            expected_type: Some(v_atom),
+            demand: None,
+            carrying_bindings: empty_shared_bindings(),
+        };
+
+        let mut state = SeckState::new(f.long(0), env());
+        // Replace the default single Eval work item with a controlled set.
+        state.work_stack.clear();
+        state.push_work(WorkItem::Resume {
+            result: (
+                smallvec::smallvec![bv(v_atom), bv(v_long)],
+                std::sync::Arc::new(env()),
+            ),
+        });
+        state.push_continuation(Continuation::ProcessCatch {
+            default: v_atom,
+            env: std::sync::Arc::new(env()),
+            depth: 3,
+            outer_carrying: empty_shared_bindings(),
+        });
+        debug_assert!(
+            state.operand_stack.total_len() == 0,
+            "tree-walker machine has an empty operand stack"
+        );
+
+        // Trampoline safepoint path (the two RootSet primitives eval_loop calls).
+        let mut loop_rs = RootSet::with_capacity(16);
+        loop_rs.collect_from_work_items(&current, &state.work_stack);
+        loop_rs.collect_from_continuations(&state.continuations);
+
+        // SeckState path (collect_all = S∪C∪K; S empty here).
+        state.collect_gc_roots(&current);
+
+        let mut loop_addrs: Vec<usize> = loop_rs
+            .roots()
+            .iter()
+            .map(|v| v.inner_ptr() as usize)
+            .collect();
+        let mut seck_addrs: Vec<usize> = state
+            .root_set
+            .roots()
+            .iter()
+            .map(|v| v.inner_ptr() as usize)
+            .collect();
+        loop_addrs.sort_unstable();
+        seck_addrs.sort_unstable();
+
+        assert_eq!(
+            loop_addrs, seck_addrs,
+            "SeckState structural roots must equal the trampoline safepoint collection"
+        );
+        assert!(
+            !seck_addrs.is_empty(),
+            "the constructed state has value-bearing roots"
+        );
     }
 
     #[test]

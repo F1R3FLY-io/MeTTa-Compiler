@@ -124,8 +124,11 @@ impl JitValue {
     #[inline(always)]
     pub fn from_inner_ptr(ptr: *const MettaValueInner) -> Self {
         let addr = ptr as u64;
+        // In index mode the "ptr" is `inner_ptr()` = INDEX_KEY_TAG(bit 48) | addr.raw();
+        // `& PAYLOAD_MASK` drops bit 48 → exactly `addr.raw()`, so the computation is
+        // already correct — only the slab-pointer width assert must be relaxed (Inc 2b).
         debug_assert!(
-            addr & TAG_MASK == 0,
+            addr & TAG_MASK == 0 || crate::backend::models::metta_value::gc_mode_is_index(),
             "Pointer uses more than 48 bits: {:#x}",
             addr
         );
@@ -137,7 +140,7 @@ impl JitValue {
     pub fn from_error_ptr(ptr: *const MettaValueInner) -> Self {
         let addr = ptr as u64;
         debug_assert!(
-            addr & TAG_MASK == 0,
+            addr & TAG_MASK == 0 || crate::backend::models::metta_value::gc_mode_is_index(),
             "Pointer uses more than 48 bits: {:#x}",
             addr
         );
@@ -372,33 +375,46 @@ impl JitValue {
             TAG_EMPTY => MettaValue::Empty(),
             TAG_PTR => {
                 let ptr = self.as_inner_ptr();
-                debug_assert!(
-                    !ptr.is_null(),
-                    "to_metta: Null inner pointer in JitValue: raw={:#018x}",
-                    self.0
-                );
-                debug_assert!(
-                    (ptr as usize) % std::mem::align_of::<MettaValueInner>() == 0,
-                    "to_metta: Misaligned inner pointer: {:p} (raw={:#018x})",
-                    ptr,
-                    self.0
-                );
-                MettaValue::from_inner(&*ptr)
+                // Index mode (Inc 2b): `ptr` carries the bare arena `Addr` bits, not
+                // a slab pointer — reconstruct the handle (do NOT deref / assert
+                // slab-pointer invariants on it). Slab arm below is byte-identical.
+                if crate::backend::models::metta_value::gc_mode_is_index() {
+                    let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(ptr as u32);
+                    MettaValue::from_addr(addr, 0)
+                } else {
+                    debug_assert!(
+                        !ptr.is_null(),
+                        "to_metta: Null inner pointer in JitValue: raw={:#018x}",
+                        self.0
+                    );
+                    debug_assert!(
+                        (ptr as usize) % std::mem::align_of::<MettaValueInner>() == 0,
+                        "to_metta: Misaligned inner pointer: {:p} (raw={:#018x})",
+                        ptr,
+                        self.0
+                    );
+                    MettaValue::from_inner(&*ptr)
+                }
             }
             TAG_ERROR => {
                 let ptr = (self.0 & PAYLOAD_MASK) as *const MettaValueInner;
-                debug_assert!(
-                    !ptr.is_null(),
-                    "to_metta: Null error pointer in JitValue: raw={:#018x}",
-                    self.0
-                );
-                debug_assert!(
-                    (ptr as usize) % std::mem::align_of::<MettaValueInner>() == 0,
-                    "to_metta: Misaligned error pointer: {:p} (raw={:#018x})",
-                    ptr,
-                    self.0
-                );
-                MettaValue::from_inner(&*ptr)
+                if crate::backend::models::metta_value::gc_mode_is_index() {
+                    let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(ptr as u32);
+                    MettaValue::from_addr(addr, 0)
+                } else {
+                    debug_assert!(
+                        !ptr.is_null(),
+                        "to_metta: Null error pointer in JitValue: raw={:#018x}",
+                        self.0
+                    );
+                    debug_assert!(
+                        (ptr as usize) % std::mem::align_of::<MettaValueInner>() == 0,
+                        "to_metta: Misaligned error pointer: {:p} (raw={:#018x})",
+                        ptr,
+                        self.0
+                    );
+                    MettaValue::from_inner(&*ptr)
+                }
             }
             TAG_ATOM => {
                 let ptr = self.as_atom_ptr();

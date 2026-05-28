@@ -521,10 +521,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{GcFactory, MettaValueInner};
+    // (convert) Active factory so these freshening/var-rename tests run under
+    // both the slab `GcFactory` and the index `IndexFactory` (GC A/B differential).
+    use crate::backend::models::{active_factory, MettaValueInner};
 
-    fn factory() -> GcFactory {
-        GcFactory::default()
+    fn factory() -> crate::backend::models::ActiveFactory {
+        active_factory()
     }
 
     #[test]

@@ -446,6 +446,8 @@ mod tests {
         assert_eq!(ctx.resume_ip, 10);
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_collect_native_gathers_results() {
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -744,6 +746,8 @@ mod tests {
     // 3. Collect gathers all results into an S-expression
     // =========================================================================
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_fork_yield_collect_full_cycle() {
         // Create context with nondeterminism support
@@ -858,6 +862,8 @@ mod tests {
         }
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_nested_fork_yield_collect() {
         // Test nested Fork/Yield/Collect with two levels of nondeterminism
@@ -1266,6 +1272,8 @@ mod tests {
         assert!(neg.is_long());
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_value_max_long() {
         // Z.A.2 (2026-05-12): JitValue::from_long routes out-of-range
@@ -1281,6 +1289,8 @@ mod tests {
         assert_eq!(metta.as_long(), Some(i64::MAX));
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_value_min_long() {
         // Z.A.2: see test_jit_value_max_long for rationale.
@@ -1508,6 +1518,8 @@ mod tests {
         assert_eq!(jv.as_long(), 99); // Conservative fallback: else_val
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_eval_quote() {
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -2552,6 +2564,8 @@ mod tests {
         assert_eq!(tag, TAG_PTR);
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_get_type_sexpr() {
         let constants: Vec<MettaValue> = vec![];
@@ -2660,6 +2674,8 @@ mod tests {
         // Type variables match anything, should return true
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_assert_type_pass() {
         let constants: Vec<MettaValue> = vec![];
@@ -2860,6 +2876,8 @@ mod tests {
         assert_eq!(result, second);
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_eval_quote_wraps_value() {
         let constants: Vec<MettaValue> = vec![];
@@ -3567,6 +3585,8 @@ mod tests {
         }
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_make_sexpr_single_4c() {
         let constants: Vec<MettaValue> = vec![];
@@ -3594,6 +3614,8 @@ mod tests {
         }
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_make_sexpr_multiple_4c() {
         let constants: Vec<MettaValue> = vec![];
@@ -3622,6 +3644,8 @@ mod tests {
         }
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_cons_atom_to_sexpr_4c() {
         let constants: Vec<MettaValue> = vec![];
@@ -3655,6 +3679,8 @@ mod tests {
         }
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_cons_atom_to_nil_4c() {
         let constants: Vec<MettaValue> = vec![];
@@ -3684,6 +3710,8 @@ mod tests {
         }
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_make_quote_wraps_4c() {
         let constants: Vec<MettaValue> = vec![];
@@ -3787,6 +3815,8 @@ mod tests {
         }
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_get_type_sexpr_4c() {
         let constants: Vec<MettaValue> = vec![];
@@ -3812,6 +3842,8 @@ mod tests {
         }
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_get_type_space_4c() {
         let constants: Vec<MettaValue> = vec![];
@@ -4466,6 +4498,8 @@ mod tests {
     // Phase 4D: Expression Operations Tests
     // ==========================================================================
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_get_head_sexpr() {
         let constants: Vec<MettaValue> = vec![];
@@ -4523,6 +4557,8 @@ mod tests {
         assert!(jit_val.is_heap(), "Error atom should be heap-allocated");
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_get_tail_sexpr() {
         let constants: Vec<MettaValue> = vec![];
@@ -4579,6 +4615,8 @@ mod tests {
         }
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_jit_get_arity_sexpr() {
         let constants: Vec<MettaValue> = vec![];
@@ -5992,6 +6030,8 @@ mod tests {
         assert_eq!(result & TAG_MASK, TAG_UNIT);
     }
 
+    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_make_list_single() {
         let constants: Vec<MettaValue> = vec![];

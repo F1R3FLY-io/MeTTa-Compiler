@@ -465,11 +465,13 @@ mod tests {
     use super::*;
     use crate::backend::environment::MettaEnvironment;
     use crate::backend::eval::trampoline::StaticEvalContext;
-    use crate::backend::models::{GcFactory, MettaValue};
+    // (convert) Active factory so these module-eval tests run under both the
+    // slab `GcFactory` and the index `IndexFactory` (GC A/B differential).
+    use crate::backend::models::{active_factory, MettaValue};
 
     #[test]
     fn test_eval_include_generic_missing_args() {
-        let env = MettaEnvironment::new(GcFactory::default());
+        let env = MettaEnvironment::new(active_factory());
         let ctx = StaticEvalContext::get();
 
         let items = vec![MettaValue::Atom("include".to_string())];
@@ -481,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_eval_import_generic_missing_args() {
-        let env = MettaEnvironment::new(GcFactory::default());
+        let env = MettaEnvironment::new(active_factory());
         let ctx = StaticEvalContext::get();
 
         let items = vec![MettaValue::Atom("import!".to_string())];

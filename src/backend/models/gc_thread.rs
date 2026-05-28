@@ -201,7 +201,12 @@ fn gc_thread_main(request_rx: mpsc::Receiver<GcRequest>, response_tx: mpsc::Send
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+// (cfg-gate) These tests exercise the slab background GC thread internals
+// directly (GcFactory/SlabAllocator, live-data preservation across a threaded
+// collector). Under `--features index-gc` the active store is the index arena
+// and the process decodes index handles, so slab values produced here aren't
+// interpretable by that runtime. Slab-internal — slab build only.
+#[cfg(all(test, not(feature = "index-gc")))]
 mod tests {
     use std::time::Duration;
 

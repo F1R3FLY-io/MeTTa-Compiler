@@ -317,10 +317,10 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for XorOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{GcFactory, MettaValue};
+    use crate::backend::models::{active_factory, MettaValue};
 
     fn run_binary_logical<Op: GroundedOperationTCO<MettaValue>>(op: &Op, a: bool, b: bool) -> bool {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             op.name().to_string(),
             vec![MettaValue::Bool(a), MettaValue::Bool(b)],
@@ -353,7 +353,7 @@ mod tests {
     }
 
     fn run_unary_logical<Op: GroundedOperationTCO<MettaValue>>(op: &Op, a: bool) -> bool {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(op.name().to_string(), vec![MettaValue::Bool(a)]);
 
         op.execute_step(&mut state, &factory);
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn test_and_short_circuit() {
         // When first arg is all False, should short-circuit
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "and".to_string(),
             vec![MettaValue::Bool(false), MettaValue::Bool(true)],
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn test_or_short_circuit() {
         // When first arg is all True, should short-circuit
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "or".to_string(),
             vec![MettaValue::Bool(true), MettaValue::Bool(false)],

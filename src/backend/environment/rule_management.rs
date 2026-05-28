@@ -4896,11 +4896,13 @@ where
         {
             return Vec::new();
         }
-        // SAFETY: V == MettaValue and F == GcFactory by TypeId guard above
-        // (V == MettaValue and the F: MettaValueFactory<V> bound +
-        // monomorphization in this codebase guarantees F == GcFactory).
-        let factory_ptr = &self.factory as *const F as *const crate::backend::models::GcFactory;
-        let gc_factory: crate::backend::models::GcFactory = unsafe { *factory_ptr };
+        // SAFETY: V == MettaValue (TypeId guard above) and, for the MettaValue
+        // monomorphization, F is the active value factory `ActiveFactory`
+        // (the slab `GcFactory` by default, `IndexFactory` under
+        // `--features index-gc`). Reinterpreting `&F` as `*const ActiveFactory`
+        // is therefore an identity cast.
+        let factory_ptr = &self.factory as *const F as *const crate::backend::models::ActiveFactory;
+        let gc_factory: crate::backend::models::ActiveFactory = unsafe { *factory_ptr };
         let expr_mv: &crate::backend::models::MettaValue =
             unsafe { &*(expr as *const V as *const crate::backend::models::MettaValue) };
         let env_ref: &crate::backend::eval::trampoline::engine::Environment = unsafe {

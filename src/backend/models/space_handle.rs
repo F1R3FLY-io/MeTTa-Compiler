@@ -38,7 +38,6 @@ use parking_lot::RwLock;
 use pathmap::zipper::{ZipperIteration, ZipperMoving, ZipperValues};
 use pathmap::PathMap;
 
-use super::gc_allocator::GcFactory;
 use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
 use super::MettaValue;
 
@@ -456,7 +455,10 @@ impl SpaceHandle {
 
         match &self.backing {
             SpaceBacking::Owned { space } => {
-                let factory = super::GcFactory::default();
+                // Inc 4 (store-centric GC): reconstruct collapsed atoms via the
+                // ACTIVE store factory — under index mode the slab `GcFactory`
+                // would mint slab-pointer handles that the index runtime misdecodes.
+                let factory = super::active_factory();
                 let mut result = Vec::new();
 
                 // Ground atoms from PathMap
@@ -533,7 +535,10 @@ impl SpaceHandle {
 
         match &self.backing {
             SpaceBacking::Owned { space } => {
-                let factory = super::GcFactory::default();
+                // Inc 4 (store-centric GC): reconstruct collapsed atoms via the
+                // ACTIVE store factory — under index mode the slab `GcFactory`
+                // would mint slab-pointer handles that the index runtime misdecodes.
+                let factory = super::active_factory();
                 let mut results = Vec::new();
 
                 // Ground atoms from PathMap
@@ -1014,7 +1019,8 @@ impl SpaceHandle {
 
     /// Deserialize bytes to MettaValue using the built-in deserializer.
     fn deserialize_to_metta(&self, bytes: &[u8]) -> MettaValue {
-        let factory = GcFactory::default();
+        // Inc 4: deserialize into the ACTIVE store (index σ under --features index-gc).
+        let factory = super::active_factory();
         match factory.deserialize(bytes) {
             Ok((value, _)) => value,
             Err(_) => MettaValue::Atom("?deserialization_error?".to_string()),
@@ -1080,7 +1086,7 @@ impl std::hash::Hash for SpaceHandle {
 mod tests {
     use super::*;
 
-    use crate::backend::models::GcFactory;
+    use crate::backend::models::active_factory;
 
     #[test]
     fn test_space_handle_new() {
@@ -1551,7 +1557,7 @@ mod tests {
         handle.add_atom(MettaValue::Long(2));
         handle.add_atom(MettaValue::Long(3));
 
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let collapsed: Vec<MettaValue> = handle.collapse_generic(&factory);
 
         assert_eq!(collapsed.len(), 3);
@@ -1573,7 +1579,7 @@ mod tests {
             handle.add_atom(atom.clone());
         }
 
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let matches: Vec<GenericMultiplicityMatch<MettaValue>> =
             handle.collapse_with_multiplicity_generic(&factory);
 
@@ -1625,7 +1631,7 @@ mod tests {
         assert_eq!(handle1.atom_count(), handle2.atom_count());
 
         // Collapse via normal vs generic should produce same results
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let collapsed1 = handle1.collapse();
         let collapsed2: Vec<MettaValue> = handle2.collapse_generic(&factory);
 
@@ -1659,7 +1665,7 @@ mod tests {
         assert!(!original.contains_generic(&MettaValue::Long(2)));
 
         // Collapse forked via generic
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let forked_atoms: Vec<MettaValue> = forked.collapse_generic(&factory);
         assert_eq!(forked_atoms.len(), 2);
     }

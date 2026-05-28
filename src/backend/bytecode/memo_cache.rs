@@ -278,12 +278,12 @@ pub fn global_memo_cache() -> &'static Arc<MemoCache<MettaValue>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{GcFactory, MettaValue, MettaValueFactory};
+    use crate::backend::models::{active_factory, MettaValue, MettaValueFactory};
 
     #[test]
     fn test_generic_memo_cache_basic() {
         let cache = MemoCache::new(100);
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // Miss on first lookup
         assert!(cache.get("foo", &[factory.long(42)]).is_none());
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn test_generic_memo_cache_different_args() {
         let cache: MemoCache<MettaValue> = MemoCache::new(100);
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         cache.insert("double", &[factory.long(5)], factory.long(10));
         cache.insert("double", &[factory.long(7)], factory.long(14));
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn test_generic_memo_cache_eviction() {
         let cache: MemoCache<MettaValue> = MemoCache::new(4);
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         for i in 0..4 {
             cache.insert("f", &[factory.long(i)], factory.long(i * 2));
@@ -334,7 +334,7 @@ mod tests {
     #[cfg(feature = "track-stats")]
     fn test_generic_memo_cache_stats() {
         let cache: MemoCache<MettaValue> = MemoCache::new(100);
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         cache.insert("f", &[factory.long(1)], factory.long(1));
         cache.get("f", &[factory.long(2)]); // miss
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn test_collect_all_values() {
         let cache: MemoCache<MettaValue> = MemoCache::new(100);
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         cache.insert("a", &[factory.long(1)], factory.long(10));
         cache.insert("b", &[factory.long(2)], factory.long(20));

@@ -178,6 +178,15 @@ fn run_fixture(metta_path: &Path, yaml_path: &Path) -> Result<FixtureOutcome, St
     let mut all: Vec<MettaValue> = Vec::new();
     let exprs: Vec<MettaValue> = state.source().iter().copied().collect();
     for expr in exprs {
+        // Inc-6 GC root contract: the `all` accumulator holds result values from
+        // PRIOR directives that are live until `canonicalize(&all)` below, but
+        // they live in this Rust-local Vec, invisible to `collect_all_roots()`.
+        // Register them as temporary roots so the single-threaded index
+        // collector (which fires at each `eval_with_tier` quiescence point) does
+        // not reclaim them. The handle refreshes each iteration and drops at
+        // loop end. No-op cost in the slab build. See
+        // docs/cesk-gc/single-threaded-collector.md.
+        let _accum_roots = mettatron::backend::models::register_temporary_roots(all.clone());
         let outcome = eval_with_tier(
             expr,
             env,
@@ -380,6 +389,16 @@ fn main() {
         "Summary: {} pass, {} fail, {} error, {} skipped",
         passes, failures, errors, skipped
     );
+
+    // Inc-6 single-threaded index GC observability: when requested, report how
+    // many live mark+sweep cycles fired during the run. A vacuous trigger leaves
+    // this at 0 (so validation can confirm the collector actually ran).
+    if std::env::var("METTATRON_INDEX_GC_REPORT").as_deref() == Ok("1") {
+        let cycles = mettatron::backend::eval::cesk::index_heap::index_gc::cycles_run();
+        let midloop =
+            mettatron::backend::eval::cesk::index_heap::index_gc::midloop_cycles_run();
+        eprintln!("INDEX_GC_CYCLES_RUN={cycles} INDEX_GC_MIDLOOP_CYCLES={midloop}");
+    }
 
     if (failures > 0 || errors > 0) && options.strict {
         process::exit(3);

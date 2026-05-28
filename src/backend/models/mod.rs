@@ -20,10 +20,11 @@ pub use gc_allocator::{
     current_context_id, disable_gc, drop_eval_guard_for_safepoint, gc_cycle_in_flight,
     gc_requests_total, gc_sweep_epoch, global_allocator, global_factory, global_gc_cron,
     init_global_allocator, is_gc_disabled, is_gc_requested, maybe_process_gc_response,
-    maybe_quiescent_gc, reacquire_eval_guard_after_safepoint, register_root_provider,
-    register_temporary_roots, release_session, request_gc, set_backpressure_level,
-    trigger_gc_cycle, try_register_env_roots, EvalGuard, GcFactory, GcHoldGuard, RootProvider,
-    SafepointRootHandle, SessionGuard, SlabAllocator, MAX_BACKPRESSURE,
+    maybe_quiescent_gc, note_worker_spawned, reacquire_eval_guard_after_safepoint,
+    register_root_provider, register_temporary_roots, release_session, request_gc,
+    set_backpressure_level, trigger_gc_cycle, try_register_env_roots, worker_ever_spawned,
+    EvalGuard, GcFactory, GcHoldGuard, RootProvider, SafepointRootHandle, SessionGuard,
+    SlabAllocator, MAX_BACKPRESSURE,
 };
 pub use gc_cron::{CronHandle, GcCronSingleton};
 pub use generic_bindings::{
@@ -50,3 +51,40 @@ use crate::backend::environment::MettaEnvironment;
 /// Uses SmallVec<[MettaValue; 2]> to inline up to 2 elements, avoiding heap
 /// allocation for the common single-result case.
 pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
+
+// ============================================================================
+// GC migration indirection seam (Increment 4, sub-step 1)
+// ============================================================================
+//
+// These three items are the single place where the evaluator's value
+// factory/store are selected. The whole `src/backend/eval/**` tree threads
+// `ActiveFactory`/`ActiveStore`/`active_factory()` instead of the concrete
+// slab types, so flipping the store-centric GC migration to the index arena
+// is a localized one-place change here — re-point these aliases at
+// `IndexFactory` / `IndexHeapStore` (`src/backend/eval/cesk/index_heap.rs`).
+//
+// In this sub-step the aliases resolve to the existing slab types, so the
+// default build is byte-identical (no cargo feature flag yet).
+
+/// The active value factory for the evaluator (Inc 4: the store-centric GC seam).
+/// The slab `GcFactory` by default; under `--features index-gc` the index-arena
+/// store's alloc interface `IndexFactory`. Compile-time store selection — NOT a
+/// runtime mode flag inside the factory.
+#[cfg(not(feature = "index-gc"))]
+pub type ActiveFactory = GcFactory;
+#[cfg(feature = "index-gc")]
+pub type ActiveFactory = crate::backend::eval::cesk::index_heap::IndexFactory;
+
+/// The active `Store` impl: `SlabStore` by default, `IndexHeapStore` (the store σ)
+/// under `--features index-gc`.
+#[cfg(not(feature = "index-gc"))]
+pub type ActiveStore = crate::backend::eval::cesk::store::SlabStore;
+#[cfg(feature = "index-gc")]
+pub type ActiveStore = crate::backend::eval::cesk::index_heap::IndexHeapStore;
+
+/// Get the active value factory instance. Delegates to `global_factory()`, which
+/// is itself feature-selected (slab `GcFactory` vs index `IndexFactory`).
+#[inline]
+pub fn active_factory() -> ActiveFactory {
+    global_factory()
+}

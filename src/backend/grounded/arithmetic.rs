@@ -911,11 +911,11 @@ impl<V: MettaValueTrait + Clone> GroundedOperationTCO<V> for ClampOp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{GcFactory, MettaValue};
+    use crate::backend::models::{active_factory, MettaValue};
 
     #[test]
     fn test_add_op_generic_longs() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let args = vec![MettaValue::Long(1), MettaValue::Long(2)];
         let mut state = GroundedState::new("+".to_string(), args);
 
@@ -950,7 +950,7 @@ mod tests {
 
     #[test]
     fn test_add_op_generic_floats() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let args = vec![MettaValue::Float(1.5), MettaValue::Float(2.5)];
         let mut state = GroundedState::new("+".to_string(), args);
 
@@ -977,7 +977,7 @@ mod tests {
 
     #[test]
     fn test_sub_op_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "-".to_string(),
             vec![MettaValue::Long(10), MettaValue::Long(3)],
@@ -1007,7 +1007,7 @@ mod tests {
 
     #[test]
     fn test_sub_op_generic_unary() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new("-".to_string(), vec![MettaValue::Long(5)]);
         let op = SubOp;
 
@@ -1032,7 +1032,7 @@ mod tests {
 
     #[test]
     fn test_sub_op_generic_unary_float() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new("-".to_string(), vec![MettaValue::Float(3.14)]);
         let op = SubOp;
 
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     fn test_sub_op_generic_unary_zero() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new("-".to_string(), vec![MettaValue::Long(0)]);
         let op = SubOp;
 
@@ -1072,7 +1072,7 @@ mod tests {
 
     #[test]
     fn test_sub_op_generic_no_args() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new("-".to_string(), vec![]);
         let op = SubOp;
 
@@ -1085,7 +1085,7 @@ mod tests {
 
     #[test]
     fn test_sub_op_generic_three_args() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "-".to_string(),
             vec![
@@ -1105,7 +1105,7 @@ mod tests {
 
     #[test]
     fn test_mul_op_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "*".to_string(),
             vec![MettaValue::Long(6), MettaValue::Long(7)],
@@ -1133,7 +1133,7 @@ mod tests {
 
     #[test]
     fn test_div_op_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "/".to_string(),
             vec![MettaValue::Long(20), MettaValue::Long(4)],
@@ -1161,7 +1161,7 @@ mod tests {
 
     #[test]
     fn test_div_by_zero() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "/".to_string(),
             vec![MettaValue::Long(10), MettaValue::Long(0)],
@@ -1188,7 +1188,7 @@ mod tests {
 
     #[test]
     fn test_mod_op_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "%".to_string(),
             vec![MettaValue::Long(17), MettaValue::Long(5)],
@@ -1218,7 +1218,7 @@ mod tests {
 
     #[test]
     fn test_mod_float_float() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "%".to_string(),
             vec![MettaValue::Float(10.5), MettaValue::Float(3.0)],
@@ -1247,7 +1247,7 @@ mod tests {
     #[test]
     fn test_mod_long_float() {
         // Key HE example: Long(85) % Float(43.5) = Float(41.5)
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "%".to_string(),
             vec![MettaValue::Long(85), MettaValue::Float(43.5)],
@@ -1276,7 +1276,7 @@ mod tests {
 
     #[test]
     fn test_mod_float_long() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "%".to_string(),
             vec![MettaValue::Float(85.5), MettaValue::Long(43)],
@@ -1307,7 +1307,7 @@ mod tests {
     fn test_mod_float_by_zero() {
         // Per MeTTa spec §13.2 (modulo): only integer % 0 → DivisionByZero;
         // Float % 0.0 follows IEEE 754 (NaN), matching HE.
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "%".to_string(),
             vec![MettaValue::Float(10.5), MettaValue::Float(0.0)],
@@ -1346,7 +1346,7 @@ mod tests {
         b: MettaValue,
         op: impl GroundedOperationTCO<MettaValue>,
     ) -> Vec<MettaValue> {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(op_name.to_string(), vec![a.clone(), b.clone()]);
 
         op.execute_step(&mut state, &factory);
@@ -1368,7 +1368,7 @@ mod tests {
         a: MettaValue,
         op: impl GroundedOperationTCO<MettaValue>,
     ) -> Vec<MettaValue> {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(op_name.to_string(), vec![a.clone()]);
 
         op.execute_step(&mut state, &factory);
@@ -1466,7 +1466,7 @@ mod tests {
 
     #[test]
     fn test_min_op_generic_longs() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "min".to_string(),
             vec![MettaValue::Long(10), MettaValue::Long(3)],
@@ -1493,7 +1493,7 @@ mod tests {
 
     #[test]
     fn test_min_op_generic_floats() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "min".to_string(),
             vec![MettaValue::Float(1.5), MettaValue::Float(2.5)],
@@ -1520,7 +1520,7 @@ mod tests {
 
     #[test]
     fn test_min_op_generic_long_float() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "min".to_string(),
             vec![MettaValue::Long(10), MettaValue::Float(3.5)],
@@ -1547,7 +1547,7 @@ mod tests {
 
     #[test]
     fn test_min_op_generic_float_long() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "min".to_string(),
             vec![MettaValue::Float(2.5), MettaValue::Long(10)],
@@ -1576,7 +1576,7 @@ mod tests {
 
     #[test]
     fn test_max_op_generic_longs() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "max".to_string(),
             vec![MettaValue::Long(10), MettaValue::Long(3)],
@@ -1603,7 +1603,7 @@ mod tests {
 
     #[test]
     fn test_max_op_generic_floats() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "max".to_string(),
             vec![MettaValue::Float(1.5), MettaValue::Float(2.5)],
@@ -1630,7 +1630,7 @@ mod tests {
 
     #[test]
     fn test_max_op_generic_long_float() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "max".to_string(),
             vec![MettaValue::Long(3), MettaValue::Float(10.5)],
@@ -1657,7 +1657,7 @@ mod tests {
 
     #[test]
     fn test_max_op_generic_float_long() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             "max".to_string(),
             vec![MettaValue::Float(10.5), MettaValue::Long(3)],

@@ -692,6 +692,8 @@ fn test_bang_superpose_nondeterminism() {
 ///
 /// The JIT1 threshold is 100. After that many evals + background compilation,
 /// the best tier should be at least JitStage1.
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_stage1_tier_promotion() {
     let state = compile("(+ 1 2)").expect("compile failed");
@@ -792,6 +794,8 @@ fn test_jit_stage1_tier_promotion() {
 ///
 /// JIT2 threshold is 500. After that many evals + background compilation,
 /// best tier should be JitStage2 (if JIT compilation succeeds).
+// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn test_jit_stage2_tier_promotion() {
     // Use a slightly different expression to avoid collision with test 8's state

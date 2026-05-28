@@ -14,9 +14,11 @@ use crate::backend::bytecode::jit::types::{
     JitBailoutReason, JitContext, PAYLOAD_MASK, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_LONG, TAG_MASK,
     TAG_PTR, TAG_UNIT, TAG_VAR,
 };
-use crate::backend::models::{
-    GcFactory, MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait, SlabAllocator,
-};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
+// `GcFactory`/`SlabAllocator` are only used by the slab factory construction in
+// `jit_runtime_get_type`, which is compiled out under `--features index-gc`.
+#[cfg(not(feature = "index-gc"))]
+use crate::backend::models::{GcFactory, SlabAllocator};
 
 use super::helpers::value_to_jit_generic;
 
@@ -74,17 +76,27 @@ static TYPE_NAME_UNKNOWN: &str = "Unknown";
 /// that outlives this call.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
-    let arena_ptr = if !ctx.is_null() {
-        (*ctx).arena_ptr()
-    } else {
-        std::ptr::null()
+    // Default (slab) build: construct the slab factory over the (possibly
+    // arena-specific) allocator — byte-identical to the pre-seam code. Under
+    // `--features index-gc` the active store is the index arena, which ignores
+    // the JIT arena pointer entirely, so use the feature-correct accessor and
+    // skip the arena-pointer plumbing altogether.
+    #[cfg(not(feature = "index-gc"))]
+    let factory = {
+        let arena_ptr = if !ctx.is_null() {
+            (*ctx).arena_ptr()
+        } else {
+            std::ptr::null()
+        };
+        let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
+            &*(arena_ptr as *const SlabAllocator)
+        } else {
+            crate::backend::models::global_allocator()
+        };
+        GcFactory::new(alloc)
     };
-    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
-        &*(arena_ptr as *const SlabAllocator)
-    } else {
-        crate::backend::models::global_allocator()
-    };
-    let factory = GcFactory::new(alloc);
+    #[cfg(feature = "index-gc")]
+    let factory = crate::backend::models::active_factory();
 
     // S6: consult environment for type assertions if available.
     if !ctx.is_null() {
@@ -95,8 +107,10 @@ pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _i
             use crate::backend::eval::types::{infer_types_generic, SkipInferredGuard};
             let env = &*(env_ptr as *const crate::backend::bytecode::MettaEnvironment);
             // Reconstruct MettaValue from NaN-boxed payload.
-            let value: MettaValue =
-                jit_to_value_generic::<MettaValue, GcFactory>(JitValue::from_raw(val), &factory);
+            let value: MettaValue = jit_to_value_generic::<
+                MettaValue,
+                crate::backend::models::ActiveFactory,
+            >(JitValue::from_raw(val), &factory);
             // Plan Phase F (2026-05-20): `get-type` consults declared
             // types only across all tiers (T0/T1/T2/T3). The MTT-only
             // `get-deep-type` op bypasses this guard.
@@ -114,7 +128,7 @@ pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _i
     }
 
     // Fallback: no env attached — use the legacy syntactic helper.
-    get_type_generic::<MettaValue, GcFactory>(val, &factory)
+    get_type_generic::<MettaValue, crate::backend::models::ActiveFactory>(val, &factory)
 }
 
 /// Check if a value's type matches an expected type.

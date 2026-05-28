@@ -87,9 +87,7 @@ where
 use crate::backend::grounded::GroundedRegistry;
 use crate::backend::hash_utils::IdentityU64BuildHasher;
 use crate::backend::models::gc_allocator::{try_register_env_roots, RootProvider};
-use crate::backend::models::{
-    GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle,
-};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 use crate::backend::modules::ModuleRegistry;
 use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
 use crate::backend::wide_mork::decode::wide_bytes_to_generic_value;
@@ -3863,11 +3861,11 @@ where
 ///
 /// This environment type uses the global slab allocator for zero-conversion evaluation.
 /// MettaValue is Copy (8 bytes, thin pointer).
-pub type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
+pub type MettaEnvironment = GenericEnvironment<MettaValue, crate::backend::models::ActiveFactory>;
 
 impl Default for MettaEnvironment {
     fn default() -> Self {
-        GenericEnvironment::new(GcFactory::default())
+        GenericEnvironment::new(crate::backend::models::active_factory())
     }
 }
 

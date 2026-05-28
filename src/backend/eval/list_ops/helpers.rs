@@ -245,11 +245,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{GcFactory, MettaValue};
+    use crate::backend::models::{active_factory, MettaValue};
 
     #[test]
     fn test_substitute_variable_generic_atom() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let expr = MettaValue::Atom("$x".to_string());
         let value = MettaValue::Long(42);
 
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_no_match() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let expr = MettaValue::Atom("$y".to_string());
         let value = MettaValue::Long(42);
 
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_sexpr() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("+".to_string()),
             MettaValue::Atom("$x".to_string()),
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_nested() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("outer".to_string()),
             MettaValue::SExpr(vec![
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_ground_types() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let value = MettaValue::Long(42);
 
         // Long should be unchanged
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_error() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         // Phase 1.1 PT-canonical: Error(Type, Ctx). Put `$x` in the Ctx slot
         // so substitution rewrites it, and `BadType` in the Type slot.
         let expr = MettaValue::Error(MettaValue::Atom("BadType"), MettaValue::Atom("$x"));
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_substitute_variable_generic_conjunction() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let expr = MettaValue::Conjunction(vec![
             MettaValue::Atom("$x".to_string()),
             MettaValue::Atom("$y".to_string()),

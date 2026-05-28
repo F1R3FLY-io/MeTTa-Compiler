@@ -292,7 +292,7 @@ mod tests {
     use super::*;
     use crate::backend::models::{global_factory, MettaValue, MettaValueFactory};
 
-    fn f() -> crate::backend::models::GcFactory {
+    fn f() -> crate::backend::models::ActiveFactory {
         global_factory()
     }
 

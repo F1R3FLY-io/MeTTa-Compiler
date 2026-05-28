@@ -222,7 +222,7 @@ impl MettaMod {
         apply_bindings: &dyn Fn(
             &crate::backend::models::MettaValue,
             &crate::backend::models::GenericBindings<crate::backend::models::MettaValue>,
-            &crate::backend::models::GcFactory,
+            &crate::backend::models::ActiveFactory,
         ) -> crate::backend::models::MettaValue,
         outer_carrying: &crate::backend::models::GenericBindings<
             crate::backend::models::MettaValue,

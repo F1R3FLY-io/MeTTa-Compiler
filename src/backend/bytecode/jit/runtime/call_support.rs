@@ -181,15 +181,15 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     // Use a lightweight EvalContext adapter for the trampoline.
     use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
     use crate::backend::eval::trampoline::EvalContext;
-    use crate::backend::models::{global_factory, GcFactory};
+    use crate::backend::models::{global_factory, ActiveFactory};
 
     struct JitEvalContext {
-        factory: GcFactory,
+        factory: ActiveFactory,
     }
 
     impl EvalContext for JitEvalContext {
         #[inline]
-        fn factory(&self) -> &GcFactory {
+        fn factory(&self) -> &ActiveFactory {
             &self.factory
         }
 

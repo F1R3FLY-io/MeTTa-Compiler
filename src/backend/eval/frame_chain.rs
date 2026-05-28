@@ -96,6 +96,12 @@ pub enum FrameLabel {
     AssertAlphaEqualToResult,
     /// Top-level `eval` call
     Eval,
+    /// Bytecode VM frame whose live execution stacks (value_stack / locals /
+    /// results / current_bindings / choice_points / …) are registered as GC
+    /// roots while it calls a NESTED `eval_trampoline` (so a mid-execution
+    /// collection inside that inner trampoline cannot free the outer VM's
+    /// live values). See `bytecode/vm/mod.rs::with_vm_roots_frame`.
+    BytecodeVm,
     /// Extensible custom label
     Custom(&'static str),
 }
@@ -110,6 +116,7 @@ impl fmt::Display for FrameLabel {
             FrameLabel::AssertEqualToResult => write!(f, "assertEqualToResult"),
             FrameLabel::AssertAlphaEqualToResult => write!(f, "assertAlphaEqualToResult"),
             FrameLabel::Eval => write!(f, "eval"),
+            FrameLabel::BytecodeVm => write!(f, "bytecode-vm"),
             FrameLabel::Custom(s) => write!(f, "{}", s),
         }
     }

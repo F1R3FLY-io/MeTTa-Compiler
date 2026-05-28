@@ -3023,11 +3023,11 @@ mod tests {
     fn test_arrow_covariant_return() {
         use crate::backend::environment::MettaEnvironment;
         use crate::backend::eval::types::types_match_with_subtypes;
-        use crate::backend::models::GcFactory;
+        use crate::backend::models::active_factory;
         use crate::backend::models::MettaValueFactory;
 
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
         env.add_subtype_generic("Dog", "Animal");
 
         // (-> Number Dog) vs (-> Number Animal)
@@ -3052,11 +3052,11 @@ mod tests {
     fn test_arrow_contravariant_param() {
         use crate::backend::environment::MettaEnvironment;
         use crate::backend::eval::types::types_match_with_subtypes;
-        use crate::backend::models::GcFactory;
+        use crate::backend::models::active_factory;
         use crate::backend::models::MettaValueFactory;
 
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
         env.add_subtype_generic("Dog", "Animal");
 
         // (-> Animal Bool) vs (-> Dog Bool)
@@ -3083,11 +3083,11 @@ mod tests {
     fn test_arrow_invariant_mismatch() {
         use crate::backend::environment::MettaEnvironment;
         use crate::backend::eval::types::types_match_with_subtypes;
-        use crate::backend::models::GcFactory;
+        use crate::backend::models::active_factory;
         use crate::backend::models::MettaValueFactory;
 
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
         env.add_subtype_generic("Dog", "Animal");
 
         // (-> Dog Bool) vs (-> Animal Bool)

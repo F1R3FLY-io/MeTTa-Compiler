@@ -3735,7 +3735,7 @@ mod multi_tier_tests {
         AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperationTCO, GroundedState,
         GroundedWork, LessEqOp, LessOp, ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
     };
-    use crate::backend::models::GcFactory;
+    use crate::backend::models::active_factory;
 
     // =========================================================================
     // Tier Definitions and Helpers
@@ -3760,7 +3760,7 @@ mod multi_tier_tests {
     where
         Op: GroundedOperationTCO<MettaValue>,
     {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let original_args = args.clone();
         let mut state = GroundedState::new(op.name().to_string(), args);
 
@@ -4243,7 +4243,7 @@ mod three_tier_tests {
         AddOp, AndOp, DivOp, EqualOp, GreaterEqOp, GreaterOp, GroundedOperationTCO, GroundedState,
         GroundedWork, LessEqOp, LessOp, ModOp, MulOp, NotEqualOp, NotOp, OrOp, SubOp,
     };
-    use crate::backend::models::{GcFactory, MettaValue, MettaValueInner};
+    use crate::backend::models::{active_factory, MettaValue, MettaValueInner};
 
     // =========================================================================
     // Helper Functions
@@ -4258,7 +4258,7 @@ mod three_tier_tests {
     where
         Op: GroundedOperationTCO<MettaValue>,
     {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let original_args = args.clone();
         let mut state = GroundedState::new(op.name().to_string(), args);
 

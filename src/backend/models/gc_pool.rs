@@ -702,7 +702,12 @@ pub fn global_gc_pool() -> &'static AdaptiveGcPool {
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+// (cfg-gate) These tests exercise the slab adaptive GC pool internals directly
+// (GcFactory/SlabAllocator, live-data preservation across pooled collectors).
+// Under `--features index-gc` the active store is the index arena and the
+// process decodes index handles, so slab values produced here aren't
+// interpretable by that runtime. Slab-internal — slab build only.
+#[cfg(all(test, not(feature = "index-gc")))]
 mod tests {
     use super::super::gc_allocator::{GcFactory, SlabAllocator};
     use super::super::metta_value_trait::MettaValueFactory;

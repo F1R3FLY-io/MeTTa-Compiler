@@ -15,7 +15,10 @@
 //! 2. `eval_trampoline()` evaluates `MettaValue` using `SessionContext`
 //! 3. Results are `Vec<MettaValue>` — no conversion needed
 
-use crate::backend::models::{global_factory, GcFactory, MettaState, MettaValue};
+// Production code threads the GC-migration seam `active_factory()` /
+// `ActiveFactory`; the `#[cfg(test)]` module below imports `global_factory`
+// directly for its concrete test fixtures.
+use crate::backend::models::{active_factory, ActiveFactory, MettaState, MettaValue};
 
 #[cfg(feature = "trace")]
 use std::sync::Arc;
@@ -57,10 +60,11 @@ pub fn is_arena_mode_available() -> bool {
 
 /// Get the global factory for creating `MettaValue`.
 ///
-/// Returns the `GcFactory` backed by the process-wide `SlabAllocator`.
+/// Returns the active factory (GC-migration seam, currently the `GcFactory`
+/// backed by the process-wide `SlabAllocator`).
 #[inline]
-pub fn get_static_factory() -> GcFactory {
-    global_factory()
+pub fn get_static_factory() -> ActiveFactory {
+    active_factory()
 }
 
 /// Create a new `MettaEnvironment` for session-based evaluation.
@@ -89,9 +93,9 @@ pub fn new_env() -> MettaEnvironment {
     // `'special_forms` arm in `eval/step/sexpr.rs` before rule lookup.
     // Per [[feedback-stack-safety-mandate]], the helper desugars use the
     // existing iterative trampoline; no direct Rust recursion.
-    let mut env = MettaEnvironment::new(global_factory());
+    let mut env = MettaEnvironment::new(active_factory());
     env.register_corelib_types();
-    let f = global_factory();
+    let f = active_factory();
     env.register_token(
         "PI",
         crate::backend::models::MettaValueFactory::float(&f, std::f64::consts::PI),
@@ -127,7 +131,7 @@ pub fn new_env() -> MettaEnvironment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::MettaValueFactory;
+    use crate::backend::models::{global_factory, MettaValueFactory};
     use crate::ir::{Position, Span};
 
     #[test]

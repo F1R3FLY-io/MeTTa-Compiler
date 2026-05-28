@@ -2539,12 +2539,15 @@ pub fn is_pattern_type_compatible<V: MettaValueTrait>(pattern: &V, ground_type: 
 mod tests {
     use super::*;
     use crate::backend::environment::MettaEnvironment;
-    use crate::backend::models::{GcFactory, MettaValue};
+    // (convert) Use the feature-selected active factory so these type-inference
+    // behavioral tests run under both the slab `GcFactory` and the index
+    // `IndexFactory` (the GC migration A/B differential).
+    use crate::backend::models::{active_factory, MettaValue};
 
     #[test]
     fn test_infer_type_generic_ground_types() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // Bool
         let value = MettaValue::Bool(true);
@@ -2564,8 +2567,8 @@ mod tests {
 
     #[test]
     fn test_infer_types_generic_ground_types() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         let types = infer_types_generic(&MettaValue::Bool(true), &factory, &env);
         assert_eq!(types.len(), 1);
@@ -2578,8 +2581,8 @@ mod tests {
 
     #[test]
     fn test_get_type_generic() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         let items = vec![
             MettaValue::Atom("get-type".to_string()),
@@ -2592,8 +2595,8 @@ mod tests {
 
     #[test]
     fn test_get_type_nondeterministic() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         // Declare multiple types for the same atom
         env.add_type_generic("a", factory.atom("A"));
@@ -2611,8 +2614,8 @@ mod tests {
 
     #[test]
     fn test_get_type_undefined_for_untyped() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         let items = vec![
             MettaValue::Atom("get-type".to_string()),
@@ -2625,8 +2628,8 @@ mod tests {
 
     #[test]
     fn test_get_type_arrow_return() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         // (: f (-> A B))
         let arrow = factory.sexpr(vec![
@@ -2645,8 +2648,8 @@ mod tests {
 
     #[test]
     fn test_get_type_multi_arrow() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         // (: f (-> A B)) and (: f (-> C D))
         let arrow1 = factory.sexpr(vec![
@@ -2672,8 +2675,8 @@ mod tests {
 
     #[test]
     fn test_check_type_generic() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (check-type 42 Number) -> true
         let items = vec![
@@ -2698,8 +2701,8 @@ mod tests {
 
     #[test]
     fn test_check_type_with_type_variable() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (check-type 42 $t) -> true (type variable matches anything)
         let items = vec![
@@ -2714,8 +2717,8 @@ mod tests {
 
     #[test]
     fn test_undefined_universal_match() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (check-type untyped-atom SomeType) → True (%Undefined% matches anything)
         let items = vec![
@@ -2734,8 +2737,8 @@ mod tests {
 
     #[test]
     fn test_check_type_multi_type_any_matches() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         // (: a A) + (: a B)
         env.add_type_generic("a", factory.atom("A"));
@@ -2771,7 +2774,7 @@ mod tests {
 
     #[test]
     fn test_match_types_with_bindings_concrete() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = HashMap::new();
 
         let number = factory.atom("Number");
@@ -2784,7 +2787,7 @@ mod tests {
 
     #[test]
     fn test_match_types_with_bindings_variable() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = HashMap::new();
 
         let pattern = factory.atom("$t");
@@ -2797,7 +2800,7 @@ mod tests {
 
     #[test]
     fn test_match_types_with_bindings_consistent() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = HashMap::new();
 
         // First binding: $t = Number
@@ -2815,7 +2818,7 @@ mod tests {
 
     #[test]
     fn test_match_types_with_bindings_structural() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = HashMap::new();
 
         // (List $t) vs (List Number) → {$t: Number}
@@ -2828,7 +2831,7 @@ mod tests {
 
     #[test]
     fn test_match_types_with_bindings_arrow() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = HashMap::new();
 
         // (-> $t $u) vs (-> Number Bool) → {$t: Number, $u: Bool}
@@ -2850,7 +2853,7 @@ mod tests {
 
     #[test]
     fn test_match_types_with_bindings_length_mismatch() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = HashMap::new();
 
         // (-> $t) vs (-> Number Bool) → fail (different lengths)
@@ -2870,8 +2873,8 @@ mod tests {
 
     #[test]
     fn test_check_type_with_subtypes() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         // (: fido Dog), (:< Dog Animal)
         env.add_type_generic("fido", factory.atom("Dog"));
@@ -2890,8 +2893,8 @@ mod tests {
 
     #[test]
     fn test_check_type_subtype_transitive() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         // (: fido Dog), (:< Dog Animal), (:< Animal LivingThing)
         env.add_type_generic("fido", factory.atom("Dog"));
@@ -2911,8 +2914,8 @@ mod tests {
 
     #[test]
     fn test_check_type_not_supertype() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         // (: fido Dog), (:< Dog Animal)
         env.add_type_generic("fido", factory.atom("Dog"));
@@ -2931,8 +2934,8 @@ mod tests {
 
     #[test]
     fn test_types_match_with_subtypes_direct() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         env.add_subtype_generic("Dog", "Animal");
 
@@ -2949,8 +2952,8 @@ mod tests {
 
     #[test]
     fn test_validate_correct() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         // (: f (-> A B)), (: a A)
         let arrow = factory.sexpr(vec![
@@ -2971,8 +2974,8 @@ mod tests {
 
     #[test]
     fn test_validate_untyped() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (validate-atom (foo bar)) → True (untyped = always valid, per HE)
         let expr = factory.sexpr(vec![factory.atom("foo"), factory.atom("bar")]);
@@ -2984,8 +2987,8 @@ mod tests {
 
     #[test]
     fn test_validate_atom_simple() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (validate-atom x) → True (untyped atom)
         let items = vec![factory.atom("validate-atom"), factory.atom("x")];
@@ -2996,7 +2999,7 @@ mod tests {
 
     #[test]
     fn test_is_type_error() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // (Error expr (BadArgType 0 A B))
         let error = factory.sexpr(vec![
@@ -3018,7 +3021,7 @@ mod tests {
 
     #[test]
     fn test_make_type_error_structure() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         let expr = factory.sexpr(vec![factory.atom("f"), factory.atom("b")]);
         let error = make_type_error(&factory, &expr, 0, &factory.atom("A"), &factory.atom("B"));
@@ -3039,8 +3042,8 @@ mod tests {
 
     #[test]
     fn test_get_type_space_self() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         env.add_type_generic("x", factory.atom("Number"));
 
@@ -3057,8 +3060,8 @@ mod tests {
 
     #[test]
     fn test_get_type_space_self_multi() {
-        let factory = GcFactory::default();
-        let mut env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let mut env = MettaEnvironment::new(active_factory());
 
         // Multiple types
         env.add_type_generic("a", factory.atom("A"));
@@ -3077,8 +3080,8 @@ mod tests {
 
     #[test]
     fn test_get_type_space_unknown_space() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (get-type-space unknown-space x) → %Undefined% (no types in that space)
         let items = vec![
@@ -3097,7 +3100,7 @@ mod tests {
 
     #[test]
     fn test_extract_type_constraint_typed_pattern() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         // (: $x Number)
         let pattern = factory.sexpr(vec![
             factory.atom(":"),
@@ -3111,7 +3114,7 @@ mod tests {
 
     #[test]
     fn test_extract_type_constraint_non_variable() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         // (: foo Number) — foo is not a variable
         let pattern = factory.sexpr(vec![
             factory.atom(":"),
@@ -3124,7 +3127,7 @@ mod tests {
 
     #[test]
     fn test_extract_type_constraint_wrong_length() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         // (: $x) — only 2 elements
         let pattern = factory.sexpr(vec![factory.atom(":"), factory.atom("$x")]);
         let constraint = extract_type_constraint(&pattern);
@@ -3133,7 +3136,7 @@ mod tests {
 
     #[test]
     fn test_extract_type_constraint_non_sexpr() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         // Just an atom — not an S-expression
         let pattern = factory.atom("$x");
         let constraint = extract_type_constraint(&pattern);
@@ -3171,7 +3174,7 @@ mod tests {
 
     #[test]
     fn test_is_pattern_type_compatible_variable() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         // Variables match any ground type
         assert!(is_pattern_type_compatible(&factory.atom("$x"), "Number"));
         assert!(is_pattern_type_compatible(&factory.atom("$y"), "Bool"));
@@ -3208,7 +3211,7 @@ mod tests {
 
     #[test]
     fn test_is_pattern_type_compatible_non_ground_conservative() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         // Non-variable atoms are conservatively compatible
         assert!(is_pattern_type_compatible(&factory.atom("foo"), "Number"));
         // S-expressions are conservatively compatible
@@ -3222,14 +3225,14 @@ mod tests {
 
     #[test]
     fn test_types_match_generic_same() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let number = factory.atom("Number");
         assert!(types_match_generic(&number, &number));
     }
 
     #[test]
     fn test_types_match_generic_different() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let number = factory.atom("Number");
         let bool_t = factory.atom("Bool");
         assert!(!types_match_generic(&number, &bool_t));
@@ -3237,7 +3240,7 @@ mod tests {
 
     #[test]
     fn test_types_match_generic_undefined_matches_any() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let number = factory.atom("Number");
         let undefined = factory.atom("%Undefined%");
         // %Undefined% on either side matches anything
@@ -3247,7 +3250,7 @@ mod tests {
 
     #[test]
     fn test_types_match_generic_variable_matches_any() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let number = factory.atom("Number");
         let var = factory.atom("$t");
         // Type variables match anything
@@ -3261,8 +3264,8 @@ mod tests {
 
     #[test]
     fn test_infer_type_let_traces_body() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (let $x 42 (+ $x 1)) → Number (traced through body)
         let expr = factory.sexpr(vec![
@@ -3281,8 +3284,8 @@ mod tests {
 
     #[test]
     fn test_infer_type_let_star_traces_body() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (let* (($x 1) ($y 2)) (+ $x $y)) → Number (traced through body)
         let bindings = factory.sexpr(vec![
@@ -3308,8 +3311,8 @@ mod tests {
 
     #[test]
     fn test_infer_types_if_branches_union() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (if True 42 "hello") → {Number, String}
         let expr = factory.sexpr(vec![
@@ -3331,8 +3334,8 @@ mod tests {
 
     #[test]
     fn test_infer_type_if_branches_same_type() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (if True 42 99) → Number (both branches same type, deduplicated)
         let expr = factory.sexpr(vec![
@@ -3352,8 +3355,8 @@ mod tests {
 
     #[test]
     fn test_infer_types_case_branches_union() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (case $x (($a 42) ($b "hello"))) → {Number, String}
         let branches = factory.sexpr(vec![
@@ -3374,8 +3377,8 @@ mod tests {
 
     #[test]
     fn test_infer_types_if_reducible_branches() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (if-reducible (f $x) 42 "fallback") → {Number, String}
         let expr = factory.sexpr(vec![
@@ -3397,8 +3400,8 @@ mod tests {
 
     #[test]
     fn test_infer_type_non_atom_head_returns_expression() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // ((Inheritance $B $A) (Truth_inversion $TV)) → Expression
         let expr = factory.sexpr(vec![
@@ -3420,8 +3423,8 @@ mod tests {
 
     #[test]
     fn test_infer_type_nested_let_if() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (let $x 1 (if (> $x 0) 42 99)) → Number
         let expr = factory.sexpr(vec![
@@ -3445,8 +3448,8 @@ mod tests {
 
     #[test]
     fn test_infer_type_deep_nesting_no_cycle() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // Build a 20-deep nested let: (let $x0 1 (let $x1 2 (let $x2 3 ... 42)))
         // With cycle detection (no arbitrary depth limit), the full acyclic chain
@@ -3470,8 +3473,8 @@ mod tests {
 
     #[test]
     fn test_infer_type_cycle_detection_via_seen() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // Build a 100-deep acyclic nested let: (let $x0 1 (let $x1 2 ... (+ $x99 1)))
         // This proves the absence of arbitrary depth limiting — all 100 levels
@@ -3499,8 +3502,8 @@ mod tests {
 
     #[test]
     fn test_infer_type_data_constructor() {
-        let factory = GcFactory::default();
-        let env = MettaEnvironment::new(GcFactory::default());
+        let factory = active_factory();
+        let env = MettaEnvironment::new(active_factory());
 
         // (stv 0.5 0.8) → Expression (no rules for stv, so it's a data constructor)
         let expr = factory.sexpr(vec![

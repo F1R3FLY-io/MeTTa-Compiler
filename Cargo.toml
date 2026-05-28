@@ -271,6 +271,14 @@ rholang = ["dep:models"]
 # Provides 5-10% improvement for rule-heavy workloads
 symbol-interning = ["lasso"]
 
+# Index-arena GC (store-centric CESK migration, Inc 4): routes the evaluator's
+# value factory + Store to the non-moving, index-addressed store σ instead of the
+# slab. Compile-time store selection — `global_factory()` returns `IndexFactory`
+# and `GC_MODE` inits to index. Default build stays on the slab (byte-identical).
+# A/B differential = build both (default vs --features index-gc) and diff via
+# scripts/ab_gc_diff.sh. The slab becomes `--features legacy-slab-gc` at Inc 7.
+index-gc = []
+
 # Evaluation trace: binary tracing of every rewrite, type check, error,
 # bailout, and tier transition with full source location provenance.
 # Zero cost when disabled (no branches, no dead code, no rkyv dep).

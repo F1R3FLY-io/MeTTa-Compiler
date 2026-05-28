@@ -1154,6 +1154,14 @@ fn main() {
         process::exit(130);
     }
 
+    // Inc-6 single-threaded index GC observability (validation hook): report how
+    // many live mark+sweep cycles fired during the file evaluation.
+    if std::env::var("METTATRON_INDEX_GC_REPORT").as_deref() == Ok("1") {
+        let cycles = mettatron::backend::eval::cesk::index_heap::index_gc::cycles_run();
+        let midloop = mettatron::backend::eval::cesk::index_heap::index_gc::midloop_cycles_run();
+        eprintln!("INDEX_GC_CYCLES_RUN={cycles} INDEX_GC_MIDLOOP_CYCLES={midloop}");
+    }
+
     if let Err(e) = write_output(options.output.as_deref(), &output) {
         eprintln!("Error: {}", e);
         process::exit(1);

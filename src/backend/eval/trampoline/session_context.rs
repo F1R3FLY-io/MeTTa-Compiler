@@ -22,11 +22,19 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use crate::backend::models::{
-    alloc_count_snapshot, global_factory, register_temporary_roots, request_gc, GcFactory,
+    alloc_count_snapshot, register_temporary_roots, request_gc, ActiveFactory, ActiveStore,
     MettaState, MettaValue,
 };
+// `GcFactory` is only referenced by the slab-only `eval_factory()`/`storage_factory()`
+// shims, which are compiled out under `--features index-gc`.
+#[cfg(not(feature = "index-gc"))]
+use crate::backend::models::GcFactory;
 
 use super::context::{EvalContext, MettaEnvironment};
+// Inc 0 (Store seam): hold a `Store` rather than a bare `GcFactory`.
+// `ActiveStore` (= `SlabStore` today) is the GC-migration alias; `Store` is
+// imported for its `factory()` accessor used by the `EvalContext` impl below.
+use crate::backend::eval::cesk::store::Store;
 
 /// Safepoint allocation count threshold.
 ///
@@ -60,8 +68,10 @@ pub struct SessionContext<'s> {
     /// Reference to the MettaState coordinating GC
     state: &'s MettaState,
 
-    /// Factory backed by the global SlabAllocator
-    factory: GcFactory,
+    /// Store seam (Inc 0/4): `ActiveStore` (= `SlabStore` today) wraps the
+    /// global `GcFactory` (no behavior change); the Inc-4 flip re-points the
+    /// `ActiveStore` alias in `models/mod.rs` to `IndexHeapStore`.
+    store: ActiveStore,
 
     /// Alloc count at the last safepoint check.
     /// Cell for interior mutability (should_safepoint takes &self).
@@ -78,7 +88,7 @@ impl<'s> std::fmt::Debug for SessionContext<'s> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionContext")
             .field("state", &self.state)
-            .field("factory", &self.factory)
+            .field("store", &self.store)
             .finish()
     }
 }
@@ -92,7 +102,7 @@ impl<'s> SessionContext<'s> {
     pub fn new(state: &'s MettaState) -> Self {
         Self {
             state,
-            factory: global_factory(),
+            store: ActiveStore::new(),
             last_safepoint_allocs: Cell::new(alloc_count_snapshot()),
             #[cfg(feature = "trace")]
             trace_collector: None,
@@ -119,9 +129,17 @@ impl<'s> SessionContext<'s> {
     /// Returns the same `GcFactory` used for all allocations. This method
     /// exists for backward compatibility with code that distinguished between
     /// eval and storage factories.
+    ///
+    /// Inc-4 coupling: this returns the concrete `GcFactory` via the
+    /// slab-specific `ActiveStore::gc_factory()` inherent method, which does
+    /// NOT exist on `IndexHeapStore`. These accessors have no production callers
+    /// (pure backward-compat shims), so under `--features index-gc` — where
+    /// `ActiveStore = IndexHeapStore` lacks `gc_factory()` — they are compiled
+    /// out entirely rather than ported to the index store.
+    #[cfg(not(feature = "index-gc"))]
     #[inline]
     pub fn eval_factory(&self) -> GcFactory {
-        self.factory
+        self.store.gc_factory()
     }
 
     /// Get the factory for persistent (storage) allocations.
@@ -129,9 +147,13 @@ impl<'s> SessionContext<'s> {
     /// Returns the same `GcFactory` used for all allocations. This method
     /// exists for backward compatibility with code that distinguished between
     /// eval and storage factories.
+    ///
+    /// Inc-4 coupling: see [`SessionContext::eval_factory`] — slab-specific
+    /// `gc_factory()` accessor; compiled out under `--features index-gc`.
+    #[cfg(not(feature = "index-gc"))]
     #[inline]
     pub fn storage_factory(&self) -> GcFactory {
-        self.factory
+        self.store.gc_factory()
     }
 
     /// Get reference to the MettaState.
@@ -144,8 +166,8 @@ impl<'s> SessionContext<'s> {
 // EvalContext routes all allocations through the single GcFactory
 impl<'s> EvalContext for SessionContext<'s> {
     #[inline]
-    fn factory(&self) -> &GcFactory {
-        &self.factory
+    fn factory(&self) -> &ActiveFactory {
+        self.store.factory()
     }
 
     /// No-op: session-based GC replaces polling-based GC.
@@ -267,6 +289,9 @@ mod tests {
     use super::*;
     use crate::backend::models::MettaValueFactory;
 
+    // Exercises the slab-only `eval_factory()`/`storage_factory()` backward-compat
+    // shims, which are compiled out under `--features index-gc`.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_session_context_creation() {
         let state = MettaState::new();
@@ -291,6 +316,9 @@ mod tests {
         assert_eq!(value.as_atom(), Some("test"));
     }
 
+    // Exercises the slab-only `eval_factory()`/`storage_factory()` backward-compat
+    // shims, which are compiled out under `--features index-gc`.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_single_factory_model() {
         let state = MettaState::new();

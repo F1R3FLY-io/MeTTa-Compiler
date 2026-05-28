@@ -19,7 +19,7 @@ use std::sync::Arc;
 use xxhash_rust::xxh3::xxh3_64;
 
 use super::metta_value_trait::{MettaValueFactory, MettaValueTrait};
-use super::{GcFactory, MettaValue};
+use super::{active_factory, MettaValue};
 use crate::backend::hash_utils::IdentityU64BuildHasher;
 
 /// Global counter for unique memo IDs
@@ -151,7 +151,7 @@ impl MemoHandle {
 
     /// Look up cached results for an expression (legacy MettaValue version).
     pub fn lookup(&self, expr: &MettaValue) -> Option<Vec<MettaValue>> {
-        self.lookup_generic(expr, &GcFactory::default())
+        self.lookup_generic(expr, &active_factory())
     }
 
     /// Store evaluation results for an expression (generic version using serialization).

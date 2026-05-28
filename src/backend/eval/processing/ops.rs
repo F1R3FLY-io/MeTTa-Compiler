@@ -14,7 +14,7 @@ use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait
 use super::super::trampoline::try_match_all_rules;
 use crate::backend::eval::bindings::compose_outer_inner_generic;
 use crate::backend::eval::trampoline::types::{bv_with, BoundValue};
-use crate::backend::models::{GcFactory, MettaValue};
+use crate::backend::models::{ActiveFactory, MettaValue};
 // NOTE: pattern_specificity_generic was removed — MeTTa HE has no specificity filter.
 use super::super::helpers::needs_special_form_redispatch;
 
@@ -28,7 +28,7 @@ use super::super::helpers::needs_special_form_redispatch;
 /// Uses GenericEnvironment<V, F> as the environment type.
 pub enum GenericProcessedSExpr<
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Clone = crate::backend::models::GcFactory,
+    F: MettaValueFactory<V> + Clone = crate::backend::models::ActiveFactory,
 > {
     /// Evaluation complete - return results
     Done((SmallVec<[V; 2]>, GenericEnvironment<V, F>)),
@@ -163,8 +163,9 @@ pub fn cartesian_product_lazy_generic<V: MettaValueTrait + Clone>(
 // Generic Processing Functions
 // ============================================================================
 
-/// Type alias for the concrete environment.
-type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
+/// Type alias for the concrete environment (GC-migration seam: `ActiveFactory`
+/// is currently `GcFactory`).
+type MettaEnvironment = GenericEnvironment<MettaValue, ActiveFactory>;
 
 /// Process collected S-expression evaluation results.
 ///
@@ -173,8 +174,8 @@ pub fn process_collected_sexpr_generic(
     collected: Vec<(SmallVec<[MettaValue; 2]>, MettaEnvironment)>,
     original_env: MettaEnvironment,
     depth: usize,
-    factory: &GcFactory,
-) -> GenericProcessedSExpr<MettaValue, GcFactory> {
+    factory: &ActiveFactory,
+) -> GenericProcessedSExpr<MettaValue, ActiveFactory> {
     // Check for errors in sub-expression results
     for (results, new_env) in &collected {
         if let Some(first) = results.first() {
@@ -224,8 +225,8 @@ pub fn process_single_combination_generic(
     evaled_items: Vec<MettaValue>,
     mut unified_env: MettaEnvironment,
     depth: usize,
-    factory: &GcFactory,
-) -> GenericProcessedSExpr<MettaValue, GcFactory> {
+    factory: &ActiveFactory,
+) -> GenericProcessedSExpr<MettaValue, ActiveFactory> {
     // Check if this is a grounded operation or special form
     if let Some(first) = evaled_items.first() {
         if let Some(op) = first.as_atom() {
@@ -421,8 +422,9 @@ pub struct GenericCartesianProductBoundIter {
     /// Ambient bindings at the point of S-expr construction. Composed into
     /// every combination's merged bindings (left-most operand of the fold).
     outer_carrying: GenericBindings<MettaValue>,
-    /// Factory needed for `compose_outer_inner_generic`. `GcFactory` is Copy.
-    factory: GcFactory,
+    /// Factory needed for `compose_outer_inner_generic`. `ActiveFactory`
+    /// (= `GcFactory` today) is Copy.
+    factory: ActiveFactory,
 }
 
 impl GenericCartesianProductBoundIter {
@@ -430,7 +432,7 @@ impl GenericCartesianProductBoundIter {
     pub fn new(
         inputs: Vec<Vec<BoundValue>>,
         outer_carrying: GenericBindings<MettaValue>,
-        factory: GcFactory,
+        factory: ActiveFactory,
     ) -> Self {
         let exhausted = inputs.iter().any(|v| v.is_empty());
         let indices = vec![0; inputs.len()];
@@ -533,7 +535,7 @@ impl Iterator for GenericCartesianProductBoundIter {
 /// contexts rather than a shared "first-result merge".
 pub enum GenericProcessedSExprBound<
     V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static,
-    F: MettaValueFactory<V> + Clone = crate::backend::models::GcFactory,
+    F: MettaValueFactory<V> + Clone = crate::backend::models::ActiveFactory,
 > {
     /// Evaluation complete — return bound results.
     Done((SmallVec<[BoundValue; 2]>, GenericEnvironment<V, F>)),
@@ -574,7 +576,7 @@ pub enum GenericProcessedSExprBound<
 fn compose_combo_bindings(
     combo_bindings: &[&GenericBindings<MettaValue>],
     outer_carrying: &GenericBindings<MettaValue>,
-    factory: &GcFactory,
+    factory: &ActiveFactory,
 ) -> Option<GenericBindings<MettaValue>> {
     let mut merged = outer_carrying.clone();
     for item in combo_bindings.iter() {
@@ -602,8 +604,8 @@ pub fn process_collected_sexpr_bound_generic(
     outer_carrying: GenericBindings<MettaValue>,
     original_env: MettaEnvironment,
     depth: usize,
-    factory: &GcFactory,
-) -> GenericProcessedSExprBound<MettaValue, GcFactory> {
+    factory: &ActiveFactory,
+) -> GenericProcessedSExprBound<MettaValue, ActiveFactory> {
     // Check for errors in sub-expression results — propagate the first error
     // found, preserving its bindings if present.
     for (results, new_env) in &collected {
@@ -674,8 +676,8 @@ pub fn process_single_combination_bound_generic(
     combo_bindings: GenericBindings<MettaValue>,
     mut unified_env: MettaEnvironment,
     depth: usize,
-    factory: &GcFactory,
-) -> GenericProcessedSExprBound<MettaValue, GcFactory> {
+    factory: &ActiveFactory,
+) -> GenericProcessedSExprBound<MettaValue, ActiveFactory> {
     if let Some(first) = evaled_items.first() {
         if let Some(op) = first.as_atom() {
             // Grounded operation: execute and tag result(s) with combo bindings.

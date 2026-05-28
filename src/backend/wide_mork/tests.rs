@@ -622,13 +622,15 @@ fn test_extract_data_contains_variables() {
 // Decode round-trip tests (encode_wide_storage → wide_bytes_to_generic_value)
 // ============================================================================
 
-use crate::backend::models::{global_factory, GcFactory, MettaValue, MettaValueInner};
+// (convert) `ActiveFactory` turbofish so wide-MORK round-trip decoding runs
+// under both the slab `GcFactory` and the index `IndexFactory` (GC A/B differential).
+use crate::backend::models::{global_factory, ActiveFactory, MettaValue, MettaValueInner};
 
 /// Helper: encode a value and decode it, returning the decoded value.
 fn roundtrip(val: &MettaValue) -> MettaValue {
     let mut buf = Vec::new();
     encode_wide_storage(val, &mut buf);
-    wide_bytes_to_generic_value::<MettaValue, GcFactory>(&buf, &global_factory())
+    wide_bytes_to_generic_value::<MettaValue, ActiveFactory>(&buf, &global_factory())
         .expect("decode should succeed")
 }
 
@@ -838,8 +840,9 @@ fn test_wide_decode_debruijn_variables() {
     encode_wide_debruijn(&val, &mut ctx, &mut buf);
 
     // Decode De Bruijn bytes — variables get epoch-suffixed names
-    let decoded = wide_debruijn_to_generic_value::<MettaValue, GcFactory>(&buf, &global_factory())
-        .expect("decode should succeed");
+    let decoded =
+        wide_debruijn_to_generic_value::<MettaValue, ActiveFactory>(&buf, &global_factory())
+            .expect("decode should succeed");
 
     match decoded.inner() {
         MettaValueInner::SExpr(items) => {

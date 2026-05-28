@@ -456,7 +456,9 @@ pub fn get_grounded_registry() -> &'static GroundedRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{GcFactory, MettaValue};
+    // (convert) Active factory so these grounded-registry tests run under both
+    // the slab `GcFactory` and the index `IndexFactory` (GC A/B differential).
+    use crate::backend::models::{active_factory, MettaValue};
 
     #[test]
     fn test_registry_with_standard_ops() {
@@ -596,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_execute_grounded_op_id() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // Test id with a single argument
         let mut state = GroundedState::new("id".to_string(), vec![MettaValue::Long(42)]);
@@ -627,7 +629,7 @@ mod tests {
 
     #[test]
     fn test_execute_grounded_op_sort_strings() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // Build (sort-strings ("c" "a" "b"))
         let list = MettaValue::SExpr(vec![
@@ -668,7 +670,7 @@ mod tests {
 
     #[test]
     fn test_execute_grounded_op_addition() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // Test addition with static dispatch
         let mut state = GroundedState::new(
@@ -716,7 +718,7 @@ mod tests {
 
     #[test]
     fn test_execute_grounded_op_comparison() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // Test less-than with static dispatch
         let mut state = GroundedState::new(
@@ -745,7 +747,7 @@ mod tests {
 
     #[test]
     fn test_execute_grounded_op_logical() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // Test 'not' with static dispatch
         let mut state = GroundedState::new("not".to_string(), vec![MettaValue::Bool(true)]);
@@ -767,7 +769,7 @@ mod tests {
 
     #[test]
     fn test_execute_grounded_op_not_found() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new("nonexistent".to_string(), vec![MettaValue::Long(1)]);
 
         let work = execute_grounded_op("nonexistent", &mut state, &factory);

@@ -566,7 +566,14 @@ fn write_metta_value_inner(
                 if !key_ptr.is_null() && !child_value.has_variables_fast() {
                     let key = key_ptr as usize;
                     let cache_hit = if let Some(entry) = ground_cache.get(&key) {
-                        if needs_gc_validation {
+                        // Index mode (CRUX Step 6): `key_ptr` is the INDEX_KEY_TAG
+                        // Addr key, not a slab pointer, so `get_slot_epoch` is
+                        // meaningless — and no Index sweep runs yet (Inc 6), so the
+                        // cached fragment cannot be stale. Skip epoch validation;
+                        // a key hit (same stable Addr ⇒ same value) is a real hit.
+                        if needs_gc_validation
+                            && !crate::backend::models::metta_value::gc_mode_is_index()
+                        {
                             let current_epoch =
                                 global_allocator().get_slot_epoch(key_ptr as *const u8);
                             current_epoch == Some(entry.alloc_epoch)
@@ -620,7 +627,11 @@ fn write_metta_value_inner(
                 // remain valid through the loop.
                 let inner: &MettaValueInner = unsafe { &*inner_ptr };
 
-                if gc_trace_enabled() {
+                // Index mode (CRUX Step 6): `ptr` is a materialized shadow-box
+                // pointer (a heap Box, not a slab page), so `is_value_ptr_valid`
+                // would false-positive a dangling-pointer panic. The slab
+                // dangling check is a slab-only diagnostic.
+                if gc_trace_enabled() && !crate::backend::models::metta_value::gc_mode_is_index() {
                     let ptr = inner as *const MettaValueInner as *const u8;
                     if !crate::backend::models::metta_value::is_inline_singleton_inner_ptr(inner)
                         && !global_allocator().is_value_ptr_valid(ptr)
@@ -839,7 +850,14 @@ fn write_metta_value_debruijn_inner(
                 if !key_ptr.is_null() && !child_value.has_variables_fast() {
                     let key = key_ptr as usize;
                     let cache_hit = if let Some(entry) = ground_cache.get(&key) {
-                        if needs_gc_validation {
+                        // Index mode (CRUX Step 6): `key_ptr` is the INDEX_KEY_TAG
+                        // Addr key, not a slab pointer, so `get_slot_epoch` is
+                        // meaningless — and no Index sweep runs yet (Inc 6), so the
+                        // cached fragment cannot be stale. Skip epoch validation;
+                        // a key hit (same stable Addr ⇒ same value) is a real hit.
+                        if needs_gc_validation
+                            && !crate::backend::models::metta_value::gc_mode_is_index()
+                        {
                             let current_epoch =
                                 global_allocator().get_slot_epoch(key_ptr as *const u8);
                             current_epoch == Some(entry.alloc_epoch)
@@ -915,7 +933,9 @@ fn debruijn_dispatch(
     work: &mut Vec<DebruijnIterWork>,
 ) -> Result<(), String> {
     use DebruijnIterWork as W;
-    if gc_trace_enabled() {
+    // Index mode (CRUX Step 6): shadow-box pointer, not a slab page — skip the
+    // slab-only dangling-pointer diagnostic (would false-positive).
+    if gc_trace_enabled() && !crate::backend::models::metta_value::gc_mode_is_index() {
         let ptr = inner as *const MettaValueInner as *const u8;
         if !crate::backend::models::metta_value::is_inline_singleton_inner_ptr(inner)
             && !global_allocator().is_value_ptr_valid(ptr)

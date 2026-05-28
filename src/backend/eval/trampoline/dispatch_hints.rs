@@ -234,7 +234,7 @@ pub(super) fn derive_arg_expected_type<C: EvalContext>(
     items: &[MettaValue],
     arg_idx: usize,
     env: &super::context::MettaEnvironment,
-    factory: &crate::backend::models::GcFactory,
+    factory: &crate::backend::models::ActiveFactory,
 ) -> Option<MettaValue> {
     let op = items.first().and_then(|v| v.as_atom())?;
     let arg_pos = arg_idx.checked_sub(1)?; // Convert to 0-based arg position
@@ -261,7 +261,7 @@ fn extract_consistent_arg_type_from_env<C: EvalContext>(
     op: &str,
     arg_pos: usize,
     env: &super::context::MettaEnvironment,
-    factory: &crate::backend::models::GcFactory,
+    factory: &crate::backend::models::ActiveFactory,
 ) -> Option<MettaValue> {
     use super::super::step::{extract_arg_types, is_meta_type};
 

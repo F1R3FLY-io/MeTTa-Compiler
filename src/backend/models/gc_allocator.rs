@@ -195,8 +195,14 @@ fn ensure_hash_cons_epoch_current() {
 
 /// Compute a content hash for an S-expression's children using their tagged pointer values.
 /// Uses Boost-style hash_combine (non-commutative, non-self-cancelling).
+///
+/// **Mode-independent** (it hashes only the children's `tagged` bits, which are
+/// stable handle identities in both Slab and Index mode), so the index-arena
+/// hash-cons table (`IndexHeap::intern_ground_sexpr`) reuses this exact function
+/// to stay byte-for-byte key-compatible with the slab table — a prerequisite for
+/// the Inc-3 A/B differential's fixpoint-identity parity (R9).
 #[inline]
-fn hash_cons_key(items: &[MettaValue]) -> u64 {
+pub(crate) fn hash_cons_key(items: &[MettaValue]) -> u64 {
     let mut combined: u64 = items.len() as u64;
     for item in items {
         let ptr_hash = item.tagged as u64;
@@ -2503,9 +2509,19 @@ pub fn global_allocator() -> &'static SlabAllocator {
     alloc
 }
 
-/// Get a factory backed by the global allocator.
-pub fn global_factory() -> GcFactory {
+/// Get the ACTIVE value factory (Inc 4 — store-centric GC seam). By default the
+/// global slab `GcFactory`; under `--features index-gc` the index-arena store's
+/// `IndexFactory`. This is COMPILE-TIME store selection — the accessor returns
+/// the active store's alloc interface (a different factory *type* per build) — so
+/// every one of the ~194 `global_factory()` callers auto-follows the active store
+/// without per-site changes. It is NOT a runtime mode-dispatch inside the factory.
+#[cfg(not(feature = "index-gc"))]
+pub fn global_factory() -> crate::backend::models::ActiveFactory {
     GcFactory::new(global_allocator())
+}
+#[cfg(feature = "index-gc")]
+pub fn global_factory() -> crate::backend::models::ActiveFactory {
+    crate::backend::eval::cesk::index_heap::IndexFactory
 }
 
 // ============================================================================
@@ -2705,6 +2721,15 @@ fn enqueue_session_release(context_id: u32) {
     if context_id == 0 {
         return; // Never release persistent values
     }
+    // Inc 4 (store-centric GC): under index mode the evaluator allocates into the
+    // index store σ, not the slab — the slab session holds no eval values, and the
+    // slab collector MUST NOT trace index-mode roots (`inner_ptr()` returns
+    // INDEX_KEY_TAG-tagged keys, not slab pointers — tracing them as pointers
+    // faults). The index store's own collector is Inc 6; until then GC is inert in
+    // index mode (the heap grows monotonically — fine for validation).
+    if crate::backend::models::metta_value::gc_mode_is_index() {
+        return;
+    }
 
     let pool = super::gc_pool::global_gc_pool();
     pool.submit_low(super::gc_pool::GcWorkItem::SessionRelease {
@@ -2742,6 +2767,19 @@ pub fn release_session(context_id: u32) {
 /// Number of concurrently active eval() / eval_trampoline() calls.
 /// GC triggers ONLY when this reaches 0 (quiescent state).
 pub(super) static ACTIVE_EVALUATORS: AtomicU32 = AtomicU32::new(0);
+
+/// Sticky process-global flag: `true` once ANY eval worker has EVER been spawned
+/// (set at the `parallel_dispatch` / `parallel_collapse_dispatch` spawn sites).
+///
+/// This is the provable-safety gate for the Inc-6 single-threaded index GC. If
+/// no eval worker has ever been spawned, then no parked-resumable worker can
+/// exist, so the single calling thread at a between-steps safepoint is provably
+/// the SOLE thread that can touch the index store σ — the trivially-true
+/// instance of the TLA+-proven `QuiescenceInvariant`, requiring no
+/// admission-gate / rendezvous. Once a worker has been spawned the flag latches
+/// `true` forever and the single-threaded collector backs off entirely (the
+/// parallel-rendezvous collector is a separate increment).
+static WORKER_EVER_SPAWNED: AtomicBool = AtomicBool::new(false);
 
 /// Set by `maybe_quiescent_gc()` during snapshot building (sub-millisecond).
 /// `EvalGuard::enter()` parks on condvar until this is false.
@@ -2922,6 +2960,23 @@ impl Drop for EvalGuard {
 /// Get the current active evaluator count (for testing and diagnostics).
 pub fn active_evaluator_count() -> u32 {
     ACTIVE_EVALUATORS.load(Ordering::Acquire)
+}
+
+/// Latch the [`WORKER_EVER_SPAWNED`] flag. Called at the eval-worker spawn sites
+/// (`parallel_dispatch` / `parallel_collapse_dispatch`) BEFORE the worker is
+/// handed to the pool, so that once any worker exists the single-threaded index
+/// GC gate (`worker_ever_spawned()`) reports `true` and the collector backs off.
+#[inline]
+pub fn note_worker_spawned() {
+    WORKER_EVER_SPAWNED.store(true, Ordering::Release);
+}
+
+/// `true` once any eval worker has EVER been spawned (sticky). The provable
+/// single-threaded-quiescence gate for the Inc-6 index GC — see
+/// [`WORKER_EVER_SPAWNED`].
+#[inline]
+pub fn worker_ever_spawned() -> bool {
+    WORKER_EVER_SPAWNED.load(Ordering::Acquire)
 }
 
 /// Counter of session-release inhibitors held by the runtime.
@@ -3409,6 +3464,12 @@ pub fn maybe_quiescent_gc() -> bool {
 pub fn maybe_async_gc() -> bool {
     // Signal that the GC lifecycle is reachable (for cron backpressure gating).
     bump_gc_reachable();
+
+    // Inc 4: the slab collector is inert in index mode (see enqueue_session_release).
+    if crate::backend::models::metta_value::gc_mode_is_index() {
+        GC_REQUESTED.store(false, Ordering::Relaxed);
+        return false;
+    }
 
     if is_gc_disabled() {
         GC_REQUESTED.store(false, Ordering::Relaxed);
@@ -4176,6 +4237,10 @@ pub fn try_register_env_roots<V>(
 ///
 /// Returns `true` if a GC cycle was initiated.
 pub fn trigger_gc_cycle() -> bool {
+    // Inc 4: the slab collector is inert in index mode (see enqueue_session_release).
+    if crate::backend::models::metta_value::gc_mode_is_index() {
+        return false;
+    }
     let pool = super::gc_pool::global_gc_pool();
     let alloc = global_allocator();
 
@@ -5595,7 +5660,12 @@ unsafe impl Sync for GcFactory {}
 
 impl Default for GcFactory {
     fn default() -> Self {
-        global_factory()
+        // Construct the concrete slab factory directly. `global_factory()` is now
+        // feature-polymorphic (returns `ActiveFactory`, i.e. `IndexFactory` under
+        // `--features index-gc`), so it can no longer satisfy this concrete
+        // `GcFactory` return type. In the default build this is byte-identical to
+        // the previous `global_factory()` body (`GcFactory::new(global_allocator())`).
+        GcFactory::new(global_allocator())
     }
 }
 
@@ -5862,8 +5932,11 @@ impl super::metta_value_trait::MettaValueFactory<MettaValue> for GcFactory {
 ///
 /// This replaces the old implementation that leaked a `Bump` arena per call.
 /// Values are allocated directly into the global slab allocator.
-fn deserialize_slab_value(
-    factory: &GcFactory,
+// Generic over the factory (Inc 2): both `GcFactory` (slab) and `IndexFactory`
+// (index arena) reuse this — the body calls only `MettaValueFactory` trait
+// methods + factory-independent helpers (`read_varint`, handle reconstruction).
+pub(crate) fn deserialize_slab_value<F: MettaValueFactory<MettaValue>>(
+    factory: &F,
     bytes: &[u8],
 ) -> Result<(MettaValue, usize), String> {
     if bytes.is_empty() {
@@ -6014,7 +6087,13 @@ fn deserialize_slab_value(
 // Tests
 // ============================================================================
 
-#[cfg(test)]
+// (cfg-gate) These tests exercise the slab allocator/collector internals
+// directly (GcFactory::new(allocator), mark/sweep/full-GC cycles, free-list
+// recycling, session epochs). Under `--features index-gc` the active store is
+// the index arena and the process decodes values as index handles
+// (`gc_mode_is_index()`), so slab-allocated values produced here are not
+// interpretable by that runtime. Slab-internal — slab build only.
+#[cfg(all(test, not(feature = "index-gc")))]
 mod tests {
     use std::sync::Barrier;
 

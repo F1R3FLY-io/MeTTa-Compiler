@@ -134,7 +134,11 @@ impl MettaState {
     /// Returns a `GcFactory` backed by the global `SlabAllocator`.
     #[inline]
     pub fn factory(&self) -> GcFactory {
-        super::gc_allocator::global_factory()
+        // Construct the concrete slab factory directly. `global_factory()` is now
+        // feature-polymorphic (returns `ActiveFactory`), so it can no longer
+        // satisfy this concrete `GcFactory` return type. Byte-identical to the
+        // previous body in the default build.
+        GcFactory::new(super::gc_allocator::global_allocator())
     }
 
     /// Lock and access the source expressions.

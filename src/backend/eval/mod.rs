@@ -248,6 +248,28 @@ pub fn eval(
     // CACHE_ROOT_HANDLE holds the cache roots in the safepoint registry,
     // so they're visible to session release GC during quiescence.
 
+    // ── Inc 6: single-threaded store-centric GC (TRUE-quiescence reclaim) ──
+    // The FIRST WORKING index collector. The `EvalGuard` has just dropped, so
+    // `active_evaluator_count() == 0`: no trampoline loop and no bytecode VM is
+    // live on the Rust stack — exactly the slab GC's session-release reclaim
+    // point and exactly the proven `QuiescenceInvariant` (activeEvaluators
+    // empty). The collector fires ONLY in index mode and ONLY when no eval
+    // worker has ever been spawned (`index_gc::gate_open`), making it safe by
+    // construction. The complete root set is `collect_all_roots()` (env / tiers
+    // / promoted RootProviders) UNIONED with the about-to-be-returned result
+    // values (held here in a Rust local, not yet in any RootProvider).
+    //
+    // Dead in the default (slab) build: `gc_mode_is_index()` const-folds to
+    // `false` when `index-gc` is off, so the slab path is byte-identical.
+    // Cheap pre-check (gate + watermark) avoids the `collect_all_roots()` walk on
+    // every eval; only build the root set when a collection will actually fire.
+    if crate::backend::eval::cesk::index_heap::index_gc::should_collect() {
+        let mut roots = crate::backend::models::collect_all_roots();
+        roots.reserve(result.0.len());
+        roots.extend(result.0.iter().copied());
+        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots);
+    }
+
     // Phase 10.5: Run type fixpoint if rules were added during this eval.
     // O(1) atomic check; no-op when no new types were registered.
     // Must be OUTSIDE EvalGuard scope: run_type_fixpoint() acquires rule_index.read(),
@@ -1132,11 +1154,12 @@ pub(crate) fn execute_jit_arena_with_env(
     env: MettaEnvironment,
 ) -> Result<(Vec<MettaValue>, MettaEnvironment), ()> {
     use crate::backend::bytecode::jit::HybridExecutor;
-    use crate::backend::models::{global_allocator, global_factory};
+    use crate::backend::models::{active_factory, global_allocator};
 
-    // Get allocator and factory from global singleton
+    // Get allocator and factory from global singleton (factory via the
+    // GC-migration seam `active_factory()`).
     let allocator = global_allocator();
-    let factory = global_factory();
+    let factory = active_factory();
 
     // Get the bytecode chunk (needed for constants)
     let chunk = state.bytecode_chunk().ok_or(())?;

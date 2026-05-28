@@ -630,10 +630,12 @@ mod tests {
     use pathmap::zipper::{ZipperIteration, ZipperValues};
 
     use crate::backend::environment::MettaEnvironment;
-    use crate::backend::models::{GcFactory, MettaValueFactory, MettaValueTrait};
+    // (convert) Active factory so these type-system tests run under both the
+    // slab `GcFactory` and the index `IndexFactory` (GC A/B differential).
+    use crate::backend::models::{active_factory, MettaValueFactory, MettaValueTrait};
 
-    fn factory() -> GcFactory {
-        GcFactory::default()
+    fn factory() -> crate::backend::models::ActiveFactory {
+        active_factory()
     }
 
     fn env() -> MettaEnvironment {

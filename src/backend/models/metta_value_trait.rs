@@ -1056,7 +1056,7 @@ pub trait MettaValueFactory<V: MettaValueTrait> {
     /// This is the inverse of `MettaValue::serialize()`. The factory allocates
     /// the value in its native context:
     /// - GcFactory: allocates directly in global slab allocator
-    /// - GcFactory::default(): convenient construction via Default
+    /// - active_factory(): convenient construction via Default
     ///
     /// # Returns
     ///
@@ -1184,11 +1184,11 @@ impl<V: MettaValueTrait, F: MettaValueFactory<V>> MettaValueFactory<V> for &F {
 #[cfg(test)]
 mod tests {
     use super::MettaValueTrait;
-    use crate::backend::models::{GcFactory, MettaValueFactory};
+    use crate::backend::models::{active_factory, MettaValueFactory};
 
     #[test]
     fn test_structurally_equivalent_atoms() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // Non-variable atoms must match exactly
         let a = factory.atom("foo");
@@ -1200,7 +1200,7 @@ mod tests {
 
     #[test]
     fn test_structurally_equivalent_variables() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // Variables are equivalent regardless of name
         let x = factory.atom("$x");
@@ -1215,7 +1215,7 @@ mod tests {
 
     #[test]
     fn test_structurally_equivalent_space_refs() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // Space references are NOT variables and must match exactly
         let self1 = factory.atom("&self");
@@ -1230,7 +1230,7 @@ mod tests {
 
     #[test]
     fn test_structurally_equivalent_sexpr() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
 
         // S-expressions must have same structure
         let e1 = factory.sexpr(vec![

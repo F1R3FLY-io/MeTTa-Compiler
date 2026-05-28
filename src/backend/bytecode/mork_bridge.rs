@@ -36,7 +36,7 @@ use super::compiler::{compile, CompileError};
 use crate::backend::environment::MettaEnvironment;
 // Disabled: pattern_match no longer needed — match_rules_native handles matching at byte level.
 // use crate::backend::eval::pattern_match;
-use crate::backend::models::{Bindings, GcFactory, GenericBindings, MettaValue};
+use crate::backend::models::{Bindings, GenericBindings, MettaValue};
 // Disabled: MettaValueTrait import no longer needed — MettaValue has inherent inner() method.
 // use crate::backend::models::metta_value_trait::MettaValueTrait;
 
@@ -252,7 +252,9 @@ impl MorkBridge {
         let empty_outer = GenericBindings::<MettaValue>::new();
         let results = env.match_rules_native(
             expr,
-            |v: &MettaValue, _: &GenericBindings<MettaValue>, _: &GcFactory| v.clone(),
+            |v: &MettaValue,
+             _: &GenericBindings<MettaValue>,
+             _: &crate::backend::models::ActiveFactory| { v.clone() },
             &empty_outer,
         );
 

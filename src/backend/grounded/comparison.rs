@@ -310,10 +310,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{GcFactory, MettaValue};
+    use crate::backend::models::{active_factory, MettaValue};
 
     fn run_comparison<Op: GroundedOperationTCO<MettaValue>>(op: &Op, a: i64, b: i64) -> bool {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(
             op.name().to_string(),
             vec![MettaValue::Long(a), MettaValue::Long(b)],
@@ -381,7 +381,7 @@ mod tests {
         a: MettaValue,
         b: MettaValue,
     ) -> bool {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut state = GroundedState::new(op.name().to_string(), vec![a.clone(), b.clone()]);
 
         op.execute_step(&mut state, &factory);

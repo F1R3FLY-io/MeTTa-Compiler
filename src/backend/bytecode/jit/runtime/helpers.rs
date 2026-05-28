@@ -170,3 +170,51 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod inc2b_index_tests {
+    use super::*;
+    use crate::backend::eval::cesk::index_heap::IndexFactory;
+    use crate::backend::models::metta_value::{reset_gc_mode_slab, set_gc_mode_index};
+
+    /// Inc 2b: the JIT pack (`metta_to_jit` → `JitValue::from_inner_ptr`) and unpack
+    /// (`JitValue::to_metta`) are mode-aware — in index mode a heap value's payload
+    /// carries the bare arena `Addr` bits (the INDEX_KEY_TAG masked off at the 48-bit
+    /// boundary) and unpack reconstructs the handle via `from_addr`, never a slab deref.
+    #[test]
+    fn jit_value_roundtrips_in_index_mode() {
+        set_gc_mode_index();
+        let f = IndexFactory;
+
+        // Heap value (ground SExpr) → TAG_PTR → reconstructed handle, structurally equal.
+        let v = f.sexpr(vec![f.atom("foo"), f.long(7)]);
+        let jv = metta_to_jit(&v);
+        assert_eq!(jv.tag(), TAG_PTR, "heap value packs to TAG_PTR");
+        let back = unsafe { jv.to_metta() };
+        assert_eq!(
+            back, v,
+            "JIT pack/unpack round-trips structurally in index mode"
+        );
+
+        // Inline scalars are tag-encoded directly (mode-independent).
+        assert_eq!(unsafe { metta_to_jit(&f.long(42)).to_metta() }, f.long(42));
+        assert_eq!(
+            unsafe { metta_to_jit(&f.bool(true)).to_metta() },
+            f.bool(true)
+        );
+
+        // Error value (TAG_PTR via the Error inner) round-trips and stays an error.
+        let e = f.error(f.atom("BadType"), f.string("msg"));
+        let eback = unsafe { metta_to_jit(&e).to_metta() };
+        assert!(
+            eback.is_error(),
+            "error value survives the JIT round-trip in index mode"
+        );
+
+        // The error-builder helpers also pack to a valid TAG_PTR payload (no assert trip).
+        let bits = make_jit_error("boom");
+        assert_eq!(JitValue::from_raw(bits).tag(), TAG_PTR);
+
+        reset_gc_mode_slab();
+    }
+}

@@ -4490,7 +4490,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::{GcFactory, MettaValue};
+    // (convert) Active factory so these binding/unification tests run under both
+    // the slab `GcFactory` and the index `IndexFactory` (GC A/B differential).
+    use crate::backend::models::{active_factory, MettaValue};
 
     #[test]
     fn test_collect_variables_generic() {
@@ -4509,7 +4511,7 @@ mod tests {
     fn test_export_query_bindings_resolves_query_var_without_rule_keys() {
         use crate::backend::models::generic_bindings::ROOT_SCOPE;
 
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let dispatch_scope = 42;
         let prefix = "$__fr_7_";
         let query = MettaValue::SExpr(vec![
@@ -4549,7 +4551,7 @@ mod tests {
     fn test_export_query_bindings_rejects_current_rule_fresh_vars_in_values() {
         use crate::backend::models::generic_bindings::ROOT_SCOPE;
 
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let dispatch_scope = 43;
         let prefix = "$__fr_8_";
         let query = MettaValue::SExpr(vec![
@@ -4582,7 +4584,7 @@ mod tests {
     fn test_export_query_bindings_keeps_other_frame_fresh_vars() {
         use crate::backend::models::generic_bindings::ROOT_SCOPE;
 
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let dispatch_scope = 44;
         let query = MettaValue::SExpr(vec![
             MettaValue::Atom("Uses".to_string()),
@@ -4613,7 +4615,7 @@ mod tests {
 
     #[test]
     fn test_project_bindings_for_consumer_resolves_tracked_alias_and_drops_fresh_key() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = GenericBindings::new();
         bindings.insert("$__fr_a", MettaValue::Atom("$who".to_string()));
         bindings.insert("$who", MettaValue::Atom("Alice".to_string()));
@@ -4636,7 +4638,7 @@ mod tests {
 
     #[test]
     fn test_project_bindings_for_consumer_keeps_live_fresh_var_only() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = GenericBindings::new();
         bindings.insert(
             "$__fr_tail",
@@ -4675,7 +4677,7 @@ mod tests {
     /// dangling resolution, not a free variable.
     #[test]
     fn test_project_bindings_for_consumer_keeps_unbound_visible_fresh_ref() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = GenericBindings::new();
         bindings.insert("$who", MettaValue::Atom("$__fr_missing".to_string()));
 
@@ -4699,7 +4701,7 @@ mod tests {
     /// `&y` and `'z` sigil variables, not just `$x`.
     #[test]
     fn test_collect_variables_generic_includes_amp_and_apos_sigils() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let expr = factory.sexpr(vec![
             factory.atom("foo"),
             factory.atom("$x"),
@@ -4722,7 +4724,7 @@ mod tests {
     /// `&y` and `'z` sigil variables, not just `$x`.
     #[test]
     fn test_seal_variables_generic_freshens_amp_and_apos_sigils() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let expr = factory.sexpr(vec![
             factory.atom("foo"),
             factory.atom("$x"),
@@ -4749,7 +4751,7 @@ mod tests {
 
     #[test]
     fn test_seal_variables_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let expr = MettaValue::SExpr(vec![
             MettaValue::Atom("foo".to_string()),
             MettaValue::Atom("$x".to_string()),
@@ -4771,7 +4773,7 @@ mod tests {
 
     #[test]
     fn test_eval_sealed_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("sealed".to_string()),
             MettaValue::SExpr(vec![MettaValue::Atom("$x".to_string())]),
@@ -4797,7 +4799,7 @@ mod tests {
 
     #[test]
     fn test_eval_atom_subst_generic() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let items = vec![
             MettaValue::Atom("atom-subst".to_string()),
             MettaValue::Long(42),
@@ -4929,7 +4931,7 @@ mod tests {
     #[test]
     fn test_unify_all_variable_prefixes() {
         // (&x 'y $z) vs (a b c) => Some({&x->a, 'y->b, $z->c})
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let lhs = sexpr(vec![
             factory.atom("&x"),
             factory.atom("'y"),
@@ -4951,7 +4953,7 @@ mod tests {
     #[test]
     fn test_unify_standalone_ampersand_not_variable() {
         // (& $x) vs (& 5) => Some({$x -> 5})
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let lhs = sexpr(vec![factory.atom("&"), MettaValue::var("x")]);
         let rhs = sexpr(vec![factory.atom("&"), MettaValue::Long(5)]);
         let result = bidirectional_unify_generic(&lhs, &rhs);
@@ -5139,7 +5141,7 @@ mod tests {
     #[test]
     fn test_unify_space_ref_not_variable() {
         // &self is a space reference, not a variable
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let lhs = factory.atom("&self");
         let rhs = MettaValue::sym("foo");
         let result = bidirectional_unify_generic(&lhs, &rhs);
@@ -5200,7 +5202,7 @@ mod tests {
     fn test_occurs_in_through_bindings() {
         // $y is bound to (g $x). Does $x occur in $y?
         let mut bindings = GenericBindings::new();
-        let factory = GcFactory::default();
+        let factory = active_factory();
         bindings.insert(
             factory.atom("$y").as_atom().expect("atom"),
             sexpr(vec![MettaValue::sym("g"), MettaValue::var("x")]),
@@ -5212,7 +5214,7 @@ mod tests {
     #[test]
     fn test_deref_value_owned_chain() {
         // $x -> $y -> $z -> 42
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut bindings = GenericBindings::new();
         bindings.insert(
             factory.atom("$x").as_atom().expect("atom"),
@@ -5248,7 +5250,7 @@ mod tests {
     fn scoped_compose_same_name_different_scopes_independent() {
         // outer at ROOT_SCOPE, inner at a fresh dispatch scope: same bare
         // name but different (scope, name) keys → both survive.
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let dispatch_scope = allocate_scope_id();
         let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
         outer.insert_scoped(ROOT_SCOPE, "$x", factory.long(1));
@@ -5269,7 +5271,7 @@ mod tests {
     fn scoped_compose_same_name_same_scope_idempotent() {
         // Both maps bind `(ROOT_SCOPE, $x) → 1`. Compose retains exactly
         // one entry, no conflict.
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
         outer.insert_scoped(ROOT_SCOPE, "$x", factory.long(1));
         let mut inner: GenericBindings<MettaValue> = GenericBindings::new();
@@ -5288,7 +5290,7 @@ mod tests {
         // Both ground, both at the SAME scope ⇒ genuine conflict ⇒ strict
         // returns None. This must keep working post-P2 for caller-level
         // (`$user_var`) ground-ground conflicts.
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
         outer.insert_scoped(ROOT_SCOPE, "$x", factory.long(1));
         let mut inner: GenericBindings<MettaValue> = GenericBindings::new();
@@ -5306,7 +5308,7 @@ mod tests {
         // inner: (ROOT_SCOPE, $a) → 7
         // Result must include (ROOT_SCOPE, $X) → 7 because the alias
         // target lives at the same scope as the binding (§3.3).
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
         outer.insert_scoped(ROOT_SCOPE, "$a", factory.atom("$X"));
         let mut inner: GenericBindings<MettaValue> = GenericBindings::new();
@@ -5323,7 +5325,7 @@ mod tests {
         // inner produced by a rule dispatch at scope_d binds (scope_d, $X) → 99.
         // The two $X bindings have different ScopedKeys, so both survive.
         // Without scope tags the inner $X binding would shadow the outer.
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let scope_d = allocate_scope_id();
         let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
         outer.insert_scoped(ROOT_SCOPE, "$a", factory.atom("$X"));
@@ -5342,7 +5344,7 @@ mod tests {
         // outer: (ROOT_SCOPE, $a) → 1, no inner entry for $a.
         // inner: (s1, $b) → 2, no outer entry for $b.
         // Both pass through verbatim.
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let s1 = allocate_scope_id();
         let mut outer: GenericBindings<MettaValue> = GenericBindings::new();
         outer.insert_scoped(ROOT_SCOPE, "$a", factory.long(1));
@@ -5362,7 +5364,7 @@ mod tests {
 
     #[test]
     fn value_contains_var_with_prefix_finds_atom() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let v = factory.atom("$__fr_42_tail");
         assert!(value_contains_var_with_prefix(&v, "$__fr_42_"));
         assert!(!value_contains_var_with_prefix(&v, "$__fr_43_"));
@@ -5371,7 +5373,7 @@ mod tests {
     #[test]
     fn value_contains_var_with_prefix_walks_sexpr() {
         // (Cons $__fr_42_head $__fr_42_tail)
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let v = factory.sexpr(vec![
             factory.atom("Cons"),
             factory.atom("$__fr_42_head"),
@@ -5384,7 +5386,7 @@ mod tests {
     #[test]
     fn value_contains_var_with_prefix_misses_unrelated() {
         // Concrete value with no freshened vars.
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let v = factory.sexpr(vec![
             factory.atom("Cons"),
             factory.atom("a"),
@@ -5397,7 +5399,7 @@ mod tests {
     #[test]
     fn value_contains_var_with_prefix_walks_nested() {
         // ((foo $__fr_7_inner) bar)
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let v = factory.sexpr(vec![
             factory.sexpr(vec![factory.atom("foo"), factory.atom("$__fr_7_inner")]),
             factory.atom("bar"),
@@ -5410,7 +5412,7 @@ mod tests {
     /// variable binds to a value containing the rule's freshened LHS variables.
     #[test]
     fn partial_binding_shape_detected() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         // Simulate the unify result for `(append $unbound (Cons "x" Nil))` against
         // rule LHS `(append (Cons $__fr_E_head $__fr_E_tail) $__fr_E_list)`.
         let prefix = "$__fr_42_";
@@ -5451,7 +5453,7 @@ mod tests {
     #[test]
     fn transitive_live_vars_includes_value_vars() {
         // (foo $a $b) with empty bindings — live = {$a, $b}.
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let value = factory.sexpr(vec![
             factory.atom("foo"),
             factory.atom("$a"),
@@ -5470,7 +5472,7 @@ mod tests {
         // value: (foo $a)
         // bindings: $a → (Cons $b Nil), $b → (bar $c)
         // Live: {$a, $b, $c}
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let value = factory.sexpr(vec![factory.atom("foo"), factory.atom("$a")]);
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         bindings.insert_scoped(
@@ -5501,7 +5503,7 @@ mod tests {
         // Live: {$a} only — the freshened binding is unreachable from value.
         // The Fix 4 trim filter would drop $__fr_99_dead because it's freshened
         // AND not in live; $a stays because it's in live.
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let value = factory.sexpr(vec![factory.atom("foo"), factory.atom("$a")]);
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         bindings.insert_scoped(ROOT_SCOPE, "$a", factory.long(7));
@@ -5522,7 +5524,10 @@ mod tests {
     }
 
     /// Build `Spanned^depth( (foo $a) )` for the Layer-A stack-safety tests.
-    fn deeply_spanned_foo_a(factory: &GcFactory, depth: usize) -> MettaValue {
+    fn deeply_spanned_foo_a(
+        factory: &crate::backend::models::ActiveFactory,
+        depth: usize,
+    ) -> MettaValue {
         let span = crate::ir::Span::new(
             crate::ir::Position::new(0, 0, 0),
             crate::ir::Position::new(0, 1, 1),
@@ -5545,7 +5550,7 @@ mod tests {
 
     #[test]
     fn apply_bindings_scoped_deeply_nested_spanned_no_overflow() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let value = deeply_spanned_foo_a(&factory, LAYER_A_DEPTH);
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         bindings.insert_scoped(ROOT_SCOPE, "$a", factory.long(7));
@@ -5571,7 +5576,7 @@ mod tests {
 
     #[test]
     fn apply_bindings_lazy_scoped_deeply_nested_spanned_no_overflow() {
-        let factory = GcFactory::default();
+        let factory = active_factory();
         let value = deeply_spanned_foo_a(&factory, LAYER_A_DEPTH);
         let mut bindings: GenericBindings<MettaValue> = GenericBindings::new();
         bindings.insert_scoped(ROOT_SCOPE, "$a", factory.long(7));

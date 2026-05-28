@@ -5,7 +5,9 @@ fn main() {
     use mettatron::backend::bytecode::vm::BytecodeVM;
     use mettatron::backend::bytecode::{ChunkBuilder, Opcode};
     use mettatron::backend::environment::GenericEnvironment;
-    use mettatron::backend::models::GcFactory;
+    // (convert) Active factory so this example builds/runs under both the slab
+    // `GcFactory` and the index `IndexFactory` (`--features index-gc`).
+    use mettatron::backend::models::active_factory;
 
     let ops = 10;
     let mut builder = ChunkBuilder::new("state_mixed");
@@ -38,7 +40,7 @@ fn main() {
 
     println!("Chunk built, running...");
     let chunk = Arc::new(chunk);
-    let env = GenericEnvironment::new(GcFactory::default());
+    let env = GenericEnvironment::new(active_factory());
     let mut vm = BytecodeVM::with_env(Arc::clone(&chunk), env);
 
     match vm.run() {

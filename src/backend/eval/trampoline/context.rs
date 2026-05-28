@@ -14,19 +14,26 @@
 use std::cell::{Cell, RefCell};
 
 use crate::backend::environment::GenericEnvironment;
+// Inc 0 (Store seam): production contexts hold a `Store` instead of a bare
+// `GcFactory`. `ActiveStore` (currently `SlabStore`) wraps the global
+// `ActiveFactory` (= `GcFactory`, no behavior change); Inc 4 flips the
+// `ActiveFactory`/`ActiveStore` aliases (in `models/mod.rs`) to the
+// index arena at one place. The `Store` trait is still imported for its
+// `factory()` accessor used by the `EvalContext` impls below.
+use crate::backend::eval::cesk::store::Store;
 use crate::backend::models::{
-    alloc_count_snapshot, global_factory, register_temporary_roots, request_gc, GcFactory,
-    MettaValue,
+    active_factory, alloc_count_snapshot, register_temporary_roots, request_gc, ActiveFactory,
+    ActiveStore, MettaValue,
 };
 
 /// Evaluation context for the trampoline engine.
 ///
-/// All contexts use `MettaValue` and `GcFactory`. The trait captures
-/// behavioral differences: GC policy, safepoints, tracing, and
-/// compiled dispatch.
+/// All contexts use `MettaValue` and `ActiveFactory` (the GC-migration seam,
+/// currently `GcFactory`). The trait captures behavioral differences: GC
+/// policy, safepoints, tracing, and compiled dispatch.
 pub trait EvalContext {
     /// Get a reference to the factory for constructing values.
-    fn factory(&self) -> &GcFactory;
+    fn factory(&self) -> &ActiveFactory;
 
     /// Hint to the context that it may trigger GC if memory pressure is high.
     ///
@@ -136,11 +143,12 @@ pub trait EvalContext {
 /// No manual arena resets are needed.
 #[derive(Debug, Clone, Copy)]
 pub struct StaticEvalContext {
-    factory: GcFactory,
+    store: ActiveStore,
 }
 
-/// Type alias for arena environment using the global GcFactory.
-pub type MettaEnvironment = GenericEnvironment<MettaValue, GcFactory>;
+/// Type alias for arena environment using the active factory (GC-migration
+/// seam, currently the global `GcFactory`).
+pub type MettaEnvironment = GenericEnvironment<MettaValue, ActiveFactory>;
 
 /// Arc-wrapped environment for O(1) sharing in continuations and work items.
 /// Eliminates per-step clone/drop overhead (8.7% of CPU in DTrace profiles).
@@ -158,7 +166,7 @@ impl StaticEvalContext {
     #[inline]
     pub fn get() -> Self {
         Self {
-            factory: global_factory(),
+            store: ActiveStore::new(),
         }
     }
 
@@ -168,7 +176,7 @@ impl StaticEvalContext {
     /// across sequential evaluations, use `get_or_create_env()` instead.
     #[inline]
     pub fn new_env() -> MettaEnvironment {
-        MettaEnvironment::new(global_factory())
+        MettaEnvironment::new(active_factory())
     }
 
     /// Get or create the persistent thread-local environment.
@@ -220,17 +228,18 @@ impl StaticEvalContext {
 
     /// Get a factory for creating `MettaValue`.
     ///
-    /// Returns the global `GcFactory` backed by the slab allocator.
+    /// Returns the active factory (GC-migration seam, currently the global
+    /// `GcFactory` backed by the slab allocator).
     #[inline]
-    pub fn get_factory() -> GcFactory {
-        global_factory()
+    pub fn get_factory() -> ActiveFactory {
+        active_factory()
     }
 }
 
 impl EvalContext for StaticEvalContext {
     #[inline]
-    fn factory(&self) -> &GcFactory {
-        &self.factory
+    fn factory(&self) -> &ActiveFactory {
+        self.store.factory()
     }
 
     // should_safepoint / perform_safepoint inherit the trait defaults
@@ -290,7 +299,7 @@ pub(super) fn parallel_gc_coop_enabled() -> bool {
 /// from the global `WORK_POOL_TRACE_COLLECTOR` keeps parallel branch
 /// evaluation visible in trace files.
 pub struct ParallelBranchContext {
-    factory: GcFactory,
+    store: ActiveStore,
     /// Alloc count at this worker's last safepoint check.
     /// `Cell` for interior mutability — `should_safepoint` takes `&self`.
     last_safepoint_allocs: Cell<u64>,
@@ -317,7 +326,7 @@ impl ParallelBranchContext {
     #[inline]
     pub fn get() -> Self {
         Self {
-            factory: global_factory(),
+            store: ActiveStore::new(),
             last_safepoint_allocs: Cell::new(alloc_count_snapshot()),
             cancel_token: None,
             #[cfg(feature = "trace")]
@@ -335,7 +344,7 @@ impl ParallelBranchContext {
         cancel_token: std::sync::Arc<crate::backend::eval::cesk::coroutine::CancelToken>,
     ) -> Self {
         Self {
-            factory: global_factory(),
+            store: ActiveStore::new(),
             last_safepoint_allocs: Cell::new(alloc_count_snapshot()),
             cancel_token: Some(cancel_token),
             #[cfg(feature = "trace")]
@@ -356,8 +365,8 @@ impl ParallelBranchContext {
 
 impl EvalContext for ParallelBranchContext {
     #[inline]
-    fn factory(&self) -> &GcFactory {
-        &self.factory
+    fn factory(&self) -> &ActiveFactory {
+        self.store.factory()
     }
 
     /// Check whether this worker should safepoint, based on cancellation,
@@ -498,6 +507,12 @@ mod tests {
         assert_eq!(MettaValueTrait::as_atom(&value), Some("test"));
     }
 
+    // (cfg-gate) Asserts the slab representation: `StaticEvalContext` is
+    // pointer-sized because the slab `GcFactory` holds one `&'static`
+    // allocator ref. Under `--features index-gc` the factory is the ZST
+    // `IndexFactory`, so the context is zero-sized — this size invariant is
+    // slab-specific and runs only in the slab build.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_static_arena_context_size() {
         // StaticEvalContext should be pointer-sized (holds one GcFactory which has one &'static ref)

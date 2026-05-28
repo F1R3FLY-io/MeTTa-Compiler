@@ -495,6 +495,132 @@ pub(crate) fn is_variable_str(s: &str) -> bool {
         || s.starts_with('\'')
 }
 
+// ==========================================================================
+// Inc 2: value-decode mode (index-arena vs slab). Default Slab — byte-identical.
+// ==========================================================================
+
+/// Process-global value-decode mode, set ONCE at startup before any value is
+/// created. `0` (Slab, default) keeps the baseline byte-identical; `1` (Index)
+/// reinterprets a heap handle's non-NaN payload as an arena
+/// [`Addr`](crate::backend::eval::cesk::index_arena::Addr). Inc 2 leaves this at
+/// Slab and only adds the (never-taken-by-default) Index arms; the `--gc=index`
+/// flip is Inc 3/4.
+// Inc 4: under `--features index-gc` the evaluator's `global_factory()` allocates
+// into the index store σ, so the decode must default to Index mode to match (the
+// value model is selected at COMPILE time; this static is the runtime-readable
+// reflection of that, set once at process start). Default build inits to Slab (0).
+static GC_MODE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(if cfg!(feature = "index-gc") { 1 } else { 0 });
+
+/// `true` iff the process is in index-arena value mode. A relaxed load of a
+/// write-once, cache-resident static — one perfectly-predicted branch on the hot
+/// path (the flag never changes after startup), so the Slab path is effectively
+/// unchanged.
+#[inline(always)]
+pub(crate) fn gc_mode_is_index() -> bool {
+    GC_MODE.load(std::sync::atomic::Ordering::Relaxed) != 0
+}
+
+/// Switch the process to index-arena value mode. MUST be called at startup
+/// before any `MettaValue` is constructed (Inc 3 `--gc=index` startup / tests).
+pub fn set_gc_mode_index() {
+    GC_MODE.store(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Reset to Slab mode (test-only; the mode is a process-global write-once in
+/// production, but `nextest` isolates each test in its own process).
+#[cfg(test)]
+pub(crate) fn reset_gc_mode_slab() {
+    GC_MODE.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl MettaValue {
+    /// The arena address this heap handle names, or `None` for an inline scalar
+    /// (Bool / i48 Long / Unit / Empty) or in Slab mode (where the non-NaN
+    /// payload is a real pointer, not an index). The 32-bit `Addr` occupies bits
+    /// [35:4]; flags stay in [3:0]; bits [63:48] are zero, so `is_inline()` is
+    /// byte-identical to the slab-pointer case.
+    #[inline]
+    pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {
+        if self.is_inline() || !gc_mode_is_index() {
+            return None;
+        }
+        Some(crate::backend::eval::cesk::index_arena::Addr::from_raw(
+            (self.tagged >> 4) as u32,
+        ))
+    }
+
+    /// Construct an index-mode heap handle from an arena `Addr` + 4 flag bits
+    /// (`FLAG_HAS_VARIABLES` etc.). Inverse of [`as_arena_addr`](Self::as_arena_addr).
+    /// Mode-agnostic bit-packing; only meaningful when the process is in Index mode.
+    #[allow(dead_code)] // wired into IndexFactory (Inc 2a-4) + mode-aware decode (Inc 2a-5)
+    #[inline]
+    pub(crate) fn from_addr(
+        addr: crate::backend::eval::cesk::index_arena::Addr,
+        flags: usize,
+    ) -> Self {
+        debug_assert!(flags <= 0xF, "flags must fit in the low 4 bits");
+        MettaValue {
+            tagged: ((addr.raw() as usize) << 4) | (flags & 0xF),
+        }
+    }
+}
+
+#[cfg(test)]
+mod inc2_mode_tests {
+    use super::*;
+    use crate::backend::eval::cesk::index_arena::Addr;
+    use crate::backend::models::MettaValueFactory;
+
+    #[test]
+    fn index_addr_handle_bit_packing_roundtrips() {
+        // Bit-level bijection — does NOT flip the global mode (no cross-test
+        // pollution): from_addr packs, and the Index-mode decode `(tagged>>4)`
+        // recovers the Addr; flags survive in the low 4 bits; the handle is
+        // non-inline (bits [63:48] == 0).
+        for &(seg, off, flags) in &[
+            (0u32, 0u32, 0usize),
+            (1, 5, 1),
+            (1000, 200, 0),
+            (16383, 262143, 1),
+        ] {
+            let addr = Addr::new(seg, off);
+            let h = MettaValue::from_addr(addr, flags);
+            assert!(
+                !h.is_inline(),
+                "an index handle is a non-NaN (non-inline) value"
+            );
+            assert_eq!(h.tagged & 0xF, flags, "flags preserved in low 4 bits");
+            assert_eq!(
+                (h.tagged >> 4) as u32,
+                addr.raw(),
+                "Addr payload roundtrips"
+            );
+        }
+    }
+
+    // (cfg-gate) Asserts the process default decode mode is Slab and that a
+    // slab heap value carries no arena Addr. Under `--features index-gc` the
+    // process starts in Index mode (`GC_MODE == 1`) and `global_factory()`
+    // yields index handles, so this slab-mode invariant is false by design —
+    // run it only in the slab build.
+    #[cfg(not(feature = "index-gc"))]
+    #[test]
+    fn default_mode_is_slab_and_has_no_arena_addr() {
+        assert!(!gc_mode_is_index(), "default value-decode mode is Slab");
+        // A slab-allocated heap value is not an arena Addr in Slab mode.
+        let v = crate::backend::models::global_factory().atom("x");
+        assert_eq!(
+            v.as_arena_addr(),
+            None,
+            "slab heap value has no Addr in Slab mode"
+        );
+        // Inline scalars never have an Addr, regardless of mode.
+        let n = crate::backend::models::global_factory().long(7);
+        assert_eq!(n.as_arena_addr(), None, "inline scalar has no Addr");
+    }
+}
+
 /// The actual value enum, allocated in the arena.
 ///
 /// This mirrors MettaValueInner but uses arena-allocated collections.
@@ -740,6 +866,40 @@ pub(crate) fn is_inline_singleton_inner_ptr(ptr: *const MettaValueInner) -> bool
         || std::ptr::eq(ptr, &INLINE_FALSE_INNER)
 }
 
+thread_local! {
+    /// Index-mode `inner_ref()` materialization cache (CRUX Step 2c): an arena
+    /// handle's payload is an `Addr`, not a `*const MettaValueInner`, so a slab
+    /// deref is invalid in Index mode. `inner_ref()` instead reads the `Node`
+    /// from the global index heap and materializes the slab-era `MettaValueInner`
+    /// here, returning a `&'static` to the boxed value.
+    ///
+    /// Keyed by `Addr.raw()` (NOT call count): the arena is **non-moving**, so a
+    /// handle's `Addr` is stable, and repeated `inner_ref()` on the same handle
+    /// reuses ONE box — bounding the cache by distinct live Addrs and giving a
+    /// **stable** materialized pointer per handle (so `from_inner` round-trips and
+    /// pointer-identity comparisons behave). The boxes' pointees are
+    /// address-stable across `HashMap` growth (growth moves only the 8-byte `Box`,
+    /// never its target), so a laundered `&'static` stays valid until
+    /// [`clear_inner_shadow`]. For Inc 2–4 (no live Index sweep) it persists,
+    /// bounded by the live heap; Inc 6 clears it on the sweep epoch.
+    static INNER_SHADOW: std::cell::RefCell<std::collections::HashMap<u32, Box<MettaValueInner>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Clear the index-mode `inner_ref()` materialization cache. Called at the Inc 6
+/// sweep epoch (and on a test mode-reset). No-op effect in Slab mode (the cache
+/// is only populated when `gc_mode_is_index()`).
+#[allow(dead_code)] // wired into the safepoint/sweep epoch in Inc 6; used by tests now
+pub(crate) fn clear_inner_shadow() {
+    INNER_SHADOW.with(|c| c.borrow_mut().clear());
+}
+
+/// Test-only: number of distinct Addrs currently materialized in the shadow cache.
+#[cfg(test)]
+pub(crate) fn inner_shadow_len() -> usize {
+    INNER_SHADOW.with(|c| c.borrow().len())
+}
+
 impl MettaValue {
     // ======================================================================
     // NaN-boxing inline discriminant and construction
@@ -827,7 +987,41 @@ impl MettaValue {
         if self.is_inline() {
             return self.inner_ref_inline();
         }
+        // Index-arena mode (CRUX Step 2c): the payload is an `Addr`, not a slab
+        // pointer — materialize the `MettaValueInner` from the heap (Addr-keyed
+        // shadow cache). Default Slab mode skips this perfectly-predicted branch,
+        // so the slab deref below is byte-identical.
+        if gc_mode_is_index() {
+            return self.inner_ref_index();
+        }
         unsafe { &*((self.tagged & PTR_MASK) as *const MettaValueInner) }
+    }
+
+    /// Index-mode materialization of `inner_ref()` (cold; see [`INNER_SHADOW`]).
+    /// Reads the `Node` at this handle's `Addr` and returns a `&'static`
+    /// `MettaValueInner` boxed in the Addr-keyed per-thread shadow cache. Does NOT
+    /// strip `Spanned` (matches the slab `inner_ref` contract).
+    #[cold]
+    #[inline(never)]
+    fn inner_ref_index(&self) -> &'static MettaValueInner {
+        let raw = (self.tagged >> 4) as u32;
+        INNER_SHADOW.with(|c| {
+            let mut m = c.borrow_mut();
+            let boxed = m.entry(raw).or_insert_with(|| {
+                let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(raw);
+                Box::new(
+                    crate::backend::eval::cesk::index_heap::global_index_heap()
+                        .read()
+                        .expect("index heap poisoned")
+                        .materialize_inner(addr),
+                )
+            });
+            // SAFETY: the box's pointee is address-stable for the cache's life
+            // (HashMap growth relocates only the 8-byte Box value, not its target),
+            // and the entry is removed only by clear_inner_shadow() at a quiescent
+            // point — so the laundered &'static outlives this borrow_mut guard.
+            unsafe { &*(&**boxed as *const MettaValueInner) }
+        })
     }
 
     /// Slow path for `inner_ref()` on inline NaN-boxed values.
@@ -938,6 +1132,18 @@ impl MettaValue {
                 _ => ValueView::Unit, // unreachable
             };
         }
+        // Index-arena mode (Inc 2a-5): the non-NaN payload is an arena `Addr`, not
+        // a slab pointer — decode the `Node` directly from the global index heap
+        // (Spanned-stripped, `'static`-laundered). Default Slab mode skips this
+        // perfectly-predicted branch, so the slab path below is byte-identical.
+        if gc_mode_is_index() {
+            let addr =
+                crate::backend::eval::cesk::index_arena::Addr::from_raw((self.tagged >> 4) as u32);
+            return crate::backend::eval::cesk::index_heap::global_index_heap()
+                .read()
+                .expect("index heap poisoned")
+                .view_at(addr);
+        }
         let inner = self.inner();
         match inner {
             MettaValueInner::Float(f) => ValueView::Float(*f),
@@ -1019,6 +1225,20 @@ impl MettaValue {
         if self.is_inline() {
             return *self;
         }
+        // Index mode (CRUX Step 5): `from_inner(self.inner())` would pack the
+        // materialized shadow pointer as if it were a handle — wrong. Instead peel
+        // `Spanned` layers via the (mode-aware) `peel_span`, returning the bare
+        // handle directly. The slab arm below is unchanged.
+        if gc_mode_is_index() {
+            let mut current = *self;
+            loop {
+                let (inner, sp) = current.peel_span();
+                if sp.is_none() {
+                    return current;
+                }
+                current = inner;
+            }
+        }
         MettaValue::from_inner(self.inner())
     }
 
@@ -1055,6 +1275,18 @@ impl MettaValue {
     pub fn inner_ptr(&self) -> *const MettaValueInner {
         if self.is_inline() {
             return std::ptr::null();
+        }
+        // Index-arena mode (CRUX Step 3a): the payload is an `Addr`, not a slab
+        // pointer. Return a stable, collision-free KEY derived from the Addr —
+        // every shared caller uses `inner_ptr()` only as a hash key / identity
+        // compare, never dereferencing it (verified: conformance_common,
+        // eval/types cycle-set, alpha_equiv fast-path, eval_loop fixpoint, mork
+        // ground-cache). `INDEX_KEY_TAG` (bit 48, above the 32-bit Addr payload)
+        // keeps the key non-null even for `Addr(0)` and disjoint from any real
+        // low-48-bit slab pointer. Stable because the arena is non-moving.
+        if gc_mode_is_index() {
+            const INDEX_KEY_TAG: usize = 1 << 48;
+            return (INDEX_KEY_TAG | (self.tagged >> 4)) as *const MettaValueInner;
         }
         (self.tagged & PTR_MASK) as *const MettaValueInner
     }
@@ -2497,6 +2729,14 @@ impl MettaValueTrait for MettaValue {
 
     #[inline]
     unsafe fn from_inner_ptr(ptr: *const MettaValueInner) -> Self {
+        // Index mode (Inc 2b): `ptr` is NOT a slab pointer — it carries the bare
+        // 32-bit arena `Addr` bits the JIT packed (the INDEX_KEY_TAG was masked off
+        // at the 48-bit payload boundary, leaving `addr.raw()`). Reconstruct the
+        // handle; do NOT dereference. Slab mode is byte-identical (the deref below).
+        if gc_mode_is_index() {
+            let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(ptr as u32);
+            return MettaValue::from_addr(addr, 0); // flags=0 matches the slab from_inner path
+        }
         // SAFETY: The pointer is slab-allocated with 'static lifetime (managed by GC).
         MettaValue::from_inner(&*ptr)
     }

@@ -434,4 +434,167 @@ time. The session-based GC properties (`SessionValuesEventuallyFreed`,
 | `tla/SlabGC_Quiescent.cfg` | Standard safety invariant checking (22 invariants) |
 | `tla/SlabGC_Quiescent_small.cfg` | Small model for fast iteration |
 | `tla/SlabGC_Quiescent_deadlock.cfg` | Liveness + deadlock checking (7 properties) |
+| `tla/StoreCentricGC.tla` | **Store-centric, non-moving, quiescent mark-sweep (Inc 6)** |
+| `tla/MC_StoreCentricGC.tla` | TLC wrapper for the store-centric spec |
+| `tla/MC_StoreCentricGC.cfg` | Authoritative full-coverage safety run (4 Addr, 2 workers, MaxRoots=3) |
+| `tla/MC_StoreCentricGC_small.cfg` | Fast minimal-safety smoke (MaxRoots=2) |
+| `tla/MC_StoreCentricGC_liveness.cfg` | FairSpec liveness/termination (GC eventually completes) |
 | `tla/RESULTS.md` | This file |
+
+---
+
+## Part 4: Store-Centric Non-Moving Collector (StoreCentricGC.tla)
+
+> **Increment 6 formal-verification deliverable.** Models the re-architected
+> collector specified in `docs/cesk-gc/store-centric-architecture.md`:
+> non-moving, structural Ψ (no registry side-channel), quiescent mark-sweep,
+> free-list rebuilt each sweep. This is the successor to Parts 1–3: where
+> `SlabGC_Quiescent` modeled a CONCURRENT-SNAPSHOT collector with a separate
+> registry + epoch/ABA filtering, Part 4 verifies the protocol that DELETES
+> the registry, the snapshot, and the epoch/ABA machinery.
+
+### Architecture modeled
+
+| Design property (doc) | How the model captures it |
+|-----------------------|---------------------------|
+| **Non-moving** (`σ: Addr→Value`, Addr=`(seg<<18)\|off`) | `Addr == SEGMENTS × OFFSETS`; an Addr's identity is a fixed carrier element. NO relocation action ⇒ **no `RelocationCorrectness` obligation** (determinism of object identity is true by construction). |
+| **Structural Ψ, no manual root registry** | `psi` is the SINGLE root set. There is NO second registry variable that could desync from it. Modeling Ψ as one variable (vs the slab model's `registeredRoots ∪ stackRoots ∪ safepointRoots`, of which `snapRoots` captured only some) makes the **registry-desync bug class structurally unmodelable**. `NoLostObjects` is the positive statement of this. |
+| **Reachability over child handles** (no write barrier) | `edges: Addr → SUBSET Addr`; `Reachable` = transitive closure of `psi` over `edges`, restricted to occupied slots (bounded-fuel fixpoint, `fuel = \|Addr\|`). `RewireEdge` rewires a live node's children to any subset of occupied Addrs during "mutating" ⇒ forces a **full transitive mark each cycle**. |
+| **True-quiescence rendezvous** | `BeginMark` advances `phase: mutating→marking` ONLY when `activeEvaluators = {}`. A **safepoint barrier** (`WorkerEnter` gated on `~gcRequested`) drains active mutators to {} once GC is pending. Mark/sweep run synchronously in-place — NO async snapshot, NO concurrent mutation. |
+| **Free-list rebuilt each sweep** | `Sweep` assigns `freeList'` wholesale from the post-reclamation free set (never accumulates onto the prior list). `Alloc` only consumes (shrinks `freeList`). Only `Sweep` creates "free" slots / grows `freeList`, and it runs only at quiescence ⇒ **ABA-free**, so per-slot epochs / 128-bit-CAS are unnecessary. |
+| **Wholesale segment release** | `Sweep` computes `deadSegs` (segments all of whose Addrs are "free" post-reclamation) and adds them to `releasedSegments`; released-segment slots go to the OS, never back onto `freeList`. |
+
+State variables: `store: Addr→{"free","live","marked"}`, `psi ⊆ Addr`,
+`edges: Addr→SUBSET Addr`, `activeEvaluators ⊆ Workers`,
+`phase ∈ {"mutating","marking","sweeping"}`, `freeList ⊆ Addr`,
+`releasedSegments ⊆ SEGMENTS`, `gcRequested ∈ BOOLEAN`,
+`workerPhase: Workers→{"outside","running"}`.
+
+Actions: mutator `WorkerEnter` / `WorkerPark` / `Alloc` / `AddRoot` /
+`RemoveRoot` / `RewireEdge`; collector `RequestGC`, `BeginMark` (rendezvous),
+`MarkStep` (idempotent transitive mark), `MarkComplete`, `Sweep`.
+
+### The 5 design-claim safety invariants
+
+| # | Invariant | Statement | Result |
+|---|-----------|-----------|--------|
+| 1 | `NoUseAfterFree` | `∀ a ∈ Reachable: store[a] ≠ "free"` — no live-reachable Addr is ever swept to free | **HOLDS** |
+| 2 | `NoLostObjects` | `phase="sweeping" ⇒ ∀ a ∈ Reachable: store[a]="marked"` — one structural mark covers the full Ψ closure; no surface missed | **HOLDS** |
+| 3 | `SegmentReleaseSafety` | `∀ a ∈ Reachable: SegOf(a) ∉ releasedSegments` — a released segment holds no live-reachable node | **HOLDS** |
+| 4 | `QuiescenceInvariant` | `phase ∈ {"marking","sweeping"} ⇒ activeEvaluators = {}` — mark/sweep run only at true quiescence (re-derives data-race-freedom) | **HOLDS** |
+| 5 | `NoConcurrentFree` | `freeList` names only "free", non-root, non-released-segment Addrs — witness that no slot is freed-then-realloc'd under a reader (⇒ epochs deletable) | **HOLDS** |
+
+Auxiliary well-formedness invariants (also all **HOLD**): `TypeOK`,
+`NoMarksWhileMutating`, `RootsAreOccupied`, `ActiveSetCorrect`,
+`ReleasedSegmentsAreFree`, `FreeSlotsHaveNoEdges`.
+
+### Verification results (TLC 2.19, 18 workers, `MemoryMax=96G CPUQuota=1800%`)
+
+#### Authoritative full-coverage safety run — COMPLETE
+
+| Parameter | Value |
+|-----------|-------|
+| Config | `MC_StoreCentricGC.cfg` |
+| SEGMENTS × OFFSETS | {0,1} × {0,1} = **4 Addrs / 2 segments** |
+| NumWorkers | 2 |
+| MaxRoots | 3 |
+| States generated | 578,731,703 |
+| Distinct states | 17,780,708 |
+| Depth | 24 |
+| Queue remaining | **0 (COMPLETE)** |
+| Wall time | **1 min 26 s** |
+
+**Result: "Model checking completed. No error has been found."** All 11
+invariants (5 design-claim + 6 auxiliary) hold across the **entire reachable
+state graph**.
+
+#### Minimal-safety smoke (MaxRoots=2) — COMPLETE
+
+| Config | States gen. | Distinct | Depth | Queue | Time |
+|--------|------------|----------|-------|-------|------|
+| `MC_StoreCentricGC_small.cfg` | 416,375,991 | 12,042,212 | 24 | **0 (COMPLETE)** | 1 min 15 s |
+
+**Result: No error.** (Does NOT reach a multi-level transitive mark — see
+Coverage below; that needs MaxRoots≥3, which the authoritative config has.)
+
+#### Liveness / termination (FairSpec) — COMPLETE
+
+| Parameter | Value |
+|-----------|-------|
+| Config | `MC_StoreCentricGC_liveness.cfg` (4 Addr, **1 worker**, MaxRoots=2) |
+| Properties | `GCEventuallyCompletes`, `CycleTerminates` |
+| States generated | 113,992,681 |
+| Distinct states | 9,040,732 |
+| Depth | 25 |
+| Queue remaining | **0 (COMPLETE)** |
+| Wall time | 19 min 05 s |
+
+**Result: "Model checking completed. No error has been found."** A requested
+GC eventually completes (`gcRequested ⤳ phase="mutating" ∧ ¬gcRequested`) and
+the mark/sweep cycle terminates (`phase="marking" ⤳ phase="mutating"`), under
+weak fairness on `WorkerPark` + the collector pipeline. (Liveness checking is
+expensive — per-property cycle detection over the state graph — so constants
+are minimized.) The 6 safety invariants also re-hold under FairSpec.
+
+#### Larger config (6 Addrs) — PARTIAL (intractable to complete)
+
+Raising `OFFSETS = {0,1,2}` (6 Addrs, 2 workers, MaxRoots=3) makes the `edges`
+breadth (6 × 2⁶) explode: a complete BFS frontier grows past 200M states. A
+depth-bounded run reached **234,950,700 distinct states (depth 14)** with
+**zero invariant violations** before being terminated. This is partial-
+confidence corroboration only; the 4-Addr config is the authoritative
+*complete* result. (Same tractability pattern as Part 2's "Large Model".)
+
+### Coverage (non-vacuity) — confirmed by negated-invariant probes
+
+To prove the green safety result is NOT vacuous, throwaway probe modules
+asserted the NEGATION of each "interesting" state; TLC reported each as
+violated, producing a witness trace that the state IS reachable on the
+authoritative (4-Addr, 2-worker, MaxRoots=3) config:
+
+| Probed state | Reached? |
+|--------------|----------|
+| `releasedSegments ≠ {}` (wholesale segment release) | **YES** |
+| `\|activeEvaluators\| = 2` (both workers concurrently active) | **YES** |
+| `Reachable ≠ {}` (non-empty live object graph) | **YES** |
+| a purely-transitively-reachable non-root node (`∃ a ∈ Reachable: a ∉ psi`) | **YES** |
+| a marked non-root **child of a marked parent** (multi-level transitive MARK) | **YES** |
+| `freeList ≠ {}` (sweep rebuilt the list; Alloc reuses) | **YES** |
+
+So every safety-critical path — transitive marking over rewired edges,
+free-list rebuild + reuse, segment release, and the 2-worker quiescence
+rendezvous — is genuinely exercised by the complete run. Probe modules were
+removed after confirmation (not deliverables).
+
+### Modeling note found during verification (model fix, NOT a design flaw)
+
+The first liveness run produced a counterexample for `GCEventuallyCompletes`:
+a busy mutator could `WorkerEnter`/`WorkerPark`/`Alloc`/`RewireEdge` in a
+cycle, keeping `BeginMark` only *intermittently* enabled (it requires
+`activeEvaluators = {}`), so weak fairness never forced it — GC starved. This
+was a **fairness/model fidelity gap, not a collector design flaw** (all safety
+invariants held throughout the counterexample). The faithful correction is the
+design's own **cooperative-safepoint admission rule**: once GC is requested,
+no new evaluator is admitted (`WorkerEnter` gated on `~gcRequested`), so
+`activeEvaluators` monotonically drains to {} and `BeginMark` becomes
+continuously enabled. With the barrier, all liveness properties pass and the
+safety state set is unchanged (the barrier only removes the starvation lasso
+edge). This matches the doc's "each active mutator drains to a safepoint and
+parks; phase moves mutating→marking ONLY when activeEvaluators = {}."
+
+### What this proves about the design
+
+- **Memory safety** of the non-moving quiescent mark-sweep: nothing reachable
+  is ever freed (`NoUseAfterFree`), and the single structural mark is complete
+  (`NoLostObjects`) — there is no registry side-channel to desync, by
+  construction.
+- **Data-race-freedom** of the new protocol is re-derived from true quiescence
+  (`QuiescenceInvariant`) without any snapshot/epoch machinery.
+- **ABA-freedom** of free-list reuse (`NoConcurrentFree` + the action
+  structure: only `Sweep` frees / grows `freeList`, and only at quiescence) —
+  the formal justification for DELETING per-slot epochs / 128-bit-CAS (Inc 6).
+- **Segment-release safety** (`SegmentReleaseSafety`): wholesale release of a
+  fully-dead arena segment never strands a live-reachable node.
+- TOCTOU-UAF and page-UAF (Part 1's Bug 1) are **structurally unmodelable**
+  here: there is no async snapshot window and no stale root set, so the bug
+  class that motivated epoch filtering cannot arise.

@@ -1355,9 +1355,7 @@ pub fn try_deterministic_chain(
             // must be handed back to the trampoline (the inline chain has no
             // barrier machinery), exactly like a non-deterministic head.
             Some(c)
-                if c.all_structural
-                    && c.candidate_count == 1
-                    && !c.any_rule_body_contains_cut =>
+                if c.all_structural && c.candidate_count == 1 && !c.any_rule_body_contains_cut =>
             {
                 c
             }

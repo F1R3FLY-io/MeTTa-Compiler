@@ -740,8 +740,12 @@ where
     }
 
     /// Mark this environment as modified.
+    ///
+    /// `pub(crate)` so sibling environment modules (e.g. `act_tiered`'s
+    /// `attach_act_base`/`detach_act_base`) can flag a tiering change for `union`'s
+    /// fast-path detection, the same way `add_to_space` does after a store mutation.
     #[inline]
-    fn mark_modified(&self) {
+    pub(crate) fn mark_modified(&self) {
         self.modified.store(true, Ordering::Release);
     }
 
@@ -816,6 +820,17 @@ where
                     ),
                     variable_atoms: RwLock::new(forked_var_atoms),
                     mork_cache_epoch: self.shared.atom_space.mork_cache_epoch,
+                    // LSM-tiered base carries through CoW make_owned: `Arc<ActBase>`
+                    // clone (read-only base) + `tombstones` O(1) PathMap CoW. The owned
+                    // env keeps tiering attached and starts with an isolated tombstone
+                    // copy, so subsequent overlay/tombstone writes don't leak back to
+                    // the source (the env clone-isolation invariant) while the immutable
+                    // base is shared. `has_act_base` mirrors the source's gate.
+                    act_base: RwLock::new(self.shared.atom_space.act_base.read().clone()),
+                    tombstones: RwLock::new(self.shared.atom_space.tombstones.read().clone()),
+                    has_act_base: AtomicBool::new(
+                        self.shared.atom_space.has_act_base.load(Ordering::Acquire),
+                    ),
                 }
             }),
             // RwLock<HashMap> - read lock + clone
@@ -1261,6 +1276,17 @@ where
                 variable_atoms: RwLock::new(Vec::new()),
                 // Same SharedMapping as self → same epoch (cache entries remain valid)
                 mork_cache_epoch: self.mork_cache_epoch,
+                // A GENUINE merge folds all source `btm`s into one in-memory union
+                // (`merge_pathmaps_max` above), so there is no longer a single immutable
+                // ACT base backing the result — DROP tiering (None / empty tombstones /
+                // gate off). The branch-union FAST PATHS (`Arc::ptr_eq` / only-one-
+                // modified) `Arc::clone` `self.shared` and so SHARE the base for free;
+                // only this both/all-modified rebuild re-decides tiering, and the safe
+                // lossless choice is "fully materialized, no base". Re-`attach-act-base!`
+                // / `compact-space!` if a base is wanted after a merge.
+                act_base: RwLock::new(None),
+                tombstones: RwLock::new(PathMap::new()),
+                has_act_base: AtomicBool::new(false),
             }),
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
@@ -1777,6 +1803,17 @@ where
                 variable_atoms: RwLock::new(Vec::new()),
                 // Same SharedMapping as self → same epoch (cache entries remain valid)
                 mork_cache_epoch: self.mork_cache_epoch,
+                // A GENUINE merge folds all source `btm`s into one in-memory union
+                // (`merge_pathmaps_max` above), so there is no longer a single immutable
+                // ACT base backing the result — DROP tiering (None / empty tombstones /
+                // gate off). The branch-union FAST PATHS (`Arc::ptr_eq` / only-one-
+                // modified) `Arc::clone` `self.shared` and so SHARE the base for free;
+                // only this both/all-modified rebuild re-decides tiering, and the safe
+                // lossless choice is "fully materialized, no base". Re-`attach-act-base!`
+                // / `compact-space!` if a base is wanted after a merge.
+                act_base: RwLock::new(None),
+                tombstones: RwLock::new(PathMap::new()),
+                has_act_base: AtomicBool::new(false),
             }),
             states: RwLock::new(merged_states),
             next_state_id: AtomicU64::new(max_state_id),
@@ -2349,6 +2386,17 @@ where
             return;
         }
 
+        // LSM-tiered base (Stage 5a): if this literal fact is currently SUPPRESSED by a
+        // tombstone (a base copy that was `remove`d), `add-atom` REVIVES one base copy
+        // instead of writing a fresh overlay copy — keeping `add`/`remove` exact bag
+        // inverses (see `act_tiered.rs`). Gated internally on `has_act_base` (no-op +
+        // single relaxed load when untiered). Returning here leaves `total_atoms`/bloom
+        // untouched (the +1 is realized in the base layer, not the overlay counter).
+        if self.untombstone_on_add(value) {
+            self.mark_modified();
+            return;
+        }
+
         // Stage 1 (MM2 ProductZipper gate): rules returned above, so every atom
         // reaching here is a non-rule fact stored literally in `btm`. A variable-
         // containing one makes the directional conjunction fast path incomplete —
@@ -2689,6 +2737,19 @@ where
             return;
         }
 
+        // LSM-tiered base (Stage 5a): OVERLAY-FIRST removal — if a base is attached and the
+        // OVERLAY holds no copy of this literal fact, suppress a base copy (tombstone)
+        // instead of being a no-op. Overlay copies are removed first (the normal path
+        // below); only an overlay miss tombstones the base. Gated internally on
+        // `has_act_base`. See `act_tiered.rs::tombstone_on_remove`.
+        if self.remove_overlay_miss_tombstone(value) {
+            crate::backend::eval::trampoline::invalidate_normal_form_memo();
+            crate::backend::eval::trampoline::clear_eval_memo();
+            crate::backend::eval::trampoline::clear_match_result_cache();
+            self.mark_modified();
+            return;
+        }
+
         // Non-rule: use literal encoding (existing path)
         match with_mork_bytes(
             value,
@@ -2872,6 +2933,14 @@ where
                         .fetch_add(1, Ordering::Relaxed);
                 }
             }
+            self.mark_modified();
+            return;
+        }
+
+        // LSM-tiered base (Stage 5a): un-tombstone-on-add — revive a suppressed base copy
+        // instead of an overlay write (interior-mutability twin of `add_to_space`). See
+        // `act_tiered.rs::untombstone_on_add`.
+        if self.untombstone_on_add(value) {
             self.mark_modified();
             return;
         }
@@ -3093,6 +3162,20 @@ where
             return;
         }
 
+        // LSM-tiered base (Stage 5a): OVERLAY-FIRST removal. If a base is attached and the
+        // OVERLAY holds no copy of this literal fact, the `remove-atom` must SUPPRESS a base
+        // copy (tombstone) rather than be a no-op. Overlay copies are always removed first
+        // (the normal path below); only an overlay miss falls through to tombstoning. Gated
+        // internally on `has_act_base` (single relaxed load when untiered). See
+        // `act_tiered.rs::tombstone_on_remove`.
+        if self.remove_overlay_miss_tombstone(value) {
+            crate::backend::eval::trampoline::invalidate_normal_form_memo();
+            crate::backend::eval::trampoline::clear_eval_memo();
+            crate::backend::eval::trampoline::clear_match_result_cache();
+            self.mark_modified();
+            return;
+        }
+
         // Non-rule: use literal encoding (existing path)
         match with_mork_bytes(
             value,
@@ -3303,13 +3386,13 @@ where
                 let mut out: Vec<crate::backend::models::GenericBindings<V>> = Vec::new();
                 mork::space::Space::query_multi(&space.btm, conj_expr, |res, _matched| {
                     if let Err(mork_bindings) = res {
-                        if let Ok(binds) = crate::backend::mork_convert::mork_bindings_to_generic::<
-                            V,
-                            F,
-                            Multiplicity,
-                        >(
-                            &mork_bindings, ctx, &space, &self.factory
-                        ) {
+                        if let Ok(binds) =
+                            crate::backend::mork_convert::mork_bindings_to_generic::<
+                                V,
+                                F,
+                                Multiplicity,
+                            >(&mork_bindings, ctx, &space, &self.factory)
+                        {
                             out.push(binds);
                         }
                     }
@@ -3378,13 +3461,13 @@ where
                 let mut out: Vec<MultiplicityMatch<V>> = Vec::new();
                 mork::space::Space::query_multi(&space.btm, conj_expr, |res, matched_expr| {
                     if let Err(mork_bindings) = res {
-                        if let Ok(binds) = crate::backend::mork_convert::mork_bindings_to_generic::<
-                            V,
-                            F,
-                            Multiplicity,
-                        >(
-                            &mork_bindings, ctx, &space, &self.factory
-                        ) {
+                        if let Ok(binds) =
+                            crate::backend::mork_convert::mork_bindings_to_generic::<
+                                V,
+                                F,
+                                Multiplicity,
+                            >(&mork_bindings, ctx, &space, &self.factory)
+                        {
                             let instantiated =
                                 apply_bindings_generic(template, &binds, &self.factory);
                             // Multiplicity from the matched atom's exact PathMap key.
@@ -3455,7 +3538,11 @@ where
     }
 
     pub fn match_space(&self, pattern: &V, template: &V) -> Vec<MultiplicityMatch<V>> {
-        // Bloom filter check using trait methods (no conversion)
+        // Bloom filter check using trait methods (no conversion). The bloom tracks ONLY
+        // overlay (in-memory) facts, so a definite-miss may still match the attached ACT
+        // BASE — only short-circuit the empty return when NO base is attached. The
+        // `has_act_base` load is reached only on the (rare) bloom-miss branch, so the hot
+        // "bloom passes" path is byte-identical to before tiering.
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
             let bloom_result = self
@@ -3464,7 +3551,7 @@ where
                 .head_arity_bloom
                 .read()
                 .may_contain(expected_head, pattern_arity);
-            if !bloom_result {
+            if !bloom_result && !self.shared.atom_space.has_act_base.load(Ordering::Acquire) {
                 return Vec::new();
             }
         }
@@ -3578,6 +3665,19 @@ where
             }
         }
 
+        // LSM-tiered base (Stage 5a "next layer"): when an out-of-core ACT base is
+        // attached, the matches above are the in-memory OVERLAY; append the base matches
+        // MINUS tombstone suppression (`base − tombstones`), OVERLAY-FIRST. The
+        // `has_act_base` gate is a single relaxed-acquire load — the no-base hot path is a
+        // predictable-false branch and is otherwise byte-identical to before tiering
+        // (Hard Constraint: zero hot-path regression). `match_space_base` re-opens the
+        // mmap per query (the proven `query_act` I/O pattern) and is fully generic, so this
+        // works for the sole concrete `V = MettaValue` instantiation that a base can attach
+        // to. Bag multiplicity is preserved (each `MultiplicityMatch` carries its count).
+        if self.shared.atom_space.has_act_base.load(Ordering::Acquire) {
+            results.extend(self.match_space_base(pattern, template));
+        }
+
         results
     }
 
@@ -3592,7 +3692,10 @@ where
     /// - `mork_bytes_to_generic_value()` - MORK bytes → V
     /// - `pattern_match_generic()` - pattern matching on V
     pub fn match_space_exists(&self, pattern: &V) -> bool {
-        // Bloom filter check using trait methods (no conversion)
+        // Bloom filter check (overlay-only) — skip the definite-miss short-circuit when an
+        // ACT base is attached, since the base may match a head absent from the overlay
+        // bloom. The `has_act_base` load is reached only on the bloom-miss branch, so the
+        // hot "bloom passes" path is unchanged. See `match_space` for the rationale.
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
             if !self
@@ -3601,6 +3704,7 @@ where
                 .head_arity_bloom
                 .read()
                 .may_contain(expected_head, pattern_arity)
+                && !self.shared.atom_space.has_act_base.load(Ordering::Acquire)
             {
                 return false;
             }
@@ -3681,6 +3785,16 @@ where
                     }
                 }
             }
+        }
+
+        // LSM-tiered base: the overlay (in-memory btm/wide_btm) did not match — consult the
+        // attached ACT base MINUS tombstones. Existence-only (early-exit on first surviving
+        // base match), so it agrees with the augmented `match_space`. Gated by the relaxed-
+        // acquire `has_act_base` load → no-base hot path stays byte-identical.
+        if self.shared.atom_space.has_act_base.load(Ordering::Acquire)
+            && self.match_space_base_exists(pattern)
+        {
+            return true;
         }
 
         false
@@ -3886,7 +4000,9 @@ mod tests {
             MettaValue::Atom("a".to_string()),
             MettaValue::Atom("b".to_string()),
         ]));
-        assert!(env.match_conjunction_query_multi(std::slice::from_ref(&g)).is_some());
+        assert!(env
+            .match_conjunction_query_multi(std::slice::from_ref(&g))
+            .is_some());
 
         // After adding a VARIABLE-containing fact, the directional fast path could
         // miss it, so the gate must fall back.
@@ -3896,7 +4012,8 @@ mod tests {
             MettaValue::Atom("z".to_string()),
         ]));
         assert!(
-            env.match_conjunction_query_multi(std::slice::from_ref(&g)).is_none(),
+            env.match_conjunction_query_multi(std::slice::from_ref(&g))
+                .is_none(),
             "variable-containing fact in btm must force fallback"
         );
     }

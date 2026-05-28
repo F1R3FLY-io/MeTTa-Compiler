@@ -313,9 +313,7 @@ fn continuation_to_stack_symbol(
         Continuation::ProcessCombinationsBound { .. } => SchedulerStackSymbol::Combinations,
         Continuation::ProcessLet { .. }
         | Continuation::ProcessLetStar { .. }
-        | Continuation::ProcessOnceRestore { .. } => {
-            SchedulerStackSymbol::LetChain { depth: 0 }
-        }
+        | Continuation::ProcessOnceRestore { .. } => SchedulerStackSymbol::LetChain { depth: 0 },
         Continuation::CollectSExpr { .. } | Continuation::CollectGroundedArg { .. } => {
             SchedulerStackSymbol::ArgEval { position: 0 }
         }
@@ -947,14 +945,14 @@ fn dispatch_rule_matches<C: EvalContext>(
     // binding values; otherwise fall back to the original full scan. Both branches are
     // semantically identical to the original; only the cheap path differs.
     let any_match_cuts = if env.shared.rule_index.read().any_rule_has_cut() {
-        matches.iter().any(|(rhs, _)| {
-            crate::backend::environment::rule_management::expr_contains_cut(rhs)
-        })
+        matches
+            .iter()
+            .any(|(rhs, _)| crate::backend::environment::rule_management::expr_contains_cut(rhs))
     } else {
         matches.iter().any(|(_, bindings)| {
-            bindings.iter().any(|(_, v)| {
-                crate::backend::environment::rule_management::expr_contains_cut(v)
-            })
+            bindings
+                .iter()
+                .any(|(_, v)| crate::backend::environment::rule_management::expr_contains_cut(v))
         })
     };
     let (cut_barrier, saved_barrier) = if any_match_cuts {
@@ -3741,8 +3739,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                             // is deferred to the observation point in
                             // ProcessCollapseEvalResults, matching the Done arm.
                             let cb = &*carrying_bindings;
-                            let resumed: smallvec::SmallVec<[BoundValue; 2]> = if cb.is_empty()
-                            {
+                            let resumed: smallvec::SmallVec<[BoundValue; 2]> = if cb.is_empty() {
                                 cached.into_iter().map(bv).collect()
                             } else {
                                 cached.into_iter().map(|v| bv_with(v, cb.clone())).collect()
@@ -3804,46 +3801,44 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Expression-level memoization: check if we've evaluated this
                 // exact expression before (by content hash). Only for MettaValue
                 // (compile-time constant after monomorphization) and pure expressions.
-                let memo_hash =
-                    if is_sexpr && should_memoize_with_env(&value, &*env) {
-                        let h = value.hash_value();
-                        if let Some(cached_results) = eval_memo_get(h, current_memo_tracked_key())
-                        {
-                            // Cache hit — skip evaluation entirely.
-                            //
-                            // 2026-05-23 binding-thread fix: attach the FULL
-                            // `carrying_bindings` to each cached result, mirroring
-                            // the `WorkItem::Eval` Done arm (`:3860`). The prior
-                            // code projected `carrying_bindings` onto each result
-                            // VALUE's free variables, which silently dropped
-                            // fold-propagated caller-scope bindings (e.g. `$b=y`)
-                            // whenever the cached result is ground — producing
-                            // spurious duplicate fold branches (the foldl-atom
-                            // conjunction dedup bug). A memo hit must be
-                            // observationally identical to a fresh evaluation, and
-                            // a fresh eval's Done arm does NOT project — by design,
-                            // projection is deferred to the observation point in
-                            // `ProcessCollapseEvalResults` (see `:7538`).
-                            let cb = &*carrying_bindings;
-                            work_stack.push(WorkItem::Resume {
-                                result: (
-                                    if cb.is_empty() {
-                                        cached_results.into_iter().map(bv).collect()
-                                    } else {
-                                        cached_results
-                                            .into_iter()
-                                            .map(|v| bv_with(v, cb.clone()))
-                                            .collect()
-                                    },
-                                    env,
-                                ),
-                            });
-                            continue;
-                        }
-                        Some(h)
-                    } else {
-                        None
-                    };
+                let memo_hash = if is_sexpr && should_memoize_with_env(&value, &*env) {
+                    let h = value.hash_value();
+                    if let Some(cached_results) = eval_memo_get(h, current_memo_tracked_key()) {
+                        // Cache hit — skip evaluation entirely.
+                        //
+                        // 2026-05-23 binding-thread fix: attach the FULL
+                        // `carrying_bindings` to each cached result, mirroring
+                        // the `WorkItem::Eval` Done arm (`:3860`). The prior
+                        // code projected `carrying_bindings` onto each result
+                        // VALUE's free variables, which silently dropped
+                        // fold-propagated caller-scope bindings (e.g. `$b=y`)
+                        // whenever the cached result is ground — producing
+                        // spurious duplicate fold branches (the foldl-atom
+                        // conjunction dedup bug). A memo hit must be
+                        // observationally identical to a fresh evaluation, and
+                        // a fresh eval's Done arm does NOT project — by design,
+                        // projection is deferred to the observation point in
+                        // `ProcessCollapseEvalResults` (see `:7538`).
+                        let cb = &*carrying_bindings;
+                        work_stack.push(WorkItem::Resume {
+                            result: (
+                                if cb.is_empty() {
+                                    cached_results.into_iter().map(bv).collect()
+                                } else {
+                                    cached_results
+                                        .into_iter()
+                                        .map(|v| bv_with(v, cb.clone()))
+                                        .collect()
+                                },
+                                env,
+                            ),
+                        });
+                        continue;
+                    }
+                    Some(h)
+                } else {
+                    None
+                };
 
                 // Sub-expression tiered dispatch.
                 //
@@ -3881,9 +3876,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // as binding-load-bearing so they route through the
                     // tree-walker (which threads per-alt bindings correctly).
                     let has_free_vars = value.has_variables_fast();
-                    let bindings_load_bearing = in_collapse_bind_scope()
-                        || !carrying_bindings.is_empty()
-                        || has_free_vars;
+                    let bindings_load_bearing =
+                        in_collapse_bind_scope() || !carrying_bindings.is_empty() || has_free_vars;
 
                     let has_grounded_args = if let Some(items) = value.as_sexpr() {
                         items
@@ -9123,9 +9117,9 @@ fn process_continuation<C: EvalContext>(
                     // keeps the single-match TCO / multi-match parallel fast paths.
                     let pattern_vars =
                         crate::backend::eval::bindings::collect_variables_generic(&pattern);
-                    let needs_reexport = result_values
-                        .iter()
-                        .any(|(_, b)| scrutinee_has_reexportable_freevar(b, &pattern_vars, &outer_carrying));
+                    let needs_reexport = result_values.iter().any(|(_, b)| {
+                        scrutinee_has_reexportable_freevar(b, &pattern_vars, &outer_carrying)
+                    });
                     if needs_reexport {
                         let mut cont_values: Vec<(
                             MettaValue,
@@ -9501,8 +9495,11 @@ fn process_continuation<C: EvalContext>(
                                     // reaches a sibling. Pushed below ProcessLet so it
                                     // composes into the body result before the let
                                     // resumes (see Continuation::ReexportLetBindings).
-                                    let reexport =
-                                        build_scrutinee_reexport(&scrutinee_b, &pattern, &outer_carrying);
+                                    let reexport = build_scrutinee_reexport(
+                                        &scrutinee_b,
+                                        &pattern,
+                                        &outer_carrying,
+                                    );
                                     // Trace: pattern-match phase (subsequent resumption)
                                     #[cfg(feature = "trace")]
                                     {

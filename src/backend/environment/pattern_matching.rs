@@ -62,7 +62,10 @@ impl MettaEnvironment {
     ) -> Option<Vec<MultiplicityMatch<MettaValue>>> {
         trace!(target: "mettatron::environment::match_space_query_multi", ?pattern, ?template);
 
-        // BLOOM FILTER CHECK: O(1) rejection if (head, arity) definitely doesn't exist
+        // BLOOM FILTER CHECK: O(1) rejection if (head, arity) definitely doesn't exist in
+        // the OVERLAY. Skip the short-circuit when an ACT base is attached (it may match a
+        // head absent from the overlay bloom). The `has_act_base` load is on the bloom-miss
+        // branch only, so the hot path is unchanged. See `match_space`.
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
             // parking_lot::RwLock - no .expect()
@@ -72,7 +75,13 @@ impl MettaEnvironment {
                 .head_arity_bloom
                 .read()
                 .may_contain(expected_head, pattern_arity);
-            if !bloom_result {
+            if !bloom_result
+                && !self
+                    .shared
+                    .atom_space
+                    .has_act_base
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
                 return Some(Vec::new()); // Definitely no matches - return empty, not None
             }
         }
@@ -191,6 +200,19 @@ impl MettaEnvironment {
             }
         }
 
+        // LSM-tiered base: append the attached ACT base matches MINUS tombstones, overlay-
+        // first, mirroring `match_space`. (Kept consistent even though this method currently
+        // has no hot-path callers, so any future use stays tier-correct.) Gated by the
+        // relaxed-acquire `has_act_base` load → no-base path byte-identical.
+        if self
+            .shared
+            .atom_space
+            .has_act_base
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            results.extend(self.match_space_base(pattern, template));
+        }
+
         Some(results)
     }
 
@@ -211,7 +233,10 @@ impl MettaEnvironment {
         pattern: &MettaValue,
         template: &MettaValue,
     ) -> Option<MettaValue> {
-        // BLOOM FILTER CHECK: O(1) rejection if (head, arity) definitely doesn't exist
+        // BLOOM FILTER CHECK: O(1) rejection if (head, arity) definitely doesn't exist in
+        // the OVERLAY. Skip the short-circuit when an ACT base is attached (it may match a
+        // head absent from the overlay bloom). The `has_act_base` load is on the bloom-miss
+        // branch only, so the hot path is unchanged. See `match_space`.
         if let Some(expected_head) = pattern.get_head_symbol() {
             let pattern_arity = pattern.get_arity() as u8;
             // parking_lot::RwLock - no .expect()
@@ -221,8 +246,13 @@ impl MettaEnvironment {
                 .head_arity_bloom
                 .read()
                 .may_contain(expected_head, pattern_arity)
+                && !self
+                    .shared
+                    .atom_space
+                    .has_act_base
+                    .load(std::sync::atomic::Ordering::Acquire)
             {
-                // Definitely no matching expressions exist
+                // Definitely no matching expressions exist (overlay) and no base attached.
                 return None;
             }
         }
@@ -258,8 +288,7 @@ impl MettaEnvironment {
                             mork::space::Space::query_multi(&space.btm, conj_expr, |res, _m| {
                                 if let Err(b) = res {
                                     if let Ok(binds) = mork_bindings_to_metta(&b, ctx, &space) {
-                                        hit =
-                                            Some(apply_bindings(template, &binds).into_owned());
+                                        hit = Some(apply_bindings(template, &binds).into_owned());
                                         return false; // first match — stop the trie walk
                                     }
                                 }
@@ -282,8 +311,7 @@ impl MettaEnvironment {
             let mut rz = space.btm.read_zipper();
 
             // OPTIMIZATION: Extract pattern's head symbol and arity for lazy pre-filtering
-            let pattern_head_bytes: Option<&[u8]> =
-                pattern.get_head_symbol().map(|s| s.as_bytes());
+            let pattern_head_bytes: Option<&[u8]> = pattern.get_head_symbol().map(|s| s.as_bytes());
             // Note: mork_head_info() already adjusts MORK arity to match MettaValue convention
             let pattern_arity = pattern.get_arity() as u8;
 
@@ -346,6 +374,22 @@ impl MettaEnvironment {
                         }
                     }
                 }
+            }
+        }
+
+        // LSM-tiered base: overlay (in-memory) had no match — return the FIRST surviving
+        // match from the attached ACT base (`base − tombstones`). `match_space_base`
+        // preserves overlay-first ordering and bag multiplicity; we take the first
+        // instantiated value. Gated by the relaxed-acquire `has_act_base` load so the
+        // no-base hot path stays byte-identical.
+        if self
+            .shared
+            .atom_space
+            .has_act_base
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            if let Some(m) = self.match_space_base(pattern, template).into_iter().next() {
+                return Some(m.value);
             }
         }
 

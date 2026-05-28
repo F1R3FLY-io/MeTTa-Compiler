@@ -562,6 +562,20 @@ pub fn can_compile_with_env(expr: &MettaValue) -> bool {
                     // which keeps the spec K T0-T1-005 row satisfied without
                     // re-implementing ~600 LOC of PathMap-walking bytecode.
                     "exec" | "coalg" | "lookup" | "rulify" => false,
+                    // Stage 5a ACT out-of-core (2026-05-27): `save-space!` /
+                    // `load-space!` / `query-act` are T0-only special forms
+                    // (PathMap ArenaCompactTree dump/mmap + `query_multi_act`
+                    // ProductZipper join). They have no bytecode lowering — like
+                    // `exec` above, route to the T0 `eval/step/sexpr.rs` arms via
+                    // compile-time tier selection so the VM never sees them as
+                    // unknown `Call`s (which would push the raw S-expr back).
+                    "save-space!" | "load-space!" | "query-act" => false,
+                    // Stage 5a LSM-tiered ACT base: `attach-act-base!` /
+                    // `detach-act-base!` / `compact-space!` are T0-only special forms
+                    // (mmap attach + overlay/tombstone bookkeeping + ACT compaction).
+                    // No bytecode lowering — route to T0 via compile-time tier
+                    // selection, same as the ACT ops above.
+                    "attach-act-base!" | "detach-act-base!" | "compact-space!" => false,
                     // S2 NOEVAL (2026-05-13): `noeval` strips itself and
                     // returns the bare argument unevaluated. Distinct from
                     // `noreduce` (which preserves the wrapper). Bytecode

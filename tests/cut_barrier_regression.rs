@@ -253,7 +253,12 @@ fn quoted_cut_does_not_prune() {
         !(collapse (with-quoted-cut (pick)))
     "#;
     let results = eval_last(source);
-    assert_eq!(results.len(), 1, "expected one collapse tuple: {:?}", results);
+    assert_eq!(
+        results.len(),
+        1,
+        "expected one collapse tuple: {:?}",
+        results
+    );
     let s = &results[0];
     // No cut fired ⇒ all three (pick) answers survive into the collapse.
     assert!(
@@ -288,7 +293,12 @@ fn cut_nested_inner_cut_rule_not_memoized() {
         !(collapse (topn))
     "#;
     let results = eval_last(source);
-    assert_eq!(results.len(), 1, "expected one collapse tuple: {:?}", results);
+    assert_eq!(
+        results.len(),
+        1,
+        "expected one collapse tuple: {:?}",
+        results
+    );
     let s = &results[0];
     assert!(
         s.contains("(pr 1 1)"),
@@ -332,7 +342,12 @@ fn cut_nested_deterministic_20_runs() {
         }
     }
     let base = baseline.expect("at least one run");
-    assert_eq!(base.len(), 1, "expected one collapse tuple every run: {:?}", base);
+    assert_eq!(
+        base.len(),
+        1,
+        "expected one collapse tuple every run: {:?}",
+        base
+    );
     assert!(
         base[0].contains("(pr 1 1)") && !base[0].contains("(pr 2"),
         "baseline must be the committed first answer (pr 1 1); got: {:?}",
@@ -353,7 +368,12 @@ fn no_cut_keeps_full_nondeterminism() {
         !(collapse (all-picks))
     "#;
     let results = eval_last(source);
-    assert_eq!(results.len(), 1, "expected one collapse tuple: {:?}", results);
+    assert_eq!(
+        results.len(),
+        1,
+        "expected one collapse tuple: {:?}",
+        results
+    );
     let s = &results[0];
     assert!(
         s.contains('1') && s.contains('2') && s.contains('3'),

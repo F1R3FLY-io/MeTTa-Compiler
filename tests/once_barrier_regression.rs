@@ -98,9 +98,17 @@ fn once_commits_match_to_first() {
         "expected two observable results (one `()` + one collapse tuple); got: {:?}",
         results
     );
-    assert_eq!(results[1], "((bar 1))", "once must commit to FIRST match; got: {}", results[1]);
+    assert_eq!(
+        results[1], "((bar 1))",
+        "once must commit to FIRST match; got: {}",
+        results[1]
+    );
     let combined = results.join(" ");
-    assert!(!combined.contains("(bar 2)"), "once failed to prune — (bar 2) leaked: {}", combined);
+    assert!(
+        !combined.contains("(bar 2)"),
+        "once failed to prune — (bar 2) leaked: {}",
+        combined
+    );
     assert!(
         !combined.contains("once"),
         "`(once …)` must be evaluated, not left as data: {}",
@@ -138,7 +146,12 @@ fn once_equals_cut_idiom() {
         "once must equal the rule-wrapped cut idiom; once={:?} cut={:?}",
         once_res, cut_res
     );
-    assert_eq!(once_res, vec!["(1)".to_string()], "both must commit to first; got: {:?}", once_res);
+    assert_eq!(
+        once_res,
+        vec!["(1)".to_string()],
+        "both must commit to first; got: {:?}",
+        once_res
+    );
 }
 
 /// once over a multi-clause rule commits to the first clause's answer. This is
@@ -173,7 +186,12 @@ fn once_inside_clause_does_not_overprune() {
         !(collapse (let* (($x (once (g))) ($y (superpose (10 20)))) (pair $x $y)))
     "#;
     let results = eval_last(source);
-    assert_eq!(results.len(), 1, "expected one collapse tuple: {:?}", results);
+    assert_eq!(
+        results.len(),
+        1,
+        "expected one collapse tuple: {:?}",
+        results
+    );
     let s = &results[0];
     assert!(
         s.contains("(pair 1 10)") && s.contains("(pair 1 20)"),
@@ -235,7 +253,11 @@ fn once_deterministic_20_runs() {
         let mut results = eval_last(source);
         results.sort();
         if let Some(ref base) = baseline {
-            assert_eq!(&results, base, "iteration {}: once result differs from baseline", i);
+            assert_eq!(
+                &results, base,
+                "iteration {}: once result differs from baseline",
+                i
+            );
         } else {
             baseline = Some(results);
         }

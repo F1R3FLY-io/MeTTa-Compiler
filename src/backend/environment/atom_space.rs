@@ -20,13 +20,14 @@
 //! `btm` and `wide_btm` store only byte keys + Multiplicity — no V references,
 //! no GC tracing needed.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use mork_interning::SharedMappingHandle;
 use parking_lot::RwLock;
 use pathmap::PathMap;
 
+use super::act_tiered::ActBase;
 use super::bloom::{AtomicBloomFilter, HeadArityBloomFilter};
 use super::multiplicity::Multiplicity;
 use crate::backend::models::MettaValueTrait;
@@ -146,6 +147,34 @@ pub struct AtomSpace<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static>
     /// Allocated once from `next_mork_epoch()` at construction time.
     /// Propagated unchanged on `fork()` (same symbol mapping, same epoch).
     pub(crate) mork_cache_epoch: u64,
+
+    // ========================================================================
+    // LSM-tiered ACT base (Stage 5a "next layer" — see `act_tiered.rs`)
+    // ========================================================================
+    /// The attached immutable out-of-core ACT base, or `None` when the space is
+    /// purely in-memory (no tiering). `Some(_)` makes `match_space` overlay the
+    /// in-memory `btm` on top of `(base − tombstones)`. Held behind `Arc<ActBase>`
+    /// so `fork`/`make_owned` clone it with a cheap `Arc` bump and compaction can
+    /// RCU-swap a fresh base in. See [`ActBase`] for why the `ACTMmap` is NOT cached.
+    pub(crate) act_base: RwLock<Option<Arc<ActBase>>>,
+
+    /// Per-base-key SUPPRESSION COUNT over base facts. The stored `Multiplicity(n)`
+    /// at a base-`sm`-encoded fact key means "hide `n` copies of this base fact" on
+    /// the tiered read (`effective_base_mult = max(0, base_leaf_mult − n)`). Kept
+    /// SEPARATE from `btm` because the overlay's `remove_atom` auto-prunes 0-count
+    /// entries — a tombstone must persist a positive count to suppress base copies.
+    /// Tombstone keys live in the base's `sm` space so they byte-match base keys.
+    /// O(1) CoW clone on `fork`/`make_owned`.
+    pub(crate) tombstones: RwLock<PathMap<Multiplicity>>,
+
+    /// Fast no-base gate, mirroring `variable_fact_count`'s monotonic-flag idiom: a
+    /// single relaxed-load avoids taking the `act_base` lock on the hot read path when
+    /// no base is attached. Set `true` on attach/compact-reattach, `false` on detach.
+    /// (Unlike `variable_fact_count` this is NOT monotonic — detach clears it — because
+    /// it gates a correctness-preserving overlay, and a stale `true` would only cost an
+    /// extra empty-base read while a stale `false` after attach is prevented by setting
+    /// it under the same critical section as the `act_base` write.)
+    pub(crate) has_act_base: AtomicBool,
 }
 
 impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
@@ -176,6 +205,10 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             fixpoint_generation: AtomicU64::new(0),
             variable_atoms: RwLock::new(Vec::new()),
             mork_cache_epoch: crate::backend::mork_convert::next_mork_epoch(),
+            // Fresh space: no tiering, empty tombstones, base gate off.
+            act_base: RwLock::new(None),
+            tombstones: RwLock::new(PathMap::new()),
+            has_act_base: AtomicBool::new(false),
         }
     }
 
@@ -198,9 +231,7 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             rule_head_bloom: std::sync::Arc::clone(&self.rule_head_bloom),
             type_bloom: std::sync::Arc::clone(&self.type_bloom),
             total_atoms: AtomicUsize::new(self.total_atoms.load(Ordering::Acquire)),
-            variable_fact_count: AtomicUsize::new(
-                self.variable_fact_count.load(Ordering::Acquire),
-            ),
+            variable_fact_count: AtomicUsize::new(self.variable_fact_count.load(Ordering::Acquire)),
             // Phase 10.5: snapshot generation counters into forked AtomSpace
             inferred_type_generation: AtomicU64::new(
                 self.inferred_type_generation.load(Ordering::Acquire),
@@ -209,6 +240,14 @@ impl<V: MettaValueTrait + Clone + Send + Sync + Unpin + 'static> AtomSpace<V> {
             variable_atoms: RwLock::new(self.variable_atoms.read().clone()),
             // Same symbol mapping → same epoch (cache entries remain valid)
             mork_cache_epoch: self.mork_cache_epoch,
+            // Tiering carries to the fork: `Arc<ActBase>` clone is a cheap bump
+            // (read-only base sharing), and `tombstones` clones O(1) via PathMap CoW.
+            // Both inputs/output observe the same base + suppression state, so a
+            // forked branch's tiered reads agree with the parent's until either
+            // side mutates (overlay/tombstone writes are CoW-isolated thereafter).
+            act_base: RwLock::new(self.act_base.read().clone()),
+            tombstones: RwLock::new(self.tombstones.read().clone()),
+            has_act_base: AtomicBool::new(self.has_act_base.load(Ordering::Acquire)),
         }
     }
 

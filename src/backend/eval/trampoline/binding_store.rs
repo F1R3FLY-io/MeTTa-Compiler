@@ -198,12 +198,18 @@ impl BindingStore {
                     Cell::Var { reference } if reference == rb => {
                         self.trail.push(TrailEntry::NewBinding { cell: rb });
                     }
-                    other => self.trail.push(TrailEntry::Rebinding { cell: rb, old: other }),
+                    other => self.trail.push(TrailEntry::Rebinding {
+                        cell: rb,
+                        old: other,
+                    }),
                 }
                 self.cells[rb] = Cell::Bound { value };
             }
             other => {
-                self.trail.push(TrailEntry::Rebinding { cell: ra, old: other });
+                self.trail.push(TrailEntry::Rebinding {
+                    cell: ra,
+                    old: other,
+                });
                 self.cells[ra] = Cell::Var { reference: rb };
             }
         }
@@ -244,7 +250,11 @@ impl BindingStore {
         let mut out = GenericBindings::new();
         for name in names {
             if let Some(value) = self.lookup(&[scope], &name) {
-                out.insert_scoped(scope, crate::backend::models::BindingName::new(&name), value);
+                out.insert_scoped(
+                    scope,
+                    crate::backend::models::BindingName::new(&name),
+                    value,
+                );
             }
         }
         out
@@ -306,10 +316,16 @@ mod tests {
         let dispatch = crate::backend::models::generic_bindings::allocate_scope_id();
         // $who is bound only at ROOT_SCOPE; lookup via [dispatch, ROOT] finds it.
         store.bind(ROOT_SCOPE, "$who", atom("a"));
-        assert_eq!(store.lookup(&[dispatch, ROOT_SCOPE], "$who"), Some(atom("a")));
+        assert_eq!(
+            store.lookup(&[dispatch, ROOT_SCOPE], "$who"),
+            Some(atom("a"))
+        );
         // A binding at the dispatch scope shadows nothing (different name).
         store.bind(dispatch, "$rule", atom("b"));
-        assert_eq!(store.lookup(&[dispatch, ROOT_SCOPE], "$rule"), Some(atom("b")));
+        assert_eq!(
+            store.lookup(&[dispatch, ROOT_SCOPE], "$rule"),
+            Some(atom("b"))
+        );
     }
 
     #[test]

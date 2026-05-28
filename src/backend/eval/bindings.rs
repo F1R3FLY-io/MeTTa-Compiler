@@ -5555,9 +5555,15 @@ mod tests {
 
         // Innermost-span semantics: exactly one span survives, wrapping the
         // substituted SExpr `(foo 7)`.
-        assert!(result.span().is_some(), "innermost span should be preserved");
+        assert!(
+            result.span().is_some(),
+            "innermost span should be preserved"
+        );
         let stripped = result.strip_one_span();
-        assert!(stripped.span().is_none(), "only one span layer should remain");
+        assert!(
+            stripped.span().is_none(),
+            "only one span layer should remain"
+        );
         let items = stripped.as_sexpr().expect("inner should be an SExpr");
         assert_eq!(items.len(), 2);
         assert_eq!(items[1].as_long(), Some(7), "$a must be substituted to 7");
@@ -5572,9 +5578,15 @@ mod tests {
 
         let result = apply_bindings_lazy_scoped_generic(&value, &bindings, &[ROOT_SCOPE], &factory);
 
-        assert!(result.span().is_some(), "innermost span should be preserved");
+        assert!(
+            result.span().is_some(),
+            "innermost span should be preserved"
+        );
         let stripped = result.strip_one_span();
-        assert!(stripped.span().is_none(), "only one span layer should remain");
+        assert!(
+            stripped.span().is_none(),
+            "only one span layer should remain"
+        );
         let items = stripped.as_sexpr().expect("inner should be an SExpr");
         assert_eq!(items.len(), 2);
         assert_eq!(items[1].as_long(), Some(7), "$a must be substituted to 7");

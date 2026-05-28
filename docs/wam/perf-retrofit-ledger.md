@@ -250,3 +250,76 @@ changing no current semantics, until its turn.
   in the profile. A trail would save ~0.2% and re-incur the `unification.rs` reverted-WAM
   per-call churn. Not built; the `binding_store.rs` trail stays inert/ready (consistent with
   the `control-substrate-design.md` "barrier-identity, not a choice-point stack" decision).
+
+## Stage 5a — ACT out-of-core persistence: COMPLETE (true MM2 join + full MeTTa surface)
+- **User decision:** "Build the true MM2 join first, then wire the full MeTTa surface."
+- **Discovery (interning):** the planned `query_multi_i` `(I (ACT name pat))` source form
+  byte-matches **inline** symbol markers in `ASource::new`; MeTTaTron's `interning` build
+  encodes them as interned IDs → `unreachable!()` (`sources.rs:313`, verified empirically).
+- **Part A — true join (authorized MORK add):** new `Space::<()>::query_multi_act`
+  (`MORK/kernel/src/space.rs`) — the ACT analogue of `query_multi`: a `ProductZipperG` over
+  the mmap'd ACT's read-zippers, taking the **interned** conjunct pattern directly (no inline
+  markers), trie-pruned (O(matches)). Bindings at namespace 0.
+- **MeTTaTron (`src/backend/environment/act_persistence.rs`):** `save_space_to_act`
+  (`dump_from_zipper`, multiplicity→u64 leaf), `query_act` (trie-pruned join + mmap-scan
+  fallback), `load_space_from_act` (`read_zipper_u64` multiplicity-faithful restore). No
+  MORK/PathMap value-genericization needed.
+- **Part B — full MeTTa surface (`step/sexpr.rs`):** `(save-space! "n")` → path String;
+  `(load-space! "n")` → Σ-multiplicity Long; `(query-act "n" pat tmpl)` → superposed matches.
+  Classified impure (`dispatch_hints.rs::is_impure_head`, never memoized — `file-*!` precedent)
+  and T0-only (`bytecode/mod.rs::can_compile_with_env => false`, `exec` precedent).
+- **Out-of-core:** the KB lives in the file-backed mmap; one fact materialized at a time —
+  never the whole KB in heap.
+- **Completeness pass (deferrals closed, no-deferrals mandate):**
+  - **Bag-faithful query** — `query_act` emits one copy per unit of stored multiplicity (==
+    `match_space` multiset): scan reads the `u64` leaf; the join recovers it via an O(depth)
+    `u64`-zipper descend (`act_leaf_multiplicity`).
+  - **Wide expressions** — `save`/`load`/`query` cover `wide_btm` (arity ≥ 64) via the
+    `<name>.wide.act` sibling (self-describing Wide MORK, sm-independent → cross-run for free).
+  - **Cross-run persistence** — `save` serializes the `SharedMapping` to `<name>.sm`
+    (`mork_interning::SharedMapping::serialize`); `query`/`load` decode via it (`act_sm_for`),
+    so a *fresh process/env* decodes a snapshot. Join (env-sm encode) is the intra-run fast
+    path; on a cross-run miss `query_act` falls back to the sm-faithful scan.
+- **Tests (14 new):** 8 Rust-API (`act_persistence::tests` — incl. bag, wide, cross-env) + 6
+  surface integration (`tests/act_surface.rs`). **Gate: nextest 4252/4252, mtt-conformance
+  --strict 483/483, PLN-main 7/7 (0 ❌).**
+- **Next layer:** see Stage 5a-LSM below (now DELIVERED).
+
+## Stage 5a-LSM — LSM tiered ACT-backed mutable space: COMPLETE (2026-05-27)
+- **Scope:** turn an out-of-core ACT into the *primary* store of a live, mutable space — the
+  "next layer" the base Stage 5a deferred. `match_space` = `overlay ++ (base − tombstones)`.
+- **New module `src/backend/environment/act_tiered.rs`** + 3 fields on `AtomSpace<V>`
+  (`act_base: RwLock<Option<Arc<ActBase>>>`, `tombstones: RwLock<PathMap<Multiplicity>>`,
+  `has_act_base: AtomicBool`), threaded through `new`/`fork`/`make_owned`/`union`/
+  `merge_all_modified` (drop base on genuine merge; Arc-share on branch-union/fork paths;
+  `fork_for_nondeterminism` shares the whole `atom_space` for free).
+- **Read (4 entry points gated):** `match_space`/`match_space_exists`/`match_space_first`/
+  `match_space_query_multi` gate on `has_act_base` — a relaxed-acquire load on the bloom-miss /
+  end-of-overlay branch only, so the **no-base hot path is byte-identical** (Hard Constraint
+  met; verified by `no_base_fast_path_unchanged` + the unchanged full gate). Base half via
+  `match_space_base` — reuses `query_act`'s trie-pruned `query_multi_act` join (head-shaped) +
+  leaf-scan fallback, tombstone-filtered (`effective = max(0, base_mult − tombstone(key))`),
+  bag-faithful, overlay-first, **fully generic** (`mork_bindings_to_generic`). The overlay bloom
+  early-return is bypassed when tiered (bloom tracks overlay heads only).
+- **add/remove (exact bag inverses):** add un-tombstones-OR-overlay-writes (XOR, not both);
+  remove peels overlay first, else tombstones a base copy (capped at base_mult). Interposed in
+  `add_to_space[_shared]` / `remove_from_space[_shared]`, gated on `has_act_base`, literal-fact
+  scoped.
+- **Compaction `(compact-space! "n")`:** decode `base − tombstones` → re-add to overlay → dump to
+  TEMP → atomic `rename` over `<n>.{act,wide.act,sm}` → invalidate sm-cache → clear overlay →
+  RCU re-attach. Returns Σ-multiplicity Long. Semantic no-op on the visible multiset.
+- **Surface (T0, impure):** `(attach-act-base! "n")`→path, `(detach-act-base!)`→Unit,
+  `(compact-space! "n")`→Σ Long. Added to `is_impure_head` + `can_compile_with_env => false`.
+- **Deviations from the design (all justified, documented in `act_persistence.rs` §4):**
+  (1) `ActBase` stores the base NAME + sm, NOT the `ACTMmap` — `ACTMmap` has an interior
+  `Cell<u64>` → `Send` but `!Sync`, and `AtomSpace` must be `Send + Sync` for `Arc`-shared cross-
+  thread eval; the read re-opens the mmap per query (the proven `query_act` pattern).
+  (2) Tombstones are a COUNT of base copies to suppress (separate `PathMap`), NOT 0-valued `btm`
+  entries — the overlay's `remove_atom` auto-prunes 0-count entries.
+  (3) add does un-tombstone XOR overlay-write (not "both" as the prose read) — doing both
+  double-counts; the XOR model is the unique bag-exact `add∘remove = id` semantics.
+  (4) No `join_eligible` distinction — the `mork_interning` deserialize fix makes cross-run
+  trie-pruned joins faithful, so the base always uses its own `<name>.sm`.
+- **Tests (28 new):** 19 Rust-API (`act_tiered::tests`) + 9 surface (`tests/act_tiered_surface.rs`).
+- **Gate (after EACH of phases 0–3): nextest 4282/4282, mtt-conformance --strict 483/483,
+  PLN-main 7/7 (0 ❌).** Full design: `docs/mm2-integration/act-out-of-core.md` §4.

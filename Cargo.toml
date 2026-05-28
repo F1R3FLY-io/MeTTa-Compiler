@@ -127,7 +127,7 @@ mork-frontend = { path = "../MORK/frontend" }
 # MORK interning - Symbol interning for MORK
 mork-interning = { path = "../MORK/interning" }
 # Models - Rholang protobuf models for PathMap Par integration (optional, gated by 'rholang' feature)
-models = { path = "../f1r3node/models", optional = true }
+models = { path = "../f1r3node-rust/models", optional = true }
 # Tokio - Async runtime for parallel evaluation (optional)
 tokio = { version = "1", features = ["rt", "sync"], optional = true }
 # PathMap - Trie-map storage for MORK expressions

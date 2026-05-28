@@ -390,6 +390,19 @@ fn is_impure_head(head: &str) -> bool {
             | "new-das!" | "new-distributed-space" | "das-barrier!"
             | "add-observer!"
             | "snapshot!" | "partition-space"
+            // Stage 5a ACT out-of-core (2026-05-27): `save-space!`/`load-space!`
+            // hit the filesystem (`/dev/shm/<name>.act`) and `load-space!`
+            // mutates the atom space; `query-act` reads an mmap'd file whose
+            // contents can change between calls (a later `save-space!`). All
+            // three must re-execute, never serve a memoized result — same
+            // rationale as the `file-*!` ops above.
+            | "save-space!" | "load-space!" | "query-act"
+            // Stage 5a LSM-tiered ACT base: `attach-act-base!`/`detach-act-base!`
+            // mutate the space's tiering (attach/drop the immutable base + clear
+            // tombstones); `compact-space!` rewrites the on-disk base and folds the
+            // overlay into it. All change the atom space and/or filesystem state, so
+            // they must re-execute, never serve a memoized result — same rationale.
+            | "attach-act-base!" | "detach-act-base!" | "compact-space!"
     )
 }
 

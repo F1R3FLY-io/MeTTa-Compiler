@@ -1306,9 +1306,9 @@ where
                     // they interlock with the propagate_keys sidecar filter and
                     // never collide under nested `(once (once X))`).
                     let epoch = crate::backend::eval::freshening::allocate_epoch();
-                    let r_var = factory.atom(
-                        crate::backend::eval::freshening::intern_fresh_name(epoch, "once_r"),
-                    );
+                    let r_var = factory.atom(crate::backend::eval::freshening::intern_fresh_name(
+                        epoch, "once_r",
+                    ));
                     let unused_var = factory.atom(
                         crate::backend::eval::freshening::intern_fresh_name(epoch, "once_t"),
                     );
@@ -1320,12 +1320,8 @@ where
                         r_var.clone(),
                     ]);
                     // (let $__fr_E_once_r X <inner>)
-                    let body = factory.sexpr(vec![
-                        factory.atom("let"),
-                        r_var,
-                        items[1].clone(),
-                        inner,
-                    ]);
+                    let body =
+                        factory.sexpr(vec![factory.atom("let"), r_var, items[1].clone(), inner]);
                     return GenericEvalStep::StartOnce { body, env, depth };
                 }
 
@@ -3172,6 +3168,215 @@ where
                         env,
                         depth,
                     };
+                }
+
+                // ────────────────────────────────────────────────────────────
+                // Stage 5a — ACT out-of-core persistence (2026-05-27).
+                //
+                // Snapshot / restore / query the atom space against a
+                // memory-mapped PathMap ArenaCompactTree at
+                // `/dev/shm/<name>.act`. All three are T0-only (gated out of T1
+                // by `can_compile_with_env`) and impure (`is_impure_head`), so
+                // they are never memoized. The `<name>` argument is a literal
+                // String or Atom naming the `.act` file. See
+                // `src/backend/environment/act_persistence.rs` and
+                // `docs/mm2-integration/act-out-of-core.md`.
+                // ────────────────────────────────────────────────────────────
+
+                // `(save-space! "name")` → dumps `&self`'s literal-fact trie to
+                // `/dev/shm/<name>.act` (multiplicity-faithful), returning the
+                // written path as a String.
+                "save-space!" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            ctx.factory().string(&format!(
+                                "save-space! requires exactly 1 argument, got {}. Usage: (save-space! \"name\")",
+                                items.len() - 1
+                            )),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let Some(name) = items[1].as_string().or_else(|| items[1].as_atom()) else {
+                        let err = ctx.factory().error(
+                            ctx.factory()
+                                .string("save-space! name must be a String or symbol"),
+                            items[1].clone(),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    };
+                    let result = match env.save_space_to_act(name) {
+                        Ok(path) => ctx.factory().string(&path.display().to_string()),
+                        Err(e) => ctx.factory().error(
+                            ctx.factory().string(&format!("save-space! failed: {e}")),
+                            items[1].clone(),
+                        ),
+                    };
+                    return GenericEvalStep::Done((smallvec![result], env));
+                }
+
+                // `(load-space! "name")` → restores the snapshot at
+                // `/dev/shm/<name>.act` into `&self` (multiplicity-faithful),
+                // returning the Σ-multiplicity insertion count as a Long.
+                "load-space!" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            ctx.factory().string(&format!(
+                                "load-space! requires exactly 1 argument, got {}. Usage: (load-space! \"name\")",
+                                items.len() - 1
+                            )),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let Some(name) = items[1].as_string().or_else(|| items[1].as_atom()) else {
+                        let err = ctx.factory().error(
+                            ctx.factory()
+                                .string("load-space! name must be a String or symbol"),
+                            items[1].clone(),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    };
+                    // CoW: mutate a clone so the loaded facts thread forward.
+                    let mut new_env = env.clone();
+                    let result = match new_env.load_space_from_act(name) {
+                        Ok(count) => ctx.factory().long(count as i64),
+                        Err(e) => ctx.factory().error(
+                            ctx.factory().string(&format!("load-space! failed: {e}")),
+                            items[1].clone(),
+                        ),
+                    };
+                    return GenericEvalStep::Done((smallvec![result], new_env));
+                }
+
+                // `(query-act "name" <pattern> <template>)` → out-of-core query
+                // of `/dev/shm/<name>.act`, superposing the `template`
+                // instantiated for each match (the trie-pruned `query_multi_act`
+                // ProductZipper join for head-shaped patterns).
+                "query-act" => {
+                    if items.len() != 4 {
+                        let err = ctx.factory().error(
+                            ctx.factory().string(&format!(
+                                "query-act requires exactly 3 arguments, got {}. Usage: (query-act \"name\" pattern template)",
+                                items.len() - 1
+                            )),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let Some(name) = items[1].as_string().or_else(|| items[1].as_atom()) else {
+                        let err = ctx.factory().error(
+                            ctx.factory()
+                                .string("query-act name must be a String or symbol"),
+                            items[1].clone(),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    };
+                    let results = env.query_act(name, &items[2], &items[3]);
+                    let out: SmallVec<[MettaValue; 2]> = results.into_iter().collect();
+                    return GenericEvalStep::Done((out, env));
+                }
+
+                // ────────────────────────────────────────────────────────────
+                // LSM-tiered ACT base (Stage 5a "next layer", see
+                // `src/backend/environment/act_tiered.rs`). `attach-act-base!` /
+                // `detach-act-base!` / `compact-space!` make an out-of-core ACT the
+                // PRIMARY store of a *live, mutable* space (overlay + base −
+                // tombstones), as opposed to the explicit snapshot/query surface
+                // above. All three are T0-only (gated out of T1 by
+                // `can_compile_with_env`) and impure (`is_impure_head`), so never
+                // memoized. CoW: each mutates a `clone()`d env so the change threads
+                // forward like any other space mutation (mirrors `load-space!`).
+                // ────────────────────────────────────────────────────────────
+
+                // `(attach-act-base! "name")` → attach `/dev/shm/<name>.act` (+ optional
+                // `<name>.wide.act`) as the immutable BASE, turning the in-memory store
+                // into an LSM overlay on top of it. Returns the base `.act` path as a
+                // String (Error if the file is absent / not a valid ACT).
+                "attach-act-base!" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            ctx.factory().string(&format!(
+                                "attach-act-base! requires exactly 1 argument, got {}. Usage: (attach-act-base! \"name\")",
+                                items.len() - 1
+                            )),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let Some(name) = items[1].as_string().or_else(|| items[1].as_atom()) else {
+                        let err = ctx.factory().error(
+                            ctx.factory()
+                                .string("attach-act-base! name must be a String or symbol"),
+                            items[1].clone(),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    };
+                    // CoW: mutate a clone so the attachment threads forward.
+                    let mut new_env = env.clone();
+                    let result = match new_env.attach_act_base(name) {
+                        Ok(path) => ctx.factory().string(&path.display().to_string()),
+                        Err(e) => ctx.factory().error(
+                            ctx.factory()
+                                .string(&format!("attach-act-base! failed: {e}")),
+                            items[1].clone(),
+                        ),
+                    };
+                    return GenericEvalStep::Done((smallvec![result], new_env));
+                }
+
+                // `(detach-act-base!)` → detach the ACT base, returning to a purely
+                // in-memory store (overlay kept; base + tombstones dropped). Returns Unit.
+                "detach-act-base!" => {
+                    if items.len() != 1 {
+                        let err = ctx.factory().error(
+                            ctx.factory().string(&format!(
+                                "detach-act-base! takes no arguments, got {}. Usage: (detach-act-base!)",
+                                items.len() - 1
+                            )),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    // CoW: mutate a clone so the detachment threads forward.
+                    let mut new_env = env.clone();
+                    new_env.detach_act_base();
+                    return GenericEvalStep::Done((smallvec![ctx.factory().unit()], new_env));
+                }
+
+                // `(compact-space! "name")` → fold overlay + (base − tombstones) into a
+                // fresh `<name>.act`, atomically replace the old base, and re-attach with a
+                // clean overlay/tombstone slate (a semantic no-op on the visible multiset).
+                // Returns the Σ-multiplicity (total fact count) as a Long.
+                "compact-space!" => {
+                    if items.len() != 2 {
+                        let err = ctx.factory().error(
+                            ctx.factory().string(&format!(
+                                "compact-space! requires exactly 1 argument, got {}. Usage: (compact-space! \"name\")",
+                                items.len() - 1
+                            )),
+                            ctx.factory().sexpr(items),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    }
+                    let Some(name) = items[1].as_string().or_else(|| items[1].as_atom()) else {
+                        let err = ctx.factory().error(
+                            ctx.factory()
+                                .string("compact-space! name must be a String or symbol"),
+                            items[1].clone(),
+                        );
+                        return GenericEvalStep::Done((smallvec![err], env));
+                    };
+                    // CoW: mutate a clone so the compacted/re-attached base threads forward.
+                    let mut new_env = env.clone();
+                    let result = match new_env.compact_space(name) {
+                        Ok(count) => ctx.factory().long(count as i64),
+                        Err(e) => ctx.factory().error(
+                            ctx.factory().string(&format!("compact-space! failed: {e}")),
+                            items[1].clone(),
+                        ),
+                    };
+                    return GenericEvalStep::Done((smallvec![result], new_env));
                 }
 
                 // State operations

@@ -199,6 +199,42 @@ impl RootSet<crate::backend::models::MettaValue> {
         self.collect_from_work_items(current_work, work_stack);
         self.collect_from_continuations(continuations);
     }
+
+    /// CESK Phase A4 — the single **structural** root reader.
+    ///
+    /// Reads GC roots directly from the reified machine instead of discovering
+    /// them through the `ROOT_REGISTRY`/`frame_chain` apparatus:
+    ///
+    /// ```text
+    /// roots = addrs_in(S) ∪ addrs_in(C) ∪ addrs_in(K) ∪ reach(E₀)
+    /// ```
+    ///
+    /// = `collect_all` (the control registers S/C/K — E_local rides inside C/K as
+    /// the per-frame `carrying_bindings`) plus **E₀**, the persistent global
+    /// environment, via its inherent `collect_roots_into` (the structural seam, not
+    /// the `RootProvider` registry). This is the Morrisett `σ|_Reachable(⟨C,E,K⟩)`
+    /// formula read from the machine.
+    ///
+    /// A4.2 will additionally fold in the native-stack K-spine (suspended trampoline
+    /// activations + live bytecode-VM leaves, via typed thread-locals) and the fixed
+    /// global-cache anchors (`collect_global_anchors`); A4.3's machine-equivalence
+    /// oracle proves this reader's multiset ⊇ the old apparatus's before A5 deletes
+    /// the apparatus. Until A4.4 this method is additive (used only by tests/oracle).
+    pub fn collect_structural(
+        &mut self,
+        operand_stack: &OperandStack<crate::backend::models::MettaValue>,
+        current_work: &WorkItem,
+        work_stack: &[WorkItem],
+        continuations: &[Continuation],
+        env0: &crate::backend::environment::core::GenericEnvironmentShared<
+            crate::backend::models::MettaValue,
+        >,
+    ) {
+        // S ∪ C ∪ K (control registers; clears the buffer internally).
+        self.collect_all(operand_stack, current_work, work_stack, continuations);
+        // ∪ reach(E₀) — the persistent global environment, read structurally.
+        env0.collect_roots_into(&mut self.roots);
+    }
 }
 
 // ============================================================================
@@ -307,6 +343,62 @@ mod tests {
         let mut rs = RootSet::with_estimated_capacity(0, 1, 1);
         rs.collect_all(&operand_stack, &current, &work_stack, &continuations);
         assert_eq!(rs.len(), 2); // 1 from operand stack + 1 from current work item
+    }
+
+    /// CESK A4.1 contract: `collect_structural` == `collect_all(S∪C∪K)` ∪
+    /// `reach(E₀)` (the env's inherent `collect_roots_into`), as a sorted
+    /// `inner_ptr` multiset. Pins that the structural reader includes BOTH the
+    /// control registers and the persistent global environment, read from the
+    /// machine (not via the registry).
+    #[test]
+    fn test_collect_structural_is_collect_all_plus_env0() {
+        use crate::backend::models::MettaValueTrait;
+        let f = factory();
+        let e = env();
+
+        let v_c = f.long(99);
+        let current = WorkItem::Eval {
+            value: v_c,
+            env: std::sync::Arc::new(env()),
+            depth: 0,
+            is_tail_call: false,
+            expected_type: None,
+            demand: None,
+            carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
+        };
+        let work_stack: Vec<WorkItem> = vec![];
+        let continuations: Vec<Continuation> = vec![Continuation::Done];
+        let operand_stack = OperandStack::new();
+
+        // Expected = collect_all(S∪C∪K) ∪ env0.collect_roots_into.
+        let mut expected: Vec<usize> = Vec::new();
+        {
+            let mut rs_all = RootSet::with_capacity(8);
+            rs_all.collect_all(&operand_stack, &current, &work_stack, &continuations);
+            expected.extend(rs_all.roots().iter().map(|v| v.inner_ptr() as usize));
+            let mut env_roots: Vec<MettaValue> = Vec::new();
+            e.shared.collect_roots_into(&mut env_roots);
+            expected.extend(env_roots.iter().map(|v| v.inner_ptr() as usize));
+        }
+
+        let mut rs = RootSet::with_capacity(8);
+        rs.collect_structural(
+            &operand_stack,
+            &current,
+            &work_stack,
+            &continuations,
+            e.shared.as_ref(),
+        );
+        let mut got: Vec<usize> = rs.roots().iter().map(|v| v.inner_ptr() as usize).collect();
+
+        expected.sort_unstable();
+        got.sort_unstable();
+        assert_eq!(
+            got, expected,
+            "collect_structural must equal collect_all(S∪C∪K) ∪ reach(E₀)"
+        );
+        // The control root (the Eval value) is present.
+        assert!(got.contains(&(v_c.inner_ptr() as usize)));
     }
 
     #[test]

@@ -88,3 +88,54 @@ pub type ActiveStore = crate::backend::eval::cesk::index_heap::IndexHeapStore;
 pub fn active_factory() -> ActiveFactory {
     global_factory()
 }
+
+/// The GC value-store compiled into this binary. The store is **compile-time
+/// exclusive** (`ActiveStore`/`ActiveFactory` are `#[cfg]`-selected; the slab's
+/// `&'static`-ptr value payload and the index arena's `Addr` payload cannot
+/// coexist in one build), so this is fixed per build: `"index"` under
+/// `--features index-gc`, otherwise `"slab"`.
+#[inline]
+pub fn compiled_gc_store() -> &'static str {
+    if cfg!(feature = "index-gc") {
+        "index"
+    } else {
+        "slab"
+    }
+}
+
+/// Inc 3: resolve a `--gc` / `MTT_GC` request against the compile-time store.
+///
+/// Because the value model is compile-time exclusive, `--gc` is **not** a runtime
+/// store switch — it is an ASSERTION that the running binary is the store the
+/// caller intended, guarding against the confound of believing you tested
+/// `index` while actually running a `slab` binary (or vice-versa). Returns the
+/// compiled store name on success; on a concrete mismatch returns `Err(msg)` with
+/// a rebuild hint (the caller hard-errors before evaluating). An `"auto"`, empty,
+/// or absent request always succeeds (no assertion requested).
+pub fn assert_gc_request(request: Option<&str>) -> Result<&'static str, String> {
+    let compiled = compiled_gc_store();
+    if let Some(raw) = request {
+        let req = raw.trim().to_ascii_lowercase();
+        match req.as_str() {
+            "" | "auto" => {}
+            r if r == compiled => {}
+            "slab" | "index" => {
+                let hint = if req == "index" {
+                    "rebuild with `--features index-gc`"
+                } else {
+                    "rebuild with default features (without `index-gc`)"
+                };
+                return Err(format!(
+                    "--gc={req} requested, but this binary was compiled with the '{compiled}' \
+                     GC store. The store is compile-time exclusive — {hint}."
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "unknown --gc value '{other}'; expected one of: slab | index | auto"
+                ));
+            }
+        }
+    }
+    Ok(compiled)
+}

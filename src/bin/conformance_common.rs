@@ -547,6 +547,7 @@ pub fn parse_base_args(args: &[String]) -> Result<BaseOptions, String> {
     let mut module_filter: Option<String> = None;
     let mut fixture_filter: Option<String> = None;
     let mut strict = false;
+    let mut gc_request: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -575,6 +576,13 @@ pub fn parse_base_args(args: &[String]) -> Result<BaseOptions, String> {
             "--strict" => {
                 strict = true;
             }
+            "--gc" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("Missing store after --gc (expected slab|index|auto)".to_string());
+                }
+                gc_request = Some(args[i].clone());
+            }
             "--tier" => {
                 // placeholder for tier filtering — consumed but not yet honored
                 i += 1;
@@ -589,6 +597,19 @@ pub fn parse_base_args(args: &[String]) -> Result<BaseOptions, String> {
 
     let conformance_dir =
         conformance_dir.ok_or_else(|| "--conformance-dir is required".to_string())?;
+
+    // Inc 3: resolve --gc (flag > MTT_GC env) and ASSERT it matches the
+    // compile-time store, so a conformance run cannot silently exercise the wrong
+    // GC store (the index-vs-slab confound). Compile-time exclusive ⇒ assertion,
+    // not a runtime switch; a concrete mismatch is a hard error with a rebuild hint.
+    let gc_request = gc_request
+        .or_else(|| std::env::var("MTT_GC").ok())
+        .filter(|s| !s.trim().is_empty());
+    let active_store = mettatron::backend::models::assert_gc_request(gc_request.as_deref())?;
+    if gc_request.is_some() {
+        eprintln!("[conformance] GC store = {active_store}");
+    }
+
     Ok(BaseOptions {
         conformance_dir,
         module_filter,

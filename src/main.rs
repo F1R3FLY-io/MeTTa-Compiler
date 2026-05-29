@@ -36,6 +36,9 @@ fn print_usage() {
     eprintln!("    --eval                  Evaluate and print results (default)");
     eprintln!("    --strict-mode           Disable transitive imports (explicit deps only)");
     eprintln!("    --no-gc                 Disable garbage collection");
+    eprintln!(
+        "    --gc <slab|index|auto>  Assert the compiled GC store (compile-time exclusive); errors on mismatch"
+    );
     #[cfg(feature = "track-stats")]
     eprintln!(
         "    --gc-stats              Print GC statistics to stderr on exit
@@ -98,6 +101,7 @@ fn parse_args() -> Result<Options, String> {
     let mut repl_mode = false;
     let mut strict_mode = false;
     let mut no_gc = false;
+    let mut gc_request: Option<String> = None;
     #[cfg(feature = "track-stats")]
     let mut gc_stats = false;
     #[cfg(feature = "track-stats")]
@@ -147,6 +151,13 @@ fn parse_args() -> Result<Options, String> {
             }
             "--no-gc" => {
                 no_gc = true;
+            }
+            "--gc" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("Missing store after --gc (expected slab|index|auto)".to_string());
+                }
+                gc_request = Some(args[i].clone());
             }
             #[cfg(feature = "track-stats")]
             "--gc-stats" => {
@@ -208,6 +219,18 @@ fn parse_args() -> Result<Options, String> {
             }
         }
         i += 1;
+    }
+
+    // Inc 3: resolve --gc (flag > MTT_GC env) and ASSERT it matches the
+    // compile-time store. The value model is compile-time exclusive, so --gc is
+    // an assertion/reporter, NOT a runtime switch — a concrete mismatch is a hard
+    // error caught here (before any evaluation), with a rebuild hint.
+    let gc_request = gc_request
+        .or_else(|| env::var("MTT_GC").ok())
+        .filter(|s| !s.trim().is_empty());
+    let active_store = mettatron::backend::models::assert_gc_request(gc_request.as_deref())?;
+    if gc_request.is_some() {
+        eprintln!("[mettatron] GC store = {active_store}");
     }
 
     Ok(Options {

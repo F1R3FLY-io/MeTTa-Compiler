@@ -2155,8 +2155,17 @@ where
 // RootProvider — GC Root Collection for Arena Environments
 // ============================================================================
 
-impl RootProvider for GenericEnvironmentShared<MettaValue> {
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+impl GenericEnvironmentShared<MettaValue> {
+    /// Structural E₀ root reader (CESK Phase A4 seam). The persistent global
+    /// environment — named spaces, bindings, types, states, pattern cache, atom
+    /// space, tokenizer, rule index, inferred fn types — is the always-live **E₀**
+    /// root of the CESK machine (the part of `Reachable(⟨C,E,K⟩)` that is global,
+    /// not control-flow). This inherent method is the STRUCTURAL entry point: the
+    /// collector reads E₀ directly from the machine, not by discovering it through
+    /// the `ROOT_REGISTRY`. The `RootProvider` impl below delegates to it
+    /// (byte-identical) during the registry-bridge period; Phase A5 deletes the
+    /// registry and the structural collector calls this directly.
+    pub(crate) fn collect_roots_into(&self, roots: &mut Vec<MettaValue>) {
         // Pre-estimate capacity from all sources to eliminate Vec reallocations.
         // Read locks under quiescent GC are uncontended (ACTIVE_EVALUATORS == 0).
         {
@@ -2253,6 +2262,17 @@ impl RootProvider for GenericEnvironmentShared<MettaValue> {
         for entry in self.inferred_fn_types.iter() {
             roots.extend(entry.value().iter().cloned());
         }
+    }
+}
+
+impl RootProvider for GenericEnvironmentShared<MettaValue> {
+    /// Delegates to the inherent structural reader `collect_roots_into`, so the
+    /// registry-discovered path and the structural E₀ read are the SAME code
+    /// (one source of truth) throughout the bridge period. Phase A5 deletes this
+    /// `RootProvider` impl once the structural collector reads E₀ directly.
+    #[inline]
+    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
+        self.collect_roots_into(roots);
     }
 }
 

@@ -3336,6 +3336,29 @@ fn eval_trampoline_inner<C: EvalContext>(
             None
         };
 
+    // A4.2b: typed `SUSPENDED_ACTIVATIONS::Spine` record alongside the
+    // `frame_chain` guard above (index-gc only ⇒ byte-identical slab path). It
+    // references the SAME in-scope `work_stack` (C) and `continuations` (K), read
+    // structurally by `collect_k_spine`. Declared after `_tramp_frame_guard`, so
+    // it drops first (LIFO); both Vecs outlive both guards.
+    let _tramp_kspine_guard: Option<
+        crate::backend::eval::cesk::k_spine::SuspendedActivationGuard,
+    > = if crate::backend::models::metta_value::gc_mode_is_index() {
+        // SAFETY: `work_stack` / `continuations` outlive this guard (locals of
+        // this activation, dropped after it) with stable addresses (declared
+        // once, mutated in place). `collect_k_spine` reads them read-only.
+        Some(unsafe {
+            crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
+                crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
+                    work_stack: &work_stack as *const Vec<WorkItem>,
+                    continuations: &continuations as *const Vec<Continuation>,
+                },
+            )
+        })
+    } else {
+        None
+    };
+
     // Final result storage
     let mut final_result: Option<EvalResult> = None;
 

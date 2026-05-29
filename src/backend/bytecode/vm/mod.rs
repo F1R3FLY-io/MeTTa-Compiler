@@ -1180,7 +1180,10 @@ where
     #[inline]
     fn with_vm_roots_frame(
         &self,
-    ) -> Option<crate::backend::eval::frame_chain::EvalFrameGuard> {
+    ) -> Option<(
+        crate::backend::eval::frame_chain::EvalFrameGuard,
+        Option<crate::backend::eval::cesk::k_spine::VmLeafGuard>,
+    )> {
         use std::any::TypeId;
         if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
             return None;
@@ -1195,13 +1198,31 @@ where
         // The pointer outlives the guard because `self` outlives the nested
         // call (guard is a sibling stack local).
         let data = self as *const Self as *const ();
-        Some(unsafe {
+        let frame = unsafe {
             crate::backend::eval::frame_chain::EvalFrameGuard::push_custom(
                 crate::backend::eval::frame_chain::FrameLabel::BytecodeVm,
                 data,
                 vm_roots_collector,
             )
-        })
+        };
+        // A4.2b: also record the typed `LIVE_VM_STACK::Vm` leaf alongside the
+        // frame_chain frame (index-gc only ⇒ byte-identical slab path). The VM
+        // is decoded structurally by `collect_k_spine` via the SAME
+        // `collect_roots_into` that `vm_roots_collector` uses. SAFETY: as above —
+        // `V == MettaValue` verified, `F == ActiveFactory` at every live call
+        // site, `self` outlives the guard.
+        let kspine = if crate::backend::models::metta_value::gc_mode_is_index() {
+            let vm_ptr = self as *const Self
+                as *const GenericBytecodeVM<MettaValue, crate::backend::models::ActiveFactory>;
+            Some(unsafe {
+                crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
+                    crate::backend::eval::cesk::k_spine::VmLeaf::Vm { vm: vm_ptr },
+                )
+            })
+        } else {
+            None
+        };
+        Some((frame, kspine))
     }
 
     /// Plan 2 helper (2026-05-06): on a parallel-branch worker thread under
@@ -4053,7 +4074,23 @@ where
                         ptr,
                     )
                 };
-                Some((guard, materialized_box))
+                // A4.2b: typed `LIVE_VM_STACK::SavedBindings` over the SAME frozen
+                // `materialized_box` Vec (index-gc only ⇒ byte-identical slab path).
+                // The Vec is built once and never mutated, so its pointer is
+                // staleness-safe. Tuple order ⇒ both guards drop before
+                // `materialized_box` (the data outlives them).
+                let kspine = if crate::backend::models::metta_value::gc_mode_is_index() {
+                    Some(unsafe {
+                        crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
+                            crate::backend::eval::cesk::k_spine::VmLeaf::SavedBindings {
+                                bindings: ptr,
+                            },
+                        )
+                    })
+                } else {
+                    None
+                };
+                Some((guard, kspine, materialized_box))
             } else {
                 None
             }
@@ -4188,7 +4225,22 @@ where
                         ptr,
                     )
                 };
-                Some((guard, materialized_box))
+                // A4.2b: typed `LIVE_VM_STACK::SavedBindings` over the SAME frozen
+                // `materialized_box` Vec (index-gc only ⇒ byte-identical slab path).
+                // Built once, never mutated ⇒ staleness-safe pointer. Tuple order ⇒
+                // both guards drop before `materialized_box` (data outlives them).
+                let kspine = if crate::backend::models::metta_value::gc_mode_is_index() {
+                    Some(unsafe {
+                        crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
+                            crate::backend::eval::cesk::k_spine::VmLeaf::SavedBindings {
+                                bindings: ptr,
+                            },
+                        )
+                    })
+                } else {
+                    None
+                };
+                Some((guard, kspine, materialized_box))
             } else {
                 None
             }

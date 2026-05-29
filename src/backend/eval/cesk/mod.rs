@@ -46,6 +46,7 @@ pub mod incremental_gc;
 pub mod index_arena;
 pub mod index_heap;
 pub mod index_node;
+pub mod k_spine;
 pub mod operand_stack;
 pub mod reductions;
 pub mod region_alloc;

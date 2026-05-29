@@ -216,6 +216,19 @@ unsafe fn collect_vec_roots(data: *const (), out: &mut Vec<MettaValue>) {
 // Generic Type Bridge
 // ============================================================================
 
+/// A4.2b — bundles the `frame_chain` guard with the typed K-spine
+/// [`SuspendedActivationGuard`](crate::backend::eval::cesk::k_spine::SuspendedActivationGuard)
+/// so every module/testing `maybe_push_frame` call site migrates to the typed
+/// K-spine through this single chokepoint. The K-spine half is recorded only
+/// under `gc_mode_is_index()` (so the slab build does ZERO extra work). Both
+/// halves pop on drop; they touch different thread-locals, so drop order is
+/// immaterial. (A5 collapses this back to a bare `SuspendedActivationGuard`
+/// once `frame_chain` is deleted.)
+pub struct FrameAndKSpineGuard {
+    _frame: EvalFrameGuard,
+    _kspine: Option<crate::backend::eval::cesk::k_spine::SuspendedActivationGuard>,
+}
+
 /// Push a frame that protects a `Vec<MettaValue>` from GC during nested
 /// trampoline calls.
 ///
@@ -228,9 +241,22 @@ unsafe fn collect_vec_roots(data: *const (), out: &mut Vec<MettaValue>) {
 pub unsafe fn maybe_push_frame<C: EvalContext>(
     label: FrameLabel,
     data: *const Vec<MettaValue>,
-) -> Option<EvalFrameGuard> {
-    // All contexts now use MettaValue — always push the frame.
-    Some(EvalFrameGuard::push_vec(label, data))
+) -> Option<FrameAndKSpineGuard> {
+    // All contexts now use MettaValue — always push the frame_chain frame.
+    let _frame = EvalFrameGuard::push_vec(label, data);
+    // A4.2b: also record the typed K-spine `ExprVec` over the SAME `data`
+    // pointer (read-only at safepoints). Index-gc only ⇒ byte-identical slab
+    // path. SAFETY: `data` outlives the returned guard (caller contract above).
+    let _kspine = if crate::backend::models::metta_value::gc_mode_is_index() {
+        Some(
+            crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
+                crate::backend::eval::cesk::k_spine::SuspendedActivation::ExprVec { exprs: data },
+            ),
+        )
+    } else {
+        None
+    };
+    Some(FrameAndKSpineGuard { _frame, _kspine })
 }
 
 // ============================================================================

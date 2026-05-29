@@ -284,6 +284,43 @@ pub fn collect_global_anchors(out: &mut Vec<crate::backend::models::MettaValue>)
     collect_compiler_atom_roots(out);
 }
 
+/// CESK Phase A4.2b — the single **structural machine-root** reader. The one
+/// entry the A4.3 machine-equivalence oracle and the A4.4 safepoint consume:
+///
+/// ```text
+/// roots = collect_structural(S, C, K, E₀)        — control registers + env struct
+///       ∪ collect_global_anchors                 — E₀'s global singleton caches
+///       ∪ collect_k_spine                        — the native-stack K-spine
+///                                                   (suspended activations + VM leaves)
+/// ```
+///
+/// This is the complete Morrisett `σ|_Reachable(⟨C,E,K⟩)` root set read from the
+/// reified machine plus the persistent global environment, with NO dependence on
+/// the `ROOT_REGISTRY` / `frame_chain` discovery apparatus. Appends to `out`.
+///
+/// Additive / unused in the hot path until A4.4 (only tests + the A4.3 oracle
+/// call it). The registry/frame_chain paths still run in parallel until A5; the
+/// oracle proves this reader's multiset ⊇ theirs before they are deleted.
+pub fn collect_machine_roots(
+    out: &mut Vec<crate::backend::models::MettaValue>,
+    operand_stack: &OperandStack<crate::backend::models::MettaValue>,
+    current_work: &WorkItem,
+    work_stack: &[WorkItem],
+    continuations: &[Continuation],
+    env0: &crate::backend::environment::core::GenericEnvironmentShared<
+        crate::backend::models::MettaValue,
+    >,
+) {
+    // S ∪ C ∪ K ∪ reach(E₀-env), via the RootSet structural reader.
+    let mut rs = RootSet::with_capacity(out.len() + 64);
+    rs.collect_structural(operand_stack, current_work, work_stack, continuations, env0);
+    out.extend(rs.drain_into_vec());
+    // ∪ E₀'s global singleton caches.
+    collect_global_anchors(out);
+    // ∪ the native-stack K-spine (suspended activations + live VM leaves).
+    super::k_spine::collect_k_spine(out);
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -469,6 +506,63 @@ mod tests {
         assert!(
             !out.is_empty(),
             "collect_global_anchors must preserve pre-existing roots"
+        );
+    }
+
+    /// CESK A4.2b — `collect_machine_roots` composes `collect_structural` ∪
+    /// `collect_global_anchors` ∪ `collect_k_spine`. Embryo of the A4.3 oracle:
+    /// with a k_spine record pushed and a control value in C, BOTH must appear
+    /// in the composed root set.
+    #[test]
+    fn test_collect_machine_roots_includes_control_and_kspine() {
+        use crate::backend::eval::cesk::k_spine::{
+            SuspendedActivation, SuspendedActivationGuard,
+        };
+        let f = factory();
+        let e = env();
+
+        let v_c = f.long(0x1234); // a control-register (C) value
+        let current = WorkItem::Eval {
+            value: v_c,
+            env: std::sync::Arc::new(env()),
+            depth: 0,
+            is_tail_call: false,
+            expected_type: None,
+            demand: None,
+            carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
+        };
+        let work_stack: Vec<WorkItem> = vec![];
+        let continuations: Vec<Continuation> = vec![Continuation::Done];
+        let operand_stack = OperandStack::new();
+
+        let v_k = f.long(0x5678); // a K-spine value
+        let kspine_exprs = vec![v_k];
+
+        let mut got: Vec<MettaValue> = Vec::new();
+        {
+            // SAFETY: kspine_exprs outlives the guard (same scope).
+            let _g = unsafe {
+                SuspendedActivationGuard::push(SuspendedActivation::ExprVec {
+                    exprs: &kspine_exprs as *const Vec<MettaValue>,
+                })
+            };
+            collect_machine_roots(
+                &mut got,
+                &operand_stack,
+                &current,
+                &work_stack,
+                &continuations,
+                e.shared.as_ref(),
+            );
+        }
+        let ptrs: Vec<usize> = got.iter().map(|v| v.inner_ptr() as usize).collect();
+        assert!(
+            ptrs.contains(&(v_c.inner_ptr() as usize)),
+            "collect_machine_roots must include the control (C) root"
+        );
+        assert!(
+            ptrs.contains(&(v_k.inner_ptr() as usize)),
+            "collect_machine_roots must include the K-spine root"
         );
     }
 

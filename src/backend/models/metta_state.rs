@@ -215,6 +215,32 @@ impl MettaState {
         self.gc_roots.output.lock()
     }
 
+    /// CESK A4.3 — collect the driver's program control (C) roots, read by name.
+    ///
+    /// `source` (the not-yet-evaluated top-level directives) and `output` (the
+    /// accumulated `!`-results) are the DRIVER's control: held by the eval /
+    /// conformance / rholang loop ABOVE the trampoline, not in the machine's
+    /// ⟨C,E,K⟩. They are genuine GC roots (a later directive must survive a
+    /// mid-eval collection of the current one). This reads them by name — the
+    /// exact bodies [`MettaStateGcRoots::collect_roots`] uses — so the
+    /// machine-equivalence oracle can treat them as a KEPT driver-C channel
+    /// (read via the `EvalContext` seam) instead of false-failing on them.
+    /// Appends to `out` (never clears).
+    ///
+    /// A5.4 re-homes this into the narrowed `SAFEPOINT_ROOTS` publication buffer
+    /// (the "driver's C" channel) when `ROOT_REGISTRY` is deleted.
+    #[inline]
+    pub fn collect_driver_program_roots(&self, out: &mut Vec<MettaValue>) {
+        // Lock order source-before-output matches the RootProvider impl above
+        // (no new lock-ordering edge). The driver releases these before calling
+        // eval (the ABBA-deadlock fix), so the safepoint lock is uncontended in
+        // the single-threaded index regime.
+        let source = self.gc_roots.source.lock();
+        let output = self.gc_roots.output.lock();
+        out.extend(source.iter().copied());
+        out.extend(output.iter().copied());
+    }
+
     /// Return an owned snapshot of the output values.
     ///
     /// See [`source_snapshot`](MettaState::source_snapshot) for rationale.

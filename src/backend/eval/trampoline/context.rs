@@ -80,6 +80,26 @@ pub trait EvalContext {
         crate::backend::models::request_gc();
     }
 
+    /// CESK A4.3 — collect the driver's program control (C) roots, if this
+    /// context bridges a driver program above the trampoline.
+    ///
+    /// The trampoline machine evaluates ONE top-level directive; the remaining
+    /// `MettaState.source` directives and accumulated `output` are the DRIVER's
+    /// control, held above the machine (the eval / conformance / rholang loop),
+    /// NOT in the machine's ⟨C,E,K⟩. A context that bridges a `MettaState` (the
+    /// production [`SessionContext`](super::session_context::SessionContext))
+    /// overrides this to expose them at the driver↔machine boundary; contexts
+    /// with no driver program (`StaticEvalContext`, `ParallelBranchContext`)
+    /// keep this no-op default.
+    ///
+    /// Read by the A4.3 machine-equivalence oracle (as the KEPT driver-C
+    /// channel) and, in A4.4, fed to the collector at the flip sites. Appends to
+    /// `out`; never clears.
+    #[inline]
+    fn collect_driver_roots(&self, _out: &mut Vec<MettaValue>) {
+        // No driver program by default.
+    }
+
     /// Get the trace collector for emitting evaluation trace events.
     #[cfg(feature = "trace")]
     #[inline]

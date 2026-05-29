@@ -276,12 +276,22 @@ pub fn collect_global_anchors(out: &mut Vec<crate::backend::models::MettaValue>)
         cache::collect_bytecode_cache_roots, compiler::collect_compiler_atom_roots,
         global_space_registry, memo_cache::global_memo_cache, tiered_cache::global_tiered_cache,
     };
-    // The five global singleton anchors, read by name (replacing ROOT_REGISTRY).
+    // The five persistent global singleton anchors, read by name (A4.2a).
     global_tiered_cache().collect_roots_into(out);
     global_space_registry().collect_all_gc_values(out);
     global_memo_cache().collect_all_values(out);
     collect_bytecode_cache_roots(out);
     collect_compiler_atom_roots(out);
+    // A4.3 — the four thread-local evaluation caches the discovered safepoint
+    // roots (eval_loop.rs:3533-3536). In the single-threaded index-gc regime the
+    // calling thread is the SOLE owner of σ, so these thread-locals are
+    // machine-global σ-value holders read by name — the same contract as the five
+    // persistent anchors above. (`collect_binding_capture_roots` is an empty
+    // no-op, so it is deliberately omitted.)
+    crate::backend::eval::trampoline::dispatch_hints::collect_eval_memo_roots(out);
+    crate::backend::eval::trampoline::dispatch_hints::collect_match_result_roots(out);
+    crate::backend::eval::cesk::tabling::collect_subgoal_roots(out);
+    crate::backend::eval::cesk::thunk::collect_thunk_roots(out);
 }
 
 /// CESK Phase A4.2b — the single **structural machine-root** reader. The one

@@ -3546,6 +3546,97 @@ fn eval_trampoline_inner<C: EvalContext>(
                 }
             }
 
+            // ── A4.3 machine-equivalence oracle (debug-only; index-gc only) ──
+            // Asserts the STRUCTURAL reader (`collect_machine_roots` ∪ the
+            // deferred-drop transient register) is a SUPERSET of the DISCOVERED
+            // root set this safepoint feeds the collector. NEW ⊇ OLD is the SAFETY
+            // direction: when A4.4 flips the collector to feed from the structural
+            // reader, no protected root may be dropped. Gated on
+            // `gc_mode_is_index()` because in slab mode the K-spine is empty (its
+            // push sites are index-gated) while `frame_chain` is populated, so the
+            // structural reader only mirrors the discovered set in index mode.
+            // Zero-cost in release (cfg'd out). PERMANENT CI invariant — kept until
+            // A5 deletes the discovery apparatus. See docs/cesk-gc/a4-3-oracle-design.md.
+            #[cfg(debug_assertions)]
+            if crate::backend::models::metta_value::gc_mode_is_index() {
+                // OLD = the discovered set assembled above in `root_set`
+                // (collect_all ∪ frame_chain ∪ 4 caches ∪ deferred-env roots) ∪
+                // `collect_all_roots()` (ROOT_REGISTRY ∪ SAFEPOINT_ROOTS) — exactly
+                // what the midloop set (below) and the quiescence collectors consume.
+                let mut old: Vec<usize> =
+                    root_set.roots().iter().map(|v| v.inner_ptr() as usize).collect();
+                for v in crate::backend::models::collect_all_roots() {
+                    old.push(v.inner_ptr() as usize);
+                }
+                // NEW = collect_machine_roots(C,E,K,E₀) ∪ the deferred-drop transient
+                // register (the one discovered source that is a per-activation local,
+                // not a machine-global — appended exactly as the A4.4 flip will).
+                let mut new_roots: Vec<MettaValue> = Vec::with_capacity(old.len() + 64);
+                crate::backend::eval::cesk::roots::collect_machine_roots(
+                    &mut new_roots,
+                    &machine_operand_stack,
+                    &work,
+                    &work_stack,
+                    &continuations,
+                    env.shared.as_ref(),
+                );
+                for deferred_env in &deferred_shared_drops {
+                    deferred_env.as_ref().collect_roots(&mut new_roots);
+                }
+                let mut new: Vec<usize> =
+                    new_roots.iter().map(|v| v.inner_ptr() as usize).collect();
+
+                old.sort_unstable();
+                old.dedup();
+                new.sort_unstable();
+                new.dedup();
+
+                // KEPT — the driver's program control (C): MettaState.source +
+                // .output, read THROUGH the driver↔machine seam (ctx). A genuine
+                // root the midloop GC needs, but held ABOVE the trampoline (not
+                // in ⟨C,E,K⟩) — published via ROOT_REGISTRY today and the
+                // narrowed SAFEPOINT_ROOTS channel after A5.4. Subtracting
+                // EXACTLY this (two named Vecs, not the bundled registry) keeps
+                // the oracle NON-VACUOUS: NEW alone must still cover every
+                // machine root (S∪C∪K, k-spine, the 9 caches, E₀, deferred).
+                let mut driver_c_vals: Vec<MettaValue> = Vec::new();
+                ctx.collect_driver_roots(&mut driver_c_vals);
+                let mut driver_c: Vec<usize> =
+                    driver_c_vals.iter().map(|v| v.inner_ptr() as usize).collect();
+                driver_c.sort_unstable();
+                driver_c.dedup();
+
+                // OLD ⊆ (NEW ∪ KEPT): a discovered root must be either structural
+                // (NEW) or the legitimately-kept driver-C (KEPT).
+                let missing: Vec<usize> = old
+                    .iter()
+                    .copied()
+                    .filter(|p| {
+                        new.binary_search(p).is_err() && driver_c.binary_search(p).is_err()
+                    })
+                    .collect();
+                if !missing.is_empty() {
+                    let sample: Vec<String> =
+                        missing.iter().take(16).map(|p| format!("{:#x}", p)).collect();
+                    panic!(
+                        "A4.3 machine-equivalence oracle FAILED at safepoint: discovered \
+                         OLD is NOT covered by (structural NEW ∪ driver-C KEPT). |OLD|={} \
+                         |NEW|={} |KEPT|={} |missing|={}\n  sample missing inner_ptrs \
+                         (<=16): [{}]\n  A discovered root source is neither structural nor \
+                         the kept driver-C. Check: (a) a thread-local cache not in \
+                         collect_global_anchors; (b) a transient register (like \
+                         deferred_shared_drops) not appended here; (c) a frame_chain push \
+                         site without a matching k_spine guard; (d) a driver-C root \
+                         (MettaState.source/output) not exposed via ctx.collect_driver_roots.",
+                        old.len(),
+                        new.len(),
+                        driver_c.len(),
+                        missing.len(),
+                        sample.join(", "),
+                    );
+                }
+            }
+
             // Clear all pointer-keyed caches before either nursery or old-gen
             // collection can free/reuse slab slots. The nursery collector runs
             // even when ctx.should_safepoint() is false, so this cannot live

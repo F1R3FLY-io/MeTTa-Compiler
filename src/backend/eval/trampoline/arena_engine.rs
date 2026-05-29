@@ -343,6 +343,40 @@ mod tests {
         all_results
     }
 
+    /// CESK A4.3 — machine-equivalence oracle CI invariant.
+    ///
+    /// Drives a recursive, rule-heavy, nondeterministic eval that crosses ≥1 GC
+    /// safepoint with the discovered-root gap sources populated: the recursion +
+    /// rule dispatch fill the EVAL_MEMO / MATCH_RESULT / subgoal / thunk caches,
+    /// and `amb` forks the search (exercising the deferred-env path). Under
+    /// `--features index-gc` + `debug_assertions` the in-safepoint oracle
+    /// (eval_loop.rs) asserts `collect_machine_roots` ⊇ the discovered root set on
+    /// EVERY safepoint hit; reaching the end without panicking == the structural
+    /// reader stayed a superset across the whole run. This keeps the reader honest
+    /// in CI after A5 deletes the discovery apparatus.
+    ///
+    /// `GC_MODE` static-inits to index under the feature, so `gc_mode_is_index()`
+    /// is true here automatically (no `set_gc_mode_index()` needed).
+    #[test]
+    #[cfg(all(debug_assertions, feature = "index-gc"))]
+    fn a4_3_oracle_holds_across_safepoint() {
+        // (cnt 5000 0) is tail-recursive (bounded K depth) but runs > 4096
+        // trampoline iterations ⇒ ≥1 safepoint; `amb` adds a nondeterministic fork.
+        let src = r#"
+            (= (cnt $n $acc) (if (== $n 0) $acc (cnt (- $n 1) (+ $acc 1))))
+            (= (amb $x) $x)
+            (= (amb $x) (+ $x 1))
+            !(cnt 5000 0)
+            !(amb 7)
+        "#;
+        // The oracle asserts inside `eval_trampoline`; this must not panic.
+        let results = eval_metta(src);
+        assert!(
+            !results.is_empty(),
+            "the driving program must produce results (and cross a safepoint)"
+        );
+    }
+
     #[test]
     fn test_add_atom_rule_becomes_reducible() {
         // Bug A+B fix: add-atom should not evaluate its atom arg AND should

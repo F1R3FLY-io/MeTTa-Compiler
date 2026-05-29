@@ -29,6 +29,11 @@ use crate::backend::models::MettaValue;
 pub use context::{CompileContext, Upvalue};
 pub use error::{CompileError, CompileResult};
 
+// CESK A4.2a: re-export the compiler-atom structural root collector so
+// `collect_global_anchors` (cesk/roots.rs) can call it by name across the
+// (private) `iterative` module boundary, replacing the `ROOT_REGISTRY` dispatch.
+pub(crate) use iterative::collect_compiler_atom_roots;
+
 /// Bytecode compiler
 pub struct Compiler {
     /// The chunk being built

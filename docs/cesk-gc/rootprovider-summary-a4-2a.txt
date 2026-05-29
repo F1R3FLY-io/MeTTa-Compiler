@@ -1,0 +1,113 @@
+╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║ ROOTPROVIDER IMPLEMENTATION INVENTORY — Phase A4.2a (2026-05-29)                                                     ║
+║ Branch: feature/petta-semantics  |  Read-only mapping for collect_global_anchors() design                           ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+GLOBAL SINGLETON ANCHORS (Classification: a) — Targets for collect_global_anchors()
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+1. TieredCacheRoots
+   ├─ impl site:           src/backend/bytecode/tiered_cache.rs:1929
+   ├─ impl body:           Delegates: global_tiered_cache().collect_roots_into(roots)
+   ├─ inherent collector:  TieredCache::collect_roots_into(&self, roots: &mut Vec<MettaValue>)
+   │                       @ src/backend/bytecode/tiered_cache.rs:1104
+   ├─ global accessor:     global_tiered_cache() @ src/backend/bytecode/tiered_cache.rs:1873
+   ├─ status:              ✓ READY — already delegates
+   └─ call:                global_tiered_cache().collect_roots_into(out)
+
+2. SpaceRegistryRoots
+   ├─ impl site:           src/backend/bytecode/space_registry.rs:165
+   ├─ impl body:           Delegates: global_space_registry().collect_all_gc_values(roots)
+   ├─ inherent collector:  SpaceRegistry::collect_all_gc_values(&self, roots: &mut Vec<MettaValue>)
+   │                       @ src/backend/bytecode/space_registry.rs:146
+   ├─ global accessor:     global_space_registry() @ src/backend/bytecode/mod.rs:285
+   ├─ status:              ✓ READY — already delegates
+   └─ call:                global_space_registry().collect_all_gc_values(out)
+
+3. MemoCacheRoots
+   ├─ impl site:           src/backend/bytecode/memo_cache.rs:247
+   ├─ impl body:           Delegates: GLOBAL_MEMO_CACHE.collect_all_values(roots)
+   ├─ inherent collector:  MemoCache<MettaValue>::collect_all_values(&self, out: &mut Vec<V>)
+   │                       @ src/backend/bytecode/memo_cache.rs:198
+   ├─ global accessor:     global_memo_cache() @ src/backend/bytecode/memo_cache.rs:273
+   ├─ status:              ✓ READY — already delegates
+   └─ call:                global_memo_cache().collect_all_values(out)
+
+4. BytecodeCacheRoots
+   ├─ impl site:           src/backend/bytecode/cache.rs:242
+   ├─ impl body:           INTRINSIC: let cache = BYTECODE_CACHE.read();
+   │                       for (_, chunk) in cache.iter() { collect_chunk_constants(chunk, roots); }
+   ├─ inherent collector:  ⚠️  NONE — NEEDS EXTRACTION
+   ├─ global accessor:     BYTECODE_CACHE static @ src/backend/bytecode/cache.rs:99 (LazyLock<RwLock<LruCache>>)
+   ├─ helper fn:           collect_chunk_constants() @ src/backend/bytecode/cache.rs:~257
+   ├─ status:              ⚠️  NEEDS EXTRACTION into inherent method (like TieredCacheRoots pattern)
+   └─ call:                (pending) collect_bytecode_cache_roots(out) or BYTECODE_CACHE intrinsic method
+
+5. CompilerAtomRoots
+   ├─ impl site:           src/backend/bytecode/compiler/iterative.rs:49
+   ├─ impl body:           INTRINSIC: check 3 OnceLock<MettaValue> statics:
+   │                       ATOM_EQUALS, ATOM_PRINTLN, ATOM_IF — if Some, push to roots
+   ├─ inherent collector:  ⚠️  NONE — marker type, NEEDS EXTRACTION
+   ├─ global accessor:     OnceLock statics @ src/backend/bytecode/compiler/iterative.rs:15–24
+   ├─ registration fn:     ensure_compiler_atom_roots_registered() @ iterative.rs:71
+   ├─ status:              ⚠️  NEEDS EXTRACTION into inherent method (CompilerAtomRoots::collect_roots_into)
+   └─ call:                (pending) CompilerAtomRoots::collect_roots_into(out) or direct function
+
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+PER-ENV / PER-INSTANCE (Classification: b) — NOT collected by global anchors (handled elsewhere)
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+6. GenericEnvironmentShared<MettaValue>
+   ├─ impl site:           src/backend/environment/core.rs:2268
+   ├─ impl body:           Delegates: self.collect_roots_into(roots)
+   ├─ inherent collector:  collect_roots_into(&self, roots: &mut Vec<MettaValue>) @ core.rs:2168
+   ├─ global accessor:     NONE — per-env, accessed as E₀ from MettaState or caller
+   ├─ classification:      (b) PER-ENV — reachable from E₀, NOT a global anchor
+   ├─ status:              ✓ Already delegates; handled as part of E₀ traversal
+   └─ note:                Do NOT include in collect_global_anchors()
+
+7. MettaStateGcRoots
+   ├─ impl site:           src/backend/models/metta_state.rs:25
+   ├─ impl body:           INTRINSIC: locks source & output Mutex, extends roots with both vectors
+   ├─ inherent collector:  Intrinsic (impl IS the logic, no separate method)
+   ├─ global accessor:     NONE — embedded in MettaState instances (Arc<MettaStateGcRoots>)
+   ├─ registration:        Implicit: MettaState::from_parts() @ metta_state.rs:~150 calls register_root_provider()
+   ├─ classification:      (b) PER-INSTANCE — each MettaState holds its own arc
+   ├─ status:              ✓ Auto-registered on instance creation
+   └─ note:                Do NOT include in collect_global_anchors()
+
+8. CurrentIterRootProvider
+   ├─ impl site:           src/backend/eval/trampoline/current_iter_root.rs:88
+   ├─ impl body:           INTRINSIC: loads self.tagged AtomicUsize (Acquire); if non-zero, push reconstructed value
+   ├─ inherent collector:  Intrinsic (impl IS the logic, no separate method)
+   ├─ global accessor:     Thread-local CURRENT_ITER_CELL: OnceCell<Arc<CurrentIterRootProvider>>
+   │                       @ current_iter_root.rs:120
+   ├─ lazy init:           get_or_init() @ current_iter_root.rs:124 — per-thread, auto-registers on first use
+   ├─ classification:      (b) PER-THREAD — each thread has its own provider
+   ├─ status:              ✓ Auto-registered per-thread dynamically
+   └─ note:                Do NOT include in collect_global_anchors()
+
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+SUMMARY
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════
+
+TOTAL IMPLEMENTATIONS FOUND: 8
+  ├─ GLOBAL ANCHORS (a):        5 (3 ready, 2 need extraction)
+  └─ PER-ENV/INSTANCE/THREAD (b): 3 (auto-registered, not global)
+
+READY FOR collect_global_anchors() (3 providers):
+  • global_tiered_cache().collect_roots_into(out)
+  • global_space_registry().collect_all_gc_values(out)
+  • global_memo_cache().collect_all_values(out)
+
+REQUIRES EXTRACTION (2 providers):
+  1. BytecodeCacheRoots → extract to inherent method on BytecodeCache or direct function
+  2. CompilerAtomRoots → extract to inherent method CompilerAtomRoots::collect_roots_into()
+
+NOT GLOBAL (3 providers):
+  • MettaStateGcRoots (per-instance, auto-registered on MettaState::from_parts)
+  • GenericEnvironmentShared<MettaValue> (per-env, reachable from E₀)
+  • CurrentIterRootProvider (per-thread, auto-registered on first use)
+
+═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════

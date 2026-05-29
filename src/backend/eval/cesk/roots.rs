@@ -21,11 +21,20 @@
 //! - Enables incremental root tracking (Phase 2.2) via dirty flags
 //! - Separates root collection logic from GC triggering logic
 //!
-//! ## Environment Roots
+//! ## Environment & global-anchor roots (CESK Phase A4)
 //!
-//! Environment roots (rules, bindings, space facts) are NOT collected here.
-//! They are registered via `ROOT_REGISTRY` + `RootProvider` on
-//! `GenericEnvironmentShared`, independent of the trampoline state.
+//! The persistent global environment **E₀** is read *structurally*, not via the
+//! `ROOT_REGISTRY`/`RootProvider` discovery apparatus. E₀ has two homes:
+//! - the env struct, folded in by [`RootSet::collect_structural`] through
+//!   `GenericEnvironmentShared::collect_roots_into`; and
+//! - a fixed set of global singleton caches (the tiered/bytecode/memo caches, the
+//!   named-space registry, and the compiler's cached atom statics), read *by name*
+//!   via [`collect_global_anchors`].
+//!
+//! `collect_all` itself still computes only the control registers (S ∪ C ∪ K);
+//! E₀ is added by `collect_structural` + `collect_global_anchors`. The registry
+//! remains live in parallel until Phase A5 deletes it — the A4.3 machine-equivalence
+//! oracle first proves the structural multiset ⊇ the registry multiset.
 
 use crate::backend::models::MettaValueTrait;
 
@@ -237,6 +246,44 @@ impl RootSet<crate::backend::models::MettaValue> {
     }
 }
 
+/// CESK Phase A4.2a — the fixed **global-anchor** structural root reader.
+///
+/// The persistent global environment E₀ has a second structural home beyond the
+/// env struct (which [`RootSet::collect_structural`] already folds in): a small,
+/// *statically known* set of global singleton caches that live outside the env
+/// struct yet are equally always-live roots — the tiered bytecode cache, the
+/// bytecode-chunk cache, the eval memo cache, the named-space registry, and the
+/// compiler's cached atom statics. This function reads those five anchors **by
+/// name** (a fixed call sequence) rather than discovering them through the
+/// `ROOT_REGISTRY` / `Weak<dyn RootProvider>` dynamic dispatch.
+///
+/// Each call delegates to the holder's own inherent collector — the exact bodies
+/// the corresponding `RootProvider` impls now delegate to — so the result is
+/// **byte-identical** to what the registry would have produced for these five
+/// providers. It is **additive** until A4.4: the registry path still runs in
+/// parallel, and A4.3's machine-equivalence oracle proves
+/// `collect_structural ∪ collect_global_anchors ∪ (K-spine)` ⊇ the registry
+/// multiset before A5 deletes the apparatus.
+///
+/// Appends to `out` (never clears it), matching the registry's append contract.
+///
+/// The `global_*()` accessors each trigger an idempotent `ensure_*_registered()`
+/// on first use, but by any safepoint these `OnceLock`s are already initialised
+/// (the caches are populated during normal evaluation), so this reader never
+/// mutates the registry in practice.
+pub fn collect_global_anchors(out: &mut Vec<crate::backend::models::MettaValue>) {
+    use crate::backend::bytecode::{
+        cache::collect_bytecode_cache_roots, compiler::collect_compiler_atom_roots,
+        global_space_registry, memo_cache::global_memo_cache, tiered_cache::global_tiered_cache,
+    };
+    // The five global singleton anchors, read by name (replacing ROOT_REGISTRY).
+    global_tiered_cache().collect_roots_into(out);
+    global_space_registry().collect_all_gc_values(out);
+    global_memo_cache().collect_all_values(out);
+    collect_bytecode_cache_roots(out);
+    collect_compiler_atom_roots(out);
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -352,7 +399,6 @@ mod tests {
     /// machine (not via the registry).
     #[test]
     fn test_collect_structural_is_collect_all_plus_env0() {
-        use crate::backend::models::MettaValueTrait;
         let f = factory();
         let e = env();
 
@@ -399,6 +445,31 @@ mod tests {
         );
         // The control root (the Eval value) is present.
         assert!(got.contains(&(v_c.inner_ptr() as usize)));
+    }
+
+    /// CESK A4.2a contract: `collect_global_anchors` reads the five global
+    /// singleton anchors by name without panicking, and **appends** (never
+    /// clears) — matching the registry's append contract. We assert the append
+    /// invariant (robust under concurrent cache mutation by other tests; we do
+    /// NOT assert a cross-read multiset, which would be flaky against the shared
+    /// global caches).
+    #[test]
+    fn test_collect_global_anchors_appends_without_panic() {
+        let f = factory();
+        let sentinel = f.long(0xA42A);
+        let sentinel_ptr = sentinel.inner_ptr();
+        let mut out: Vec<MettaValue> = vec![sentinel];
+        super::collect_global_anchors(&mut out);
+        // Append contract: the pre-existing root is preserved at index 0.
+        assert_eq!(
+            out[0].inner_ptr(),
+            sentinel_ptr,
+            "collect_global_anchors must append, not clear the buffer"
+        );
+        assert!(
+            !out.is_empty(),
+            "collect_global_anchors must preserve pre-existing roots"
+        );
     }
 
     #[test]

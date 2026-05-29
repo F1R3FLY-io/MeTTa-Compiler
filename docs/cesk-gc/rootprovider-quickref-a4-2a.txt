@@ -1,0 +1,65 @@
+╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║ ROOTPROVIDER QUICK REFERENCE TABLE — Phase A4.2a                                                                     ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+Provider Type              | Impl Site File:Line           | Impl Body           | Inherent Collector (name+line)        | Global Accessor (name+line)           | Class | Status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TieredCacheRoots          | tiered_cache.rs:1929          | Delegates           | collect_roots_into (1104)             | global_tiered_cache (1873)            | (a)  | ✓ Ready
+SpaceRegistryRoots        | space_registry.rs:165         | Delegates           | collect_all_gc_values (146)           | global_space_registry (mod.rs:285)    | (a)  | ✓ Ready
+MemoCacheRoots            | memo_cache.rs:247             | Delegates           | collect_all_values (198)              | global_memo_cache (273)               | (a)  | ✓ Ready
+BytecodeCacheRoots        | cache.rs:242                  | Intrinsic           | NONE — NEEDS EXTRACTION               | BYTECODE_CACHE static (99)            | (a)  | ⚠ Extract
+CompilerAtomRoots         | compiler/iterative.rs:49      | Intrinsic           | NONE — marker type, EXTRACT needed   | ATOM_* OnceLock statics (15–24)       | (a)  | ⚠ Extract
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+GenericEnv<MettaValue>    | environment/core.rs:2268      | Delegates           | collect_roots_into (2168)             | None — per-env                        | (b)  | ✓ Intrinsic
+MettaStateGcRoots         | metta_state.rs:25             | Intrinsic           | Intrinsic (no separate method)        | None — per-instance Arc               | (b)  | ✓ Intrinsic
+CurrentIterRootProvider   | current_iter_root.rs:88       | Intrinsic           | Intrinsic (no separate method)        | thread-local CURRENT_ITER_CELL (120)  | (b)  | ✓ Auto-reg'd
+
+LEGEND:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Impl Body:
+  • "Delegates" = impl directly calls an inherent method (ready to extract to direct call)
+  • "Intrinsic" = impl contains the collection logic directly (no separate method exists)
+
+Inherent Collector:
+  • Method name & source line number if exists
+  • "NONE — NEEDS EXTRACTION" if logic is in impl block but no inherent method wraps it
+  • "Intrinsic (no separate method)" if logic IS in impl and intentionally inlined (no extraction needed)
+
+Classification:
+  • (a) = Global singleton anchor — collected by collect_global_anchors()
+  • (b) = Per-env/instance/thread — NOT collected globally (auto-registered elsewhere)
+
+Status:
+  • ✓ Ready = can be called directly or already works
+  • ⚠ Extract = needs extract-and-delegate pattern like TieredCacheRoots
+
+EXTRACTION TARGETS:
+─────────────────
+
+1. BytecodeCacheRoots (cache.rs:242)
+   Pattern: Extract impl body to inherent method
+   Model:   TieredCacheRoots (delegates to global_tiered_cache().collect_roots_into())
+   Action:  Create BytecodeCache::collect_roots_into() that walks BYTECODE_CACHE, calls collect_chunk_constants()
+   Helper:  collect_chunk_constants() already exists @ cache.rs:~257
+
+2. CompilerAtomRoots (compiler/iterative.rs:49)
+   Pattern: Extract impl body to inherent method on marker type
+   Model:   (none — new pattern)
+   Action:  Create CompilerAtomRoots::collect_roots_into(&self, out: &mut Vec<MettaValue>)
+            that checks ATOM_EQUALS, ATOM_PRINTLN, ATOM_IF OnceLocks and pushes to out
+
+FOR collect_global_anchors() FUNCTION:
+──────────────────────────────────────
+pub(crate) fn collect_global_anchors(out: &mut Vec<MettaValue>) {
+    global_tiered_cache().collect_roots_into(out);
+    global_space_registry().collect_all_gc_values(out);
+    global_memo_cache().collect_all_values(out);
+    // After extraction:
+    collect_bytecode_cache_roots(out);  // or: BytecodeCacheRoots::new().collect_roots_into(out)
+    CompilerAtomRoots.collect_roots_into(out);  // or: CompilerAtomRoots::collect_roots_into(out)
+}
+
+DOCUMENTATION REFERENCES:
+────────────────────────
+  Full inventory:  docs/cesk-gc/rootprovider-inventory-phase-a4-2a.md
+  Summary:         docs/cesk-gc/rootprovider-summary-a4-2a.txt

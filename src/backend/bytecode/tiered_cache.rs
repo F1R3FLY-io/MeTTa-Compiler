@@ -1101,7 +1101,7 @@ impl TieredCache {
         }
     }
 
-    fn collect_roots_into(&self, roots: &mut Vec<MettaValue>) {
+    pub(crate) fn collect_roots_into(&self, roots: &mut Vec<MettaValue>) {
         roots.extend(
             self.pending_bytecode_roots
                 .iter()

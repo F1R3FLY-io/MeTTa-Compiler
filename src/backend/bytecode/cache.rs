@@ -241,10 +241,21 @@ struct BytecodeCacheRoots;
 
 impl RootProvider for BytecodeCacheRoots {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        let cache = BYTECODE_CACHE.read();
-        for (_, chunk) in cache.iter() {
-            collect_chunk_constants(chunk, roots);
-        }
+        collect_bytecode_cache_roots(roots);
+    }
+}
+
+/// CESK A4.2a structural reader: collect the GC roots held by the global
+/// bytecode cache — the `MettaValue` constants of every cached `BytecodeChunk`
+/// and its sub-chunks. This inherent collector is what the `RootProvider` impl
+/// delegates to, and what `collect_global_anchors` (cesk/roots.rs) calls *by
+/// name* — replacing the dynamic `ROOT_REGISTRY`/`Weak<dyn RootProvider>`
+/// dispatch with a fixed structural read. Byte-identical to the former impl
+/// body; additive (the registry path still works until Phase A5).
+pub(crate) fn collect_bytecode_cache_roots(roots: &mut Vec<MettaValue>) {
+    let cache = BYTECODE_CACHE.read();
+    for (_, chunk) in cache.iter() {
+        collect_chunk_constants(chunk, roots);
     }
 }
 

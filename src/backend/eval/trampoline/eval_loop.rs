@@ -3356,6 +3356,16 @@ fn eval_trampoline_inner<C: EvalContext>(
     let mut root_set =
         crate::backend::eval::cesk::RootSet::<MettaValue>::with_estimated_capacity(32, 64, 0);
 
+    // SECK Phase A1: the canonical structural-root reader is `RootSet::collect_all`
+    // (the algebraic formula `roots = addrs(S) ∪ addrs(C) ∪ addrs(K)`). The
+    // tree-walker's S (operand stack) is always empty, so this single empty stack
+    // — allocated once, reused across safepoints like `root_set` — lets the live
+    // safepoint use the SAME reader as `SeckState::collect_gc_roots`, making the
+    // structural machine state the one source of truth for the root formula. This
+    // is the seam Phase A4 extends to fold E₀ + the VM/JIT-as-K-leaf roots into the
+    // structural read (replacing the registry/frame_chain discovery apparatus).
+    let machine_operand_stack = crate::backend::eval::cesk::OperandStack::<MettaValue>::new();
+
     // I-4/I-6: Clear subgoal and thunk tables between top-level evaluations
     // to prevent stale cached results from previous evaluations.
     // Skip when resuming — tables were already cleared on the initial call.
@@ -3475,9 +3485,16 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Root formula: roots = addrs_in(C) ∪ addrs_in(K)
             // where C = current work item + work stack, K = continuations.
             // Environment roots (E) are managed separately via RootProvider.
-            root_set.clear();
-            root_set.collect_from_work_items(&work, &work_stack);
-            root_set.collect_from_continuations(&continuations);
+            // SECK Phase A1: route through the canonical structural reader
+            // (`RootSet::collect_all` = S∪C∪K; clears the buffer internally) — the
+            // identical reader `SeckState::collect_gc_roots` uses. S is the empty
+            // `machine_operand_stack` (the tree-walker never uses an operand stack),
+            // so this is byte-identical to the prior `collect_from_work_items` +
+            // `collect_from_continuations` pair, but now there is ONE source of
+            // truth for the structural root formula. The auxiliary roots collected
+            // below (frame chain, caches, deferred envs) are the discovery
+            // apparatus Phase A4/A5 replace with structural E₀ + VM-leaf reads.
+            root_set.collect_all(&machine_operand_stack, &work, &work_stack, &continuations);
 
             // Collect roots from all caller frames in the thread-local chain.
             // This protects values held by callers of nested trampolines

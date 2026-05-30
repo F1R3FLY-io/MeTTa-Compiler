@@ -179,9 +179,25 @@ impl<N: Copy> Segment<N> {
     }
 
     /// `true` if no slot in `0..len` is marked.
+    ///
+    /// B1.b word-parallel fast path: OR together the complete mark words covering
+    /// `0..len` (one `AtomicU64::load` per 64 slots instead of per slot), masking
+    /// the final partial word to the valid low `len & 63` bits. Equivalent to the
+    /// per-slot scan — a segment is fully dead iff no in-range mark bit is set
+    /// (offsets `>= len` are never set by `set_mark`, so the mask only guards the
+    /// padding bits of the last word).
     fn is_fully_dead(&self) -> bool {
-        for off in 0..self.len {
-            if self.is_marked(off) {
+        let len = self.len;
+        let full_words = len >> 6;
+        for wi in 0..full_words {
+            if self.marks[wi].load(Ordering::Relaxed) != 0 {
+                return false;
+            }
+        }
+        let rem = len & 63;
+        if rem != 0 {
+            let mask = (1u64 << rem) - 1;
+            if (self.marks[full_words].load(Ordering::Relaxed) & mask) != 0 {
                 return false;
             }
         }
@@ -426,13 +442,46 @@ impl<N: Copy> IndexArena<N> {
             }
 
             // Partially-live (or the current segment): reclaim unmarked slots.
+            // B1.b word-parallel fast path: per complete mark word, skip the
+            // per-bit loop when the word is all-live (`u64::MAX` -> 64 live) or
+            // all-dead (`0` -> 64 contiguous free slots); only mixed words and the
+            // final partial word fall back to the per-bit test. Push order stays
+            // increasing-`off`, so the free list (and its LIFO reuse order) is
+            // byte-identical to the per-slot scan.
             let len = self.segments[si].len;
-            for off in 0..len {
-                if self.segments[si].is_marked(off) {
-                    stats.live += 1;
+            let full_words = len >> 6;
+            let rem = len & 63;
+            for wi in 0..full_words {
+                let word = self.segments[si].marks[wi].load(Ordering::Relaxed);
+                let base = wi << 6;
+                if word == u64::MAX {
+                    stats.live += 64;
+                } else if word == 0 {
+                    for off in base..base + 64 {
+                        self.free_list.push(Addr::new(si as u32, off as u32));
+                    }
+                    stats.reclaimed_to_free_list += 64;
                 } else {
-                    self.free_list.push(Addr::new(si as u32, off as u32));
-                    stats.reclaimed_to_free_list += 1;
+                    for b in 0..64usize {
+                        if (word & (1u64 << b)) != 0 {
+                            stats.live += 1;
+                        } else {
+                            self.free_list.push(Addr::new(si as u32, (base + b) as u32));
+                            stats.reclaimed_to_free_list += 1;
+                        }
+                    }
+                }
+            }
+            if rem != 0 {
+                let word = self.segments[si].marks[full_words].load(Ordering::Relaxed);
+                let base = full_words << 6;
+                for b in 0..rem {
+                    if (word & (1u64 << b)) != 0 {
+                        stats.live += 1;
+                    } else {
+                        self.free_list.push(Addr::new(si as u32, (base + b) as u32));
+                        stats.reclaimed_to_free_list += 1;
+                    }
                 }
             }
             self.segments[si].clear_marks();
@@ -827,5 +876,101 @@ mod tests {
         );
         assert_eq!(stats.segments_released, 1);
         assert_eq!(stats.live, 1);
+    }
+
+    // ---- B1.b: word-parallel sweep / is_fully_dead equivalence tests ----
+    // Each pins a branch of the word-parallel fast path against the spec
+    // (same free list, same SweepStats as the per-slot scan).
+
+    #[test]
+    fn sweep_word_parallel_all_live_and_all_dead_words() {
+        // 128 slots = 2 mark words. Word 0 (offsets 0..64) all-live; word 1
+        // (64..128) all-dead. Exercises the `word == u64::MAX` and `word == 0`
+        // fast paths in the reclaim loop (single/current segment → not released).
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(128);
+        let addrs: Vec<Addr> = (0..128u64).map(|v| arena.alloc(v)).collect();
+        for a in &addrs[0..64] {
+            arena.mark(*a);
+        }
+        let stats = arena.sweep();
+        assert_eq!(stats.live, 64, "word 0 all-live → 64 live");
+        assert_eq!(stats.reclaimed_to_free_list, 64, "word 1 all-dead → 64 freed");
+        assert_eq!(stats.segments_released, 0, "current segment never released");
+        assert_eq!(arena.free_slots(), 64);
+        // Live slots survive with original values; marks cleared.
+        for (i, a) in addrs[0..64].iter().enumerate() {
+            assert_eq!(*arena.get(*a), i as u64);
+            assert!(!arena.is_marked(*a), "sweep clears marks");
+        }
+        // The 64 freed slots are reused without segment growth.
+        for v in 0..64u64 {
+            let _ = arena.alloc(1000 + v);
+        }
+        assert_eq!(arena.free_slots(), 0, "free list drained by reuse");
+        assert_eq!(arena.segment_count(), 1, "reuse, not growth");
+    }
+
+    #[test]
+    fn sweep_word_parallel_mixed_and_partial_words() {
+        // 100 slots: one complete mixed word (offsets 0..64) + a mixed partial
+        // final word (64..100, 36 bits). Even offsets marked. Exercises the
+        // per-bit fallback for both a complete mixed word and the partial word.
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(128);
+        let addrs: Vec<Addr> = (0..100u64).map(|v| arena.alloc(v)).collect();
+        let mut expected_live = 0usize;
+        for (off, a) in addrs.iter().enumerate() {
+            if off % 2 == 0 {
+                arena.mark(*a);
+                expected_live += 1;
+            }
+        }
+        let expected_free = 100 - expected_live;
+        let stats = arena.sweep();
+        assert_eq!(stats.live, expected_live, "even offsets live (50)");
+        assert_eq!(
+            stats.reclaimed_to_free_list, expected_free,
+            "odd offsets freed (50)"
+        );
+        assert_eq!(arena.free_slots(), expected_free);
+        for (off, a) in addrs.iter().enumerate() {
+            if off % 2 == 0 {
+                assert_eq!(*arena.get(*a), off as u64, "live even slot unchanged");
+            }
+        }
+    }
+
+    #[test]
+    fn sweep_word_parallel_releases_fully_dead_multiword_segment() {
+        // Segment 0 (128 slots = 2 full words) fully dead and non-current →
+        // released via the word-parallel `is_fully_dead` (all words zero, rem==0).
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(128);
+        let _seg0: Vec<Addr> = (0..128u64).map(|v| arena.alloc(v)).collect();
+        let live1 = arena.alloc(9999); // opens + makes segment 1 current
+        assert_eq!(live1.segment(), 1);
+        assert_eq!(arena.segment_count(), 2);
+        arena.mark(live1); // all of segment 0 stays unmarked
+        let stats = arena.sweep();
+        assert_eq!(stats.segments_released, 1, "fully-dead seg 0 released");
+        assert_eq!(stats.live, 1, "only the seg-1 slot survives");
+        assert_eq!(stats.reclaimed_to_free_list, 0, "released, not reclaimed");
+    }
+
+    #[test]
+    fn sweep_word_parallel_partial_word_mark_prevents_release() {
+        // A FULL non-current segment of capacity 100 has a partial final mark word
+        // (36 bits). A single mark at offset 99 (in that partial word) must keep
+        // `is_fully_dead` false (the mask preserves the bit) → segment NOT released
+        // → its other 99 slots reclaimed via the reclaim loop's partial-word path.
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(100);
+        let seg0: Vec<Addr> = (0..100u64).map(|v| arena.alloc(v)).collect();
+        let live1 = arena.alloc(7777); // opens segment 1 (current)
+        assert_eq!(live1.segment(), 1);
+        arena.mark(live1);
+        arena.mark(seg0[99]); // offset 99 ∈ partial word [64,100)
+        let stats = arena.sweep();
+        assert_eq!(stats.segments_released, 0, "seg 0 has a live slot → not released");
+        assert_eq!(stats.live, 2, "seg0[99] + live1");
+        assert_eq!(stats.reclaimed_to_free_list, 99, "seg 0's other 99 slots freed");
+        assert_eq!(*arena.get(seg0[99]), 99, "the live partial-word slot is intact");
     }
 }

@@ -5,15 +5,16 @@
 #
 # Runs (all heavy ops capped under systemd-run, MemorySwapMax=0, FOREGROUND
 # within this script — launch the SCRIPT itself in the background):
-#   1. SLAB  nextest (release)              → expect 4325 pass / 0 fail
-#   2. INDEX nextest (release, index-gc)    → expect 4177 pass / 0 fail
+#   1. SLAB  nextest (release)              → expect 4324 pass / 0 fail
+#   2. INDEX nextest (release, index-gc)    → expect 4167 pass / 0 fail
 #   3. INDEX conformance bin build (release)
-#   4. INDEX conformance (release, all 744) → expect 744 pass (483+221+40), cycles>0
-#   --with-oracle (for A5.1+ steps touching the collection path):
+#   4. INDEX conformance (release, all 483) → expect 483 pass (base 222 +
+#      M11-pt 221 + M11-he 40, the latter two SUBSETS of 483), cycles>0 (~840).
+#   --with-oracle (for steps touching the collection path):
 #   5. INDEX conformance DEBUG, MIN_BYTES=1 → machine-equivalence oracle fires
-#      every collection; expect 0 oracle panics, 744 pass.
+#      every collection; expect 0 oracle panics, 483 pass.
 #
-# Baselines (390b743 / A4.4): slab 4325, index 4177, conformance 744.
+# Baselines (dbc6fa8 / A5.7, Phase A complete): slab 4324, index 4167, conf 483.
 set -uo pipefail
 LABEL="${1:?usage: a5_greenwall.sh <label> [--with-oracle]}"
 WITH_ORACLE=0; [[ "${2:-}" == "--with-oracle" ]] && WITH_ORACLE=1
@@ -25,11 +26,11 @@ RUNBIN=(systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuo
 P=/tmp/a5_${LABEL}
 echo "===== A5 GREEN-WALL [$LABEL] ====="; date
 
-echo "### 1 SLAB nextest (expect 4325/0)"
+echo "### 1 SLAB nextest (expect 4324/0)"
 "${CAP[@]}" cargo nextest run --release > ${P}_slab_nextest.log 2>&1; echo "slab_rc=$?"
 grep -E "Summary|tests run|^ *FAIL|TIMEOUT" ${P}_slab_nextest.log | tail -4
 
-echo "### 2 INDEX nextest (expect 4177/0)"
+echo "### 2 INDEX nextest (expect 4167/0)"
 "${CAP[@]}" cargo nextest run --release --features index-gc > ${P}_index_nextest.log 2>&1; echo "index_rc=$?"
 grep -E "Summary|tests run|^ *FAIL|TIMEOUT" ${P}_index_nextest.log | tail -4
 
@@ -57,7 +58,7 @@ echo "slab lib:  $(grep -oE 'mettatron. \(lib\) generated [0-9]+ warning' ${P}_w
 echo "index lib: $(grep -oE 'mettatron. \(lib\) generated [0-9]+ warning' ${P}_wcheck_index.log | grep -oE '[0-9]+' | head -1) (expect 49)"
 
 if [[ "$WITH_ORACLE" == "1" ]]; then
-  echo "### 5 INDEX conformance DEBUG (machine-equivalence oracle, MIN_BYTES=1; expect 0 panics, 744 pass)"
+  echo "### 5 INDEX conformance DEBUG (machine-equivalence oracle, MIN_BYTES=1; expect 0 panics, 483 pass)"
   "${CAP[@]}" cargo build --features index-gc --bin mtt-conformance > ${P}_confbuild_debug.log 2>&1; echo "confbuild_debug_rc=$?"
   tail -2 ${P}_confbuild_debug.log
   METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 "${RUNBIN[@]}" \

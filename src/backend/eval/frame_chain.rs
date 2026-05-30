@@ -28,7 +28,6 @@
 //! innermost (most recent) to outermost (root).
 
 use std::cell::Cell;
-use std::fmt;
 use std::ptr;
 
 use crate::backend::eval::trampoline::EvalContext;
@@ -77,50 +76,10 @@ pub struct EvalFrame {
 // same thread's stack.
 unsafe impl Send for EvalFrame {}
 
-/// Human-readable frame label for stack trace rendering.
-///
-/// Describes the evaluation context of a frame in the chain.
-#[derive(Debug, Clone, Copy)]
-pub enum FrameLabel {
-    /// `include "path"` — loading and evaluating a MeTTa file
-    Include,
-    /// `import! module` — importing a module into scope
-    Import,
-    /// `assertEqual actual expected` — assertion evaluation
-    AssertEqual,
-    /// `assertAlphaEqual actual expected` — alpha-equiv assertion
-    AssertAlphaEqual,
-    /// `assertEqualToResult actual expected` — result assertion
-    AssertEqualToResult,
-    /// `assertAlphaEqualToResult actual expected` — alpha result assertion
-    AssertAlphaEqualToResult,
-    /// Top-level `eval` call
-    Eval,
-    /// Bytecode VM frame whose live execution stacks (value_stack / locals /
-    /// results / current_bindings / choice_points / …) are registered as GC
-    /// roots while it calls a NESTED `eval_trampoline` (so a mid-execution
-    /// collection inside that inner trampoline cannot free the outer VM's
-    /// live values). See `bytecode/vm/mod.rs::with_vm_roots_frame`.
-    BytecodeVm,
-    /// Extensible custom label
-    Custom(&'static str),
-}
-
-impl fmt::Display for FrameLabel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FrameLabel::Include => write!(f, "include"),
-            FrameLabel::Import => write!(f, "import!"),
-            FrameLabel::AssertEqual => write!(f, "assertEqual"),
-            FrameLabel::AssertAlphaEqual => write!(f, "assertAlphaEqual"),
-            FrameLabel::AssertEqualToResult => write!(f, "assertEqualToResult"),
-            FrameLabel::AssertAlphaEqualToResult => write!(f, "assertAlphaEqualToResult"),
-            FrameLabel::Eval => write!(f, "eval"),
-            FrameLabel::BytecodeVm => write!(f, "bytecode-vm"),
-            FrameLabel::Custom(s) => write!(f, "{}", s),
-        }
-    }
-}
+// `FrameLabel` relocated to [`super::frame_label`] (A5.0) so it survives A5.6's
+// cfg-walling of this module to the slab build. Re-exported here so existing
+// `frame_chain::FrameLabel` paths keep compiling in the slab build.
+pub use crate::backend::eval::frame_label::FrameLabel;
 
 // ============================================================================
 // Thread-Local Chain Head

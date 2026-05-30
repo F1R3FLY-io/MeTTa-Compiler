@@ -7,7 +7,9 @@
 pub(crate) mod alpha_equiv;
 pub(crate) mod bindings;
 pub mod cesk;
+pub(crate) mod expr_vec_frame;
 pub(crate) mod frame_chain;
+pub(crate) mod frame_label;
 pub(crate) mod freshening;
 pub(crate) mod git_import;
 pub(crate) mod helpers;

@@ -31,7 +31,8 @@
 use smallvec::{smallvec, SmallVec};
 
 use crate::backend::eval::alpha_equiv::atoms_are_alpha_equivalent;
-use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
+use crate::backend::eval::expr_vec_frame::push_expr_vec_frame;
+use crate::backend::eval::frame_label::FrameLabel;
 use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 use crate::backend::eval::trampoline::{EvalContext, MettaEnvironment};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
@@ -143,7 +144,7 @@ where
 
     // Push frame protecting items across nested trampoline calls.
     // SAFETY: `items` outlives `_frame_guard`.
-    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqual, &items) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::AssertEqual, &items) };
 
     // Evaluate both arguments. Each may produce multiple results.
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
@@ -232,7 +233,7 @@ where
 
     // Push frame protecting items across nested trampoline calls.
     // SAFETY: `items` outlives `_frame_guard`.
-    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqual, &items) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::AssertEqual, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -276,7 +277,7 @@ where
     }
 
     // Push frame protecting items across nested trampoline calls.
-    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::AssertAlphaEqual, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -323,7 +324,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqual, &items) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::AssertEqual, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -365,7 +366,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertAlphaEqual, &items) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::AssertAlphaEqual, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -411,7 +412,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::AssertEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -457,7 +458,7 @@ where
     }
 
     let _frame_guard =
-        unsafe { maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items) };
+        unsafe { push_expr_vec_frame(FrameLabel::AssertAlphaEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -506,7 +507,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::AssertEqualToResult, &items) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::AssertEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -551,7 +552,7 @@ where
     }
 
     let _frame_guard =
-        unsafe { maybe_push_frame::<C>(FrameLabel::AssertAlphaEqualToResult, &items) };
+        unsafe { push_expr_vec_frame(FrameLabel::AssertAlphaEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();

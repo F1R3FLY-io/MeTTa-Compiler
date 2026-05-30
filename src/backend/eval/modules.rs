@@ -21,7 +21,8 @@
 use std::hash::{Hash, Hasher};
 
 use crate::backend::compile::compile_generic;
-use crate::backend::eval::frame_chain::{maybe_push_frame, FrameLabel};
+use crate::backend::eval::expr_vec_frame::push_expr_vec_frame;
+use crate::backend::eval::frame_label::FrameLabel;
 use crate::backend::eval::trampoline::eval_loop::eval_trampoline;
 use crate::backend::eval::trampoline::{EvalContext, MettaEnvironment};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
@@ -129,7 +130,7 @@ where
     // This ensures that when a nested trampoline (e.g., !(import! ...)) fires a GC
     // safepoint, the remaining expressions in this Vec are visible as roots.
     // SAFETY: `expressions` outlives `_frame_guard` (both are locals in this scope).
-    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::Include, &expressions) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::Include, &expressions) };
 
     // Process expressions: extract rules, evaluate force-eval expressions.
     // Iterate by reference so the Vec stays alive for the frame guard.
@@ -328,7 +329,7 @@ where
 
     // Push a frame guard protecting compiled expressions from GC during nested eval.
     // SAFETY: `expressions` outlives `_frame_guard` (both are locals in this scope).
-    let _frame_guard = unsafe { maybe_push_frame::<C>(FrameLabel::Import, &expressions) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::Import, &expressions) };
 
     // Process expressions: extract rules, type declarations, evaluate force-eval.
     // Iterate by reference so the Vec stays alive for the frame guard.

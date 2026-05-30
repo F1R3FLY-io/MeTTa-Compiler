@@ -35,9 +35,8 @@
 //! unreachable in the index build.
 //!
 //! A5.0 adds this helper but does not yet wire the 11 call sites
-//! (modules.rs ×2 + testing_ops.rs ×9); A5.2 does that and removes the
+//! (modules.rs ×2 + testing_ops.rs ×9); A5.2 wired those and removed the
 //! module-level `allow(dead_code)`.
-#![allow(dead_code, unused_imports)]
 
 use super::frame_label::FrameLabel;
 use crate::backend::models::MettaValue;

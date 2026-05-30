@@ -37,8 +37,10 @@ echo "### 3 INDEX conformance bin build (release)"
 "${CAP[@]}" cargo build --release --features index-gc --bin mtt-conformance > ${P}_confbuild.log 2>&1; echo "confbuild_rc=$?"
 tail -2 ${P}_confbuild.log
 
-echo "### 4 INDEX conformance (release; expect 744 pass = 483+221+40, cycles>0)"
-FANOUT_DEPTH=0 METTATRON_INDEX_GC_REPORT=1 "${RUNBIN[@]}" \
+echo "### 4 INDEX conformance (release, all 483; cycles>0 ~840). FANOUT_DEPTH=0 forces"
+echo "    single-threaded so worker_ever_spawned never latches; MIN_BYTES=128KiB so the"
+echo "    quiescence collector fires often (non-vacuous)."
+METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 "${RUNBIN[@]}" \
   "$REPO/target/release/mtt-conformance" --conformance-dir "$CONF_DIR" --strict > ${P}_conf.log 2>&1
 echo "conf_rc=$?"
 grep -E "^Found |^Summary:" ${P}_conf.log
@@ -51,7 +53,7 @@ if [[ "$WITH_ORACLE" == "1" ]]; then
   echo "### 5 INDEX conformance DEBUG (machine-equivalence oracle, MIN_BYTES=1; expect 0 panics, 744 pass)"
   "${CAP[@]}" cargo build --features index-gc --bin mtt-conformance > ${P}_confbuild_debug.log 2>&1; echo "confbuild_debug_rc=$?"
   tail -2 ${P}_confbuild_debug.log
-  FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=1 "${RUNBIN[@]}" \
+  METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 "${RUNBIN[@]}" \
     "$REPO/target/debug/mtt-conformance" --conformance-dir "$CONF_DIR" --strict > ${P}_conf_debug.log 2>&1
   echo "conf_debug_rc=$?"
   echo "debug Summary: $(grep -E '^Summary:' ${P}_conf_debug.log)"

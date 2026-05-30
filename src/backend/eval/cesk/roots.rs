@@ -419,7 +419,11 @@ pub fn assert_quiescence_superset(
         .filter(|p| new.binary_search(p).is_err() && kept.binary_search(p).is_err())
         .collect();
     if !missing.is_empty() {
-        let sample: Vec<String> = missing.iter().take(16).map(|p| format!("{:#x}", p)).collect();
+        let sample: Vec<String> = missing
+            .iter()
+            .take(16)
+            .map(|p| format!("{:#x}", p))
+            .collect();
         let missing_set: std::collections::HashSet<usize> = missing.iter().copied().collect();
         let missing_dbg: Vec<String> = old_vals
             .iter()
@@ -642,9 +646,7 @@ mod tests {
     /// in the composed root set.
     #[test]
     fn test_collect_machine_roots_includes_control_and_kspine() {
-        use crate::backend::eval::cesk::k_spine::{
-            SuspendedActivation, SuspendedActivationGuard,
-        };
+        use crate::backend::eval::cesk::k_spine::{SuspendedActivation, SuspendedActivationGuard};
         let f = factory();
         let e = env();
 

@@ -395,8 +395,7 @@ fn main() {
     // this at 0 (so validation can confirm the collector actually ran).
     if std::env::var("METTATRON_INDEX_GC_REPORT").as_deref() == Ok("1") {
         let cycles = mettatron::backend::eval::cesk::index_heap::index_gc::cycles_run();
-        let midloop =
-            mettatron::backend::eval::cesk::index_heap::index_gc::midloop_cycles_run();
+        let midloop = mettatron::backend::eval::cesk::index_heap::index_gc::midloop_cycles_run();
         eprintln!("INDEX_GC_CYCLES_RUN={cycles} INDEX_GC_MIDLOOP_CYCLES={midloop}");
     }
 

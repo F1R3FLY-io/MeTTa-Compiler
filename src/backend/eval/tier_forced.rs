@@ -265,8 +265,12 @@ pub fn eval_with_tier(
         match tier {
             TierSelection::Treewalker => run_t0_direct(value, env, state),
             TierSelection::Bytecode => run_t1(value, env, state, policy),
-            TierSelection::JitStage1 => run_jit(value, env, state, ExecutionTier::JitStage1, policy),
-            TierSelection::JitStage2 => run_jit(value, env, state, ExecutionTier::JitStage2, policy),
+            TierSelection::JitStage1 => {
+                run_jit(value, env, state, ExecutionTier::JitStage1, policy)
+            }
+            TierSelection::JitStage2 => {
+                run_jit(value, env, state, ExecutionTier::JitStage2, policy)
+            }
             TierSelection::Auto => unreachable!("handled above"),
         }
     };

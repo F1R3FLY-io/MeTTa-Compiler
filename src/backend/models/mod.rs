@@ -17,15 +17,14 @@ pub use bindings::SmartBindings as Bindings;
 pub use gc_allocator::{
     active_evaluator_count, alloc_count_snapshot, apply_backpressure_tier1,
     apply_backpressure_tier2, backpressure_level, collect_all_roots, collect_safepoint_roots,
-    committed_bytes_snapshot,
-    current_context_id, disable_gc, drop_eval_guard_for_safepoint, gc_cycle_in_flight,
-    gc_requests_total, gc_sweep_epoch, global_allocator, global_factory, global_gc_cron,
-    init_global_allocator, is_gc_disabled, is_gc_requested, maybe_process_gc_response,
-    maybe_quiescent_gc, note_worker_spawned, reacquire_eval_guard_after_safepoint,
-    register_root_provider, register_temporary_roots, release_session, request_gc,
-    set_backpressure_level, trigger_gc_cycle, try_register_env_roots, worker_ever_spawned,
-    EvalGuard, GcFactory, GcHoldGuard, RootProvider, SafepointRootHandle, SessionGuard,
-    SlabAllocator, MAX_BACKPRESSURE,
+    committed_bytes_snapshot, current_context_id, disable_gc, drop_eval_guard_for_safepoint,
+    gc_cycle_in_flight, gc_requests_total, gc_sweep_epoch, global_allocator, global_factory,
+    global_gc_cron, init_global_allocator, is_gc_disabled, is_gc_requested,
+    maybe_process_gc_response, maybe_quiescent_gc, note_worker_spawned,
+    reacquire_eval_guard_after_safepoint, register_root_provider, register_temporary_roots,
+    release_session, request_gc, set_backpressure_level, trigger_gc_cycle, try_register_env_roots,
+    worker_ever_spawned, EvalGuard, GcFactory, GcHoldGuard, RootProvider, SafepointRootHandle,
+    SessionGuard, SlabAllocator, MAX_BACKPRESSURE,
 };
 pub use gc_cron::{CronHandle, GcCronSingleton};
 pub use generic_bindings::{

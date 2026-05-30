@@ -204,8 +204,7 @@ mod tests {
             is_tail_call: false,
             expected_type: None,
             demand: None,
-            carrying_bindings:
-                crate::backend::eval::trampoline::types::empty_shared_bindings(),
+            carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
         }]
     }
 

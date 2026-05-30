@@ -43,7 +43,12 @@ use std::ptr;
 use std::sync::atomic::{
     AtomicBool, AtomicIsize, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
 };
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, OnceLock};
+// A5.5: `Weak` is used only by the slab-only ROOT_REGISTRY (Vec<Weak<dyn RootProvider>>),
+// which is cfg-walled to slab — so the import is slab-only to avoid an unused-import
+// warning in the index build (keeps the lib-warning count at 49 in BOTH builds).
+#[cfg(not(feature = "index-gc"))]
+use std::sync::Weak;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -3430,7 +3435,13 @@ pub fn maybe_quiescent_gc() -> bool {
     }
 
     // Safe: no evaluators active, build snapshot and submit to GC pool.
+    // A5.5: the slab pool path (trigger_gc_cycle_via_pool → collect_all_roots) is
+    // walled to slab; in index this fn is already runtime-inert above
+    // (gc_mode_is_index early-return), so the index arm is a never-reached `false`.
+    #[cfg(not(feature = "index-gc"))]
     let result = trigger_gc_cycle_via_pool();
+    #[cfg(feature = "index-gc")]
+    let result = false;
 
     drop(_gc_guard);
     result
@@ -3516,7 +3527,12 @@ pub fn maybe_async_gc() -> bool {
         }
     };
 
+    // A5.5: slab pool path walled to slab; index is runtime-inert above
+    // (gc_mode_is_index early-return), so the index arm is a never-reached `false`.
+    #[cfg(not(feature = "index-gc"))]
     let result = trigger_gc_cycle_via_pool();
+    #[cfg(feature = "index-gc")]
+    let result = false;
     drop(_gc_guard);
     result
 }
@@ -3637,6 +3653,11 @@ pub fn maybe_process_gc_response() -> bool {
 ///
 /// `collect_roots` may be called from any thread (typically the GC thread).
 /// Implementations must be thread-safe.
+///
+/// A5.5: registry CORE walled to the slab build — the index collector reads
+/// roots purely structurally (`collect_machine_roots`) ∪ KEPT
+/// (`collect_safepoint_roots`), so the trait/registry never compile in index.
+#[cfg(not(feature = "index-gc"))]
 pub trait RootProvider: Send + Sync {
     /// Collect all live GC root values from this provider.
     ///
@@ -3653,8 +3674,10 @@ pub trait RootProvider: Send + Sync {
 ///
 /// Uses `RwLock` because registration is infrequent (environment creation), while
 /// `collect_all_roots()` only runs during GC cycles (not on the allocation hot path).
+#[cfg(not(feature = "index-gc"))]
 static ROOT_REGISTRY: OnceLock<RwLock<Vec<Weak<dyn RootProvider>>>> = OnceLock::new();
 
+#[cfg(not(feature = "index-gc"))]
 fn root_registry() -> &'static RwLock<Vec<Weak<dyn RootProvider>>> {
     ROOT_REGISTRY.get_or_init(|| RwLock::new(Vec::new()))
 }
@@ -3663,6 +3686,7 @@ fn root_registry() -> &'static RwLock<Vec<Weak<dyn RootProvider>>> {
 ///
 /// Stores a `Weak` reference — the provider is automatically removed from the
 /// registry when all strong `Arc` references are dropped.
+#[cfg(not(feature = "index-gc"))]
 pub fn register_root_provider(provider: &Arc<dyn RootProvider>) {
     let mut registry = root_registry().write();
     registry.push(Arc::downgrade(provider));
@@ -3686,6 +3710,7 @@ pub fn register_root_provider(provider: &Arc<dyn RootProvider>) {
 ///    all `Weak` refs to `Arc`, prune dead entries, and release the lock.
 /// 2. **Collection phase** — Iterates the local `Vec<Arc>` without holding any
 ///    registry lock, calling `collect_roots()` on each provider.
+#[cfg(not(feature = "index-gc"))]
 pub fn collect_all_roots() -> Vec<MettaValue> {
     // Phase 1: Snapshot — briefly hold write lock to upgrade Weak refs and prune dead entries.
     // This takes O(N * weak_upgrade) time, NOT O(N * collect_roots) time.
@@ -3726,6 +3751,7 @@ pub fn collect_all_roots() -> Vec<MettaValue> {
 ///
 /// Dead entries accumulate until the next `collect_all_roots()` call (during
 /// regular GC cycles), which prunes them under write lock.
+#[cfg(not(feature = "index-gc"))]
 fn collect_all_roots_readonly() -> Vec<MettaValue> {
     // Phase 1: Snapshot providers under read lock (no pruning).
     let providers: Vec<Arc<dyn RootProvider>> = {
@@ -3854,6 +3880,7 @@ pub fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
 /// `register_root_provider()` calls from evaluator threads creating environments.
 ///
 /// Returns `Some(roots)` on success, `None` if lock contention prevents collection.
+#[cfg(not(feature = "index-gc"))]
 fn collect_provider_roots_readonly() -> Option<Vec<MettaValue>> {
     let registry = root_registry();
 
@@ -3926,10 +3953,17 @@ pub(crate) fn trace_safepoint_live_set() -> (Option<PtrHashSet>, bool) {
     // Also collect environment roots (rules, bindings, types, spaces).
     // Values dead per a previous GC cycle may now be live through the
     // environment (e.g., added as a rule RHS between cycles).
+    // A5.5: the provider-registry reader is slab-only; in index the registry is
+    // empty (E₀ read structurally, no providers), so env_roots is empty and
+    // env_complete is trivially true (nothing to be incomplete about). The fn
+    // itself stays compiled in both builds.
+    #[cfg(not(feature = "index-gc"))]
     let (env_roots, env_complete) = match collect_provider_roots_readonly() {
         Some(roots) => (roots, true),
         None => (Vec::new(), false),
     };
+    #[cfg(feature = "index-gc")]
+    let (env_roots, env_complete): (Vec<MettaValue>, bool) = (Vec::new(), true);
 
     let total_roots = safepoint_roots.len() + env_roots.len();
     let mut live_set = PtrHashSet::with_capacity_and_hasher(total_roots * 2, PtrBuildHasher);
@@ -4272,6 +4306,11 @@ pub fn try_register_env_roots<V>(
 /// 4. Submits the snapshot to the adaptive GC pool (HIGH priority)
 ///
 /// Returns `true` if a GC cycle was initiated.
+///
+/// A5.5: walled to slab — this wrapper calls `collect_all_roots()` (now
+/// slab-only) and is runtime-inert in index (the `gc_mode_is_index()`
+/// early-return), so compiling it only in slab is a zero-runtime-behavior change.
+#[cfg(not(feature = "index-gc"))]
 pub fn trigger_gc_cycle() -> bool {
     // Inc 4: the slab collector is inert in index mode (see enqueue_session_release).
     if crate::backend::models::metta_value::gc_mode_is_index() {
@@ -4323,6 +4362,11 @@ pub fn trigger_gc_cycle() -> bool {
 /// Sets `GC_CYCLE_IN_FLIGHT` before submitting the snapshot to prevent
 /// queueing multiple snapshots. Aligns with TLA+ `hasGcRequest' = TRUE`
 /// in `TryQuiescentGc_SnapshotOK`.
+///
+/// A5.5: walled to slab — calls `collect_all_roots()` (slab-only). Its callers
+/// (`maybe_quiescent_gc`/`maybe_async_gc`, compiled in both builds) two-arm the
+/// call so the index arm yields `false` without referencing this fn.
+#[cfg(not(feature = "index-gc"))]
 fn trigger_gc_cycle_via_pool() -> bool {
     let pool = super::gc_pool::global_gc_pool();
     let alloc = global_allocator();
@@ -5149,7 +5193,14 @@ impl SlabAllocator {
         // Weak refs from ROOT_REGISTRY. This prevents a race where an
         // environment's root provider is pruned before its clone registers,
         // causing values to be missed and freed while still reachable.
+        // A5.5: collect_all_roots_readonly is slab-only (registry-backed). In
+        // index the registry is empty by construction (no providers), so the
+        // index arm is an empty root set — this fn is unreachable in index
+        // (the slab session-release path is inert), making it a no-op there.
+        #[cfg(not(feature = "index-gc"))]
         let roots = collect_all_roots_readonly();
+        #[cfg(feature = "index-gc")]
+        let roots: Vec<MettaValue> = Vec::new();
         if trace {
             eprintln!(
                 "[GC-TRACE] trace_surviving_set: {} root values collected",
@@ -7090,6 +7141,8 @@ mod tests {
     // Safepoint Root Registry Tests
     // ================================================================
 
+    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_register_temporary_roots_basic() {
         let factory = global_factory();
@@ -7120,6 +7173,8 @@ mod tests {
         );
     }
 
+    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_register_temporary_roots_multiple_handles() {
         let factory = global_factory();
@@ -7144,6 +7199,8 @@ mod tests {
         assert!(!roots.iter().any(|r| r.as_long() == Some(1002)));
     }
 
+    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_register_temporary_roots_empty_active_handle_does_not_alias() {
         let factory = global_factory();
@@ -7164,6 +7221,8 @@ mod tests {
         drop(live_handle);
     }
 
+    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_register_temporary_roots_slot_reuse() {
         let factory = global_factory();
@@ -7228,6 +7287,8 @@ mod tests {
         // decrement both depth and ACTIVE_EVALUATORS exactly once.
     }
 
+    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_safepoint_with_temporary_roots() {
         let factory = global_factory();

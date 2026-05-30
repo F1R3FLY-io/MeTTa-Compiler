@@ -16,16 +16,22 @@ pub mod work_pool;
 pub use bindings::SmartBindings as Bindings;
 pub use gc_allocator::{
     active_evaluator_count, alloc_count_snapshot, apply_backpressure_tier1,
-    apply_backpressure_tier2, backpressure_level, collect_all_roots, collect_safepoint_roots,
-    committed_bytes_snapshot, current_context_id, disable_gc, drop_eval_guard_for_safepoint,
-    gc_cycle_in_flight, gc_requests_total, gc_sweep_epoch, global_allocator, global_factory,
-    global_gc_cron, init_global_allocator, is_gc_disabled, is_gc_requested,
-    maybe_process_gc_response, maybe_quiescent_gc, note_worker_spawned,
-    reacquire_eval_guard_after_safepoint, register_root_provider, register_temporary_roots,
-    release_session, request_gc, set_backpressure_level, trigger_gc_cycle, try_register_env_roots,
-    worker_ever_spawned, EvalGuard, GcFactory, GcHoldGuard, RootProvider, SafepointRootHandle,
-    SessionGuard, SlabAllocator, MAX_BACKPRESSURE,
+    apply_backpressure_tier2, backpressure_level, collect_safepoint_roots, committed_bytes_snapshot,
+    current_context_id, disable_gc, drop_eval_guard_for_safepoint, gc_cycle_in_flight,
+    gc_requests_total, gc_sweep_epoch, global_allocator, global_factory, global_gc_cron,
+    init_global_allocator, is_gc_disabled, is_gc_requested, maybe_process_gc_response,
+    maybe_quiescent_gc, note_worker_spawned, reacquire_eval_guard_after_safepoint,
+    register_temporary_roots, release_session, request_gc, set_backpressure_level,
+    try_register_env_roots, worker_ever_spawned, EvalGuard, GcFactory, GcHoldGuard,
+    SafepointRootHandle, SessionGuard, SlabAllocator, MAX_BACKPRESSURE,
 };
+// A5.5: the registry CORE re-exports are walled to slab — these symbols no longer
+// compile in the index build (the index collector reads roots structurally via
+// collect_machine_roots ∪ collect_safepoint_roots). KEPT in the common arm above:
+// collect_safepoint_roots, register_temporary_roots, SafepointRootHandle,
+// maybe_quiescent_gc, try_register_env_roots (the A5.4 driver-transport channel).
+#[cfg(not(feature = "index-gc"))]
+pub use gc_allocator::{collect_all_roots, register_root_provider, trigger_gc_cycle, RootProvider};
 pub use gc_cron::{CronHandle, GcCronSingleton};
 pub use generic_bindings::{
     allocate_scope_id, BindingName, BindingsWithClasses, ClassData, ClassId, ClassTable,

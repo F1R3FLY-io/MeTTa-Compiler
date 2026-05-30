@@ -376,6 +376,9 @@ pub fn eval_with_trace(
 mod tests {
     use super::*;
 
+    // A5.5: calls collect_all_roots() (slab-only registry reader after A5.5) —
+    // compile in slab only. Same class as the gc_allocator.rs registry tests.
+    #[cfg(not(feature = "index-gc"))]
     #[test]
     fn test_refresh_thread_local_cache_roots_registers_eval_memo_values() {
         let cached = MettaValue::sym("thread-local-cache-root");

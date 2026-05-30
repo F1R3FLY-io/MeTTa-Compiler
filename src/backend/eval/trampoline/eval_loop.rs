@@ -3627,6 +3627,13 @@ fn eval_trampoline_inner<C: EvalContext>(
                     .iter()
                     .map(|v| v.inner_ptr() as usize)
                     .collect();
+                // A5.5: collect_all_roots is slab-only (registry walled). In index the
+                // registry is empty (0 providers; its safepoint contribution ⊆ KEPT
+                // below), so OLD = root_set.roots() alone — still ⊇ S∪C∪K + the 4
+                // thread-local caches + deferred (root_set assembled them above), so the
+                // midloop oracle stays NON-VACUOUS: NEW (collect_machine_roots) must
+                // structurally cover the whole machine. `old` stays defined in both builds.
+                #[cfg(not(feature = "index-gc"))]
                 for v in crate::backend::models::collect_all_roots() {
                     old.push(v.inner_ptr() as usize);
                 }

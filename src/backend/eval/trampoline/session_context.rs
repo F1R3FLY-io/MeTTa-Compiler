@@ -170,15 +170,9 @@ impl<'s> EvalContext for SessionContext<'s> {
         self.store.factory()
     }
 
-    /// CESK A4.3 — expose the driver's program control (C) at the driver↔machine
-    /// boundary: the `MettaState` this session evaluates. Its `source` (remaining
-    /// top-level directives) + `output` (accumulated `!`-results) are live roots
-    /// held above the trampoline. The A4.3 oracle reads this as the KEPT driver-C
-    /// channel; A4.4 feeds it to the collector at the flip sites.
-    #[inline]
-    fn collect_driver_roots(&self, out: &mut Vec<MettaValue>) {
-        self.state.collect_driver_program_roots(out);
-    }
+    // A5.4: `collect_driver_roots` override RETIRED — driver-C is now published to
+    // the GLOBAL SAFEPOINT_ROOTS channel by the driver (see context.rs / main.rs),
+    // read ctx-independently via `collect_safepoint_roots`.
 
     /// No-op: session-based GC replaces polling-based GC.
     ///

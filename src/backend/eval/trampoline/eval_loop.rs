@@ -3654,18 +3654,16 @@ fn eval_trampoline_inner<C: EvalContext>(
                 new.dedup();
 
                 // KEPT — the driver's program control (C): MettaState.source +
-                // .output, read THROUGH the driver↔machine seam (ctx). A genuine
-                // root the midloop GC needs, but held ABOVE the trampoline (not
-                // in ⟨C,E,K⟩) — published via ROOT_REGISTRY today and the
-                // narrowed SAFEPOINT_ROOTS channel after A5.4. Subtracting
-                // EXACTLY this (two named Vecs, not the bundled registry) keeps
-                // the oracle NON-VACUOUS: NEW alone must still cover every
+                // .output + the cross-directive result accumulator + cache snapshot,
+                // ALL published to the ONE narrow SAFEPOINT_ROOTS channel by the
+                // driver (CLI/REPL/conformance via register_temporary_roots). A5.4
+                // RETIRED the per-context `ctx.collect_driver_roots` seam:
+                // SAFEPOINT_ROOTS is GLOBAL, so it covers driver-C regardless of the
+                // on-stack EvalContext (SessionContext vs VmEvalContext) — resolving
+                // the VM-nested midloop gap structurally. Subtracting EXACTLY this
+                // keeps the oracle NON-VACUOUS: NEW alone must still cover every
                 // machine root (S∪C∪K, k-spine, the 9 caches, E₀, deferred).
                 let mut driver_c_vals: Vec<MettaValue> = Vec::new();
-                ctx.collect_driver_roots(&mut driver_c_vals);
-                // ∪ SAFEPOINT_ROOTS — the narrow driver-transport channel (the
-                // driver's cross-directive result accumulator + cache snapshot). A
-                // kept apparatus channel (not structural); the flip keeps feeding it.
                 crate::backend::models::collect_safepoint_roots(&mut driver_c_vals);
                 let mut driver_c: Vec<usize> = driver_c_vals
                     .iter()
@@ -3696,7 +3694,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                          collect_global_anchors; (b) a transient register (like \
                          deferred_shared_drops) not appended here; (c) a frame_chain push \
                          site without a matching k_spine guard; (d) a driver-C root \
-                         (MettaState.source/output) not exposed via ctx.collect_driver_roots.",
+                         (MettaState.source/output) not published to SAFEPOINT_ROOTS via \
+                         register_temporary_roots by the CLI/REPL/conformance driver.",
                         old.len(),
                         new.len(),
                         driver_c.len(),
@@ -3739,7 +3738,8 @@ fn eval_trampoline_inner<C: EvalContext>(
             if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {
                 // A4.4 FLIP (midloop): feed the collector from the STRUCTURAL machine reader —
                 //   collect_machine_roots(S, C, K, E₀) ∪ the deferred-drop transient register
-                //   ∪ the driver-C program (MettaState.{source,output}) via ctx.collect_driver_roots.
+                //   ∪ the driver-C program (MettaState.{source,output}) via the GLOBAL
+                //   SAFEPOINT_ROOTS channel (A5.4; the driver publishes it; ctx-independent).
                 // This is EXACTLY the NEW ∪ KEPT the A4.3 oracle (above, ~3560) just proved is a
                 // superset of the discovered OLD (collect_all_roots ∪ root_set) — so the flip is a
                 // PROVEN superset at this site. collect_all_roots()/root_set survive (still fed to
@@ -3757,10 +3757,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                 for deferred_env in &deferred_shared_drops {
                     deferred_env.as_ref().collect_roots_into(&mut midloop_roots);
                 }
-                // The driver's program control (C), held ABOVE the trampoline, via the seam.
-                ctx.collect_driver_roots(&mut midloop_roots);
-                // ∪ SAFEPOINT_ROOTS — the narrow driver-transport channel (driver result
-                // accumulator + cache snapshot). Kept (not structural); A5.4 narrows it.
+                // ∪ SAFEPOINT_ROOTS — the ONE narrow driver-transport channel: the
+                // driver's program control C (MettaState.source/output) + result
+                // accumulator + cache snapshot, published by the CLI/REPL/conformance
+                // driver. GLOBAL (ctx-independent), so it covers driver-C even when a
+                // nested VM (VmEvalContext) is on the stack — A5.4 retired the
+                // per-context ctx.collect_driver_roots seam. Kept (not structural).
                 crate::backend::models::collect_safepoint_roots(&mut midloop_roots);
                 crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered_midloop(
                     &midloop_roots,

@@ -640,6 +640,21 @@ fn eval_metta(
     // Snapshot source expressions (MettaValue is Copy)
     let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
 
+    // A5.4 — publish the driver's control C (the residual top-level directive
+    // sequence + accumulated output) to the ONE narrow GC publication channel
+    // (SAFEPOINT_ROOTS), held for the WHOLE eval loop. The index midloop collector
+    // reads `collect_safepoint_roots` INDEPENDENTLY of the on-stack EvalContext
+    // type, so this keeps the not-yet-evaluated `source` directives live across a
+    // mid-eval collection of the current directive — including when a nested
+    // bytecode VM is on the stack (VmEvalContext, whose per-context driver-C seam
+    // was the gap A5.4 closes). No-op cost in slab. MUST be a scope-held binding
+    // (NOT `let _ =`): `SafepointRootHandle::Drop` unregisters the slot.
+    let _driver_c_handle = {
+        let mut dc: Vec<MettaValue> = Vec::new();
+        state.collect_driver_program_roots(&mut dc);
+        register_temporary_roots(dc)
+    };
+
     // Evaluate each expression using arena evaluation with bytecode/JIT tiering.
     // Each expression gets its own SessionGuard — values allocated during eval
     // are tagged with the session's context ID and released asynchronously on
@@ -1010,6 +1025,16 @@ fn run_repl(options: &Options) {
                         // Snapshot source expressions (MettaValue is Copy)
                         let source_exprs: Vec<MettaValue> =
                             state.source().iter().copied().collect();
+
+                        // A5.4 — publish driver-C (remaining source + output) to
+                        // SAFEPOINT_ROOTS for this REPL line's directive batch (see
+                        // the batch loop). Scope-held over the inner `for` loop;
+                        // NOT `let _ =` (the handle's Drop unregisters the slot).
+                        let _driver_c_handle = {
+                            let mut dc: Vec<MettaValue> = Vec::new();
+                            state.collect_driver_program_roots(&mut dc);
+                            register_temporary_roots(dc)
+                        };
 
                         for expr in source_exprs {
                             // Only output results for S-expressions, not atoms or ground types

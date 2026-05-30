@@ -8,6 +8,14 @@ pub(crate) mod alpha_equiv;
 pub(crate) mod bindings;
 pub mod cesk;
 pub(crate) mod expr_vec_frame;
+// A5.6: frame_chain is the legacy thread-local raw-pointer GC-root chain. The
+// index-gc build reads roots structurally from the reified K-spine / store and
+// has NO frame_chain module at all — every index-live `frame_chain::*` ref is
+// cfg-walled (A5.1/2/3 walled the spine/VM/ExprVec/provider sites; A5.6 walled
+// the remaining parallel/worker push + collect sites). The slab (default) build
+// compiles + uses frame_chain verbatim. F4 (a later step) physically deletes
+// the file once the slab build itself stops needing it.
+#[cfg(not(feature = "index-gc"))]
 pub(crate) mod frame_chain;
 pub(crate) mod frame_label;
 pub(crate) mod freshening;

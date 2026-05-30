@@ -266,6 +266,12 @@ impl std::fmt::Debug for ParallelDispatchHandle {
 /// the worker's `EvalGuard` already inhibits the collection that would
 /// otherwise observe a stale snapshot.
 #[derive(Debug)]
+// A5.3: the index-gc build cfg-walls the `RootProvider` impl (it registers ZERO
+// providers — roots are structural), so these fields are read only in the slab
+// build. The struct is still constructed and held alive via the dispatch handle's
+// `_root_provider_arc` field (byte-identical construction in both builds), so it is
+// intentionally dead-but-present in the index regime.
+#[cfg_attr(feature = "index-gc", allow(dead_code))]
 pub struct ParallelDispatchRootProvider {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
     /// Stable snapshot of worker INPUTS for the dispatch lifetime.
@@ -295,6 +301,7 @@ pub struct ParallelDispatchRootProvider {
     pub(crate) branches: Arc<Vec<super::eval_loop::ParallelBranch>>,
 }
 
+#[cfg(not(feature = "index-gc"))]
 impl crate::backend::models::gc_allocator::RootProvider for ParallelDispatchRootProvider {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
         // INPUTS first — no Mutex, direct iter (immutable Arc).
@@ -361,6 +368,9 @@ impl std::fmt::Debug for ParallelCollapseDispatchHandle {
 /// `ParallelDispatchRootProvider` for the design rationale (the same
 /// reasoning applies — collapse handles also carry `EvalFrameGuard`).
 #[derive(Debug)]
+// A5.3: see `ParallelDispatchRootProvider` — the `RootProvider` impl is slab-only;
+// the struct stays alive via `ParallelCollapseDispatchHandle::_root_provider_arc`.
+#[cfg_attr(feature = "index-gc", allow(dead_code))]
 pub struct ParallelCollapseRootProvider {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
     /// Stable snapshot of worker INPUTS for the dispatch lifetime.
@@ -370,6 +380,7 @@ pub struct ParallelCollapseRootProvider {
     pub(crate) items: Arc<Vec<BoundValue>>,
 }
 
+#[cfg(not(feature = "index-gc"))]
 impl crate::backend::models::gc_allocator::RootProvider for ParallelCollapseRootProvider {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
         // INPUTS first — no Mutex, direct iter (immutable Arc).

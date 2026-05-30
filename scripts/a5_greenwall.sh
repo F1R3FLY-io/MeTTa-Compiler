@@ -49,6 +49,13 @@ echo "fails+errors: $(grep -cE ': (FAIL|ERROR)' ${P}_conf.log)"
 echo "per-module PASS counts:"
 grep ': PASS' ${P}_conf.log | sed -E 's#/.*##' | sort | uniq -c
 
+echo "### 4b WARNINGS — mettatron lib (0-new-warnings gate; A5 baseline = 49 BOTH builds)."
+echo "    (nextest logs report '(lib test)' which is noisy; cargo check gives the clean '(lib)' count.)"
+"${CAP[@]}" cargo check > ${P}_wcheck_slab.log 2>&1
+echo "slab lib:  $(grep -oE 'mettatron. \(lib\) generated [0-9]+ warning' ${P}_wcheck_slab.log | grep -oE '[0-9]+' | head -1) (expect 49)"
+"${CAP[@]}" cargo check --features index-gc > ${P}_wcheck_index.log 2>&1
+echo "index lib: $(grep -oE 'mettatron. \(lib\) generated [0-9]+ warning' ${P}_wcheck_index.log | grep -oE '[0-9]+' | head -1) (expect 49)"
+
 if [[ "$WITH_ORACLE" == "1" ]]; then
   echo "### 5 INDEX conformance DEBUG (machine-equivalence oracle, MIN_BYTES=1; expect 0 panics, 744 pass)"
   "${CAP[@]}" cargo build --features index-gc --bin mtt-conformance > ${P}_confbuild_debug.log 2>&1; echo "confbuild_debug_rc=$?"

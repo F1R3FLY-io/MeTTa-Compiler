@@ -86,7 +86,9 @@ where
 }
 use crate::backend::grounded::GroundedRegistry;
 use crate::backend::hash_utils::IdentityU64BuildHasher;
-use crate::backend::models::gc_allocator::{try_register_env_roots, RootProvider};
+use crate::backend::models::gc_allocator::try_register_env_roots;
+#[cfg(not(feature = "index-gc"))]
+use crate::backend::models::gc_allocator::RootProvider;
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 use crate::backend::modules::ModuleRegistry;
 use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
@@ -2265,6 +2267,7 @@ impl GenericEnvironmentShared<MettaValue> {
     }
 }
 
+#[cfg(not(feature = "index-gc"))]
 impl RootProvider for GenericEnvironmentShared<MettaValue> {
     /// Delegates to the inherent structural reader `collect_roots_into`, so the
     /// registry-discovered path and the structural E₀ read are the SAME code

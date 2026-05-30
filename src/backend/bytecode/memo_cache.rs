@@ -15,7 +15,10 @@
 
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock};
+// `OnceLock` only backs the slab-build's RootProvider registration cache (A5.3).
+#[cfg(not(feature = "index-gc"))]
+use std::sync::OnceLock;
 
 use xxhash_rust::xxh3::Xxh3;
 
@@ -222,6 +225,7 @@ pub struct CacheStats {
 // Global Singleton Memo Cache + GC Root Provider
 // =============================================================================
 
+#[cfg(not(feature = "index-gc"))]
 use crate::backend::models::gc_allocator::{register_root_provider, RootProvider};
 use crate::backend::models::MettaValue;
 
@@ -242,8 +246,10 @@ static GLOBAL_MEMO_CACHE: LazyLock<Arc<MemoCache<MettaValue>>> = LazyLock::new(|
 ///
 /// Without this, cached function results are invisible to GC and may be freed
 /// while still reachable from the cache, causing use-after-free.
+#[cfg(not(feature = "index-gc"))]
 struct MemoCacheRoots;
 
+#[cfg(not(feature = "index-gc"))]
 impl RootProvider for MemoCacheRoots {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
         GLOBAL_MEMO_CACHE.collect_all_values(roots);
@@ -252,12 +258,17 @@ impl RootProvider for MemoCacheRoots {
 
 /// Keeps the `Arc<dyn RootProvider>` alive for the lifetime of the process so
 /// the `Weak` reference in `ROOT_REGISTRY` remains valid.
+#[cfg(not(feature = "index-gc"))]
 static MEMO_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
 
 /// Ensure the global memo cache is registered as a GC root provider.
 ///
 /// Called lazily on first access to the global cache. Idempotent —
 /// `OnceLock` guarantees single initialization.
+///
+/// CESK A5.3: index-gc no-op — roots are read structurally by
+/// `collect_global_anchors` via `collect_all_values`.
+#[cfg(not(feature = "index-gc"))]
 pub fn ensure_memo_cache_roots_registered() {
     MEMO_CACHE_ROOT_PROVIDER.get_or_init(|| {
         let provider = Arc::new(MemoCacheRoots) as Arc<dyn RootProvider>;
@@ -265,6 +276,11 @@ pub fn ensure_memo_cache_roots_registered() {
         provider
     });
 }
+
+/// CESK A5.3: index-gc no-op (empty registry; structural roots).
+#[cfg(feature = "index-gc")]
+#[inline]
+pub fn ensure_memo_cache_roots_registered() {}
 
 /// Get a reference to the global `MemoCache<MettaValue>`.
 ///

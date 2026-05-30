@@ -256,7 +256,6 @@ use super::types::{
     SharedBindings, WorkItem,
 };
 use crate::backend::environment::rule_management::extract_rule_parts;
-use crate::backend::models::gc_allocator::RootProvider;
 
 use crate::backend::eval::types::{
     extract_type_constraint, get_ground_type, infer_type_generic, is_pattern_type_compatible,
@@ -2424,6 +2423,10 @@ fn parallel_dispatch(
             // `safepoint_wait_for_quiescence` would otherwise re-open
             // between Phase 8 dispatch-input snapshots and per-pump-tick
             // safepoint root registrations.
+            // A5.3: slab-only — the `current_iter_root` module is walled out of the
+            // index build (which registers no providers). `branch_expr` stays used
+            // by the rest of this worker closure.
+            #[cfg(not(feature = "index-gc"))]
             let _current_iter_scope =
                 super::current_iter_root::CurrentIterScope::enter(branch_expr);
             // Phase 10.A — Stage 1e closure: re-establish the parent's
@@ -2531,6 +2534,13 @@ fn parallel_dispatch(
             branches: Arc::clone(&branches),
         },
     );
+    // A5.3: index-gc registers ZERO providers (the parallel dispatch contributes
+    // ∅ in the single-threaded index regime — the registration site is downstream
+    // of `note_worker_spawned()`, and FANOUT_DEPTH=0 never spawns). The
+    // `root_provider` Arc is still constructed and moved into the handle's
+    // `_root_provider_arc` field (used in both builds); only the registry CALL is
+    // walled. A5.5 deletes the registry.
+    #[cfg(not(feature = "index-gc"))]
     crate::backend::models::gc_allocator::register_root_provider(
         &(Arc::clone(&root_provider)
             as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
@@ -2903,6 +2913,9 @@ fn parallel_collapse_dispatch(
             // Phase 9.1: register `item_expr` as a per-thread current-iter
             // GC root for the worker's lifetime (mirrors branch worker at
             // `:1730`). See `current_iter_root` module docs.
+            // A5.3: slab-only — see the branch-worker site above. `item_expr` stays
+            // used by the rest of this collapse-worker closure.
+            #[cfg(not(feature = "index-gc"))]
             let _current_iter_scope = super::current_iter_root::CurrentIterScope::enter(item_expr);
             // Phase 10.A — Stage 1e closure: re-establish the parent's
             // collapse-bind tracked-vars on the worker thread so
@@ -2999,6 +3012,11 @@ fn parallel_collapse_dispatch(
             items: Arc::clone(&items),
         },
     );
+    // A5.3: index-gc registers ZERO providers (parallel collapse contributes ∅ in
+    // the single-threaded index regime — downstream of `note_worker_spawned()`,
+    // never spawned at FANOUT_DEPTH=0). The `root_provider` Arc is still moved into
+    // `_root_provider_arc` (used in both builds); only the registry CALL is walled.
+    #[cfg(not(feature = "index-gc"))]
     crate::backend::models::gc_allocator::register_root_provider(
         &(Arc::clone(&root_provider)
             as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
@@ -3578,8 +3596,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Collect GC roots from deferred environment drops.
                 // These environments' MettaValues must be visible to the GC
                 // so it doesn't sweep values only reachable through them.
+                // A5.3: call the inherent structural reader `collect_roots_into`
+                // (kept unconditional) directly — byte-identical to the
+                // `RootProvider::collect_roots` it delegated to, and the
+                // `RootProvider` impl for E₀ is now slab-only (cfg-walled).
                 for deferred_env in &deferred_shared_drops {
-                    deferred_env.as_ref().collect_roots(concrete_roots);
+                    deferred_env.as_ref().collect_roots_into(concrete_roots);
                 }
             }
 
@@ -3621,7 +3643,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     env.shared.as_ref(),
                 );
                 for deferred_env in &deferred_shared_drops {
-                    deferred_env.as_ref().collect_roots(&mut new_roots);
+                    deferred_env.as_ref().collect_roots_into(&mut new_roots);
                 }
                 let mut new: Vec<usize> =
                     new_roots.iter().map(|v| v.inner_ptr() as usize).collect();
@@ -3733,7 +3755,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                 );
                 // The deferred-drop transient register (a per-activation local, not a machine-global).
                 for deferred_env in &deferred_shared_drops {
-                    deferred_env.as_ref().collect_roots(&mut midloop_roots);
+                    deferred_env.as_ref().collect_roots_into(&mut midloop_roots);
                 }
                 // The driver's program control (C), held ABOVE the trampoline, via the seam.
                 ctx.collect_driver_roots(&mut midloop_roots);

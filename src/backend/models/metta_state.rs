@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, MutexGuard};
 
-use super::gc_allocator::{register_root_provider, GcFactory, RootProvider};
+use super::gc_allocator::GcFactory;
+#[cfg(not(feature = "index-gc"))]
+use super::gc_allocator::{register_root_provider, RootProvider};
 use super::MettaValue;
 use crate::backend::environment::MettaEnvironment;
 
@@ -22,6 +24,7 @@ struct MettaStateGcRoots {
     output: Mutex<Vec<MettaValue>>,
 }
 
+#[cfg(not(feature = "index-gc"))]
 impl RootProvider for MettaStateGcRoots {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
         // Use blocking lock() — GC root collection MUST see all roots for
@@ -120,8 +123,11 @@ impl MettaState {
             output: Mutex::new(output),
         });
         // Register as GC root provider (Weak reference — auto-unregisters on drop)
-        let provider: Arc<dyn RootProvider> = gc_roots.clone();
-        register_root_provider(&provider);
+        #[cfg(not(feature = "index-gc"))]
+        {
+            let provider: Arc<dyn RootProvider> = gc_roots.clone();
+            register_root_provider(&provider);
+        }
 
         MettaState {
             gc_roots,

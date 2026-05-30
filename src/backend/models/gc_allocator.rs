@@ -32,6 +32,9 @@
 
 // Phase 1.1 PT-canonical Error tuple (Type, Ctx) — /* PT-swapped */
 use std::alloc::Layout;
+// A5.3/A5.4: `Any` is used only by the slab arm of `try_register_env_roots`
+// (the `Arc<dyn Any>` downcast); the index build's no-op arm doesn't need it.
+#[cfg(not(feature = "index-gc"))]
 use std::any::Any;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -4205,6 +4208,7 @@ pub fn maybe_process_gc_response_fast() -> bool {
 ///
 /// This is called from `GenericEnvironment::new()`, `make_owned()`,
 /// `fork_for_nondeterminism()`, `union()`, and `union_all()`.
+#[cfg(not(feature = "index-gc"))]
 pub fn try_register_env_roots<V>(
     shared: &Arc<crate::backend::environment::GenericEnvironmentShared<V>>,
 ) where
@@ -4235,6 +4239,28 @@ pub fn try_register_env_roots<V>(
         let provider: Arc<dyn RootProvider> = arena_shared;
         register_root_provider(&provider);
     }
+}
+
+/// CESK A5.3: index-gc build registers ZERO providers. E₀ (the persistent global
+/// environment) is read STRUCTURALLY by `collect_persistent_roots` via
+/// `GenericEnvironmentShared::<MettaValue>::collect_roots_into` — never through
+/// the `ROOT_REGISTRY` — so environment registration is a no-op here. The
+/// signature (incl. the `V` bound) survives because the 5 callers
+/// (`GenericEnvironment::new`/`make_owned`/`fork_for_nondeterminism`/`union`/
+/// `union_all`) invoke it unconditionally in both builds.
+#[cfg(feature = "index-gc")]
+#[inline]
+pub fn try_register_env_roots<V>(
+    _shared: &Arc<crate::backend::environment::GenericEnvironmentShared<V>>,
+) where
+    V: crate::backend::models::metta_value_trait::MettaValueTrait
+        + Clone
+        + Send
+        + Sync
+        + Unpin
+        + 'static,
+{
+    // E₀ is read structurally; no registry registration in the index regime.
 }
 
 /// Trigger a GC cycle using the global allocator, root registry, and GC pool.

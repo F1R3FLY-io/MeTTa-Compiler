@@ -37,6 +37,11 @@ mod arena_engine;
 // later increments read/write it at the cache-hit / rule-match / fork sites.
 pub(crate) mod binding_store;
 mod context;
+// A5.3: the per-thread current-iter GC root provider is a slab-only registry
+// mechanism; the index build registers ZERO providers (structural roots), so the
+// whole module is walled out there. Its 2 `CurrentIterScope::enter` call sites in
+// eval_loop.rs are correspondingly cfg-walled.
+#[cfg(not(feature = "index-gc"))]
 pub(crate) mod current_iter_root;
 pub(crate) mod dispatch_hints;
 pub mod engine;

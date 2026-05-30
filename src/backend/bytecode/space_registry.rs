@@ -24,11 +24,16 @@
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
+// `Arc`/`OnceLock` only back the slab-build's RootProvider registration cache (A5.3);
+// the index build registers no providers, so they would be unused there.
+#[cfg(not(feature = "index-gc"))]
 use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 
-use crate::backend::models::{register_root_provider, MettaValue, RootProvider, SpaceHandle};
+use crate::backend::models::{MettaValue, SpaceHandle};
+#[cfg(not(feature = "index-gc"))]
+use crate::backend::models::{register_root_provider, RootProvider};
 
 /// Global counter for unique space IDs
 static SPACE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -160,8 +165,10 @@ impl SpaceRegistry {
 /// Without this, atoms in JIT-created spaces (via `jit_runtime_eval_new`,
 /// `jit_runtime_load_space`) are invisible to GC and may be freed while still
 /// reachable, causing use-after-free / SEGV on unmapped pages.
+#[cfg(not(feature = "index-gc"))]
 struct SpaceRegistryRoots;
 
+#[cfg(not(feature = "index-gc"))]
 impl RootProvider for SpaceRegistryRoots {
     fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
         crate::backend::bytecode::global_space_registry().collect_all_gc_values(roots);
@@ -170,12 +177,17 @@ impl RootProvider for SpaceRegistryRoots {
 
 /// Keeps the Arc<dyn RootProvider> alive for the lifetime of the process so
 /// the Weak reference in ROOT_REGISTRY remains valid.
+#[cfg(not(feature = "index-gc"))]
 static SPACE_REGISTRY_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
 
 /// Ensure the space registry is registered as a GC root provider.
 ///
 /// Called from `global_space_registry()` on first access. Idempotent — OnceLock
 /// guarantees single initialization.
+///
+/// CESK A5.3: index-gc no-op — roots are read structurally by
+/// `collect_global_anchors` via `collect_all_gc_values`.
+#[cfg(not(feature = "index-gc"))]
 pub fn ensure_space_registry_roots_registered() {
     SPACE_REGISTRY_ROOT_PROVIDER.get_or_init(|| {
         let provider = Arc::new(SpaceRegistryRoots) as Arc<dyn RootProvider>;
@@ -183,6 +195,11 @@ pub fn ensure_space_registry_roots_registered() {
         provider
     });
 }
+
+/// CESK A5.3: index-gc no-op (empty registry; structural roots).
+#[cfg(feature = "index-gc")]
+#[inline]
+pub fn ensure_space_registry_roots_registered() {}
 
 #[cfg(test)]
 mod tests {

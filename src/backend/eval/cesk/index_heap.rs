@@ -396,9 +396,31 @@ impl IndexHeap {
 
     /// Sweep, co-releasing the side-arenas of any fully-dead released segments.
     pub fn sweep(&mut self) -> SweepStats {
-        // Drop hash-cons entries: a swept segment invalidates the `Addr`s they
-        // hold (Step 4 clear-on-sweep; matches the slab table's epoch clear).
-        self.hash_cons.clear();
+        // B1.c: retain only hash-cons entries whose interned `Addr` is still LIVE
+        // (marked this cycle by `mark`, which the collector calls immediately
+        // before `sweep` under the write lock — see `run_collection_if_triggered`).
+        // Dead entries (unmarked, so about to be reclaimed to the free list, or in
+        // a fully-dead segment about to be released) are dropped, so a later
+        // `intern_ground_sexpr` can never hit and hand back a reclaimed/released
+        // slot. This replaces the old unconditional `clear()`: live ground content
+        // keeps its canonical `Addr` across sweeps (stable `inner_ptr` identity),
+        // dead content is forgotten.
+        //
+        // Soundness: marks are read HERE, before `sweep_with` clears them. By
+        // induction every retained entry points at a marked (hence non-released)
+        // segment and new inter-sweep entries point at freshly-bumped live
+        // segments — release happens only inside `sweep_with`, after this retain —
+        // so `is_marked` is always bounds-safe. With no preceding `mark` all marks
+        // are 0 and this degenerates to the old `clear()` (still sound). Dropping
+        // only *released-segment* entries (and leaning on the lookup-time
+        // re-validation) is NOT sound: a kept entry whose slot was reclaimed to the
+        // free list but not yet reused has intact bytes, so a re-intern would hit
+        // and return a free slot — a UAF once that slot is popped by `alloc_fixed`.
+        {
+            let arena = &self.arena;
+            self.hash_cons
+                .retain(|_, v| v.as_arena_addr().is_some_and(|a| arena.is_marked(a)));
+        }
         let sides = &mut self.sides;
         self.arena.sweep_with(|seg| {
             if seg < sides.len() {
@@ -1512,6 +1534,47 @@ mod tests {
         // …but it still carries the variable flag and is structurally equal.
         assert_eq!(v1.tagged & 0xF, FLAG_HAS_VARIABLES);
         assert_eq!(v1, v2, "non-hash-consed SExprs remain structurally equal");
+
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn sweep_retains_live_hash_cons_drops_dead() {
+        // B1.c: sweep keeps the hash-cons entry for LIVE (marked) ground content
+        // and drops the entry for dead content — so re-interning live content HITS
+        // the same canonical Addr, while dead content is forgotten and re-allocated
+        // fresh (never a dangling hit on a reclaimed-but-intact slot).
+        use crate::backend::models::MettaValueFactory;
+        set_gc_mode_index();
+        let f = IndexFactory;
+        let mut heap = IndexHeap::with_segment_capacity(64);
+
+        // Two distinct ground SExprs (inline-scalar children → heap-independent).
+        let live = heap.intern_ground_sexpr(&[f.long(1), f.long(2)]);
+        let dead = heap.intern_ground_sexpr(&[f.long(3), f.long(4)]);
+        let live_addr = live.as_arena_addr().expect("live is an arena addr");
+        let dead_addr = dead.as_arena_addr().expect("dead is an arena addr");
+        assert_ne!(live_addr, dead_addr);
+
+        // Mark only `live`, then sweep (mirrors the collector's mark→sweep order).
+        heap.mark(&[live_addr]);
+        let _ = heap.sweep();
+
+        // Live content re-interns to the SAME Addr (entry retained).
+        let live2 = heap.intern_ground_sexpr(&[f.long(1), f.long(2)]);
+        assert_eq!(
+            live2.as_arena_addr(),
+            Some(live_addr),
+            "live ground content keeps its canonical Addr across sweep"
+        );
+        // Dead content re-interns to a FRESH Addr (the stale entry was dropped — not
+        // a dangling hit on the reclaimed slot).
+        let dead2 = heap.intern_ground_sexpr(&[f.long(3), f.long(4)]);
+        assert_ne!(
+            dead2.as_arena_addr(),
+            Some(dead_addr),
+            "dead content's entry dropped → re-allocated, not a free-slot hit"
+        );
 
         reset_gc_mode_slab();
     }

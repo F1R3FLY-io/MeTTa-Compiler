@@ -33,7 +33,11 @@
 
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::cell::UnsafeCell;
+use std::hint;
+use std::mem::MaybeUninit;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 /// Number of low bits of an [`Addr`] used for the intra-segment slot offset.
 /// 18 bits ⇒ up to 262_144 slots per segment (~6 MiB at 24 B/node, within the
@@ -115,49 +119,70 @@ pub trait ArenaNode: Copy {
 
 /// One segment: a fixed-capacity slot array plus its mark bitmap.
 ///
-/// `nodes` is preallocated to `capacity` so the storage never reallocates while
-/// the segment is alive (stable addresses). A released segment drops `nodes`
-/// (freeing the memory) and is flagged so the arena can detect a stale access
-/// in debug builds.
+/// `nodes` is allocated **once** to `capacity` `MaybeUninit` cells in [`new`] and
+/// never reallocated while the segment is alive — that stability is what makes a
+/// published slot reference sound to read lock-free (the plan's Finding 3). Each
+/// cell is an [`UnsafeCell`] so a node can be bump-written through a shared
+/// `&Segment` (the B2 `&self` allocation path) without a `&mut`.
+///
+/// Two cursors discipline concurrent bump allocation (B2.2 two-cursor protocol):
+/// `bump` *claims* a unique offset; `len` *publishes* the contiguous written
+/// prefix. A reader (the marker) reads a slot only for `off < len.load(Acquire)`,
+/// which — paired with the publisher's `Release` — guarantees the node bytes are
+/// fully written and visible (never uninit, never torn). See the type-level
+/// SAFETY block on [`IndexArena`].
 struct Segment<N: Copy> {
-    /// Slot storage; `len` slots are in use (`0..len` is the bump high-water).
-    nodes: Vec<N>,
-    /// Number of slots ever bump-allocated in this segment (the high-water).
-    len: usize,
+    /// Slot storage, `capacity` cells allocated once. A cell is initialized
+    /// (via `MaybeUninit::write`) exactly once, when its offset is claimed by
+    /// `bump`, before that offset is published into `len`.
+    nodes: Box<[UnsafeCell<MaybeUninit<N>>]>,
+    /// PUBLISH cursor: the count of fully-written, published slots. `0..len` is a
+    /// contiguous written prefix — the invariant `is_fully_dead`/`sweep`/
+    /// `live_node_count` rely on. Published with `Release`, read with `Acquire`.
+    len: AtomicUsize,
+    /// CLAIM cursor: high-water of *reserved* (claimed) slots, `len <= bump`.
+    /// `fetch_add(1, Relaxed)` hands each caller a unique offset.
+    bump: AtomicUsize,
     /// Per-slot mark bits, `ceil(capacity/64)` words. `AtomicU64` so a future
-    /// parallel/concurrent mark can set bits without a lock.
-    marks: Vec<AtomicU64>,
+    /// parallel/concurrent mark sets bits without a lock. **Ordering stays
+    /// `Relaxed` in B2** (B3 flips mark ordering to Release/Acquire).
+    marks: Box<[AtomicU64]>,
     /// Per-segment slot capacity.
     capacity: usize,
-    /// `true` once the segment has been released (its `nodes` dropped).
-    released: bool,
+    /// `true` once the segment has been released (its `nodes` storage dropped).
+    /// `AtomicBool` (read `Relaxed`) future-proofs the D-phase concurrent reader;
+    /// in B2 it is only flipped at quiescence under `&mut self`.
+    released: AtomicBool,
 }
 
 impl<N: Copy> Segment<N> {
     fn new(capacity: usize) -> Self {
         debug_assert!(capacity > 0 && capacity <= DEFAULT_SEGMENT_CAPACITY);
+        // `UnsafeCell`/`MaybeUninit`/`AtomicU64` are not `Clone`, so the storage
+        // is built from an iterator (one cell per slot) rather than `vec![..; n]`.
+        let nodes: Box<[UnsafeCell<MaybeUninit<N>>]> = (0..capacity)
+            .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+            .collect();
         let words = capacity.div_ceil(64);
-        let mut marks = Vec::with_capacity(words);
-        for _ in 0..words {
-            marks.push(AtomicU64::new(0));
-        }
+        let marks: Box<[AtomicU64]> = (0..words).map(|_| AtomicU64::new(0)).collect();
         Segment {
-            nodes: Vec::with_capacity(capacity),
-            len: 0,
+            nodes,
+            len: AtomicUsize::new(0),
+            bump: AtomicUsize::new(0),
             marks,
             capacity,
-            released: false,
+            released: AtomicBool::new(false),
         }
     }
 
     #[inline]
     fn is_full(&self) -> bool {
-        self.len >= self.capacity
+        self.bump.load(Ordering::Relaxed) >= self.capacity
     }
 
-    /// Set the mark bit for `offset`. Returns `true` if it was previously
-    /// unmarked (i.e. this call performed the marking), enabling the caller to
-    /// push newly-grayed nodes onto a worklist exactly once.
+    /// Set the mark bit for `offset`. Returns `true` if previously unmarked.
+    /// Ordering stays `Relaxed` in B2 (B3 introduces Release/Acquire mark
+    /// ordering for the concurrent marker).
     #[inline]
     fn set_mark(&self, offset: usize) -> bool {
         let bit = 1u64 << (offset & 63);
@@ -173,21 +198,20 @@ impl<N: Copy> Segment<N> {
 
     #[inline]
     fn clear_marks(&self) {
-        for w in &self.marks {
+        for w in self.marks.iter() {
             w.store(0, Ordering::Relaxed);
         }
     }
 
-    /// `true` if no slot in `0..len` is marked.
+    /// `true` if no slot in `0..len` is marked (B1.b word-parallel form preserved).
     ///
-    /// B1.b word-parallel fast path: OR together the complete mark words covering
-    /// `0..len` (one `AtomicU64::load` per 64 slots instead of per slot), masking
-    /// the final partial word to the valid low `len & 63` bits. Equivalent to the
-    /// per-slot scan — a segment is fully dead iff no in-range mark bit is set
-    /// (offsets `>= len` are never set by `set_mark`, so the mask only guards the
-    /// padding bits of the last word).
+    /// Reads the PUBLISH cursor with `Acquire` so that, paired with the
+    /// publisher's `Release`, every published slot's mark word is observed. OR
+    /// together the complete mark words covering `0..len` (one load per 64 slots),
+    /// masking the final partial word to the valid low `len & 63` bits (offsets
+    /// `>= len` are never set by `set_mark`, so the mask only guards padding bits).
     fn is_fully_dead(&self) -> bool {
-        let len = self.len;
+        let len = self.len.load(Ordering::Acquire);
         let full_words = len >> 6;
         for wi in 0..full_words {
             if self.marks[wi].load(Ordering::Relaxed) != 0 {
@@ -204,12 +228,83 @@ impl<N: Copy> Segment<N> {
         true
     }
 
-    /// Drop the slot storage, returning the byte estimate freed.
+    /// Borrow the published node at `offset`.
+    ///
+    /// # Safety
+    /// The caller must guarantee `offset < self.len.load(Acquire)` *as observed by
+    /// the calling thread*, i.e. `offset` lies in the published prefix. Publication
+    /// (`len.compare_exchange(.., Release)`) happens-after the slot's
+    /// `MaybeUninit::write`, so an `Acquire`-load of `len` that observes
+    /// `len > offset` also observes the fully-written node bytes. Under that
+    /// premise the cell is initialized and not concurrently mutated (a published
+    /// slot is rewritten only by free-list reuse, which runs only at quiescence —
+    /// see the `IndexArena` SAFETY block), so the `&N` is a valid shared borrow.
+    #[inline]
+    unsafe fn node_at(&self, offset: usize) -> &N {
+        // `UnsafeCell::get()` yields `*mut MaybeUninit<N>`; the reference produced
+        // does NOT borrow `&self` (it derives from the raw pointer), which is what
+        // lets `IndexArena::get`/`segment` return `&N` without aliasing conflicts.
+        let cell = self.nodes[offset].get();
+        (*cell).assume_init_ref()
+    }
+
+    /// Claim a unique slot offset by bumping the CLAIM cursor. Returns `None` once
+    /// the segment is full. `Relaxed` is sufficient: the offset is made safe to
+    /// read only by the subsequent `publish` (`Release`); the claim itself only
+    /// needs atomic uniqueness, which `fetch_add` provides on any ordering.
+    #[inline]
+    fn bump_one(&self) -> Option<usize> {
+        let off = self.bump.fetch_add(1, Ordering::Relaxed);
+        if off >= self.capacity {
+            None
+        } else {
+            Some(off)
+        }
+    }
+
+    /// Write `node` into the (uniquely claimed, exclusive) slot `off`.
+    ///
+    /// # Safety
+    /// `off` must have been returned by a prior `bump_one` on `self` and not yet
+    /// written — i.e. the caller holds the unique claim to `off` and `off` is not
+    /// yet published. Under that premise the write is exclusive (no other thread
+    /// can hold the same claim) and races no reader (`off >= len` until publish).
+    #[inline]
+    unsafe fn write_claimed(&self, off: usize, node: N) {
+        (*self.nodes[off].get()).write(node);
+    }
+
+    /// Publish slot `off` into the contiguous written prefix.
+    ///
+    /// Spins until `len == off`, then advances `len` to `off + 1` with `Release`
+    /// ordering (so the prior `write_claimed` happens-before any `Acquire`-load of
+    /// `len` that observes the new value). Keeps `[0, len)` a contiguous written
+    /// prefix even when claims complete out of order. Under the B2 single-bumper
+    /// scope the CAS always succeeds first try (`len == off` already), degenerating
+    /// to a `store(off+1, Release)`; the CAS form is implemented so the invariant
+    /// survives a future relaxation (concurrent bumpers within one segment).
+    #[inline]
+    fn publish(&self, off: usize) {
+        while self
+            .len
+            .compare_exchange_weak(off, off + 1, Ordering::Release, Ordering::Relaxed)
+            .is_err()
+        {
+            hint::spin_loop();
+        }
+    }
+
+    /// Drop the slot storage, returning the byte estimate freed. `&mut self`:
+    /// release runs only inside `sweep_with` at quiescence (exclusive access), so
+    /// the storage teardown cannot race a reader. The freed-byte estimate uses
+    /// `capacity` (storage is allocated once to `capacity`, never grown).
     fn release(&mut self) -> usize {
-        let freed = self.nodes.capacity() * std::mem::size_of::<N>();
-        self.nodes = Vec::new();
-        self.len = 0;
-        self.released = true;
+        let freed = self.capacity * std::mem::size_of::<N>();
+        // Drop the once-allocated cell storage.
+        self.nodes = Box::new([]);
+        self.len.store(0, Ordering::Relaxed);
+        self.bump.store(0, Ordering::Relaxed);
+        self.released.store(true, Ordering::Relaxed);
         freed
     }
 }
@@ -235,17 +330,32 @@ pub struct SweepStats {
 /// the live set, then [`sweep`](Self::sweep) rebuilds the free list from
 /// unmarked slots and releases fully-dead segments.
 pub struct IndexArena<N: Copy> {
-    segments: Vec<Segment<N>>,
-    /// Current bump-target segment.
-    cur_seg: usize,
+    /// Never-realloc segment directory: `MAX_SEGMENTS` cells, allocated once.
+    /// Cell `i` is initialized (its `Box<Segment>` written) exactly once, under
+    /// `dir_lock`, before `seg_count` is advanced past `i`. A reader dereferences
+    /// cell `i` only for `i < seg_count.load(Acquire)`.
+    segments: Box<[UnsafeCell<MaybeUninit<Box<Segment<N>>>>]>,
+    /// Published directory length (count of initialized cells). Monotone;
+    /// advanced with `Release` under `dir_lock`, read with `Acquire`.
+    seg_count: AtomicUsize,
+    /// Current bump-target segment index. Advanced with `Release` under
+    /// `dir_lock`; read with `Acquire`.
+    cur_seg: AtomicUsize,
+    /// Serializes directory growth (`open_segment`): the rare slow path. A plain
+    /// `Mutex<()>` — bump allocation does NOT take it (only the open of a fresh
+    /// segment does), so the steady-state fast path is lock-free.
+    dir_lock: Mutex<()>,
     /// Per-segment slot capacity for new segments.
     segment_capacity: usize,
-    /// Free slots reclaimed by the last sweep, consumed by allocation.
-    /// Rebuilt-from-scratch each sweep (never persisted across cycles), so a
-    /// slot in a released segment is never handed out.
+    /// Free slots reclaimed by the last sweep, consumed by allocation **at
+    /// quiescence only** (rebuilt-from-scratch each sweep, never persisted). Stays
+    /// a plain `Vec<Addr>` accessed under `&mut self`: it is touched only by
+    /// `sweep_with` (rebuild) and the quiescent `&mut self` `alloc` free-list path
+    /// — never by a concurrent `&self` bump — so no atomics are needed.
     free_list: Vec<Addr>,
-    /// Total live + free slots ever bump-allocated (diagnostics).
-    alloc_count: u64,
+    /// Total slots ever bump-allocated (diagnostics). `AtomicU64` so a concurrent
+    /// `&self` `bump_in`/`alloc` can increment it; read `Relaxed` (diagnostic only).
+    alloc_count: AtomicU64,
 }
 
 impl<N: Copy> Default for IndexArena<N> {
@@ -260,103 +370,205 @@ impl<N: Copy> IndexArena<N> {
         Self::with_segment_capacity(DEFAULT_SEGMENT_CAPACITY)
     }
 
-    /// A new arena whose segments hold `capacity` slots each. Small capacities
-    /// are used by tests to exercise multi-segment behavior cheaply.
+    /// A new arena whose segments hold `capacity` slots each. Small capacities are
+    /// used by tests to exercise multi-segment behavior cheaply.
+    ///
+    /// Allocates the full `MAX_SEGMENTS`-cell directory once (each cell is an
+    /// uninitialized `MaybeUninit<Box<Segment>>` — `8 * MAX_SEGMENTS = 128 KiB` of
+    /// pointer slots, see the risk note on directory cost), then opens segment 0.
     pub fn with_segment_capacity(capacity: usize) -> Self {
         assert!(
             capacity > 0 && capacity <= DEFAULT_SEGMENT_CAPACITY,
             "segment capacity {capacity} out of range 1..={DEFAULT_SEGMENT_CAPACITY}"
         );
-        let mut arena = IndexArena {
-            segments: Vec::new(),
-            cur_seg: 0,
+        // `UnsafeCell`/`MaybeUninit` are not `Clone`, so the directory is built
+        // from an iterator (one uninit cell per addressable segment index) rather
+        // than `vec![..; MAX_SEGMENTS]`. Allocated once, never reallocated.
+        let segments: Box<[UnsafeCell<MaybeUninit<Box<Segment<N>>>>]> = (0..MAX_SEGMENTS)
+            .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+            .collect();
+        let arena = IndexArena {
+            segments,
+            seg_count: AtomicUsize::new(0),
+            cur_seg: AtomicUsize::new(0),
+            dir_lock: Mutex::new(()),
             segment_capacity: capacity,
             free_list: Vec::new(),
-            alloc_count: 0,
+            alloc_count: AtomicU64::new(0),
         };
-        arena.open_segment();
+        arena.open_segment(); // publishes segment 0; sets cur_seg = 0
         arena
     }
 
     /// Open a fresh segment and make it the bump target. Returns its index.
-    fn open_segment(&mut self) -> usize {
-        assert!(
-            self.segments.len() < MAX_SEGMENTS,
-            "arena exhausted: {MAX_SEGMENTS} segments"
-        );
-        let idx = self.segments.len();
-        self.segments.push(Segment::new(self.segment_capacity));
-        self.cur_seg = idx;
+    ///
+    /// `&self`: takes `dir_lock` (the rare slow path — once per `capacity`
+    /// allocations), writes the next directory cell, then publishes it by
+    /// advancing `seg_count` (`Release`) and retargets `cur_seg` (`Release`). The
+    /// `Release` stores pair with the `Acquire` loads in `segment`/`current_seg`
+    /// so a reader that observes `i < seg_count` also observes the initialized
+    /// cell `i` (its `Box<Segment>` ptr and the segment's initial `len = 0`).
+    fn open_segment(&self) -> usize {
+        let _guard = self.dir_lock.lock().expect("index-arena dir_lock poisoned");
+        let idx = self.seg_count.load(Ordering::Relaxed); // exclusive under the guard
+        assert!(idx < MAX_SEGMENTS, "arena exhausted: {MAX_SEGMENTS} segments");
+        let seg = Box::new(Segment::new(self.segment_capacity));
+        // SAFETY: cell `idx` is not yet published (`idx == seg_count`), so no
+        // reader can observe it; under `dir_lock` we are the unique writer of this
+        // cell. Initialize it before publishing `idx` into `seg_count`.
+        unsafe {
+            (*self.segments[idx].get()).write(seg);
+        }
+        self.seg_count.store(idx + 1, Ordering::Release); // publish the cell
+        self.cur_seg.store(idx, Ordering::Release); // retarget bump
         idx
     }
 
-    /// Allocate `node`, returning its address. Prefers a reused free slot, else
-    /// bump-allocates in the current segment (opening a new one if full).
+    /// Borrow segment `i` of the published directory.
+    ///
+    /// # Safety
+    /// The caller must guarantee `i < self.seg_count.load(Acquire)` as observed by
+    /// the calling thread — i.e. cell `i` has been published by `open_segment`'s
+    /// `Release` store to `seg_count`, which happens-after the cell's
+    /// initialization. Under that premise the cell is initialized.
+    ///
+    /// The returned `&Segment<N>` derives from the raw pointer
+    /// `UnsafeCell::get()` returns (`*mut MaybeUninit<Box<Segment>>`), NOT from a
+    /// borrow of `&self.segments`. This is deliberate: the reference does not
+    /// borrow `self`, so `sweep_with` can hold a `&Segment` (to read its marks)
+    /// while *also* mutably borrowing `self.free_list` to push reclaimed slots —
+    /// the borrow-checker resolution in §4.
+    #[inline]
+    unsafe fn segment(&self, i: usize) -> &Segment<N> {
+        let cell = self.segments[i].get(); // *mut MaybeUninit<Box<Segment<N>>>
+        (*cell).assume_init_ref() // &Box<Segment<N>> -> &Segment<N> via Deref
+    }
+
+    /// The current bump-target segment index (published).
+    #[inline]
+    fn current_seg(&self) -> usize {
+        self.cur_seg.load(Ordering::Acquire)
+    }
+
+    /// Allocate `node`, returning its address. Prefers a reused free slot
+    /// (quiescence-only, `&mut self`), else bump-allocates in the current segment
+    /// (opening a new one if full). Byte-identical to the pre-B2 path: free-list
+    /// LIFO reuse, then fresh bump.
     pub fn alloc(&mut self, node: N) -> Addr {
-        self.alloc_count += 1;
         if let Some(addr) = self.free_list.pop() {
-            let seg = &mut self.segments[addr.segment()];
-            debug_assert!(!seg.released);
-            seg.nodes[addr.offset()] = node;
+            self.alloc_count.fetch_add(1, Ordering::Relaxed);
+            // SAFETY: `addr` came from the last sweep's reclaim of a *published*
+            // slot in a non-released segment; `&mut self` (quiescence) ⇒ no reader.
+            unsafe {
+                let seg = self.segment(addr.segment());
+                debug_assert!(!seg.released.load(Ordering::Relaxed));
+                // Overwrite the (already-initialized, already-published) slot in
+                // place — exclusive under `&mut self`. The slot stays published
+                // (len unchanged), so no publish step.
+                (*seg.nodes[addr.offset()].get()).write(node);
+            }
             return addr;
         }
-        // Bump in the current segment, advancing past full/released segments.
+        // Fresh bump (the path a concurrent producer also takes, but here under
+        // `&mut self`). Delegates to the `&self` primitive for a single impl.
+        self.alloc_bump(node)
+    }
+
+    /// Fresh-bump-only allocation — `&self`, lock-free-capable. Claims a unique
+    /// slot via the current segment's atomic `bump` cursor, writes the node, and
+    /// publishes it; opens a fresh segment when the current one is full. **Never
+    /// touches the free list** (free-list reuse is `&mut self`/quiescence-only, so
+    /// a concurrent claim can never alias a reused slot — the ABA/torn-node class
+    /// B2 avoids; TLA+ `NoConcurrentFree`). This is the substrate B3 TLABs use.
+    pub fn alloc_bump(&self, node: N) -> Addr {
         loop {
-            let seg = &mut self.segments[self.cur_seg];
-            if !seg.released && !seg.is_full() {
-                let off = seg.len;
-                debug_assert_eq!(seg.nodes.len(), off);
-                seg.nodes.push(node);
-                seg.len += 1;
-                return Addr::new(self.cur_seg as u32, off as u32);
+            let si = self.current_seg();
+            // SAFETY: `si == cur_seg < seg_count` (cur_seg is only ever set to a
+            // published index by `open_segment`), so the cell is initialized.
+            let seg = unsafe { self.segment(si) };
+            if !seg.released.load(Ordering::Relaxed) {
+                if let Some(off) = seg.bump_one() {
+                    // SAFETY: `off` uniquely claimed by this thread (no aliasing);
+                    // not yet published, so it races no reader.
+                    unsafe { seg.write_claimed(off, node) };
+                    seg.publish(off);
+                    self.alloc_count.fetch_add(1, Ordering::Relaxed);
+                    return Addr::new(si as u32, off as u32);
+                }
             }
+            // Current segment full/released: open a fresh one and retry. Multiple
+            // threads may race here; `open_segment` serializes under `dir_lock`,
+            // and a loser simply re-reads the advanced `cur_seg` next iteration.
             self.open_segment();
         }
     }
 
-    /// Borrow the node at `addr`.
+    /// Borrow the node at `addr`. The slot must be published (it is, for any
+    /// `Addr` ever returned by allocation — allocation publishes before returning).
     #[inline]
     pub fn get(&self, addr: Addr) -> &N {
-        let seg = &self.segments[addr.segment()];
-        debug_assert!(
-            !seg.released,
-            "get on a released segment {}",
-            addr.segment()
-        );
-        &seg.nodes[addr.offset()]
+        // SAFETY: `addr.segment()` was published (it indexes a segment that
+        // produced `addr` via allocation, so `< seg_count`); `addr.offset()` was
+        // published before `addr` was handed out (`alloc`/`bump_in` publish then
+        // return), so `offset < len` for this thread. Not released (a live `Addr`
+        // names a non-released segment — release only at quiescence after the
+        // marker proved it unreachable).
+        unsafe {
+            let seg = self.segment(addr.segment());
+            debug_assert!(
+                !seg.released.load(Ordering::Relaxed),
+                "get on a released segment {}",
+                addr.segment()
+            );
+            debug_assert!(
+                addr.offset() < seg.len.load(Ordering::Acquire),
+                "get on an unpublished offset {}",
+                addr.offset()
+            );
+            seg.node_at(addr.offset())
+        }
     }
 
-    /// Mutably borrow the node at `addr`.
+    /// Mutably borrow the node at `addr`. **Stays `&mut self`** — its only caller
+    /// is the arena's own cycle test; `IndexHeap` never exposes a mutable node
+    /// borrow (the value model is immutable post-publish). `&mut self` ⇒ exclusive
+    /// ⇒ no concurrent reader, so the in-place rewrite is sound.
     #[inline]
     pub fn get_mut(&mut self, addr: Addr) -> &mut N {
-        let seg = &mut self.segments[addr.segment()];
-        debug_assert!(!seg.released);
-        &mut seg.nodes[addr.offset()]
+        // SAFETY: `&mut self` is exclusive; `addr` names a published, non-released
+        // slot (see `get`). The `&mut N` aliases nothing.
+        unsafe {
+            let cell = self.segment(addr.segment()).nodes[addr.offset()].get();
+            (*cell).assume_init_mut()
+        }
     }
 
-    /// Mark `addr` live. Returns `true` if it was newly marked (was unmarked).
+    /// Mark `addr` live. Returns `true` if newly marked. `&self` (already was) —
+    /// `set_mark` is an atomic `fetch_or`.
     #[inline]
     pub fn mark(&self, addr: Addr) -> bool {
-        self.segments[addr.segment()].set_mark(addr.offset())
+        // SAFETY: `addr.segment() < seg_count` (it names a live, published slot).
+        unsafe { self.segment(addr.segment()) }.set_mark(addr.offset())
     }
 
     /// Whether `addr` is currently marked.
     #[inline]
     pub fn is_marked(&self, addr: Addr) -> bool {
-        self.segments[addr.segment()].is_marked(addr.offset())
+        // SAFETY: as `mark`.
+        unsafe { self.segment(addr.segment()) }.is_marked(addr.offset())
     }
 
-    /// Number of segments currently allocated (including released ones, which
-    /// retain their index slot so addresses stay stable).
+    /// Number of segments currently published (including released ones, which
+    /// retain their directory cell so addresses stay stable).
     #[inline]
     pub fn segment_count(&self) -> usize {
-        self.segments.len()
+        self.seg_count.load(Ordering::Acquire)
     }
 
     /// Total allocations performed (diagnostics).
     #[inline]
     pub fn alloc_count(&self) -> u64 {
-        self.alloc_count
+        self.alloc_count.load(Ordering::Relaxed)
     }
 
     /// Number of slots currently on the free list.
@@ -376,9 +588,12 @@ impl<N: Copy> IndexArena<N> {
     pub fn committed_node_bytes(&self) -> usize {
         let per = std::mem::size_of::<N>();
         let mut total = 0usize;
-        for seg in &self.segments {
-            if !seg.released {
-                total += seg.nodes.capacity() * per;
+        let n = self.seg_count.load(Ordering::Acquire);
+        for si in 0..n {
+            // SAFETY: si < seg_count ⇒ published.
+            let seg = unsafe { self.segment(si) };
+            if !seg.released.load(Ordering::Relaxed) {
+                total += seg.capacity * per;
             }
         }
         total
@@ -391,9 +606,12 @@ impl<N: Copy> IndexArena<N> {
     #[inline]
     pub fn live_node_count(&self) -> usize {
         let mut total = 0usize;
-        for seg in &self.segments {
-            if !seg.released {
-                total += seg.len;
+        let n = self.seg_count.load(Ordering::Acquire);
+        for si in 0..n {
+            // SAFETY: si < seg_count ⇒ published.
+            let seg = unsafe { self.segment(si) };
+            if !seg.released.load(Ordering::Relaxed) {
+                total += seg.len.load(Ordering::Acquire);
             }
         }
         total
@@ -424,35 +642,53 @@ impl<N: Copy> IndexArena<N> {
         // Rebuild the free list from scratch (never persist across cycles).
         self.free_list.clear();
 
-        let seg_count = self.segments.len();
+        let seg_count = self.seg_count.load(Ordering::Acquire);
+        let cur = self.cur_seg.load(Ordering::Acquire);
         for si in 0..seg_count {
-            if self.segments[si].released {
+            // Read this segment through a RAW POINTER local, NOT the `segment()`
+            // helper: `segment()` returns `&Segment` whose lifetime is threaded
+            // through `&self`, which the borrow checker then treats as a live
+            // shared borrow of `*self` for the whole loop body — conflicting with
+            // `self.free_list.push` (E0502). A `*mut Segment` derived from
+            // `UnsafeCell::get()` carries no lifetime (it launders through a raw
+            // pointer, §4), so the per-use `&*seg_ptr` / `&mut *seg_ptr` borrows
+            // are independent of `self` and coexist with `&mut self.free_list`.
+            // SAFETY: si < seg_count ⇒ published; `&mut self` ⇒ quiescence, no
+            // concurrent mutator, so reading marks/len and (for release) taking a
+            // `&mut Segment` is exclusive. The cell is initialized (published).
+            let seg_ptr: *mut Segment<N> = unsafe {
+                // `assume_init_mut()` yields `&mut Box<Segment<N>>`; deref the Box
+                // (`**`) to reach the `Segment`, then take a transient `&mut` and
+                // cast to a raw pointer (the `&mut` is consumed by the cast, not
+                // held — so it neither aliases nor outlives anything).
+                &mut **(*self.segments[si].get()).assume_init_mut() as *mut Segment<N>
+            };
+            if unsafe { (*seg_ptr).released.load(Ordering::Relaxed) } {
                 continue;
             }
-            let is_current = si == self.cur_seg;
-            let fully_dead = self.segments[si].is_fully_dead();
+            let is_current = si == cur;
+            let fully_dead = unsafe { (*seg_ptr).is_fully_dead() };
 
             if fully_dead && !is_current {
-                // Whole-segment release (never the current bump target, so the
-                // arena always has a live segment to allocate into).
                 on_release(si);
-                stats.bytes_released += self.segments[si].release();
+                // Take a `&mut Segment` through the raw pointer to drop its storage.
+                // SAFETY: `&mut self` is exclusive; no other reference to this
+                // segment is live across this point.
+                let seg_mut: &mut Segment<N> = unsafe { &mut *seg_ptr };
+                stats.bytes_released += seg_mut.release();
                 stats.segments_released += 1;
                 continue;
             }
 
-            // Partially-live (or the current segment): reclaim unmarked slots.
-            // B1.b word-parallel fast path: per complete mark word, skip the
-            // per-bit loop when the word is all-live (`u64::MAX` -> 64 live) or
-            // all-dead (`0` -> 64 contiguous free slots); only mixed words and the
-            // final partial word fall back to the per-bit test. Push order stays
-            // increasing-`off`, so the free list (and its LIFO reuse order) is
-            // byte-identical to the per-slot scan.
-            let len = self.segments[si].len;
+            // Partially-live (or current): reclaim unmarked slots. B1.b
+            // word-parallel fast path preserved verbatim — only the slot read
+            // changes to `seg.marks[..]` and the length to `seg.len.load(Acquire)`.
+            let seg: &Segment<N> = unsafe { &*seg_ptr };
+            let len = seg.len.load(Ordering::Acquire);
             let full_words = len >> 6;
             let rem = len & 63;
             for wi in 0..full_words {
-                let word = self.segments[si].marks[wi].load(Ordering::Relaxed);
+                let word = seg.marks[wi].load(Ordering::Relaxed);
                 let base = wi << 6;
                 if word == u64::MAX {
                     stats.live += 64;
@@ -473,7 +709,7 @@ impl<N: Copy> IndexArena<N> {
                 }
             }
             if rem != 0 {
-                let word = self.segments[si].marks[full_words].load(Ordering::Relaxed);
+                let word = seg.marks[full_words].load(Ordering::Relaxed);
                 let base = full_words << 6;
                 for b in 0..rem {
                     if (word & (1u64 << b)) != 0 {
@@ -484,12 +720,15 @@ impl<N: Copy> IndexArena<N> {
                     }
                 }
             }
-            self.segments[si].clear_marks();
+            seg.clear_marks();
         }
 
         // If the current segment was released-eligible but kept, or all
         // non-current segments died, ensure cur_seg points at a usable segment.
-        if self.segments[self.cur_seg].released {
+        // SAFETY: cur < seg_count ⇒ published.
+        let cur_released =
+            unsafe { self.segment(cur) }.released.load(Ordering::Relaxed);
+        if cur_released {
             self.open_segment();
         }
         stats
@@ -527,38 +766,90 @@ impl<N: Copy> IndexArena<N> {
         marked
     }
 
-    /// Ensure the current segment can bump-allocate a node slot, opening a fresh
-    /// segment if the current one is full or released. Returns the segment index
-    /// that will receive the next [`bump_in`]. Variable-length allocation calls
-    /// this first so a node and its side-arena data co-locate in one segment.
-    pub fn ensure_bump_room(&mut self) -> usize {
+    /// Ensure the current segment can bump-allocate, opening a fresh segment if
+    /// full/released. Returns the segment index for the next `bump_in`. `&self`.
+    pub fn ensure_bump_room(&self) -> usize {
         loop {
-            let seg = &self.segments[self.cur_seg];
-            if !seg.released && !seg.is_full() {
-                return self.cur_seg;
+            let si = self.current_seg();
+            // SAFETY: si == cur_seg < seg_count ⇒ published.
+            let seg = unsafe { self.segment(si) };
+            if !seg.released.load(Ordering::Relaxed) && !seg.is_full() {
+                return si;
             }
             self.open_segment();
         }
     }
 
-    /// Bump-allocate `node` into `seg` (which must be the current, non-full,
-    /// non-released segment, as just returned by [`ensure_bump_room`]). Bypasses
-    /// the free list so the caller controls co-location with side-arena data.
-    pub fn bump_in(&mut self, seg: usize, node: N) -> Addr {
+    /// Bump-allocate `node` into `seg` (must be the current, non-full, non-released
+    /// segment from `ensure_bump_room`). `&self`: claims a unique offset, writes,
+    /// publishes. Bypasses the free list (caller controls side-arena co-location).
+    pub fn bump_in(&self, seg: usize, node: N) -> Addr {
         assert_eq!(
-            seg, self.cur_seg,
+            seg,
+            self.current_seg(),
             "bump_in target must be the current segment"
         );
-        let s = &mut self.segments[seg];
-        debug_assert!(!s.released && !s.is_full());
-        let off = s.len;
-        debug_assert_eq!(s.nodes.len(), off);
-        s.nodes.push(node);
-        s.len += 1;
-        self.alloc_count += 1;
+        // SAFETY: seg == cur_seg < seg_count ⇒ published.
+        let s = unsafe { self.segment(seg) };
+        debug_assert!(!s.released.load(Ordering::Relaxed));
+        let off = s
+            .bump_one()
+            .expect("bump_in called on a full segment (ensure_bump_room contract)");
+        // SAFETY: `off` uniquely claimed; not yet published ⇒ no reader race.
+        unsafe { s.write_claimed(off, node) };
+        s.publish(off);
+        self.alloc_count.fetch_add(1, Ordering::Relaxed);
         Addr::new(seg as u32, off as u32)
     }
 }
+
+// SAFETY: `IndexArena<N>` contains `UnsafeCell`s (in the segment directory and in
+// each segment's slot storage), which makes it `!Sync`/`!Send` by default. The
+// following manual impls are sound because every `&self` access to interior-
+// mutable state obeys the B2 concurrency protocol:
+//
+//   (i)   UNIQUE CLAIM. A slot is *written* only after `bump.fetch_add(1, Relaxed)`
+//         hands the writing thread a unique offset. No two threads ever obtain the
+//         same offset, so the `MaybeUninit::write` is exclusive — no writer aliases
+//         another writer.
+//
+//   (ii)  PUBLISHED READS ONLY, RELEASE/ACQUIRE-ORDERED. A reader (`get`/`node_at`/
+//         the marker) dereferences slot `off` only for `off < len.load(Acquire)`.
+//         The writer publishes with `len.CAS(off→off+1, Release)` *after* its
+//         `write`, so an `Acquire`-load observing `len > off` happens-after the
+//         write ⇒ the reader sees fully-initialized, non-torn bytes. A slot is
+//         never read before it is published ⇒ no uninit/torn read, no read/write
+//         race.
+//
+//   (iii) DIRECTORY PUBLICATION. A reader dereferences directory cell `i` only for
+//         `i < seg_count.load(Acquire)`. `open_segment` initializes cell `i` then
+//         does `seg_count.store(i+1, Release)` (under `dir_lock`, the unique
+//         writer of cell `i`), so observing `i < seg_count` happens-after the
+//         cell's initialization ⇒ the `Box<Segment>` ptr and the segment's initial
+//         `len = 0` are visible before the reader indexes it.
+//
+//   (iv)  FREE-LIST REUSE AT QUIESCENCE. The only in-place rewrite of an *already-
+//         published* slot is free-list reuse (`alloc`'s pop path) and the only
+//         producer of free slots is `sweep_with`. Both are `&mut self` and run
+//         only at a quiescent safepoint (the collector gate is closed whenever any
+//         worker exists). `&mut self` is statically exclusive of every `&self`
+//         reader/bumper, so reuse never races a concurrent access (ABA-free by
+//         construction; TLA+ `NoConcurrentFree`).
+//
+// Hence no data race on any field. `Send` additionally requires `N: Send` (the
+// arena owns `N` values it may hand to another thread); `Sync` additionally
+// requires `N: Send + Sync` (a shared `&IndexArena` lets multiple threads obtain
+// `&N`, and moving an `N` out — none of the API does, but the bound is the
+// conventional, conservative one). `free_list: Vec<Addr>` and the atomics/`Mutex`
+// are all `Send`/`Sync` for `Addr: Send + Sync`.
+unsafe impl<N: Copy + Send> Send for IndexArena<N> {}
+unsafe impl<N: Copy + Send + Sync> Sync for IndexArena<N> {}
+
+// SAFETY: `Segment<N>`'s interior mutability (the `UnsafeCell` slot cells) is
+// disciplined by the same claim/publish protocol as `IndexArena` (see above);
+// `marks`/`len`/`bump`/`released` are atomics. Sound for the same N bounds.
+unsafe impl<N: Copy + Send> Send for Segment<N> {}
+unsafe impl<N: Copy + Send + Sync> Sync for Segment<N> {}
 
 impl<N: ArenaNode> IndexArena<N> {
     /// Transitively mark every node reachable from `roots`, returning the count
@@ -658,6 +949,35 @@ mod tests {
         assert!(!arena.mark(a), "second mark returns false (idempotent)");
         assert!(arena.is_marked(a));
         assert!(!arena.is_marked(b), "marking a must not mark b");
+    }
+
+    #[test]
+    fn alloc_bump_fresh_only_skips_free_list() {
+        // `alloc_bump` (&self) must NEVER consume the free list — it claims fresh
+        // bump space only. Sweep frees a slot; a following `alloc_bump` bumps past
+        // it (free_slots stays nonzero), whereas `alloc` (&mut) would reuse it.
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(64);
+        let a = arena.alloc(1);
+        let b = arena.alloc(2);
+        // Mark `a` (the LIVE slot); `b` is unmarked and becomes the freed slot.
+        arena.mark(a);
+        let stats = arena.sweep();
+        assert_eq!(stats.reclaimed_to_free_list, 1, "the unmarked slot (b) is freed");
+        assert_eq!(arena.free_slots(), 1);
+        // `&self` fresh bump: does not pop the free list (it bumps past it).
+        let c = arena.alloc_bump(3);
+        assert_eq!(arena.free_slots(), 1, "alloc_bump leaves the free list intact");
+        assert_ne!(c, b, "alloc_bump did not reuse the freed slot");
+        assert_ne!(c, a, "alloc_bump did not clobber the live slot");
+        assert_eq!(*arena.get(c), 3);
+        // And `alloc` (&mut) still reuses the freed slot, proving the two paths
+        // differ as designed. The reused slot is `b` (the freed one), NOT `a`
+        // (which stayed live/marked and is never on the free list).
+        let d = arena.alloc(4);
+        assert_eq!(arena.free_slots(), 0, "alloc reuses the freed slot");
+        assert_eq!(d, b, "alloc reused the freed slot (b) LIFO");
+        assert_ne!(d, a, "the live slot a was never freed, so never reused");
+        assert_eq!(*arena.get(a), 1, "the live slot a is intact");
     }
 
     #[test]
@@ -972,5 +1292,167 @@ mod tests {
         assert_eq!(stats.live, 2, "seg0[99] + live1");
         assert_eq!(stats.reclaimed_to_free_list, 99, "seg 0's other 99 slots freed");
         assert_eq!(*arena.get(seg0[99]), 99, "the live partial-word slot is intact");
+    }
+}
+
+// ============================================================================
+// loom model — the bump/publish/read protocol proof (B2)
+// ============================================================================
+//
+// Builds only under `--cfg loom`. loom exhaustively explores every
+// Acquire/Release interleaving of: two writer threads each claim a unique slot
+// (`bump.fetch_add`), write it, and publish it contiguously
+// (`len.CAS(off→off+1, Release)`); a reader thread loads `len` (Acquire) and
+// reads every published slot. The model asserts the three B2 invariants:
+//   (i)   no two writers ever obtain the same offset (unique claim);
+//   (ii)  every slot the reader reads is fully written (no uninit / torn read);
+//   (iii) `len` is always a contiguous written prefix `[0, len)`.
+//
+// RUN (capped, FOREGROUND — an uncapped loom run can blow memory exploring the
+// state space). VERIFIED-GREEN command:
+//   RUSTFLAGS="--cfg loom -C target-cpu=native" LOOM_MAX_PREEMPTIONS=2 \
+//     systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=1200% \
+//     cargo test --release --lib --features index-gc \
+//     backend::eval::cesk::index_arena::loom_model -- --nocapture
+// (`-C target-cpu=native` is RE-ADDED because setting RUSTFLAGS overrides
+// .cargo/config.toml, which would otherwise drop the gxhash AES/SSE2 flags.)
+// TWO requirements, both load-bearing (each empirically needed — without them the
+// run fails, NOT a protocol bug):
+//   * `--release`: loom runs each thread on a fixed-size `generator` coroutine
+//     stack; the DEBUG-profile frame of this large crate overflows it ("coroutine
+//     has overflowed its stack", failing on the first thread in 0.00s). Release's
+//     smaller frames fit. loom's model checking is runtime (its instrumented
+//     atomics/cells track accesses regardless of opt level), so release is a valid
+//     check; assert! fires in release too.
+//   * `LOOM_MAX_PREEMPTIONS=2`: bounds the schedule tree for tractability (this
+//     model's meaningful interleavings — the two publish orders + the reader's
+//     observation point — are all within 2 preemptions).
+// The model itself uses the STRONG `compare_exchange` (not `_weak`) and
+// `thread::yield_now()` (not `hint::spin_loop()`) — see `claim_write_publish`.
+#[cfg(loom)]
+mod loom_model {
+    use super::*;
+    use loom::cell::UnsafeCell;
+    use loom::sync::atomic::{AtomicUsize, Ordering};
+    use loom::sync::Arc;
+    use loom::thread;
+
+    /// Minimal mirror of `Segment`'s slot machinery (the protocol under test),
+    /// over loom's instrumented `UnsafeCell`/atomics. `CAP` slots; two writers,
+    /// one reader. Values are `usize` (a per-writer tagged payload) so the reader
+    /// can assert it read a fully-written, sensible value (not torn/uninit).
+    struct LoomSeg {
+        slots: Vec<UnsafeCell<MaybeUninit<usize>>>,
+        len: AtomicUsize,
+        bump: AtomicUsize,
+        cap: usize,
+    }
+    // SAFETY: same protocol as `Segment` (claim-unique / publish-Release /
+    // read-published); loom verifies the absence of races.
+    unsafe impl Sync for LoomSeg {}
+    unsafe impl Send for LoomSeg {}
+
+    impl LoomSeg {
+        fn new(cap: usize) -> Self {
+            LoomSeg {
+                slots: (0..cap).map(|_| UnsafeCell::new(MaybeUninit::uninit())).collect(),
+                len: AtomicUsize::new(0),
+                bump: AtomicUsize::new(0),
+                cap,
+            }
+        }
+        fn bump_one(&self) -> Option<usize> {
+            let off = self.bump.fetch_add(1, Ordering::Relaxed);
+            if off >= self.cap { None } else { Some(off) }
+        }
+        // claim+write+publish for a single value; returns the claimed offset.
+        fn claim_write_publish(&self, value: usize) -> Option<usize> {
+            let off = self.bump_one()?;
+            // exclusive: `off` uniquely claimed.
+            self.slots[off].with_mut(|p| unsafe { (*p).write(value) });
+            // Publish contiguously: spin until `len == off`. TWO loom-model-only
+            // adaptations (production `Segment::publish` keeps `compare_exchange_weak`
+            // + `hint::spin_loop()`, which are correct there):
+            //   (1) STRONG `compare_exchange` (not `_weak`): loom models a weak CAS
+            //       as able to fail SPURIOUSLY, so a weak CAS in a spin loop lets
+            //       loom explore unboundedly many spurious failures within a SINGLE
+            //       execution — the coroutine never exits the loop and overflows its
+            //       stack. The strong CAS fails only when `len != off` (a real wait
+            //       on the lower-offset writer), which is bounded. The protocol proof
+            //       (contiguity / Release-Acquire happens-before / no-torn-read) is
+            //       identical — weak only adds benign retries that re-establish the
+            //       same invariant.
+            //   (2) `thread::yield_now()` (not `hint::spin_loop()`): a waiter blocked
+            //       on a lower offset must YIELD to loom's scheduler so that writer
+            //       is run; a CPU `spin_loop` is not a loom scheduling point.
+            while self
+                .len
+                .compare_exchange(off, off + 1, Ordering::Release, Ordering::Relaxed)
+                .is_err()
+            {
+                thread::yield_now();
+            }
+            Some(off)
+        }
+    }
+
+    #[test]
+    fn loom_two_writers_one_reader_bump_publish() {
+        loom::model(|| {
+            const CAP: usize = 4;
+            let seg = Arc::new(LoomSeg::new(CAP));
+
+            // Two writers, each publishing one tagged value.
+            let w1 = {
+                let seg = seg.clone();
+                thread::spawn(move || seg.claim_write_publish(0xA0)) // tag A
+            };
+            let w2 = {
+                let seg = seg.clone();
+                thread::spawn(move || seg.claim_write_publish(0xB0)) // tag B
+            };
+
+            // Reader: observe the published prefix and read every slot in it.
+            let r = {
+                let seg = seg.clone();
+                thread::spawn(move || {
+                    let n = seg.len.load(Ordering::Acquire);
+                    // (iii) len is a contiguous prefix: 0..=2 (0, 1, or both done).
+                    assert!(n <= CAP, "len {n} exceeded capacity {CAP}");
+                    for off in 0..n {
+                        // (ii) every published slot is fully written: the value is
+                        // exactly one of the two tags, never uninit/torn. loom
+                        // would surface a data race here if the read could observe
+                        // an unpublished/half-written slot.
+                        let v = seg.slots[off].with(|p| unsafe { (*p).assume_init() });
+                        assert!(v == 0xA0 || v == 0xB0, "slot {off} read torn/uninit value {v:#x}");
+                    }
+                    n
+                })
+            };
+
+            let o1 = w1.join().expect("w1");
+            let o2 = w2.join().expect("w2");
+            let _ = r.join().expect("r");
+
+            // (i) unique claim: the two writers got DIFFERENT offsets.
+            if let (Some(a), Some(b)) = (o1, o2) {
+                assert_ne!(a, b, "two writers claimed the same offset {a}");
+            }
+
+            // Final state: both published ⇒ len == 2, prefix fully written.
+            let final_len = seg.len.load(Ordering::Acquire);
+            assert_eq!(final_len, 2, "both writers must have published");
+            let mut seen = [false; 2];
+            for off in 0..final_len {
+                let v = seg.slots[off].with(|p| unsafe { (*p).assume_init() });
+                match v {
+                    0xA0 => seen[0] = true,
+                    0xB0 => seen[1] = true,
+                    other => panic!("unexpected published value {other:#x}"),
+                }
+            }
+            assert!(seen[0] && seen[1], "both tags present in the contiguous prefix");
+        });
     }
 }

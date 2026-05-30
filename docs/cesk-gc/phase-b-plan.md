@@ -97,9 +97,21 @@ debug oracle (the least-trivially-safe B1 item).
 
 ## B2 — concurrent arena interior (THE PARALLELISM GATE, CAVEAT 3)
 
-Make `alloc`/`bump_in`/`open_segment` take `&self` (lock-free w.r.t. each other and a concurrent marker
-reading published slots); keep `sweep`/`release`/free-list-reuse `&mut self` at quiescence. Dissolves the
-#1 wall-clock lever: the single `RwLock<IndexHeap>` that serializes ALL allocation.
+> **Precise line-level design + adversarial-review verdict: `docs/cesk-gc/phase-b2-impl-design.md`.**
+> Key reframing from that review (supersedes the B2.1/B2.2/B2.3 split below): `IndexHeap` keeps its
+> `RwLock` `.write()` for side-arena mutation, so making `IndexArena` `&self` is **byte-identical at
+> runtime** (still serialized). B2 therefore makes the arena interior lock-free-*CAPABLE* and proves the
+> bump/publish protocol with a **loom model in isolation** — the end-to-end FANOUT>0 concurrency-flip
+> (former "B2.3") moves to **D-phase** (when the IndexHeap side-arena spine also goes `&self`). Net:
+> **B2 = ONE commit** (UnsafeCell directory + two-cursor protocol + `alloc(&mut)`/`alloc_bump(&self)`
+> split + `unsafe impl Send/Sync` + loom), gated by **wall (byte-identical) + ASAN@FANOUT=0 + loom**
+> (NOT TLA+ — TLA+ extension defers to D's actual concurrency). `get_mut` stays `&mut self` (no non-test
+> caller). 128 KiB directory/arena accepted (one runtime arena, ~1 page resident; ~4 MiB transient tests).
+
+Make `alloc_bump`/`bump_in`/`ensure_bump_room`/`open_segment` take `&self` (lock-free w.r.t. each other and
+a concurrent marker reading published slots); keep `alloc` (free-list reuse) + `sweep`/`release` `&mut self`
+at quiescence. Dissolves the #1 wall-clock lever: the single `RwLock<IndexHeap>` that serializes ALL
+allocation (delivered end-to-end in D, once the side-arena spine joins).
 
 ### B2.1 — never-realloc segment directory
 `segments: Vec<Segment<N>>` (222) reallocs on `open_segment`'s `push` (272) → invalidates any `&Segment`

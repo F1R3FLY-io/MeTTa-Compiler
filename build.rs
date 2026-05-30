@@ -4,6 +4,13 @@ use std::process::Command;
 use std::time::SystemTime;
 
 fn main() {
+    // Declare the `loom` custom cfg (used by the B2 IndexArena bump/publish loom
+    // model in src/backend/eval/cesk/index_arena.rs) so rustc does NOT emit an
+    // `unexpected_cfgs` warning under normal builds — which would break the
+    // "lib 49 warnings BOTH builds" green-wall gate. `loom` code compiles only
+    // under `--cfg loom` (a dedicated, capped lane); it is inert otherwise.
+    println!("cargo::rustc-check-cfg=cfg(loom)");
+
     // Part 1: Tree-Sitter parser generation
     regenerate_tree_sitter_parser();
 

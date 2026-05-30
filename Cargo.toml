@@ -313,6 +313,13 @@ proptest = "1.9"
 # System info - RSS monitoring for memory leak stress tests
 sysinfo = "0.33"
 
+# loom — concurrency permutation model checker for the B2 IndexArena bump/publish
+# protocol (src/backend/eval/cesk/index_arena.rs). Compiled ONLY under `--cfg loom`
+# (a dedicated, capped lane), so it never enters the normal build/test graph and
+# never perturbs the lib-49-warnings gate.
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
 [[bench]]
 name = "parser_benchmark"
 harness = false

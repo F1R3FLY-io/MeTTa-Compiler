@@ -3601,6 +3601,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // machine root (S∪C∪K, k-spine, the 9 caches, E₀, deferred).
                 let mut driver_c_vals: Vec<MettaValue> = Vec::new();
                 ctx.collect_driver_roots(&mut driver_c_vals);
+                // ∪ SAFEPOINT_ROOTS — the narrow driver-transport channel (the
+                // driver's cross-directive result accumulator + cache snapshot). A
+                // kept apparatus channel (not structural); the flip keeps feeding it.
+                crate::backend::models::collect_safepoint_roots(&mut driver_c_vals);
                 let mut driver_c: Vec<usize> =
                     driver_c_vals.iter().map(|v| v.inner_ptr() as usize).collect();
                 driver_c.sort_unstable();
@@ -3668,9 +3672,31 @@ fn eval_trampoline_inner<C: EvalContext>(
             // committed-bytes watermark drives the trigger (the slab `is_gc_
             // requested()`-gated safepoint dance below is a separate path).
             if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {
-                let mut midloop_roots: Vec<MettaValue> =
-                    crate::backend::models::collect_all_roots();
-                midloop_roots.extend_from_slice(root_set.roots());
+                // A4.4 FLIP (midloop): feed the collector from the STRUCTURAL machine reader —
+                //   collect_machine_roots(S, C, K, E₀) ∪ the deferred-drop transient register
+                //   ∪ the driver-C program (MettaState.{source,output}) via ctx.collect_driver_roots.
+                // This is EXACTLY the NEW ∪ KEPT the A4.3 oracle (above, ~3560) just proved is a
+                // superset of the discovered OLD (collect_all_roots ∪ root_set) — so the flip is a
+                // PROVEN superset at this site. collect_all_roots()/root_set survive (still fed to
+                // the oracle's OLD) until A5 deletes the apparatus.
+                let mut midloop_roots: Vec<MettaValue> = Vec::with_capacity(root_set.len() + 64);
+                crate::backend::eval::cesk::roots::collect_machine_roots(
+                    &mut midloop_roots,
+                    &machine_operand_stack,
+                    &work,
+                    &work_stack,
+                    &continuations,
+                    env.shared.as_ref(),
+                );
+                // The deferred-drop transient register (a per-activation local, not a machine-global).
+                for deferred_env in &deferred_shared_drops {
+                    deferred_env.as_ref().collect_roots(&mut midloop_roots);
+                }
+                // The driver's program control (C), held ABOVE the trampoline, via the seam.
+                ctx.collect_driver_roots(&mut midloop_roots);
+                // ∪ SAFEPOINT_ROOTS — the narrow driver-transport channel (driver result
+                // accumulator + cache snapshot). Kept (not structural); A5.4 narrows it.
+                crate::backend::models::collect_safepoint_roots(&mut midloop_roots);
                 crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered_midloop(
                     &midloop_roots,
                 );

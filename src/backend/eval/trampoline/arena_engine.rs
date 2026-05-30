@@ -377,6 +377,32 @@ mod tests {
         );
     }
 
+    /// CESK A4.4 — QUIESCENCE machine-equivalence oracle CI invariant.
+    ///
+    /// Drives several directives through `eval()` (the quiescence collection site,
+    /// eval/mod.rs) with the committed-bytes watermark forced to 0 so the index
+    /// collector fires at EVERY quiescence. Under `--features index-gc` +
+    /// `debug_assertions` the A4.4 quiescence oracle (`assert_quiescence_superset`)
+    /// fires each time; reaching the end without panicking == `OLD ⊆ NEW∪KEPT` held
+    /// at every quiescence collection. (The authoritative gate is the debug index
+    /// conformance subset on real programs; this pins it in `cargo nextest` CI.)
+    ///
+    /// `MIN_BYTES` is parsed once — set it BEFORE any eval; nextest isolates each
+    /// test in its own process, so this does not leak to other tests.
+    #[test]
+    #[cfg(all(debug_assertions, feature = "index-gc"))]
+    fn a4_4_quiescence_oracle_holds() {
+        std::env::set_var("METTATRON_INDEX_GC_MIN_BYTES", "0");
+        let src = "!(+ 1 2)\n!(* 3 4)\n!(if (== 1 1) (+ 5 6) 0)";
+        let state = crate::compile(src).expect("compile");
+        let mut env = new_env();
+        for expr in state.source_snapshot() {
+            // eval() runs the quiescence collector (+ the A4.4 oracle) at each return.
+            let r = crate::backend::eval::eval(expr, env, &state);
+            env = r.1;
+        }
+    }
+
     #[test]
     fn test_add_atom_rule_becomes_reducible() {
         // Bug A+B fix: add-atom should not evaluate its atom arg AND should

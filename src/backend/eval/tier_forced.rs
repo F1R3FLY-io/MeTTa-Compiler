@@ -282,13 +282,42 @@ pub fn eval_with_tier(
     // Cheap pre-check (gate + watermark) avoids the `collect_all_roots()` walk on
     // every eval; only build the root set when a collection will actually fire.
     if crate::backend::eval::cesk::index_heap::index_gc::should_collect() {
-        let mut roots = crate::backend::models::collect_all_roots();
-        if let TierEvalOutcome::Ok { results, .. } | TierEvalOutcome::Demoted { results, .. } =
-            &outcome
+        // A4.4 FLIP (quiescence, forced-tier): same shape as eval()'s flip. C∪K empty.
+        // The E₀ env + result values live inside `outcome`'s Ok/Demoted arms; the driver-C
+        // program is the `state` param. NotApplicable allocates no result garbage and does
+        // not drop the env, so it contributes only the global-anchor + driver-C roots.
+        // collect_all_roots() survives in the oracle's OLD until A5.
+        let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
+        if let TierEvalOutcome::Ok { results, env, .. }
+        | TierEvalOutcome::Demoted { results, env, .. } = &outcome
         {
+            // ── A4.4 quiescence machine-equivalence oracle (debug-only; index-gc only) ──
+            #[cfg(debug_assertions)]
+            if crate::backend::models::metta_value::gc_mode_is_index() {
+                crate::backend::eval::cesk::roots::assert_quiescence_superset(
+                    results,
+                    env.shared.as_ref(),
+                    state,
+                );
+            }
+            crate::backend::eval::cesk::roots::collect_persistent_roots(
+                &mut roots,
+                env.shared.as_ref(),
+            );
             roots.reserve(results.len());
             roots.extend(results.iter().copied());
+        } else {
+            // NotApplicable: no env/results (tier_applicable returned before any tier ran ⇒
+            // no per-call transient garbage; the env was never moved out). The global anchors
+            // + K-spine + driver-C are the complete live set for this rare arm.
+            crate::backend::eval::cesk::roots::collect_global_anchors(&mut roots);
+            crate::backend::eval::cesk::k_spine::collect_k_spine(&mut roots);
         }
+        // The driver's program control (C), held above the trampoline.
+        state.collect_driver_program_roots(&mut roots);
+        // KEPT narrow driver-transport channel: SAFEPOINT_ROOTS (driver result
+        // accumulator + cache snapshot). NOT replaced by the structural reader.
+        crate::backend::models::collect_safepoint_roots(&mut roots);
         crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots);
     }
 

@@ -3824,7 +3824,17 @@ pub fn register_temporary_roots(roots: Vec<MettaValue>) -> SafepointRootHandle {
 ///
 /// Called from `collect_all_roots()` to include trampoline-resident values
 /// in the GC root set alongside environment roots.
-fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
+///
+/// CESK A4.4: this is the NARROW driver-transport channel (the plan's "keep
+/// SAFEPOINT_ROOTS narrow" — register_temporary_roots publication buffers like
+/// the conformance runner's cross-directive result accumulator, plus the
+/// thread-local cache snapshot via CACHE_ROOT_HANDLE). The structural reader does
+/// NOT replace it; the A4.4 flip + the machine-equivalence oracles read it as a
+/// KEPT channel (so dropping it from the live feed would free the driver's
+/// accumulated results → UAF). A5.4 narrows it further. `pub(crate)` for those
+/// callers. (`pub` to match `collect_all_roots`'s re-export convention; the
+/// `models` module is crate-internal.)
+pub fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
     if let Some(registry) = SAFEPOINT_ROOTS.get() {
         let guard = registry.lock();
         for root_set in guard.iter().flatten() {

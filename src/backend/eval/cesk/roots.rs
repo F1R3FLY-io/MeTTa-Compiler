@@ -321,14 +321,131 @@ pub fn collect_machine_roots(
         crate::backend::models::MettaValue,
     >,
 ) {
-    // S ∪ C ∪ K ∪ reach(E₀-env), via the RootSet structural reader.
+    // S ∪ C ∪ K (control registers), via the RootSet structural reader. `collect_all`
+    // CLEARS its own buffer, so we collect into a fresh RootSet and append — `out`'s
+    // pre-existing contents are preserved.
     let mut rs = RootSet::with_capacity(out.len() + 64);
-    rs.collect_structural(operand_stack, current_work, work_stack, continuations, env0);
+    rs.collect_all(operand_stack, current_work, work_stack, continuations);
     out.extend(rs.drain_into_vec());
-    // ∪ E₀'s global singleton caches.
+    // ∪ reach(E₀-env) ∪ global anchors ∪ K-spine — the persistent structural roots.
+    // (Byte-identical to the prior `collect_structural` + anchors + k_spine: same
+    // pointer multiset in the same order — see docs/cesk-gc/a4-4-collector-flip-design.md.)
+    collect_persistent_roots(out, env0);
+}
+
+/// CESK Phase A4.4 — the **persistent** structural root reader: the machine-global
+/// roots live at EVERY safepoint, INCLUDING true quiescence (where the control
+/// registers S∪C∪K are empty and there is no current `WorkItem`):
+///
+/// ```text
+/// persistent_roots = reach(E₀-env)         — the persistent global environment struct
+///                  ∪ collect_global_anchors  — E₀'s global singleton caches (5+4)
+///                  ∪ collect_k_spine         — the native-stack K-spine
+/// ```
+///
+/// Exactly the non-control-register part of [`collect_machine_roots`]. The two
+/// quiescence collectors (`eval()` / `eval_with_tier`, C∪K empty post-`EvalGuard`)
+/// consume THIS (∪ the about-to-return result values ∪ the driver-C program), while
+/// `collect_machine_roots` = `collect_all`(S∪C∪K) ∪ this (for the midloop safepoint,
+/// where C∪K are live). Appends to `out` (never clears).
+pub fn collect_persistent_roots(
+    out: &mut Vec<crate::backend::models::MettaValue>,
+    env0: &crate::backend::environment::core::GenericEnvironmentShared<
+        crate::backend::models::MettaValue,
+    >,
+) {
+    // reach(E₀-env) — the persistent global environment, read structurally.
+    env0.collect_roots_into(out);
+    // ∪ E₀'s global singleton caches (5 OnceLock + 4 thread-local).
     collect_global_anchors(out);
     // ∪ the native-stack K-spine (suspended activations + live VM leaves).
     super::k_spine::collect_k_spine(out);
+}
+
+/// CESK Phase A4.4 — the QUIESCENCE machine-equivalence oracle. Asserts the discovered
+/// quiescence root set (`collect_all_roots()` ∪ `result`) is covered by the structural
+/// PERSISTENT reader (`collect_persistent_roots` ∪ `result`) UNION the legitimately-kept
+/// driver-C program (`MettaState.{source,output}`). The safety direction (no protected
+/// root dropped) for the A4.4 flip of the two quiescence collectors. Debug-only; the
+/// callers gate it on `gc_mode_is_index()` (in slab mode `collect_all_roots`' frame-chain
+/// roots have no structural mirror — the structural reader is the index-gc root source).
+/// PERMANENT CI invariant, kept until A5 deletes the discovery apparatus.
+#[cfg(debug_assertions)]
+pub fn assert_quiescence_superset(
+    result: &[crate::backend::models::MettaValue],
+    env0: &crate::backend::environment::core::GenericEnvironmentShared<
+        crate::backend::models::MettaValue,
+    >,
+    state: &crate::backend::models::MettaState,
+) {
+    // OLD = the discovered set the BEFORE feed consumed: collect_all_roots()
+    // (ROOT_REGISTRY ∪ SAFEPOINT_ROOTS) ∪ the about-to-return result values.
+    let mut old_vals: Vec<crate::backend::models::MettaValue> =
+        crate::backend::models::collect_all_roots();
+    old_vals.extend(result.iter().copied());
+    let mut old: Vec<usize> = old_vals.iter().map(|v| v.inner_ptr() as usize).collect();
+
+    // NEW = the structural PERSISTENT reader (reach E₀-env ∪ global anchors ∪ K-spine)
+    // ∪ the about-to-return result values. (No collect_machine_roots: C∪K are empty at
+    // quiescence, so there is no current WorkItem and no control registers.)
+    let mut new_vals: Vec<crate::backend::models::MettaValue> = Vec::with_capacity(old.len() + 64);
+    collect_persistent_roots(&mut new_vals, env0);
+    new_vals.extend(result.iter().copied());
+    let mut new: Vec<usize> = new_vals.iter().map(|v| v.inner_ptr() as usize).collect();
+
+    // KEPT = the apparatus roots A4.4 does NOT replace structurally:
+    //  (1) the driver's program control (C): MettaState.source + .output (re-homed A5.3b); and
+    //  (2) SAFEPOINT_ROOTS — the NARROW driver-transport channel (the conformance/REPL/driver
+    //      cross-directive result accumulator via register_temporary_roots + the thread-local
+    //      cache snapshot via CACHE_ROOT_HANDLE). The plan keeps SAFEPOINT_ROOTS narrow; the
+    //      structural reader does NOT cover the driver's accumulated results, so they are KEPT
+    //      (else the flipped collector would free them → UAF). A5.4 narrows it.
+    let mut kept_vals: Vec<crate::backend::models::MettaValue> = Vec::new();
+    state.collect_driver_program_roots(&mut kept_vals);
+    crate::backend::models::collect_safepoint_roots(&mut kept_vals);
+    let mut kept: Vec<usize> = kept_vals.iter().map(|v| v.inner_ptr() as usize).collect();
+
+    old.sort_unstable();
+    old.dedup();
+    new.sort_unstable();
+    new.dedup();
+    kept.sort_unstable();
+    kept.dedup();
+
+    // OLD ⊆ (NEW ∪ KEPT): every discovered root is structural (NEW) or the kept driver-C.
+    let missing: Vec<usize> = old
+        .iter()
+        .copied()
+        .filter(|p| new.binary_search(p).is_err() && kept.binary_search(p).is_err())
+        .collect();
+    if !missing.is_empty() {
+        let sample: Vec<String> = missing.iter().take(16).map(|p| format!("{:#x}", p)).collect();
+        let missing_set: std::collections::HashSet<usize> = missing.iter().copied().collect();
+        let missing_dbg: Vec<String> = old_vals
+            .iter()
+            .filter(|v| missing_set.contains(&(v.inner_ptr() as usize)))
+            .take(8)
+            .map(|v| format!("{:?}", v))
+            .collect();
+        panic!(
+            "A4.4 QUIESCENCE machine-equivalence oracle FAILED: discovered OLD is NOT \
+             covered by (structural-persistent NEW ∪ driver-C KEPT). |OLD|={} |NEW|={} \
+             |KEPT|={} |missing|={}\n  sample missing inner_ptrs (<=16): [{}]\n  missing \
+             values (<=8): [{}]\n  At true quiescence C∪K are empty, so a missing root \
+             means: (a) a thread-local cache not in collect_global_anchors; (b) a transient \
+             register (a result value not passed in, or a deferred-env not yet drained) \
+             unaccounted; (c) a global anchor (tiered/bytecode/memo/space/compiler) the \
+             persistent reader omits; (d) a driver-C root (MettaState.source/output) not \
+             exposed via collect_driver_program_roots; (e) an env-struct root \
+             collect_roots_into misses.",
+            old.len(),
+            new.len(),
+            kept.len(),
+            missing.len(),
+            sample.join(", "),
+            missing_dbg.join(" | "),
+        );
+    }
 }
 
 // ============================================================================

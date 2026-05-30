@@ -264,9 +264,37 @@ pub fn eval(
     // Cheap pre-check (gate + watermark) avoids the `collect_all_roots()` walk on
     // every eval; only build the root set when a collection will actually fire.
     if crate::backend::eval::cesk::index_heap::index_gc::should_collect() {
-        let mut roots = crate::backend::models::collect_all_roots();
-        roots.reserve(result.0.len());
+        // ── A4.4 quiescence machine-equivalence oracle (debug-only; index-gc only) ──
+        // Asserts the structural-persistent feed below covers the discovered set the
+        // BEFORE feed used (collect_all_roots ∪ result). Gated on gc_mode_is_index()
+        // (slab has no structural mirror for frame-chain roots). PERMANENT CI invariant.
+        #[cfg(debug_assertions)]
+        if crate::backend::models::metta_value::gc_mode_is_index() {
+            crate::backend::eval::cesk::roots::assert_quiescence_superset(
+                &result.0,
+                result.1.shared.as_ref(),
+                state,
+            );
+        }
+        // A4.4 FLIP (quiescence): feed the collector from the PERSISTENT structural reader —
+        //   collect_persistent_roots(E₀)        — reach(E₀-env) ∪ global anchors ∪ K-spine
+        //   ∪ result.0                          — the about-to-return values (a Rust local)
+        //   ∪ state.collect_driver_program_roots — the driver's program control (C).
+        // C∪K are empty post-EvalGuard ⇒ NO current WorkItem ⇒ collect_persistent_roots
+        // (not collect_machine_roots). collect_all_roots() survives in the oracle's OLD
+        // until A5. Use `result.1.shared` (the consumed `env` was moved into eval_inner).
+        let mut roots: Vec<MettaValue> = Vec::with_capacity(result.0.len() + 64);
+        crate::backend::eval::cesk::roots::collect_persistent_roots(
+            &mut roots,
+            result.1.shared.as_ref(),
+        );
         roots.extend(result.0.iter().copied());
+        state.collect_driver_program_roots(&mut roots);
+        // KEPT narrow driver-transport channel: SAFEPOINT_ROOTS (the driver's
+        // cross-directive result accumulator via register_temporary_roots + the
+        // thread-local cache snapshot). NOT replaced by the structural reader —
+        // dropping it would free the driver's accumulated results → UAF. (A5.4 narrows.)
+        crate::backend::models::collect_safepoint_roots(&mut roots);
         crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots);
     }
 

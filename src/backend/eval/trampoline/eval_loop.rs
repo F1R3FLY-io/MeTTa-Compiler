@@ -3090,6 +3090,11 @@ fn parallel_collapse_threshold() -> usize {
 /// is reconstructed from the VM's bytecode chunk + execution stacks, rooted by
 /// `with_vm_roots_frame`), and the VM's result re-enters this activation only as
 /// a `Resume` pushed onto `work_stack` (covered from that point on).
+// A5.1: SLAB-ONLY. The index build roots the suspended-spine (C, K) structurally
+// via the typed K-spine `SuspendedActivation::Spine` (see the cfg-split guard push
+// below), so this frame_chain payload struct + its collector are compiled only for
+// the slab build (deleted with frame_chain at F4).
+#[cfg(not(feature = "index-gc"))]
 struct TrampolineFrameRoots {
     work_stack: *const Vec<WorkItem>,
     continuations: *const Vec<Continuation>,
@@ -3105,6 +3110,7 @@ struct TrampolineFrameRoots {
 /// is dropped before those `Vec`s go out of scope (both are locals of the same
 /// `eval_trampoline_inner` activation), so the pointers are valid for the
 /// frame's whole lifetime. Read-only.
+#[cfg(not(feature = "index-gc"))]
 unsafe fn collect_trampoline_frame_roots(data: *const (), out: &mut Vec<MettaValue>) {
     let r = unsafe { &*(data as *const TrampolineFrameRoots) };
     let work_stack = unsafe { &*r.work_stack };
@@ -3315,10 +3321,16 @@ fn eval_trampoline_inner<C: EvalContext>(
     // pushed, so the slab frame-chain walk is byte-identical to before. The
     // `TrampolineFrameRoots` struct and guard are stack locals that drop at
     // function exit; the raw pointers they hold name in-scope `Vec`s.
+    //
+    // A5.1: the frame_chain half is now SLAB-ONLY (`#[cfg(not(index-gc))]`, kept
+    // verbatim/byte-identical). The index build's sole spine root source is the
+    // typed K-spine `Spine` guard pushed unconditionally below.
+    #[cfg(not(feature = "index-gc"))]
     let _tramp_roots = TrampolineFrameRoots {
         work_stack: &work_stack as *const Vec<WorkItem>,
         continuations: &continuations as *const Vec<Continuation>,
     };
+    #[cfg(not(feature = "index-gc"))]
     let _tramp_frame_guard: Option<crate::backend::eval::frame_chain::EvalFrameGuard> =
         if crate::backend::models::metta_value::gc_mode_is_index() {
             // SAFETY: `_tramp_roots` outlives the guard (both are locals of this
@@ -3341,22 +3353,38 @@ fn eval_trampoline_inner<C: EvalContext>(
     // references the SAME in-scope `work_stack` (C) and `continuations` (K), read
     // structurally by `collect_k_spine`. Declared after `_tramp_frame_guard`, so
     // it drops first (LIFO); both Vecs outlive both guards.
-    let _tramp_kspine_guard: Option<
-        crate::backend::eval::cesk::k_spine::SuspendedActivationGuard,
-    > = if crate::backend::models::metta_value::gc_mode_is_index() {
-        // SAFETY: `work_stack` / `continuations` outlive this guard (locals of
-        // this activation, dropped after it) with stable addresses (declared
-        // once, mutated in place). `collect_k_spine` reads them read-only.
-        Some(unsafe {
-            crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
-                crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
-                    work_stack: &work_stack as *const Vec<WorkItem>,
-                    continuations: &continuations as *const Vec<Continuation>,
-                },
-            )
-        })
-    } else {
-        None
+    #[cfg(not(feature = "index-gc"))]
+    let _tramp_kspine_guard: Option<crate::backend::eval::cesk::k_spine::SuspendedActivationGuard> =
+        if crate::backend::models::metta_value::gc_mode_is_index() {
+            // SAFETY: `work_stack` / `continuations` outlive this guard (locals of
+            // this activation, dropped after it) with stable addresses (declared
+            // once, mutated in place). `collect_k_spine` reads them read-only.
+            Some(unsafe {
+                crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
+                    crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
+                        work_stack: &work_stack as *const Vec<WorkItem>,
+                        continuations: &continuations as *const Vec<Continuation>,
+                    },
+                )
+            })
+        } else {
+            None
+        };
+
+    // A5.1 INDEX build: the typed K-spine `Spine` record is the SOLE mid-execution
+    // root source for this activation (read by `collect_machine_roots` ->
+    // `collect_k_spine`). Unconditional — the index build always runs index GC mode.
+    // SAFETY: `work_stack`/`continuations` outlive this guard (locals of this
+    // activation, dropped after it) with stable addresses (declared once, mutated in
+    // place); `collect_k_spine` reads them read-only.
+    #[cfg(feature = "index-gc")]
+    let _tramp_kspine_guard = unsafe {
+        crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
+            crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
+                work_stack: &work_stack as *const Vec<WorkItem>,
+                continuations: &continuations as *const Vec<Continuation>,
+            },
+        )
     };
 
     // Final result storage
@@ -3522,6 +3550,15 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Collect roots from all caller frames in the thread-local chain.
             // This protects values held by callers of nested trampolines
             // (e.g., compiled expressions in eval_include_generic).
+            //
+            // A5.1: SLAB-ONLY. In the index build the spine/VM/ExprVec roots are
+            // carried structurally by the K-spine (read by NEW = collect_machine_roots
+            // at the collection site below), so this frame_chain contribution to the
+            // oracle's OLD `root_set` is cfg-walled out in lock-step — OLD shrinks,
+            // NEW unchanged, OLD ⊆ NEW ∪ KEPT preserved. SAFE: the real index collector
+            // reads NEW (`midloop_roots`), not `root_set` (verified at the
+            // `should_collect_midloop()` flip below) — so this drops no live root.
+            #[cfg(not(feature = "index-gc"))]
             {
                 let concrete_roots = root_set.as_mut_vec();
                 crate::backend::eval::frame_chain::collect_frame_chain_roots(concrete_roots);
@@ -3563,8 +3600,11 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // (collect_all ∪ frame_chain ∪ 4 caches ∪ deferred-env roots) ∪
                 // `collect_all_roots()` (ROOT_REGISTRY ∪ SAFEPOINT_ROOTS) — exactly
                 // what the midloop set (below) and the quiescence collectors consume.
-                let mut old: Vec<usize> =
-                    root_set.roots().iter().map(|v| v.inner_ptr() as usize).collect();
+                let mut old: Vec<usize> = root_set
+                    .roots()
+                    .iter()
+                    .map(|v| v.inner_ptr() as usize)
+                    .collect();
                 for v in crate::backend::models::collect_all_roots() {
                     old.push(v.inner_ptr() as usize);
                 }
@@ -3605,8 +3645,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // driver's cross-directive result accumulator + cache snapshot). A
                 // kept apparatus channel (not structural); the flip keeps feeding it.
                 crate::backend::models::collect_safepoint_roots(&mut driver_c_vals);
-                let mut driver_c: Vec<usize> =
-                    driver_c_vals.iter().map(|v| v.inner_ptr() as usize).collect();
+                let mut driver_c: Vec<usize> = driver_c_vals
+                    .iter()
+                    .map(|v| v.inner_ptr() as usize)
+                    .collect();
                 driver_c.sort_unstable();
                 driver_c.dedup();
 
@@ -3615,13 +3657,14 @@ fn eval_trampoline_inner<C: EvalContext>(
                 let missing: Vec<usize> = old
                     .iter()
                     .copied()
-                    .filter(|p| {
-                        new.binary_search(p).is_err() && driver_c.binary_search(p).is_err()
-                    })
+                    .filter(|p| new.binary_search(p).is_err() && driver_c.binary_search(p).is_err())
                     .collect();
                 if !missing.is_empty() {
-                    let sample: Vec<String> =
-                        missing.iter().take(16).map(|p| format!("{:#x}", p)).collect();
+                    let sample: Vec<String> = missing
+                        .iter()
+                        .take(16)
+                        .map(|p| format!("{:#x}", p))
+                        .collect();
                     panic!(
                         "A4.3 machine-equivalence oracle FAILED at safepoint: discovered \
                          OLD is NOT covered by (structural NEW ∪ driver-C KEPT). |OLD|={} \
@@ -3809,14 +3852,18 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Push the popped work item back so it can be resumed
             work_stack.push(work);
             let depth_hint = continuations.last().map(|c| c.depth_hint()).unwrap_or(0) as u32;
-            // Drop the mid-execution-rooting frame BEFORE moving `work_stack` /
-            // `continuations` into `SuspendedEval` — the frame holds raw pointers
-            // into them, so it must be unregistered from the chain first. (This
-            // yield path is the parallel-worker cooperative-yield and is
-            // unreachable in the single-threaded index-gc regime where the frame
-            // is actually pushed, but dropping explicitly keeps the raw-pointer
-            // contract sound unconditionally.)
+            // Drop the mid-execution-rooting guard BEFORE moving `work_stack` /
+            // `continuations` into `SuspendedEval` — it holds raw pointers into them,
+            // so it must be unregistered first. (This yield path is the parallel-
+            // worker cooperative-yield, unreachable in the single-threaded index-gc
+            // regime where the guard is pushed, but dropping explicitly keeps the
+            // raw-pointer contract sound unconditionally.)
+            // A5.1: slab drops the frame_chain guard (byte-identical); the index
+            // build drops its sole K-spine `Spine` guard (plan §2.1).
+            #[cfg(not(feature = "index-gc"))]
             drop(_tramp_frame_guard);
+            #[cfg(feature = "index-gc")]
+            drop(_tramp_kspine_guard);
             return crate::backend::eval::cesk::EvalOutcome::Yielded(
                 crate::backend::eval::cesk::SuspendedEval {
                     work_stack,

@@ -8471,6 +8471,10 @@ fn test_trail_mark_undo_new_binding() {
 /// contribute every value on its `value_stack` and `locals` to the GC root set
 /// gathered by `collect_frame_chain_roots` (the exact path the mid-loop
 /// safepoint uses). After the frame guard drops, those roots disappear.
+// A5.1: SLAB-ONLY — asserts the frame_chain root path. The index build asserts
+// the equivalent typed K-spine path in `..._index` below (with_vm_roots_frame
+// returns a VmLeaf guard there, not a frame_chain frame).
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn vm_frame_under_trampoline_contributes_roots() {
     use crate::backend::eval::frame_chain::collect_frame_chain_roots;
@@ -8539,6 +8543,8 @@ fn vm_frame_under_trampoline_contributes_roots() {
 /// must contribute their respective live execution stacks, modeling the
 /// arbitrarily-deep VM↔trampoline nest. This is the structural guarantee that
 /// makes the whole nested execution context a complete root source.
+// A5.1: SLAB-ONLY (frame_chain path); index sibling `..._index` below.
+#[cfg(not(feature = "index-gc"))]
 #[test]
 fn nested_vm_frames_each_contribute_roots() {
     use crate::backend::eval::frame_chain::collect_frame_chain_roots;
@@ -8593,5 +8599,115 @@ fn nested_vm_frames_each_contribute_roots() {
     assert!(
         !after_inner.iter().any(|v| v == &inner_val),
         "inner VM frame's roots are gone once its guard drops"
+    );
+}
+
+// ── A5.1 index-build siblings: the same nested-VM rooting guarantees, but via
+// the typed K-spine (`VmLeaf::Vm` -> `collect_k_spine`), which is the index
+// collector's structural root source. `with_vm_roots_frame` returns a
+// `VmLeafGuard` under `--features index-gc`. ─────────────────────────────────
+
+/// Index sibling of `vm_frame_under_trampoline_contributes_roots`.
+#[cfg(feature = "index-gc")]
+#[test]
+fn vm_frame_under_trampoline_contributes_roots_index() {
+    use crate::backend::eval::cesk::k_spine::collect_k_spine;
+
+    let mut builder = ChunkBuilder::new("vm-roots-test-index");
+    builder.emit(Opcode::Return);
+    let chunk = builder.build_arc();
+    let mut vm = BytecodeVM::new(chunk);
+
+    let stack_a = MettaValue::Atom("vm-stack-sentinel-A");
+    let stack_b = MettaValue::Atom("vm-stack-sentinel-B");
+    let local_c = MettaValue::Atom("vm-local-sentinel-C");
+    vm.value_stack.push(stack_a.clone());
+    vm.value_stack.push(stack_b.clone());
+    vm.locals.push(local_c.clone());
+
+    let mut before: Vec<MettaValue> = Vec::new();
+    collect_k_spine(&mut before);
+    assert!(
+        !before.iter().any(|v| v == &stack_a),
+        "VM stack value must NOT be a K-spine root before the guard is pushed"
+    );
+
+    {
+        let _vm_roots_guard = vm
+            .with_vm_roots_frame()
+            .expect("with_vm_roots_frame must register a VmLeaf for V == MettaValue");
+
+        let mut roots: Vec<MettaValue> = Vec::new();
+        collect_k_spine(&mut roots);
+        assert!(
+            roots.iter().any(|v| v == &stack_a),
+            "value_stack[0] must be enumerated by the VmLeaf::Vm collector"
+        );
+        assert!(
+            roots.iter().any(|v| v == &stack_b),
+            "value_stack[1] must be enumerated by the VmLeaf::Vm collector"
+        );
+        assert!(
+            roots.iter().any(|v| v == &local_c),
+            "locals[0] must be enumerated by the VmLeaf::Vm collector"
+        );
+    }
+
+    let mut after: Vec<MettaValue> = Vec::new();
+    collect_k_spine(&mut after);
+    assert!(
+        !after.iter().any(|v| v == &stack_a),
+        "VM stack value must NOT remain a K-spine root after the guard drops"
+    );
+}
+
+/// Index sibling of `nested_vm_frames_each_contribute_roots`.
+#[cfg(feature = "index-gc")]
+#[test]
+fn nested_vm_frames_each_contribute_roots_index() {
+    use crate::backend::eval::cesk::k_spine::collect_k_spine;
+
+    let mut b_outer = ChunkBuilder::new("outer-vm-index");
+    b_outer.emit(Opcode::Return);
+    let mut outer_vm = BytecodeVM::new(b_outer.build_arc());
+    let outer_val = MettaValue::Atom("outer-vm-live-value");
+    outer_vm.value_stack.push(outer_val.clone());
+
+    let _outer_guard = outer_vm
+        .with_vm_roots_frame()
+        .expect("outer VmLeaf registered");
+
+    let mut b_inner = ChunkBuilder::new("inner-vm-index");
+    b_inner.emit(Opcode::Return);
+    let mut inner_vm = BytecodeVM::new(b_inner.build_arc());
+    let inner_val = MettaValue::Atom("inner-vm-live-value");
+    inner_vm.locals.push(inner_val.clone());
+
+    {
+        let _inner_guard = inner_vm
+            .with_vm_roots_frame()
+            .expect("inner VmLeaf registered");
+
+        let mut roots: Vec<MettaValue> = Vec::new();
+        collect_k_spine(&mut roots);
+        assert!(
+            roots.iter().any(|v| v == &outer_val),
+            "outer VM leaf's value_stack must still be rooted while inner nest runs"
+        );
+        assert!(
+            roots.iter().any(|v| v == &inner_val),
+            "inner VM leaf's locals must be rooted"
+        );
+    }
+
+    let mut after_inner: Vec<MettaValue> = Vec::new();
+    collect_k_spine(&mut after_inner);
+    assert!(
+        after_inner.iter().any(|v| v == &outer_val),
+        "outer VM leaf's roots persist after the inner nest returns"
+    );
+    assert!(
+        !after_inner.iter().any(|v| v == &inner_val),
+        "inner VM leaf's roots are gone once its guard drops"
     );
 }

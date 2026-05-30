@@ -3654,8 +3654,11 @@ fn eval_trampoline_inner<C: EvalContext>(
             // `gc_mode_is_index()` because in slab mode the K-spine is empty (its
             // push sites are index-gated) while `frame_chain` is populated, so the
             // structural reader only mirrors the discovered set in index mode.
-            // Zero-cost in release (cfg'd out). PERMANENT CI invariant — kept until
-            // A5 deletes the discovery apparatus. See docs/cesk-gc/a4-3-oracle-design.md.
+            // Zero-cost in release (cfg'd out). PERMANENT CI invariant (RT-7, A5
+            // COMPLETE): A5 cfg-scoped the discovery apparatus to slab, so this is now
+            // the STANDING index structural-internal-consistency check (the
+            // collect_all_roots OLD-term is cfg-walled out of index — A5.5). Kept until
+            // F4 deletes the slab apparatus. See docs/cesk-gc/a4-3-oracle-design.md.
             #[cfg(debug_assertions)]
             if crate::backend::models::metta_value::gc_mode_is_index() {
                 // OLD = the discovered set assembled above in `root_set`

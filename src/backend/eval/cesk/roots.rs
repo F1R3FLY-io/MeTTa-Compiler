@@ -369,7 +369,12 @@ pub fn collect_persistent_roots(
 /// root dropped) for the A4.4 flip of the two quiescence collectors. Debug-only; the
 /// callers gate it on `gc_mode_is_index()` (in slab mode `collect_all_roots`' frame-chain
 /// roots have no structural mirror — the structural reader is the index-gc root source).
-/// PERMANENT CI invariant, kept until A5 deletes the discovery apparatus.
+/// PERMANENT CI invariant (RT-7, A5 COMPLETE). A5 cfg-scoped the discovery apparatus
+/// to the slab build, so this is now the STANDING check: in the index build it asserts
+/// structural-reader internal consistency (NEW ∪ KEPT ⊇ the live S∪C∪K + caches +
+/// deferred root_set; the registry term is gone); in the slab build it asserts the
+/// structural reader covers the (still-present) discovery apparatus. Kept until F4
+/// physically deletes the slab apparatus — never delete it while slab exists.
 #[cfg(debug_assertions)]
 pub fn assert_quiescence_superset(
     result: &[crate::backend::models::MettaValue],

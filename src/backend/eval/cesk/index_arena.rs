@@ -378,6 +378,17 @@ pub struct IndexArena<N: Copy> {
     /// `Release`/`Acquire` (set at quiescence; race-free at the single-threaded
     /// collector anyway, like `seg_count`/`cur_seg`).
     young_floor: AtomicUsize,
+    /// C1.c generational MINOR trigger: bytes of YOUNG node-slot allocated since the
+    /// last promotion (the nursery-fill odometer). Incremented by `size_of::<N>()`
+    /// on every allocation that lands in a young segment (`alloc` young free-slot
+    /// reuse, `alloc_bump`, `bump_in` — all target `cur_seg >= young_floor`); RESET
+    /// to 0 by [`promote_young`]. Unlike a high-water (`live_node_count`) or
+    /// capacity (`committed_node_bytes`) figure it tracks REAL young allocation
+    /// INCLUDING free-list reuse below the high-water mark, resets per minor (so
+    /// trigger == rearm baseline ⇒ no thrash), and costs one `Relaxed` add. The
+    /// driver fires a minor when this exceeds `YOUNG_BUDGET`. `Relaxed` (the
+    /// single-threaded collector regime, like `alloc_count`).
+    young_alloc_bytes: AtomicU64,
 }
 
 impl<N: Copy> Default for IndexArena<N> {
@@ -418,6 +429,7 @@ impl<N: Copy> IndexArena<N> {
             free_list: Vec::new(),
             alloc_count: AtomicU64::new(0),
             young_floor: AtomicUsize::new(0),
+            young_alloc_bytes: AtomicU64::new(0),
         };
         arena.open_segment(); // publishes segment 0; sets cur_seg = 0
         arena
@@ -481,22 +493,47 @@ impl<N: Copy> IndexArena<N> {
     /// (opening a new one if full). Byte-identical to the pre-B2 path: free-list
     /// LIFO reuse, then fresh bump.
     pub fn alloc(&mut self, node: N) -> Addr {
-        if let Some(addr) = self.free_list.pop() {
-            self.alloc_count.fetch_add(1, Ordering::Relaxed);
-            // SAFETY: `addr` came from the last sweep's reclaim of a *published*
-            // slot in a non-released segment; `&mut self` (quiescence) ⇒ no reader.
-            unsafe {
-                let seg = self.segment(addr.segment());
-                debug_assert!(!seg.released.load(Ordering::Relaxed));
-                // Overwrite the (already-initialized, already-published) slot in
-                // place — exclusive under `&mut self`. The slot stays published
-                // (len unchanged), so no publish step.
-                (*seg.nodes[addr.offset()].get()).write(node);
+        // C1.c: reuse only CUR_SEG free slots (NOT all young segments). The
+        // soundness of the young-only minor mark rests on NO old→young σ edge. A node
+        // reused into a LOWER young segment can point at a child in a HIGHER (younger)
+        // segment; after the next promotion (`young_floor := cur_seg`) that node
+        // becomes OLD while its child stays YOUNG — a genuine old→young edge the
+        // young-only mark (which skips old) would miss ⇒ use-after-free. Restricting
+        // reuse to `cur_seg` keeps BUMP ORDER (a node's children are all in segments
+        // <= its own = `cur_seg`, since they were allocated no later than it), so a
+        // reused node and ALL its children share a segment <= cur_seg and PROMOTE
+        // TOGETHER ⇒ a reused node never becomes old while a child stays young ⇒ no
+        // old→young edge ⇒ the young-only mark is sound, with NO remembered set.
+        // (Mechanically checked: tla/StoreCentricGC_GenerationalYoungMark.tla; the
+        // negative model — reuse any young — produces the old→young counterexample.)
+        // Non-`cur_seg` free slots (lower young, or old) are skipped (left slot-free,
+        // re-added by the next major's free-list rebuild / recovered at segment
+        // release). LIFO + minors append `cur_seg` slots ⇒ `cur_seg` is on top ⇒ this
+        // skips rarely.
+        let cur = self.current_seg();
+        while let Some(addr) = self.free_list.pop() {
+            if addr.segment() == cur {
+                self.alloc_count.fetch_add(1, Ordering::Relaxed);
+                self.young_alloc_bytes
+                    .fetch_add(std::mem::size_of::<N>() as u64, Ordering::Relaxed);
+                // SAFETY: `addr` came from the last sweep's reclaim of a *published*
+                // slot in a non-released segment; `&mut self` (quiescence) ⇒ no reader.
+                unsafe {
+                    let seg = self.segment(addr.segment());
+                    debug_assert!(!seg.released.load(Ordering::Relaxed));
+                    // Overwrite the (already-initialized, already-published) slot in
+                    // place — exclusive under `&mut self`. The slot stays published
+                    // (len unchanged), so no publish step.
+                    (*seg.nodes[addr.offset()].get()).write(node);
+                }
+                return addr;
             }
-            return addr;
+            // else: not the current bump segment — skip (left slot-free; re-added by
+            // the next major). Reusing it could create an old→young edge (see above).
         }
-        // Fresh bump (the path a concurrent producer also takes, but here under
-        // `&mut self`). Delegates to the `&self` primitive for a single impl.
+        // No reusable `cur_seg` free slot: bump (the path a concurrent producer also
+        // takes, but here under `&mut self`). Always young — `cur_seg >= young_floor`.
+        // `alloc_bump` increments `young_alloc_bytes`.
         self.alloc_bump(node)
     }
 
@@ -519,6 +556,11 @@ impl<N: Copy> IndexArena<N> {
                     unsafe { seg.write_claimed(off, node) };
                     seg.publish(off);
                     self.alloc_count.fetch_add(1, Ordering::Relaxed);
+                    // C1.c: bump always targets `cur_seg` (`si == current_seg() >=
+                    // young_floor`), so this is a YOUNG allocation — count it toward
+                    // the nursery-fill minor trigger.
+                    self.young_alloc_bytes
+                        .fetch_add(std::mem::size_of::<N>() as u64, Ordering::Relaxed);
                     return Addr::new(si as u32, off as u32);
                 }
             }
@@ -691,6 +733,31 @@ impl<N: Copy> IndexArena<N> {
     #[inline]
     pub fn set_young_floor(&self, floor: usize) {
         self.young_floor.store(floor, Ordering::Release);
+    }
+
+    /// C1.b: promote (non-moving) — advance the young/old boundary to the current
+    /// bump segment, so every segment swept by the just-finished collection (minor
+    /// or major) becomes OLD and only the active segment + future segments are
+    /// young. No copying: promotion is pure reclassification of the boundary. The
+    /// current segment stays young (it is the live allocation target). Called after
+    /// a collection under the heap write lock (quiescence); `Release` (via
+    /// `set_young_floor`) pairs with the next minor's `Acquire` load of `young_floor`.
+    #[inline]
+    pub fn promote_young(&self) {
+        self.set_young_floor(self.current_seg());
+        // C1.c: reset the nursery-fill odometer — `young_alloc_bytes` counts bytes
+        // allocated since the LAST promotion, so the next minor fires after
+        // `YOUNG_BUDGET` more young allocation (trigger == rearm baseline ⇒ no thrash).
+        self.young_alloc_bytes.store(0, Ordering::Relaxed);
+    }
+
+    /// C1.c: bytes of young node-slot allocated since the last [`promote_young`] —
+    /// the nursery-fill odometer the driver compares against `YOUNG_BUDGET` to fire a
+    /// minor. Tracks real young allocation (bump AND young free-list reuse), unlike
+    /// the high-water `young_live_node_count`.
+    #[inline]
+    pub fn young_alloc_bytes(&self) -> usize {
+        self.young_alloc_bytes.load(Ordering::Relaxed) as usize
     }
 
     /// Per-node byte size (`size_of::<N>()`), so a wrapper can convert a node
@@ -888,6 +955,53 @@ impl<N: Copy> IndexArena<N> {
         marked
     }
 
+    /// C1.c: YOUNG-ONLY transitive mark — the MINOR's mark, and what makes a minor
+    /// cheap (O(young reachable), not O(total live)). Like [`mark_from_roots_with`]
+    /// but marks and descends ONLY young nodes (`addr.segment() >= young_floor`); old
+    /// nodes (whether a root or a child) are skipped entirely — neither marked nor
+    /// descended.
+    ///
+    /// SOUND because there are NO old→young σ edges (Phase C1.c §A.2: `alloc` reuses
+    /// young slots only ⇒ all new allocation is young; bump order makes built edges
+    /// young→old; σ nodes are immutable post-publish; a `change-state!` young value
+    /// is an E₀ ROOT, not a σ edge). Theorem: for any live young node `y`, the edge
+    /// into `y` cannot originate at an old node (no old→young), so `y`'s parent is
+    /// young; inductively every ancestor up to a young ROOT is young ⇒ `y` is reached
+    /// via an all-young path from a young root. Hence skipping old misses no live
+    /// young node. (A subsequent `sweep_young` reclaims only unmarked YOUNG slots, so
+    /// an unmarked OLD node is never reclaimed by the minor regardless.) Mechanically
+    /// checked by `tla/StoreCentricGC_Generational` (`YoungOnlyMarkReachesLiveYoung`).
+    /// Stack-safe explicit worklist; idempotent.
+    pub fn mark_young_from_roots_with<F: FnMut(Addr, &mut Vec<Addr>)>(
+        &self,
+        roots: &[Addr],
+        mut child_fn: F,
+    ) -> usize {
+        let young_floor = self.young_floor.load(Ordering::Acquire);
+        let mut marked = 0usize;
+        let mut worklist: Vec<Addr> = Vec::with_capacity(roots.len().max(16));
+        for &r in roots {
+            if r.segment() >= young_floor && self.mark(r) {
+                marked += 1;
+                worklist.push(r);
+            }
+        }
+        let mut kids: Vec<Addr> = Vec::new();
+        while let Some(addr) = worklist.pop() {
+            kids.clear();
+            child_fn(addr, &mut kids);
+            for &k in &kids {
+                // Descend/mark only young; old children are skipped (no old→young ⇒
+                // no live young node is reachable only through them).
+                if k.segment() >= young_floor && self.mark(k) {
+                    marked += 1;
+                    worklist.push(k);
+                }
+            }
+        }
+        marked
+    }
+
     /// Ensure the current segment can bump-allocate, opening a fresh segment if
     /// full/released. Returns the segment index for the next `bump_in`. `&self`.
     pub fn ensure_bump_room(&self) -> usize {
@@ -921,6 +1035,10 @@ impl<N: Copy> IndexArena<N> {
         unsafe { s.write_claimed(off, node) };
         s.publish(off);
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
+        // C1.c: `seg == current_seg() >= young_floor` (asserted above) ⇒ a YOUNG
+        // allocation — count it toward the nursery-fill minor trigger.
+        self.young_alloc_bytes
+            .fetch_add(std::mem::size_of::<N>() as u64, Ordering::Relaxed);
         Addr::new(seg as u32, off as u32)
     }
 }

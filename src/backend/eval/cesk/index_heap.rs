@@ -394,6 +394,30 @@ impl IndexHeap {
         })
     }
 
+    /// C1.c: YOUNG-ONLY mark — the MINOR's mark (see
+    /// [`IndexArena::mark_young_from_roots_with`] for the soundness theorem). Same
+    /// child resolution as [`mark`] (inline handles + SExpr/Conjunction side-arena
+    /// children) but marks/descends only young nodes (`seg >= young_floor`), making
+    /// the minor O(young reachable) instead of O(total live). The child resolver is
+    /// invoked only on young nodes (the worklist holds only young addrs), so old
+    /// segments are never even read.
+    pub fn mark_young(&self, roots: &[Addr]) -> usize {
+        let arena = &self.arena;
+        let sides = &self.sides;
+        arena.mark_young_from_roots_with(roots, |addr, out| {
+            let node = arena.get(addr);
+            node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
+            if let Node::SExpr(cr) | Node::Conjunction(cr) = node {
+                let kids = &sides[addr.segment()].children[cr.idx as usize];
+                for c in kids.iter() {
+                    if let Some(a) = c.as_arena_addr() {
+                        out.push(a);
+                    }
+                }
+            }
+        })
+    }
+
     /// Sweep, co-releasing the side-arenas of any fully-dead released segments.
     pub fn sweep(&mut self) -> SweepStats {
         // B1.c: retain only hash-cons entries whose interned `Addr` is still LIVE
@@ -423,6 +447,42 @@ impl IndexHeap {
         }
         let sides = &mut self.sides;
         self.arena.sweep_with(|seg| {
+            if seg < sides.len() {
+                sides[seg] = SegmentSideArenas::default();
+            }
+        })
+    }
+
+    /// C1.b: young-only minor sweep — the generational counterpart of [`sweep`].
+    /// Sweeps ONLY young segments (`>= young_floor`); OLD segments keep their marks
+    /// AND slots untouched (a minor never releases an old segment). The hash-cons
+    /// retain therefore checks liveness only for YOUNG entries: an OLD entry is
+    /// retained unconditionally — its old segment is never released by a minor, so
+    /// its `Addr` (and the interned bytes) stay valid, and a later `intern` correctly
+    /// hits it (dropping it would only lose canonicalization, never cause a UAF; a
+    /// MAJOR's full `sweep` drops any now-stale old entry). A young entry is dropped
+    /// unless marked (its slot is about to be reclaimed / its segment released).
+    ///
+    /// Soundness mirrors `sweep`: marks are read HERE, before `sweep_young_with`
+    /// clears the young marks; release happens only inside `sweep_young_with`, AFTER
+    /// this retain, so `is_marked` is always bounds-safe. The collector marks the
+    /// FULL reachable set (C1.b uses the full `mark`, conservative-complete), so
+    /// every live young node is marked and never reclaimed here.
+    pub fn sweep_young(&mut self) -> SweepStats {
+        let young_floor = self.arena.young_floor();
+        {
+            let arena = &self.arena;
+            self.hash_cons.retain(|_, v| match v.as_arena_addr() {
+                // Young: keep iff still marked this cycle (else about to be reclaimed).
+                Some(a) if a.segment() >= young_floor => arena.is_marked(a),
+                // Old: keep — a minor never releases an old segment, so the Addr lives.
+                Some(_) => true,
+                // Inline scalar / non-index handle: not an arena-keyed entry.
+                None => false,
+            });
+        }
+        let sides = &mut self.sides;
+        self.arena.sweep_young_with(|seg| {
             if seg < sides.len() {
                 sides[seg] = SegmentSideArenas::default();
             }
@@ -466,6 +526,23 @@ impl IndexHeap {
     #[inline]
     pub fn live_bytes(&self) -> usize {
         self.arena.live_node_count() * self.arena.node_size_bytes()
+    }
+
+    /// C1.c: bytes of young node-slab allocated since the last [`promote_young`] —
+    /// the nursery-fill odometer the driver compares against `YOUNG_BUDGET` to fire a
+    /// minor (forwards to [`IndexArena::young_alloc_bytes`]). Tracks real young
+    /// allocation (bump AND young free-list reuse), unlike a high-water/capacity
+    /// figure; resets to 0 at promotion ⇒ trigger == rearm baseline ⇒ no thrash.
+    #[inline]
+    pub fn young_alloc_bytes(&self) -> usize {
+        self.arena.young_alloc_bytes()
+    }
+
+    /// C1.b: promote young survivors to old (non-moving boundary advance). Forwards
+    /// to [`IndexArena::promote_young`]; called after a collection under the write lock.
+    #[inline]
+    pub fn promote_young(&self) {
+        self.arena.promote_young();
     }
 }
 
@@ -763,13 +840,41 @@ pub mod index_gc {
     /// single sequential evaluator thread (the gate forbids any worker).
     static WATERMARK: AtomicUsize = AtomicUsize::new(0);
 
-    /// Growth factor applied to post-sweep live bytes to set the next threshold.
+    /// C1.c: minors fired since the last major. The major (full) collection is the
+    /// periodic BACKSTOP — it fires when total committed exceeds [`WATERMARK`] OR
+    /// after [`MAJOR_CADENCE`] minors, whichever first — to reclaim old-generation
+    /// garbage that minors (which sweep only young) leave behind. Reset to 0 on each
+    /// major. Single-threaded collector ⇒ `Relaxed` is race-free.
+    static MINORS_SINCE_MAJOR: AtomicUsize = AtomicUsize::new(0);
+
+    /// C1.c: at most this many minors between majors (the major backstop cadence).
+    /// Bounds the old-generation dead that accumulates between majors (a minor never
+    /// reclaims old). 16 keeps majors rare on a mark-dominated heap while ensuring
+    /// old dead is reclaimed within a bounded number of cheap young collections.
+    const MAJOR_CADENCE: usize = 16;
+
+    /// Growth factor applied to post-sweep live bytes to set the next major threshold.
     const GROWTH: usize = 2;
 
-    /// Default minimum collection threshold (bytes). Overridable via
-    /// `METTATRON_INDEX_GC_MIN_BYTES` (validation lowers it to force the
-    /// collector to fire on small workloads).
+    /// Default minimum collection threshold (bytes) for the MAJOR. Overridable via
+    /// `METTATRON_INDEX_GC_MIN_BYTES` (validation lowers it to force the major to
+    /// fire on small workloads). This is the major (full-sweep) tuning knob only —
+    /// NOT a minor on/off switch.
     const DEFAULT_MIN_THRESHOLD: usize = 8 * 1024 * 1024;
+
+    /// C1.c: the nursery budget — a MINOR fires when `young_alloc_bytes` (bytes of
+    /// young node-slab allocated since the last promotion) exceeds this. A principled
+    /// CONSTANT (NOT an on/off switch — minors are ALWAYS on; this only sizes the
+    /// nursery), ≈ 1/4 of a segment's node-slab capacity (a segment is
+    /// `1<<18` slots ≈ 8 MiB). Rationale: (a) < `DEFAULT_MIN_THRESHOLD` (the major
+    /// floor) so a minor fires BEFORE a major on multi-segment workloads
+    /// (minor-primary); (b) < one segment so a minor's young generation stays within
+    /// the active bump segment ⇒ its reclaimed slots stay young and are reused (no
+    /// promotion-stranding); (c) tied to the substrate's segment granularity, not a
+    /// magic number. Minors thus fire NATURALLY on any workload allocating more than
+    /// ~1/4 segment of transient young between safepoints — exercised by tests with
+    /// no force-switch.
+    const YOUNG_BUDGET: usize = 2 * 1024 * 1024;
 
     /// Cached `METTATRON_INDEX_GC_MIN_BYTES` (parsed once).
     fn min_threshold() -> usize {
@@ -811,11 +916,16 @@ pub mod index_gc {
         if !gate_open() {
             return false;
         }
-        let committed = {
+        // C1.c: a collection is due if the MINOR trigger (young allocation since the
+        // last promotion exceeds the nursery budget — PRIMARY) OR the MAJOR backstop
+        // (total committed over the watermark, or the minor cadence elapsed) fires.
+        let (committed, young_alloc) = {
             let heap = global_index_heap().read().expect("index heap");
-            heap.committed_bytes()
+            (heap.committed_bytes(), heap.young_alloc_bytes())
         };
-        committed > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+        young_alloc > YOUNG_BUDGET
+            || committed > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+            || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
     }
 
     /// The provable single-threaded-quiescence gate:
@@ -900,11 +1010,14 @@ pub mod index_gc {
         if !gate_open_midloop() {
             return false;
         }
-        let committed = {
+        // C1.c: minor (young allocation) primary OR major backstop (see `should_collect`).
+        let (committed, young_alloc) = {
             let heap = global_index_heap().read().expect("index heap");
-            heap.committed_bytes()
+            (heap.committed_bytes(), heap.young_alloc_bytes())
         };
-        committed > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+        young_alloc > YOUNG_BUDGET
+            || committed > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+            || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
     }
 
     /// `METTATRON_INDEX_GC_DISABLE=1` forces the collector off (parsed once).
@@ -982,13 +1095,20 @@ pub mod index_gc {
     /// clears this thread's `MettaValueInner` shadow, and rearms the watermark.
     /// `phase` only labels the optional ops trace. Returns `true` iff a cycle ran.
     fn mark_sweep_if_over_watermark(roots: &[MettaValue], phase: &str) -> bool {
-        // Trigger check under a read lock (released before we re-acquire write).
-        let committed = {
+        // C1.c generational trigger under a read lock (released before we re-acquire
+        // write). The MINOR is PRIMARY: it fires when young allocation since the last
+        // promotion (`young_alloc_bytes`, the nursery odometer) exceeds `YOUNG_BUDGET`.
+        // The MAJOR is the BACKSTOP: total committed over the watermark OR the minor
+        // cadence elapsed (bounding the old-gen dead a minor leaves behind). Major
+        // takes precedence when both are due (it subsumes a minor and reclaims old).
+        let (committed, young_alloc) = {
             let heap = global_index_heap().read().expect("index heap");
-            heap.committed_bytes()
+            (heap.committed_bytes(), heap.young_alloc_bytes())
         };
-        let threshold = WATERMARK.load(Ordering::Relaxed).max(min_threshold());
-        if committed <= threshold {
+        let major_due = committed > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+            || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;
+        let minor_due = young_alloc > YOUNG_BUDGET;
+        if !major_due && !minor_due {
             return false;
         }
 
@@ -1002,41 +1122,67 @@ pub mod index_gc {
             }
         }
 
-        // Collect under the write lock: mutually exclusive with allocation, so
-        // the marked set cannot be raced by a new alloc (true quiescence for the
-        // store). The gate already guarantees no OTHER thread can be in eval.
-        let (live_after, stats) = {
+        // Collect under the write lock: mutually exclusive with allocation, so the
+        // marked set cannot be raced by a new alloc (true quiescence for the store).
+        // The gate already guarantees no OTHER thread can be in eval.
+        //   MAJOR: FULL `mark` + full `sweep` (reclaims old dead too) + promote.
+        //   MINOR: the cheap YOUNG-ONLY `mark_young` (O(young reachable)) + young
+        //          `sweep_young` + promote. SOUND because `alloc` reuses young slots
+        //          only ⇒ no old→young σ edge ⇒ no live young node is reachable only
+        //          through an old node (Phase C1.c §A; the young-only mark theorem).
+        // `promote_young` reclassifies the swept young segments as old (so only the
+        // active + future segments stay young) AND resets the young-alloc odometer.
+        let (live_after, stats, did_major) = {
             let mut heap = global_index_heap().write().expect("index heap");
-            heap.mark(&addrs);
-            let stats = heap.sweep();
-            (heap.live_bytes(), stats)
+            if major_due {
+                heap.mark(&addrs); // FULL mark
+                let stats = heap.sweep();
+                heap.promote_young();
+                (heap.live_bytes(), stats, true)
+            } else {
+                heap.mark_young(&addrs); // YOUNG-ONLY mark (cheap — the minor's win)
+                let stats = heap.sweep_young();
+                heap.promote_young();
+                (heap.live_bytes(), stats, false)
+            }
         };
 
-        // Drop this thread's stale `MettaValueInner` materialization cache: a
-        // swept segment's `Addr`s are now invalid/reusable, so any cached inner
-        // keyed by such an Addr must go. This thread is the only one with a
+        // Drop this thread's stale `MettaValueInner` materialization cache: a swept
+        // (young or whole-heap) segment's `Addr`s are now invalid/reusable, so any
+        // cached inner keyed by such an Addr must go — required after BOTH a minor
+        // (a reused young Addr) and a major. This thread is the only one with a
         // populated INNER_SHADOW in the single-threaded regime.
         clear_inner_shadow();
 
-        // Recompute the watermark from post-sweep live bytes.
-        WATERMARK.store(
-            live_after.saturating_mul(GROWTH).max(min_threshold()),
-            Ordering::Relaxed,
-        );
+        // Major backstop bookkeeping. A major rearms the committed watermark from
+        // post-full-sweep live bytes and resets the minor cadence; a minor only
+        // advances the cadence (its young odometer was reset by `promote_young`).
+        if did_major {
+            WATERMARK.store(
+                live_after.saturating_mul(GROWTH).max(min_threshold()),
+                Ordering::Relaxed,
+            );
+            MINORS_SINCE_MAJOR.store(0, Ordering::Relaxed);
+        } else {
+            MINORS_SINCE_MAJOR.fetch_add(1, Ordering::Relaxed);
+        }
 
         GC_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
         if phase == "midloop" {
             MIDLOOP_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Optional ops trace (METTATRON_INDEX_GC_REPORT=2): per-cycle reclaim.
+        // Optional ops trace (METTATRON_INDEX_GC_REPORT=2): per-cycle reclaim, with
+        // the C1.c minor/major label + the young-alloc odometer that triggered it.
         if std::env::var("METTATRON_INDEX_GC_REPORT").as_deref() == Ok("2") {
+            let kind = if did_major { "major" } else { "minor" };
             eprintln!(
-                "[index_gc] {phase} cycle: roots={} live_bytes={live_after} reclaimed_slots={} released_segs={} bytes_freed={}",
+                "[index_gc] {phase} {kind} cycle: roots={} live_bytes={live_after} young_alloc_pre={young_alloc} reclaimed_slots={} released_segs={} bytes_freed={} minors_since_major={}",
                 addrs.len(),
                 stats.reclaimed_to_free_list,
                 stats.segments_released,
-                stats.bytes_released
+                stats.bytes_released,
+                MINORS_SINCE_MAJOR.load(Ordering::Relaxed),
             );
         }
         true

@@ -546,67 +546,54 @@ impl IndexHeap {
     }
 
     /// C1.c #1: free the co-located side-arena entry (children/string/span `Box`) of
-    /// each reclaimed (swept-dead, partial-segment) node and recycle its index onto
-    /// the segment's `free_*` stack for reuse by a later variable-length allocation —
-    /// without this a node-slot reused by `alloc_sexpr`/etc. would orphan the prior
-    /// occupant's side `Box` (a leak bounded only by segment release). `reclaimed` is
-    /// the slots `sweep`/`sweep_young` reclaimed (NOT released-segment slots, whose
-    /// whole `sides[seg]` was reset). The node bytes are still intact (the sweep frees
-    /// a slot WITHOUT clobbering it), so `arena.get(addr)` reads the dead node's
-    /// side-ref; the slot is `None`d so its `Box` drops now. The `is_some` guard makes
-    /// it idempotent (no double-free / duplicate free index).
+    /// each reclaimed (swept-dead, partial-segment) node — bounding side-arena growth
+    /// under variable-length node-slot reuse, since a slot reused by `alloc_sexpr`/etc.
+    /// orphans the prior occupant's side `Box` (a leak otherwise bounded only by
+    /// segment release, which resets the whole `sides[seg]`). `reclaimed` is the slots
+    /// `sweep`/`sweep_young` reclaimed (NOT released-segment slots). The node bytes are
+    /// still intact (the sweep frees a slot WITHOUT clobbering it), so `arena.get(addr)`
+    /// reads the dead node's side index; the slot is `None`d so its `Box` drops — and
+    /// the index is NOT recycled (intern only ever APPENDS fresh indices), so `None`-ing
+    /// index `i` touches no live node and is idempotent (a re-reclaimed still-free slot
+    /// just `None`s the same already-`None` index again). Recycling — which would hand
+    /// `i` to a live node — is the unsound path an earlier gate's "live … slot" panic
+    /// caught, hence the no-recycle design.
+    ///
+    /// INERT (commented out) pending the quiescence-only re-enable increment. Freeing a
+    /// side `Box` at sweep is a USE-AFTER-FREE under the MID-LOOP collector: a live
+    /// `materialize_inner` result on the Rust stack can hold a launder'd `&'static` into
+    /// that `Box` (the launder contract — see module docs), which dropping the `Box`
+    /// dangles. It IS sound under the QUIESCENCE collector (`active_evaluator_count() == 0`
+    /// ⇒ no live stack launder'd ref, and the post-sweep `clear_inner_shadow()` discards
+    /// every `INNER_SHADOW` entry before the next eval can deref one), so re-enabling it
+    /// GATED on `phase == "quiescence"` is a separable increment requiring its own ASAN
+    /// gate. Until then the orphan side `Box` is reclaimed wholesale at segment release.
+    /// The implementation is preserved below per the no-delete-to-disable policy.
     fn free_reclaimed_side_slots(&mut self, reclaimed: &[Addr]) {
-        enum Side {
-            Children(u32),
-            Strings(u32),
-            Spans(u32),
-            None,
-        }
-        for &addr in reclaimed.iter().take(0) {
-            // DIAGNOSTIC (temporary): take(0) no-ops the side-free to isolate whether
-            // the C1.c #1 divergence is from the side-free or the node reuse.
-            let seg = addr.segment();
-            // Extract the dead node's side index (Copy) — the `arena` borrow ends here,
-            // before mutating the disjoint `sides` field.
-            let side = match self.arena.get(addr) {
-                Node::SExpr(cr) | Node::Conjunction(cr) => Side::Children(cr.idx),
-                Node::Atom(br) | Node::String(br) => Side::Strings(br.idx),
-                Node::Spanned(_, sr) => Side::Spans(sr.idx),
-                _ => Side::None, // fixed node: no side slot
-            };
-            if seg >= self.sides.len() {
-                continue;
-            }
-            let s = &mut self.sides[seg];
-            // Free the dead node's `Box` (drop it now); leave the index `None` (NOT
-            // recycled — see `SegmentSideArenas`). SOUND + idempotent: with no
-            // recycling, index `i` is ONLY EVER this dead node's (intern appends fresh
-            // indices, never `i`), so `None`-ing it touches no live node, and a
-            // re-reclaimed still-free slot just `None`s the same already-None index
-            // again (harmless). This is why recycling — which would hand `i` to a live
-            // node — is the unsound path the gate's "live ... slot" panic caught.
-            match side {
-                Side::Children(i) => {
-                    let i = i as usize;
-                    if i < s.children.len() {
-                        s.children[i] = None;
-                    }
-                }
-                Side::Strings(i) => {
-                    let i = i as usize;
-                    if i < s.strings.len() {
-                        s.strings[i] = None;
-                    }
-                }
-                Side::Spans(i) => {
-                    let i = i as usize;
-                    if i < s.spans.len() {
-                        s.spans[i] = None;
-                    }
-                }
-                Side::None => {}
-            }
-        }
+        // Inert until the quiescence-only re-enable increment (see doc above). `reclaimed`
+        // is still collected (the sweep substrate is complete + ready for re-enable).
+        let _ = reclaimed;
+        // enum Side { Children(u32), Strings(u32), Spans(u32), None }
+        // for &addr in reclaimed {
+        //     let seg = addr.segment();
+        //     // Extract the dead node's side index (Copy) — the `arena` borrow ends
+        //     // here, before mutating the disjoint `sides` field.
+        //     let side = match self.arena.get(addr) {
+        //         Node::SExpr(cr) | Node::Conjunction(cr) => Side::Children(cr.idx),
+        //         Node::Atom(br) | Node::String(br) => Side::Strings(br.idx),
+        //         Node::Spanned(_, sr) => Side::Spans(sr.idx),
+        //         _ => Side::None, // fixed node: no side slot
+        //     };
+        //     if seg >= self.sides.len() { continue; }
+        //     let s = &mut self.sides[seg];
+        //     // Drop the dead node's `Box`; leave the index `None` (NOT recycled).
+        //     match side {
+        //         Side::Children(i) => { let i = i as usize; if i < s.children.len() { s.children[i] = None; } }
+        //         Side::Strings(i)  => { let i = i as usize; if i < s.strings.len()  { s.strings[i]  = None; } }
+        //         Side::Spans(i)    => { let i = i as usize; if i < s.spans.len()    { s.spans[i]    = None; } }
+        //         Side::None => {}
+        //     }
+        // }
     }
 
     /// C1.b: young-only minor sweep — the generational counterpart of [`sweep`].
@@ -1927,6 +1914,18 @@ mod tests {
 
         reset_gc_mode_slab();
     }
+
+    // C1.c #1 cache-invalidation regression guard: the failure mode (a reused Addr
+    // serving a stale VALUE_HASH_CACHE hash -> set-op mis-bucketing) is NOT unit-
+    // testable here. VALUE_HASH_CACHE is populated/read by `MettaValue::hash_value()`,
+    // which materializes via the GLOBAL index heap (not a local `IndexHeap`), and
+    // forcing controlled reclaim+reuse there means driving the gated GLOBAL collector
+    // — which mutates global state unsafely under `cargo test`'s threads (every
+    // index-mode test shares the global heap). The guard is therefore the CONFORMANCE
+    // suite: `M09f-stdlib-set/{002,010,011}` (intersection/subtraction-on-atoms),
+    // `M11-bisimilarity-pt/3xx/{036,037}` (set-op rewrites), and `M18-jit-fallback/
+    // {001,003}` — all FAIL 483->473/10 without the `clear_aba_sensitive_caches()`
+    // invalidation and PASS 483/0 with it, driving the real global collector each gate.
 
     #[test]
     fn strip_spans_returns_bare_handle_in_index() {

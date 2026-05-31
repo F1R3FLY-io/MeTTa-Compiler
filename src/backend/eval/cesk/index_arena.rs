@@ -425,7 +425,10 @@ impl<N: Copy> IndexArena<N> {
     fn open_segment(&self) -> usize {
         let _guard = self.dir_lock.lock().expect("index-arena dir_lock poisoned");
         let idx = self.seg_count.load(Ordering::Relaxed); // exclusive under the guard
-        assert!(idx < MAX_SEGMENTS, "arena exhausted: {MAX_SEGMENTS} segments");
+        assert!(
+            idx < MAX_SEGMENTS,
+            "arena exhausted: {MAX_SEGMENTS} segments"
+        );
         let seg = Box::new(Segment::new(self.segment_capacity));
         // SAFETY: cell `idx` is not yet published (`idx == seg_count`), so no
         // reader can observe it; under `dir_lock` we are the unique writer of this
@@ -742,8 +745,9 @@ impl<N: Copy> IndexArena<N> {
         // If the current segment was released-eligible but kept, or all
         // non-current segments died, ensure cur_seg points at a usable segment.
         // SAFETY: cur < seg_count ⇒ published.
-        let cur_released =
-            unsafe { self.segment(cur) }.released.load(Ordering::Relaxed);
+        let cur_released = unsafe { self.segment(cur) }
+            .released
+            .load(Ordering::Relaxed);
         if cur_released {
             self.open_segment();
         }
@@ -978,11 +982,18 @@ mod tests {
         // Mark `a` (the LIVE slot); `b` is unmarked and becomes the freed slot.
         arena.mark(a);
         let stats = arena.sweep();
-        assert_eq!(stats.reclaimed_to_free_list, 1, "the unmarked slot (b) is freed");
+        assert_eq!(
+            stats.reclaimed_to_free_list, 1,
+            "the unmarked slot (b) is freed"
+        );
         assert_eq!(arena.free_slots(), 1);
         // `&self` fresh bump: does not pop the free list (it bumps past it).
         let c = arena.alloc_bump(3);
-        assert_eq!(arena.free_slots(), 1, "alloc_bump leaves the free list intact");
+        assert_eq!(
+            arena.free_slots(),
+            1,
+            "alloc_bump leaves the free list intact"
+        );
         assert_ne!(c, b, "alloc_bump did not reuse the freed slot");
         assert_ne!(c, a, "alloc_bump did not clobber the live slot");
         assert_eq!(*arena.get(c), 3);
@@ -1230,7 +1241,10 @@ mod tests {
         }
         let stats = arena.sweep();
         assert_eq!(stats.live, 64, "word 0 all-live → 64 live");
-        assert_eq!(stats.reclaimed_to_free_list, 64, "word 1 all-dead → 64 freed");
+        assert_eq!(
+            stats.reclaimed_to_free_list, 64,
+            "word 1 all-dead → 64 freed"
+        );
         assert_eq!(stats.segments_released, 0, "current segment never released");
         assert_eq!(arena.free_slots(), 64);
         // Live slots survive with original values; marks cleared.
@@ -1304,10 +1318,20 @@ mod tests {
         arena.mark(live1);
         arena.mark(seg0[99]); // offset 99 ∈ partial word [64,100)
         let stats = arena.sweep();
-        assert_eq!(stats.segments_released, 0, "seg 0 has a live slot → not released");
+        assert_eq!(
+            stats.segments_released, 0,
+            "seg 0 has a live slot → not released"
+        );
         assert_eq!(stats.live, 2, "seg0[99] + live1");
-        assert_eq!(stats.reclaimed_to_free_list, 99, "seg 0's other 99 slots freed");
-        assert_eq!(*arena.get(seg0[99]), 99, "the live partial-word slot is intact");
+        assert_eq!(
+            stats.reclaimed_to_free_list, 99,
+            "seg 0's other 99 slots freed"
+        );
+        assert_eq!(
+            *arena.get(seg0[99]),
+            99,
+            "the live partial-word slot is intact"
+        );
     }
 }
 
@@ -1371,7 +1395,9 @@ mod loom_model {
     impl LoomSeg {
         fn new(cap: usize) -> Self {
             LoomSeg {
-                slots: (0..cap).map(|_| UnsafeCell::new(MaybeUninit::uninit())).collect(),
+                slots: (0..cap)
+                    .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+                    .collect(),
                 len: AtomicUsize::new(0),
                 bump: AtomicUsize::new(0),
                 cap,
@@ -1379,7 +1405,11 @@ mod loom_model {
         }
         fn bump_one(&self) -> Option<usize> {
             let off = self.bump.fetch_add(1, Ordering::Relaxed);
-            if off >= self.cap { None } else { Some(off) }
+            if off >= self.cap {
+                None
+            } else {
+                Some(off)
+            }
         }
         // claim+write+publish for a single value; returns the claimed offset.
         fn claim_write_publish(&self, value: usize) -> Option<usize> {
@@ -1441,7 +1471,10 @@ mod loom_model {
                         // would surface a data race here if the read could observe
                         // an unpublished/half-written slot.
                         let v = seg.slots[off].with(|p| unsafe { (*p).assume_init() });
-                        assert!(v == 0xA0 || v == 0xB0, "slot {off} read torn/uninit value {v:#x}");
+                        assert!(
+                            v == 0xA0 || v == 0xB0,
+                            "slot {off} read torn/uninit value {v:#x}"
+                        );
                     }
                     n
                 })
@@ -1468,7 +1501,10 @@ mod loom_model {
                     other => panic!("unexpected published value {other:#x}"),
                 }
             }
-            assert!(seen[0] && seen[1], "both tags present in the contiguous prefix");
+            assert!(
+                seen[0] && seen[1],
+                "both tags present in the contiguous prefix"
+            );
         });
     }
 }

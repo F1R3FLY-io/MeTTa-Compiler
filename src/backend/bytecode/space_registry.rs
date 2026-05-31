@@ -31,9 +31,9 @@ use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 
-use crate::backend::models::{MettaValue, SpaceHandle};
 #[cfg(not(feature = "index-gc"))]
 use crate::backend::models::{register_root_provider, RootProvider};
+use crate::backend::models::{MettaValue, SpaceHandle};
 
 /// Global counter for unique space IDs
 static SPACE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);

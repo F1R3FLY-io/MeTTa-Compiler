@@ -1237,9 +1237,7 @@ where
     /// `vm_roots_collector` uses). Returns `None` for non-`MettaValue`
     /// monomorphizations (no rooting needed).
     #[cfg(feature = "index-gc")]
-    fn with_vm_roots_frame(
-        &self,
-    ) -> Option<crate::backend::eval::cesk::k_spine::VmLeafGuard> {
+    fn with_vm_roots_frame(&self) -> Option<crate::backend::eval::cesk::k_spine::VmLeafGuard> {
         use std::any::TypeId;
         if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
             return None;

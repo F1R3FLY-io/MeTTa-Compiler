@@ -3412,22 +3412,23 @@ fn eval_trampoline_inner<C: EvalContext>(
     // structurally by `collect_k_spine`. Declared after `_tramp_frame_guard`, so
     // it drops first (LIFO); both Vecs outlive both guards.
     #[cfg(not(feature = "index-gc"))]
-    let _tramp_kspine_guard: Option<crate::backend::eval::cesk::k_spine::SuspendedActivationGuard> =
-        if crate::backend::models::metta_value::gc_mode_is_index() {
-            // SAFETY: `work_stack` / `continuations` outlive this guard (locals of
-            // this activation, dropped after it) with stable addresses (declared
-            // once, mutated in place). `collect_k_spine` reads them read-only.
-            Some(unsafe {
-                crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
-                    crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
-                        work_stack: &work_stack as *const Vec<WorkItem>,
-                        continuations: &continuations as *const Vec<Continuation>,
-                    },
-                )
-            })
-        } else {
-            None
-        };
+    let _tramp_kspine_guard: Option<
+        crate::backend::eval::cesk::k_spine::SuspendedActivationGuard,
+    > = if crate::backend::models::metta_value::gc_mode_is_index() {
+        // SAFETY: `work_stack` / `continuations` outlive this guard (locals of
+        // this activation, dropped after it) with stable addresses (declared
+        // once, mutated in place). `collect_k_spine` reads them read-only.
+        Some(unsafe {
+            crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
+                crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
+                    work_stack: &work_stack as *const Vec<WorkItem>,
+                    continuations: &continuations as *const Vec<Continuation>,
+                },
+            )
+        })
+    } else {
+        None
+    };
 
     // A5.1 INDEX build: the typed K-spine `Spine` record is the SOLE mid-execution
     // root source for this activation (read by `collect_machine_roots` ->

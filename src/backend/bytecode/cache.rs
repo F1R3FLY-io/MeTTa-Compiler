@@ -28,9 +28,9 @@ use lru::LruCache;
 
 use crate::backend::bytecode::chunk::{BytecodeChunk, GenericBytecodeChunk};
 use crate::backend::hash_utils::IdentityU64BuildHasher;
-use crate::backend::models::{MettaValue, MettaValueTrait, ValueView};
 #[cfg(not(feature = "index-gc"))]
 use crate::backend::models::{register_root_provider, RootProvider};
+use crate::backend::models::{MettaValue, MettaValueTrait, ValueView};
 
 /// Statistics for bytecode cache monitoring (lock-free atomics).
 #[cfg(feature = "track-stats")]

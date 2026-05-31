@@ -457,8 +457,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard =
-        unsafe { push_expr_vec_frame(FrameLabel::AssertAlphaEqualToResult, &items) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::AssertAlphaEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();
@@ -551,8 +550,7 @@ where
         return GenericEvalStep::Done((smallvec![err], env));
     }
 
-    let _frame_guard =
-        unsafe { push_expr_vec_frame(FrameLabel::AssertAlphaEqualToResult, &items) };
+    let _frame_guard = unsafe { push_expr_vec_frame(FrameLabel::AssertAlphaEqualToResult, &items) };
 
     let (actual_results, env) = eval_trampoline(items[1].clone(), env, ctx);
     let env = (*env).clone();

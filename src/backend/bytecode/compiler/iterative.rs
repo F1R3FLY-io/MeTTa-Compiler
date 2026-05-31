@@ -20,9 +20,9 @@ use super::Compiler;
 use crate::backend::bytecode::chunk::JumpLabel;
 use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::eval::{is_eager_special_form, is_grounded_op};
-use crate::backend::models::{MettaValue, ValueView};
 #[cfg(not(feature = "index-gc"))]
 use crate::backend::models::{register_root_provider, RootProvider};
+use crate::backend::models::{MettaValue, ValueView};
 
 // ============================================================================
 // Cached Synthetic Atoms

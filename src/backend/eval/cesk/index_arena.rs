@@ -493,48 +493,60 @@ impl<N: Copy> IndexArena<N> {
     /// (opening a new one if full). Byte-identical to the pre-B2 path: free-list
     /// LIFO reuse, then fresh bump.
     pub fn alloc(&mut self, node: N) -> Addr {
-        // C1.c: reuse only CUR_SEG free slots (NOT all young segments). The
-        // soundness of the young-only minor mark rests on NO old→young σ edge. A node
-        // reused into a LOWER young segment can point at a child in a HIGHER (younger)
-        // segment; after the next promotion (`young_floor := cur_seg`) that node
-        // becomes OLD while its child stays YOUNG — a genuine old→young edge the
-        // young-only mark (which skips old) would miss ⇒ use-after-free. Restricting
-        // reuse to `cur_seg` keeps BUMP ORDER (a node's children are all in segments
-        // <= its own = `cur_seg`, since they were allocated no later than it), so a
-        // reused node and ALL its children share a segment <= cur_seg and PROMOTE
-        // TOGETHER ⇒ a reused node never becomes old while a child stays young ⇒ no
-        // old→young edge ⇒ the young-only mark is sound, with NO remembered set.
-        // (Mechanically checked: tla/StoreCentricGC_GenerationalYoungMark.tla; the
-        // negative model — reuse any young — produces the old→young counterexample.)
-        // Non-`cur_seg` free slots (lower young, or old) are skipped (left slot-free,
-        // re-added by the next major's free-list rebuild / recovered at segment
-        // release). LIFO + minors append `cur_seg` slots ⇒ `cur_seg` is on top ⇒ this
-        // skips rarely.
+        // Reuse a CUR_SEG free slot if available (see `pop_young_free_slot` for the
+        // cur_seg-only soundness argument), else bump. Both paths are young.
+        if let Some(addr) = self.pop_young_free_slot() {
+            self.write_reused(addr, node);
+            addr
+        } else {
+            self.alloc_bump(node)
+        }
+    }
+
+    /// C1.c #1: pop a reusable YOUNG free slot in the CURRENT bump segment, if one
+    /// exists, WITHOUT writing a node (the caller writes via [`write_reused`] after
+    /// interning any side data into the SAME segment). Returns `None` if no `cur_seg`
+    /// free slot is available (the caller bumps).
+    ///
+    /// Reuse is restricted to `cur_seg` (NOT all young segments) for SOUNDNESS of the
+    /// young-only minor mark, which rests on NO old→young σ edge. A node reused into
+    /// a LOWER young segment can point at a child in a HIGHER (younger) segment;
+    /// after the next promotion (`young_floor := cur_seg`) that node becomes OLD
+    /// while its child stays YOUNG — a genuine old→young edge the young-only mark
+    /// (which skips old) would miss ⇒ use-after-free. `cur_seg`-only reuse keeps BUMP
+    /// ORDER (a reused node's children are all in segments <= `cur_seg` = its own,
+    /// since allocated no later), so a reused node and ALL its children share a
+    /// segment <= cur_seg and PROMOTE TOGETHER ⇒ never old-node-with-young-child ⇒ no
+    /// old→young, NO remembered set. (Mechanically checked:
+    /// tla/StoreCentricGC_GenerationalYoungMark.tla — the negative model, reuse any
+    /// young, produces the old→young counterexample.) Non-`cur_seg` free slots are
+    /// skipped (left slot-free, re-added by the next major); LIFO + minors append
+    /// `cur_seg` slots ⇒ `cur_seg` is on top ⇒ this skips rarely.
+    pub fn pop_young_free_slot(&mut self) -> Option<Addr> {
         let cur = self.current_seg();
         while let Some(addr) = self.free_list.pop() {
             if addr.segment() == cur {
-                self.alloc_count.fetch_add(1, Ordering::Relaxed);
-                self.young_alloc_bytes
-                    .fetch_add(std::mem::size_of::<N>() as u64, Ordering::Relaxed);
-                // SAFETY: `addr` came from the last sweep's reclaim of a *published*
-                // slot in a non-released segment; `&mut self` (quiescence) ⇒ no reader.
-                unsafe {
-                    let seg = self.segment(addr.segment());
-                    debug_assert!(!seg.released.load(Ordering::Relaxed));
-                    // Overwrite the (already-initialized, already-published) slot in
-                    // place — exclusive under `&mut self`. The slot stays published
-                    // (len unchanged), so no publish step.
-                    (*seg.nodes[addr.offset()].get()).write(node);
-                }
-                return addr;
+                return Some(addr);
             }
-            // else: not the current bump segment — skip (left slot-free; re-added by
-            // the next major). Reusing it could create an old→young edge (see above).
+            // else: not the current bump segment — discard (re-added by a major).
         }
-        // No reusable `cur_seg` free slot: bump (the path a concurrent producer also
-        // takes, but here under `&mut self`). Always young — `cur_seg >= young_floor`.
-        // `alloc_bump` increments `young_alloc_bytes`.
-        self.alloc_bump(node)
+        None
+    }
+
+    /// C1.c #1: write `node` into an already-published slot returned by
+    /// [`pop_young_free_slot`] (reuse in place — the slot stays published, `len`
+    /// unchanged, so no publish step). Counts the alloc + the young nursery odometer.
+    pub fn write_reused(&mut self, addr: Addr, node: N) {
+        self.alloc_count.fetch_add(1, Ordering::Relaxed);
+        self.young_alloc_bytes
+            .fetch_add(std::mem::size_of::<N>() as u64, Ordering::Relaxed);
+        // SAFETY: `addr` came from `pop_young_free_slot` — a *published*, non-released
+        // `cur_seg` slot; `&mut self` (quiescence) ⇒ no reader races the overwrite.
+        unsafe {
+            let seg = self.segment(addr.segment());
+            debug_assert!(!seg.released.load(Ordering::Relaxed));
+            (*seg.nodes[addr.offset()].get()).write(node);
+        }
     }
 
     /// Fresh-bump-only allocation — `&self`, lock-free-capable. Claims a unique
@@ -774,21 +786,27 @@ impl<N: Copy> IndexArena<N> {
     /// Must be called at quiescence (no concurrent allocation/mutation) — this
     /// is what keeps free-list reuse ABA-free.
     pub fn sweep(&mut self) -> SweepStats {
-        self.sweep_with(|_| {})
+        self.sweep_with(|_| {}, &mut Vec::new())
     }
 
     /// C1 generational minor sweep with no side-arena callback (cf. [`sweep`];
     /// sweeps only the young generation `[young_floor, seg_count)`).
     pub fn sweep_young(&mut self) -> SweepStats {
-        self.sweep_young_with(|_| {})
+        self.sweep_young_with(|_| {}, &mut Vec::new())
     }
 
     /// Like [`sweep`](Self::sweep) but invokes `on_release(segment_index)` for
     /// each fully-dead segment as it is released, so a wrapper that owns parallel
-    /// per-segment side-arenas (e.g. `IndexHeap`) can co-release them in lockstep.
-    pub fn sweep_with<F: FnMut(usize)>(&mut self, on_release: F) -> SweepStats {
+    /// per-segment side-arenas (e.g. `IndexHeap`) can co-release them in lockstep,
+    /// and records each reclaimed (partial-segment) slot in `reclaimed_out` so the
+    /// wrapper can free its co-located side entry (C1.c #1).
+    pub fn sweep_with<F: FnMut(usize)>(
+        &mut self,
+        on_release: F,
+        reclaimed_out: &mut Vec<Addr>,
+    ) -> SweepStats {
         // Full sweep: range [0, seg_count), rebuild the free list from scratch.
-        self.sweep_range(0, true, on_release)
+        self.sweep_range(0, true, on_release, reclaimed_out)
     }
 
     /// C1 generational MINOR: sweep only the YOUNG segments `[young_floor,
@@ -803,9 +821,13 @@ impl<N: Copy> IndexArena<N> {
     /// collector advances `young_floor` after each minor so a young slot is swept
     /// at most once before promotion (no duplicate free entries). Quiescence-only,
     /// like [`sweep`](Self::sweep).
-    pub fn sweep_young_with<F: FnMut(usize)>(&mut self, on_release: F) -> SweepStats {
+    pub fn sweep_young_with<F: FnMut(usize)>(
+        &mut self,
+        on_release: F,
+        reclaimed_out: &mut Vec<Addr>,
+    ) -> SweepStats {
         let young_floor = self.young_floor.load(Ordering::Acquire);
-        self.sweep_range(young_floor, false, on_release)
+        self.sweep_range(young_floor, false, on_release, reclaimed_out)
     }
 
     /// Shared sweep core for the full sweep ([`sweep_with`]) and the C1
@@ -820,7 +842,15 @@ impl<N: Copy> IndexArena<N> {
         start_seg: usize,
         clear_free_list: bool,
         mut on_release: F,
+        reclaimed_out: &mut Vec<Addr>,
     ) -> SweepStats {
+        // C1.c #1: every slot reclaimed (partial-segment, unmarked) is also pushed to
+        // `reclaimed_out` so the wrapping `IndexHeap` can FREE its co-located
+        // side-arena entry (children/string/span `Box`) and recycle the side index —
+        // without it a reused node-slot would orphan the prior occupant's side `Box`
+        // (a leak bounded only by segment release). Released-segment slots are NOT
+        // included (the release path `continue`s before the reclaim loop; the whole
+        // `sides[seg]` is reset wholesale by `on_release`).
         let mut stats = SweepStats::default();
         if clear_free_list {
             // Full sweep: rebuild from scratch (never persist across a full cycle).
@@ -882,7 +912,9 @@ impl<N: Copy> IndexArena<N> {
                     stats.live += 64;
                 } else if word == 0 {
                     for off in base..base + 64 {
-                        self.free_list.push(Addr::new(si as u32, off as u32));
+                        let a = Addr::new(si as u32, off as u32);
+                        self.free_list.push(a);
+                        reclaimed_out.push(a);
                     }
                     stats.reclaimed_to_free_list += 64;
                 } else {
@@ -890,7 +922,9 @@ impl<N: Copy> IndexArena<N> {
                         if (word & (1u64 << b)) != 0 {
                             stats.live += 1;
                         } else {
-                            self.free_list.push(Addr::new(si as u32, (base + b) as u32));
+                            let a = Addr::new(si as u32, (base + b) as u32);
+                            self.free_list.push(a);
+                            reclaimed_out.push(a);
                             stats.reclaimed_to_free_list += 1;
                         }
                     }
@@ -1435,7 +1469,7 @@ mod tests {
         arena.mark(live);
 
         let mut released = Vec::new();
-        let stats = arena.sweep_with(|si| released.push(si));
+        let stats = arena.sweep_with(|si| released.push(si), &mut Vec::new());
         assert_eq!(
             released,
             vec![0],

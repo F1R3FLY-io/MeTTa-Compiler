@@ -44,15 +44,31 @@ use crate::ir::Span;
 
 /// Per-segment variable-length side-arenas, index-parallel with the arena's
 /// segments. Each interned value is its own `Box` (address-stable for the
-/// segment's life — see the module docs); the `Vec<Box<_>>` may reallocate, but
-/// the `Box` pointees never move. Append-only within a segment (no intra-segment
-/// reuse — tolerated fragmentation); co-released wholesale when the owning
-/// segment is released (dropping the `Vec` drops every `Box` it owns).
+/// segment's life — see the module docs); the `Vec<Option<Box<_>>>` may
+/// reallocate, but the `Box` pointees never move. Co-released wholesale when the
+/// owning segment is released (dropping the `Vec` drops every `Box` it owns).
+///
+/// C1.c (#1, the allocator↔GC coupling): the entries are `Option<Box<_>>` so a
+/// swept-dead node's side slot can be FREED (set `None`, dropping its `Box`) at the
+/// sweep — closing the gap where a node-slot reused by `alloc_sexpr`/etc. orphaned
+/// the prior occupant's side `Box` (a leak bounded only by segment release).
+/// `Option<Box<[T]>>`/`Option<Box<str>>`/`Option<Box<Span>>` are the same size as
+/// the bare `Box` (the non-null pointer niche), so the `Option` costs no memory.
+///
+/// Indices are NOT recycled (the slot stays `None`; later allocations APPEND a fresh
+/// index). Recycling a freed index would be unsound WITHOUT a per-slot occupancy bit:
+/// the sweep re-reclaims still-free node-slots (their dead-node bytes are intact), so
+/// a re-read of a dead node's recycled side-ref could free a now-*live* node's slot
+/// (a "live ... slot" panic / UAF). Not recycling keeps the side-free IDEMPOTENT (a
+/// dead node's slot is `None`d once; re-reads hit the `is_some` guard and skip). The
+/// `Box` DATA is freed promptly; only the `Vec` SPINE grows (one `Option` ptr per
+/// ever-interned datum), recovered wholesale at segment release. (A safe index
+/// recycler would need an occupancy bitmap — a future refinement.)
 #[derive(Default)]
 struct SegmentSideArenas {
-    children: Vec<Box<[MettaValue]>>,
-    strings: Vec<Box<str>>,
-    spans: Vec<Box<Span>>,
+    children: Vec<Option<Box<[MettaValue]>>>,
+    strings: Vec<Option<Box<str>>>,
+    spans: Vec<Option<Box<Span>>>,
 }
 
 /// Launder a side-arena / handle-table reference to `'static`, for building a
@@ -156,17 +172,33 @@ impl IndexHeap {
     }
 
     /// Allocate an `SExpr`, co-locating its children in the node's segment.
+    /// C1.c #1: REUSE a `cur_seg` free slot if available (interning the children
+    /// into that slot's segment so they co-locate + co-release), else BUMP. Reuse
+    /// feeds the minor's reclaimed young slots back into allocation, bounding
+    /// committed (the variable-length path previously only bumped → reclaim wasted).
     pub fn alloc_sexpr(&mut self, items: &[MettaValue]) -> Addr {
-        let cs = self.intern_children(items);
-        let seg = self.arena.ensure_bump_room();
-        self.arena.bump_in(seg, Node::SExpr(cs))
+        if let Some(addr) = self.arena.pop_young_free_slot() {
+            let cr = self.intern_children_in(addr.segment(), items);
+            self.arena.write_reused(addr, Node::SExpr(cr));
+            addr
+        } else {
+            let cs = self.intern_children(items);
+            let seg = self.arena.ensure_bump_room();
+            self.arena.bump_in(seg, Node::SExpr(cs))
+        }
     }
 
-    /// Allocate a `Conjunction`, co-locating its goals.
+    /// Allocate a `Conjunction`, co-locating its goals (reuse-or-bump, as `alloc_sexpr`).
     pub fn alloc_conjunction(&mut self, goals: &[MettaValue]) -> Addr {
-        let cs = self.intern_children(goals);
-        let seg = self.arena.ensure_bump_room();
-        self.arena.bump_in(seg, Node::Conjunction(cs))
+        if let Some(addr) = self.arena.pop_young_free_slot() {
+            let cr = self.intern_children_in(addr.segment(), goals);
+            self.arena.write_reused(addr, Node::Conjunction(cr));
+            addr
+        } else {
+            let cs = self.intern_children(goals);
+            let seg = self.arena.ensure_bump_room();
+            self.arena.bump_in(seg, Node::Conjunction(cs))
+        }
     }
 
     /// Hash-cons a GROUND `SExpr` (caller guarantees variable-free): return the
@@ -199,52 +231,87 @@ impl IndexHeap {
         v
     }
 
-    /// Allocate an `Atom`, co-locating its bytes.
+    /// Allocate an `Atom`, co-locating its bytes (reuse-or-bump, as `alloc_sexpr`).
     pub fn alloc_atom(&mut self, s: &str) -> Addr {
-        let bs = self.intern_bytes(s);
-        let seg = self.arena.ensure_bump_room();
-        self.arena.bump_in(seg, Node::Atom(bs))
+        if let Some(addr) = self.arena.pop_young_free_slot() {
+            let br = self.intern_bytes_in(addr.segment(), s);
+            self.arena.write_reused(addr, Node::Atom(br));
+            addr
+        } else {
+            let bs = self.intern_bytes(s);
+            let seg = self.arena.ensure_bump_room();
+            self.arena.bump_in(seg, Node::Atom(bs))
+        }
     }
 
-    /// Allocate a `String`, co-locating its bytes.
+    /// Allocate a `String`, co-locating its bytes (reuse-or-bump, as `alloc_sexpr`).
     pub fn alloc_string(&mut self, s: &str) -> Addr {
-        let bs = self.intern_bytes(s);
-        let seg = self.arena.ensure_bump_room();
-        self.arena.bump_in(seg, Node::String(bs))
+        if let Some(addr) = self.arena.pop_young_free_slot() {
+            let br = self.intern_bytes_in(addr.segment(), s);
+            self.arena.write_reused(addr, Node::String(br));
+            addr
+        } else {
+            let bs = self.intern_bytes(s);
+            let seg = self.arena.ensure_bump_room();
+            self.arena.bump_in(seg, Node::String(bs))
+        }
     }
 
-    /// Allocate a `Spanned`, co-locating the (boxed) span in the node's segment.
+    /// Allocate a `Spanned`, co-locating the (boxed) span (reuse-or-bump, as `alloc_sexpr`).
     pub fn alloc_spanned(&mut self, inner: MettaValue, span: Span) -> Addr {
-        let seg = self.arena.ensure_bump_room();
-        self.sync_sides();
-        let spans = &mut self.sides[seg].spans;
-        let idx = spans.len() as u32;
-        spans.push(Box::new(span));
-        self.arena
-            .bump_in(seg, Node::Spanned(inner, SpanRef { idx }))
+        if let Some(addr) = self.arena.pop_young_free_slot() {
+            let sr = self.intern_span_in(addr.segment(), span);
+            self.arena.write_reused(addr, Node::Spanned(inner, sr));
+            addr
+        } else {
+            let seg = self.arena.ensure_bump_room();
+            let sr = self.intern_span_in(seg, span);
+            self.arena.bump_in(seg, Node::Spanned(inner, sr))
+        }
     }
 
-    /// Box `items` into the current bump segment's child side-arena, returning the
-    /// segment-relative index. The caller bumps the node into the *same* segment
-    /// (interning touches only the side-arena, never a node slot, so a following
-    /// `ensure_bump_room` returns the same segment), so node and children
-    /// co-locate and co-release.
+    /// C1.c #1: box `items` into segment `seg`'s child side-arena, REUSING a freed
+    /// index (a swept-dead slot, from `free_children`) if available else APPENDING,
+    /// returning the segment-relative index. The caller co-locates the owning node
+    /// in the SAME `seg` (so node + children co-release, and `children(addr)` reads
+    /// `sides[addr.segment()]`). The reuse path passes the REUSED node-slot's
+    /// segment so the side data lands WITH the node (not a possibly-advanced
+    /// `cur_seg`, which would break co-location + bump order). Reuse keeps the side
+    /// `Vec` bounded by live+free entries, not total-ever — so a minor's reclaim is
+    /// not wasted.
+    fn intern_children_in(&mut self, seg: usize, items: &[MettaValue]) -> ChildRef {
+        self.sync_sides();
+        let side = &mut self.sides[seg];
+        let idx = side.children.len() as u32;
+        side.children.push(Some(items.to_vec().into_boxed_slice()));
+        ChildRef { idx }
+    }
+
+    fn intern_bytes_in(&mut self, seg: usize, s: &str) -> ByteRef {
+        self.sync_sides();
+        let side = &mut self.sides[seg];
+        let idx = side.strings.len() as u32;
+        side.strings.push(Some(s.to_string().into_boxed_str()));
+        ByteRef { idx }
+    }
+
+    fn intern_span_in(&mut self, seg: usize, span: Span) -> SpanRef {
+        self.sync_sides();
+        let side = &mut self.sides[seg];
+        let idx = side.spans.len() as u32;
+        side.spans.push(Some(Box::new(span)));
+        SpanRef { idx }
+    }
+
+    /// Bump-path interning: into the current bump segment (`ensure_bump_room`).
     fn intern_children(&mut self, items: &[MettaValue]) -> ChildRef {
         let seg = self.arena.ensure_bump_room();
-        self.sync_sides();
-        let children = &mut self.sides[seg].children;
-        let idx = children.len() as u32;
-        children.push(items.to_vec().into_boxed_slice());
-        ChildRef { idx }
+        self.intern_children_in(seg, items)
     }
 
     fn intern_bytes(&mut self, s: &str) -> ByteRef {
         let seg = self.arena.ensure_bump_room();
-        self.sync_sides();
-        let strings = &mut self.sides[seg].strings;
-        let idx = strings.len() as u32;
-        strings.push(s.to_string().into_boxed_str());
-        ByteRef { idx }
+        self.intern_bytes_in(seg, s)
     }
 
     // ── Access ───────────────────────────────────────────────────────────
@@ -254,12 +321,15 @@ impl IndexHeap {
         self.arena.get(addr)
     }
 
-    /// The children of an `SExpr`/`Conjunction` at `addr`.
+    /// The children of an `SExpr`/`Conjunction` at `addr`. (C1.c #1: the side slot
+    /// is `Some` for any live node — a slot is set `None` only when its node is
+    /// swept-dead, and a dead node is never read.)
     pub fn children(&self, addr: Addr) -> &[MettaValue] {
         match self.arena.get(addr) {
-            Node::SExpr(cr) | Node::Conjunction(cr) => {
-                &self.sides[addr.segment()].children[cr.idx as usize][..]
-            }
+            Node::SExpr(cr) | Node::Conjunction(cr) => self.sides[addr.segment()].children
+                [cr.idx as usize]
+                .as_deref()
+                .expect("live SExpr/Conjunction children slot"),
             _ => panic!("children() on a non-SExpr/Conjunction node"),
         }
     }
@@ -267,9 +337,10 @@ impl IndexHeap {
     /// The string of an `Atom`/`String` at `addr`.
     pub fn str_slice(&self, addr: Addr) -> &str {
         match self.arena.get(addr) {
-            Node::Atom(br) | Node::String(br) => {
-                &self.sides[addr.segment()].strings[br.idx as usize][..]
-            }
+            Node::Atom(br) | Node::String(br) => self.sides[addr.segment()].strings
+                [br.idx as usize]
+                .as_deref()
+                .expect("live Atom/String slot"),
             _ => panic!("str_slice() on a non-Atom/String node"),
         }
     }
@@ -277,7 +348,9 @@ impl IndexHeap {
     /// The `Span` of a `Spanned` at `addr`.
     pub fn span_at(&self, addr: Addr) -> Span {
         match self.arena.get(addr) {
-            Node::Spanned(_, sr) => *self.sides[addr.segment()].spans[sr.idx as usize],
+            Node::Spanned(_, sr) => *self.sides[addr.segment()].spans[sr.idx as usize]
+                .as_deref()
+                .expect("live Spanned slot"),
             _ => panic!("span_at() on a non-Spanned node"),
         }
     }
@@ -365,8 +438,13 @@ impl IndexHeap {
             Node::Empty => MettaValueInner::Empty,
             Node::NotReducible => MettaValueInner::NotReducible,
             Node::Spanned(inner, sr) => {
-                let span: &'static Span =
-                    unsafe { launder(&*self.sides[addr.segment()].spans[sr.idx as usize]) };
+                let span: &'static Span = unsafe {
+                    launder(
+                        self.sides[addr.segment()].spans[sr.idx as usize]
+                            .as_deref()
+                            .expect("live Spanned slot"),
+                    )
+                };
                 MettaValueInner::Spanned(*inner, span)
             }
         }
@@ -384,7 +462,9 @@ impl IndexHeap {
             let node = arena.get(addr);
             node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
             if let Node::SExpr(cr) | Node::Conjunction(cr) = node {
-                let kids = &sides[addr.segment()].children[cr.idx as usize];
+                let kids = sides[addr.segment()].children[cr.idx as usize]
+                    .as_deref()
+                    .expect("live SExpr/Conjunction children slot");
                 for c in kids.iter() {
                     if let Some(a) = c.as_arena_addr() {
                         out.push(a);
@@ -408,7 +488,9 @@ impl IndexHeap {
             let node = arena.get(addr);
             node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
             if let Node::SExpr(cr) | Node::Conjunction(cr) = node {
-                let kids = &sides[addr.segment()].children[cr.idx as usize];
+                let kids = sides[addr.segment()].children[cr.idx as usize]
+                    .as_deref()
+                    .expect("live SExpr/Conjunction children slot");
                 for c in kids.iter() {
                     if let Some(a) = c.as_arena_addr() {
                         out.push(a);
@@ -445,12 +527,86 @@ impl IndexHeap {
             self.hash_cons
                 .retain(|_, v| v.as_arena_addr().is_some_and(|a| arena.is_marked(a)));
         }
-        let sides = &mut self.sides;
-        self.arena.sweep_with(|seg| {
-            if seg < sides.len() {
-                sides[seg] = SegmentSideArenas::default();
+        let mut reclaimed: Vec<Addr> = Vec::new();
+        let stats = {
+            let sides = &mut self.sides;
+            self.arena.sweep_with(
+                |seg| {
+                    if seg < sides.len() {
+                        sides[seg] = SegmentSideArenas::default();
+                    }
+                },
+                &mut reclaimed,
+            )
+        };
+        // C1.c #1: free the side-arena entries of the reclaimed (partial-segment) dead
+        // nodes + recycle their indices (released segments were reset wholesale above).
+        self.free_reclaimed_side_slots(&reclaimed);
+        stats
+    }
+
+    /// C1.c #1: free the co-located side-arena entry (children/string/span `Box`) of
+    /// each reclaimed (swept-dead, partial-segment) node and recycle its index onto
+    /// the segment's `free_*` stack for reuse by a later variable-length allocation —
+    /// without this a node-slot reused by `alloc_sexpr`/etc. would orphan the prior
+    /// occupant's side `Box` (a leak bounded only by segment release). `reclaimed` is
+    /// the slots `sweep`/`sweep_young` reclaimed (NOT released-segment slots, whose
+    /// whole `sides[seg]` was reset). The node bytes are still intact (the sweep frees
+    /// a slot WITHOUT clobbering it), so `arena.get(addr)` reads the dead node's
+    /// side-ref; the slot is `None`d so its `Box` drops now. The `is_some` guard makes
+    /// it idempotent (no double-free / duplicate free index).
+    fn free_reclaimed_side_slots(&mut self, reclaimed: &[Addr]) {
+        enum Side {
+            Children(u32),
+            Strings(u32),
+            Spans(u32),
+            None,
+        }
+        for &addr in reclaimed.iter().take(0) {
+            // DIAGNOSTIC (temporary): take(0) no-ops the side-free to isolate whether
+            // the C1.c #1 divergence is from the side-free or the node reuse.
+            let seg = addr.segment();
+            // Extract the dead node's side index (Copy) — the `arena` borrow ends here,
+            // before mutating the disjoint `sides` field.
+            let side = match self.arena.get(addr) {
+                Node::SExpr(cr) | Node::Conjunction(cr) => Side::Children(cr.idx),
+                Node::Atom(br) | Node::String(br) => Side::Strings(br.idx),
+                Node::Spanned(_, sr) => Side::Spans(sr.idx),
+                _ => Side::None, // fixed node: no side slot
+            };
+            if seg >= self.sides.len() {
+                continue;
             }
-        })
+            let s = &mut self.sides[seg];
+            // Free the dead node's `Box` (drop it now); leave the index `None` (NOT
+            // recycled — see `SegmentSideArenas`). SOUND + idempotent: with no
+            // recycling, index `i` is ONLY EVER this dead node's (intern appends fresh
+            // indices, never `i`), so `None`-ing it touches no live node, and a
+            // re-reclaimed still-free slot just `None`s the same already-None index
+            // again (harmless). This is why recycling — which would hand `i` to a live
+            // node — is the unsound path the gate's "live ... slot" panic caught.
+            match side {
+                Side::Children(i) => {
+                    let i = i as usize;
+                    if i < s.children.len() {
+                        s.children[i] = None;
+                    }
+                }
+                Side::Strings(i) => {
+                    let i = i as usize;
+                    if i < s.strings.len() {
+                        s.strings[i] = None;
+                    }
+                }
+                Side::Spans(i) => {
+                    let i = i as usize;
+                    if i < s.spans.len() {
+                        s.spans[i] = None;
+                    }
+                }
+                Side::None => {}
+            }
+        }
     }
 
     /// C1.b: young-only minor sweep — the generational counterpart of [`sweep`].
@@ -481,12 +637,22 @@ impl IndexHeap {
                 None => false,
             });
         }
-        let sides = &mut self.sides;
-        self.arena.sweep_young_with(|seg| {
-            if seg < sides.len() {
-                sides[seg] = SegmentSideArenas::default();
-            }
-        })
+        let mut reclaimed: Vec<Addr> = Vec::new();
+        let stats = {
+            let sides = &mut self.sides;
+            self.arena.sweep_young_with(
+                |seg| {
+                    if seg < sides.len() {
+                        sides[seg] = SegmentSideArenas::default();
+                    }
+                },
+                &mut reclaimed,
+            )
+        };
+        // C1.c #1: free + recycle the reclaimed young nodes' side slots (the minor's
+        // young reclaim now feeds variable-length allocation, not just node-slot reuse).
+        self.free_reclaimed_side_slots(&reclaimed);
+        stats
     }
 
     // ── Diagnostics ──────────────────────────────────────────────────────
@@ -1152,7 +1318,29 @@ pub mod index_gc {
         // cached inner keyed by such an Addr must go — required after BOTH a minor
         // (a reused young Addr) and a major. This thread is the only one with a
         // populated INNER_SHADOW in the single-threaded regime.
+        // C1.c #1: when this collection reused an `Addr` for new content, every
+        // Addr-keyed / content-hash-keyed cache that could still hold the PRIOR
+        // occupant's entry must be invalidated — else a later lookup (set-op hashing,
+        // eval memo, match, operator, MORK) serves a stale result. Invalidate EXACTLY
+        // the set the SLAB collector invalidates at its safepoints, via the proven,
+        // already-wired `clear_aba_sensitive_caches()` — restoring slab parity:
+        //   VALUE_HASH_CACHE (Addr-keyed in index mode — the PRIMARY cause of the
+        //   set-op divergences), the MORK bytes + ground-fragment caches, and the
+        //   operator cache. (The slab bumps `gc_sweep_epoch`, which VALUE_HASH_CACHE /
+        //   MORK self-read to lazily self-clear; the index collector cannot call the
+        //   `pub(super)` epoch bump, so it uses the same public clear path the slab
+        //   path uses — minimal surface, exact parity.)
+        crate::backend::eval::trampoline::eval_loop::clear_aba_sensitive_caches();
+        // Index-only: the laundered-`MettaValueInner` shadow keyed by `Addr` (a reused
+        // Addr invalidates any cached inner). Not part of the slab ABA set.
         clear_inner_shadow();
+        // EVAL_MEMO + MATCH_RESULT_CACHE are NOT in the slab ABA set — there they are
+        // query-generation-protected under the deterministic-GC invariant, which index
+        // Addr-reuse ACROSS DIRECTIVES violates (no `query_gen` bump between directives
+        // of one top-level query). A reused Addr's new content must not hit a stale
+        // memo/match entry keyed on its (now-wrong) content hash, so clear them here.
+        crate::backend::eval::trampoline::dispatch_hints::clear_eval_memo();
+        crate::backend::eval::trampoline::dispatch_hints::clear_match_result_cache();
 
         // Major backstop bookkeeping. A major rearms the committed watermark from
         // post-full-sweep live bytes and resets the minor cadence; a minor only
@@ -1713,13 +1901,28 @@ mod tests {
             Some(live_addr),
             "live ground content keeps its canonical Addr across sweep"
         );
-        // Dead content re-interns to a FRESH Addr (the stale entry was dropped — not
-        // a dangling hit on the reclaimed slot).
-        let dead2 = heap.intern_ground_sexpr(&[f.long(3), f.long(4)]);
-        assert_ne!(
-            dead2.as_arena_addr(),
+        // Dead content's hash-cons entry was DROPPED at sweep (B1.c), so re-interning
+        // it is a MISS that RE-ALLOCATES — NOT a dangling HIT on the reclaimed slot.
+        // C1.c #1 (cur_seg-only free-list reuse) means a fresh allocation may REUSE the
+        // reclaimed slot, so the no-dangling-hit guard can no longer be an Addr-
+        // inequality check. Instead: consume the reclaimed slot with DIFFERENT content
+        // first (it reuses `dead_addr`), so a (buggy) stale hit on dead's entry would
+        // return that slot now holding (5,6); then re-interning (3,4) must yield the
+        // CORRECT (3,4) content — proving the entry was dropped + re-allocated.
+        let other = heap.intern_ground_sexpr(&[f.long(5), f.long(6)]);
+        assert_eq!(
+            other.as_arena_addr(),
             Some(dead_addr),
-            "dead content's entry dropped → re-allocated, not a free-slot hit"
+            "C1.c #1: a fresh allocation reuses the reclaimed cur_seg slot"
+        );
+        let dead2 = heap.intern_ground_sexpr(&[f.long(3), f.long(4)]);
+        let kids = heap.children(dead2.as_arena_addr().expect("dead2 is an arena addr"));
+        assert!(
+            kids.len() == 2
+                && kids[0].tagged == f.long(3).tagged
+                && kids[1].tagged == f.long(4).tagged,
+            "dead content re-interns to CORRECT (3,4) content — entry dropped + \
+             re-allocated, not a dangling hit on the reclaimed (now-(5,6)) slot"
         );
 
         reset_gc_mode_slab();

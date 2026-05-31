@@ -155,8 +155,16 @@ where
         TAG_EMPTY => factory.empty(),
         TAG_PTR => {
             let ptr = (jit_val.to_bits() & PAYLOAD_MASK) as *const MettaValueInner;
-            debug_assert!(!ptr.is_null(), "jit_to_value_generic: Null inner pointer");
-            // Reconstruct value from slab-allocated inner pointer
+            // The null check is a SLAB invariant: under index-gc the payload is the
+            // bare arena `Addr` bits and `Addr(0)` (payload 0) is a VALID address,
+            // so the assert is meaningless there (it would false-fire). `from_inner_ptr`
+            // is itself mode-aware (reconstructs the handle in index mode), so the
+            // value is correct either way — only the assert needs the gate.
+            debug_assert!(
+                crate::backend::models::metta_value::gc_mode_is_index() || !ptr.is_null(),
+                "jit_to_value_generic: Null inner pointer"
+            );
+            // Reconstruct value (slab: deref the inner ptr; index: from the Addr bits).
             V::from_inner_ptr(ptr)
         }
         _ => {

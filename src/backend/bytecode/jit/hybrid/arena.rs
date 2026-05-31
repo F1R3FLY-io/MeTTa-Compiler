@@ -458,21 +458,41 @@ fn jit_to_value(jit_val: u64, factory: &crate::backend::models::ActiveFactory) -
             }
         }
         TAG_PTR => {
-            // Pointer to slab-allocated MettaValueInner
-            let ptr = (jit_val & PAYLOAD_MASK) as *const MettaValueInner;
-            if !ptr.is_null() {
-                unsafe { MettaValue::from_inner(&*ptr) }
+            // Index mode (B4): the payload carries the bare arena `Addr` bits, NOT
+            // a slab pointer — reconstruct the handle (do NOT deref / null-check it;
+            // `Addr(0)` is a valid arena address). Mirrors `JitValue::to_metta`'s
+            // index arm. Slab arm below is byte-identical.
+            if crate::backend::models::metta_value::gc_mode_is_index() {
+                let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(
+                    (jit_val & PAYLOAD_MASK) as u32,
+                );
+                MettaValue::from_addr(addr, 0)
             } else {
-                factory.unit()
+                // Pointer to slab-allocated MettaValueInner
+                let ptr = (jit_val & PAYLOAD_MASK) as *const MettaValueInner;
+                if !ptr.is_null() {
+                    unsafe { MettaValue::from_inner(&*ptr) }
+                } else {
+                    factory.unit()
+                }
             }
         }
         TAG_ERROR => {
-            // Error values — also point to slab-allocated MettaValueInner
-            let ptr = (jit_val & PAYLOAD_MASK) as *const MettaValueInner;
-            if !ptr.is_null() {
-                unsafe { MettaValue::from_inner(&*ptr) }
+            // Error values — index mode reconstructs the arena handle (the
+            // error-ness lives in the node, not the handle flags); slab arm
+            // byte-identical.
+            if crate::backend::models::metta_value::gc_mode_is_index() {
+                let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(
+                    (jit_val & PAYLOAD_MASK) as u32,
+                );
+                MettaValue::from_addr(addr, 0)
             } else {
-                factory.error(factory.string("unknown error"), factory.unit())
+                let ptr = (jit_val & PAYLOAD_MASK) as *const MettaValueInner;
+                if !ptr.is_null() {
+                    unsafe { MettaValue::from_inner(&*ptr) }
+                } else {
+                    factory.error(factory.string("unknown error"), factory.unit())
+                }
             }
         }
         _ => {

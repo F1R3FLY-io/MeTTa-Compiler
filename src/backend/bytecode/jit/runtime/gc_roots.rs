@@ -150,12 +150,23 @@ unsafe fn collect_chunk_ptr_constants(chunk: *const (), out: &mut Vec<MettaValue
 pub(crate) unsafe fn collect_jit_value_into(v: JitValue, out: &mut Vec<MettaValue>) {
     let tag = v.tag();
     if tag == TAG_PTR || tag == TAG_ERROR {
-        let p = (v.0 & PAYLOAD_MASK) as *const MettaValueInner;
-        if !p.is_null() {
-            // SAFETY: TAG_PTR/TAG_ERROR payloads are produced exclusively
-            // by `JitValue::from_inner_ptr` / `from_error_ptr`, which are
-            // only ever called on slab-allocated 'static MettaValueInner.
-            out.push(MettaValue::from_inner(&*p));
+        // Index mode (B4): the payload is the bare arena `Addr` bits, NOT a slab
+        // pointer — reconstruct the handle (do NOT deref). This makes the JIT
+        // root-walker the structural index-leaf reader for `VmLeaf::Jit` (`Addr(0)`
+        // is a valid arena address, so there is no null-skip in the index arm).
+        if crate::backend::models::metta_value::gc_mode_is_index() {
+            let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(
+                (v.0 & PAYLOAD_MASK) as u32,
+            );
+            out.push(MettaValue::from_addr(addr, 0));
+        } else {
+            let p = (v.0 & PAYLOAD_MASK) as *const MettaValueInner;
+            if !p.is_null() {
+                // SAFETY: under slab, TAG_PTR/TAG_ERROR payloads are produced
+                // exclusively by `JitValue::from_inner_ptr` / `from_error_ptr`,
+                // only ever called on slab-allocated 'static MettaValueInner.
+                out.push(MettaValue::from_inner(&*p));
+            }
         }
     }
     // Inline tags (TAG_LONG/BOOL/UNIT/EMPTY) and atom/var string-pointer
@@ -281,5 +292,39 @@ mod tests {
                 "missing JIT chunk/constant root: {expected:?}"
             );
         }
+    }
+
+    /// B4: `collect_jit_value_into` reconstructs the arena handle from a TAG_PTR
+    /// payload in index mode (the bare `Addr` bits), NOT a slab deref — so it is the
+    /// structural root-walker for `VmLeaf::Jit`. Pre-B4 it deref'd the `Addr` bits as
+    /// a `*const MettaValueInner` (garbage / UAF under index where payload = addr.raw()).
+    #[test]
+    fn collect_jit_value_into_index_reconstructs_handle() {
+        use crate::backend::bytecode::jit::runtime::helpers::metta_to_jit;
+        use crate::backend::eval::cesk::index_heap::IndexFactory;
+        use crate::backend::models::metta_value::{reset_gc_mode_slab, set_gc_mode_index};
+        use crate::backend::models::MettaValueFactory;
+
+        set_gc_mode_index();
+        let f = IndexFactory;
+        // A heap value (ground SExpr) packs to TAG_PTR carrying its Addr bits.
+        let v = f.sexpr(vec![f.atom("foo"), f.long(7)]);
+        let jv = metta_to_jit(&v);
+        assert_eq!(jv.tag(), TAG_PTR, "heap value packs to TAG_PTR");
+
+        let mut out = Vec::new();
+        unsafe { collect_jit_value_into(jv, &mut out) };
+        assert_eq!(out.len(), 1, "TAG_PTR contributes exactly one root");
+        assert_eq!(
+            out[0], v,
+            "the root is the reconstructed handle, NOT a slab deref of the Addr bits"
+        );
+
+        // An inline scalar (TAG_LONG) references no arena node → contributes nothing.
+        out.clear();
+        unsafe { collect_jit_value_into(metta_to_jit(&f.long(42)), &mut out) };
+        assert!(out.is_empty(), "inline scalar is not a GC root");
+
+        reset_gc_mode_slab();
     }
 }

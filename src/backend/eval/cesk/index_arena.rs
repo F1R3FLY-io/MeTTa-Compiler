@@ -181,47 +181,61 @@ impl<N: Copy> Segment<N> {
     }
 
     /// Set the mark bit for `offset`. Returns `true` if previously unmarked.
-    /// Ordering stays `Relaxed` in B2 (B3 introduces Release/Acquire mark
-    /// ordering for the concurrent marker).
+    ///
+    /// `AcqRel` (B3): the Release half publishes the marking thread's prior writes
+    /// (in allocate-black, the node bytes the mutator wrote before blackening) to a
+    /// concurrent sweep / second marker that `Acquire`-loads this word and observes
+    /// the bit; the Acquire half orders a parallel marker's subsequent worklist
+    /// reads (and keeps the `prev & bit` idempotence correct across markers racing
+    /// to gray a shared node). Byte-identical at the current single-threaded runtime
+    /// — Relaxed→stronger only ADDS happens-before; with one thread it is identical.
     #[inline]
     fn set_mark(&self, offset: usize) -> bool {
         let bit = 1u64 << (offset & 63);
-        let prev = self.marks[offset >> 6].fetch_or(bit, Ordering::Relaxed);
+        let prev = self.marks[offset >> 6].fetch_or(bit, Ordering::AcqRel);
         (prev & bit) == 0
     }
 
+    /// `Acquire` (B3): observing the bit set happens-after the `set_mark` (AcqRel)
+    /// that set it, so the reader also observes that marker's published writes.
     #[inline]
     fn is_marked(&self, offset: usize) -> bool {
         let bit = 1u64 << (offset & 63);
-        (self.marks[offset >> 6].load(Ordering::Relaxed) & bit) != 0
+        (self.marks[offset >> 6].load(Ordering::Acquire) & bit) != 0
     }
 
+    /// `Release` (B3): cycle N's zeroing is ordered before cycle N+1's first
+    /// `set_mark`/`is_marked` (Acquire) observes the word, so a stale set bit from
+    /// the previous cycle never leaks into the next mark phase.
     #[inline]
     fn clear_marks(&self) {
         for w in self.marks.iter() {
-            w.store(0, Ordering::Relaxed);
+            w.store(0, Ordering::Release);
         }
     }
 
     /// `true` if no slot in `0..len` is marked (B1.b word-parallel form preserved).
     ///
-    /// Reads the PUBLISH cursor with `Acquire` so that, paired with the
-    /// publisher's `Release`, every published slot's mark word is observed. OR
-    /// together the complete mark words covering `0..len` (one load per 64 slots),
-    /// masking the final partial word to the valid low `len & 63` bits (offsets
-    /// `>= len` are never set by `set_mark`, so the mask only guards padding bits).
+    /// Reads the PUBLISH cursor with `Acquire` (paired with the publisher's
+    /// `Release`, every published slot is observed) AND each mark word with
+    /// `Acquire` (B3 — paired with `set_mark`'s AcqRel, the sweep, as the mark
+    /// CONSUMER, observes every bit any marker set, so a live slot is never
+    /// reclaimed). OR together the complete mark words covering `0..len` (one load
+    /// per 64 slots), masking the final partial word to the valid low `len & 63`
+    /// bits (offsets `>= len` are never set by `set_mark`, so the mask only guards
+    /// padding bits).
     fn is_fully_dead(&self) -> bool {
         let len = self.len.load(Ordering::Acquire);
         let full_words = len >> 6;
         for wi in 0..full_words {
-            if self.marks[wi].load(Ordering::Relaxed) != 0 {
+            if self.marks[wi].load(Ordering::Acquire) != 0 {
                 return false;
             }
         }
         let rem = len & 63;
         if rem != 0 {
             let mask = (1u64 << rem) - 1;
-            if (self.marks[full_words].load(Ordering::Relaxed) & mask) != 0 {
+            if (self.marks[full_words].load(Ordering::Acquire) & mask) != 0 {
                 return false;
             }
         }
@@ -681,14 +695,16 @@ impl<N: Copy> IndexArena<N> {
             }
 
             // Partially-live (or current): reclaim unmarked slots. B1.b
-            // word-parallel fast path preserved verbatim — only the slot read
-            // changes to `seg.marks[..]` and the length to `seg.len.load(Acquire)`.
+            // word-parallel fast path preserved verbatim. Mark words are read with
+            // `Acquire` (B3): the sweep is the mark CONSUMER, so it must observe
+            // every bit any marker set (else it reclaims a live slot — UAF); each
+            // load pairs with `set_mark`'s AcqRel.
             let seg: &Segment<N> = unsafe { &*seg_ptr };
             let len = seg.len.load(Ordering::Acquire);
             let full_words = len >> 6;
             let rem = len & 63;
             for wi in 0..full_words {
-                let word = seg.marks[wi].load(Ordering::Relaxed);
+                let word = seg.marks[wi].load(Ordering::Acquire);
                 let base = wi << 6;
                 if word == u64::MAX {
                     stats.live += 64;
@@ -709,7 +725,7 @@ impl<N: Copy> IndexArena<N> {
                 }
             }
             if rem != 0 {
-                let word = seg.marks[full_words].load(Ordering::Relaxed);
+                let word = seg.marks[full_words].load(Ordering::Acquire);
                 let base = full_words << 6;
                 for b in 0..rem {
                     if (word & (1u64 << b)) != 0 {

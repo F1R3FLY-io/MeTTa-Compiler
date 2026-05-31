@@ -25,15 +25,14 @@ perfectly-predicted branch. (Affects only wording of B1's nursery skip; not corr
 
 | Step | What | Status |
 |------|------|--------|
-| B1.a | skip the dead slab nursery in index mode (eval_loop.rs:3846) | **DONE** (commit `83ec811`, verified present + safe) |
-| B1.0 | verify B1.a green; (optional) correct the stale 4325/4177 comment in a5_greenwall.sh | pending |
-| B1.b | word-parallel sweep + all-live/all-dead fast path (index_arena.rs) | pending |
-| B1.c | scope hash-cons clear to released segments (index_heap.rs) | pending |
-| B2.1 | never-realloc segment directory (`Box<[UnsafeCell<MaybeUninit<Box<Segment>>>]>` + `seg_count: AtomicUsize`), alloc still `&mut self` | pending |
-| B2.2 | atomic bump cursor + `&self` alloc/bump_in (two-cursor publish protocol; `unsafe impl Send/Sync`; `released: AtomicBool`) | pending |
-| B2.3 | exercise concurrency at FANOUT>0 (per-worker `cur_seg` partition for determinism) | pending |
-| B3 | lock-free TLABs (64 KiB CCD-local) + Release/Acquire mark ordering | pending |
-| B4 | JIT-on-index re-enablement (ungate tiered_cache.rs:1297/1491/1698) — closes the PLN budget gap | pending |
+| B1.a | skip the dead slab nursery in index mode (eval_loop.rs:3846) | **DONE** `83ec811` (verified present + safe) |
+| B1.0 | correct the stale 4325/4177/744 comments in a5_greenwall.sh | **DONE** (folded into B1.b `0f53d6c`) |
+| B1.b | word-parallel sweep + all-live/all-dead fast path (index_arena.rs) | **DONE** `0f53d6c` |
+| B1.c | retain LIVE hash-cons entries at sweep (is_marked-retain, not released-only) | **DONE** `b8ef27e` |
+| B2 | lock-free-capable arena interior: UnsafeCell directory + two-cursor bump/publish + `alloc(&mut)`/`alloc_bump(&self)` split + `unsafe impl Send/Sync` + loom model (was B2.1/B2.2; B2.3 concurrency-flip → D) | **DONE** `efb7d35` |
+| B3 | Release/Acquire mark ordering (set_mark AcqRel; is_marked/is_fully_dead/sweep_with Acquire; clear_marks Release) — for D's concurrent marker; byte-identical | **gating** |
+| B3-TLAB | ~~lock-free TLABs (64 KiB CCD-local)~~ → **DEFERRED to Phase D** (user-approved 2026-05-31). Inert until D (IndexHeap serializes; collector gate latches off) + incompatible with B2's contiguous-`len` ⇒ co-design with D's concurrent collector. Full backlog = D-TLAB.1–6 (see `phase-b3-tlab-deferral` below). | **→ D** |
+| B4 | JIT-on-index re-enablement (ungate tiered_cache.rs:1297/1491/1698) — closes the ~2.2× index PLN gap | pending |
 
 ---
 
@@ -285,3 +284,59 @@ If B2.3 fails ASAN, B2.1+B2.2 (a strictly-better directory + `&self` API) still 
 - **Re-introducing a discovery side-channel** (Phase A's whole point) → the permanent machine-equivalence
   oracle (eval_loop.rs:3662) panics; B2 touches only the σ substrate, never the root set.
 - **ASAN OOM** (once crashed the 125 GiB box) → `-p MemoryMax=32G -p MemorySwapMax=0`, FOREGROUND, serial.
+
+---
+
+## B3 — Release/Acquire mark ordering (the clean half; TLABs → D)
+
+User-approved 2026-05-31: B3 ships **only** the mark-ordering strengthening; the lock-free TLABs defer to D
+(rationale below). Edits in `index_arena.rs` (Plan-agent designed `help-me-complete-…` B3 report, source-verified):
+- `set_mark`: `fetch_or(bit, Relaxed)` → **`AcqRel`** — Release half publishes the marker's prior writes
+  (allocate-black node bytes) to a sweep/second-marker that Acquire-observes the bit; Acquire half orders a
+  parallel marker's worklist reads + keeps `prev & bit` idempotence correct across racing markers.
+- `is_marked`: `load(Relaxed)` → **`Acquire`** — observing the bit happens-after the AcqRel set.
+- `is_fully_dead` (×2 mark-word loads) + `sweep_with` reclaim loop (×2): `load(Relaxed)` → **`Acquire`** — the
+  sweep is the mark CONSUMER; it must observe every bit any marker set (else it reclaims a live slot → UAF).
+- `clear_marks`: `store(0, Relaxed)` → **`Release`** — cycle N's zeroing ordered before cycle N+1's first set.
+
+**Byte-identical at the current runtime** (proof): Relaxed→stronger only ADDS happens-before; the marker
+(`heap.mark`) + sweep run single-threaded under the IndexHeap `RwLock` write lock and only while
+`!worker_ever_spawned()`, so with one thread the orderings are observably identical (same bits, same
+SweepStats, same conformance output). `bump`/`len`/`released`/`alloc_count` keep their own orderings.
+
+**B3 gate** = green-wall `--with-oracle` (byte-identical: slab 4330/0, index 4173/0, conformance 483/0 ~840
+cycles, lib 49 both, oracle 0) + ASAN@FANOUT=0 (regression backstop — the mark-ordering is byte-identical
+*memory accesses*, so ASAN, which checks memory safety not ordering, is a sanity backstop, not informative).
+**No loom/TLA+ in B3**: the ordering's PURPOSE is D's concurrent marker, which doesn't exist in B; the
+mechanical concurrency proof (loom of mark↔sweep + the TLA+ `claimed`/`published` model) is a **D deliverable**
+done against the real marker — consistent with deferring the TLAB it serves. The ordering is sound by
+construction (textbook Release/Acquire synchronizes-with) + documented + byte-identical-gated now.
+
+## TLABs deferred to D — the concrete backlog (D-TLAB.1–6, nothing hand-waved)
+
+A **TLAB** (thread-local allocation buffer) = each worker bulk-reserves a slot range (`bump.fetch_add(N)`) and
+bump-allocates within it locally (non-atomic `next += 1`), amortizing the shared-cursor atomic ~N× and giving
+CCD/cache locality. **Why deferred:** (1) **incompatible with B2's contiguous-`len`** — independent TLAB ranges
+publish out of order, but `len` is a contiguous prefix, so a higher range must wait for lower ranges → serializes,
+defeating the parallelism; (2) **inert until D** — IndexHeap still serializes all allocation behind its RwLock, and
+the collector gate latches off the moment a worker spawns, so a TLAB delivers 0 benefit + can't be exercised in
+B's single-threaded runtime; (3) its correctness obligation (a concurrent marker never reads a claimed-unpublished
+slot; sweep never frees one) is a **D invariant** with no B-phase validator.
+
+D must build (per the Plan-agent report):
+- **D-TLAB.1** Per-slot publication replacing single-segment contiguity. Two candidates: (a) a per-segment
+  `published` bitmap alongside `marks` (slot readable iff published-bit set, Acquire; marker/sweep AND it with
+  `marks`); **(b) segment-as-TLAB** — a worker claims a WHOLE segment via the already-`&self` `open_segment`, keeping
+  B2's contiguous-`len` *verbatim* (one bumper per segment ⇒ contiguity free), cross-segment parallelism from
+  different workers owning different segments. **Prefer (b)** (lowest risk; preserves the B2 protocol) unless a
+  per-worker segment-count explosion forces (a).
+- **D-TLAB.2** 64 KiB sizing: under (b) a TLAB *segment capacity* (~2730 slots) distinct from the 6 MiB production
+  segment (L2/CCD-resident); under (a) a 64 KiB range within a segment.
+- **D-TLAB.3** The `Tlab { seg, base, next, end }` thread-local + bulk-claim + non-atomic local bump + re-claim.
+- **D-TLAB.4** `tlab_flush_and_publish`: Release fence before `ACTIVE_EVALUATORS--` (park / EvalGuard drop), so a
+  concurrent marker observing the evaluator-count drop also observes the TLAB's published slots.
+- **D-TLAB.5** Gate interaction: only after D5 drops `!worker_ever_spawned()` can a TLAB coexist with live collection
+  ⇒ TLAB correctness is a D-gate obligation (ASAN@FANOUT>0 + 20-run + loom + TLA+), not a B-gate one.
+- **D-TLAB.6** loom (multi-range model: N writers claim disjoint ranges, publish independently, a marker reads the
+  published set) + extend `tla/StoreCentricGC.tla`'s `claimed`/`PublishSlot` to model out-of-order range
+  publication under the concurrent marker (`NoUnpublishedRead`/`NoMarkOfClaimed`).

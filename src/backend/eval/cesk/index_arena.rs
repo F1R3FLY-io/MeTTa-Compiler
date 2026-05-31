@@ -370,6 +370,14 @@ pub struct IndexArena<N: Copy> {
     /// Total slots ever bump-allocated (diagnostics). `AtomicU64` so a concurrent
     /// `&self` `bump_in`/`alloc` can increment it; read `Relaxed` (diagnostic only).
     alloc_count: AtomicU64,
+    /// C1 generational boundary: segments `[young_floor, seg_count)` are YOUNG,
+    /// `[0, young_floor)` are OLD. A minor ([`sweep_young_with`]) reclaims only
+    /// young segments; the collector advances this (via [`set_young_floor`]) after
+    /// each minor to promote survivors to old. Init 0 (everything young ⇒ a minor
+    /// with `young_floor == 0` degenerates to a full-range sweep — sound).
+    /// `Release`/`Acquire` (set at quiescence; race-free at the single-threaded
+    /// collector anyway, like `seg_count`/`cur_seg`).
+    young_floor: AtomicUsize,
 }
 
 impl<N: Copy> Default for IndexArena<N> {
@@ -409,6 +417,7 @@ impl<N: Copy> IndexArena<N> {
             segment_capacity: capacity,
             free_list: Vec::new(),
             alloc_count: AtomicU64::new(0),
+            young_floor: AtomicUsize::new(0),
         };
         arena.open_segment(); // publishes segment 0; sets cur_seg = 0
         arena
@@ -634,6 +643,56 @@ impl<N: Copy> IndexArena<N> {
         total
     }
 
+    /// C1: committed node bytes of the YOUNG generation only (`[young_floor,
+    /// seg_count)`). The minor's watermark trigger — the ~6% frequency lever.
+    #[inline]
+    pub fn young_committed_node_bytes(&self) -> usize {
+        let per = std::mem::size_of::<N>();
+        let mut total = 0usize;
+        let n = self.seg_count.load(Ordering::Acquire);
+        let floor = self.young_floor.load(Ordering::Acquire);
+        for si in floor..n {
+            // SAFETY: si < seg_count ⇒ published.
+            let seg = unsafe { self.segment(si) };
+            if !seg.released.load(Ordering::Relaxed) {
+                total += seg.capacity * per;
+            }
+        }
+        total
+    }
+
+    /// C1: live node count of the YOUNG generation only (`[young_floor, seg_count)`).
+    #[inline]
+    pub fn young_live_node_count(&self) -> usize {
+        let mut total = 0usize;
+        let n = self.seg_count.load(Ordering::Acquire);
+        let floor = self.young_floor.load(Ordering::Acquire);
+        for si in floor..n {
+            // SAFETY: si < seg_count ⇒ published.
+            let seg = unsafe { self.segment(si) };
+            if !seg.released.load(Ordering::Relaxed) {
+                total += seg.len.load(Ordering::Acquire);
+            }
+        }
+        total
+    }
+
+    /// C1: the current young/old generational boundary (segments `>= young_floor`
+    /// are young). Read by the minor sweep and the young watermark.
+    #[inline]
+    pub fn young_floor(&self) -> usize {
+        self.young_floor.load(Ordering::Acquire)
+    }
+
+    /// C1: advance the young/old boundary (promotion). The collector calls this
+    /// after a minor — typically `set_young_floor(cur_seg)` — so the just-swept
+    /// young survivors become OLD and only segments allocated afterwards are young.
+    /// Quiescence-only; `Release` pairs with the minor's `Acquire` load.
+    #[inline]
+    pub fn set_young_floor(&self, floor: usize) {
+        self.young_floor.store(floor, Ordering::Release);
+    }
+
     /// Per-node byte size (`size_of::<N>()`), so a wrapper can convert a node
     /// count into a byte estimate without knowing `N`.
     #[inline]
@@ -651,17 +710,60 @@ impl<N: Copy> IndexArena<N> {
         self.sweep_with(|_| {})
     }
 
+    /// C1 generational minor sweep with no side-arena callback (cf. [`sweep`];
+    /// sweeps only the young generation `[young_floor, seg_count)`).
+    pub fn sweep_young(&mut self) -> SweepStats {
+        self.sweep_young_with(|_| {})
+    }
+
     /// Like [`sweep`](Self::sweep) but invokes `on_release(segment_index)` for
     /// each fully-dead segment as it is released, so a wrapper that owns parallel
     /// per-segment side-arenas (e.g. `IndexHeap`) can co-release them in lockstep.
-    pub fn sweep_with<F: FnMut(usize)>(&mut self, mut on_release: F) -> SweepStats {
+    pub fn sweep_with<F: FnMut(usize)>(&mut self, on_release: F) -> SweepStats {
+        // Full sweep: range [0, seg_count), rebuild the free list from scratch.
+        self.sweep_range(0, true, on_release)
+    }
+
+    /// C1 generational MINOR: sweep only the YOUNG segments `[young_floor,
+    /// seg_count)` — release fully-dead non-current young segments and reclaim
+    /// young unmarked slots — leaving OLD segments `[0, young_floor)` entirely
+    /// untouched (their marks AND slots retained). Sound because there is no
+    /// old→young σ edge (σ `Node` edges are immutable; the only mutable cell,
+    /// `State`, is an E₀ root, not a σ back-edge — see phase-c-generational-design.md),
+    /// so a live young node is always reached from the full structural root set and
+    /// an old node is never reclaimed by a minor. Appends to the free list (does
+    /// NOT clear it): a minor retains the prior major's old free entries, and the
+    /// collector advances `young_floor` after each minor so a young slot is swept
+    /// at most once before promotion (no duplicate free entries). Quiescence-only,
+    /// like [`sweep`](Self::sweep).
+    pub fn sweep_young_with<F: FnMut(usize)>(&mut self, on_release: F) -> SweepStats {
+        let young_floor = self.young_floor.load(Ordering::Acquire);
+        self.sweep_range(young_floor, false, on_release)
+    }
+
+    /// Shared sweep core for the full sweep ([`sweep_with`]) and the C1
+    /// generational minor ([`sweep_young_with`]). Sweeps `[start_seg, seg_count)`:
+    /// releases fully-dead non-current segments, reclaims unmarked slots of
+    /// partially-live segments into the free list (B1.b word-parallel fast path),
+    /// and clears the swept segments' marks. `clear_free_list` rebuilds the free
+    /// list from scratch (full) vs appends (minor). Segments `[0, start_seg)` are
+    /// NOT visited — marks and slots retained — which is the generational invariant.
+    fn sweep_range<F: FnMut(usize)>(
+        &mut self,
+        start_seg: usize,
+        clear_free_list: bool,
+        mut on_release: F,
+    ) -> SweepStats {
         let mut stats = SweepStats::default();
-        // Rebuild the free list from scratch (never persist across cycles).
-        self.free_list.clear();
+        if clear_free_list {
+            // Full sweep: rebuild from scratch (never persist across a full cycle).
+            // A minor appends instead (retains the prior major's old free entries).
+            self.free_list.clear();
+        }
 
         let seg_count = self.seg_count.load(Ordering::Acquire);
         let cur = self.cur_seg.load(Ordering::Acquire);
-        for si in 0..seg_count {
+        for si in start_seg..seg_count {
             // Read this segment through a RAW POINTER local, NOT the `segment()`
             // helper: `segment()` returns `&Segment` whose lifetime is threaded
             // through `&self`, which the borrow checker then treats as a live
@@ -1331,6 +1433,88 @@ mod tests {
             *arena.get(seg0[99]),
             99,
             "the live partial-word slot is intact"
+        );
+    }
+
+    // ---- C1.a: generational young-only minor sweep ----
+
+    #[test]
+    fn sweep_young_only_touches_young_segments() {
+        // capacity 64: seg 0 = OLD (64 slots), seg 1 = YOUNG (10 slots, current).
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(64);
+        let seg0: Vec<Addr> = (0..64u64).map(|v| arena.alloc(v)).collect(); // fills seg 0
+        let seg1: Vec<Addr> = (0..10u64).map(|v| arena.alloc(100 + v)).collect(); // seg 1 (current)
+        assert_eq!(seg0[63].segment(), 0);
+        assert_eq!(seg1[0].segment(), 1);
+        assert_eq!(arena.segment_count(), 2);
+
+        // Promote seg 0 to OLD: young_floor = 1 (segments >= 1 are young).
+        arena.set_young_floor(1);
+        assert_eq!(arena.young_floor(), 1);
+
+        // OLD seg 0: mark one slot; its other 63 are unmarked OLD slots a minor must
+        // NOT reclaim. YOUNG seg 1: mark even offsets (5), leave odd (5) unmarked.
+        arena.mark(seg0[5]);
+        for (i, a) in seg1.iter().enumerate() {
+            if i % 2 == 0 {
+                arena.mark(*a);
+            }
+        }
+
+        let stats = arena.sweep_young();
+        // The minor visited ONLY the young generation (seg 1): 5 unmarked reclaimed,
+        // 5 marked live. Segment 0 (old) was not visited at all.
+        assert_eq!(
+            stats.reclaimed_to_free_list, 5,
+            "only young (seg 1) unmarked slots reclaimed"
+        );
+        assert_eq!(stats.live, 5, "only young marked counted; old seg 0 not visited");
+        assert_eq!(stats.segments_released, 0);
+        assert_eq!(arena.free_slots(), 5, "free list holds ONLY young slots — no old");
+
+        // OLD segment untouched: its mark RETAINED (a minor doesn't clear old marks)
+        // and its unmarked slots NOT reclaimed.
+        assert!(
+            arena.is_marked(seg0[5]),
+            "old segment's mark retained across the minor"
+        );
+        assert!(
+            !arena.is_marked(seg0[0]),
+            "old unmarked slot untouched (still unmarked)"
+        );
+        assert_eq!(*arena.get(seg0[5]), 5, "old live value intact");
+        // YOUNG marks WERE cleared (the minor swept young).
+        assert!(!arena.is_marked(seg1[0]), "young mark cleared after the minor");
+        assert_eq!(*arena.get(seg1[0]), 100, "young live value intact");
+    }
+
+    #[test]
+    fn young_accessors_reflect_the_young_generation() {
+        // capacity 64. Fill seg 0 (old after promotion) + partially fill seg 1 (young).
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(64);
+        let _seg0: Vec<Addr> = (0..64u64).map(|v| arena.alloc(v)).collect();
+        let _seg1: Vec<Addr> = (0..10u64).map(|v| arena.alloc(100 + v)).collect();
+        assert_eq!(arena.young_floor(), 0, "young_floor starts at 0 (all young)");
+
+        // With young_floor == 0 the young accessors == the full-heap accessors.
+        assert_eq!(arena.young_live_node_count(), arena.live_node_count());
+        assert_eq!(
+            arena.young_committed_node_bytes(),
+            arena.committed_node_bytes()
+        );
+
+        // Promote seg 0 to OLD: now young = seg 1 only (10 live slots).
+        arena.set_young_floor(1);
+        assert_eq!(arena.young_floor(), 1);
+        assert_eq!(arena.young_live_node_count(), 10, "young live = seg 1's 10 slots");
+        assert!(
+            arena.young_committed_node_bytes() < arena.committed_node_bytes(),
+            "young committed < total (excludes old seg 0)"
+        );
+        // young committed = one young segment's capacity * size_of::<u64>().
+        assert_eq!(
+            arena.young_committed_node_bytes(),
+            64 * std::mem::size_of::<u64>()
         );
     }
 }

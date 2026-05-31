@@ -153,11 +153,19 @@ unsafe fn try_grounded_fast_path(head: &str, args_ptr: *const u64, arity: usize)
 /// # Safety
 /// `ctx_ref.env_ptr` must point to a valid `MettaEnvironment` (or be null).
 unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<MettaValue> {
-    // Plan 3 hook H-1 (2026-05-06): cooperative GC safepoint at JIT
-    // tier-return edge. Parallel-branch workers entering the trampoline
-    // from JIT must surrender their EvalGuard so quiescence-driven GC
-    // can fire. The walker registers JitContext slab roots + the local
-    // `arg` value before the safepoint protocol runs.
+    // Plan 3 hook H-1 (2026-05-06): cooperative GC safepoint at the JIT
+    // tier-return edge. Parallel-branch workers entering the trampoline from JIT
+    // must surrender their EvalGuard so quiescence-driven GC can fire; the walker
+    // registers JitContext slab roots + the local `arg` before the safepoint.
+    //
+    // SLAB-ONLY (B4.2 cfg-wall): this is a discovery-style channel
+    // (collect_jit_roots_into → worker_cooperative_safepoint, on the slab
+    // parallel-worker `is_gc_requested()` rendezvous). Under index-gc the JIT
+    // roots are STRUCTURAL — the `VmLeaf::Jit` K-leaf pushed around `native_fn`
+    // (hybrid/arena.rs), read by `collect_k_spine`. Compiling this out of the
+    // index build keeps that path unambiguous and honors the Phase-A invariant
+    // (no discovery side-channel under index-gc).
+    #[cfg(not(feature = "index-gc"))]
     {
         let is_worker =
             crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER.with(|f| f.get());

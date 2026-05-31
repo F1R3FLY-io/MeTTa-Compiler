@@ -1289,14 +1289,12 @@ impl TieredCache {
 
     /// Maybe trigger JIT Stage 1 compilation
     pub(crate) fn maybe_trigger_jit1(&self, state: &Arc<ExprCompilationState>, count: u32) {
-        // Inc 2b — index-mode gate (AIRTIGHT): the Cranelift JIT decodes values via
-        // raw slab pointers, so under the index-arena value model the tier falls
-        // back to the (verified index-correct) bytecode VM / interpreter. Never
-        // compile JIT code → jit1/jit2 stay NotStarted → every dispatch `== Ready`
-        // arm is skipped. Slab mode (default) is byte-identical (branch not taken).
-        if crate::backend::models::metta_value::gc_mode_is_index() {
-            return;
-        }
+        // B4 (2026-05-31): JIT RE-ENABLED under index-gc. The Cranelift JIT now
+        // decodes values index-aware (the NaN-box payload reconstructs an arena
+        // `Addr`, B4.1) and its register file is a structural GC root (the
+        // `VmLeaf::Jit` K-leaf pushed around `native_fn`, B4.2), so it is both
+        // correct and UAF-safe under the index value model. (Inc 2b gated it off
+        // because it decoded raw slab pointers + had no index root contract.)
         // Check if we've reached the threshold
         if count < self.jit1_threshold {
             return;
@@ -1486,11 +1484,8 @@ impl TieredCache {
     /// is available before the aggressive optimizing compiler runs.
     /// (V8 equivalent: Turbofan requires Maglev to have run and collected ICs.)
     pub(crate) fn maybe_trigger_jit2(&self, state: &Arc<ExprCompilationState>, count: u32) {
-        // Inc 2b — index-mode gate (see maybe_trigger_jit1): never compile JIT
-        // under the index-arena value model; fall back to the index-correct VM.
-        if crate::backend::models::metta_value::gc_mode_is_index() {
-            return;
-        }
+        // B4 (2026-05-31): JIT RE-ENABLED under index-gc (see maybe_trigger_jit1 —
+        // index-aware value decode B4.1 + the VmLeaf::Jit structural root B4.2).
         // Check if we've reached the threshold
         if count < self.jit2_threshold {
             return;
@@ -1695,14 +1690,10 @@ impl TieredCache {
             let state = entry.value();
 
             // Check from highest to lowest tier
-            if !crate::backend::models::metta_value::gc_mode_is_index()
-                && state.jit2_status() == TierStatusKind::Ready
-            {
+            if state.jit2_status() == TierStatusKind::Ready {
                 return ExecutionTier::JitStage2;
             }
-            if !crate::backend::models::metta_value::gc_mode_is_index()
-                && state.jit1_status() == TierStatusKind::Ready
-            {
+            if state.jit1_status() == TierStatusKind::Ready {
                 return ExecutionTier::JitStage1;
             }
             if state.bytecode_status() == TierStatusKind::Ready {
@@ -2119,9 +2110,7 @@ pub fn try_sub_expr_dispatch(
 
     // Cascade: JIT Stage 2 > JIT Stage 1 > Bytecode VM
     // env.clone() is deferred to here — only when a tier actually dispatches.
-    if !crate::backend::models::metta_value::gc_mode_is_index()
-        && state.jit2_status() == TierStatusKind::Ready
-    {
+    if state.jit2_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit2_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
                 #[cfg(feature = "track-stats")]
@@ -2130,9 +2119,7 @@ pub fn try_sub_expr_dispatch(
             }
         }
     }
-    if !crate::backend::models::metta_value::gc_mode_is_index()
-        && state.jit1_status() == TierStatusKind::Ready
-    {
+    if state.jit1_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit1_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
                 #[cfg(feature = "track-stats")]
@@ -2198,9 +2185,7 @@ pub fn try_sub_expr_dispatch_with_hash_bindings(
     // Inc 2b: index mode never reaches a Ready JIT tier (the compile triggers are
     // gated), but guard each dispatch arm defensively so a stale Ready status can
     // never run raw-pointer JIT code over index handles. Slab is byte-identical.
-    if !crate::backend::models::metta_value::gc_mode_is_index()
-        && state.jit2_status() == TierStatusKind::Ready
-    {
+    if state.jit2_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit2_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
                 #[cfg(feature = "track-stats")]
@@ -2213,9 +2198,7 @@ pub fn try_sub_expr_dispatch_with_hash_bindings(
             }
         }
     }
-    if !crate::backend::models::metta_value::gc_mode_is_index()
-        && state.jit1_status() == TierStatusKind::Ready
-    {
+    if state.jit1_status() == TierStatusKind::Ready {
         if let Some(code) = state.jit1_code() {
             if let Ok((results, new_env)) = dispatch_jit(&state, code.ptr, env.clone()) {
                 #[cfg(feature = "track-stats")]

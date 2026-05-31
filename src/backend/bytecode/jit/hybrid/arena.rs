@@ -138,6 +138,26 @@ impl HybridExecutor {
         let native_fn: extern "C" fn(*mut JitContext) -> i64 =
             unsafe { std::mem::transmute(native_ptr) };
 
+        // B4.2: under index-gc, register the JitContext as a structural GC K-leaf
+        // for the entire native call AND any re-entrant eval_trampoline beneath it
+        // (where the index midloop collector may fire). Without this the arena
+        // `Addr`s in ctx's operand stack / results / choice-points / binding-frames
+        // are invisible to the collector → UAF. Mirrors `VmLeaf::Vm`; the pointer is
+        // read LIVE (the buffers mutate during the call). `None` (zero-cost) in slab,
+        // which keeps its own worker-safepoint path in call_support.rs. Dropped
+        // before `ctx` (declared after it) so the raw ptr never dangles.
+        let _jit_leaf = if crate::backend::models::metta_value::gc_mode_is_index() {
+            Some(unsafe {
+                crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
+                    crate::backend::eval::cesk::k_spine::VmLeaf::Jit {
+                        ctx: &ctx as *const JitContext,
+                    },
+                )
+            })
+        } else {
+            None
+        };
+
         let jit_result = native_fn(&mut ctx);
 
         // Check for type error from JIT runtime functions (thread-local flag)
@@ -309,6 +329,26 @@ impl HybridExecutor {
         // Cast and call native function
         let native_fn: extern "C" fn(*mut JitContext) -> i64 =
             unsafe { std::mem::transmute(native_ptr) };
+
+        // B4.2: under index-gc, register the JitContext as a structural GC K-leaf
+        // for the entire native call AND any re-entrant eval_trampoline beneath it
+        // (where the index midloop collector may fire). Without this the arena
+        // `Addr`s in ctx's operand stack / results / choice-points / binding-frames
+        // are invisible to the collector → UAF. Mirrors `VmLeaf::Vm`; the pointer is
+        // read LIVE (the buffers mutate during the call). `None` (zero-cost) in slab,
+        // which keeps its own worker-safepoint path in call_support.rs. Dropped
+        // before `ctx` (declared after it) so the raw ptr never dangles.
+        let _jit_leaf = if crate::backend::models::metta_value::gc_mode_is_index() {
+            Some(unsafe {
+                crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
+                    crate::backend::eval::cesk::k_spine::VmLeaf::Jit {
+                        ctx: &ctx as *const JitContext,
+                    },
+                )
+            })
+        } else {
+            None
+        };
 
         let jit_result = native_fn(&mut ctx);
 

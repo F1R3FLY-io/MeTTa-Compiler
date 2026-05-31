@@ -54,19 +54,28 @@ pub(crate) enum SuspendedActivation {
     ExprVec { exprs: *const Vec<MettaValue> },
 }
 
-/// One live bytecode-VM leaf parked across a nested eval.
+/// One live bytecode-VM (or JIT) leaf parked across a nested eval.
 pub(crate) enum VmLeaf {
     /// Sites #7/#8/#9 (`with_vm_roots_frame`): the whole VM, decoded via
     /// `GenericBytecodeVM::collect_roots_into`. Pins the only nested-eval-
     /// reaching monomorphization `<MettaValue, ActiveFactory>` (the same
-    /// assumption `with_vm_roots_frame` already makes; JIT is gated off under
-    /// index-gc).
+    /// assumption `with_vm_roots_frame` already makes).
     Vm {
         vm: *const GenericBytecodeVM<MettaValue, ActiveFactory>,
     },
     /// Sites #10/#11: a VM template's saved-bindings `Vec`, built once and never
     /// mutated (a frozen snapshot — so holding its pointer is staleness-safe).
     SavedBindings { bindings: *const Vec<MettaValue> },
+    /// B4: a live JIT execution's `JitContext` — the JIT analogue of `Vm`. Its
+    /// operand stack / results / choice-points / binding-frames / saved-stack /
+    /// template-results carry arena `Addr`s, walked structurally via
+    /// `collect_jit_roots_into`. The pointer is read LIVE at the nested-eval
+    /// safepoint (the buffers mutate during JIT execution, so a snapshot would
+    /// miss freshly-pushed roots — the same discipline as `Vm`). Pushed around
+    /// `native_fn` only under index-gc (slab keeps its own worker-safepoint path).
+    Jit {
+        ctx: *const crate::backend::bytecode::jit::types::JitContext,
+    },
 }
 
 thread_local! {
@@ -173,6 +182,16 @@ pub fn collect_k_spine(out: &mut Vec<MettaValue>) {
                 },
                 VmLeaf::SavedBindings { bindings } => unsafe {
                     out.extend_from_slice(&*bindings);
+                },
+                // SAFETY: the JitContext outlives the guard (the HybridExecutor
+                // holds its buffers across `native_fn`); read live at the
+                // safepoint. `collect_jit_roots_into` walks every value-bearing
+                // JIT field, decoding each Addr-bearing JitValue via the
+                // index-aware `collect_jit_value_into` (B4.1).
+                VmLeaf::Jit { ctx } => unsafe {
+                    crate::backend::bytecode::jit::runtime::gc_roots::collect_jit_roots_into(
+                        &*ctx, out,
+                    );
                 },
             }
         }

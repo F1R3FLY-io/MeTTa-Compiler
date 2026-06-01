@@ -1108,30 +1108,73 @@ impl<N: Copy> IndexArena<N> {
         }
     }
 
+    /// Bump-allocate `node` into `seg` IF `seg` is still the current, non-full,
+    /// non-released segment — else return `None` so the caller can RETRY the whole
+    /// side-co-location triple against the freshly-advanced segment (D-TLAB-1.2).
+    ///
+    /// `&self`, lock-free-capable. On success: claims a unique offset (`bump_one`),
+    /// writes the node, publishes it. Returns `None` (no allocation, no side effect
+    /// on the cursors beyond the inspected loads) when:
+    ///   * `seg != current_seg()` — a concurrent `open_segment` advanced the bump
+    ///     target after the caller picked `seg` (so the caller's already-interned
+    ///     side datum is now in a stale segment ⇒ it must re-pick and re-intern); or
+    ///   * the segment is released / its `bump` cursor is exhausted (`bump_one`
+    ///     returns `None`).
+    /// This is the fallible primitive the `&self`-capable co-location path
+    /// (`IndexHeap::alloc_*`) drives; the orphaned stale-segment side entry is the
+    /// no-recycle steady state (a swept-dead-equivalent index never handed out).
+    ///
+    /// The `current_seg()` re-check is the TOCTOU guard the plan calls for: it
+    /// makes the segment the side datum was interned into and the segment the node
+    /// is bumped into provably identical on the success path (co-location holds),
+    /// or fails the call so the caller retries — never silently bumps into a
+    /// different segment than the side datum landed in.
+    pub fn try_bump_in(&self, seg: usize, node: N) -> Option<Addr> {
+        // TOCTOU guard: only bump if `seg` is still the published current target.
+        // (A `Relaxed` mismatch is enough to bail; `current_seg` uses `Acquire`,
+        // which also orders the subsequent `segment(seg)` cell read.)
+        if seg != self.current_seg() {
+            return None;
+        }
+        // SAFETY: seg == cur_seg < seg_count ⇒ published (cur_seg is only ever set
+        // to a published index by `open_segment`).
+        let s = unsafe { self.segment(seg) };
+        if s.released.load(Ordering::Relaxed) {
+            return None;
+        }
+        let off = s.bump_one()?; // None ⇒ full; caller opens a fresh segment + retries
+        // SAFETY: `off` uniquely claimed by this thread; not yet published ⇒ races
+        // no reader.
+        unsafe { s.write_claimed(off, node) };
+        s.publish(off);
+        self.alloc_count.fetch_add(1, Ordering::Relaxed);
+        // C1.c: `seg == current_seg() >= young_floor` (re-checked above) ⇒ a YOUNG
+        // allocation — count it toward the nursery-fill minor trigger.
+        self.young_alloc_bytes
+            .fetch_add(std::mem::size_of::<N>() as u64, Ordering::Relaxed);
+        Some(Addr::new(seg as u32, off as u32))
+    }
+
     /// Bump-allocate `node` into `seg` (must be the current, non-full, non-released
     /// segment from `ensure_bump_room`). `&self`: claims a unique offset, writes,
     /// publishes. Bypasses the free list (caller controls side-arena co-location).
+    ///
+    /// The INFALLIBLE form — asserts the `ensure_bump_room` contract (`seg` is the
+    /// current, non-full segment) and panics otherwise. Retained verbatim in
+    /// contract for the existing `&mut self` callers (the arena's own co-location
+    /// test) and any caller that holds the bump target exclusively; the new
+    /// `&self`-concurrent path uses the fallible [`try_bump_in`] + retry instead.
+    /// Delegates to `try_bump_in`, turning its `None` (which can only arise from a
+    /// raced segment advance / full segment — both contract violations here) into
+    /// the same panics the prior monolithic body raised.
     pub fn bump_in(&self, seg: usize, node: N) -> Addr {
         assert_eq!(
             seg,
             self.current_seg(),
             "bump_in target must be the current segment"
         );
-        // SAFETY: seg == cur_seg < seg_count ⇒ published.
-        let s = unsafe { self.segment(seg) };
-        debug_assert!(!s.released.load(Ordering::Relaxed));
-        let off = s
-            .bump_one()
-            .expect("bump_in called on a full segment (ensure_bump_room contract)");
-        // SAFETY: `off` uniquely claimed; not yet published ⇒ no reader race.
-        unsafe { s.write_claimed(off, node) };
-        s.publish(off);
-        self.alloc_count.fetch_add(1, Ordering::Relaxed);
-        // C1.c: `seg == current_seg() >= young_floor` (asserted above) ⇒ a YOUNG
-        // allocation — count it toward the nursery-fill minor trigger.
-        self.young_alloc_bytes
-            .fetch_add(std::mem::size_of::<N>() as u64, Ordering::Relaxed);
-        Addr::new(seg as u32, off as u32)
+        self.try_bump_in(seg, node)
+            .expect("bump_in called on a full segment (ensure_bump_room contract)")
     }
 }
 

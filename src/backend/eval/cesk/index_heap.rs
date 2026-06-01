@@ -42,7 +42,7 @@
 
 use std::sync::{OnceLock, RwLock};
 
-use crate::backend::eval::cesk::index_arena::{Addr, ArenaNode, IndexArena, SweepStats};
+use crate::backend::eval::cesk::index_arena::{Addr, ArenaNode, IndexArena, SweepStats, MAX_SEGMENTS};
 use crate::backend::eval::cesk::index_node::{ByteRef, ChildRef, Node, SpanRef};
 use crate::backend::eval::cesk::store::Store;
 use crate::backend::models::gc_allocator::hash_cons_key;
@@ -86,6 +86,13 @@ use crate::ir::Span;
 /// `free` needs `&mut self`, which the quiescence-only sweep already holds. No
 /// concurrency is introduced here — every caller stays `&mut self`/`&self` exactly
 /// as before — so this increment is purely the inner field-type swap.
+///
+/// D-TLAB-1.2: realized that prerequisite — the three `intern_*_in` methods and
+/// every read accessor are now **`&self`**, reaching a segment's arena through the
+/// heap's never-realloc side DIRECTORY (`IndexHeap::sides` + `side`/`ensure_side_seg`)
+/// rather than `&mut self.sides[seg]`. Still byte-identical at FANOUT=0: `IndexFactory`
+/// keeps the heap WRITE lock (no live concurrency yet — the read-lock flip is the
+/// NEXT increment); the `&self` signature is purely the capability that flip needs.
 struct SegmentSideArenas {
     children: SideColumn<[MettaValue]>,
     strings: SideColumn<str>,
@@ -125,9 +132,34 @@ unsafe fn launder<'a, T: ?Sized>(r: &'a T) -> &'static T {
 /// The index-arena value heap.
 pub struct IndexHeap {
     arena: IndexArena<Node>,
-    /// `sides[i]` holds segment `i`'s variable-length data (kept parallel with
-    /// `arena.segments` via [`sync_sides`](Self::sync_sides)).
-    sides: Vec<SegmentSideArenas>,
+    /// Segment `i`'s variable-length data (its children/strings/spans columns),
+    /// kept index-parallel with `arena.segments`. D-TLAB-1.2: a **never-realloc
+    /// directory** (mirroring `IndexArena::segments`) of `MAX_SEGMENTS` cells,
+    /// allocated once in [`new`](Self::new) so a fresh segment's side arena can be
+    /// initialized under `&self` (the prerequisite for the next increment's
+    /// read-lock allocation). Cell `i`'s `Box<SegmentSideArenas>` is written
+    /// exactly once, under `sides_dir_lock`, before `sides_count` is advanced past
+    /// `i` (`Release`); a reader dereferences cell `i` only for
+    /// `i < sides_count.load(Acquire)` (see [`side`](Self::side)).
+    ///
+    /// LAZY by design: each cell starts `MaybeUninit::uninit()` and is populated
+    /// only when [`ensure_side_seg`](Self::ensure_side_seg) first needs segment
+    /// `i`. A pre-sized `Vec<SegmentSideArenas>` is NOT viable — each
+    /// `SegmentSideArenas` eagerly allocates 3 `SideColumn` super-directories
+    /// (≈48 KiB), so ×`MAX_SEGMENTS` (16_384) would commit ~786 MiB up front; the
+    /// directory's eager cost is only the `MAX_SEGMENTS` *pointer* cells
+    /// (`8 · MAX_SEGMENTS = 128 KiB`), with one `SegmentSideArenas` materialized
+    /// per segment actually used.
+    sides: Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<Box<SegmentSideArenas>>>]>,
+    /// Published side-directory length (count of initialized cells). Monotone;
+    /// advanced with `Release` under `sides_dir_lock`, read with `Acquire`. Kept
+    /// `== arena.segment_count()` by [`ensure_side_seg`](Self::ensure_side_seg).
+    sides_count: std::sync::atomic::AtomicUsize,
+    /// Serializes side-directory growth ([`ensure_side_seg`](Self::ensure_side_seg)):
+    /// the rare slow path (once per opened segment). A plain `Mutex<()>` — the
+    /// per-`push` interner fast path does NOT take it once a segment's cell is
+    /// published. Mirrors `IndexArena::dir_lock`.
+    sides_dir_lock: std::sync::Mutex<()>,
     /// Increment A: the slots the most recent `sweep`/`sweep_young` reclaimed, stashed for
     /// the driver to free their side `Box`es via [`free_reclaimed_side_slots`] — but ONLY
     /// at quiescence (a midloop sweep leaves this for the next quiescence sweep, for
@@ -169,33 +201,140 @@ impl IndexHeap {
     }
 
     fn from_arena(arena: IndexArena<Node>) -> Self {
-        let mut h = IndexHeap {
+        use std::cell::UnsafeCell;
+        use std::mem::MaybeUninit;
+        // D-TLAB-1.2: allocate the never-realloc side directory ONCE — one uninit
+        // pointer-cell per addressable segment index (`UnsafeCell`/`MaybeUninit`
+        // are not `Clone`, so build it from an iterator, NOT `vec![..; N]`). Each
+        // cell's `Box<SegmentSideArenas>` is populated lazily by `ensure_side_seg`.
+        let sides: Box<[UnsafeCell<MaybeUninit<Box<SegmentSideArenas>>>]> = (0..MAX_SEGMENTS)
+            .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+            .collect();
+        let h = IndexHeap {
             arena,
-            sides: Vec::new(),
+            sides,
+            sides_count: std::sync::atomic::AtomicUsize::new(0),
+            sides_dir_lock: std::sync::Mutex::new(()),
             last_reclaimed: Vec::new(),
             space_table: Vec::new(),
             memo_table: Vec::new(),
             hash_cons: std::collections::HashMap::new(),
         };
-        h.sync_sides();
+        // Materialize the side arena for every segment the arena has already opened
+        // (its constructor opens segment 0). `&self` even during construction —
+        // `ensure_side_seg` only needs shared access.
+        let initial_segs = h.arena.segment_count();
+        if initial_segs > 0 {
+            h.ensure_side_seg(initial_segs - 1);
+        }
         h
     }
 
-    /// Grow `sides` so it stays index-parallel with the arena's segments (the
-    /// arena may open segments internally during allocation).
+    /// Lazily initialize the side-directory cells `[sides_count..=seg]`, so segment
+    /// `seg`'s side arena exists and is published. `&self` — the D-TLAB-1.2 lever:
+    /// a fresh segment's side arena can be created under shared access (the
+    /// prerequisite for the next increment's read-lock allocation). Replaces the
+    /// old `&mut self` `sync_sides`.
+    ///
+    /// Mirrors `IndexArena::open_segment` exactly: take `sides_dir_lock` (the rare
+    /// slow path — once per opened segment), RE-CHECK `seg < sides_count` under the
+    /// lock (a concurrent caller may have already grown past `seg` while we
+    /// waited), then for each missing cell `c` allocate its `Box<SegmentSideArenas>`,
+    /// write it (we are the unique writer of cell `c` under the lock — it is not
+    /// yet published), and publish it by advancing `sides_count` (`Release`). The
+    /// `Release` store pairs with the `Acquire` load in [`side`](Self::side) so a
+    /// reader observing `c < sides_count` also observes the initialized cell.
+    ///
+    /// Fills the whole `sides_count..=seg` gap (not just `seg`) so the directory
+    /// stays dense even if `seg` ever jumps ahead (it does not today — the arena
+    /// opens segments one at a time — but a future relaxation might).
     #[inline]
-    fn sync_sides(&mut self) {
-        while self.sides.len() < self.arena.segment_count() {
-            self.sides.push(SegmentSideArenas::default());
+    fn ensure_side_seg(&self, seg: usize) {
+        use std::sync::atomic::Ordering;
+        // Fast path: already published (Acquire pairs with the publishing Release).
+        if seg < self.sides_count.load(Ordering::Acquire) {
+            return;
+        }
+        let _guard = self
+            .sides_dir_lock
+            .lock()
+            .expect("index-heap sides_dir_lock poisoned");
+        let mut next = self.sides_count.load(Ordering::Acquire); // exclusive under guard
+        if seg < next {
+            return; // another thread grew past `seg` while we waited
+        }
+        assert!(
+            seg < MAX_SEGMENTS,
+            "side directory exhausted: {MAX_SEGMENTS} segments"
+        );
+        while next <= seg {
+            let arenas = Box::new(SegmentSideArenas::default());
+            // SAFETY: cell `next` is not yet published (`next == sides_count`), so
+            // no reader can observe it; under `sides_dir_lock` we are the unique
+            // writer of this cell. Initialize it before publishing `next`.
+            unsafe {
+                (*self.sides[next].get()).write(arenas);
+            }
+            self.sides_count.store(next + 1, Ordering::Release); // publish the cell
+            next += 1;
         }
     }
+
+    /// Borrow segment `seg`'s side arena from the published directory.
+    ///
+    /// # Safety
+    /// The caller must guarantee `seg < self.sides_count.load(Acquire)` as observed
+    /// by the calling thread — i.e. cell `seg` has been published by
+    /// [`ensure_side_seg`](Self::ensure_side_seg)'s `Release` store to
+    /// `sides_count`, which happens-after the cell's initialization. Under that
+    /// premise the cell is initialized.
+    ///
+    /// The returned `&SegmentSideArenas` derives from the raw pointer
+    /// `UnsafeCell::get()` yields (`*mut MaybeUninit<Box<SegmentSideArenas>>`), NOT
+    /// from a borrow of `self.sides`. This is deliberate — mirroring
+    /// `IndexArena::segment` — so callers can hold a `&SegmentSideArenas` (to push
+    /// into one of its `SideColumn`s) without aliasing a borrow of the directory.
+    #[inline]
+    unsafe fn side(&self, seg: usize) -> &SegmentSideArenas {
+        let cell = self.sides[seg].get(); // *mut MaybeUninit<Box<SegmentSideArenas>>
+        (*cell).assume_init_ref() // &Box<SegmentSideArenas> -> &SegmentSideArenas via Deref
+    }
+
+    /// Mutably borrow segment `seg`'s side arena. **`&mut self`** (quiescence-only:
+    /// its only callers — [`free_reclaimed_side_slots`](Self::free_reclaimed_side_slots)
+    /// and the segment-release reset — run under the heap write lock at a quiescent
+    /// safepoint, statically exclusive of every `&self` reader/pusher, so the `&mut
+    /// SegmentSideArenas` aliases nothing).
+    ///
+    /// # Safety
+    /// `seg < self.sides_count.load(Acquire)` (cell `seg` published) AND the caller
+    /// holds exclusive (`&mut self`) access. Under `&mut self` no concurrent
+    /// `&self` accessor exists, so the `&mut` borrow derived from the raw pointer is
+    /// the unique reference to the cell's contents.
+    #[inline]
+    unsafe fn side_mut(&mut self, seg: usize) -> &mut SegmentSideArenas {
+        let cell = self.sides[seg].get(); // *mut MaybeUninit<Box<SegmentSideArenas>>
+        (*cell).assume_init_mut() // &mut Box<SegmentSideArenas> -> &mut SegmentSideArenas
+    }
+
+    // NOTE (D-TLAB-1.2): the segment-release reset (the directory analogue of the
+    // old `sides[seg] = SegmentSideArenas::default()`) is performed INLINE in the
+    // `sweep`/`sweep_young` release closures rather than via a `&mut self` helper:
+    // those closures run while `self.arena` is mutably borrowed by `sweep_with`/
+    // `sweep_young_with`, so they capture the DISJOINT `&mut self.sides` field
+    // directly (a whole-`&mut self` helper would alias the arena borrow). The reset
+    // drops the cell's old `Box<SegmentSideArenas>` (its `SideColumn`s free every
+    // payload/chunk/page `Box`) and installs a fresh empty arena in place.
 
     // ── Allocation ───────────────────────────────────────────────────────
 
     /// Allocate a fixed-size node (no side-arena data). Free-list reuse is fine.
     pub fn alloc_fixed(&mut self, node: Node) -> Addr {
         let a = self.arena.alloc(node);
-        self.sync_sides();
+        // `alloc` may have opened a fresh segment internally — keep the side
+        // directory index-parallel so `sides_count == segment_count` holds for the
+        // diagnostics / release paths (a fixed node has no side data of its own).
+        self.ensure_side_seg(self.arena.segment_count() - 1);
         a
     }
 
@@ -224,9 +363,22 @@ impl IndexHeap {
             self.arena.write_reused(addr, Node::SExpr(cr));
             addr
         } else {
-            let cs = self.intern_children(items);
-            let seg = self.arena.ensure_bump_room();
-            self.arena.bump_in(seg, Node::SExpr(cs))
+            // D-TLAB-1.2 co-location single-pick + retry: pick `seg` ONCE
+            // (`ensure_bump_room`), intern the children into THAT `seg`, then
+            // `try_bump_in(seg, ..)`. If a concurrent `open_segment` advanced the
+            // bump target between the pick and the bump, `try_bump_in` returns
+            // `None` and we RETRY the whole triple against the new segment — the
+            // orphaned side entry in the stale `seg` is the no-recycle steady state
+            // (a never-handed-out index, freed wholesale at that segment's release).
+            // The side datum is interned BEFORE the node is published, so the node's
+            // `Release`-publish transitively gates the side entry's visibility.
+            loop {
+                let seg = self.arena.ensure_bump_room();
+                let cs = self.intern_children_in(seg, items);
+                if let Some(addr) = self.arena.try_bump_in(seg, Node::SExpr(cs)) {
+                    return addr;
+                }
+            }
         }
     }
 
@@ -237,9 +389,14 @@ impl IndexHeap {
             self.arena.write_reused(addr, Node::Conjunction(cr));
             addr
         } else {
-            let cs = self.intern_children(goals);
-            let seg = self.arena.ensure_bump_room();
-            self.arena.bump_in(seg, Node::Conjunction(cs))
+            // D-TLAB-1.2 single-pick + retry (see `alloc_sexpr`).
+            loop {
+                let seg = self.arena.ensure_bump_room();
+                let cs = self.intern_children_in(seg, goals);
+                if let Some(addr) = self.arena.try_bump_in(seg, Node::Conjunction(cs)) {
+                    return addr;
+                }
+            }
         }
     }
 
@@ -280,9 +437,14 @@ impl IndexHeap {
             self.arena.write_reused(addr, Node::Atom(br));
             addr
         } else {
-            let bs = self.intern_bytes(s);
-            let seg = self.arena.ensure_bump_room();
-            self.arena.bump_in(seg, Node::Atom(bs))
+            // D-TLAB-1.2 single-pick + retry (see `alloc_sexpr`).
+            loop {
+                let seg = self.arena.ensure_bump_room();
+                let bs = self.intern_bytes_in(seg, s);
+                if let Some(addr) = self.arena.try_bump_in(seg, Node::Atom(bs)) {
+                    return addr;
+                }
+            }
         }
     }
 
@@ -293,9 +455,14 @@ impl IndexHeap {
             self.arena.write_reused(addr, Node::String(br));
             addr
         } else {
-            let bs = self.intern_bytes(s);
-            let seg = self.arena.ensure_bump_room();
-            self.arena.bump_in(seg, Node::String(bs))
+            // D-TLAB-1.2 single-pick + retry (see `alloc_sexpr`).
+            loop {
+                let seg = self.arena.ensure_bump_room();
+                let bs = self.intern_bytes_in(seg, s);
+                if let Some(addr) = self.arena.try_bump_in(seg, Node::String(bs)) {
+                    return addr;
+                }
+            }
         }
     }
 
@@ -306,52 +473,67 @@ impl IndexHeap {
             self.arena.write_reused(addr, Node::Spanned(inner, sr));
             addr
         } else {
-            let seg = self.arena.ensure_bump_room();
-            let sr = self.intern_span_in(seg, span);
-            self.arena.bump_in(seg, Node::Spanned(inner, sr))
+            // D-TLAB-1.2 single-pick + retry (see `alloc_sexpr`). `inner` is a
+            // `Copy` handle, so re-passing it on each retry iteration is free.
+            loop {
+                let seg = self.arena.ensure_bump_room();
+                let sr = self.intern_span_in(seg, span);
+                if let Some(addr) = self.arena.try_bump_in(seg, Node::Spanned(inner, sr)) {
+                    return addr;
+                }
+            }
         }
     }
 
-    /// C1.c #1: box `items` into segment `seg`'s child side-arena, REUSING a freed
-    /// index (a swept-dead slot, from `free_children`) if available else APPENDING,
-    /// returning the segment-relative index. The caller co-locates the owning node
-    /// in the SAME `seg` (so node + children co-release, and `children(addr)` reads
-    /// `sides[addr.segment()]`). The reuse path passes the REUSED node-slot's
-    /// segment so the side data lands WITH the node (not a possibly-advanced
-    /// `cur_seg`, which would break co-location + bump order). Reuse keeps the side
-    /// `Vec` bounded by live+free entries, not total-ever — so a minor's reclaim is
-    /// not wasted.
-    fn intern_children_in(&mut self, seg: usize, items: &[MettaValue]) -> ChildRef {
-        self.sync_sides();
-        let side = &mut self.sides[seg];
-        // D-TLAB-1.1: `SideColumn::push` claims+publishes a fresh stable index and
-        // returns it (was `len()` pre-push + `Vec::push`). Callable through `&mut`
-        // even though `push` takes `&self` — no concurrency is introduced here.
+    /// C1.c #1: box `items` into segment `seg`'s child side-arena, APPENDING a
+    /// fresh stable index (no-recycle — see [`SegmentSideArenas`]), returning it.
+    /// The caller co-locates the owning node in the SAME `seg` (so node + children
+    /// co-release, and `children(addr)` reads segment `addr.segment()`).
+    ///
+    /// D-TLAB-1.2: now **`&self`** — the lever for the next increment's read-lock
+    /// allocation. Ensures segment `seg`'s side directory cell is published
+    /// ([`ensure_side_seg`], `&self`), borrows it ([`side`], `&self` Acquire-gated
+    /// cell read — NOT a `&mut self.sides[seg]`), then `SideColumn::push` (already
+    /// `&self`: lock-free claim+publish). No concurrency is introduced THIS
+    /// increment (every caller still holds the heap WRITE lock); the `&self`
+    /// signature is what lets the *next* increment flip the factory to `.read()`.
+    fn intern_children_in(&self, seg: usize, items: &[MettaValue]) -> ChildRef {
+        self.ensure_side_seg(seg);
+        // SAFETY: `ensure_side_seg(seg)` just published cell `seg` (or it already
+        // was), so `seg < sides_count` as observed here (the `Release` store in
+        // `ensure_side_seg` is observed by this same thread).
+        let side = unsafe { self.side(seg) };
         let idx = side.children.push(items.to_vec().into_boxed_slice());
         ChildRef { idx }
     }
 
-    fn intern_bytes_in(&mut self, seg: usize, s: &str) -> ByteRef {
-        self.sync_sides();
-        let side = &mut self.sides[seg];
+    fn intern_bytes_in(&self, seg: usize, s: &str) -> ByteRef {
+        self.ensure_side_seg(seg);
+        // SAFETY: as `intern_children_in` — cell `seg` published by the call above.
+        let side = unsafe { self.side(seg) };
         let idx = side.strings.push(s.to_string().into_boxed_str());
         ByteRef { idx }
     }
 
-    fn intern_span_in(&mut self, seg: usize, span: Span) -> SpanRef {
-        self.sync_sides();
-        let side = &mut self.sides[seg];
+    fn intern_span_in(&self, seg: usize, span: Span) -> SpanRef {
+        self.ensure_side_seg(seg);
+        // SAFETY: as `intern_children_in` — cell `seg` published by the call above.
+        let side = unsafe { self.side(seg) };
         let idx = side.spans.push(Box::new(span));
         SpanRef { idx }
     }
 
     /// Bump-path interning: into the current bump segment (`ensure_bump_room`).
-    fn intern_children(&mut self, items: &[MettaValue]) -> ChildRef {
+    /// NOTE: the `alloc_*` bump path no longer routes through this two-step helper
+    /// — it picks `seg` ONCE and passes it to `intern_children_in` + `try_bump_in`
+    /// together (the co-location single-pick, D-TLAB-1.2). Retained for any direct
+    /// caller / symmetry; `&self`.
+    fn intern_children(&self, items: &[MettaValue]) -> ChildRef {
         let seg = self.arena.ensure_bump_room();
         self.intern_children_in(seg, items)
     }
 
-    fn intern_bytes(&mut self, s: &str) -> ByteRef {
+    fn intern_bytes(&self, s: &str) -> ByteRef {
         let seg = self.arena.ensure_bump_room();
         self.intern_bytes_in(seg, s)
     }
@@ -373,7 +555,12 @@ impl IndexHeap {
             // in the same `push` that produced the index); the node is live (a dead
             // node is never read — see the doc comment), so its slot is `Some`.
             Node::SExpr(cr) | Node::Conjunction(cr) => {
-                unsafe { self.sides[addr.segment()].children.get(cr.idx) }
+                // SAFETY (D-TLAB-1.2): segment `addr.segment()`'s side cell was
+                // published by the interner's `ensure_side_seg` BEFORE this node's
+                // address was handed out, so `addr.segment() < sides_count`; `cr.idx
+                // < published_len()` and the slot is `Some` (live node) per above.
+                let side = unsafe { self.side(addr.segment()) };
+                unsafe { side.children.get(cr.idx) }
                     .expect("live SExpr/Conjunction children slot")
             }
             _ => panic!("children() on a non-SExpr/Conjunction node"),
@@ -386,7 +573,10 @@ impl IndexHeap {
             // SAFETY (D-TLAB-1.1): `br.idx` came from `SideColumn::push` at intern,
             // so `idx < published_len()`; the node is live ⇒ slot is `Some`.
             Node::Atom(br) | Node::String(br) => {
-                unsafe { self.sides[addr.segment()].strings.get(br.idx) }
+                // SAFETY (D-TLAB-1.2): cell `addr.segment()` published before this
+                // node's address was handed out (see `children`); `br.idx` in range.
+                let side = unsafe { self.side(addr.segment()) };
+                unsafe { side.strings.get(br.idx) }
                     .expect("live Atom/String slot")
             }
             _ => panic!("str_slice() on a non-Atom/String node"),
@@ -398,8 +588,12 @@ impl IndexHeap {
         match self.arena.get(addr) {
             // SAFETY (D-TLAB-1.1): `sr.idx` came from `SideColumn::push` at intern,
             // so `idx < published_len()`; the node is live ⇒ slot is `Some`.
-            Node::Spanned(_, sr) => *unsafe { self.sides[addr.segment()].spans.get(sr.idx) }
-                .expect("live Spanned slot"),
+            Node::Spanned(_, sr) => {
+                // SAFETY (D-TLAB-1.2): cell `addr.segment()` published before this
+                // node's address was handed out (see `children`); `sr.idx` in range.
+                let side = unsafe { self.side(addr.segment()) };
+                *unsafe { side.spans.get(sr.idx) }.expect("live Spanned slot")
+            }
             _ => panic!("span_at() on a non-Spanned node"),
         }
     }
@@ -487,20 +681,17 @@ impl IndexHeap {
             Node::Empty => MettaValueInner::Empty,
             Node::NotReducible => MettaValueInner::NotReducible,
             Node::Spanned(inner, sr) => {
-                // SAFETY (D-TLAB-1.1): `sr.idx` came from `SideColumn::push` at
-                // intern (so `idx < published_len()`); the node is live ⇒ slot is
-                // `Some`. The launder is sound for the same reason as before — the
-                // `Box<Span>` pointee is address-stable for the segment's life
-                // (`SideColumn` never moves a published `Box`); only the *source* of
-                // the `&Span` changed (was `Vec[idx].as_deref()`, now `col.get(idx)`).
-                let span: &'static Span = unsafe {
-                    launder(
-                        self.sides[addr.segment()]
-                            .spans
-                            .get(sr.idx)
-                            .expect("live Spanned slot"),
-                    )
-                };
+                // SAFETY (D-TLAB-1.2): cell `addr.segment()` was published by the
+                // interner's `ensure_side_seg` before this node's address was handed
+                // out, so `addr.segment() < sides_count`; `sr.idx < published_len()`
+                // and the slot is `Some` (live node). The launder is sound for the
+                // same reason as before — the `Box<Span>` pointee is address-stable
+                // for the segment's life (`SideColumn` never moves a published `Box`,
+                // and the directory cell `Box<SegmentSideArenas>` itself never moves);
+                // only the *source* of the `&Span` changed (`Vec[seg]` → `side(seg)`).
+                let side = unsafe { self.side(addr.segment()) };
+                let span: &'static Span =
+                    unsafe { launder(side.spans.get(sr.idx).expect("live Spanned slot")) };
                 MettaValueInner::Spanned(*inner, span)
             }
         }
@@ -513,15 +704,18 @@ impl IndexHeap {
     /// count newly marked. Stack-safe (delegates to `mark_from_roots_with`).
     pub fn mark(&self, roots: &[Addr]) -> usize {
         let arena = &self.arena;
-        let sides = &self.sides;
         arena.mark_from_roots_with(roots, |addr, out| {
             let node = arena.get(addr);
             node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
             if let Node::SExpr(cr) | Node::Conjunction(cr) = node {
-                // SAFETY (D-TLAB-1.1): the worklist holds only live (reachable) nodes,
-                // whose `cr.idx` came from `SideColumn::push` at intern, so it is
-                // `< published_len()` and the slot is `Some`.
-                let kids = unsafe { sides[addr.segment()].children.get(cr.idx) }
+                // SAFETY (D-TLAB-1.2): the worklist holds only live (reachable) nodes,
+                // whose segment cell was published before the address was handed out
+                // (`addr.segment() < sides_count`) and whose `cr.idx < published_len()`
+                // with a `Some` slot (live node). `self.side` reads the directory cell
+                // via raw pointer (no `&self.sides` borrow), so it does not conflict
+                // with the `arena` borrow above.
+                let side = unsafe { self.side(addr.segment()) };
+                let kids = unsafe { side.children.get(cr.idx) }
                     .expect("live SExpr/Conjunction children slot");
                 for c in kids.iter() {
                     if let Some(a) = c.as_arena_addr() {
@@ -541,15 +735,16 @@ impl IndexHeap {
     /// segments are never even read.
     pub fn mark_young(&self, roots: &[Addr]) -> usize {
         let arena = &self.arena;
-        let sides = &self.sides;
         arena.mark_young_from_roots_with(roots, |addr, out| {
             let node = arena.get(addr);
             node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
             if let Node::SExpr(cr) | Node::Conjunction(cr) = node {
-                // SAFETY (D-TLAB-1.1): the young worklist holds only live (reachable)
-                // young nodes, whose `cr.idx` came from `SideColumn::push` at intern,
-                // so it is `< published_len()` and the slot is `Some`.
-                let kids = unsafe { sides[addr.segment()].children.get(cr.idx) }
+                // SAFETY (D-TLAB-1.2): the young worklist holds only live (reachable)
+                // young nodes — segment cell published before the address was handed
+                // out, `cr.idx < published_len()`, slot `Some`. `self.side` reads via
+                // raw pointer (no `&self.sides` borrow), so no conflict with `arena`.
+                let side = unsafe { self.side(addr.segment()) };
+                let kids = unsafe { side.children.get(cr.idx) }
                     .expect("live SExpr/Conjunction children slot");
                 for c in kids.iter() {
                     if let Some(a) = c.as_arena_addr() {
@@ -589,11 +784,27 @@ impl IndexHeap {
         }
         let mut reclaimed: Vec<Addr> = Vec::new();
         let stats = {
+            // Disjoint-field capture: the release closure resets segment side
+            // arenas through `&mut self.sides` (the directory `Box`), while
+            // `self.arena.sweep_with` mutably borrows the disjoint `self.arena`.
+            // (D-TLAB-1.2: was `sides[seg] = ..`; now an unsafe cell-reset on the
+            // directory — `&mut self.sides` is exclusive, so the `&mut` to the
+            // cell's `Box<SegmentSideArenas>` aliases nothing; published cells only.)
             let sides = &mut self.sides;
+            let sides_count = self.sides_count.load(std::sync::atomic::Ordering::Acquire);
             self.arena.sweep_with(
                 |seg| {
-                    if seg < sides.len() {
-                        sides[seg] = SegmentSideArenas::default();
+                    if seg < sides_count {
+                        // SAFETY: `seg < sides_count` ⇒ cell `seg` published (its
+                        // `Box<SegmentSideArenas>` initialized); `&mut self.sides`
+                        // is exclusive (quiescence, write lock) ⇒ unique access.
+                        // `assume_init_mut()` is `&mut Box<SegmentSideArenas>`;
+                        // resetting the pointee (`**`) drops the old arena (freeing
+                        // its columns) in place and reuses the cell's `Box`.
+                        unsafe {
+                            **(*sides[seg].get()).assume_init_mut() =
+                                SegmentSideArenas::default();
+                        }
                     }
                 },
                 &mut reclaimed,
@@ -654,10 +865,16 @@ impl IndexHeap {
                 Node::Spanned(_, sr) => Side::Spans(sr.idx),
                 _ => Side::None, // fixed node (Bool/Long/Var/…): no side slot
             };
-            if seg >= self.sides.len() {
+            // D-TLAB-1.2: the published-cell bound is `sides_count` (was the `Vec`
+            // length). The `arena` borrow above has ended; `side_mut` takes `&mut
+            // self` (quiescence — exclusive), giving the dead node's segment side
+            // arena to free its column entry.
+            if seg >= self.sides_count.load(std::sync::atomic::Ordering::Acquire) {
                 continue;
             }
-            let s = &mut self.sides[seg];
+            // SAFETY: `seg < sides_count` ⇒ cell `seg` published; `&mut self`
+            // exclusive ⇒ unique access.
+            let s = unsafe { self.side_mut(seg) };
             // Drop the dead node's `Box` (return the payload RSS); leave the index `None`
             // (NOT recycled — intern only APPENDS, so index `i` is permanently this dead
             // node's). D-TLAB-1.1: `SideColumn::free` does the `i < published_len`
@@ -702,11 +919,22 @@ impl IndexHeap {
         }
         let mut reclaimed: Vec<Addr> = Vec::new();
         let stats = {
+            // Disjoint-field capture (see `sweep`): reset released young segments'
+            // side arenas through `&mut self.sides` while `self.arena` is borrowed
+            // by `sweep_young_with`.
             let sides = &mut self.sides;
+            let sides_count = self.sides_count.load(std::sync::atomic::Ordering::Acquire);
             self.arena.sweep_young_with(
                 |seg| {
-                    if seg < sides.len() {
-                        sides[seg] = SegmentSideArenas::default();
+                    if seg < sides_count {
+                        // SAFETY: `seg < sides_count` ⇒ cell `seg` published;
+                        // `&mut self.sides` exclusive (quiescence). `assume_init_mut()`
+                        // is `&mut Box<SegmentSideArenas>`; resetting the pointee
+                        // (`**`) drops the old arena (frees its columns) in place.
+                        unsafe {
+                            **(*sides[seg].get()).assume_init_mut() =
+                                SegmentSideArenas::default();
+                        }
                     }
                 },
                 &mut reclaimed,
@@ -742,15 +970,20 @@ impl IndexHeap {
     /// D-TLAB-1.1: `published_len()` replaces the old `Vec::len()` and is
     /// byte-identical for this estimate — `push` advances it, `free` never
     /// decrements it (matching the old `None`-in-place), and a segment release
-    /// (`sides[seg] = SegmentSideArenas::default()`) resets it to 0 with a fresh
-    /// column — so the same monotone-up / drop-at-release shape holds.
+    /// (resetting `sides[seg]` to a fresh arena) resets it to 0 — so the same
+    /// monotone-up / drop-at-release shape holds. D-TLAB-1.2: iterate the published
+    /// directory cells `[0, sides_count)` instead of a `Vec`; same sum.
     #[inline]
     pub fn committed_bytes(&self) -> usize {
+        use std::sync::atomic::Ordering;
         let node_bytes = self.arena.committed_node_bytes();
         // Side-arena spine: pointer-sized entry per interned variable-length datum.
         let ptr = std::mem::size_of::<usize>();
         let mut side = 0usize;
-        for s in &self.sides {
+        let sides_count = self.sides_count.load(Ordering::Acquire);
+        for seg in 0..sides_count {
+            // SAFETY: `seg < sides_count` ⇒ cell `seg` published.
+            let s = unsafe { self.side(seg) };
             side += (s.children.published_len() + s.strings.published_len() + s.spans.published_len())
                 * ptr;
         }
@@ -800,6 +1033,49 @@ impl IndexHeap {
         self.arena.promote_young();
     }
 }
+
+// SAFETY (D-TLAB-1.2): `IndexHeap` gained an `UnsafeCell` field — the never-realloc
+// side directory `sides: Box<[UnsafeCell<MaybeUninit<Box<SegmentSideArenas>>>]>` —
+// which makes the auto-derived `Send`/`Sync` no longer apply (the prior
+// `Vec<SegmentSideArenas>` was auto-`Send`/`Sync` via `SegmentSideArenas`'s columns'
+// own unsafe impls). The interior mutability of `sides` is disciplined by the same
+// publish protocol as `IndexArena::segments` and `SideColumn::pages` (see the
+// type-level SAFETY blocks there):
+//
+//   (i)   DIRECTORY PUBLICATION. A reader dereferences cell `seg` only for
+//         `seg < sides_count.load(Acquire)`. `ensure_side_seg` initializes cell
+//         `seg`'s `Box<SegmentSideArenas>` then `sides_count.store(seg+1, Release)`
+//         (under `sides_dir_lock`, the unique writer of cell `seg`), so observing
+//         `seg < sides_count` happens-after the cell's initialization ⇒ the
+//         `Box<SegmentSideArenas>` ptr (and its columns' `Release`-published initial
+//         state) is visible before the reader indexes it. The `&SegmentSideArenas`
+//         that `side` returns derives from the raw `UnsafeCell::get()` pointer (not
+//         a `&self.sides` borrow), so it does not alias the directory `Box`.
+//
+//   (ii)  PER-SEGMENT APPENDS ARE `SideColumn`-DISCIPLINED. All variable-length data
+//         lives in the cell's `SideColumn`s, whose own claim-unique / publish-Release
+//         / read-published protocol (and `unsafe impl Send/Sync`) makes a shared
+//         `&SegmentSideArenas` safe to `push`/`get` from multiple threads.
+//
+//   (iii) CELL MUTATION AT QUIESCENCE. The only writes to an already-published
+//         directory cell's contents (the segment-release reset and
+//         `free_reclaimed_side_slots`) go through `&mut self` (`side_mut`, and the
+//         disjoint `&mut self.sides` capture in the `sweep*` release closures),
+//         which run only at a quiescent safepoint under the heap write lock —
+//         statically exclusive of every `&self` reader/pusher. A cell's
+//         `Box<SegmentSideArenas>` ptr is never reassigned after publication (only
+//         its pointee is reset in place), so a concurrent `side` reader's raw-pointer
+//         deref stays valid; no cell is ever un-published (`sides_count` is monotone).
+//
+// The other fields are `Send`/`Sync` for the conventional reasons: `arena:
+// IndexArena<Node>` has its own (matching) unsafe impls; `last_reclaimed`/
+// `space_table`/`memo_table`/`hash_cons` are plain owned collections mutated only
+// under the `RwLock` write guard; `sides_count`/`sides_dir_lock` are atomics/`Mutex`.
+// `Node` is `Copy` (no owned resources), and the `Box<SegmentSideArenas>` payloads
+// are `Send + Sync` (their columns are), so both bounds hold without an `N: Send`-style
+// generic guard (the type is concrete).
+unsafe impl Send for IndexHeap {}
+unsafe impl Sync for IndexHeap {}
 
 /// The process-global index heap, mirroring the slab's `OnceLock<SlabAllocator>`.
 /// Backs the future `IndexHeapStore`; `RwLock` is correct for Inc 2 (default-OFF,
@@ -2824,5 +3100,222 @@ mod tests {
             let got = unsafe { col.get(i as u32) }.expect("entry present past ceiling");
             assert_eq!(got, &[i as i32][..], "value correct at index {i}");
         }
+    }
+}
+
+// ============================================================================
+// loom model — the side-append-BEFORE-node-publish ordering proof (D-TLAB-1.2)
+// ============================================================================
+//
+// Builds only under `--cfg loom`. This is the concurrency-capability gate for the
+// `&self` side-append path: it proves that a reader who Acquire-observes a published
+// NODE is GUARANTEED to also observe the SIDE entry that node names — i.e. the side
+// datum's publication transitively happens-before the reader's side read, so the
+// `unsafe fn side`/`SideColumn::get` deref never sees an unpublished/torn side cell.
+//
+// The ordering under test mirrors `IndexHeap::alloc_sexpr`'s bump path: on ONE
+// thread, the side datum is `push`ed (claim + write + publish via the side column's
+// `len`-CAS `Release`) STRICTLY BEFORE the node is bumped (claim + write the node —
+// which CARRIES the side index — + publish via the node `len`-CAS `Release`). A
+// reader Acquire-loads the node `len`, and for every published node reads its side
+// index then Acquire-loads the side `len` and the side cell.
+//
+// WHY IT HOLDS (the happens-before chain the model checks):
+//   writer:  side.write(idx) → side_len.store(Release) → node.write(carry=idx)
+//            → node_len.CAS(Release)            [all in program order, one thread]
+//   reader:  node_len.load(Acquire) sees the node  ⇒ synchronizes-with the writer's
+//            node_len Release ⇒ happens-after ALL the writer's prior writes, INCLUDING
+//            its side cell write and side_len store. So the reader observes
+//            `side_len > idx` (side published) and the fully-written side bytes.
+// loom exhaustively explores every interleaving of two such writers + one reader and
+// surfaces a data race / stale read if the chain ever broke (e.g. if the side were
+// published with weaker-than-Release ordering, or AFTER the node).
+//
+// RUN (capped, FOREGROUND — same convention + caveats as `index_arena::loom_model`):
+//   RUSTFLAGS="--cfg loom -C target-cpu=native" LOOM_MAX_PREEMPTIONS=2 \
+//     systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=1200% \
+//     cargo test --release --lib --features index-gc \
+//     backend::eval::cesk::index_heap::loom_side_node_ordering -- --nocapture
+// (`--release`: loom runs each thread on a fixed coroutine stack the DEBUG frame of
+// this large crate overflows; `--cfg loom -C target-cpu=native`: RUSTFLAGS overrides
+// .cargo/config.toml, so re-add the gxhash AES/SSE2 flags. STRONG `compare_exchange`
+// + `thread::yield_now()` for the same reasons documented on `index_arena`'s model.)
+#[cfg(loom)]
+mod loom_side_node_ordering {
+    use loom::cell::UnsafeCell;
+    use loom::sync::atomic::{AtomicUsize, Ordering};
+    use loom::sync::Arc;
+    use loom::thread;
+    use std::mem::MaybeUninit;
+
+    /// Minimal mirror of ONE `SideColumn` chunk (the publish protocol under test),
+    /// over loom's instrumented `UnsafeCell`/atomics. Payload `usize` (a per-writer
+    /// tag) so the reader can assert it read a fully-written value (not torn/uninit).
+    struct SideCol {
+        slots: Vec<UnsafeCell<MaybeUninit<usize>>>,
+        len: AtomicUsize,
+        bump: AtomicUsize,
+        cap: usize,
+    }
+    // SAFETY: same claim-unique / publish-Release / read-published protocol as the
+    // production `SideColumn`; loom verifies the absence of races.
+    unsafe impl Sync for SideCol {}
+    unsafe impl Send for SideCol {}
+
+    impl SideCol {
+        fn new(cap: usize) -> Self {
+            SideCol {
+                slots: (0..cap)
+                    .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+                    .collect(),
+                len: AtomicUsize::new(0),
+                bump: AtomicUsize::new(0),
+                cap,
+            }
+        }
+        /// Claim + write + publish a side entry; returns its index (the value the
+        /// node will CARRY). `Relaxed` claim, `Release` publish — verbatim
+        /// `SideColumn::{push,publish}` protocol (strong CAS / yield for loom).
+        fn push(&self, value: usize) -> Option<usize> {
+            let idx = self.bump.fetch_add(1, Ordering::Relaxed);
+            if idx >= self.cap {
+                return None;
+            }
+            self.slots[idx].with_mut(|p| unsafe { (*p).write(value) });
+            while self
+                .len
+                .compare_exchange(idx, idx + 1, Ordering::Release, Ordering::Relaxed)
+                .is_err()
+            {
+                thread::yield_now();
+            }
+            Some(idx)
+        }
+        /// Read a published side entry. SAFETY: `idx < len.load(Acquire)`.
+        unsafe fn get(&self, idx: usize) -> usize {
+            self.slots[idx].with(|p| (*p).assume_init())
+        }
+    }
+
+    /// Minimal mirror of the node arena's `Segment` slot machinery; each node CARRIES
+    /// the side index it names (so the reader can follow node → side).
+    struct NodeSeg {
+        slots: Vec<UnsafeCell<MaybeUninit<usize>>>, // each cell holds a side index
+        len: AtomicUsize,
+        bump: AtomicUsize,
+        cap: usize,
+    }
+    unsafe impl Sync for NodeSeg {}
+    unsafe impl Send for NodeSeg {}
+
+    impl NodeSeg {
+        fn new(cap: usize) -> Self {
+            NodeSeg {
+                slots: (0..cap)
+                    .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+                    .collect(),
+                len: AtomicUsize::new(0),
+                bump: AtomicUsize::new(0),
+                cap,
+            }
+        }
+        /// Claim + write + publish a node carrying `side_idx`. Verbatim
+        /// `Segment::{bump_one,write_claimed,publish}` protocol.
+        fn publish_node(&self, side_idx: usize) -> Option<usize> {
+            let off = self.bump.fetch_add(1, Ordering::Relaxed);
+            if off >= self.cap {
+                return None;
+            }
+            self.slots[off].with_mut(|p| unsafe { (*p).write(side_idx) });
+            while self
+                .len
+                .compare_exchange(off, off + 1, Ordering::Release, Ordering::Relaxed)
+                .is_err()
+            {
+                thread::yield_now();
+            }
+            Some(off)
+        }
+        unsafe fn carried_side_idx(&self, off: usize) -> usize {
+            self.slots[off].with(|p| (*p).assume_init())
+        }
+    }
+
+    #[test]
+    fn loom_side_entry_visible_when_node_observed() {
+        loom::model(|| {
+            const CAP: usize = 4;
+            let side = Arc::new(SideCol::new(CAP));
+            let nodes = Arc::new(NodeSeg::new(CAP));
+
+            // Two writers, each performing the `alloc_*` triple ON ONE THREAD: push a
+            // side entry (publish it), THEN publish a node carrying that side index —
+            // the side-append-BEFORE-node-publish ordering D-TLAB-1.2 establishes.
+            let w = |tag: usize| {
+                let side = side.clone();
+                let nodes = nodes.clone();
+                thread::spawn(move || {
+                    // Tag the side payload so the reader can assert a sane value; the
+                    // tag's high bits are unique per writer (0xA._ / 0xB._).
+                    let sidx = side.push(tag)?;
+                    nodes.publish_node(sidx)
+                })
+            };
+            let w1 = w(0xA0);
+            let w2 = w(0xB0);
+
+            // Reader: observe published nodes, follow each to its side entry, and
+            // assert the side entry IS published (no out-of-bounds vs `side.len`) and
+            // fully written (a known tag, never uninit/torn). loom flags a data race
+            // here if observing the node did NOT transitively publish the side.
+            let r = {
+                let side = side.clone();
+                let nodes = nodes.clone();
+                thread::spawn(move || {
+                    let n = nodes.len.load(Ordering::Acquire);
+                    assert!(n <= CAP, "node len {n} exceeded capacity {CAP}");
+                    for off in 0..n {
+                        // SAFETY: off < node_len (Acquire) ⇒ node published.
+                        let sidx = unsafe { nodes.carried_side_idx(off) };
+                        // THE INVARIANT: a published node ⇒ its side entry published.
+                        let slen = side.len.load(Ordering::Acquire);
+                        assert!(
+                            sidx < slen,
+                            "node at off {off} carries side idx {sidx} but side len is \
+                             only {slen} — side entry NOT published before the node \
+                             (the D-TLAB-1.2 ordering broke)"
+                        );
+                        // SAFETY: sidx < side_len (just asserted, Acquire) ⇒ published.
+                        let v = unsafe { side.get(sidx) };
+                        assert!(
+                            v == 0xA0 || v == 0xB0,
+                            "side entry {sidx} read torn/uninit value {v:#x}"
+                        );
+                    }
+                    n
+                })
+            };
+
+            let o1 = w1.join().expect("w1");
+            let o2 = w2.join().expect("w2");
+            let _ = r.join().expect("r");
+
+            // Both writers completed ⇒ two nodes + two side entries published, and
+            // the two writers claimed DISTINCT node offsets (unique claim).
+            if let (Some(a), Some(b)) = (o1, o2) {
+                assert_ne!(a, b, "two writers published the same node offset {a}");
+            }
+            let final_nodes = nodes.len.load(Ordering::Acquire);
+            let final_side = side.len.load(Ordering::Acquire);
+            assert_eq!(final_nodes, 2, "both nodes must be published");
+            assert_eq!(final_side, 2, "both side entries must be published");
+            // Every published node still resolves to a written side entry post-join.
+            for off in 0..final_nodes {
+                let sidx = unsafe { nodes.carried_side_idx(off) };
+                assert!(sidx < final_side, "node {off} → side {sidx} unpublished");
+                let v = unsafe { side.get(sidx) };
+                assert!(v == 0xA0 || v == 0xB0, "final side {sidx} value {v:#x}");
+            }
+        });
     }
 }

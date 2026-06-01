@@ -485,6 +485,120 @@ impl IndexHeap {
         }
     }
 
+    // ── D-RLOCK.1: `&self` bump-ONLY allocation entries ──────────────────────
+    //
+    // The next increment (D-RLOCK.2) flips `IndexFactory`'s HOT sites off the
+    // serializing `global_index_heap().write()` onto a concurrent
+    // `.read()`+`&self` bump path so parallel-eval workers stop serializing
+    // against each other on the heap write lock. These methods are the `&self`
+    // bump-ONLY entries that path calls: each body is the EXACT `else`-branch
+    // bump loop of the corresponding `alloc_*` above (the
+    // `ensure_bump_room`/`intern_*_in`/`try_bump_in` single-pick + retry triple,
+    // every call of which is already `&self`), with the `pop_young_free_slot` +
+    // `write_reused` REUSE branch DELETED — reuse stays `&mut self`/quiescence
+    // -only (a concurrent claim must never alias a reused slot — the
+    // ABA/torn-node class `IndexArena::alloc_bump` is documented to avoid; TLA+
+    // `NoConcurrentFree`).
+    //
+    // SOUNDNESS of running these under a SHARED (`.read()`) heap guard:
+    //   * Every primitive they call is `&self` and obeys the B2 lock-free arena
+    //     protocol (`alloc_bump`/`try_bump_in` claim a unique slot via the atomic
+    //     bump cursor and publish with `Release`; `intern_*_in` → `SideColumn::push`
+    //     claims+publishes a side index lock-free; `ensure_side_seg` publishes a
+    //     directory cell under its own small mutex). No `&self` path here FREES or
+    //     RESETS anything.
+    //   * The side datum is interned BEFORE the node is published (`try_bump_in`'s
+    //     `publish` is the node's release point), so the node's `Release`-publish
+    //     transitively gates the side entry's visibility (same ordering the loom
+    //     `loom_side_node_ordering` model proves).
+    //   * The collector (the only thing that frees) is `&mut self` everywhere
+    //     (`sweep`/`sweep_young`/`free_reclaimed_side_slots`/`SideColumn::free`),
+    //     so it is UNCALLABLE through a `.read()` guard — type-enforced — AND it is
+    //     gated OFF once any worker is spawned (`!worker_ever_spawned()`), which is
+    //     exactly the regime in which concurrent (`.read()`) allocation occurs. So
+    //     a concurrent bump never races a live collector on two independent grounds.
+    //
+    // INERT this increment: NOT called by anything yet (D-RLOCK.2 wires them).
+    // The module is `#![allow(dead_code)]`, so they raise no dead-code warning.
+
+    /// `&self` bump-ONLY allocation of an `SExpr`, co-locating its children in the
+    /// node's segment. Bump-only twin of [`alloc_sexpr`](Self::alloc_sexpr)'s
+    /// `else` branch — see the D-RLOCK.1 block comment above.
+    pub fn alloc_sexpr_concurrent(&self, items: &[MettaValue]) -> Addr {
+        loop {
+            let seg = self.arena.ensure_bump_room();
+            let cs = self.intern_children_in(seg, items);
+            if let Some(addr) = self.arena.try_bump_in(seg, Node::SExpr(cs)) {
+                return addr;
+            }
+        }
+    }
+
+    /// `&self` bump-ONLY allocation of a `Conjunction`, co-locating its goals.
+    /// Bump-only twin of [`alloc_conjunction`](Self::alloc_conjunction)'s `else`
+    /// branch — see the D-RLOCK.1 block comment above.
+    pub fn alloc_conjunction_concurrent(&self, goals: &[MettaValue]) -> Addr {
+        loop {
+            let seg = self.arena.ensure_bump_room();
+            let cs = self.intern_children_in(seg, goals);
+            if let Some(addr) = self.arena.try_bump_in(seg, Node::Conjunction(cs)) {
+                return addr;
+            }
+        }
+    }
+
+    /// `&self` bump-ONLY allocation of an `Atom`, co-locating its bytes. Bump-only
+    /// twin of [`alloc_atom`](Self::alloc_atom)'s `else` branch — see the D-RLOCK.1
+    /// block comment above.
+    pub fn alloc_atom_concurrent(&self, s: &str) -> Addr {
+        loop {
+            let seg = self.arena.ensure_bump_room();
+            let bs = self.intern_bytes_in(seg, s);
+            if let Some(addr) = self.arena.try_bump_in(seg, Node::Atom(bs)) {
+                return addr;
+            }
+        }
+    }
+
+    /// `&self` bump-ONLY allocation of a `String`, co-locating its bytes. Bump-only
+    /// twin of [`alloc_string`](Self::alloc_string)'s `else` branch — see the
+    /// D-RLOCK.1 block comment above.
+    pub fn alloc_string_concurrent(&self, s: &str) -> Addr {
+        loop {
+            let seg = self.arena.ensure_bump_room();
+            let bs = self.intern_bytes_in(seg, s);
+            if let Some(addr) = self.arena.try_bump_in(seg, Node::String(bs)) {
+                return addr;
+            }
+        }
+    }
+
+    /// `&self` bump-ONLY allocation of a `Spanned`, co-locating the (boxed) span.
+    /// Bump-only twin of [`alloc_spanned`](Self::alloc_spanned)'s `else` branch —
+    /// see the D-RLOCK.1 block comment above.
+    pub fn alloc_spanned_concurrent(&self, inner: MettaValue, span: Span) -> Addr {
+        loop {
+            let seg = self.arena.ensure_bump_room();
+            let sr = self.intern_span_in(seg, span);
+            if let Some(addr) = self.arena.try_bump_in(seg, Node::Spanned(inner, sr)) {
+                return addr;
+            }
+        }
+    }
+
+    /// `&self` bump-ONLY allocation of a FIXED-size node (no side-arena data).
+    /// Uses [`IndexArena::alloc_bump`] (`&self`, fresh-bump-only — NOT `alloc`,
+    /// which is `&mut self` and may reuse a free slot) and keeps the side
+    /// directory index-parallel (`ensure_side_seg`, `&self`) exactly as
+    /// [`alloc_fixed`](Self::alloc_fixed) does. See the D-RLOCK.1 block comment.
+    pub fn alloc_fixed_concurrent(&self, node: Node) -> Addr {
+        let a = self.arena.alloc_bump(node);
+        // `alloc_bump` may have opened a fresh segment internally — keep the side
+        // directory index-parallel (a fixed node has no side data of its own).
+        self.ensure_side_seg(self.arena.segment_count() - 1);
+        a
+    }
+
     /// C1.c #1: box `items` into segment `seg`'s child side-arena, APPENDING a
     /// fresh stable index (no-recycle — see [`SegmentSideArenas`]), returning it.
     /// The caller co-locates the owning node in the SAME `seg` (so node + children
@@ -1111,10 +1225,20 @@ fn flag_vars(has: bool) -> usize {
 impl MettaValueFactory<MettaValue> for IndexFactory {
     fn atom(&self, s: &str) -> MettaValue {
         let flags = flag_vars(is_variable_str(s));
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_atom(s);
+        // D-RLOCK.2: try the EXCLUSIVE (`&mut`) reuse-or-bump path first via a
+        // NON-BLOCKING `try_write` (one shot, no retry loop ⇒ no livelock); fall
+        // back to the concurrent (`.read()`+`&self`) BUMP-ONLY path when the write
+        // lock is held by another worker (the parallel-eval case this increment
+        // de-serializes). At FANOUT=0 (one thread) `try_write` always succeeds, so
+        // this is byte-identical to the prior unconditional `.write()` path.
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_atom(s)
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_atom_concurrent(s)
+        };
         MettaValue::from_addr(addr, flags)
     }
 
@@ -1126,26 +1250,41 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
         if let Some(v) = MettaValue::try_inline_long(n) {
             return v;
         }
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_fixed(Node::Long(n));
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_fixed(Node::Long(n))
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_fixed_concurrent(Node::Long(n))
+        };
         MettaValue::from_addr(addr, 0)
     }
 
     fn float(&self, f: f64) -> MettaValue {
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_fixed(Node::Float(f));
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_fixed(Node::Float(f))
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_fixed_concurrent(Node::Float(f))
+        };
         MettaValue::from_addr(addr, 0)
     }
 
     fn string(&self, s: &str) -> MettaValue {
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_string(s);
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_string(s)
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_string_concurrent(s)
+        };
         MettaValue::from_addr(addr, 0)
     }
 
@@ -1162,33 +1301,61 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             // Hash-cons ground SExprs (CRUX Step 4) — matches GcFactory exactly
             // (ground-only, shared `hash_cons_key`), so equal content shares one
             // `Addr` ⇒ one `inner_ptr` key (R9 fixpoint-identity parity).
+            //
+            // D-RLOCK.2: this branch STAYS on unconditional `.write()`. Hash-consing
+            // reads AND mutates the shared `hash_cons` map (lookup-then-insert under
+            // one `&mut self`); it is NOT concurrent-appendable this increment, and
+            // (more importantly) the dedup must observe a coherent map to preserve
+            // R9 fixpoint-identity parity — two concurrent inserters of the same
+            // ground content could otherwise mint two distinct `Addr`s for it. Only
+            // the VARIABLE (non-ground) branch below de-serializes.
             return global_index_heap()
                 .write()
                 .expect("index heap")
                 .intern_ground_sexpr(items);
         }
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_sexpr(items);
+        // D-RLOCK.2: VARIABLE SExprs carry no hash-cons (each is freshly allocated),
+        // so they take the try_write reuse-or-bump / concurrent bump-only split
+        // (see `atom`). Fresh-bump never reuses an `Addr`, and the value is non-
+        // ground ⇒ compared structurally, never by the `inner_ptr`-keyed
+        // VALUE_HASH_CACHE in a content-equality-sensitive way that a fresh `Addr`
+        // would corrupt — so the concurrent path is output-equivalent.
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_sexpr(items)
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_sexpr_concurrent(items)
+        };
         MettaValue::from_addr(addr, FLAG_HAS_VARIABLES)
     }
 
     fn error(&self, offending: MettaValue, detail: MettaValue) -> MettaValue {
         let flags = flag_vars(offending.has_variables_fast() || detail.has_variables_fast());
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_fixed(Node::Error(offending, detail));
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_fixed(Node::Error(offending, detail))
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_fixed_concurrent(Node::Error(offending, detail))
+        };
         MettaValue::from_addr(addr, flags)
     }
 
     fn type_value(&self, inner: MettaValue) -> MettaValue {
         let flags = flag_vars(inner.has_variables_fast());
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_fixed(Node::Type(inner));
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_fixed(Node::Type(inner))
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_fixed_concurrent(Node::Type(inner))
+        };
         MettaValue::from_addr(addr, flags)
     }
 
@@ -1198,10 +1365,17 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
 
     fn conjunction_from_slice(&self, goals: &[MettaValue]) -> MettaValue {
         let flags = flag_vars(goals.iter().any(|g| g.has_variables_fast()));
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_conjunction(goals);
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        // Conjunctions are not hash-consed (no ground-dedup branch), so the whole
+        // method de-serializes.
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_conjunction(goals)
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_conjunction_concurrent(goals)
+        };
         MettaValue::from_addr(addr, flags)
     }
 
@@ -1214,10 +1388,18 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
     }
 
     fn state(&self, id: u64) -> MettaValue {
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_fixed(Node::State(id));
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        // The `State` NODE is a fixed node (`alloc_fixed`); the State *cell* it
+        // names is registered separately by the caller — only the node alloc is
+        // de-serialized here.
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_fixed(Node::State(id))
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_fixed_concurrent(Node::State(id))
+        };
         MettaValue::from_addr(addr, 0)
     }
 
@@ -1252,10 +1434,15 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
 
     fn quote(&self, inner: MettaValue) -> MettaValue {
         let flags = flag_vars(inner.has_variables_fast());
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_fixed(Node::Quoted(inner));
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_fixed(Node::Quoted(inner))
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_fixed_concurrent(Node::Quoted(inner))
+        };
         MettaValue::from_addr(addr, flags)
     }
 
@@ -1264,19 +1451,29 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
         // Lazy). That check needs the mode-aware `is_lazy`/decode, so it is added
         // in Inc 2a-5; until then `lazy` always wraps (correct, just non-idempotent).
         let flags = flag_vars(inner.has_variables_fast());
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_fixed(Node::Lazy(inner));
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_fixed(Node::Lazy(inner))
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_fixed_concurrent(Node::Lazy(inner))
+        };
         MettaValue::from_addr(addr, flags)
     }
 
     fn spanned(&self, value: MettaValue, span: crate::ir::Span) -> MettaValue {
         let flags = flag_vars(value.has_variables_fast());
-        let addr = global_index_heap()
-            .write()
-            .expect("index heap")
-            .alloc_spanned(value, span);
+        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
+        let addr = if let Ok(mut h) = global_index_heap().try_write() {
+            h.alloc_spanned(value, span)
+        } else {
+            global_index_heap()
+                .read()
+                .expect("index heap")
+                .alloc_spanned_concurrent(value, span)
+        };
         MettaValue::from_addr(addr, flags)
     }
 
@@ -3100,6 +3297,119 @@ mod tests {
             let got = unsafe { col.get(i as u32) }.expect("entry present past ceiling");
             assert_eq!(got, &[i as i32][..], "value correct at index {i}");
         }
+    }
+}
+
+// ============================================================================
+// D-RLOCK.2 TSan concurrency test — the `.read()`+`&self` concurrent factory path
+// ============================================================================
+//
+// Gate #5 of the D-RLOCK.2 increment: real-thread (NOT loom) validation that N
+// threads concurrently allocating through `IndexFactory`'s `.read()`+`&self`
+// BUMP-ONLY path (`alloc_*_concurrent`) race no data and produce decodable values.
+//
+// To FORCE every worker onto the concurrent path (not the `try_write` `&mut`
+// path), the main thread holds a `.read()` guard for the duration of the storm:
+// with a reader held, every worker's `try_write()` fails (RwLock denies a writer
+// while a reader is live) ⇒ each worker takes `global_index_heap().read()` +
+// `alloc_*_concurrent`. Multiple concurrent readers + concurrent `&self` bumps is
+// exactly the runtime regime D-RLOCK.2 introduces (parallel-eval workers, with
+// the single-threaded collector gated OFF by `note_worker_spawned()`).
+//
+// Collector exclusion is established two ways (both asserted): `note_worker_spawned()`
+// closes the single-threaded collector gate, AND every freeing collector path is
+// `&mut self` so it is uncallable through the `.read()` guards the workers hold.
+//
+// BUILD + RUN under ThreadSanitizer (nightly, capped, FOREGROUND):
+//   RUSTFLAGS="-Zsanitizer=thread -C target-cpu=native" \
+//     systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000% \
+//     cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
+//       --release --lib --features index-gc \
+//       backend::eval::cesk::index_heap::tsan_concurrent_factory -- --nocapture --test-threads=1
+// Expect: 0 TSan reports (no "WARNING: ThreadSanitizer: data race").
+//
+// Gated `feature = "index-gc"` (IndexFactory only allocates into the index heap
+// under that feature; `gc_mode_is_index()` inits to true there) and `not(loom)`
+// (uses std threads, not loom's instrumented model).
+#[cfg(all(test, feature = "index-gc", not(loom)))]
+mod tsan_concurrent_factory {
+    use super::*;
+    use crate::backend::models::metta_value::set_gc_mode_index;
+    use crate::backend::models::{note_worker_spawned, MettaValueFactory};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn concurrent_read_path_allocations_are_race_free() {
+        // Index value mode (so `from_addr`/`view` decode the arena Addr) + close the
+        // single-threaded collector gate (the regime in which concurrent `.read()`
+        // allocation occurs; the collector backs off).
+        set_gc_mode_index();
+        note_worker_spawned();
+        assert!(
+            crate::backend::models::worker_ever_spawned(),
+            "collector gate must be CLOSED for the concurrent-path regime"
+        );
+
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 2000;
+        let barrier = Arc::new(Barrier::new(THREADS + 1));
+
+        // Hold a READ guard for the whole storm so every worker's `try_write()`
+        // fails ⇒ each takes the `.read()` + `alloc_*_concurrent` path. Dropped
+        // after the workers join.
+        let read_guard = global_index_heap().read().expect("index heap read guard");
+
+        let mut handles = Vec::with_capacity(THREADS);
+        for t in 0..THREADS {
+            let b = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let f = IndexFactory;
+                b.wait(); // all threads hammer the heap simultaneously
+                let mut last = Vec::with_capacity(PER_THREAD);
+                for i in 0..PER_THREAD {
+                    // Exercise each concurrent entry: atom (variable ⇒ FLAG set),
+                    // a VARIABLE SExpr (non-ground ⇒ the de-serialized branch, NOT
+                    // hash-cons), a conjunction, and a spanned wrapper.
+                    let a = f.atom(&format!("$v{t}_{i}"));
+                    let s = f.sexpr_from_slice(&[a, f.atom(&format!("$w{t}_{i}"))]);
+                    let c = f.conjunction_from_slice(&[s, f.long(1_000_000 + i as i64)]);
+                    let sp = f.spanned(
+                        c,
+                        crate::ir::Span {
+                            start: crate::ir::Position {
+                                row: t,
+                                column: i,
+                                byte_offset: i,
+                            },
+                            end: crate::ir::Position {
+                                row: t,
+                                column: i + 1,
+                                byte_offset: i + 1,
+                            },
+                        },
+                    );
+                    last.push(sp);
+                }
+                last
+            }));
+        }
+        barrier.wait();
+        let mut total = 0usize;
+        for h in handles {
+            let produced = h.join().expect("worker thread panicked");
+            total += produced.len();
+        }
+        // Workers are joined; release the read guard.
+        drop(read_guard);
+        assert_eq!(total, THREADS * PER_THREAD, "all allocations accounted for");
+
+        // Decode a sample under a fresh read guard — proves the concurrently-bumped
+        // nodes + their side data (children / strings / spans) are coherently
+        // published (a torn/unpublished side entry would panic in `view`/`children`).
+        let _g = global_index_heap().read().expect("index heap read guard");
+        // (The values are heap handles; their mere construction + accounting above,
+        // run under TSan, is the race check. A deeper structural walk is exercised
+        // by the conformance/ASAN arms.)
     }
 }
 

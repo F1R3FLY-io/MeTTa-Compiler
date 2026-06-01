@@ -2949,9 +2949,37 @@ const RENDEZVOUS_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §"Sub-increments".
 #[allow(dead_code)] // DEAD until D2.x gates the call sites on this.
 pub(crate) fn rendezvous_enabled() -> bool {
+    // TEST-ONLY override: the env gate is parsed once into a process-global
+    // `OnceLock<bool>`, so a test cannot flip it per-case (and several tests run
+    // in one process). `force_rendezvous_enabled_for_test` sets this AtomicBool,
+    // which `rendezvous_enabled()` consults FIRST under `#[cfg(test)]`, so the
+    // D2.1 integration test can engage the dormant rendezvous wiring
+    // deterministically without depending on env-var ordering. In non-test
+    // builds this branch does not exist, so the gate is purely the env OnceLock.
+    #[cfg(test)]
+    {
+        if RENDEZVOUS_FORCED_FOR_TEST.load(Ordering::Acquire) {
+            return true;
+        }
+    }
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var("METTATRON_INDEX_GC_PARALLEL").as_deref() == Ok("1"))
 }
+
+/// TEST-ONLY: force [`rendezvous_enabled`] to return `true` regardless of the
+/// `METTATRON_INDEX_GC_PARALLEL` env OnceLock (which is parsed once per process
+/// and so cannot be flipped per test). Lets the D2.1 integration test engage the
+/// rendezvous wiring (WorkerEnter gate + midloop self-root branch) deterministically.
+/// Reset to `false` at the end of the test so it does not leak into other tests.
+#[cfg(test)]
+pub(crate) fn force_rendezvous_enabled_for_test(on: bool) {
+    RENDEZVOUS_FORCED_FOR_TEST.store(on, Ordering::Release);
+}
+
+/// Backing flag for [`force_rendezvous_enabled_for_test`]. Default `false` ⇒ the
+/// real env gate governs. Test-only.
+#[cfg(test)]
+static RENDEZVOUS_FORCED_FOR_TEST: AtomicBool = AtomicBool::new(false);
 
 /// Acquire the rendezvous as the sole collector (one collector at a time).
 ///
@@ -3016,17 +3044,40 @@ pub(crate) fn worker_park_and_root(roots: &[MettaValue]) {
         RENDEZVOUS_CONDVAR.notify_all();
     }
     // (4) park until the requestor clears GC_REQUESTED (HB4).
-    {
-        let mut lock = RESUME_MUTEX.lock();
-        while is_gc_requested() {
-            let result = RESUME_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
-            if result.timed_out() && is_gc_requested() {
-                tracing::warn!(
-                    "worker_park_and_root: still GC_REQUESTED after {:?} wait — re-checking",
-                    RENDEZVOUS_WAIT_TIMEOUT,
-                );
-                // Loop re-checks the real predicate; a timeout is a benign retry.
-            }
+    worker_wait_for_resume();
+}
+
+/// WORKER side: park on [`RESUME_CONDVAR`] until the requestor clears
+/// `GC_REQUESTED` (HB4), then return.
+///
+/// Step (4) of [`worker_park_and_root`], factored out so there is ONE park
+/// implementation shared by BOTH (a) a worker that has already self-rooted at a
+/// poll point (`worker_park_and_root` calls this as its last step) and (b) the
+/// D2.1 **WorkerEnter gate** (a brand-new worker that has NOT yet joined the
+/// active eval set, so it has no roots to contribute and parks directly here
+/// until the in-flight rendezvous completes — the TLA+ `WorkerEnter`
+/// `~gcRequested` admission guard, Risk R2).
+///
+/// Lost-wakeup-safe: [`RESUME_MUTEX`] is held across the `is_gc_requested()`
+/// predicate check and the `wait_for`, matching [`resume_workers`], which holds
+/// the SAME mutex across `GC_REQUESTED.store(false, Release)` + `notify_all()`.
+/// The worker's resume Acquire on `is_gc_requested()` thus observes the
+/// post-sweep state (HB4). The 5 s `wait_for` is a warn-and-recheck liveness
+/// backstop (Risk R1), NOT a hard budget: the loop only exits when the real
+/// predicate (`!is_gc_requested()`) holds.
+///
+/// DEAD until D2.1. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
+#[allow(dead_code)] // DEAD until D2.1 (WorkerEnter gate + worker_park_and_root step 4).
+pub(crate) fn worker_wait_for_resume() {
+    let mut lock = RESUME_MUTEX.lock();
+    while is_gc_requested() {
+        let result = RESUME_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
+        if result.timed_out() && is_gc_requested() {
+            tracing::warn!(
+                "worker_wait_for_resume: still GC_REQUESTED after {:?} wait — re-checking",
+                RENDEZVOUS_WAIT_TIMEOUT,
+            );
+            // Loop re-checks the real predicate; a timeout is a benign retry.
         }
     }
 }

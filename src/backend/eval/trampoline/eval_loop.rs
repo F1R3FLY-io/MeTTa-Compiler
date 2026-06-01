@@ -2448,6 +2448,27 @@ fn parallel_dispatch(
 
         let closure = move || {
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+            // ── D2.1 WorkerEnter gate (DORMANT behind `rendezvous_enabled()`,
+            //    default OFF → byte-identical) ──
+            // The TLA+ `WorkerEnter` admission guard (`~gcRequested`): a NEW
+            // worker must NOT join the active eval set while a rendezvous GC is
+            // pending — otherwise `active_evaluator_count()` could never drain to
+            // 0 and the requestor would block forever (Risk R2). DEVIATION from
+            // the design's literal "put it inside `WorkerEvalScope::enter()`": in
+            // THIS codebase `EvalGuard::enter()` (which increments
+            // `ACTIVE_EVALUATORS`) runs BEFORE `WorkerEvalScope::enter()` (the
+            // thread-local flag flip, ~30 lines below), so the only site that is
+            // genuinely "before the worker joins the active set (before its
+            // EvalGuard::enter)" — the design's stated requirement — is the very
+            // TOP of the closure, here. Parking here (a bare wait, since this
+            // worker has not yet joined `active` and has no machine roots to
+            // contribute) realizes the admission guard faithfully. Gated on
+            // `rendezvous_enabled()` (cached env OnceLock; default OFF), so when
+            // OFF this is one short-circuited boolean read off the worker-spawn
+            // path and never parks — byte-identical to the prior behaviour.
+            if crate::backend::models::gc_allocator::rendezvous_enabled() {
+                crate::backend::models::gc_allocator::worker_wait_for_resume();
+            }
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
             let _guard = EvalGuard::enter();
             // Phase 9.1: register `branch_expr` as a per-thread current-iter
@@ -2955,6 +2976,17 @@ fn parallel_collapse_dispatch(
 
         let closure = move || {
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+            // ── D2.1 WorkerEnter gate (DORMANT behind `rendezvous_enabled()`,
+            //    default OFF → byte-identical) ── mirror of the parallel-dispatch
+            //    worker above; see the full rationale there. Blocks a new collapse
+            //    worker from joining `active` while a rendezvous GC is pending
+            //    (TLA+ `WorkerEnter` `~gcRequested`, Risk R2). Placed at the
+            //    closure TOP (before `EvalGuard::enter()`) because that is the
+            //    only genuine "before joining the active set" site in this
+            //    codebase. OFF by default → one short-circuited boolean read.
+            if crate::backend::models::gc_allocator::rendezvous_enabled() {
+                crate::backend::models::gc_allocator::worker_wait_for_resume();
+            }
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
             let _guard = EvalGuard::enter();
             // Phase 9.1: register `item_expr` as a per-thread current-iter
@@ -3795,7 +3827,58 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Independent of `ctx.should_safepoint()`: the index GC's own
             // committed-bytes watermark drives the trigger (the slab `is_gc_
             // requested()`-gated safepoint dance below is a separate path).
-            if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {
+            // ── D2.1 worker self-root at the midloop poll point (DORMANT behind
+            //    `rendezvous_enabled()`, default OFF → byte-identical) ──
+            // SIBLING (`if … else if …`) to the single-threaded `should_collect_
+            // midloop()` collect below: a parallel-eval WORKER that observes a
+            // pending rendezvous GC self-collects its OWN structural roots (the
+            // collector cannot read a parked worker's native-stack registers —
+            // the genuine-CESK crux) into the shared buffer, drops its EvalGuard
+            // so `active_evaluator_count()` can reach 0, then parks until the
+            // requestor finishes marking. The two are mutually exclusive by
+            // construction: `should_collect_midloop()` already requires
+            // `!worker_ever_spawned()` (single-threaded regime), and this branch
+            // requires `rendezvous_enabled()` (default OFF) — so they never both
+            // fire, and the `else if` guarantees at most one runs per safepoint
+            // (no double-collect). When `rendezvous_enabled()` is OFF (default),
+            // the leading conjunct short-circuits WITHOUT calling
+            // `is_gc_requested()`, so control falls straight to the unchanged
+            // `else if should_collect_midloop()` — byte-identical to the prior
+            // bare `if`. The requestor that SETS `GC_REQUESTED` + drains + marks
+            // is D2.3 (not this increment); for D2.1 the only driver is the
+            // integration test, which plays requestor manually.
+            if crate::backend::models::gc_allocator::rendezvous_enabled()
+                && crate::backend::models::gc_allocator::is_gc_requested()
+            {
+                // Self-collect MY machine roots (same structural reader the
+                // single-threaded midloop uses at this site) over MY in-scope
+                // registers, ∪ the deferred-drop transient register. This worker's
+                // term in the union ⋃_i σ|_Reachable(⟨C_i,E_i,K_i⟩) ∪ reach(E₀);
+                // E₀ is folded by `collect_machine_roots_live` and over-counted
+                // N× across workers but SOUND (dedup at the `as_arena_addr` mark
+                // projection — the D2.2 E₀-single-count optimisation comes later).
+                let mut my_roots: Vec<MettaValue> = Vec::with_capacity(
+                    work_stack.len() * 2 + continuations.len() * 4 + 64,
+                );
+                crate::backend::eval::cesk::roots::collect_machine_roots_live(
+                    &mut my_roots,
+                    &machine_operand_stack,
+                    &work,
+                    &work_stack,
+                    &continuations,
+                    env.shared.as_ref(),
+                );
+                for deferred_env in &deferred_shared_drops {
+                    deferred_env.as_ref().collect_roots_into(&mut my_roots);
+                }
+                // Leave the active set BEFORE parking so the requestor's
+                // `active_evaluator_count()==0` (the TLA+ `BeginMark` predicate)
+                // can be reached, publish my roots + signal parked + park until
+                // the requestor clears `GC_REQUESTED`, then rejoin the active set.
+                crate::backend::models::gc_allocator::drop_eval_guard_for_safepoint();
+                crate::backend::models::gc_allocator::worker_park_and_root(&my_roots);
+                crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint();
+            } else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {
                 // A4.4 FLIP (midloop): feed the collector from the STRUCTURAL machine reader —
                 //   collect_machine_roots(S, C, K, E₀) ∪ the deferred-drop transient register
                 //   ∪ the driver-C program (MettaState.{source,output}) via the GLOBAL
@@ -17821,5 +17904,259 @@ fn process_continuation<C: EvalContext>(
                 }
             }
         }
+    }
+}
+
+// =============================================================================
+// D2.1 integration test — worker self-root CESK-completeness (index-gc only)
+// =============================================================================
+//
+// Gated `#[cfg(all(test, feature = "index-gc"))]` because it exercises the
+// store-centric index collector's rendezvous: each parked worker SELF-COLLECTS
+// its own structural roots (the genuine-CESK crux — the collector cannot read a
+// parked worker's native-stack registers), and the requestor's union must cover
+// every worker's contribution. The CESK-completeness assertion mirrors the
+// intent of `roots::assert_quiescence_superset` (roots.rs:432): the marked root
+// set is a SUPERSET of every live machine's roots.
+//
+// The test drives the EXACT body of the D2.1 midloop self-root branch
+// (`collect_machine_roots_live` over real in-scope registers →
+// `drop_eval_guard_for_safepoint` → `worker_park_and_root` →
+// `reacquire_eval_guard_after_safepoint`) directly from two real worker threads
+// — rather than letting a live eval grind 4096+ trampoline iterations until
+// `gc_counter & 0xFFF == 0` coincides with `is_gc_requested()` — for
+// determinism + a bounded runtime. This is the same direct-primitive strategy
+// the D1.1 unit test uses (`gc_allocator::worker_park_and_root`), and it
+// exercises every primitive the live branch invokes with genuinely non-trivial
+// registers (a per-worker control value, a continuation, an operand-stack
+// frame, the persistent E₀ env).
+#[cfg(all(test, feature = "index-gc"))]
+mod d2_1_rendezvous_integration_tests {
+    use crate::backend::eval::cesk::operand_stack::OperandStack;
+    use crate::backend::eval::cesk::roots::collect_machine_roots_live;
+    use crate::backend::eval::trampoline::types::{empty_shared_bindings, Continuation, WorkItem};
+    use crate::backend::environment::MettaEnvironment;
+    use crate::backend::models::gc_allocator;
+    use crate::backend::models::{
+        active_evaluator_count, global_factory, EvalGuard, MettaValue, MettaValueFactory,
+    };
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Barrier, Mutex};
+    use std::time::{Duration, Instant};
+
+    /// CESK-completeness under the rendezvous: two real worker threads each
+    /// self-collect their structural roots into the shared buffer and park; the
+    /// requestor (this test thread) waits until both have parked, drains the
+    /// buffer, and asserts the union is (a) non-empty and (b) a SUPERSET of every
+    /// worker's contributed control-register root — the property a real mark
+    /// relies on for NoUseAfterFree. Then it resumes the workers and joins them
+    /// within a bounded timeout (a hang ⇒ lost wakeup / deadlock ⇒ the join times
+    /// out ⇒ the test fails, never hangs the suite).
+    #[test]
+    fn test_worker_self_root_union_covers_each_worker_index_gc() {
+        const N_WORKERS: usize = 2;
+
+        // Engage the dormant rendezvous wiring deterministically (the env gate is
+        // a process-global OnceLock; this test-only override flips an AtomicBool
+        // that `rendezvous_enabled()` consults first). Reset on every exit path.
+        gc_allocator::force_rendezvous_enabled_for_test(true);
+        assert!(
+            gc_allocator::rendezvous_enabled(),
+            "force_rendezvous_enabled_for_test must engage rendezvous_enabled()"
+        );
+
+        // Clean slate: other tests in this process may have left the rendezvous
+        // statics dirty. The test owns these process-globals for its duration.
+        gc_allocator::request_gc(); // sets GC_REQUESTED = true (the requestor signal)
+        gc_allocator::reset_rendezvous_counters(); // parked-count -> 0, buffer cleared
+
+        // Each worker reports the `inner_ptr()` of its unique control value so the
+        // requestor can assert the drained union covers it (CESK-completeness).
+        let reported_ptrs: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        // Maximize the contention window: all workers reach the self-root branch
+        // body together.
+        let start = Arc::new(Barrier::new(N_WORKERS));
+
+        let mut handles = Vec::with_capacity(N_WORKERS);
+        for w in 0..N_WORKERS {
+            let reported_ptrs = Arc::clone(&reported_ptrs);
+            let start = Arc::clone(&start);
+            let handle = std::thread::Builder::new()
+                .name(format!("d2_1-worker-{w}"))
+                .spawn(move || {
+                    // (i) Join the active eval set exactly as a real worker does
+                    // (the WorkerEnter gate runs BEFORE this in the live closure;
+                    // here GC is already requested, so a real worker would have
+                    // parked at the gate — we model a worker that joined BEFORE
+                    // the GC request and is now mid-eval at the midloop poll).
+                    let _guard = EvalGuard::enter();
+                    let _worker_marker = super::WorkerEvalScope::enter();
+
+                    // (ii) Build genuinely non-trivial machine registers, with a
+                    // per-worker control value `v_c` (distinct pointer per worker).
+                    let f = global_factory();
+                    let v_c = f.long(0x5EED_0000 + w as i64); // control register (C)
+                    let v_op = f.long(0x0B_0000 + w as i64); // operand-stack value (S)
+                    let env = MettaEnvironment::new(f);
+
+                    let mut operand_stack: OperandStack<MettaValue> = OperandStack::new();
+                    operand_stack.push_frame();
+                    operand_stack.push(v_op);
+
+                    let current = WorkItem::Eval {
+                        value: v_c,
+                        env: Arc::new(MettaEnvironment::new(global_factory())),
+                        depth: 0,
+                        is_tail_call: false,
+                        expected_type: None,
+                        demand: None,
+                        carrying_bindings: empty_shared_bindings(),
+                    };
+                    let work_stack: Vec<WorkItem> = Vec::new();
+                    let continuations: Vec<Continuation> = vec![Continuation::Done];
+                    let deferred_shared_drops: Vec<
+                        Arc<
+                            crate::backend::environment::GenericEnvironmentShared<MettaValue>,
+                        >,
+                    > = Vec::new();
+
+                    // Record this worker's control pointer for the requestor's
+                    // CESK-completeness assertion.
+                    reported_ptrs.lock().unwrap().push(v_c.inner_ptr() as usize);
+
+                    // Rendezvous together so the requestor genuinely waits on
+                    // BOTH workers (not a fast worker that parks before the slow
+                    // one even started).
+                    start.wait();
+
+                    // (iii) The EXACT body of the D2.1 midloop self-root branch:
+                    //   self-collect MY roots over MY registers (∪ deferred) →
+                    //   leave the active set → publish + signal-parked + park →
+                    //   rejoin the active set once the requestor clears GC_REQUESTED.
+                    let mut my_roots: Vec<MettaValue> = Vec::with_capacity(
+                        work_stack.len() * 2 + continuations.len() * 4 + 64,
+                    );
+                    collect_machine_roots_live(
+                        &mut my_roots,
+                        &operand_stack,
+                        &current,
+                        &work_stack,
+                        &continuations,
+                        env.shared.as_ref(),
+                    );
+                    for deferred_env in &deferred_shared_drops {
+                        deferred_env.as_ref().collect_roots_into(&mut my_roots);
+                    }
+                    // Sanity: my own control root is in my self-collected set.
+                    assert!(
+                        my_roots.iter().any(|v| v.inner_ptr() == v_c.inner_ptr()),
+                        "worker {w}: self-collected roots must contain its own C value"
+                    );
+
+                    gc_allocator::drop_eval_guard_for_safepoint();
+                    gc_allocator::worker_park_and_root(&my_roots);
+                    gc_allocator::reacquire_eval_guard_after_safepoint();
+
+                    // Keep `v_c`/`v_op`/`env`/`current` alive (and thus their slab
+                    // slots / index Addrs valid) until AFTER the requestor has
+                    // drained + asserted: returning here drops them, and the
+                    // requestor only joins after asserting. `_guard` drops here,
+                    // balancing the drop/reacquire pair and the initial enter.
+                    drop(current);
+                    drop(env);
+                    let _ = v_op;
+                    v_c.inner_ptr() as usize
+                })
+                .expect("spawn d2_1 worker");
+            handles.push(handle);
+        }
+
+        // ---- REQUESTOR (this test thread) -----------------------------------
+        // Authoritative drain-gate: wait until parked-count reaches N_WORKERS.
+        // `WORKERS_PARKED_FOR_GC` is the buffer happens-before carrier — its
+        // AcqRel fetch_add in `worker_park_and_root` release-fences each buffer
+        // append, so observing the count == N (Acquire) guarantees all N appends
+        // are visible (HB2). This is the same drain-gate the D1.1 unit test uses,
+        // and it is robust to the `drop_eval_guard_for_safepoint()`-before-append
+        // ordering (an `active==0`-keyed wake could otherwise observe a partial
+        // buffer — see the deliverable's D2.3 note).
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while gc_allocator::WORKERS_PARKED_FOR_GC.load(Ordering::Acquire) < N_WORKERS as u32 {
+            assert!(
+                Instant::now() < deadline,
+                "requestor: only {} of {} workers parked within 30s — deadlock/lost-wakeup",
+                gc_allocator::WORKERS_PARKED_FOR_GC.load(Ordering::Acquire),
+                N_WORKERS,
+            );
+            std::thread::yield_now();
+        }
+
+        // Also exercise the requestor's `active==0` wait primitive (the TLA+
+        // `BeginMark` predicate). All workers have parked (dropped their guards),
+        // so `active_evaluator_count()` is 0 and this returns promptly; bounded by
+        // its own 5s warn-retry backstop.
+        assert_eq!(
+            active_evaluator_count(),
+            0,
+            "all workers parked ⇒ active_evaluator_count() must be 0"
+        );
+        gc_allocator::requestor_wait_for_parked();
+
+        // Drain the union and assert CESK-completeness.
+        let mut union: Vec<MettaValue> = Vec::new();
+        gc_allocator::drain_worker_root_buffer(&mut union);
+        assert!(
+            !union.is_empty(),
+            "CESK-completeness: the worker-root union must be non-empty"
+        );
+        let union_ptrs: std::collections::HashSet<usize> =
+            union.iter().map(|v| v.inner_ptr() as usize).collect();
+        let reported = reported_ptrs.lock().unwrap().clone();
+        assert_eq!(
+            reported.len(),
+            N_WORKERS,
+            "every worker must have reported its control pointer"
+        );
+        for (w, &ptr) in reported.iter().enumerate() {
+            assert!(
+                union_ptrs.contains(&ptr),
+                "CESK-completeness FAILED: the requestor's union does NOT cover \
+                 worker {w}'s control root {ptr:#x}. A live (parked) machine's \
+                 structural root is missing from the mark set ⇒ a real mark would \
+                 free it ⇒ use-after-free. union_size={} reported={:?}",
+                union_ptrs.len(),
+                reported,
+            );
+        }
+
+        // Resume the workers (clears GC_REQUESTED + notifies, lost-wakeup-safe),
+        // then join within a bounded timeout — a hang ⇒ the rendezvous deadlocked.
+        gc_allocator::resume_workers();
+        for (w, handle) in handles.into_iter().enumerate() {
+            // Bounded join: poll is_finished with a deadline rather than a
+            // blocking join (a lost wakeup would otherwise hang the suite).
+            let jdeadline = Instant::now() + Duration::from_secs(30);
+            while !handle.is_finished() {
+                assert!(
+                    Instant::now() < jdeadline,
+                    "worker {w} did not resume within 30s after resume_workers() — lost wakeup"
+                );
+                std::thread::yield_now();
+            }
+            let got_ptr = handle.join().expect("worker thread panicked");
+            assert!(
+                union_ptrs.contains(&got_ptr),
+                "worker {w}'s returned control ptr must have been in the union"
+            );
+        }
+
+        // Cleanup: leave the rendezvous statics + the test override pristine so
+        // sibling tests in this process are unaffected.
+        gc_allocator::reset_rendezvous_counters();
+        assert!(
+            !gc_allocator::is_gc_requested(),
+            "resume_workers() must have cleared GC_REQUESTED"
+        );
+        gc_allocator::force_rendezvous_enabled_for_test(false);
     }
 }

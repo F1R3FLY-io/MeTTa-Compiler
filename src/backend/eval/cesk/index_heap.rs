@@ -20,8 +20,18 @@
 //! Allocation discipline (the co-location rule that keeps non-moving reclamation
 //! sound): **fixed-size nodes** may reuse a free-list slot in any segment;
 //! **variable-length nodes** (`SExpr`/`Conjunction`/`Atom`/`String`/`Spanned`)
-//! bump the node slot *and* their side data into the *same* segment and never
-//! take a free-list slot.
+//! bump the node slot *and* their side data into the *same* segment.
+//!
+//! C1.c (#1, commit `674dbc5`) deliberately RELAXED the historical "variable-
+//! length nodes never take a free-list slot" rule: a variable-length node MAY now
+//! reuse a `cur_seg` free-list node-slot (via `write_reused`), which leaves the
+//! node bump cursor put while `intern_*_in` APPENDS a fresh side index into the
+//! same segment's [`SideColumn`]. Because `cur_seg` is release-exempt (it is the
+//! live allocation frontier and is never co-released), a long-lived `cur_seg`
+//! under reuse-heavy churn can append side entries without bound — so the side
+//! column must be **unbounded by design**, exactly like the `Vec<Option<Box<_>>>`
+//! it replaced (see the [`SideColumn`] docs: a two-level lazy-growing directory
+//! addresses the entire `u32` index space, never the segment capacity).
 //!
 //! Inc 2 is in progress: this module is complete + unit-tested in isolation and
 //! not yet wired to the value model (`#![allow(dead_code)]`). A single global
@@ -61,14 +71,40 @@ use crate::ir::Span;
 /// a re-read of a dead node's recycled side-ref could free a now-*live* node's slot
 /// (a "live ... slot" panic / UAF). Not recycling keeps the side-free IDEMPOTENT (a
 /// dead node's slot is `None`d once; re-reads hit the `is_some` guard and skip). The
-/// `Box` DATA is freed promptly; only the `Vec` SPINE grows (one `Option` ptr per
+/// `Box` DATA is freed promptly; only the column SPINE grows (one `Option` ptr per
 /// ever-interned datum), recovered wholesale at segment release. (A safe index
 /// recycler would need an occupancy bitmap — a future refinement.)
-#[derive(Default)]
+///
+/// D-TLAB-1.1: the three fields are now [`SideColumn<T>`] (a never-realloc chunked
+/// column) instead of `Vec<Option<Box<_>>>`. The semantics are byte-identical at
+/// FANOUT=0 — `push` still APPENDS and returns the stable index, `get` borrows the
+/// published `Box` pointee (address-stable, so the launder contract is preserved —
+/// see the module docs / [`launder`]), and `free` drops the payload `Box` leaving
+/// `None` without recycling. The swap is the prerequisite for D-TLAB-1.2's `&self`
+/// allocation path: `SideColumn::{push,get}` are already `&self` (callable through
+/// the `&mut self` the intern/access methods still take in this increment); only
+/// `free` needs `&mut self`, which the quiescence-only sweep already holds. No
+/// concurrency is introduced here — every caller stays `&mut self`/`&self` exactly
+/// as before — so this increment is purely the inner field-type swap.
 struct SegmentSideArenas {
-    children: Vec<Option<Box<[MettaValue]>>>,
-    strings: Vec<Option<Box<str>>>,
-    spans: Vec<Option<Box<Span>>>,
+    children: SideColumn<[MettaValue]>,
+    strings: SideColumn<str>,
+    spans: SideColumn<Span>,
+}
+
+impl Default for SegmentSideArenas {
+    /// A fresh, empty per-segment side arena. Each column allocates only its
+    /// `MAX_SIDE_PAGES` super-directory (no page and no chunk until the first
+    /// `push`) — see [`SideColumn::new`]. (A manual impl, not
+    /// `#[derive(Default)]`: `SideColumn` has no `Default`, and its empty value
+    /// is `new()`.)
+    fn default() -> Self {
+        SegmentSideArenas {
+            children: SideColumn::new(),
+            strings: SideColumn::new(),
+            spans: SideColumn::new(),
+        }
+    }
 }
 
 /// Launder a side-arena / handle-table reference to `'static`, for building a
@@ -288,24 +324,24 @@ impl IndexHeap {
     fn intern_children_in(&mut self, seg: usize, items: &[MettaValue]) -> ChildRef {
         self.sync_sides();
         let side = &mut self.sides[seg];
-        let idx = side.children.len() as u32;
-        side.children.push(Some(items.to_vec().into_boxed_slice()));
+        // D-TLAB-1.1: `SideColumn::push` claims+publishes a fresh stable index and
+        // returns it (was `len()` pre-push + `Vec::push`). Callable through `&mut`
+        // even though `push` takes `&self` — no concurrency is introduced here.
+        let idx = side.children.push(items.to_vec().into_boxed_slice());
         ChildRef { idx }
     }
 
     fn intern_bytes_in(&mut self, seg: usize, s: &str) -> ByteRef {
         self.sync_sides();
         let side = &mut self.sides[seg];
-        let idx = side.strings.len() as u32;
-        side.strings.push(Some(s.to_string().into_boxed_str()));
+        let idx = side.strings.push(s.to_string().into_boxed_str());
         ByteRef { idx }
     }
 
     fn intern_span_in(&mut self, seg: usize, span: Span) -> SpanRef {
         self.sync_sides();
         let side = &mut self.sides[seg];
-        let idx = side.spans.len() as u32;
-        side.spans.push(Some(Box::new(span)));
+        let idx = side.spans.push(Box::new(span));
         SpanRef { idx }
     }
 
@@ -332,10 +368,14 @@ impl IndexHeap {
     /// swept-dead, and a dead node is never read.)
     pub fn children(&self, addr: Addr) -> &[MettaValue] {
         match self.arena.get(addr) {
-            Node::SExpr(cr) | Node::Conjunction(cr) => self.sides[addr.segment()].children
-                [cr.idx as usize]
-                .as_deref()
-                .expect("live SExpr/Conjunction children slot"),
+            // SAFETY (D-TLAB-1.1): `cr.idx` was returned by `SideColumn::push` when
+            // this node was interned, so it is < `published_len()` (publish happens
+            // in the same `push` that produced the index); the node is live (a dead
+            // node is never read — see the doc comment), so its slot is `Some`.
+            Node::SExpr(cr) | Node::Conjunction(cr) => {
+                unsafe { self.sides[addr.segment()].children.get(cr.idx) }
+                    .expect("live SExpr/Conjunction children slot")
+            }
             _ => panic!("children() on a non-SExpr/Conjunction node"),
         }
     }
@@ -343,10 +383,12 @@ impl IndexHeap {
     /// The string of an `Atom`/`String` at `addr`.
     pub fn str_slice(&self, addr: Addr) -> &str {
         match self.arena.get(addr) {
-            Node::Atom(br) | Node::String(br) => self.sides[addr.segment()].strings
-                [br.idx as usize]
-                .as_deref()
-                .expect("live Atom/String slot"),
+            // SAFETY (D-TLAB-1.1): `br.idx` came from `SideColumn::push` at intern,
+            // so `idx < published_len()`; the node is live ⇒ slot is `Some`.
+            Node::Atom(br) | Node::String(br) => {
+                unsafe { self.sides[addr.segment()].strings.get(br.idx) }
+                    .expect("live Atom/String slot")
+            }
             _ => panic!("str_slice() on a non-Atom/String node"),
         }
     }
@@ -354,8 +396,9 @@ impl IndexHeap {
     /// The `Span` of a `Spanned` at `addr`.
     pub fn span_at(&self, addr: Addr) -> Span {
         match self.arena.get(addr) {
-            Node::Spanned(_, sr) => *self.sides[addr.segment()].spans[sr.idx as usize]
-                .as_deref()
+            // SAFETY (D-TLAB-1.1): `sr.idx` came from `SideColumn::push` at intern,
+            // so `idx < published_len()`; the node is live ⇒ slot is `Some`.
+            Node::Spanned(_, sr) => *unsafe { self.sides[addr.segment()].spans.get(sr.idx) }
                 .expect("live Spanned slot"),
             _ => panic!("span_at() on a non-Spanned node"),
         }
@@ -444,10 +487,17 @@ impl IndexHeap {
             Node::Empty => MettaValueInner::Empty,
             Node::NotReducible => MettaValueInner::NotReducible,
             Node::Spanned(inner, sr) => {
+                // SAFETY (D-TLAB-1.1): `sr.idx` came from `SideColumn::push` at
+                // intern (so `idx < published_len()`); the node is live ⇒ slot is
+                // `Some`. The launder is sound for the same reason as before — the
+                // `Box<Span>` pointee is address-stable for the segment's life
+                // (`SideColumn` never moves a published `Box`); only the *source* of
+                // the `&Span` changed (was `Vec[idx].as_deref()`, now `col.get(idx)`).
                 let span: &'static Span = unsafe {
                     launder(
-                        self.sides[addr.segment()].spans[sr.idx as usize]
-                            .as_deref()
+                        self.sides[addr.segment()]
+                            .spans
+                            .get(sr.idx)
                             .expect("live Spanned slot"),
                     )
                 };
@@ -468,8 +518,10 @@ impl IndexHeap {
             let node = arena.get(addr);
             node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
             if let Node::SExpr(cr) | Node::Conjunction(cr) = node {
-                let kids = sides[addr.segment()].children[cr.idx as usize]
-                    .as_deref()
+                // SAFETY (D-TLAB-1.1): the worklist holds only live (reachable) nodes,
+                // whose `cr.idx` came from `SideColumn::push` at intern, so it is
+                // `< published_len()` and the slot is `Some`.
+                let kids = unsafe { sides[addr.segment()].children.get(cr.idx) }
                     .expect("live SExpr/Conjunction children slot");
                 for c in kids.iter() {
                     if let Some(a) = c.as_arena_addr() {
@@ -494,8 +546,10 @@ impl IndexHeap {
             let node = arena.get(addr);
             node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
             if let Node::SExpr(cr) | Node::Conjunction(cr) = node {
-                let kids = sides[addr.segment()].children[cr.idx as usize]
-                    .as_deref()
+                // SAFETY (D-TLAB-1.1): the young worklist holds only live (reachable)
+                // young nodes, whose `cr.idx` came from `SideColumn::push` at intern,
+                // so it is `< published_len()` and the slot is `Some`.
+                let kids = unsafe { sides[addr.segment()].children.get(cr.idx) }
                     .expect("live SExpr/Conjunction children slot");
                 for c in kids.iter() {
                     if let Some(a) = c.as_arena_addr() {
@@ -606,27 +660,13 @@ impl IndexHeap {
             let s = &mut self.sides[seg];
             // Drop the dead node's `Box` (return the payload RSS); leave the index `None`
             // (NOT recycled — intern only APPENDS, so index `i` is permanently this dead
-            // node's). The `i < len` guard keeps it bounds-safe AND idempotent: a
-            // re-reclaimed still-free slot just `None`s an already-`None` index again.
+            // node's). D-TLAB-1.1: `SideColumn::free` does the `i < published_len`
+            // bounds check internally and is idempotent (re-freeing an already-`None`
+            // cell is a no-op), so the prior explicit `i < len()` guard is subsumed.
             match side {
-                Side::Children(i) => {
-                    let i = i as usize;
-                    if i < s.children.len() {
-                        s.children[i] = None;
-                    }
-                }
-                Side::Strings(i) => {
-                    let i = i as usize;
-                    if i < s.strings.len() {
-                        s.strings[i] = None;
-                    }
-                }
-                Side::Spans(i) => {
-                    let i = i as usize;
-                    if i < s.spans.len() {
-                        s.spans[i] = None;
-                    }
-                }
+                Side::Children(i) => s.children.free(i),
+                Side::Strings(i) => s.strings.free(i),
+                Side::Spans(i) => s.spans.free(i),
                 Side::None => {}
             }
         }
@@ -692,11 +732,18 @@ impl IndexHeap {
 
     /// Committed node-slab bytes (see [`IndexArena::committed_node_bytes`]) plus
     /// a coarse estimate of the per-segment side-arena footprint (one machine
-    /// word per interned child slice/str/span box pointer, i.e. the `Vec<Box<_>>`
-    /// spine — the boxed payloads themselves are not separately tracked but the
-    /// spine count tracks growth/release in lockstep with segments). This is the
-    /// watermark signal for the Inc-6 single-threaded GC trigger; it does not
-    /// need to be exact, only monotone-up between sweeps and to drop at sweep.
+    /// word per interned child slice/str/span box pointer, i.e. the [`SideColumn`]
+    /// published-entry count — the boxed payloads themselves are not separately
+    /// tracked but the entry count tracks growth/release in lockstep with
+    /// segments). This is the watermark signal for the Inc-6 single-threaded GC
+    /// trigger; it does not need to be exact, only monotone-up between sweeps and
+    /// to drop at sweep.
+    ///
+    /// D-TLAB-1.1: `published_len()` replaces the old `Vec::len()` and is
+    /// byte-identical for this estimate — `push` advances it, `free` never
+    /// decrements it (matching the old `None`-in-place), and a segment release
+    /// (`sides[seg] = SegmentSideArenas::default()`) resets it to 0 with a fresh
+    /// column — so the same monotone-up / drop-at-release shape holds.
     #[inline]
     pub fn committed_bytes(&self) -> usize {
         let node_bytes = self.arena.committed_node_bytes();
@@ -704,7 +751,8 @@ impl IndexHeap {
         let ptr = std::mem::size_of::<usize>();
         let mut side = 0usize;
         for s in &self.sides {
-            side += (s.children.len() + s.strings.len() + s.spans.len()) * ptr;
+            side += (s.children.published_len() + s.strings.published_len() + s.spans.published_len())
+                * ptr;
         }
         node_bytes + side
     }
@@ -1567,14 +1615,27 @@ pub mod index_gc {
 // The lock-free replacement for `SegmentSideArenas`' `Vec<Option<Box<T>>>`
 // (each `children`/`strings`/`spans` field becomes one column). It mirrors
 // `IndexArena`'s never-realloc directory + `Segment`'s two-cursor bump/publish
-// protocol EXACTLY (see `index_arena.rs`): a once-allocated chunk directory
-// (`chunks`) whose cells are published with `Release`/`Acquire`, a `bump` CLAIM
-// cursor (`Relaxed` `fetch_add` — uniqueness is all `fetch_add` needs), and a
-// `len` PUBLISH cursor (`Release`-CAS, `Acquire`-load) keeping `[0, len)` a
-// contiguous written prefix. This lets entries be appended through a shared
-// `&self` (the B2 `&self` allocation path) without an `&mut` or a lock on the
-// hot path. INERT in D-TLAB-1.0: declared and unit-tested, but no other code
-// references it yet (D-TLAB-1.1 swaps `SegmentSideArenas` over to it).
+// protocol (see `index_arena.rs`): a lazily-grown chunk directory whose cells
+// are published with `Release`/`Acquire`, a `bump` CLAIM cursor (`Relaxed`
+// `fetch_add` — uniqueness is all `fetch_add` needs), and a `len` PUBLISH cursor
+// (`Release`-CAS, `Acquire`-load) keeping `[0, len)` a contiguous written
+// prefix. This lets entries be appended through a shared `&self` (the B2 `&self`
+// allocation path) without an `&mut` or a lock on the hot path.
+//
+// D-TLAB-1.1 capacity repair: the directory is now **two levels** — a `pages`
+// super-directory of chunk-pointer pages — instead of a single fixed-size chunk
+// array. The original one-level directory was a fixed `MAX_SIDE_CHUNKS = 66`
+// cells (one segment's worth), imposing a HARD ceiling of `66 * 4096 = 270_336`
+// CUMULATIVE appends per column. That ceiling was unsound for the (deliberate,
+// C1.c #1 / commit `674dbc5`) variable-length free-list REUSE on a release-exempt
+// `cur_seg`: a long-lived `cur_seg` under reuse-heavy MIDLOOP churn appends side
+// entries without bound and tripped `assert!(c < MAX_SIDE_CHUNKS)` (panic
+// "side column exhausted", rc=101) on `side_free_minor.metta`/`cut_young.metta`.
+// The prior `Vec<Option<Box<T>>>` also grew without bound but never crashed (a
+// `Vec` has no ceiling). The two-level directory RESTORES that unbounded-no-crash
+// behavior: it addresses the entire `u32` index space (every index any caller can
+// ever claim), while keeping per-column overhead tiny because pages — and the
+// chunks within them — are allocated LAZILY on first touch (see `MAX_SIDE_PAGES`).
 
 /// Low bits of a side-column index used for the intra-chunk offset.
 /// 12 bits ⇒ 4096 entries per chunk (the unit the directory grows by).
@@ -1583,19 +1644,31 @@ const SIDE_CHUNK_BITS: u32 = 12;
 const SIDE_CHUNK_LEN: usize = 1 << SIDE_CHUNK_BITS;
 /// Mask selecting the intra-chunk offset from an index.
 const SIDE_CHUNK_MASK: usize = SIDE_CHUNK_LEN - 1;
-/// Maximum chunks a single column directory holds, allocated once in `new`.
+
+/// Bits of the *chunk number* used to select the chunk WITHIN a page.
+/// 10 bits ⇒ 1024 chunk-pointers per page (one `SidePage`).
+const SIDE_PAGE_BITS: u32 = 10;
+/// Chunk-pointers per page (`1 << SIDE_PAGE_BITS`).
+const SIDE_PAGE_LEN: usize = 1 << SIDE_PAGE_BITS;
+/// Mask selecting the chunk-within-page from a chunk number.
+const SIDE_PAGE_MASK: usize = SIDE_PAGE_LEN - 1;
+
+/// Maximum pages a single column super-directory holds, allocated once in `new`.
 ///
-/// Worst case: every node slot in one segment is a variable-length allocation
-/// contributing exactly one side entry, and entries are NEVER recycled, so a
-/// column for a single segment must hold at least
-/// [`DEFAULT_SEGMENT_CAPACITY`](crate::backend::eval::cesk::index_arena::DEFAULT_SEGMENT_CAPACITY)
-/// entries. `ceil(DEFAULT_SEGMENT_CAPACITY / SIDE_CHUNK_LEN)` chunks cover that,
-/// plus a small `+ 2` margin. With `DEFAULT_SEGMENT_CAPACITY = 262_144` and
-/// `SIDE_CHUNK_LEN = 4096` this is `262_144 / 4096 + 2 = 64 + 2 = 66`.
-const MAX_SIDE_CHUNKS: usize = {
-    use crate::backend::eval::cesk::index_arena::DEFAULT_SEGMENT_CAPACITY;
-    (DEFAULT_SEGMENT_CAPACITY + SIDE_CHUNK_LEN - 1) / SIDE_CHUNK_LEN + 2
-};
+/// Side-column indices are `u32`, so the directory must address the entire `u32`
+/// index space (entries are never recycled — a `bump` claim only ever moves up).
+/// A chunk holds `2^SIDE_CHUNK_BITS` entries and a page holds `2^SIDE_PAGE_BITS`
+/// chunks, so `2^(32 − SIDE_CHUNK_BITS − SIDE_PAGE_BITS)` pages cover all `2^32`
+/// indices. With `SIDE_CHUNK_BITS = 12` and `SIDE_PAGE_BITS = 10` this is
+/// `2^(32 − 12 − 10) = 2^10 = 1024` pages — one page per `1024 * 4096 =
+/// 4_194_304`-entry span. This is a CEILING on the `u32` index space itself, not
+/// on the segment capacity, so it can never be tripped by legitimate appends
+/// (`bump` would have to overflow `u32` first). The super-directory is the only
+/// EAGER allocation (`MAX_SIDE_PAGES` pointer-cells per column); pages and chunks
+/// are allocated lazily on first touch — so an untouched column costs only the
+/// super-directory, and an active one costs the super-directory plus exactly the
+/// pages/chunks it has reached.
+const MAX_SIDE_PAGES: usize = 1 << (32 - SIDE_CHUNK_BITS - SIDE_PAGE_BITS);
 
 /// One side-column chunk: `SIDE_CHUNK_LEN` cells, each an
 /// `UnsafeCell<MaybeUninit<Option<Box<T>>>>`. Every cell is initialized to
@@ -1607,25 +1680,48 @@ const MAX_SIDE_CHUNKS: usize = {
 /// same size as the bare `Box`.)
 type SideChunk<T> = Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<Option<Box<T>>>>]>;
 
+/// One super-directory page: `SIDE_PAGE_LEN` chunk-pointer cells, each an
+/// `UnsafeCell<MaybeUninit<SideChunk<T>>>`. A page is allocated (its cells all
+/// `MaybeUninit::uninit()`) lazily by `grow_to` when the first chunk it holds is
+/// needed, and published (`page_count` advanced with `Release`) BEFORE any chunk
+/// within it is published — so a reader observing `c < chunk_count` (Acquire)
+/// also observes the page that holds chunk `c`. (Page cells are `uninit()`, NOT
+/// `None`-initialized like chunk cells, because a `SidePage` is itself a
+/// directory level whose entries are only ever read after `grow_to` publishes
+/// them via `chunk_count` — mirroring the node arena's segment-directory cells.)
+type SidePage<T> = Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<SideChunk<T>>>]>;
+
 /// A per-(segment, field) never-realloc chunked column of address-stable
 /// `Box<T>` payloads, appendable under `&self` (lock-free bump+publish) — the
-/// concurrent replacement for the `Vec<Option<Box<T>>>` side arenas.
+/// concurrent replacement for the `Vec<Option<Box<T>>>` side arenas, and
+/// **unbounded by design** (it grows to address the entire `u32` index space,
+/// not the segment capacity — see [`MAX_SIDE_PAGES`] and the module docs on the
+/// C1.c #1 free-list reuse that makes unboundedness mandatory).
 ///
 /// Mirrors [`IndexArena`](crate::backend::eval::cesk::index_arena)'s directory
-/// + [`Segment`]'s two-cursor: `chunks` is a once-allocated directory of
-/// `MAX_SIDE_CHUNKS` cells (a cell's chunk `Box` is written exactly once, under
-/// `grow_lock`, before `chunk_count` advances past it); `bump` claims a unique
-/// index (`Relaxed`); `len` publishes the contiguous written prefix
-/// (`Release`-CAS). Inert in D-TLAB-1.0 (added but not yet referenced).
+/// + [`Segment`]'s two-cursor, but with a **two-level lazy-growing directory**
+/// (`pages` → `SidePage` → `SideChunk`) so the eager footprint is just the
+/// `MAX_SIDE_PAGES` super-directory while the addressable space spans all `2^32`
+/// indices: a page (then a chunk within it) is written exactly once, under
+/// `grow_lock`, with the PAGE published (`page_count`, `Release`) strictly before
+/// the CHUNK (`chunk_count`, `Release`); `bump` claims a unique index
+/// (`Relaxed`); `len` publishes the contiguous written prefix (`Release`-CAS).
 struct SideColumn<T: ?Sized> {
-    /// Never-realloc directory: `MAX_SIDE_CHUNKS` cells, allocated once in
-    /// `new`. Cell `c` is initialized (its chunk `Box` written) exactly once,
-    /// under `grow_lock`, before `chunk_count` is advanced past `c` with a
-    /// `Release` store. A reader dereferences cell `c` only for
-    /// `c < chunk_count.load(Acquire)` (the `unsafe fn chunk` precondition).
-    chunks: Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<SideChunk<T>>>]>,
-    /// Published chunk count (count of initialized directory cells). Monotone;
-    /// advanced with `Release` under `grow_lock`, read with `Acquire`.
+    /// Never-realloc super-directory: `MAX_SIDE_PAGES` page cells, allocated once
+    /// in `new`. Page `p` is initialized (a `SidePage` of `SIDE_PAGE_LEN`
+    /// chunk-cells written) exactly once, under `grow_lock`, before `page_count`
+    /// is advanced past `p` (`Release`). A reader reaches page `p` only for
+    /// `p < page_count.load(Acquire)`, which `grow_to` guarantees whenever the
+    /// chunk it holds is published (page published before chunk).
+    pages: Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<SidePage<T>>>]>,
+    /// Published page count (count of initialized super-directory cells).
+    /// Monotone; advanced with `Release` under `grow_lock`, read with `Acquire`.
+    /// Always advanced BEFORE `chunk_count` for any chunk the page holds.
+    page_count: std::sync::atomic::AtomicUsize,
+    /// Published chunk count (count of initialized chunk cells across all pages).
+    /// Monotone; advanced with `Release` under `grow_lock`, read with `Acquire`.
+    /// `c < chunk_count` ⇒ chunk `c`'s page is published (`page_count` was
+    /// advanced first).
     chunk_count: std::sync::atomic::AtomicUsize,
     /// CLAIM cursor: `fetch_add(1, Relaxed)` hands each caller a unique entry
     /// index. `Relaxed` suffices — the index is made safe to read only by the
@@ -1643,25 +1739,28 @@ struct SideColumn<T: ?Sized> {
 }
 
 impl<T: ?Sized> SideColumn<T> {
-    /// A new, empty column. Allocates the `MAX_SIDE_CHUNKS`-cell directory once
-    /// (each cell an uninitialized `MaybeUninit<SideChunk>`); does NOT
-    /// pre-allocate any chunk — chunk 0 is created lazily by the first `push`
-    /// via `grow_to`. (`IndexArena::new` eagerly opens segment 0; this column
-    /// stays fully lazy because a column may never be pushed to — keeping
-    /// per-column overhead to just the `MAX_SIDE_CHUNKS` pointer slots, here
-    /// `66 * 8 = 528` bytes.)
+    /// A new, empty column. Allocates the `MAX_SIDE_PAGES`-cell super-directory
+    /// once (each cell an uninitialized `MaybeUninit<SidePage>`); does NOT
+    /// pre-allocate any page or chunk — page 0 / chunk 0 are created lazily by
+    /// the first `push` via `grow_to`. (`IndexArena::new` eagerly opens segment
+    /// 0; this column stays fully lazy because a column may never be pushed to —
+    /// keeping an untouched column's overhead to just the `MAX_SIDE_PAGES`
+    /// super-directory cells, here `1024 * size_of::<SidePage>()` =
+    /// `1024 * 16 B` = 16 KiB; each lazily-allocated page is another
+    /// `1024 * 16 B` = 16 KiB, and each chunk `4096 * 8 B` = 32 KiB.)
     fn new() -> Self {
         use std::cell::UnsafeCell;
         use std::mem::MaybeUninit;
         use std::sync::atomic::AtomicUsize;
-        // `UnsafeCell`/`MaybeUninit` are not `Clone`, so the directory is built
-        // from an iterator (one uninit cell per addressable chunk) rather than
-        // `vec![..; MAX_SIDE_CHUNKS]`. Allocated once, never reallocated.
-        let chunks: Box<[UnsafeCell<MaybeUninit<SideChunk<T>>>]> = (0..MAX_SIDE_CHUNKS)
+        // `UnsafeCell`/`MaybeUninit` are not `Clone`, so the super-directory is
+        // built from an iterator (one uninit cell per addressable page) rather
+        // than `vec![..; MAX_SIDE_PAGES]`. Allocated once, never reallocated.
+        let pages: Box<[UnsafeCell<MaybeUninit<SidePage<T>>>]> = (0..MAX_SIDE_PAGES)
             .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
             .collect();
         SideColumn {
-            chunks,
+            pages,
+            page_count: AtomicUsize::new(0),
             chunk_count: AtomicUsize::new(0),
             bump: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
@@ -1675,34 +1774,51 @@ impl<T: ?Sized> SideColumn<T> {
         (idx >> SIDE_CHUNK_BITS, idx & SIDE_CHUNK_MASK)
     }
 
-    /// Borrow chunk `c` of the published directory.
+    /// Decompose a chunk number into `(page, chunk-within-page)`.
+    #[inline]
+    fn locate_chunk(c: usize) -> (usize, usize) {
+        (c >> SIDE_PAGE_BITS, c & SIDE_PAGE_MASK)
+    }
+
+    /// Borrow chunk `c` via the two-level directory (page → chunk).
     ///
     /// # Safety
     /// The caller must guarantee `c < self.chunk_count.load(Acquire)` as
-    /// observed by the calling thread — i.e. cell `c` has been published by
-    /// `grow_to`'s `Release` store to `chunk_count`, which happens-after the
-    /// cell's initialization. Under that premise the cell is initialized.
+    /// observed by the calling thread — i.e. chunk `c` has been published by
+    /// `grow_to`'s `Release` store to `chunk_count`, which happens-after BOTH the
+    /// chunk's initialization and (published strictly earlier) its page's
+    /// initialization + `page_count` publication. Under that premise both the
+    /// page cell and the chunk cell are initialized.
     ///
-    /// The returned slice derives from the raw pointer `UnsafeCell::get()`
-    /// yields (NOT from a borrow of `&self.chunks`), so it does not borrow
-    /// `self` — mirroring `IndexArena::segment`.
+    /// The returned slice derives from the raw pointers `UnsafeCell::get()`
+    /// yields at each level (NOT from a borrow of `&self.pages`), so it does not
+    /// borrow `self` — mirroring `IndexArena::segment`.
     #[inline]
     unsafe fn chunk(&self, c: usize) -> &[std::cell::UnsafeCell<std::mem::MaybeUninit<Option<Box<T>>>>] {
-        let cell = self.chunks[c].get(); // *mut MaybeUninit<SideChunk<T>>
-        (*cell).assume_init_ref() // &SideChunk<T> -> &[..] via Deref
+        let (p, ck) = Self::locate_chunk(c);
+        let page = (*self.pages[p].get()).assume_init_ref(); // &SidePage<T> -> &[..]
+        let chunk_cell = page[ck].get(); // *mut MaybeUninit<SideChunk<T>>
+        (*chunk_cell).assume_init_ref() // &SideChunk<T> -> &[..] via Deref
     }
 
-    /// Grow the directory so chunk `c` is published. Mirrors
+    /// Grow the two-level directory so chunk `c` is published. Mirrors
     /// `IndexArena::open_segment`: takes `grow_lock`, re-checks under the lock,
-    /// allocates and writes any missing chunk cell, then publishes it with a
-    /// `Release` store to `chunk_count` (paired with the `Acquire` load in
-    /// `chunk`/`push`).
+    /// and for each missing chunk up to `c` allocates+writes its PAGE (if not yet
+    /// present) and publishes it (`page_count`, `Release`) BEFORE allocating the
+    /// chunk, writing it into the page cell, and publishing it (`chunk_count`,
+    /// `Release`). Both stores are paired with the `Acquire` loads in
+    /// `chunk`/`push`.
+    ///
+    /// CRITICAL ORDERING: the PAGE is published strictly before the CHUNK it
+    /// holds, so a reader observing `c < chunk_count` (Acquire) is guaranteed to
+    /// also observe `page(c) < page_count` (Acquire) — the `unsafe fn chunk`
+    /// precondition then covers both levels with the single `chunk_count` check.
     ///
     /// Loops `chunk_count_now..=c` to fill ALL gaps up to `c`, not just `c`
     /// itself: although a single-segment monotone `bump` advances `c` by one at
     /// a time, a future relaxation (a claim landing far ahead) could skip a
     /// chunk; filling the gap keeps the directory dense and every published
-    /// chunk initialized.
+    /// chunk (and its page) initialized.
     fn grow_to(&self, c: usize) {
         use std::cell::UnsafeCell;
         use std::mem::MaybeUninit;
@@ -1712,24 +1828,53 @@ impl<T: ?Sized> SideColumn<T> {
         if c < next {
             return; // another thread already grew past `c` while we waited
         }
+        // The super-directory addresses the entire `u32` index space, so this
+        // can only trip if a `bump` claim has overflowed `u32` (impossible for
+        // legitimate appends). Asserting on the page index gives the clearer msg.
+        let (top_page, _) = Self::locate_chunk(c);
         assert!(
-            c < MAX_SIDE_CHUNKS,
-            "side column exhausted: {MAX_SIDE_CHUNKS} chunks"
+            top_page < MAX_SIDE_PAGES,
+            "side column exhausted: {MAX_SIDE_PAGES} pages"
         );
-        // Fill every gap chunk_count..=c. Each entry is initialized to `None`
-        // (NOT uninit) so `assume_init_ref` is sound on any in-bounds offset
-        // before a `push` writes it (see the `SideChunk` type docs).
+        // Fill every gap chunk_count..=c. For each chunk: ensure its page is
+        // allocated+published FIRST, then allocate+write the chunk, then publish
+        // the chunk. Each chunk cell is initialized to `None` (NOT uninit) so
+        // `assume_init_ref` is sound on any in-bounds offset before a `push`
+        // writes it (see the `SideChunk` type docs).
         while next <= c {
+            let (p, ck) = Self::locate_chunk(next);
+            // (1) Ensure page `p` is allocated + published. A page's cells are
+            // `MaybeUninit::uninit()` (the chunk cell is written before the chunk
+            // is published, so it is never read before then). Publish the page
+            // (`Release`) strictly BEFORE the chunk so a reader seeing the chunk
+            // also sees the page.
+            if p >= self.page_count.load(Ordering::Acquire) {
+                let page: SidePage<T> = (0..SIDE_PAGE_LEN)
+                    .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+                    .collect();
+                // SAFETY: page cell `p` is not yet published (`p == page_count`),
+                // so no reader can observe it; under `grow_lock` we are the unique
+                // writer. Initialize it before publishing `p`.
+                unsafe {
+                    (*self.pages[p].get()).write(page);
+                }
+                self.page_count.store(p + 1, Ordering::Release); // publish page
+            }
+            // (2) Allocate the chunk (all cells `None`) and write it into page
+            // `p`'s chunk-cell `ck`.
             let chunk: SideChunk<T> = (0..SIDE_CHUNK_LEN)
                 .map(|_| UnsafeCell::new(MaybeUninit::new(None)))
                 .collect();
-            // SAFETY: cell `next` is not yet published (`next == chunk_count`),
-            // so no reader can observe it; under `grow_lock` we are the unique
-            // writer of this cell. Initialize it before publishing `next`.
+            // SAFETY: page `p` is published (`p < page_count`, just ensured), so
+            // its cell array is initialized. Chunk cell `ck` is not yet published
+            // (`next == chunk_count`), so no reader can observe it; under
+            // `grow_lock` we are the unique writer of this cell.
             unsafe {
-                (*self.chunks[next].get()).write(chunk);
+                let page = (*self.pages[p].get()).assume_init_ref();
+                (*page[ck].get()).write(chunk);
             }
-            self.chunk_count.store(next + 1, Ordering::Release); // publish cell
+            // (3) Publish the chunk (paired with the `Acquire` load in `chunk`).
+            self.chunk_count.store(next + 1, Ordering::Release);
             next += 1;
         }
     }
@@ -1839,6 +1984,77 @@ impl<T: ?Sized> SideColumn<T> {
     }
 }
 
+// D-TLAB-1.1: `SideColumn` OWNS heap allocations (the page `Box`es, the chunk
+// `Box`es, and in each initialized chunk cell an `Option<Box<T>>` payload) inside
+// `MaybeUninit` cells, which `MaybeUninit` does NOT drop automatically. (This is
+// the crucial difference from `IndexArena`/`Segment`, whose cells hold `N: Copy`
+// nodes — a `Copy` type owns no resources, so dropping its directory `Box` without
+// an explicit teardown leaks nothing; `Segment::release` is sound for exactly that
+// reason.) Without this `Drop`, every `SideColumn` teardown — a segment release
+// (`sides[seg] = SegmentSideArenas::default()` in `sweep`/`sweep_young`) or the
+// heap's own drop — would LEAK every payload `Box<T>`, every chunk `Box`, and
+// every page `Box`, regressing the RSS reclamation the side arenas exist to
+// provide and diverging from the prior `Vec<Option<Box<T>>>`, which freed its
+// payloads on drop/reassignment. This impl restores that exactly, INNERMOST-FIRST:
+// drop each chunk cell's `Option<Box<T>>`, then each chunk `Box`, then each page
+// `Box` — never a page before the chunks it holds.
+impl<T: ?Sized> Drop for SideColumn<T> {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        // Only the PUBLISHED cells are initialized: chunk cells `[0, chunk_count)`
+        // (`grow_to` writes chunk `c` then `Release`-publishes `c+1`) and page
+        // cells `[0, page_count)` (published strictly before any chunk they hold).
+        // Cells `>= chunk_count` / `>= page_count` are `MaybeUninit::uninit()` and
+        // MUST NOT be touched. `&mut self` in `drop` is exclusive, so a `Relaxed`
+        // load suffices (no concurrent writer/reader to synchronize with).
+        let chunks_live = self.chunk_count.load(Ordering::Relaxed);
+        // (1) INNERMOST: every published chunk's cells, then the chunk `Box`.
+        for c in 0..chunks_live {
+            let (p, ck) = Self::locate_chunk(c);
+            // SAFETY: `c < chunk_count` ⇒ chunk `c` was initialized by `grow_to`,
+            // and its page `p < page_count` (published first) so the page cell is
+            // initialized too. `&mut self` is exclusive, so we are the unique
+            // accessor. We take raw pointers (not `&mut` borrows of `self.pages`)
+            // so the inner cell drops do not alias a live borrow of the directory.
+            unsafe {
+                let page = (*self.pages[p].get()).assume_init_ref(); // &SidePage<T>
+                let chunk_cell = page[ck].get(); // *mut MaybeUninit<SideChunk<T>>
+                // Borrow the chunk to drop each cell's `Option<Box<T>>`. EVERY cell
+                // of a published chunk is initialized — `grow_to` fills all
+                // `SIDE_CHUNK_LEN` cells with `MaybeUninit::new(None)`, and `push`
+                // only overwrites a cell with `Some(..)` — so `assume_init_drop` is
+                // sound on each, dropping any live payload `Box<T>` (a freed cell is
+                // `None`, whose drop is a no-op).
+                let chunk: &mut SideChunk<T> = (*chunk_cell).assume_init_mut();
+                for cell in chunk.iter() {
+                    (*cell.get()).assume_init_drop(); // drops `Option<Box<T>>`
+                }
+                // Now drop the chunk `Box` itself (frees the cell array). The page
+                // `Box` that holds this chunk cell is dropped only in pass (2),
+                // strictly after all its chunks — never a page before its chunks.
+                (*chunk_cell).assume_init_drop(); // drops `SideChunk<T>` (the Box)
+            }
+        }
+        // (2) Now every chunk is gone; drop each published page `Box`.
+        let pages_live = self.page_count.load(Ordering::Relaxed);
+        for p in 0..pages_live {
+            // SAFETY: `p < page_count` ⇒ page `p` was initialized by `grow_to`;
+            // all chunks it held were dropped in pass (1). `&mut self` is
+            // exclusive. The chunk cells inside the page that were never published
+            // (`>= chunk_count`) are `MaybeUninit::uninit()` and own nothing, so
+            // dropping the page `Box` (the cell array) is sound without touching
+            // them.
+            unsafe {
+                let page_cell = self.pages[p].get(); // *mut MaybeUninit<SidePage<T>>
+                (*page_cell).assume_init_drop(); // drops `SidePage<T>` (the Box)
+            }
+        }
+        // The super-directory `Box<[UnsafeCell<MaybeUninit<..>>]>` itself, and all
+        // unpublished (uninit) page cells, drop trivially (no owned resources) when
+        // `self.pages` drops after this — no manual teardown needed for them.
+    }
+}
+
 // SAFETY: `SideColumn<T>`'s interior mutability (the `UnsafeCell` directory and
 // per-chunk cells) is disciplined by the same claim/publish protocol as
 // `IndexArena`/`Segment` (see the type-level SAFETY block in `index_arena.rs`):
@@ -1854,12 +2070,19 @@ impl<T: ?Sized> SideColumn<T> {
 //         so an `Acquire`-load observing `len > idx` happens-after the write ⇒
 //         no uninit/torn read, no read/write race.
 //
-//   (iii) DIRECTORY PUBLICATION. A reader dereferences directory cell `c` only
-//         for `c < chunk_count.load(Acquire)`. `grow_to` initializes cell `c`
-//         then does `chunk_count.store(c+1, Release)` (under `grow_lock`, the
-//         unique writer of cell `c`), so observing `c < chunk_count` happens-
-//         after the cell's initialization ⇒ the chunk `Box` ptr (and its cells,
-//         all `None` from `grow_to`) are visible before the reader indexes it.
+//   (iii) DIRECTORY PUBLICATION (two-level). A reader reaches chunk cell `c`
+//         only via its page `p = c >> SIDE_PAGE_BITS` then the chunk, dereferenc-
+//         ing each only for `c < chunk_count.load(Acquire)`. `grow_to`, under
+//         `grow_lock` (the unique writer of both cells), publishes the PAGE first
+//         — initialize page cell `p`, then `page_count.store(p+1, Release)` —
+//         and the CHUNK strictly after — initialize chunk cell `c` inside page
+//         `p`, then `chunk_count.store(c+1, Release)`. So observing
+//         `c < chunk_count` (Acquire) happens-after BOTH the chunk's
+//         initialization AND (published earlier) `p < page_count` and the page's
+//         initialization ⇒ the page `Box` ptr, the chunk `Box` ptr, and the
+//         chunk's cells (all `None` from `grow_to`) are all visible before the
+//         reader indexes it. The single `chunk_count` check therefore covers
+//         both directory levels.
 //
 //   (iv)  FREE AT QUIESCENCE. The only in-place rewrite of an already-published
 //         entry is `free`, which is `&mut self` and runs only at a quiescent
@@ -2556,5 +2779,50 @@ mod tests {
         assert_eq!(unsafe { col.get(i1) }, Some(&[1][..]), "i1 intact");
         assert_eq!(unsafe { col.get(i2) }, Some(&[2][..]), "new entry present");
         assert_eq!(col.published_len(), 3, "len counts every push, freed or not");
+    }
+
+    #[test]
+    fn side_column_grows_past_old_66_chunk_ceiling() {
+        // REGRESSION (D-TLAB-1.1 capacity repair): the original one-level
+        // directory was a fixed `MAX_SIDE_CHUNKS = 66` cells ⇒ a HARD ceiling of
+        // `66 * 4096 = 270_336` cumulative appends, which `assert!(c <
+        // MAX_SIDE_CHUNKS)` tripped (panic "side column exhausted", rc=101) under
+        // the C1.c #1 free-list reuse on a release-exempt `cur_seg` in MIDLOOP
+        // workloads. The two-level lazy directory restores the prior
+        // `Vec<Option<Box<T>>>`'s unbounded-no-crash behavior. Push WELL past the
+        // old ceiling and assert: no panic, every entry published, the directory
+        // spans multiple PAGES (so the page level actually grew), and reads are
+        // correct at 0, across the old 270_335/270_336 boundary, and at the end.
+        const OLD_CEILING: usize = 270_336; // = 66 * SIDE_CHUNK_LEN (the panic point)
+        const N: usize = 280_000; // > OLD_CEILING ⇒ would have panicked before
+        // Tiny payload (a 1-element `Box<[i32]>`) keeps the test cheap: ~280k
+        // 4-byte allocations, not 280k large slices.
+        let col: SideColumn<[i32]> = SideColumn::new();
+        for i in 0..N {
+            let boxed: Box<[i32]> = vec![i as i32].into_boxed_slice();
+            let idx = col.push(boxed); // MUST NOT panic past the old 66-chunk cap
+            assert_eq!(idx as usize, i, "index tracks push order at {i}");
+        }
+        assert_eq!(col.published_len(), N, "all {N} entries published, no ceiling");
+        // The directory must span more than one PAGE (each page covers
+        // `SIDE_PAGE_LEN * SIDE_CHUNK_LEN = 1024 * 4096 = 4_194_304` entries — so
+        // 280k fits in page 0, but the chunk count must exceed one page's worth of
+        // chunks only at 4M+; here we assert it spans many CHUNKS and that the
+        // chunk count is consistent with N, exercising the two-level `chunk`
+        // deref across the boundary the old single-level array could not address).
+        let chunks = col.chunk_count();
+        let expected_chunks = N.div_ceil(SIDE_CHUNK_LEN);
+        assert_eq!(chunks, expected_chunks, "chunk_count tracks N (got {chunks})");
+        assert!(
+            chunks > 66,
+            "directory grew past the OLD 66-chunk ceiling (got {chunks} chunks)"
+        );
+        // Reads at the boundaries that mattered: index 0, the two indices
+        // straddling the old ceiling, and the final index — all via the two-level
+        // `chunk` deref. SAFETY: every index < published_len() == N.
+        for &i in &[0usize, OLD_CEILING - 1, OLD_CEILING, N - 1] {
+            let got = unsafe { col.get(i as u32) }.expect("entry present past ceiling");
+            assert_eq!(got, &[i as i32][..], "value correct at index {i}");
+        }
     }
 }

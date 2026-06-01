@@ -2816,6 +2816,453 @@ pub(super) static GC_PROGRESS_CONDVAR: Condvar = Condvar::new();
 pub(super) static QUIESCENT_MUTEX: Mutex<()> = Mutex::new(());
 pub(super) static QUIESCENT_CONDVAR: Condvar = Condvar::new();
 
+// ============================================================================
+// Phase D — Parallel-Collector Cooperative Rendezvous (D1.1 state + primitives)
+// ============================================================================
+//
+// DEAD CODE until D2.x wires the call sites. These `pub(crate)` items implement
+// the cooperative stop-the-world rendezvous that lets the index collector run
+// WHILE FANOUT>0 eval workers are alive (today the index collector is gated OFF
+// the moment a worker spawns — `!worker_ever_spawned()` in `index_heap.rs` —
+// so under parallel eval the heap grows uncollected until quiescence). The full
+// protocol, the 4-role happens-before chain, the lost-wakeup avoidance, and the
+// sub-increment spec are documented in
+// `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` (§D1).
+//
+// PROTOCOL (one collector at a time; workers SELF-COLLECT their structural roots
+// because the requestor cannot read a parked worker's thread-local registers —
+// see the design doc's "Genuine-CESK crux"):
+//
+//   Requestor: begin_gc_rendezvous() [CAS exclusion] → request_gc() [Release] →
+//     self-root → drop_eval_guard_for_safepoint() → requestor_wait_for_parked()
+//     [waits active==0, the proven TLA+ `BeginMark` predicate] → drain ∪ E₀ ∪
+//     driver-C → mark_sweep_if_over_watermark(.write()) → GC_REQUESTED=false
+//     [Release] → resume_workers() → end_gc_rendezvous() →
+//     reacquire_eval_guard_after_safepoint().
+//
+//   Worker (at a poll point): is_gc_requested() [Acquire] ⇒ self-root into the
+//     shared buffer, drop its EvalGuard, then `worker_park_and_root(roots)`
+//     (append + count + notify-requestor + park until !is_gc_requested), then
+//     reacquire its EvalGuard. (The eval_loop caller owns the drop/reacquire of
+//     the EvalGuard around the call; `worker_park_and_root` itself is JUST the
+//     buffer-append + counter-bump + notify + park, so it is testable in
+//     isolation — see the D1.1 unit test.)
+//
+// HAPPENS-BEFORE (design doc §D1 "Happens-before"):
+//   HB1  request_gc() Release  →  worker is_gc_requested() Acquire (request seen)
+//   HB2  worker buffer-append + `WORKERS_PARKED_FOR_GC.fetch_add(AcqRel)` (the
+//        AcqRel acts as the buffer-append release fence) + RENDEZVOUS_MUTEX held
+//        across {parked-count predicate, notify_all}  →  requestor observes ALL
+//        buffer writes before it drains+marks.
+//   HB3  the collector's `.write()` lock  →  excludes any allocator `.read()`
+//        during mark (D-RLOCK); parked workers hold NO `.read()` (they park
+//        between allocations).
+//   HB4  `GC_REQUESTED.store(false)` Release  →  worker resume Acquire sees the
+//        post-sweep store state.
+//
+// LOST-WAKEUP AVOIDANCE (copied from `EvalGuard::enter` :2920-2941): on BOTH the
+// RENDEZVOUS side (requestor waits parked) and the RESUME side (worker waits
+// resume), the mutex is held across BOTH the predicate observation and the
+// matching `notify_all`, so a thread that re-checks the predicate and is about
+// to `wait` cannot miss the notification. The 5 s `wait_for` + warn-retry is a
+// liveness backstop (NOT a hard budget — that was the deleted
+// `safepoint_wait_for_quiescence`'s pathology), bounding R1 (a worker that never
+// reaches a safepoint) to a warn-and-retry rather than a deadlock.
+//
+// SEPARATE condvar pairs (Risk R4): `RENDEZVOUS_*` / `RESUME_*` are NEW and
+// distinct from the slab `GC_PROGRESS_*` / `QUIESCENT_*` pairs — overloading
+// them would risk cross-wakeups between the slab snapshot protocol and the index
+// rendezvous. They are loom-verified on the new pairs (`loom_rendezvous`).
+
+/// Number of eval workers currently parked at a rendezvous safepoint (having
+/// self-rooted into [`WORKER_ROOT_BUFFER`]). It is BOTH the buffer happens-before
+/// carrier (the `fetch_add(AcqRel)` is the release fence for the worker's prior
+/// buffer-append — HB2) AND an observability aid. The PRIMARY termination gate
+/// for the requestor is [`active_evaluator_count`]`()==0` (the TLA+-proven
+/// `BeginMark` predicate), not this counter; this counter exists so the protocol
+/// can be reasoned about / asserted directly. `pub(crate)` for test/loom parity.
+///
+/// DEAD until D2.x. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
+#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+pub(crate) static WORKERS_PARKED_FOR_GC: AtomicU32 = AtomicU32::new(0);
+
+/// `true` while a rendezvous-collector requestor owns the rendezvous (one
+/// collector at a time). Set by [`begin_gc_rendezvous`] via a `false→true` CAS
+/// (AcqRel) and cleared by [`end_gc_rendezvous`] (Release). A second would-be
+/// requestor that loses the CAS backs off rather than racing a concurrent mark.
+///
+/// DEAD until D2.x. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
+#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+pub(crate) static GC_REQUESTOR_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Shared buffer of structural roots self-collected by parking workers (D2). A
+/// single `Vec`; appends are O(roots/worker) and happen once per worker per
+/// cycle. The requestor [`drain_worker_root_buffer`]s it (∪ `E₀` ∪ driver-C)
+/// before marking. Carries `MettaValue` root HANDLES — exactly what
+/// `collect_machine_roots` already produces — NOT a serialized machine.
+///
+/// DEAD until D2.x. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D2.
+#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+pub(crate) static WORKER_ROOT_BUFFER: Mutex<Vec<MettaValue>> = Mutex::new(Vec::new());
+
+/// Mutex + Condvar pair on which the REQUESTOR waits for all workers to park
+/// (`active_evaluator_count()==0`). A parking worker holds [`RENDEZVOUS_MUTEX`]
+/// across {`WORKERS_PARKED_FOR_GC.fetch_add`, `RENDEZVOUS_CONDVAR.notify_all`}
+/// and the requestor holds it across {predicate check, `wait_for`} — this is the
+/// lost-wakeup-safe handshake (HB2 + EvalGuard::enter :2920-2941 pattern). NEW
+/// and SEPARATE from `GC_PROGRESS_*` / `QUIESCENT_*` (Risk R4).
+///
+/// DEAD until D2.x. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
+#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+pub(crate) static RENDEZVOUS_MUTEX: Mutex<()> = Mutex::new(());
+#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+pub(crate) static RENDEZVOUS_CONDVAR: Condvar = Condvar::new();
+
+/// Mutex + Condvar pair on which a parked WORKER waits to be resumed
+/// (`!is_gc_requested()`). The requestor holds [`RESUME_MUTEX`] across
+/// {`GC_REQUESTED.store(false)`, `RESUME_CONDVAR.notify_all`} (done by
+/// [`resume_workers`]) and a parked worker holds it across {predicate check,
+/// `wait_for`} — the lost-wakeup-safe resume handshake (HB4). NEW and SEPARATE
+/// from `GC_PROGRESS_*` / `QUIESCENT_*` (Risk R4).
+///
+/// DEAD until D2.x. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
+#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+pub(crate) static RESUME_MUTEX: Mutex<()> = Mutex::new(());
+#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+pub(crate) static RESUME_CONDVAR: Condvar = Condvar::new();
+
+/// Maximum time a rendezvous wait (`requestor_wait_for_parked` /
+/// `worker_park_and_root`) parks before logging a warning and re-checking its
+/// predicate. This is a LIVENESS BACKSTOP, not a hard budget: the loop re-checks
+/// the real predicate after every timeout and only exits when it actually holds,
+/// so a slow worker yields a warn-and-retry (bounding Risk R1) rather than a
+/// premature unblock. Mirrors `EvalGuard::enter`'s `GC_WAIT_TIMEOUT` (:2918).
+#[allow(dead_code)] // DEAD until D2.x (used by worker_park_and_root / requestor_wait_for_parked).
+const RENDEZVOUS_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether the parallel rendezvous collector is enabled (env
+/// `METTATRON_INDEX_GC_PARALLEL=1`, default OFF). Parsed once and cached, exactly
+/// like `index_heap::midloop_enabled()` (:1844). Until D5 the rendezvous call
+/// sites are ALSO gated on this, so the default build is byte-identical (the
+/// primitives are dead code regardless — this gate governs the D2.x wiring).
+///
+/// See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §"Sub-increments".
+#[allow(dead_code)] // DEAD until D2.x gates the call sites on this.
+pub(crate) fn rendezvous_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("METTATRON_INDEX_GC_PARALLEL").as_deref() == Ok("1"))
+}
+
+/// Acquire the rendezvous as the sole collector (one collector at a time).
+///
+/// CAS [`GC_REQUESTOR_ACTIVE`] `false→true` (AcqRel on success so the subsequent
+/// `request_gc()`/buffer reads happen-after any prior collector's
+/// `end_gc_rendezvous` Release; Acquire on failure). Returns `true` if THIS
+/// caller now owns the rendezvous; `false` if another requestor already owns it
+/// (caller must back off — do NOT proceed to mark concurrently).
+///
+/// PROTOCOL: paired with [`end_gc_rendezvous`]; see the §D1 requestor sequence.
+/// DEAD until D2.3.
+#[allow(dead_code)] // DEAD until D2.3 (requestor wiring); exercised by the D1.1 test.
+pub(crate) fn begin_gc_rendezvous() -> bool {
+    GC_REQUESTOR_ACTIVE
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+}
+
+/// Release rendezvous ownership (the last step of the requestor sequence, after
+/// `resume_workers()`).
+///
+/// `Release` so a subsequent [`begin_gc_rendezvous`] on another thread that
+/// acquires ownership observes all of this collector's writes (the just-finished
+/// sweep + buffer reset). DEAD until D2.3.
+#[allow(dead_code)] // DEAD until D2.3 (requestor wiring); exercised by the D1.1 test.
+pub(crate) fn end_gc_rendezvous() {
+    GC_REQUESTOR_ACTIVE.store(false, Ordering::Release);
+}
+
+/// WORKER side: append `roots` to the shared buffer, signal "parked", and park
+/// until the requestor clears `GC_REQUESTED`.
+///
+/// This is JUST the buffer-append + counter-bump + notify-requestor + park; the
+/// `eval_loop` caller owns dropping its `EvalGuard` BEFORE this call and
+/// reacquiring it AFTER (D2.1) — keeping this function self-contained makes it
+/// unit-testable in isolation (see `test_rendezvous_park_resumes_on_clear`).
+///
+/// Sequence (HB2 then HB4):
+///   1. `WORKER_ROOT_BUFFER.lock().extend_from_slice(roots)` — publish my roots.
+///   2. `WORKERS_PARKED_FOR_GC.fetch_add(1, AcqRel)` — the AcqRel is the release
+///      fence for step 1's buffer writes (so the requestor, after its Acquire on
+///      the same counter / under RENDEZVOUS_MUTEX, sees them — HB2).
+///   3. Under [`RENDEZVOUS_MUTEX`]: `RENDEZVOUS_CONDVAR.notify_all()` — wake the
+///      requestor that is waiting for everyone to park. Holding the mutex across
+///      the notify is the lost-wakeup guard (the requestor holds it across its
+///      predicate check + wait).
+///   4. Park: under [`RESUME_MUTEX`], `while is_gc_requested() { wait_for(5s) }`
+///      — observe the requestor's `GC_REQUESTED.store(false)` Release (HB4),
+///      lost-wakeup-safe because `resume_workers()` holds RESUME_MUTEX across the
+///      store + notify.
+///
+/// DEAD until D2.1. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1/§D2.
+#[allow(dead_code)] // DEAD until D2.1 (worker poll points); exercised by the D1.1 test.
+pub(crate) fn worker_park_and_root(roots: &[MettaValue]) {
+    // (1) publish my self-collected roots.
+    WORKER_ROOT_BUFFER.lock().extend_from_slice(roots);
+    // (2) signal parked; the AcqRel fetch_add release-fences the buffer append.
+    WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);
+    // (3) wake the requestor (lost-wakeup-safe: mutex held across notify).
+    {
+        let _lock = RENDEZVOUS_MUTEX.lock();
+        RENDEZVOUS_CONDVAR.notify_all();
+    }
+    // (4) park until the requestor clears GC_REQUESTED (HB4).
+    {
+        let mut lock = RESUME_MUTEX.lock();
+        while is_gc_requested() {
+            let result = RESUME_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
+            if result.timed_out() && is_gc_requested() {
+                tracing::warn!(
+                    "worker_park_and_root: still GC_REQUESTED after {:?} wait — re-checking",
+                    RENDEZVOUS_WAIT_TIMEOUT,
+                );
+                // Loop re-checks the real predicate; a timeout is a benign retry.
+            }
+        }
+    }
+}
+
+/// REQUESTOR side: block until every other evaluator has parked
+/// (`active_evaluator_count()==0`).
+///
+/// The requestor MUST have already `drop_eval_guard_for_safepoint()`'d itself, so
+/// `active==0` means "all OTHER workers parked" — the proven TLA+ `BeginMark`
+/// predicate. Lost-wakeup-safe: [`RENDEZVOUS_MUTEX`] is held across the predicate
+/// check and the `wait_for`, matching the worker's notify under the same mutex
+/// (HB2). The 5 s timeout is a warn-and-recheck liveness backstop (Risk R1).
+///
+/// DEAD until D2.3. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
+#[allow(dead_code)] // DEAD until D2.3 (requestor wiring).
+pub(crate) fn requestor_wait_for_parked() {
+    let mut lock = RENDEZVOUS_MUTEX.lock();
+    while active_evaluator_count() != 0 {
+        let result = RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
+        if result.timed_out() && active_evaluator_count() != 0 {
+            tracing::warn!(
+                "requestor_wait_for_parked: {} evaluator(s) still active after {:?} — re-checking",
+                active_evaluator_count(),
+                RENDEZVOUS_WAIT_TIMEOUT,
+            );
+            // Loop re-checks the real predicate; a timeout is a benign retry.
+        }
+    }
+}
+
+/// REQUESTOR side: move all worker-contributed roots out of the shared buffer
+/// into `out` (which the requestor then unions with `E₀` + driver-C before
+/// marking). Drains under the lock so it composes with concurrent worker appends
+/// (none should be in flight once `active==0`, but the lock keeps it sound).
+///
+/// DEAD until D2.3. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D2.
+#[allow(dead_code)] // DEAD until D2.3 (requestor wiring); exercised by the D1.1 test.
+pub(crate) fn drain_worker_root_buffer(out: &mut Vec<MettaValue>) {
+    out.extend(WORKER_ROOT_BUFFER.lock().drain(..));
+}
+
+/// REQUESTOR side: reset the per-cycle rendezvous counters/buffer to their
+/// initial state (parked-count → 0, buffer cleared). Called by the requestor
+/// after a cycle completes (or to recover after a backed-off attempt) so the
+/// next rendezvous starts clean. `Release` on the counter store pairs with the
+/// next cycle's Acquire reads.
+///
+/// DEAD until D2.3. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
+#[allow(dead_code)] // DEAD until D2.3 (requestor wiring); exercised by the D1.1 test.
+pub(crate) fn reset_rendezvous_counters() {
+    WORKERS_PARKED_FOR_GC.store(0, Ordering::Release);
+    WORKER_ROOT_BUFFER.lock().clear();
+}
+
+/// REQUESTOR side: clear `GC_REQUESTED` and wake all parked workers, atomically
+/// w.r.t. the worker park.
+///
+/// The lost-wakeup-safe handshake (HB4) requires that the resume CONDITION
+/// (`GC_REQUESTED` going false) be published UNDER the same mutex that a parking
+/// worker holds across its `while is_gc_requested() { wait }` loop — otherwise a
+/// worker can read `GC_REQUESTED==true`, then the requestor clears+notifies, then
+/// the worker locks+waits and misses the notification forever. So this function
+/// holds [`RESUME_MUTEX`] across BOTH `GC_REQUESTED.store(false, Release)` (HB4:
+/// the worker's resume Acquire on `is_gc_requested` then sees the post-sweep
+/// store state) AND `RESUME_CONDVAR.notify_all()`.
+///
+/// DEVIATION from the literal D1.1 spec (which listed `resume_workers()` as just
+/// `{ lock RESUME_MUTEX; notify_all() }` with the `GC_REQUESTED` clear done by
+/// the requestor separately BEFORE the call): clearing the flag OUTSIDE the lock
+/// reopens exactly the lost-wakeup window this pair is meant to close, so the
+/// clear is folded INTO this function under the lock. The design doc §D1 requestor
+/// sequence ("`GC_REQUESTED.store(false, Release)` → RESUME_CONDVAR.notify_all()")
+/// is honored — both steps simply happen here, together, under RESUME_MUTEX. The
+/// loom model `loom_rendezvous` verifies this is lost-wakeup-free.
+///
+/// DEAD until D2.3. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
+#[allow(dead_code)] // DEAD until D2.3 (requestor wiring); exercised by the D1.1 test.
+pub(crate) fn resume_workers() {
+    let _lock = RESUME_MUTEX.lock();
+    GC_REQUESTED.store(false, Ordering::Release);
+    RESUME_CONDVAR.notify_all();
+}
+
+// ----------------------------------------------------------------------------
+// D1.1 unit test — rendezvous primitives in isolation (BOTH builds)
+// ----------------------------------------------------------------------------
+//
+// Deliberately gated `#[cfg(test)]` (NOT `cfg(all(test, not(feature =
+// "index-gc")))` like the slab-only `mod tests` below) because the rendezvous
+// primitives are build-agnostic (pure synchronization over `MettaValue`, which
+// exists in both builds) and the Phase-D gate requires this test to PASS — and
+// add +1 to the test count — under `--features index-gc` as well as slab.
+#[cfg(test)]
+mod rendezvous_d1_1_tests {
+    use super::*;
+    // `global_factory().long(..)` needs the factory trait in scope; it is a
+    // build-agnostic way to mint a `MettaValue` (slab handle or index Addr).
+    use super::super::metta_value_trait::MettaValueFactory;
+
+    /// (a) `begin_gc_rendezvous` CAS exclusion: with two threads racing, EXACTLY
+    /// one observes `true`. (b) park/notify with no lost wakeup: a worker thread
+    /// parks via `worker_park_and_root`, the "requestor" sets then clears
+    /// `GC_REQUESTED` via `resume_workers()`, and the worker resumes — verified by
+    /// a join that must complete within a bounded timeout (a hang ⇒ lost wakeup ⇒
+    /// the join times out ⇒ the test fails, never hangs the suite).
+    ///
+    /// Both sub-cases live in ONE `#[test]` so they run sequentially: they mutate
+    /// PROCESS-GLOBAL statics (`GC_REQUESTED`, `GC_REQUESTOR_ACTIVE`,
+    /// `WORKERS_PARKED_FOR_GC`, `WORKER_ROOT_BUFFER`), so concurrent test bodies
+    /// would race on shared state. We reset that state up front.
+    #[test]
+    fn test_rendezvous_primitives_exclusion_and_park_resume() {
+        use std::sync::atomic::{AtomicU32, Ordering as O};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        // Clean slate (other tests may have left these set; this test owns them
+        // for its duration — it does not run concurrently with itself).
+        GC_REQUESTED.store(false, O::Release);
+        GC_REQUESTOR_ACTIVE.store(false, O::Release);
+        reset_rendezvous_counters();
+
+        // ---- (a) begin_gc_rendezvous mutual exclusion --------------------------
+        // Two threads race to acquire; a Barrier maximizes the contention window.
+        // Across many rounds, the count of `true` results is ALWAYS exactly 1.
+        for _round in 0..64 {
+            GC_REQUESTOR_ACTIVE.store(false, O::Release);
+            // `start` maximizes the CAS-contention window; `settled` ensures BOTH
+            // threads have recorded their CAS result BEFORE the winner releases —
+            // otherwise the winner could `end_gc_rendezvous()` (reset the flag) so
+            // fast that the "loser" then wins its own CAS too, and we would count
+            // 2 winners for a property ("at most one owner at a time") that is in
+            // fact upheld. Releasing only after `settled` makes the test measure
+            // the true mutual-exclusion invariant.
+            let start = Arc::new(std::sync::Barrier::new(2));
+            let settled = Arc::new(std::sync::Barrier::new(2));
+            let winners = Arc::new(AtomicU32::new(0));
+
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let start = Arc::clone(&start);
+                    let settled = Arc::clone(&settled);
+                    let winners = Arc::clone(&winners);
+                    std::thread::spawn(move || {
+                        start.wait();
+                        let won = begin_gc_rendezvous();
+                        if won {
+                            winners.fetch_add(1, O::AcqRel);
+                        }
+                        // Both threads have now CAS'd and recorded the outcome.
+                        settled.wait();
+                        // Now it is safe for the winner to release ownership.
+                        if won {
+                            end_gc_rendezvous();
+                        }
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().expect("exclusion thread panicked");
+            }
+            assert_eq!(
+                winners.load(O::Acquire),
+                1,
+                "exactly one thread may win begin_gc_rendezvous per round"
+            );
+        }
+        // Leave ownership released for part (b).
+        GC_REQUESTOR_ACTIVE.store(false, O::Release);
+
+        // ---- (b) park / notify, no lost wakeup --------------------------------
+        // A worker self-roots a sentinel and parks; the requestor (this thread)
+        // sets GC_REQUESTED, waits for the worker to park, drains the buffer
+        // (asserting the sentinel arrived — HB2), then resume_workers() clears the
+        // flag + notifies (HB4). The worker must resume.
+        reset_rendezvous_counters();
+
+        // Requestor publishes the GC request FIRST (HB1), so when the worker
+        // reaches its park loop `is_gc_requested()` is already true and it parks.
+        GC_REQUESTED.store(true, O::Release);
+
+        let sentinel: i64 = 0x5EED_BEEF;
+        let worker = std::thread::spawn(move || {
+            // Worker self-collects its structural root(s); here a single sentinel.
+            let my_root = global_factory().long(sentinel);
+            worker_park_and_root(&[my_root]);
+            // If we get here, the park observed `!is_gc_requested()` and returned.
+            true
+        });
+
+        // Wait for the worker to actually park (WORKERS_PARKED_FOR_GC reaches 1).
+        // `requestor_wait_for_parked()` itself keys off `active_evaluator_count()`,
+        // which this unit test does not drive (no EvalGuard), so we spin on the
+        // parked-count directly — the buffer-HB carrier — with a bounded deadline.
+        let park_deadline = Instant::now() + Duration::from_secs(10);
+        while WORKERS_PARKED_FOR_GC.load(O::Acquire) < 1 {
+            assert!(
+                Instant::now() < park_deadline,
+                "worker did not park within deadline (parked-count never reached 1)"
+            );
+            std::thread::yield_now();
+        }
+
+        // HB2: the worker's root must be visible in the shared buffer now.
+        let mut drained: Vec<MettaValue> = Vec::new();
+        drain_worker_root_buffer(&mut drained);
+        assert!(
+            drained.iter().any(|r| r.as_long() == Some(sentinel)),
+            "worker-contributed root (sentinel) must be visible after parking (HB2)"
+        );
+
+        // Resume: clear GC_REQUESTED + notify, lost-wakeup-safe (HB4).
+        resume_workers();
+
+        // The worker MUST resume. Bounded join (poll `is_finished`) so a lost
+        // wakeup surfaces as a test FAILURE, not a hung suite.
+        let join_deadline = Instant::now() + Duration::from_secs(10);
+        while !worker.is_finished() {
+            assert!(
+                Instant::now() < join_deadline,
+                "worker did not resume after resume_workers() — possible lost wakeup"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            worker.join().expect("worker thread panicked"),
+            "worker_park_and_root must return once GC_REQUESTED is cleared"
+        );
+
+        // Cleanup so we leave the globals pristine for any sibling tests.
+        reset_rendezvous_counters();
+        GC_REQUESTED.store(false, O::Release);
+        GC_REQUESTOR_ACTIVE.store(false, O::Release);
+    }
+}
+
 /// Set when a GC snapshot is sent to the GC thread, cleared when the response
 /// is processed. Prevents queueing multiple snapshots in the mpsc channel.
 ///
@@ -7322,5 +7769,305 @@ mod tests {
         // Can be 0 if counter hasn't updated yet (it updates every 1024 allocs),
         // but should at least not panic
         let _ = bytes;
+    }
+}
+
+// ============================================================================
+// D1.2 — loom model of the Phase-D cooperative rendezvous protocol
+// ============================================================================
+//
+// Compiled ONLY under `--cfg loom` (a dedicated capped lane — never in the
+// normal build/test graph, so it never perturbs the lib-49-warnings gate). It
+// model-checks the §D1 protocol (1 requestor + 2 workers) over loom's
+// instrumented atomics/mutex/condvar, exploring ALL interleavings within
+// `LOOM_MAX_PREEMPTIONS` to prove four properties:
+//
+//   (1) no_mark_before_all_parked   MARKING set ⇒ every worker is parked
+//                                    (parked == NUM_WORKERS). This is the
+//                                    CESK-completeness precondition: the
+//                                    requestor only marks once every machine has
+//                                    self-rooted (HB2 / TLA+ BeginMark).
+//   (2) no_lost_wakeup              both workers eventually resume (their park
+//                                    loops exit) after the requestor clears the
+//                                    request + notifies (HB4). A lost wakeup
+//                                    would leave a worker blocked → its
+//                                    `join()` never returns → loom flags a
+//                                    deadlock.
+//   (3) no_self_root_after_mark     no worker is mid-self-root while MARKING is
+//                                    set (the `self_rooting` in-progress count is
+//                                    0 when MARKING flips true).
+//   (4) requestor_exclusion         (separate sub-model) with two requestors
+//                                    racing the `false→true` CAS, EXACTLY one
+//                                    observes `true`.
+//
+// loom-MODEL adaptations (each load-bearing; mirror `index_arena.rs:1840`):
+//   * loom surrogate state passed by `Arc` — NOT the real `static`s. loom can
+//     reset only state it allocates inside `loom::model(..)`; a real `static`
+//     would carry corruption across the (thousands of) explored executions.
+//   * loom `Mutex::lock()` returns `LockResult` (std-shaped) ⇒ `.expect(..)`;
+//     loom `Condvar::wait(guard)` CONSUMES and RETURNS the guard. loom's
+//     `wait_timeout` does NOT actually time out (it just calls `wait`), so we
+//     use `wait` inside a `while predicate` loop — loom explores the notify.
+//   * `loom::thread::yield_now()` (not `hint::spin_loop()`) at the few spin
+//     points so the blocked role yields to loom's scheduler.
+//   * STRONG `compare_exchange` (not `_weak`): a weak CAS in a loom spin can fail
+//     spuriously unboundedly within ONE execution and overflow the coroutine
+//     stack. The protocol proof is identical (weak only adds benign retries).
+//   * Small fixed sizes (2 workers, 1-element root append, one poll point per
+//     worker) keep the schedule tree tractable under `LOOM_MAX_PREEMPTIONS=2`.
+//
+// VERIFIED-GREEN command (capped lane; `-C target-cpu=native` re-added because
+// setting RUSTFLAGS overrides .cargo/config.toml's gxhash AES/SSE2 flags; the
+// large crate's DEBUG frames overflow loom's coroutine stack ⇒ `--release`):
+//   RUSTFLAGS="--cfg loom -C target-cpu=native" LOOM_MAX_PREEMPTIONS=2 \
+//     systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 \
+//       -p CPUQuota=1200% \
+//     cargo test --release --lib \
+//       backend::models::gc_allocator::loom_rendezvous -- --nocapture
+#[cfg(loom)]
+mod loom_rendezvous {
+    use loom::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use loom::sync::{Arc, Condvar, Mutex};
+    use loom::thread;
+
+    /// Loom surrogate for the real rendezvous statics (which loom cannot reset
+    /// between iterations). One instance per `loom::model` execution, shared by
+    /// `Arc`. Field roles mirror the production primitives 1:1.
+    struct Rdv {
+        /// Surrogate for `GC_REQUESTED` (request/resume signal).
+        gc_requested: AtomicBool,
+        /// Surrogate for `WORKERS_PARKED_FOR_GC` (buffer-HB carrier + parked
+        /// observability). Incremented by a worker AFTER it appends its root.
+        parked: AtomicU32,
+        /// Surrogate for `WORKER_ROOT_BUFFER` (worker self-rooted handles — here
+        /// just sentinel `u32`s, one per worker).
+        buffer: Mutex<Vec<u32>>,
+        /// In-progress self-root count: a worker holds it >0 across {append,
+        /// parked.fetch_add}. Used to assert (3) no_self_root_after_mark.
+        self_rooting: AtomicU32,
+        /// Set by the requestor once `parked == NUM_WORKERS`; the moment it marks.
+        marking: AtomicBool,
+        /// Surrogate for `RENDEZVOUS_MUTEX`/`CONDVAR` (requestor waits parked).
+        rdv_mutex: Mutex<()>,
+        rdv_cond: Condvar,
+        /// Surrogate for `RESUME_MUTEX`/`CONDVAR` (worker waits resume).
+        resume_mutex: Mutex<()>,
+        resume_cond: Condvar,
+    }
+
+    impl Rdv {
+        fn new() -> Self {
+            Rdv {
+                gc_requested: AtomicBool::new(false),
+                parked: AtomicU32::new(0),
+                buffer: Mutex::new(Vec::new()),
+                self_rooting: AtomicU32::new(0),
+                marking: AtomicBool::new(false),
+                rdv_mutex: Mutex::new(()),
+                rdv_cond: Condvar::new(),
+                resume_mutex: Mutex::new(()),
+                resume_cond: Condvar::new(),
+            }
+        }
+    }
+
+    /// WORKER body — surrogate of `worker_park_and_root` PLUS its poll-point
+    /// guard. `tag` is this worker's sentinel root.
+    ///
+    /// Precondition (matches "a safepoint observes an ALREADY-published request"
+    /// — HB1): the requestor sets `gc_requested=true` BEFORE the workers run, so
+    /// each worker's poll point observes the request and parks. (A worker that
+    /// observed `false` would simply not park — not the rendezvous under test.)
+    fn worker(r: &Arc<Rdv>, tag: u32) {
+        // Poll point: observe the request (HB1: requestor's Release → this
+        // Acquire). It is already true by construction.
+        if r.gc_requested.load(Ordering::Acquire) {
+            // --- self-root window: open across the buffer append ONLY ---
+            // Models the real worker's `collect_machine_roots_live` +
+            // `WORKER_ROOT_BUFFER.lock().extend(..)` — the append is FULLY
+            // complete before the worker announces it is parked.
+            r.self_rooting.fetch_add(1, Ordering::AcqRel);
+            // (1) publish my root.
+            r.buffer.lock().expect("buffer lock").push(tag);
+            // Self-root window CLOSES here — BEFORE `parked` is bumped. This
+            // mirrors the real ordering `append → drop_eval_guard_for_safepoint()
+            // (active--) → WORKERS_PARKED_FOR_GC.fetch_add(1)`: a worker finishes
+            // self-rooting (and drops its EvalGuard) BEFORE the signal the
+            // requestor gates on. Consequently, once the requestor observes the
+            // gate satisfied (here `parked == NUM_WORKERS`; in production
+            // `active_evaluator_count()==0`), NO worker can still be self-rooting,
+            // so the `self_rooting == 0` assert below holds. (loom found that
+            // closing this window AFTER `parked++` was a MODEL bug — the gate
+            // could open while a worker's `fetch_sub` was still pending; it does
+            // NOT reflect the real protocol, where the append precedes the gate
+            // signal. This is exactly the kind of ordering subtlety loom exists to
+            // surface.)
+            r.self_rooting.fetch_sub(1, Ordering::AcqRel);
+            // (2) signal parked; AcqRel release-fences the append (HB2).
+            r.parked.fetch_add(1, Ordering::AcqRel);
+            // (3) wake the requestor — lost-wakeup-safe: mutex held across notify.
+            {
+                let _g = r.rdv_mutex.lock().expect("rdv lock");
+                r.rdv_cond.notify_all();
+            }
+            // (4) park until the requestor clears gc_requested (HB4). loom's
+            // `wait` consumes+returns the guard; the `while` re-checks the
+            // predicate so loom must schedule the requestor's notify to exit.
+            let mut g = r.resume_mutex.lock().expect("resume lock");
+            while r.gc_requested.load(Ordering::Acquire) {
+                g = r.resume_cond.wait(g).expect("resume wait");
+            }
+        }
+    }
+
+    /// REQUESTOR body — surrogate of `requestor_wait_for_parked` + the §D1
+    /// mark/resume tail. `num_workers` is the rendezvous size.
+    fn requestor(r: &Arc<Rdv>, num_workers: u32) {
+        // Wait until all workers have parked. We key on `parked` (the surrogate
+        // for the buffer-HB carrier) rather than an `active==0` surrogate to keep
+        // the model self-contained; the lost-wakeup-safe handshake is identical
+        // (rdv_mutex held across predicate + wait, matching the worker's notify).
+        {
+            let mut g = r.rdv_mutex.lock().expect("rdv lock");
+            while r.parked.load(Ordering::Acquire) < num_workers {
+                g = r.rdv_cond.wait(g).expect("rdv wait");
+            }
+        }
+
+        // (1) no_mark_before_all_parked: by the loop predicate, all parked now.
+        assert_eq!(
+            r.parked.load(Ordering::Acquire),
+            num_workers,
+            "requestor may mark only once every worker has parked (HB2 / BeginMark)"
+        );
+        // (3) no_self_root_after_mark: no worker may be mid-self-root as we mark.
+        assert_eq!(
+            r.self_rooting.load(Ordering::Acquire),
+            0,
+            "no worker may be self-rooting while the requestor marks"
+        );
+
+        // Mark window: flip MARKING, drain the union, then clear it. The
+        // assertions above bracket the instant MARKING becomes observable.
+        r.marking.store(true, Ordering::Release);
+
+        // Drain the worker roots (∪ E₀ ∪ driver-C in production). Every worker's
+        // sentinel must be present — the union is complete (CESK completeness).
+        let drained = {
+            let mut buf = r.buffer.lock().expect("buffer lock");
+            let v: Vec<u32> = buf.drain(..).collect();
+            v
+        };
+        assert_eq!(
+            drained.len() as u32,
+            num_workers,
+            "the marked union must contain every parked worker's root"
+        );
+
+        r.marking.store(false, Ordering::Release);
+
+        // (2) Resume: clear gc_requested + notify, BOTH under resume_mutex
+        // (lost-wakeup-safe — HB4: matches the worker holding resume_mutex across
+        // its `while is_gc_requested { wait }`).
+        {
+            let _g = r.resume_mutex.lock().expect("resume lock");
+            r.gc_requested.store(false, Ordering::Release);
+            r.resume_cond.notify_all();
+        }
+    }
+
+    /// 1 requestor + 2 workers: the full rendezvous. Proves (1), (2), (3).
+    #[test]
+    fn loom_rendezvous_requestor_two_workers() {
+        loom::model(|| {
+            const NUM_WORKERS: u32 = 2;
+            let r = Arc::new(Rdv::new());
+
+            // Publish the GC request up-front (HB1: a safepoint observes an
+            // already-set request), then spawn the participants.
+            r.gc_requested.store(true, Ordering::Release);
+
+            let w1 = {
+                let r = r.clone();
+                thread::spawn(move || worker(&r, 0xA))
+            };
+            let w2 = {
+                let r = r.clone();
+                thread::spawn(move || worker(&r, 0xB))
+            };
+            let req = {
+                let r = r.clone();
+                thread::spawn(move || requestor(&r, NUM_WORKERS))
+            };
+
+            // (2) no_lost_wakeup: every join must return. If a worker missed its
+            // resume notification it would block on `resume_cond.wait` forever and
+            // loom would report a deadlock here.
+            req.join().expect("requestor");
+            w1.join().expect("worker 1 — possible lost wakeup");
+            w2.join().expect("worker 2 — possible lost wakeup");
+
+            // Final state: request cleared, both parked, marking finished.
+            assert!(
+                !r.gc_requested.load(Ordering::Acquire),
+                "gc_requested must be cleared after the cycle"
+            );
+            assert_eq!(
+                r.parked.load(Ordering::Acquire),
+                NUM_WORKERS,
+                "both workers must have parked exactly once"
+            );
+            assert!(
+                !r.marking.load(Ordering::Acquire),
+                "MARKING must be cleared after the mark window"
+            );
+        });
+    }
+
+    /// (4) requestor_exclusion: two threads race the `false→true` CAS (the
+    /// surrogate of `begin_gc_rendezvous`); EXACTLY one wins. Mirrors the
+    /// production `GC_REQUESTOR_ACTIVE.compare_exchange(false, true, AcqRel,
+    /// Acquire)`. Loom explores both orderings.
+    #[test]
+    fn loom_rendezvous_requestor_exclusion() {
+        loom::model(|| {
+            let owner = Arc::new(AtomicBool::new(false));
+            let winners = Arc::new(AtomicU32::new(0));
+
+            let t1 = {
+                let owner = owner.clone();
+                let winners = winners.clone();
+                thread::spawn(move || {
+                    // STRONG CAS (see module adaptations).
+                    if owner
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        winners.fetch_add(1, Ordering::AcqRel);
+                    }
+                })
+            };
+            let t2 = {
+                let owner = owner.clone();
+                let winners = winners.clone();
+                thread::spawn(move || {
+                    if owner
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        winners.fetch_add(1, Ordering::AcqRel);
+                    }
+                })
+            };
+
+            t1.join().expect("requestor 1");
+            t2.join().expect("requestor 2");
+
+            assert_eq!(
+                winners.load(Ordering::Acquire),
+                1,
+                "exactly one requestor may win the begin_gc_rendezvous CAS"
+            );
+        });
     }
 }

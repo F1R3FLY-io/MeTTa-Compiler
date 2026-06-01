@@ -397,6 +397,22 @@ fn main() {
         let cycles = mettatron::backend::eval::cesk::index_heap::index_gc::cycles_run();
         let midloop = mettatron::backend::eval::cesk::index_heap::index_gc::midloop_cycles_run();
         eprintln!("INDEX_GC_CYCLES_RUN={cycles} INDEX_GC_MIDLOOP_CYCLES={midloop}");
+        // Increment B observability: final heap state, to explain WHY the trigger did/
+        // didn't fire (e.g. cycles=0 because the run's young allocation never crossed
+        // YOUNG_BUDGET=2 MiB, or old_live stayed 0 on a single-segment workload where
+        // promote is a no-op). committed = node-slab + side-spine pointers.
+        {
+            let h = mettatron::backend::eval::cesk::index_heap::global_index_heap()
+                .read()
+                .expect("index heap");
+            eprintln!(
+                "INDEX_GC_FINAL committed={} young_alloc={} old_live={} live={}",
+                h.committed_bytes(),
+                h.young_alloc_bytes(),
+                h.old_live_bytes(),
+                h.live_bytes()
+            );
+        }
     }
 
     if (failures > 0 || errors > 0) && options.strict {

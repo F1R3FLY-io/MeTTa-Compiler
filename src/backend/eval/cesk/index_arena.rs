@@ -731,6 +731,28 @@ impl<N: Copy> IndexArena<N> {
         total
     }
 
+    /// Increment B (CHANGE #3): live node count of the OLD generation only (`[0,
+    /// young_floor)`) — the mirror of [`young_live_node_count`]. The major's live-based
+    /// trigger: a minor holds total live flat by reusing young (+ the side-free returns
+    /// payload RSS), so `old_live` grows ONLY with PROMOTED survivors ⇒ a major fires only
+    /// when the old gen genuinely grows — NOT on `committed`, which the append-only side
+    /// spine inflates monotonically (no-recycle). HIGH-WATER (`seg.len`, the bump cursor —
+    /// doesn't subtract reclaimed-but-unreleased old slots), so it OVER-estimates ⇒ the
+    /// major fires slightly EARLY ⇒ conservative/safe (R2: never delays a needed major).
+    #[inline]
+    pub fn old_live_node_count(&self) -> usize {
+        let mut total = 0usize;
+        let floor = self.young_floor.load(Ordering::Acquire);
+        for si in 0..floor {
+            // SAFETY: si < floor <= seg_count ⇒ published.
+            let seg = unsafe { self.segment(si) };
+            if !seg.released.load(Ordering::Relaxed) {
+                total += seg.len.load(Ordering::Acquire);
+            }
+        }
+        total
+    }
+
     /// C1: the current young/old generational boundary (segments `>= young_floor`
     /// are young). Read by the minor sweep and the young watermark.
     #[inline]

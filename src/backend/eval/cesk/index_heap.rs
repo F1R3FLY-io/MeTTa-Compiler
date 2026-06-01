@@ -717,6 +717,16 @@ impl IndexHeap {
         self.arena.live_node_count() * self.arena.node_size_bytes()
     }
 
+    /// Increment B (CHANGE #3): estimated live bytes of the OLD generation only — the
+    /// major's live-based trigger metric (mirror of [`live_bytes`], over
+    /// [`IndexArena::old_live_node_count`]). The major fires on `old_live_bytes` growth,
+    /// NOT `committed_bytes` (whose append-only side spine never shrinks under no-recycle,
+    /// so it would fire the major spuriously and defeat "minor displaces major").
+    #[inline]
+    pub fn old_live_bytes(&self) -> usize {
+        self.arena.old_live_node_count() * self.arena.node_size_bytes()
+    }
+
     /// C1.c: bytes of young node-slab allocated since the last [`promote_young`] —
     /// the nursery-fill odometer the driver compares against `YOUNG_BUDGET` to fire a
     /// minor (forwards to [`IndexArena::young_alloc_bytes`]). Tracks real young
@@ -1029,6 +1039,15 @@ pub mod index_gc {
     /// single sequential evaluator thread (the gate forbids any worker).
     static WATERMARK: AtomicUsize = AtomicUsize::new(0);
 
+    /// Increment B (CHANGE #3, R3 anti-thrash): when a cap-triggered major
+    /// (`committed > max_bytes()`) releases 0 segments it is FUTILE (the over-cap is
+    /// genuine live data or pathological 1-node-per-segment fragmentation), so re-firing
+    /// it every cycle would thrash. After such a major, raise the effective cap to the
+    /// current `committed` (stored here) so the cap clause needs FURTHER growth to
+    /// re-fire; reset to 0 on any major that DID release a segment. Single-threaded ⇒
+    /// `Relaxed`.
+    static CAP_FLOOR: AtomicUsize = AtomicUsize::new(0);
+
     /// C1.c: minors fired since the last major. The major (full) collection is the
     /// periodic BACKSTOP — it fires when total committed exceeds [`WATERMARK`] OR
     /// after [`MAJOR_CADENCE`] minors, whichever first — to reclaim old-generation
@@ -1078,6 +1097,28 @@ pub mod index_gc {
         })
     }
 
+    /// Increment B (CHANGE #3): default ABSOLUTE committed ceiling (bytes) — the hard cap
+    /// above which a MAJOR is forced regardless of `old_live`. Bounds RSS even on a
+    /// pathological workload whose old gen never grows (so the live-based trigger never
+    /// fires) but whose append-only side spine + transient churn inflate `committed`.
+    /// 4 GiB. Overridable via `METTATRON_INDEX_GC_MAX_BYTES` (NOT an on/off switch — a
+    /// ceiling tuning knob; the collector is always on).
+    const DEFAULT_ABSOLUTE_COMMITTED_CAP: usize = 4 * 1024 * 1024 * 1024;
+
+    /// Cached `METTATRON_INDEX_GC_MAX_BYTES` (parsed once) — the hard committed ceiling
+    /// (mirror of [`min_threshold`]). `committed > max_bytes()` forces a major.
+    fn max_bytes() -> usize {
+        use std::sync::OnceLock;
+        static MAX: OnceLock<usize> = OnceLock::new();
+        *MAX.get_or_init(|| {
+            std::env::var("METTATRON_INDEX_GC_MAX_BYTES")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or(DEFAULT_ABSOLUTE_COMMITTED_CAP)
+        })
+    }
+
     /// Number of live mark+sweep cycles run so far (test/validation observable).
     #[inline]
     pub fn cycles_run() -> u64 {
@@ -1108,12 +1149,21 @@ pub mod index_gc {
         // C1.c: a collection is due if the MINOR trigger (young allocation since the
         // last promotion exceeds the nursery budget — PRIMARY) OR the MAJOR backstop
         // (total committed over the watermark, or the minor cadence elapsed) fires.
-        let (committed, young_alloc) = {
+        let (committed, young_alloc, old_live) = {
             let heap = global_index_heap().read().expect("index heap");
-            (heap.committed_bytes(), heap.young_alloc_bytes())
+            (
+                heap.committed_bytes(),
+                heap.young_alloc_bytes(),
+                heap.old_live_bytes(),
+            )
         };
+        // Increment B (CHANGE #3): the MAJOR triggers on OLD-gen live growth (`old_live`),
+        // NOT `committed` (whose append-only side spine never shrinks under no-recycle, so
+        // it would fire the major spuriously); `committed` appears ONLY in the hard-ceiling
+        // clause (`> max_bytes()`). The MINOR (`young_alloc`) stays the primary trigger.
         young_alloc > YOUNG_BUDGET
-            || committed > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+            || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+            || committed > max_bytes()
             || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
     }
 
@@ -1200,12 +1250,21 @@ pub mod index_gc {
             return false;
         }
         // C1.c: minor (young allocation) primary OR major backstop (see `should_collect`).
-        let (committed, young_alloc) = {
+        let (committed, young_alloc, old_live) = {
             let heap = global_index_heap().read().expect("index heap");
-            (heap.committed_bytes(), heap.young_alloc_bytes())
+            (
+                heap.committed_bytes(),
+                heap.young_alloc_bytes(),
+                heap.old_live_bytes(),
+            )
         };
+        // Increment B (CHANGE #3): the MAJOR triggers on OLD-gen live growth (`old_live`),
+        // NOT `committed` (whose append-only side spine never shrinks under no-recycle, so
+        // it would fire the major spuriously); `committed` appears ONLY in the hard-ceiling
+        // clause (`> max_bytes()`). The MINOR (`young_alloc`) stays the primary trigger.
         young_alloc > YOUNG_BUDGET
-            || committed > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+            || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+            || committed > max_bytes()
             || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
     }
 
@@ -1290,12 +1349,25 @@ pub mod index_gc {
         // The MAJOR is the BACKSTOP: total committed over the watermark OR the minor
         // cadence elapsed (bounding the old-gen dead a minor leaves behind). Major
         // takes precedence when both are due (it subsumes a minor and reclaims old).
-        let (committed, young_alloc) = {
+        let (committed, young_alloc, old_live) = {
             let heap = global_index_heap().read().expect("index heap");
-            (heap.committed_bytes(), heap.young_alloc_bytes())
+            (
+                heap.committed_bytes(),
+                heap.young_alloc_bytes(),
+                heap.old_live_bytes(),
+            )
         };
-        let major_due = committed > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
-            || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;
+        // Increment B (CHANGE #3): the MAJOR is LIVE-BASED — it fires on OLD-gen live
+        // growth (`old_live` past the watermark), the HARD CEILING (`committed` past the
+        // R3-floored cap), or the cadence backstop. `committed` no longer drives the
+        // PRIMARY major (the append-only side spine inflates it monotonically under
+        // no-recycle, which would defeat "minor displaces major"). The MINOR (`young_alloc`)
+        // stays PRIMARY. Components are kept separate so the rearm + R3 see WHY a major fired.
+        let cap = max_bytes().max(CAP_FLOOR.load(Ordering::Relaxed));
+        let live_major = old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold());
+        let cap_major = committed > cap;
+        let cadence_major = MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;
+        let major_due = live_major || cap_major || cadence_major;
         let minor_due = young_alloc > YOUNG_BUDGET;
         if !major_due && !minor_due {
             return false;
@@ -1321,7 +1393,7 @@ pub mod index_gc {
         //          through an old node (Phase C1.c §A; the young-only mark theorem).
         // `promote_young` reclassifies the swept young segments as old (so only the
         // active + future segments stay young) AND resets the young-alloc odometer.
-        let (live_after, stats, did_major) = {
+        let (live_after, old_live_after, stats, did_major) = {
             let mut heap = global_index_heap().write().expect("index heap");
             let (stats, did_major) = if major_due {
                 heap.mark(&addrs); // FULL mark
@@ -1344,7 +1416,9 @@ pub mod index_gc {
                 heap.free_reclaimed_side_slots(&reclaimed);
             }
             heap.promote_young();
-            (heap.live_bytes(), stats, did_major)
+            // B.4: measure old_live AFTER promote (the just-swept survivors are now old),
+            // so the rearm metric == the trigger metric (both old_live) ⇒ geometric, no thrash.
+            (heap.live_bytes(), heap.old_live_bytes(), stats, did_major)
         };
 
         // Drop this thread's stale `MettaValueInner` materialization cache: a swept
@@ -1380,11 +1454,25 @@ pub mod index_gc {
         // post-full-sweep live bytes and resets the minor cadence; a minor only
         // advances the cadence (its young odometer was reset by `promote_young`).
         if did_major {
+            // B.4: rearm the major watermark from the post-promote OLD-gen live high-water
+            // (trigger == rearm metric, both `old_live` ⇒ geometric doubling ⇒ no immediate
+            // re-fire; the major now fires only when the old gen genuinely re-grows). On the
+            // FIRST major almost everything is freshly old (old_live ≈ total live), matching
+            // the prior `live_after`-based rearm; subsequent majors fire only on real old growth.
             WATERMARK.store(
-                live_after.saturating_mul(GROWTH).max(min_threshold()),
+                old_live_after.saturating_mul(GROWTH).max(min_threshold()),
                 Ordering::Relaxed,
             );
             MINORS_SINCE_MAJOR.store(0, Ordering::Relaxed);
+            // B.5 (R3 anti-thrash): a cap-triggered major that released 0 segments is FUTILE
+            // — raise CAP_FLOOR to current `committed` so the cap clause needs FURTHER growth
+            // to re-fire (no per-cycle thrash on a genuinely-over-cap / 1-node-per-segment
+            // fragmented old gen). A major that DID release a segment resets the floor.
+            if cap_major && stats.segments_released == 0 {
+                CAP_FLOOR.store(committed, Ordering::Relaxed);
+            } else if stats.segments_released > 0 {
+                CAP_FLOOR.store(0, Ordering::Relaxed);
+            }
         } else {
             MINORS_SINCE_MAJOR.fetch_add(1, Ordering::Relaxed);
         }
@@ -1398,8 +1486,21 @@ pub mod index_gc {
         // the C1.c minor/major label + the young-alloc odometer that triggered it.
         if std::env::var("METTATRON_INDEX_GC_REPORT").as_deref() == Ok("2") {
             let kind = if did_major { "major" } else { "minor" };
+            // B observability: the major-REASON (old_live / cap / cadence) + old_live_after
+            // + committed, so the A/B benchmark can confirm minors dominate and majors fire
+            // on genuine old-gen growth (not on the inflating committed). "{kind} cycle" is
+            // kept contiguous so the grep-based gates ("minor cycle"/"major cycle") still match.
+            let reason = if !did_major {
+                "young"
+            } else if live_major {
+                "old_live"
+            } else if cap_major {
+                "cap"
+            } else {
+                "cadence"
+            };
             eprintln!(
-                "[index_gc] {phase} {kind} cycle: roots={} live_bytes={live_after} young_alloc_pre={young_alloc} reclaimed_slots={} released_segs={} bytes_freed={} minors_since_major={}",
+                "[index_gc] {phase} {kind} cycle ({reason}): roots={} live_bytes={live_after} old_live_after={old_live_after} committed={committed} young_alloc_pre={young_alloc} reclaimed_slots={} released_segs={} bytes_freed={} minors_since_major={}",
                 addrs.len(),
                 stats.reclaimed_to_free_list,
                 stats.segments_released,

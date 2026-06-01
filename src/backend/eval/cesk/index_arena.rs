@@ -389,6 +389,13 @@ pub struct IndexArena<N: Copy> {
     /// driver fires a minor when this exceeds `YOUNG_BUDGET`. `Relaxed` (the
     /// single-threaded collector regime, like `alloc_count`).
     young_alloc_bytes: AtomicU64,
+    /// Increment C (CHANGE #2 — backpressure): set TRUE when [`open_segment`] opens a
+    /// SUBSEQUENT segment (idx > 0) — the "nursery filled / about to grow" event the
+    /// slab's `request_gc` / `BACKPRESSURE_LEVEL` signals on. The collector folds this
+    /// into `minor_due` (schedule a minor at the next safepoint, never synchronous), and
+    /// [`promote_young`] clears it (trigger == rearm ⇒ no thrash — the index analogue of
+    /// the slab's `BackpressureEventuallyRelaxes`). `Relaxed` (single-threaded regime).
+    nursery_full_pending: AtomicBool,
 }
 
 impl<N: Copy> Default for IndexArena<N> {
@@ -430,6 +437,7 @@ impl<N: Copy> IndexArena<N> {
             alloc_count: AtomicU64::new(0),
             young_floor: AtomicUsize::new(0),
             young_alloc_bytes: AtomicU64::new(0),
+            nursery_full_pending: AtomicBool::new(false),
         };
         arena.open_segment(); // publishes segment 0; sets cur_seg = 0
         arena
@@ -459,6 +467,14 @@ impl<N: Copy> IndexArena<N> {
         }
         self.seg_count.store(idx + 1, Ordering::Release); // publish the cell
         self.cur_seg.store(idx, Ordering::Release); // retarget bump
+        // Increment C (CHANGE #2): a SUBSEQUENT segment open (idx > 0) is the nursery-
+        // filled backpressure event — signal a minor at the next safepoint. The initial
+        // segment 0 (from the constructor) is NOT a fill, so it does not signal. A
+        // sweep-driven reopen also sets this, but the collection's `promote_young` clears
+        // it in the same critical section ⇒ no spurious post-collection minor.
+        if idx > 0 {
+            self.nursery_full_pending.store(true, Ordering::Relaxed);
+        }
         idx
     }
 
@@ -783,6 +799,10 @@ impl<N: Copy> IndexArena<N> {
         // allocated since the LAST promotion, so the next minor fires after
         // `YOUNG_BUDGET` more young allocation (trigger == rearm baseline ⇒ no thrash).
         self.young_alloc_bytes.store(0, Ordering::Relaxed);
+        // Increment C (CHANGE #2): clear the backpressure signal — promotion is the index
+        // analogue of the slab's `BackpressureEventuallyRelaxes` (trigger == rearm ⇒ a
+        // minor cannot immediately re-fire on a stale pending flag).
+        self.nursery_full_pending.store(false, Ordering::Relaxed);
     }
 
     /// C1.c: bytes of young node-slot allocated since the last [`promote_young`] —
@@ -792,6 +812,14 @@ impl<N: Copy> IndexArena<N> {
     #[inline]
     pub fn young_alloc_bytes(&self) -> usize {
         self.young_alloc_bytes.load(Ordering::Relaxed) as usize
+    }
+
+    /// Increment C (CHANGE #2 — backpressure): the allocator→GC signal — TRUE iff, since
+    /// the last promotion, a subsequent segment opened (the nursery grew). The driver
+    /// folds it into `minor_due` so a minor is scheduled at the next safepoint.
+    #[inline]
+    pub fn nursery_full_pending(&self) -> bool {
+        self.nursery_full_pending.load(Ordering::Relaxed)
     }
 
     /// Per-node byte size (`size_of::<N>()`), so a wrapper can convert a node
@@ -1223,6 +1251,37 @@ mod tests {
         assert_eq!((b.segment(), b.offset()), (0, 1));
         assert_eq!((c.segment(), c.offset()), (0, 2));
         assert_eq!(arena.alloc_count(), 3);
+    }
+
+    #[test]
+    fn nursery_full_pending_signals_on_segment_open_and_clears_on_promote() {
+        // Increment C (CHANGE #2): the backpressure signal is FALSE initially (only the
+        // constructor's segment 0 opened — idx=0, not a fill), set TRUE when a SUBSEQUENT
+        // segment opens (idx>0 — the nursery grew), and cleared by `promote_young` (the
+        // index analogue of the slab's `BackpressureEventuallyRelaxes`). NOTE: this fires
+        // here only because the test uses a tiny 2-slot segment; in PRODUCTION a segment is
+        // 8 MiB > YOUNG_BUDGET (2 MiB), so `young_alloc > YOUNG_BUDGET` triggers the minor
+        // BEFORE a 2nd segment opens — the signal is subsumed there (it is the slab-faithful
+        // integration channel for the small-segment / high-budget path; the substantive
+        // runtime coupling is the driver's level-3 minor-preference, which is independent).
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(2);
+        assert!(!arena.nursery_full_pending(), "initial segment 0 is not a fill");
+        arena.alloc(1);
+        arena.alloc(2); // fills segment 0 (capacity 2)
+        assert!(
+            !arena.nursery_full_pending(),
+            "no subsequent segment has opened yet"
+        );
+        arena.alloc(3); // overflows segment 0 -> opens segment 1 (idx=1>0) -> signal
+        assert!(
+            arena.nursery_full_pending(),
+            "a subsequent segment open sets the backpressure signal"
+        );
+        arena.promote_young();
+        assert!(
+            !arena.nursery_full_pending(),
+            "promote_young clears the signal (the relax)"
+        );
     }
 
     #[test]

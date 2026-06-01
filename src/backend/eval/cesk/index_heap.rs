@@ -737,6 +737,14 @@ impl IndexHeap {
         self.arena.young_alloc_bytes()
     }
 
+    /// Increment C (CHANGE #2): the allocator->GC backpressure signal (forwards to
+    /// [`IndexArena::nursery_full_pending`]) — TRUE iff a segment opened since the last
+    /// promotion. The driver folds it into `minor_due` so a minor is scheduled next safepoint.
+    #[inline]
+    pub fn nursery_full_pending(&self) -> bool {
+        self.arena.nursery_full_pending()
+    }
+
     /// C1.b: promote young survivors to old (non-moving boundary advance). Forwards
     /// to [`IndexArena::promote_young`]; called after a collection under the write lock.
     #[inline]
@@ -1119,6 +1127,26 @@ pub mod index_gc {
         })
     }
 
+    /// Increment C (CHANGE #2): the allocator→GC backpressure LEVEL (0..3) — the index
+    /// mirror of the slab's `BACKPRESSURE_LEVEL` (`gc_allocator.rs:3159-3162`), the SAME
+    /// ladder applied to the young-nursery ratio (`young_alloc / YOUNG_BUDGET`) instead of
+    /// the slab's committed/threshold ratio: `>=2x -> 3, >=1.5x -> 2, >=1x -> 1, else 0`.
+    /// Drives the level-3 minor-preference (a level-3 nursery is ACUTE young pressure, so
+    /// the driver prefers the cheap young-only minor over a coincident major for one cycle).
+    #[inline]
+    fn index_backpressure_level(young_alloc: usize) -> u8 {
+        let b = YOUNG_BUDGET;
+        if young_alloc >= 2 * b {
+            3
+        } else if young_alloc * 2 >= 3 * b {
+            2
+        } else if young_alloc >= b {
+            1
+        } else {
+            0
+        }
+    }
+
     /// Number of live mark+sweep cycles run so far (test/validation observable).
     #[inline]
     pub fn cycles_run() -> u64 {
@@ -1149,19 +1177,23 @@ pub mod index_gc {
         // C1.c: a collection is due if the MINOR trigger (young allocation since the
         // last promotion exceeds the nursery budget — PRIMARY) OR the MAJOR backstop
         // (total committed over the watermark, or the minor cadence elapsed) fires.
-        let (committed, young_alloc, old_live) = {
+        let (committed, young_alloc, old_live, nursery_pending) = {
             let heap = global_index_heap().read().expect("index heap");
             (
                 heap.committed_bytes(),
                 heap.young_alloc_bytes(),
                 heap.old_live_bytes(),
+                heap.nursery_full_pending(),
             )
         };
         // Increment B (CHANGE #3): the MAJOR triggers on OLD-gen live growth (`old_live`),
         // NOT `committed` (whose append-only side spine never shrinks under no-recycle, so
         // it would fire the major spuriously); `committed` appears ONLY in the hard-ceiling
-        // clause (`> max_bytes()`). The MINOR (`young_alloc`) stays the primary trigger.
+        // clause (`> max_bytes()`). The MINOR is `young_alloc` past the budget OR the
+        // Increment C (CHANGE #2) backpressure signal (`nursery_pending` — a segment opened
+        // since the last promotion, the slab `request_gc` analogue).
         young_alloc > YOUNG_BUDGET
+            || nursery_pending
             || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
             || committed > max_bytes()
             || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
@@ -1250,19 +1282,23 @@ pub mod index_gc {
             return false;
         }
         // C1.c: minor (young allocation) primary OR major backstop (see `should_collect`).
-        let (committed, young_alloc, old_live) = {
+        let (committed, young_alloc, old_live, nursery_pending) = {
             let heap = global_index_heap().read().expect("index heap");
             (
                 heap.committed_bytes(),
                 heap.young_alloc_bytes(),
                 heap.old_live_bytes(),
+                heap.nursery_full_pending(),
             )
         };
         // Increment B (CHANGE #3): the MAJOR triggers on OLD-gen live growth (`old_live`),
         // NOT `committed` (whose append-only side spine never shrinks under no-recycle, so
         // it would fire the major spuriously); `committed` appears ONLY in the hard-ceiling
-        // clause (`> max_bytes()`). The MINOR (`young_alloc`) stays the primary trigger.
+        // clause (`> max_bytes()`). The MINOR is `young_alloc` past the budget OR the
+        // Increment C (CHANGE #2) backpressure signal (`nursery_pending` — a segment opened
+        // since the last promotion, the slab `request_gc` analogue).
         young_alloc > YOUNG_BUDGET
+            || nursery_pending
             || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
             || committed > max_bytes()
             || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
@@ -1349,29 +1385,41 @@ pub mod index_gc {
         // The MAJOR is the BACKSTOP: total committed over the watermark OR the minor
         // cadence elapsed (bounding the old-gen dead a minor leaves behind). Major
         // takes precedence when both are due (it subsumes a minor and reclaims old).
-        let (committed, young_alloc, old_live) = {
+        let (committed, young_alloc, old_live, nursery_pending) = {
             let heap = global_index_heap().read().expect("index heap");
             (
                 heap.committed_bytes(),
                 heap.young_alloc_bytes(),
                 heap.old_live_bytes(),
+                heap.nursery_full_pending(),
             )
         };
         // Increment B (CHANGE #3): the MAJOR is LIVE-BASED — it fires on OLD-gen live
         // growth (`old_live` past the watermark), the HARD CEILING (`committed` past the
         // R3-floored cap), or the cadence backstop. `committed` no longer drives the
         // PRIMARY major (the append-only side spine inflates it monotonically under
-        // no-recycle, which would defeat "minor displaces major"). The MINOR (`young_alloc`)
-        // stays PRIMARY. Components are kept separate so the rearm + R3 see WHY a major fired.
+        // no-recycle, which would defeat "minor displaces major"). Components are kept
+        // separate so the rearm + R3 + the Increment C level-3 preference see WHY a major fired.
         let cap = max_bytes().max(CAP_FLOOR.load(Ordering::Relaxed));
         let live_major = old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold());
         let cap_major = committed > cap;
         let cadence_major = MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;
         let major_due = live_major || cap_major || cadence_major;
-        let minor_due = young_alloc > YOUNG_BUDGET;
+        // Increment C (CHANGE #2): the MINOR is `young_alloc` past the budget OR the
+        // backpressure signal (`nursery_pending` — a segment opened since the last promotion).
+        let minor_due = young_alloc > YOUNG_BUDGET || nursery_pending;
         if !major_due && !minor_due {
             return false;
         }
+        // Increment C (CHANGE #2) — the level-3 minor-preference (the bounded <=1-cycle
+        // inversion): when the nursery is at ACUTE young pressure (level 3) AND both a minor
+        // and a major are due, PREFER the cheap young-only minor for THIS cycle — UNLESS the
+        // major is forced by the hard ceiling (`cap_major`) or the cadence backstop
+        // (`cadence_major`), which must not be deferred. A deferred `live_major` still fires
+        // within MAJOR_CADENCE (the cadence counts up regardless), so old dead stays bounded.
+        let level = index_backpressure_level(young_alloc);
+        let do_major =
+            major_due && !(level == 3 && minor_due && !cap_major && !cadence_major);
 
         // Project the root values to arena addresses. filter_map drops inline
         // scalars (Bool / i48 Long / Unit / Empty) and any non-index handle.
@@ -1395,10 +1443,12 @@ pub mod index_gc {
         // active + future segments stay young) AND resets the young-alloc odometer.
         let (live_after, old_live_after, stats, did_major) = {
             let mut heap = global_index_heap().write().expect("index heap");
-            let (stats, did_major) = if major_due {
+            let (stats, did_major) = if do_major {
                 heap.mark(&addrs); // FULL mark
                 (heap.sweep(), true)
             } else {
+                // Minor: a pure minor (only minor_due) OR a level-3-DEFERRED major (a minor
+                // ran instead this cycle; the live_major re-fires next cycle / within cadence).
                 heap.mark_young(&addrs); // YOUNG-ONLY mark (cheap — the minor's win)
                 (heap.sweep_young(), false)
             };

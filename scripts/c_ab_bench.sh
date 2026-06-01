@@ -31,9 +31,16 @@ WORKLOADS=("$REPO/examples/cesk-gc/side_free_minor.metta")
 [ -f "$ROBOT" ] && WORKLOADS+=("$ROBOT")
 
 build_ref() {  # $1=ref -> echoes saved binary path
-  local ref="$1" wt="/tmp/wt-cab-$1" out="/tmp/cab_${1}_mettatron"
+  # The worktree MUST be a sibling of MeTTa-Compiler: Cargo.toml has relative path deps
+  # (../MORK/kernel, ../f1r3node-rust/models, ../PathMap, …) that only resolve from the
+  # real parent dir — a /tmp worktree resolves ../MORK to /tmp/MORK (nonexistent).
+  local ref="$1" wt="/home/dylon/Workspace/f1r3fly.io/wt-cab-$1" out="/tmp/cab_${1}_mettatron"
   git worktree add --detach "$wt" "$ref" >/tmp/cab_wt_$1.log 2>&1 || true
-  ( cd "$wt" && "${BUILDCAP[@]}" cargo build --release --features index-gc --bin mettatron ) \
+  # +nightly: the repo's nightly toolchain is a rustup DIRECTORY OVERRIDE (not a tracked
+  # rust-toolchain file), so a fresh worktree defaults to stable and fails E0554 on
+  # fast-slice-utils' #![feature]. .cargo/config.toml (target-cpu=native) IS tracked, so
+  # it ships with the worktree.
+  ( cd "$wt" && "${BUILDCAP[@]}" cargo +nightly build --release --features index-gc --bin mettatron ) \
     >/tmp/cab_build_$1.log 2>&1
   cp "$CARGO_TARGET_DIR/release/mettatron" "$out"
   echo "$out"
@@ -44,8 +51,10 @@ bench() {  # $1=label $2=bin
   for wl in "${WORKLOADS[@]}"; do
     local name; name=$(basename "$wl" .metta)
     for r in $(seq 1 "$REPS"); do
-      METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=$GIB METTATRON_INDEX_GC_REPORT=2 \
-        /usr/bin/time -v "${RUNCAP[@]}" "$bin" "$wl" \
+      # /usr/bin/time -v must run INSIDE the systemd scope so it measures the BINARY's
+      # RSS (its child), not the systemd-run wrapper's. env sets the GC knobs in the scope.
+      "${RUNCAP[@]}" env METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=$GIB \
+        METTATRON_INDEX_GC_REPORT=2 /usr/bin/time -v "$bin" "$wl" \
         >"/tmp/cab_${label}_${name}_${r}.out" 2>"/tmp/cab_${label}_${name}_${r}.err"
       local rss wall minors majors
       rss=$(grep -oE 'Maximum resident set size \(kbytes\): [0-9]+' "/tmp/cab_${label}_${name}_${r}.err" | grep -oE '[0-9]+$')
@@ -64,6 +73,6 @@ echo "### build B ($B_REF)"; B_BIN=$(build_ref "$B_REF"); echo "B_bin=$B_BIN ($(
 echo "### bench A"; bench "A($A_REF)" "$A_BIN"
 echo "### bench B"; bench "B($B_REF)" "$B_BIN"
 echo "===== cleanup worktrees ====="
-git worktree remove --force "/tmp/wt-cab-$A_REF" 2>/dev/null || true
-git worktree remove --force "/tmp/wt-cab-$B_REF" 2>/dev/null || true
+git worktree remove --force "/home/dylon/Workspace/f1r3fly.io/wt-cab-$A_REF" 2>/dev/null || true
+git worktree remove --force "/home/dylon/Workspace/f1r3fly.io/wt-cab-$B_REF" 2>/dev/null || true
 echo "===== C A/B BENCH DONE (RSS is the side-free headline metric) ====="; date

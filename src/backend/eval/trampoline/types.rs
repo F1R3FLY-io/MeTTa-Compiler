@@ -3166,6 +3166,128 @@ mod tests {
         force_cut_signal_for_test(0); // thread-local hygiene for the shared test thread
     }
 
+    /// Increment D (C2): the SAME narrowing soundness for `ProcessAmb` — drops the dead
+    /// `remaining_alts` once the cut fired for the frame's barrier, keeps `results`.
+    /// (`ProcessAmb` carries no trace-gated fields, so the frame literal is gate-free.)
+    #[test]
+    fn collect_live_values_narrows_process_amb_on_cut() {
+        use crate::backend::eval::trampoline::eval_loop::force_cut_signal_for_test;
+        let f = factory();
+        const B: u64 = 43; // a nonzero cut barrier
+        let frame = Continuation::ProcessAmb {
+            remaining_alts: vec![
+                (f.long(1), GenericBindings::new()),
+                (f.long(2), GenericBindings::new()),
+            ]
+            .into_iter(),
+            results: vec![(f.long(3), GenericBindings::new())],
+            env: env(),
+            depth: 0,
+            outer_carrying: empty_shared_bindings(),
+            project_alt_carrying: true,
+            cut_barrier: B,
+        };
+        let longs = |v: &[MettaValue]| {
+            let mut xs: Vec<i64> = v.iter().filter_map(|x| x.as_long()).collect();
+            xs.sort_unstable();
+            xs
+        };
+
+        // NOT fired: live == full == {1,2,3} (proves the not-fired arm mirrors collect_values).
+        force_cut_signal_for_test(0);
+        let (mut live, mut full) = (Vec::new(), Vec::new());
+        frame.collect_live_values(&mut live);
+        frame.collect_values(&mut full);
+        assert_eq!(longs(&live), longs(&full), "no cut: live == full");
+        assert_eq!(longs(&live), vec![1, 2, 3], "no cut: all alts kept");
+
+        // FIRED: live drops the dead remaining_alts {1,2}, keeps results {3}; full unchanged.
+        force_cut_signal_for_test(B);
+        let (mut live, mut full) = (Vec::new(), Vec::new());
+        frame.collect_live_values(&mut live);
+        frame.collect_values(&mut full);
+        assert_eq!(longs(&live), vec![3], "cut fired: only results remain (alts are dead)");
+        assert_eq!(longs(&full), vec![1, 2, 3], "collect_values is unchanged by the cut");
+        force_cut_signal_for_test(0);
+    }
+
+    /// Increment D (C2): the SAME narrowing soundness for `ProcessMatchTemplates` — drops the
+    /// dead `remaining_templates` once the cut fired for the frame's barrier, keeps `results`.
+    #[test]
+    fn collect_live_values_narrows_process_match_templates_on_cut() {
+        use crate::backend::eval::trampoline::eval_loop::force_cut_signal_for_test;
+        let f = factory();
+        const B: u64 = 44; // a nonzero cut barrier
+        let frame = Continuation::ProcessMatchTemplates {
+            remaining_templates: vec![f.long(1), f.long(2)].into_iter(),
+            results: vec![(f.long(3), GenericBindings::new())],
+            env: env(),
+            depth: 0,
+            outer_carrying: empty_shared_bindings(),
+            cut_barrier: B,
+        };
+        let longs = |v: &[MettaValue]| {
+            let mut xs: Vec<i64> = v.iter().filter_map(|x| x.as_long()).collect();
+            xs.sort_unstable();
+            xs
+        };
+
+        // NOT fired: live == full == {1,2,3}.
+        force_cut_signal_for_test(0);
+        let (mut live, mut full) = (Vec::new(), Vec::new());
+        frame.collect_live_values(&mut live);
+        frame.collect_values(&mut full);
+        assert_eq!(longs(&live), longs(&full), "no cut: live == full");
+        assert_eq!(longs(&live), vec![1, 2, 3], "no cut: all templates kept");
+
+        // FIRED: live drops the dead remaining_templates {1,2}, keeps results {3}.
+        force_cut_signal_for_test(B);
+        let (mut live, mut full) = (Vec::new(), Vec::new());
+        frame.collect_live_values(&mut live);
+        frame.collect_values(&mut full);
+        assert_eq!(longs(&live), vec![3], "cut fired: only results remain (templates are dead)");
+        assert_eq!(longs(&full), vec![1, 2, 3], "collect_values is unchanged by the cut");
+        force_cut_signal_for_test(0);
+    }
+
+    /// Increment D (C2) EDGE: `cut_barrier == 0` means "no active cut scope".
+    /// `cut_fired_peek(0)` is false UNCONDITIONALLY (the `b != 0` guard, eval_loop.rs:2166),
+    /// so the dead-iterator narrowing must NEVER engage for a barrier-0 frame — even with the
+    /// thread-local `CUT_SIGNAL` forced to a nonzero value. This pins the guard that keeps the
+    /// narrowing from over-pruning frames that never opened a cut scope.
+    #[test]
+    fn collect_live_values_barrier_zero_never_narrows() {
+        use crate::backend::eval::trampoline::eval_loop::force_cut_signal_for_test;
+        let f = factory();
+        let frame = Continuation::ProcessAmb {
+            remaining_alts: vec![
+                (f.long(1), GenericBindings::new()),
+                (f.long(2), GenericBindings::new()),
+            ]
+            .into_iter(),
+            results: vec![(f.long(3), GenericBindings::new())],
+            env: env(),
+            depth: 0,
+            outer_carrying: empty_shared_bindings(),
+            project_alt_carrying: true,
+            cut_barrier: 0,
+        };
+        let longs = |v: &[MettaValue]| {
+            let mut xs: Vec<i64> = v.iter().filter_map(|x| x.as_long()).collect();
+            xs.sort_unstable();
+            xs
+        };
+
+        // Force a NONZERO signal: a barrier-0 frame still must not narrow.
+        force_cut_signal_for_test(99);
+        let (mut live, mut full) = (Vec::new(), Vec::new());
+        frame.collect_live_values(&mut live);
+        frame.collect_values(&mut full);
+        assert_eq!(longs(&live), longs(&full), "barrier 0: live == full (no scope to cut)");
+        assert_eq!(longs(&live), vec![1, 2, 3], "barrier 0: all alts kept despite the signal");
+        force_cut_signal_for_test(0);
+    }
+
     #[test]
     fn test_work_item_eval_collects_value() {
         let f = factory();

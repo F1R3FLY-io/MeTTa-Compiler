@@ -186,6 +186,17 @@ impl RootSet<crate::backend::models::MettaValue> {
         }
     }
 
+    /// Increment D (C2): K-component roots with the abstract-GC NARROWING applied — uses
+    /// [`Continuation::collect_live_values`] (which skips a post-cut-dead iterator field —
+    /// `remaining_matches`/`remaining_alts`/`remaining_templates`) instead of `collect_values`.
+    /// Used ONLY by the MIDLOOP root-build (where K is non-empty); quiescence has no
+    /// continuations, so the shipped path is byte-identical.
+    pub fn collect_from_continuations_live(&mut self, continuations: &[Continuation]) {
+        for c in continuations {
+            c.collect_live_values(&mut self.roots);
+        }
+    }
+
     /// Collect all roots from a complete SECK machine snapshot.
     ///
     /// Convenience method that calls all `collect_from_*` methods.
@@ -207,6 +218,22 @@ impl RootSet<crate::backend::models::MettaValue> {
         self.collect_from_operand_stack(operand_stack);
         self.collect_from_work_items(current_work, work_stack);
         self.collect_from_continuations(continuations);
+    }
+
+    /// Increment D (C2): [`collect_all`] with the K-walk NARROWED via
+    /// [`collect_from_continuations_live`] (S and C unchanged — only K narrows). The
+    /// abstract-GC (Might–Shivers) refinement of the K register's `σ|_Reachable` contribution.
+    pub fn collect_all_live(
+        &mut self,
+        operand_stack: &OperandStack<crate::backend::models::MettaValue>,
+        current_work: &WorkItem,
+        work_stack: &[WorkItem],
+        continuations: &[Continuation],
+    ) {
+        self.clear();
+        self.collect_from_operand_stack(operand_stack);
+        self.collect_from_work_items(current_work, work_stack);
+        self.collect_from_continuations_live(continuations);
     }
 
     /// CESK Phase A4 — the single **structural** root reader.
@@ -330,6 +357,32 @@ pub fn collect_machine_roots(
     // ∪ reach(E₀-env) ∪ global anchors ∪ K-spine — the persistent structural roots.
     // (Byte-identical to the prior `collect_structural` + anchors + k_spine: same
     // pointer multiset in the same order — see docs/cesk-gc/a4-4-collector-flip-design.md.)
+    collect_persistent_roots(out, env0);
+}
+
+/// CESK Phase C Increment D (C2): [`collect_machine_roots`] with the K-component NARROWED
+/// via [`RootSet::collect_all_live`] / [`Continuation::collect_live_values`] — Might–Shivers
+/// abstract-GC live-variable marking (skip a post-cut-dead K-frame iterator field). Used ONLY
+/// by the MIDLOOP root-build (the `should_collect_midloop` feed in `eval_loop.rs`); the
+/// QUIESCENCE root-build keeps `collect_machine_roots` (and at quiescence K is empty anyway,
+/// so the shipped collector is byte-identical). The narrowing is a machine-STATE property, so
+/// it is sound for BOTH the midloop minor and the (rare) midloop major marking from the single
+/// root vec; the soundness coupling (`collect_live_values` skips F ⟹ the next transition does
+/// not read F) is mechanically asserted at the three advance arms (eval_loop.rs:8556/14762/15611).
+/// The young-only-mark theorem is untouched (D shrinks the root set, not the mark descent).
+pub fn collect_machine_roots_live(
+    out: &mut Vec<crate::backend::models::MettaValue>,
+    operand_stack: &OperandStack<crate::backend::models::MettaValue>,
+    current_work: &WorkItem,
+    work_stack: &[WorkItem],
+    continuations: &[Continuation],
+    env0: &crate::backend::environment::core::GenericEnvironmentShared<
+        crate::backend::models::MettaValue,
+    >,
+) {
+    let mut rs = RootSet::with_capacity(out.len() + 64);
+    rs.collect_all_live(operand_stack, current_work, work_stack, continuations);
+    out.extend(rs.drain_into_vec());
     collect_persistent_roots(out, env0);
 }
 

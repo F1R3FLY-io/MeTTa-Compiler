@@ -3805,7 +3805,15 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // PROVEN superset at this site. collect_all_roots()/root_set survive (still fed to
                 // the oracle's OLD) until A5 deletes the apparatus.
                 let mut midloop_roots: Vec<MettaValue> = Vec::with_capacity(root_set.len() + 64);
-                crate::backend::eval::cesk::roots::collect_machine_roots(
+                // C #D-2 (C2): narrow the K-component via Might–Shivers abstract-GC live-var
+                // marking (`collect_machine_roots_live` -> `Continuation::collect_live_values`),
+                // skipping post-cut-dead K-frame iterators. MIDLOOP-ONLY (K is non-empty here;
+                // the quiescence build keeps `collect_machine_roots` + the A4.3 oracle above stays
+                // full). The narrowing is a machine-STATE property ⇒ sound for the midloop minor
+                // AND major from this one root vec; the soundness coupling (narrowed ⟹ the next
+                // transition does not read the skipped field) is mechanically asserted at the three
+                // advance arms (eval_loop.rs:8556 / :14762 / :15611).
+                crate::backend::eval::cesk::roots::collect_machine_roots_live(
                     &mut midloop_roots,
                     &machine_operand_stack,
                     &work,
@@ -8554,6 +8562,17 @@ fn process_continuation<C: EvalContext>(
                     result: (SmallVec::from_vec(results), result_env),
                 });
             } else {
+                // D-2 (C2) soundness coupling: `collect_live_values` SKIPS `remaining_matches`
+                // iff `cut_fired_peek(cut_barrier)`. Reading the next match here is the read of
+                // a field a midloop minor may have left un-rooted, so it REQUIRES !cut — else a
+                // narrowed-then-reclaimed value would be deref'd (UAF). This branch is the !cut
+                // path BY CONSTRUCTION (the cut-commit branch above dropped + finished), so it
+                // holds; the assert tripwires any future edit that reads on the cut path.
+                debug_assert!(
+                    !cut_fired,
+                    "D-2: ProcessRuleMatches reads remaining_matches.next() only when !cut_fired \
+                     (collect_live_values narrows remaining_matches iff cut_fired)"
+                );
                 // remaining_matches is already in generic type (V, GenericBindings<V>)
                 let (rhs, raw_bindings) = remaining_matches
                     .next()
@@ -14748,6 +14767,14 @@ fn process_continuation<C: EvalContext>(
                 return;
             }
 
+            // D-2 (C2) soundness coupling: `collect_live_values` skips `remaining_alts` iff
+            // `cut_fired_peek(cut_barrier)`; the cut-commit branch above dropped + returned, so
+            // reaching this read is the !cut path by construction. The assert tripwires any future
+            // edit that reads `remaining_alts` on the cut path (a narrowed-then-reclaimed deref → UAF).
+            debug_assert!(
+                !cut_fired_peek(cut_barrier),
+                "D-2: ProcessAmb reads remaining_alts.next() only when !cut_fired_peek (narrowed iff cut)"
+            );
             if let Some((next_val, alt_b)) = remaining_alts.next() {
                 // Phase 1 cut-barrier: re-assert this disjunction's barrier as
                 // the innermost active cut scope before dispatching the next
@@ -15597,6 +15624,13 @@ fn process_continuation<C: EvalContext>(
                     result: (SmallVec::from_vec(results), env),
                 });
             } else {
+                // D-2 (C2) soundness coupling: `collect_live_values` skips `remaining_templates`
+                // iff `cut_fired_peek(cut_barrier)`; the cut-commit branch above dropped + returned,
+                // so this read is the !cut path. Tripwire for a future edit reading on the cut path.
+                debug_assert!(
+                    !cut_fired_peek(cut_barrier),
+                    "D-2: ProcessMatchTemplates reads remaining_templates.next() only when !cut_fired_peek"
+                );
                 let next_template = remaining_templates.next().unwrap();
 
                 // Phase 1 cut-barrier: re-assert this fan-out's barrier before

@@ -1,26 +1,37 @@
 # Phase D — Parallel Collector: source-verified design
 
-**Status: EXECUTING. D-TLAB-1.0 (`a574bf5`) + D-TLAB-1.1 (`f7f49e0`, incl. the D-TLAB-1.0 two-level
-lazy-directory fixup) COMMITTED + gated. NEXT = D-TLAB-1.2 (the `&self` flip + co-location single-pick +
-sides-directory move — the concurrency-capability gate, loom/TSan/TLA+).** Authoritative plan:
+**Status: EXECUTING. The D-TLAB sub-phase (concurrent side arenas + un-serialized allocation) is COMPLETE +
+committed + gated. NEXT = D1–D5 (the parallel collector itself: rendezvous → worker-self-root → parallel
+mark/sweep → concurrent release → gate-flip).** Authoritative plan:
 `~/.claude/plans/help-me-complete-the-shimmying-mochi.md` (Phase D). This doc records the VERIFIED current
 state and the corrections the source forces on the plan's D1/D2 assumptions.
 
-**Progress (2026-06-01):**
-- ✅ **D-TLAB-1.0** (`a574bf5`): the inert `SideColumn<T>` concurrent chunked column + unit tests.
-- ✅ **D-TLAB-1.1** (`f7f49e0`): wired `SideColumn` into `SegmentSideArenas` (fields + access methods +
-  `Drop`), still `&mut` (byte-identical) — AND folded the D-TLAB-1.0 fixup: the fixed `MAX_SIDE_CHUNKS=66`
-  cap (unreachable inert, but panics rc=101 once wired — variable-length cur_seg reuse decouples
-  never-recycled side appends from node count → unbounded) → a **two-level lazy directory**
-  (`SIDE_PAGE_BITS=10`: eager `MAX_SIDE_PAGES=1024` super-dir → lazy 1024-chunk pages → full u32 ceiling,
-  ~16 KiB eager/column; `grow_to` publishes page-before-chunk). Gate green: c_A_asan arm3 rc=0 + 14 minors
-  (was rc=101 at 66 chunks), 0 UAF all arms; slab nextest 4343/0, index 4186/0, conf 483/0, warnings 49/49;
-  20-run determinism 1-hash (side_free_minor + cut_young).
-- ⏳ **D-TLAB-1.2**: flip `intern_*_in`/`ensure_side_seg` to `&self` (lazy `sides` directory under
-  `sides_dir_lock`); add `alloc_*_bump(&self)` with the co-location single-`seg`-pick + `bump_in`-retry;
-  side-append-before-node-publish. The concurrency-capability gate (loom side-publish + TSan + TLA+
-  `NoObservableNodeNamesUnpublishedSide`). Then the read-lock fast path increment flips `IndexFactory` to
-  `.read()`.
+**Progress (2026-06-01) — D-TLAB sub-phase COMPLETE:**
+- ✅ **D-TLAB-1.0** (`a574bf5`): inert `SideColumn<T>` concurrent chunked column + unit tests.
+- ✅ **D-TLAB-1.1** (`f7f49e0`): wired `SideColumn` into `SegmentSideArenas` (&mut, byte-identical) + the
+  D-TLAB-1.0 two-level-lazy-directory fixup (`SIDE_PAGE_BITS=10`, full u32 ceiling; the `MAX_SIDE_CHUNKS=66`
+  cap panicked rc=101 once wired — cur_seg reuse decouples never-recycled side appends from node count).
+- ✅ **D-TLAB-1.2** (`98b7c99`): `&self`-capable side append — `sides` → never-realloc directory +
+  `ensure_side_seg(&self)`/`side(&self)`; `intern_*_in` → `&self`; `IndexArena::try_bump_in(&self)` (TOCTOU
+  guard, co-location single-pick + retry); `bump_in` delegates (slab untouched); `unsafe impl Send/Sync`.
+  IndexFactory stays `.write()` (byte-identical). NEW loom side-publish-before-node-publish test passes.
+- ✅ **D-RLOCK.1/.2** (`24b1a11`): the read-lock allocation fast path — `IndexFactory` hot sites flip to
+  `try_write()` (reuse) → `.read()` + `alloc_*_concurrent(&self)` (bump-only), so parallel-eval workers stop
+  serializing on the heap lock. Ground hash-cons / space / memo / not_reducible stay `.write()`. SAFE because
+  the collector is gated OFF under FANOUT>0 (`!worker_ever_spawned()`) ⇒ alloc never races a live collector
+  (temporally disjoint + RwLock-excluded + every freeing path is `&mut self`, type-uncallable under `.read()`).
+  Gate: byte-identical FANOUT=0 483/0 + DEBUG oracle 483/0; FANOUT=8 output-determinism == unmodified-HEAD
+  baseline (canonical hash, Robot+FlyingRaven); TSan 0; ASAN FANOUT=8 0-UAF; loom 12/12; mmverify; 20-run
+  1-hash; slab 4343/0, index 4186/0. **TLA+ coverage:** the existing `StoreCentricGC.tla` (NumWorkers
+  concurrent `Alloc` + collect-at-quiescence, 5 invariants green) OVER-APPROXIMATES D-RLOCK (collector OFF
+  under FANOUT>0) ⇒ already covers concurrent-alloc safety; the real TLA+ EXTENSION is owed at D1–D5 (parallel
+  collection). PRE-EXISTING (not D-RLOCK): a FANOUT=8 SEGV in `stress_multidir.metta` reproduces at identical
+  rate on unmodified HEAD `98b7c99` — a latent parallel-eval scale-crash, independent of this work.
+- ⏳ **D1–D5** (NEXT): the parallel collector — D1 fresh rendezvous (EvalGuard/condvar/GC_STATE), D2
+  worker-self-root, D3 parallel mark/sweep, D4 concurrent dead-segment release behind the launder+epoch
+  handshake, D5 flip the `!worker_ever_spawned()` gate. Load-bearing: ASAN FANOUT>0 + 20-run + re-derived
+  TLA+ + loom/TSan. This is where collection runs WITH workers (the no-collection-while-parallel half of the
+  perf gap).
 
 ## Three contradictions the source forces on the written plan (verified file:line)
 

@@ -1562,6 +1562,319 @@ pub mod index_gc {
     }
 }
 
+// ── D-TLAB-1.0: `SideColumn<T>` — concurrent never-realloc side-arena column ──
+//
+// The lock-free replacement for `SegmentSideArenas`' `Vec<Option<Box<T>>>`
+// (each `children`/`strings`/`spans` field becomes one column). It mirrors
+// `IndexArena`'s never-realloc directory + `Segment`'s two-cursor bump/publish
+// protocol EXACTLY (see `index_arena.rs`): a once-allocated chunk directory
+// (`chunks`) whose cells are published with `Release`/`Acquire`, a `bump` CLAIM
+// cursor (`Relaxed` `fetch_add` — uniqueness is all `fetch_add` needs), and a
+// `len` PUBLISH cursor (`Release`-CAS, `Acquire`-load) keeping `[0, len)` a
+// contiguous written prefix. This lets entries be appended through a shared
+// `&self` (the B2 `&self` allocation path) without an `&mut` or a lock on the
+// hot path. INERT in D-TLAB-1.0: declared and unit-tested, but no other code
+// references it yet (D-TLAB-1.1 swaps `SegmentSideArenas` over to it).
+
+/// Low bits of a side-column index used for the intra-chunk offset.
+/// 12 bits ⇒ 4096 entries per chunk (the unit the directory grows by).
+const SIDE_CHUNK_BITS: u32 = 12;
+/// Entries per chunk (`1 << SIDE_CHUNK_BITS`).
+const SIDE_CHUNK_LEN: usize = 1 << SIDE_CHUNK_BITS;
+/// Mask selecting the intra-chunk offset from an index.
+const SIDE_CHUNK_MASK: usize = SIDE_CHUNK_LEN - 1;
+/// Maximum chunks a single column directory holds, allocated once in `new`.
+///
+/// Worst case: every node slot in one segment is a variable-length allocation
+/// contributing exactly one side entry, and entries are NEVER recycled, so a
+/// column for a single segment must hold at least
+/// [`DEFAULT_SEGMENT_CAPACITY`](crate::backend::eval::cesk::index_arena::DEFAULT_SEGMENT_CAPACITY)
+/// entries. `ceil(DEFAULT_SEGMENT_CAPACITY / SIDE_CHUNK_LEN)` chunks cover that,
+/// plus a small `+ 2` margin. With `DEFAULT_SEGMENT_CAPACITY = 262_144` and
+/// `SIDE_CHUNK_LEN = 4096` this is `262_144 / 4096 + 2 = 64 + 2 = 66`.
+const MAX_SIDE_CHUNKS: usize = {
+    use crate::backend::eval::cesk::index_arena::DEFAULT_SEGMENT_CAPACITY;
+    (DEFAULT_SEGMENT_CAPACITY + SIDE_CHUNK_LEN - 1) / SIDE_CHUNK_LEN + 2
+};
+
+/// One side-column chunk: `SIDE_CHUNK_LEN` cells, each an
+/// `UnsafeCell<MaybeUninit<Option<Box<T>>>>`. Every cell is initialized to
+/// `MaybeUninit::new(None)` at chunk creation (`grow_to`) — NOT `uninit()` —
+/// so `assume_init_ref` on ANY in-bounds offset is always sound, even before a
+/// `push` writes it. (This diverges from the node arena, which gates reads on
+/// `len`; for the `Option<Box<T>>` column initializing to `None` is the safe
+/// and robust choice and costs nothing — the niche keeps `Option<Box<_>>` the
+/// same size as the bare `Box`.)
+type SideChunk<T> = Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<Option<Box<T>>>>]>;
+
+/// A per-(segment, field) never-realloc chunked column of address-stable
+/// `Box<T>` payloads, appendable under `&self` (lock-free bump+publish) — the
+/// concurrent replacement for the `Vec<Option<Box<T>>>` side arenas.
+///
+/// Mirrors [`IndexArena`](crate::backend::eval::cesk::index_arena)'s directory
+/// + [`Segment`]'s two-cursor: `chunks` is a once-allocated directory of
+/// `MAX_SIDE_CHUNKS` cells (a cell's chunk `Box` is written exactly once, under
+/// `grow_lock`, before `chunk_count` advances past it); `bump` claims a unique
+/// index (`Relaxed`); `len` publishes the contiguous written prefix
+/// (`Release`-CAS). Inert in D-TLAB-1.0 (added but not yet referenced).
+struct SideColumn<T: ?Sized> {
+    /// Never-realloc directory: `MAX_SIDE_CHUNKS` cells, allocated once in
+    /// `new`. Cell `c` is initialized (its chunk `Box` written) exactly once,
+    /// under `grow_lock`, before `chunk_count` is advanced past `c` with a
+    /// `Release` store. A reader dereferences cell `c` only for
+    /// `c < chunk_count.load(Acquire)` (the `unsafe fn chunk` precondition).
+    chunks: Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<SideChunk<T>>>]>,
+    /// Published chunk count (count of initialized directory cells). Monotone;
+    /// advanced with `Release` under `grow_lock`, read with `Acquire`.
+    chunk_count: std::sync::atomic::AtomicUsize,
+    /// CLAIM cursor: `fetch_add(1, Relaxed)` hands each caller a unique entry
+    /// index. `Relaxed` suffices — the index is made safe to read only by the
+    /// subsequent `publish` (`Release`); the claim needs atomic uniqueness only.
+    bump: std::sync::atomic::AtomicUsize,
+    /// PUBLISH cursor: the count of fully-written, published entries. `[0, len)`
+    /// is a contiguous written prefix. Published with `Release`, read with
+    /// `Acquire` — paired so an `Acquire`-load observing `len > idx` happens-
+    /// after the entry's `write`.
+    len: std::sync::atomic::AtomicUsize,
+    /// Serializes directory growth (`grow_to`): the rare slow path (once per
+    /// `SIDE_CHUNK_LEN` pushes). A plain `Mutex<()>` — `push`'s fast path does
+    /// NOT take it once the target chunk is published.
+    grow_lock: std::sync::Mutex<()>,
+}
+
+impl<T: ?Sized> SideColumn<T> {
+    /// A new, empty column. Allocates the `MAX_SIDE_CHUNKS`-cell directory once
+    /// (each cell an uninitialized `MaybeUninit<SideChunk>`); does NOT
+    /// pre-allocate any chunk — chunk 0 is created lazily by the first `push`
+    /// via `grow_to`. (`IndexArena::new` eagerly opens segment 0; this column
+    /// stays fully lazy because a column may never be pushed to — keeping
+    /// per-column overhead to just the `MAX_SIDE_CHUNKS` pointer slots, here
+    /// `66 * 8 = 528` bytes.)
+    fn new() -> Self {
+        use std::cell::UnsafeCell;
+        use std::mem::MaybeUninit;
+        use std::sync::atomic::AtomicUsize;
+        // `UnsafeCell`/`MaybeUninit` are not `Clone`, so the directory is built
+        // from an iterator (one uninit cell per addressable chunk) rather than
+        // `vec![..; MAX_SIDE_CHUNKS]`. Allocated once, never reallocated.
+        let chunks: Box<[UnsafeCell<MaybeUninit<SideChunk<T>>>]> = (0..MAX_SIDE_CHUNKS)
+            .map(|_| UnsafeCell::new(MaybeUninit::uninit()))
+            .collect();
+        SideColumn {
+            chunks,
+            chunk_count: AtomicUsize::new(0),
+            bump: AtomicUsize::new(0),
+            len: AtomicUsize::new(0),
+            grow_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    /// Decompose an index into `(chunk, offset)`.
+    #[inline]
+    fn locate(idx: usize) -> (usize, usize) {
+        (idx >> SIDE_CHUNK_BITS, idx & SIDE_CHUNK_MASK)
+    }
+
+    /// Borrow chunk `c` of the published directory.
+    ///
+    /// # Safety
+    /// The caller must guarantee `c < self.chunk_count.load(Acquire)` as
+    /// observed by the calling thread — i.e. cell `c` has been published by
+    /// `grow_to`'s `Release` store to `chunk_count`, which happens-after the
+    /// cell's initialization. Under that premise the cell is initialized.
+    ///
+    /// The returned slice derives from the raw pointer `UnsafeCell::get()`
+    /// yields (NOT from a borrow of `&self.chunks`), so it does not borrow
+    /// `self` — mirroring `IndexArena::segment`.
+    #[inline]
+    unsafe fn chunk(&self, c: usize) -> &[std::cell::UnsafeCell<std::mem::MaybeUninit<Option<Box<T>>>>] {
+        let cell = self.chunks[c].get(); // *mut MaybeUninit<SideChunk<T>>
+        (*cell).assume_init_ref() // &SideChunk<T> -> &[..] via Deref
+    }
+
+    /// Grow the directory so chunk `c` is published. Mirrors
+    /// `IndexArena::open_segment`: takes `grow_lock`, re-checks under the lock,
+    /// allocates and writes any missing chunk cell, then publishes it with a
+    /// `Release` store to `chunk_count` (paired with the `Acquire` load in
+    /// `chunk`/`push`).
+    ///
+    /// Loops `chunk_count_now..=c` to fill ALL gaps up to `c`, not just `c`
+    /// itself: although a single-segment monotone `bump` advances `c` by one at
+    /// a time, a future relaxation (a claim landing far ahead) could skip a
+    /// chunk; filling the gap keeps the directory dense and every published
+    /// chunk initialized.
+    fn grow_to(&self, c: usize) {
+        use std::cell::UnsafeCell;
+        use std::mem::MaybeUninit;
+        use std::sync::atomic::Ordering;
+        let _guard = self.grow_lock.lock().expect("side-column grow_lock poisoned");
+        let mut next = self.chunk_count.load(Ordering::Acquire);
+        if c < next {
+            return; // another thread already grew past `c` while we waited
+        }
+        assert!(
+            c < MAX_SIDE_CHUNKS,
+            "side column exhausted: {MAX_SIDE_CHUNKS} chunks"
+        );
+        // Fill every gap chunk_count..=c. Each entry is initialized to `None`
+        // (NOT uninit) so `assume_init_ref` is sound on any in-bounds offset
+        // before a `push` writes it (see the `SideChunk` type docs).
+        while next <= c {
+            let chunk: SideChunk<T> = (0..SIDE_CHUNK_LEN)
+                .map(|_| UnsafeCell::new(MaybeUninit::new(None)))
+                .collect();
+            // SAFETY: cell `next` is not yet published (`next == chunk_count`),
+            // so no reader can observe it; under `grow_lock` we are the unique
+            // writer of this cell. Initialize it before publishing `next`.
+            unsafe {
+                (*self.chunks[next].get()).write(chunk);
+            }
+            self.chunk_count.store(next + 1, Ordering::Release); // publish cell
+            next += 1;
+        }
+    }
+
+    /// Publish entry `idx` into the contiguous written prefix.
+    ///
+    /// Spins until `len == idx`, then advances `len` to `idx + 1` with `Release`
+    /// (so the prior write happens-before any `Acquire`-load of `len` that
+    /// observes the new value). Keeps `[0, len)` a contiguous written prefix
+    /// even when claims complete out of order. Verbatim `Segment::publish`.
+    #[inline]
+    fn publish(&self, idx: usize) {
+        use std::sync::atomic::Ordering;
+        while self
+            .len
+            .compare_exchange_weak(idx, idx + 1, Ordering::Release, Ordering::Relaxed)
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
+    }
+
+    /// Append `boxed`, returning its stable index. Lock-free on the steady-state
+    /// fast path (the `grow_to` lock is taken only when crossing into a not-yet-
+    /// published chunk, once per `SIDE_CHUNK_LEN` pushes).
+    ///
+    /// Protocol (mirrors `IndexArena::alloc_bump` → `Segment::{bump_one,
+    /// write_claimed, publish}`): CLAIM a unique `idx` (`Relaxed` `fetch_add`);
+    /// ensure the target chunk is published (`grow_to` under `Acquire` re-check);
+    /// WRITE the (uniquely claimed, exclusive, unpublished) cell; PUBLISH `idx`.
+    fn push(&self, boxed: Box<T>) -> u32 {
+        use std::sync::atomic::Ordering;
+        let idx = self.bump.fetch_add(1, Ordering::Relaxed); // unique claim
+        let (c, off) = Self::locate(idx);
+        if c >= self.chunk_count.load(Ordering::Acquire) {
+            self.grow_to(c);
+        }
+        // SAFETY: `c < chunk_count` now (either it already was, or `grow_to`
+        // published it — both with `Release`, observed here `Acquire`-wise via
+        // `grow_to`'s store / the load above). `idx` was uniquely claimed by the
+        // `fetch_add`, so no other writer holds `(c, off)`; `off` is not yet
+        // published (`off >= len` until `publish`), so no reader observes it.
+        // The write is therefore exclusive and races no reader.
+        unsafe {
+            let chunk = self.chunk(c);
+            (*chunk[off].get()).write(Some(boxed));
+        }
+        self.publish(idx);
+        idx as u32
+    }
+
+    /// Borrow the published entry at `idx`, or `None` if it was freed.
+    ///
+    /// # Safety
+    /// The caller must guarantee `idx < self.len.load(Acquire)` as observed by
+    /// the calling thread (the entry is in the published prefix). Publication
+    /// (`len.CAS(.., Release)`) happens-after the entry's write, so an
+    /// `Acquire`-load of `len` observing `len > idx` also observes the fully-
+    /// written `Option<Box<T>>`. A published entry is mutated only by `free`
+    /// (`&mut self`, quiescence-only — see the SAFETY block on the `unsafe
+    /// impl`), so the borrow races no writer.
+    unsafe fn get(&self, idx: u32) -> Option<&T> {
+        use std::sync::atomic::Ordering;
+        debug_assert!(
+            (idx as usize) < self.len.load(Ordering::Acquire),
+            "SideColumn::get index {idx} out of published range"
+        );
+        let (c, off) = Self::locate(idx as usize);
+        let chunk = self.chunk(c);
+        (*chunk[off].get()).assume_init_ref().as_deref()
+    }
+
+    /// Drop the payload `Box` at `idx`, leaving the cell as `None`. `&mut self`
+    /// (quiescence-only): a free runs only at a quiescent safepoint, statically
+    /// exclusive of every `&self` reader/pusher, so it races nothing (the index
+    /// analogue of the arena's free-list-reuse-at-quiescence rule). Never
+    /// decrements `bump`/`len` and never recycles the index — a later `push`
+    /// APPENDS a fresh index (keeping the side-free idempotent: re-freeing an
+    /// already-`None` cell is a no-op). `Relaxed` load of `len` is fine under
+    /// `&mut self` (no concurrent writer).
+    fn free(&mut self, idx: u32) {
+        use std::sync::atomic::Ordering;
+        if (idx as usize) < self.len.load(Ordering::Relaxed) {
+            let (c, off) = Self::locate(idx as usize);
+            // SAFETY: `idx < len` ⇒ `c < chunk_count` (published) and the cell is
+            // initialized (every cell is `None` from `grow_to`, then possibly a
+            // `Some` from `push`). `&mut self` is exclusive, so no aliasing.
+            unsafe {
+                let chunk = self.chunk(c);
+                *(*chunk[off].get()).assume_init_mut() = None; // drops the Box
+            }
+        }
+    }
+
+    /// The number of published entries (`len`).
+    #[inline]
+    fn published_len(&self) -> usize {
+        use std::sync::atomic::Ordering;
+        self.len.load(Ordering::Acquire)
+    }
+
+    /// The number of published chunks (diagnostics / tests).
+    #[inline]
+    fn chunk_count(&self) -> usize {
+        use std::sync::atomic::Ordering;
+        self.chunk_count.load(Ordering::Acquire)
+    }
+}
+
+// SAFETY: `SideColumn<T>`'s interior mutability (the `UnsafeCell` directory and
+// per-chunk cells) is disciplined by the same claim/publish protocol as
+// `IndexArena`/`Segment` (see the type-level SAFETY block in `index_arena.rs`):
+//
+//   (i)   UNIQUE CLAIM. A cell is *written* only after `bump.fetch_add(1,
+//         Relaxed)` hands the writing thread a unique index. No two threads
+//         obtain the same index, so the `MaybeUninit::write` is exclusive — no
+//         writer aliases another writer.
+//
+//   (ii)  PUBLISHED READS ONLY, RELEASE/ACQUIRE-ORDERED. A reader (`get`)
+//         dereferences index `idx` only for `idx < len.load(Acquire)`. The
+//         writer publishes with `len.CAS(idx→idx+1, Release)` *after* its write,
+//         so an `Acquire`-load observing `len > idx` happens-after the write ⇒
+//         no uninit/torn read, no read/write race.
+//
+//   (iii) DIRECTORY PUBLICATION. A reader dereferences directory cell `c` only
+//         for `c < chunk_count.load(Acquire)`. `grow_to` initializes cell `c`
+//         then does `chunk_count.store(c+1, Release)` (under `grow_lock`, the
+//         unique writer of cell `c`), so observing `c < chunk_count` happens-
+//         after the cell's initialization ⇒ the chunk `Box` ptr (and its cells,
+//         all `None` from `grow_to`) are visible before the reader indexes it.
+//
+//   (iv)  FREE AT QUIESCENCE. The only in-place rewrite of an already-published
+//         entry is `free`, which is `&mut self` and runs only at a quiescent
+//         safepoint. `&mut self` is statically exclusive of every `&self`
+//         reader/pusher, so a free never races a concurrent access (and the
+//         index is never recycled ⇒ no ABA).
+//
+// Hence no data race on any field. `Send` requires `T: Send` (the column owns
+// `Box<T>` payloads it may hand to another thread); `Sync` requires `T: Send +
+// Sync` (a shared `&SideColumn` lets multiple threads obtain `&T`) — the same
+// conservative bounds `IndexArena` uses. `T: ?Sized` is supported (the columns
+// hold `[MettaValue]`/`str`/`Span` via `Box<[_]>`/`Box<str>`/`Box<Span>`).
+unsafe impl<T: ?Sized + Send> Send for SideColumn<T> {}
+unsafe impl<T: ?Sized + Send + Sync> Sync for SideColumn<T> {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2156,5 +2469,92 @@ mod tests {
         let plain = f.atom("y");
         assert_eq!(plain.strip_spans().as_atom(), Some("y"));
         reset_gc_mode_slab();
+    }
+
+    // ── D-TLAB-1.0: `SideColumn<T>` single-threaded unit tests ──────────────
+    // Concurrency is validated separately (loom/TSan in D-TLAB-1.2); these are
+    // deterministic, single-threaded behavioral checks. No GC-mode set is needed
+    // (the column is a standalone data structure, mode-independent).
+
+    #[test]
+    fn side_column_push_get_roundtrip_and_order() {
+        // Push 10 `Box<[i32]>` payloads; read each back; assert value + order.
+        let col: SideColumn<[i32]> = SideColumn::new();
+        let mut idxs = Vec::with_capacity(10);
+        for i in 0..10i32 {
+            let boxed: Box<[i32]> = vec![i, i * 10, i * 100].into_boxed_slice();
+            idxs.push(col.push(boxed));
+        }
+        // Indices are claimed monotonically from 0 (no recycling, no gaps here).
+        assert_eq!(idxs, (0u32..10).collect::<Vec<_>>(), "monotone indices 0..10");
+        assert_eq!(col.published_len(), 10, "all 10 published");
+        for (i, &idx) in idxs.iter().enumerate() {
+            let i = i as i32;
+            // SAFETY: idx < published_len() (just pushed, single-threaded).
+            let got = unsafe { col.get(idx) }.expect("entry present");
+            assert_eq!(got, &[i, i * 10, i * 100][..], "entry {idx} value + order");
+        }
+    }
+
+    #[test]
+    fn side_column_grows_across_chunk_boundary() {
+        // Push past one chunk boundary to exercise `grow_to` over >= 2 chunks.
+        let n = SIDE_CHUNK_LEN + 5;
+        let col: SideColumn<[i32]> = SideColumn::new();
+        for i in 0..n {
+            let boxed: Box<[i32]> = vec![i as i32].into_boxed_slice();
+            let idx = col.push(boxed);
+            assert_eq!(idx as usize, i, "index tracks push order");
+        }
+        assert_eq!(col.published_len(), n, "all entries published");
+        assert!(
+            col.chunk_count() >= 2,
+            "crossed a chunk boundary ⇒ >= 2 chunks (got {})",
+            col.chunk_count()
+        );
+        // Read back a sample spanning both chunks (including the boundary).
+        for &i in &[0usize, 1, SIDE_CHUNK_LEN - 1, SIDE_CHUNK_LEN, SIDE_CHUNK_LEN + 4] {
+            // SAFETY: i < published_len() == n.
+            let got = unsafe { col.get(i as u32) }.expect("entry present");
+            assert_eq!(got, &[i as i32][..], "entry {i} survives the grow");
+        }
+    }
+
+    #[test]
+    fn side_column_free_drops_only_target() {
+        // free(idx) ⇒ get returns None there; a neighbor is unaffected.
+        let mut col: SideColumn<str> = SideColumn::new();
+        let a = col.push(Box::from("alpha"));
+        let b = col.push(Box::from("beta"));
+        let c = col.push(Box::from("gamma"));
+        // SAFETY: all indices < published_len() (just pushed).
+        assert_eq!(unsafe { col.get(b) }, Some("beta"));
+        col.free(b);
+        assert_eq!(unsafe { col.get(b) }, None, "freed entry reads None");
+        // Neighbors unaffected.
+        assert_eq!(unsafe { col.get(a) }, Some("alpha"), "left neighbor intact");
+        assert_eq!(unsafe { col.get(c) }, Some("gamma"), "right neighbor intact");
+        // Idempotent re-free is a no-op (still None, no double-drop).
+        col.free(b);
+        assert_eq!(unsafe { col.get(b) }, None, "re-free is idempotent");
+    }
+
+    #[test]
+    fn side_column_no_recycle_after_free() {
+        // After freeing an index, the next push gets a NEW (higher) index — the
+        // freed slot is never reused (no-recycle invariant).
+        let mut col: SideColumn<[i32]> = SideColumn::new();
+        let i0 = col.push(vec![0].into_boxed_slice());
+        let i1 = col.push(vec![1].into_boxed_slice());
+        col.free(i0);
+        let i2 = col.push(vec![2].into_boxed_slice());
+        assert_eq!(i2, 2, "push after free APPENDS a fresh index (no recycle)");
+        assert_ne!(i2, i0, "freed index {i0} is not reused");
+        // The freed slot stays freed; the new entry is the appended one.
+        // SAFETY: indices < published_len() (== 3).
+        assert_eq!(unsafe { col.get(i0) }, None, "freed slot still None");
+        assert_eq!(unsafe { col.get(i1) }, Some(&[1][..]), "i1 intact");
+        assert_eq!(unsafe { col.get(i2) }, Some(&[2][..]), "new entry present");
+        assert_eq!(col.published_len(), 3, "len counts every push, freed or not");
     }
 }

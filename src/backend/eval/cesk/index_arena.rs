@@ -937,7 +937,15 @@ impl<N: Copy> IndexArena<N> {
                     if (word & (1u64 << b)) != 0 {
                         stats.live += 1;
                     } else {
-                        self.free_list.push(Addr::new(si as u32, (base + b) as u32));
+                        // A.0 (Phase C side-free prerequisite): the partial-last-word
+                        // tail MUST push to `reclaimed_out` too, exactly like the
+                        // full-word arms above (:917/:927) — else the side-free would
+                        // silently under-free the last <64 slots of every segment's
+                        // published prefix (an orphaned-payload leak). Byte-identical
+                        // while the side-free is inert (the extra entries are unused).
+                        let a = Addr::new(si as u32, (base + b) as u32);
+                        self.free_list.push(a);
+                        reclaimed_out.push(a);
                         stats.reclaimed_to_free_list += 1;
                     }
                 }

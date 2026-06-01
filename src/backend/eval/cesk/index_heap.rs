@@ -92,6 +92,11 @@ pub struct IndexHeap {
     /// `sides[i]` holds segment `i`'s variable-length data (kept parallel with
     /// `arena.segments` via [`sync_sides`](Self::sync_sides)).
     sides: Vec<SegmentSideArenas>,
+    /// Increment A: the slots the most recent `sweep`/`sweep_young` reclaimed, stashed for
+    /// the driver to free their side `Box`es via [`free_reclaimed_side_slots`] — but ONLY
+    /// at quiescence (a midloop sweep leaves this for the next quiescence sweep, for
+    /// launder soundness). `std::mem::take`-n by the driver after each collection.
+    last_reclaimed: Vec<Addr>,
     /// `Arc`-backed `Space` handles, indexed by the `u64` id stored in
     /// `Node::Space(id)`. Append-only and never swept (handles are env-rooted).
     space_table: Vec<SpaceHandle>,
@@ -131,6 +136,7 @@ impl IndexHeap {
         let mut h = IndexHeap {
             arena,
             sides: Vec::new(),
+            last_reclaimed: Vec::new(),
             space_table: Vec::new(),
             memo_table: Vec::new(),
             hash_cons: std::collections::HashMap::new(),
@@ -539,9 +545,10 @@ impl IndexHeap {
                 &mut reclaimed,
             )
         };
-        // C1.c #1: free the side-arena entries of the reclaimed (partial-segment) dead
-        // nodes + recycle their indices (released segments were reset wholesale above).
-        self.free_reclaimed_side_slots(&reclaimed);
+        // C1.c #1 (Increment A): stash the reclaimed (partial-segment) dead slots; the
+        // driver frees their payload `Box`es via `free_reclaimed_side_slots` ONLY at
+        // quiescence (launder soundness). Released segments were reset wholesale above.
+        self.last_reclaimed = reclaimed;
         stats
     }
 
@@ -559,41 +566,70 @@ impl IndexHeap {
     /// `i` to a live node — is the unsound path an earlier gate's "live … slot" panic
     /// caught, hence the no-recycle design.
     ///
-    /// INERT (commented out) pending the quiescence-only re-enable increment. Freeing a
-    /// side `Box` at sweep is a USE-AFTER-FREE under the MID-LOOP collector: a live
+    /// QUIESCENCE-ONLY (Phase C Increment A — the soundness gate). The driver calls this
+    /// ONLY for `phase == "quiescence"` (`active_evaluator_count() == 0`). Freeing a side
+    /// `Box` at sweep is a USE-AFTER-FREE under the MID-LOOP collector: a live
     /// `materialize_inner` result on the Rust stack can hold a launder'd `&'static` into
-    /// that `Box` (the launder contract — see module docs), which dropping the `Box`
-    /// dangles. It IS sound under the QUIESCENCE collector (`active_evaluator_count() == 0`
-    /// ⇒ no live stack launder'd ref, and the post-sweep `clear_inner_shadow()` discards
-    /// every `INNER_SHADOW` entry before the next eval can deref one), so re-enabling it
-    /// GATED on `phase == "quiescence"` is a separable increment requiring its own ASAN
-    /// gate. Until then the orphan side `Box` is reclaimed wholesale at segment release.
-    /// The implementation is preserved below per the no-delete-to-disable policy.
+    /// that `Box` (the launder contract — see module docs; every external launder consumer
+    /// runs DURING eval ⇒ `active >= 1`), which dropping the `Box` would dangle. At TRUE
+    /// QUIESCENCE no trampoline/VM frame is on the Rust stack ⇒ no live stack launder'd
+    /// ref exists; the only references into side `Box`es are this thread's `INNER_SHADOW`
+    /// entries, which the driver's post-sweep `clear_inner_shadow()` discards before any
+    /// next eval can deref one (the single-threaded collector thread is the sole
+    /// populator of `INNER_SHADOW`). A MIDLOOP collection still reclaims the node SLOT
+    /// (sound — the slot bytes stay intact; the launder'd ref is into the side `Box`, not
+    /// the node) and DEFERS the side `Box` to the next quiescence sweep, where the same
+    /// still-dead slot reappears in `reclaimed` (no-recycle idempotence makes the deferral
+    /// correct). So midloop stays sound at the cost of the side-free's RSS win on that cycle.
     fn free_reclaimed_side_slots(&mut self, reclaimed: &[Addr]) {
-        // Inert until the quiescence-only re-enable increment (see doc above). `reclaimed`
-        // is still collected (the sweep substrate is complete + ready for re-enable).
-        let _ = reclaimed;
-        // enum Side { Children(u32), Strings(u32), Spans(u32), None }
-        // for &addr in reclaimed {
-        //     let seg = addr.segment();
-        //     // Extract the dead node's side index (Copy) — the `arena` borrow ends
-        //     // here, before mutating the disjoint `sides` field.
-        //     let side = match self.arena.get(addr) {
-        //         Node::SExpr(cr) | Node::Conjunction(cr) => Side::Children(cr.idx),
-        //         Node::Atom(br) | Node::String(br) => Side::Strings(br.idx),
-        //         Node::Spanned(_, sr) => Side::Spans(sr.idx),
-        //         _ => Side::None, // fixed node: no side slot
-        //     };
-        //     if seg >= self.sides.len() { continue; }
-        //     let s = &mut self.sides[seg];
-        //     // Drop the dead node's `Box`; leave the index `None` (NOT recycled).
-        //     match side {
-        //         Side::Children(i) => { let i = i as usize; if i < s.children.len() { s.children[i] = None; } }
-        //         Side::Strings(i)  => { let i = i as usize; if i < s.strings.len()  { s.strings[i]  = None; } }
-        //         Side::Spans(i)    => { let i = i as usize; if i < s.spans.len()    { s.spans[i]    = None; } }
-        //         Side::None => {}
-        //     }
-        // }
+        enum Side {
+            Children(u32),
+            Strings(u32),
+            Spans(u32),
+            None,
+        }
+        for &addr in reclaimed {
+            let seg = addr.segment();
+            // Extract the dead node's side index (Copy) — the `arena` borrow ends here,
+            // before mutating the disjoint `sides` field. `reclaimed` holds exactly the
+            // unmarked, non-released slots `sweep_range` reclaimed (its contract), so the
+            // node bytes are intact and this reads the dead occupant's side index.
+            let side = match self.arena.get(addr) {
+                Node::SExpr(cr) | Node::Conjunction(cr) => Side::Children(cr.idx),
+                Node::Atom(br) | Node::String(br) => Side::Strings(br.idx),
+                Node::Spanned(_, sr) => Side::Spans(sr.idx),
+                _ => Side::None, // fixed node (Bool/Long/Var/…): no side slot
+            };
+            if seg >= self.sides.len() {
+                continue;
+            }
+            let s = &mut self.sides[seg];
+            // Drop the dead node's `Box` (return the payload RSS); leave the index `None`
+            // (NOT recycled — intern only APPENDS, so index `i` is permanently this dead
+            // node's). The `i < len` guard keeps it bounds-safe AND idempotent: a
+            // re-reclaimed still-free slot just `None`s an already-`None` index again.
+            match side {
+                Side::Children(i) => {
+                    let i = i as usize;
+                    if i < s.children.len() {
+                        s.children[i] = None;
+                    }
+                }
+                Side::Strings(i) => {
+                    let i = i as usize;
+                    if i < s.strings.len() {
+                        s.strings[i] = None;
+                    }
+                }
+                Side::Spans(i) => {
+                    let i = i as usize;
+                    if i < s.spans.len() {
+                        s.spans[i] = None;
+                    }
+                }
+                Side::None => {}
+            }
+        }
     }
 
     /// C1.b: young-only minor sweep — the generational counterpart of [`sweep`].
@@ -636,9 +672,9 @@ impl IndexHeap {
                 &mut reclaimed,
             )
         };
-        // C1.c #1: free + recycle the reclaimed young nodes' side slots (the minor's
-        // young reclaim now feeds variable-length allocation, not just node-slot reuse).
-        self.free_reclaimed_side_slots(&reclaimed);
+        // C1.c #1 (Increment A): stash the reclaimed young slots; the driver frees their
+        // payload `Box`es ONLY at quiescence (launder soundness — a midloop minor defers).
+        self.last_reclaimed = reclaimed;
         stats
     }
 
@@ -1287,17 +1323,28 @@ pub mod index_gc {
         // active + future segments stay young) AND resets the young-alloc odometer.
         let (live_after, stats, did_major) = {
             let mut heap = global_index_heap().write().expect("index heap");
-            if major_due {
+            let (stats, did_major) = if major_due {
                 heap.mark(&addrs); // FULL mark
-                let stats = heap.sweep();
-                heap.promote_young();
-                (heap.live_bytes(), stats, true)
+                (heap.sweep(), true)
             } else {
                 heap.mark_young(&addrs); // YOUNG-ONLY mark (cheap — the minor's win)
-                let stats = heap.sweep_young();
-                heap.promote_young();
-                (heap.live_bytes(), stats, false)
+                (heap.sweep_young(), false)
+            };
+            // Increment A (the RSS half of CHANGE #1): free the swept-dead nodes' payload
+            // `Box`es — ONLY at quiescence. `phase == "quiescence"` ⇒ `gate_open()` ⇒
+            // `active_evaluator_count() == 0` ⇒ no trampoline/VM frame on the Rust stack ⇒
+            // no live launder'd `&'static` into a side `Box`; the only refs into side
+            // `Box`es are this thread's `INNER_SHADOW` entries, dropped by
+            // `clear_inner_shadow()` below before any next eval can deref one. A MIDLOOP
+            // collection reclaimed the node slots but DEFERS the side `Box`es to the next
+            // quiescence sweep (the still-dead slots reappear in `reclaimed`; no-recycle
+            // idempotence makes the deferral correct).
+            if phase == "quiescence" {
+                let reclaimed = std::mem::take(&mut heap.last_reclaimed);
+                heap.free_reclaimed_side_slots(&reclaimed);
             }
+            heap.promote_young();
+            (heap.live_bytes(), stats, did_major)
         };
 
         // Drop this thread's stale `MettaValueInner` materialization cache: a swept

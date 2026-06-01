@@ -2838,6 +2838,84 @@ impl Continuation {
         }
     }
 
+    /// Increment D (C2): abstract-GC live-variable marking (Might–Shivers) over the reified
+    /// K-frame. Identical roots to [`collect_values`] EXCEPT it narrows the THREE post-cut
+    /// variants, skipping the one iterator field a FIRED cut has provably made dead — the
+    /// variant's advance arm takes the commit branch that DROPS that iterator on the next
+    /// transition (eval_loop.rs `ProcessRuleMatches`:8506 / `ProcessAmb`:14734 /
+    /// `ProcessMatchTemplates`:15578), and no other transition reads it. When the cut has
+    /// NOT fired — and for EVERY other (and future) variant via the `_` delegate — it is
+    /// BYTE-IDENTICAL to `collect_values`, so `collect_live_values ⊆ collect_values` ALWAYS
+    /// and equal absent a fired cut. Used ONLY by the MIDLOOP root-build
+    /// (`collect_machine_roots_live`): at quiescence K is empty, so there is nothing to
+    /// narrow. The `_` catch-all full-walks every non-narrowed variant, so a narrowing can
+    /// never silently under-root (the soundness default). `cut_fired_peek` is a pure
+    /// thread-local read on the sole eval thread at the midloop safepoint (consistent).
+    pub fn collect_live_values(&self, out: &mut Vec<MettaValue>) {
+        use crate::backend::eval::trampoline::eval_loop::cut_fired_peek;
+        match self {
+            Self::ProcessRuleMatches {
+                remaining_matches,
+                results,
+                current_branch_bindings,
+                outer_carrying,
+                cut_barrier,
+                ..
+            } => {
+                // `remaining_matches` is dead once the cut fired for this barrier.
+                if !cut_fired_peek(*cut_barrier) {
+                    for (rhs, bindings) in remaining_matches.as_slice() {
+                        out.push(*rhs);
+                        collect_bindings_values(bindings, out);
+                    }
+                }
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
+                collect_bindings_values(current_branch_bindings, out);
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::ProcessAmb {
+                remaining_alts,
+                results,
+                outer_carrying,
+                cut_barrier,
+                ..
+            } => {
+                if !cut_fired_peek(*cut_barrier) {
+                    for (v, bindings) in remaining_alts.as_slice().iter() {
+                        out.push(*v);
+                        collect_bindings_values(bindings, out);
+                    }
+                }
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::ProcessMatchTemplates {
+                remaining_templates,
+                results,
+                outer_carrying,
+                cut_barrier,
+                ..
+            } => {
+                if !cut_fired_peek(*cut_barrier) {
+                    out.extend(remaining_templates.as_slice().iter().copied());
+                }
+                for (v, bindings) in results.iter() {
+                    out.push(*v);
+                    collect_bindings_values(bindings, out);
+                }
+                collect_bindings_values(outer_carrying, out);
+            }
+            // Every other (and future) variant: conservative full walk — no narrowing.
+            _ => self.collect_values(out),
+        }
+    }
+
     /// Return the depth hint from whichever variant is active.
     ///
     /// Used by the cooperative yield logic to record the evaluation depth
@@ -3026,6 +3104,66 @@ mod tests {
 
     fn env() -> SharedEnv {
         std::sync::Arc::new(crate::backend::environment::MettaEnvironment::new(factory()))
+    }
+
+    /// Increment D (C2): the abstract-GC narrowing is SOUND on the primary narrowed
+    /// variant — `collect_live_values` equals `collect_values` when no cut has fired, and
+    /// drops EXACTLY the dead `remaining_matches` (keeping `results`) once the cut fired
+    /// for the frame's barrier. `ProcessAmb` / `ProcessMatchTemplates` use the IDENTICAL
+    /// `if !cut_fired_peek(*cut_barrier) { skip }` pattern (mirroring their `collect_values`
+    /// arms), additionally validated end-to-end by the MIDLOOP live-superset oracle over
+    /// the corpus + cut fixtures (D-2). `as_slice()` is non-consuming, so one frame serves
+    /// every collection. Gated `not(trace)` so the trace-only frame fields need not be built.
+    #[cfg(not(feature = "trace"))]
+    #[test]
+    fn collect_live_values_narrows_process_rule_matches_on_cut() {
+        use crate::backend::eval::trampoline::eval_loop::force_cut_signal_for_test;
+        let f = factory();
+        const B: u64 = 42; // a nonzero cut barrier
+        let frame = Continuation::ProcessRuleMatches {
+            remaining_matches: vec![
+                (f.long(1), GenericBindings::new()),
+                (f.long(2), GenericBindings::new()),
+            ]
+            .into_iter(),
+            results: vec![(f.long(3), GenericBindings::new())],
+            env: env(),
+            depth: 0,
+            pre_fork_epoch: 0,
+            pre_fork_gen: 0,
+            fork_depth: 0,
+            cut_barrier: B,
+            saved_barrier: 0,
+            current_branch_bindings: empty_shared_bindings(),
+            outer_carrying: empty_shared_bindings(),
+            tracked_vars_hint: None,
+        };
+        let longs = |v: &[MettaValue]| {
+            let mut xs: Vec<i64> = v.iter().filter_map(|x| x.as_long()).collect();
+            xs.sort_unstable();
+            xs
+        };
+
+        // NOT fired (signal 0 != B): live == full == {1,2,3}.
+        force_cut_signal_for_test(0);
+        let (mut live, mut full) = (Vec::new(), Vec::new());
+        frame.collect_live_values(&mut live);
+        frame.collect_values(&mut full);
+        assert_eq!(longs(&live), longs(&full), "no cut: live == full");
+        assert_eq!(longs(&live), vec![1, 2, 3], "no cut: all matches kept");
+
+        // FIRED (signal == B): live drops the dead remaining_matches {1,2}, keeps results {3};
+        // collect_values is unchanged; live ⊆ full (the safety invariant).
+        force_cut_signal_for_test(B);
+        let (mut live, mut full) = (Vec::new(), Vec::new());
+        frame.collect_live_values(&mut live);
+        frame.collect_values(&mut full);
+        assert_eq!(longs(&live), vec![3], "cut fired: only results remain (matches are dead)");
+        assert_eq!(longs(&full), vec![1, 2, 3], "collect_values is unchanged by the cut");
+        for x in longs(&live) {
+            assert!(longs(&full).contains(&x), "live ⊆ full");
+        }
+        force_cut_signal_for_test(0); // thread-local hygiene for the shared test thread
     }
 
     #[test]

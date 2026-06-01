@@ -2162,8 +2162,17 @@ fn set_current_barrier(b: u64) {
 /// PEEKS here to decide pruning, and the signal is consumed exactly once by the
 /// barrier OWNER (see `consume_cut_for`) when its dispatch completes.
 #[inline]
-fn cut_fired_peek(b: u64) -> bool {
+pub(crate) fn cut_fired_peek(b: u64) -> bool {
     b != 0 && CUT_SIGNAL.with(|c| c.get()) == b
+}
+
+/// Increment D (C2) test hook: force `CUT_SIGNAL` to `b` so a differential test of
+/// `Continuation::collect_live_values` can drive the post-cut narrowing predicate
+/// (`cut_fired_peek`) directly, without running a real cut. Test-only (zero release
+/// surface); the test restores it to 0 for thread-local hygiene.
+#[cfg(test)]
+pub(crate) fn force_cut_signal_for_test(b: u64) {
+    CUT_SIGNAL.with(|c| c.set(b));
 }
 
 /// Phase 1 cut-barrier: CONSUME the cut signal for barrier `b` if it is fired

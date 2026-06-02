@@ -411,13 +411,18 @@ pub async fn run_state_async(
         // If this is a rule definition or ground fact and we have a batch, evaluate the batch first
         if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {
             let batch_results = evaluate_batch_parallel_arena(current_batch, env.clone()).await;
-            for (_batch_idx, results, should_output) in batch_results {
-                if should_output {
+            for outcome in batch_results {
+                if outcome.should_output {
                     let mut output = result_state.output_mut();
-                    for &result in &results {
+                    for &result in &outcome.results {
                         output.push(result);
                     }
                 }
+                // E1-c (F1): `outcome` (and its index-gc _root_handle) drops HERE, at
+                // end of iteration — AFTER the output.push copy above made every value
+                // structurally reachable via MettaState.output (collect_driver_program_
+                // roots). The persistent root is released exactly when the value becomes
+                // reachable through a longer-lived structural root; never before.
             }
             current_batch = Vec::new();
         }
@@ -434,13 +439,16 @@ pub async fn run_state_async(
     // Evaluate any remaining batch
     if !current_batch.is_empty() {
         let batch_results = evaluate_batch_parallel_arena(current_batch, env.clone()).await;
-        for (_batch_idx, results, should_output) in batch_results {
-            if should_output {
+        for outcome in batch_results {
+            if outcome.should_output {
                 let mut output = result_state.output_mut();
-                for &result in &results {
+                for &result in &outcome.results {
                     output.push(result);
                 }
             }
+            // E1-c (F1): `outcome` (+ its index-gc _root_handle) drops HERE, AFTER the
+            // output.push copy — releasing the persistent root exactly when the value
+            // becomes structurally reachable via MettaState.output.
         }
     }
 
@@ -455,6 +463,30 @@ pub async fn run_state_async(
     Ok(result_state)
 }
 
+/// E1-c (F1, design §1.1): one batch expression's gathered outcome. Carries the
+/// original index, the complete result value set, the output flag, and — ONLY in the
+/// index-gc build — the persistent [`SafepointRootHandle`] that keeps every result
+/// value rooted in `SAFEPOINT_ROOTS` (driver-C) from BEFORE the worker's `EvalGuard`
+/// drops until the caller has copied the values into `MettaState.output` (structurally
+/// reachable as driver program control via `collect_driver_program_roots`). The async
+/// gather driver holds NO `EvalGuard` (not a rendezvous participant), so the
+/// cycle-scoped `WORKER_ROOT_BUFFER`/finisher used by dispatch/collapse is UNSOUND
+/// here — the result must stay rooted ACROSS GC cycles until consumed, which only the
+/// persistent RAII-scoped channel provides. `SafepointRootHandle` is `Send` (it is
+/// `{ idx: usize }`), so it crosses the `spawn_eval` + async-gather boundary safely.
+///
+/// BYTE-IDENTICAL WHEN DORMANT: in the slab build the handle field does not exist (the
+/// F1 mechanism is `#[cfg(feature = "index-gc")]`); in the index build the field is
+/// `None` unless `dedicated_gc_enabled()` is ON.
+#[cfg(feature = "async")]
+struct BatchOutcome {
+    idx: usize,
+    results: Vec<MettaValue>,
+    should_output: bool,
+    #[cfg(feature = "index-gc")]
+    _root_handle: Option<crate::backend::models::SafepointRootHandle>,
+}
+
 /// Helper function to evaluate a batch of arena expressions in parallel.
 /// Returns results in original order with their indices.
 ///
@@ -466,7 +498,7 @@ pub async fn run_state_async(
 async fn evaluate_batch_parallel_arena(
     batch: Vec<(usize, MettaValue, bool)>,
     env: MettaEnvironment,
-) -> Vec<(usize, Vec<MettaValue>, bool)> {
+) -> Vec<BatchOutcome> {
     use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
     use std::sync::{Arc, Condvar, Mutex};
 
@@ -481,12 +513,29 @@ async fn evaluate_batch_parallel_arena(
     }
 
     // Scatter-gather: shared results vec + atomic barrier + condvar
-    let results: Arc<Mutex<Vec<Option<(usize, Vec<MettaValue>, bool)>>>> =
-        Arc::new(Mutex::new(vec![None; num_tasks]));
+    // BatchOutcome is NOT Clone (its F1 SafepointRootHandle is not), so init the
+    // slot vec via map-collect rather than `vec![None; n]` (which needs Clone).
+    let results: Arc<Mutex<Vec<Option<BatchOutcome>>>> =
+        Arc::new(Mutex::new((0..num_tasks).map(|_| None).collect()));
     let remaining = Arc::new(AtomicU32::new(num_tasks as u32));
     let done_pair = Arc::new((Mutex::new(false), Condvar::new()));
 
     let pool = global_eval_pool();
+
+    // ── E1-c (F1) batch worker-spawn latch ──
+    // The batch spawns concurrent workers via `pool.spawn_eval`, which (unlike
+    // parallel_dispatch / parallel_collapse_dispatch, eval_loop.rs) does NOT latch the
+    // "a worker has spawned" flag. Under the dedicated collector this latch tells the
+    // index collector it is in the FANOUT>0 regime. Gated on `dedicated_gc_enabled()`
+    // so index-default (dedicated OFF) + slab are BYTE-IDENTICAL — `note_worker_spawned`
+    // only flips a bool the INDEX collector reads, and the ST collector's `active==0`
+    // gate already prevents a mid-batch collection regardless.
+    #[cfg(feature = "index-gc")]
+    {
+        if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+            crate::backend::models::note_worker_spawned();
+        }
+    }
 
     for (slot, (idx, expr, should_output)) in batch.into_iter().enumerate() {
         let env = env.clone();
@@ -503,10 +552,51 @@ async fn evaluate_batch_parallel_arena(
                 let ctx = StaticEvalContext::get();
                 let (eval_results, _new_env) = eval_trampoline(expr, env, &ctx);
 
+                let result_vec = eval_results.into_vec();
+
+                // ── E1-c finisher (design §1.1 / F1): the OUTER batch-result handoff ──
+                // This worker's result Vec is about to move into the gather Mutex and
+                // ride worker→gather→caller on an async driver that holds NO EvalGuard
+                // (not a rendezvous participant). Unlike the dispatch/collapse finishers
+                // (which publish into the cycle-scoped WORKER_ROOT_BUFFER because the
+                // PARENT trampoline consumes them within the same cycle), the batch
+                // result must stay rooted ACROSS GC cycles until `run_state_async`
+                // copies it into MettaState.output. So register into the PERSISTENT
+                // driver-C channel (SAFEPOINT_ROOTS) and ride the SafepointRootHandle to
+                // the caller, which drops it only AFTER the copy (the consumer loop).
+                //
+                // Register BEFORE `_guard` drops on closure exit (no window where this
+                // thread is inactive yet the result is unrooted). NOT gated on
+                // is_gc_requested() (unlike the dispatch/collapse finishers): a batch
+                // result must stay rooted across ALL future cycles until consumed, and
+                // by the time a cycle is requested this worker is long gone. The flat
+                // result Vec IS the complete root set (eval_trampoline→into_vec is a
+                // flat Vec<MettaValue>; no nested (value,bindings) walk needed; clone is
+                // a cheap Copy of arena handles).
+                //
+                // BYTE-IDENTICAL WHEN DORMANT: the `#[cfg(index-gc)]` wall + the
+                // `dedicated_gc_enabled()`-first short-circuit ⇒ slab does not compile
+                // it; index-default leaves the handle None.
+                #[cfg(feature = "index-gc")]
+                let root_handle = if crate::backend::models::gc_allocator::dedicated_gc_enabled()
+                {
+                    Some(crate::backend::models::register_temporary_roots(
+                        result_vec.clone(),
+                    ))
+                } else {
+                    None
+                };
+
                 // Store result in pre-allocated slot (no contention — each task writes its own slot)
                 {
                     let mut guard = results.lock().expect("results mutex poisoned");
-                    guard[slot] = Some((idx, eval_results.into_vec(), should_output));
+                    guard[slot] = Some(BatchOutcome {
+                        idx,
+                        results: result_vec,
+                        should_output,
+                        #[cfg(feature = "index-gc")]
+                        _root_handle: root_handle,
+                    });
                 }
 
                 // Decrement barrier; if last task, notify waiter
@@ -533,15 +623,19 @@ async fn evaluate_batch_parallel_arena(
         }
     }
 
-    // Collect results, unwrap Options, sort by original index
-    let mut collected: Vec<(usize, Vec<MettaValue>, bool)> = results
+    // Collect results, unwrap Options, sort by original index. Each BatchOutcome
+    // carries (in the index-gc build) its persistent-root handle, which MUST NOT be
+    // dropped here — it rides to `run_state_async`, which drops it only AFTER copying
+    // the values into MettaState.output. Dropping it here would un-root the result
+    // before the caller consumes it → UAF.
+    let mut collected: Vec<BatchOutcome> = results
         .lock()
         .expect("results mutex poisoned")
         .drain(..)
         .map(|opt| opt.expect("task result missing"))
         .collect();
 
-    collected.sort_by_key(|(idx, _, _)| *idx);
+    collected.sort_by_key(|o| o.idx);
     collected
 }
 

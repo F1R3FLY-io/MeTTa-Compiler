@@ -2776,6 +2776,17 @@ pub fn release_session(context_id: u32) {
 /// GC triggers ONLY when this reaches 0 (quiescent state).
 pub(super) static ACTIVE_EVALUATORS: AtomicU32 = AtomicU32::new(0);
 
+/// Number of distinct mutator THREADS currently inside ≥1 `EvalGuard` (i.e. with
+/// thread-local `EVAL_GUARD_DEPTH > 0`). Unlike [`ACTIVE_EVALUATORS`] — a SUM of
+/// guard *increments*, so a depth-`k` thread contributes `k` — `N_THREADS` counts
+/// each active thread EXACTLY ONCE: bumped only on the outermost enter (depth
+/// 0→1) and dropped only on the outermost leave (depth 1→0). The Phase D+E
+/// dedicated-GC-thread driver gates its rendezvous on
+/// `WORKERS_PARKED_FOR_GC == n_threads()` (a per-THREAD parked count), NOT on
+/// `active_evaluator_count()`, so a nested (depth>1) mutator parks once and is
+/// counted once. See docs/cesk-gc/phase-de-concurrent-collector-design.md §1.2.
+pub(super) static N_THREADS: AtomicU32 = AtomicU32::new(0);
+
 /// Sticky process-global flag: `true` once ANY eval worker has EVER been spawned
 /// (set at the `parallel_dispatch` / `parallel_collapse_dispatch` spawn sites).
 ///
@@ -3437,7 +3448,17 @@ impl EvalGuard {
             }
             drop(lock);
         }
-        EVAL_GUARD_DEPTH.with(|d| d.set(d.get() + 1));
+        EVAL_GUARD_DEPTH.with(|d| {
+            let prev = d.get();
+            d.set(prev + 1);
+            // §1.2: count this THREAD once, on the OUTERMOST enter only. Placed
+            // AFTER the admission loop, so only a thread that has cleared
+            // GC_IN_PROGRESS joins the active-thread set (the Phase D+E
+            // dedicated-GC-thread driver's `n_threads()` rendezvous gate).
+            if prev == 0 {
+                N_THREADS.fetch_add(1, Ordering::AcqRel);
+            }
+        });
         EvalGuard
     }
 }
@@ -3449,6 +3470,10 @@ impl Drop for EvalGuard {
             let depth = d.get();
             if depth > 0 {
                 d.set(depth - 1);
+                // §1.2: leave the active-thread set on the OUTERMOST drop only.
+                if depth == 1 {
+                    N_THREADS.fetch_sub(1, Ordering::AcqRel);
+                }
             }
         });
         let prev = ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
@@ -3466,6 +3491,14 @@ impl Drop for EvalGuard {
 /// Get the current active evaluator count (for testing and diagnostics).
 pub fn active_evaluator_count() -> u32 {
     ACTIVE_EVALUATORS.load(Ordering::Acquire)
+}
+
+/// Number of distinct mutator threads currently inside ≥1 `EvalGuard` (each
+/// counted ONCE, regardless of guard nesting). This is the Phase D+E
+/// dedicated-GC-thread driver's rendezvous gate target
+/// (`WORKERS_PARKED_FOR_GC == n_threads()`). See [`N_THREADS`].
+pub fn n_threads() -> u32 {
+    N_THREADS.load(Ordering::Acquire)
 }
 
 /// Latch the [`WORKER_EVER_SPAWNED`] flag. Called at the eval-worker spawn sites
@@ -4600,6 +4633,12 @@ pub fn drop_eval_guard_for_safepoint() {
             "drop_eval_guard_for_safepoint called without active guard"
         );
         d.set(depth - 1);
+        // §1.2: a parking mutator leaves the active-thread set when its LAST
+        // guard level drops. (E1-c upgrades this to a full-depth drain; the
+        // depth==1 hook then fires when the drained depth reaches 0.)
+        if depth == 1 {
+            N_THREADS.fetch_sub(1, Ordering::AcqRel);
+        }
     });
 
     let prev = ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);
@@ -4640,7 +4679,15 @@ pub fn reacquire_eval_guard_after_safepoint() {
         drop(lock);
     }
 
-    EVAL_GUARD_DEPTH.with(|d| d.set(d.get() + 1));
+    EVAL_GUARD_DEPTH.with(|d| {
+        let prev = d.get();
+        d.set(prev + 1);
+        // §1.2: rejoin the active-thread set when resuming from a park. Placed
+        // AFTER the admission loop (same discipline as EvalGuard::enter).
+        if prev == 0 {
+            N_THREADS.fetch_add(1, Ordering::AcqRel);
+        }
+    });
 }
 
 /// Get the committed bytes from the global allocator's atomic counter.
@@ -7783,6 +7830,44 @@ mod tests {
         // reacquire_eval_guard_after_safepoint() is a balanced pair (restores both
         // EVAL_GUARD_DEPTH and ACTIVE_EVALUATORS), the guard's Drop will correctly
         // decrement both depth and ACTIVE_EVALUATORS exactly once.
+    }
+
+    /// §1.2: `N_THREADS` counts each mutator THREAD once, independent of guard
+    /// nesting depth (the dedicated-GC-thread driver gates on `n_threads()`, not
+    /// `active_evaluator_count()`). Runs on a FRESH thread so the thread-local
+    /// `EVAL_GUARD_DEPTH` starts at 0; asserts the depth transitions (the source
+    /// of truth for N_THREADS) and a robust `>= 1` lower bound on the global
+    /// counter (absolute global deltas are flaky under parallel tests — same
+    /// reason `test_safepoint_drop_reacquire_cycle` uses the thread-local depth).
+    #[test]
+    fn n_threads_counts_each_thread_once_not_guard_depth() {
+        std::thread::spawn(|| {
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 0, "fresh thread: depth 0");
+            let g1 = EvalGuard::enter(); // depth 0->1: joins the active-thread set
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 1);
+            assert!(n_threads() >= 1, "outermost enter: this thread is in the set");
+            let g2 = EvalGuard::enter(); // depth 1->2: nested, must NOT re-count
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 2);
+            assert!(n_threads() >= 1, "nested enter: still in the set (counted once)");
+            drop(g2); // depth 2->1: inner drop keeps membership
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 1);
+            assert!(n_threads() >= 1, "inner drop: still in the set");
+            drop(g1); // depth 1->0: outermost drop leaves the set
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 0);
+
+            // Safepoint drop/reacquire on a depth-1 guard moves membership 1->0->1
+            // and must not underflow N_THREADS.
+            let g = EvalGuard::enter(); // 0->1
+            assert!(n_threads() >= 1);
+            drop_eval_guard_for_safepoint(); // 1->0: leaves the set
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 0);
+            reacquire_eval_guard_after_safepoint(); // 0->1: rejoins
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 1);
+            assert!(n_threads() >= 1, "reacquire: back in the set");
+            drop(g); // 1->0
+        })
+        .join()
+        .expect("n_threads test thread panicked");
     }
 
     // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.

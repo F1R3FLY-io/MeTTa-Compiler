@@ -2897,6 +2897,28 @@ pub(super) static QUIESCENT_CONDVAR: Condvar = Condvar::new();
 #[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
 pub(crate) static WORKERS_PARKED_FOR_GC: AtomicU32 = AtomicU32::new(0);
 
+/// Monotonic GC cycle generation, bumped at the END of each rendezvous cycle (by
+/// the dedicated-GC-thread driver, under [`RENDEZVOUS_MUTEX`], together with the
+/// parked-count/buffer reset). A parking worker captures `my_gen` at park time;
+/// its resume-wait ([`worker_resume_wait_for_cycle`]) releases when `GC_CYCLE_GEN
+/// != my_gen` (the cycle it parked for ended) — robust to the boolean
+/// `GC_REQUESTED` being re-set by an UNRELATED back-to-back trigger (≥10 non-driver
+/// callers set it), which a boolean-gated resume could not distinguish (Round-4
+/// fix F2). Also the straggler-exclusion key in [`worker_park_and_root_in_cycle`]:
+/// a parker whose `gen != my_gen` drops its stale roots and does NOT bump the
+/// parked-count, so a late finisher from cycle K cannot corrupt cycle K+1's gate.
+///
+/// DEAD until E1-c wires the FANOUT>0 driver. See
+/// `docs/cesk-gc/phase-de-concurrent-collector-design.md` §1.3 + Round-4 F2.
+#[allow(dead_code)] // DEAD until E1-c B/C wires the FANOUT>0 park-and-collect.
+pub(crate) static GC_CYCLE_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Current GC cycle generation (Acquire). See [`GC_CYCLE_GEN`].
+#[allow(dead_code)] // DEAD until E1-c.
+pub(crate) fn current_cycle_gen() -> u64 {
+    GC_CYCLE_GEN.load(Ordering::Acquire)
+}
+
 /// `true` while a rendezvous-collector requestor owns the rendezvous (one
 /// collector at a time). Set by [`begin_gc_rendezvous`] via a `false→true` CAS
 /// (AcqRel) and cleared by [`end_gc_rendezvous`] (Release). A second would-be
@@ -3092,6 +3114,61 @@ pub(crate) fn worker_park_and_root(roots: &[MettaValue]) {
     worker_wait_for_resume();
 }
 
+/// WORKER side (E1-c, cycle-generation-gated variant of [`worker_park_and_root`]).
+/// Publish `roots` + signal parked ONLY if still in the cycle the worker observed
+/// (`GC_CYCLE_GEN == my_gen`), all under [`RENDEZVOUS_MUTEX`] so the gen-check,
+/// buffer append, count bump, and notify are atomic w.r.t. the requestor's
+/// cycle-end gen bump (under the same mutex). A straggler whose cycle already
+/// ended finds `gen != my_gen`, DROPS its (stale) roots, and does NOT bump the
+/// parked-count — so it cannot corrupt the next cycle's `WORKERS_PARKED_FOR_GC ==
+/// n` gate (§1.3 straggler exclusion). Then parks via
+/// [`worker_resume_wait_for_cycle`] until the cycle ends.
+///
+/// DEAD until E1-c wires the FANOUT>0 park sites. See
+/// `docs/cesk-gc/phase-de-concurrent-collector-design.md` §1.3 + Round-4 F2.
+#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
+    {
+        let _lock = RENDEZVOUS_MUTEX.lock();
+        if GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
+            // still my cycle: publish roots; the AcqRel fetch_add release-fences
+            // the append (HB2); then wake the requestor.
+            WORKER_ROOT_BUFFER.lock().extend_from_slice(roots);
+            WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);
+            RENDEZVOUS_CONDVAR.notify_all();
+        }
+        // else: my cycle already ended → stale roots dropped, no bump.
+    }
+    worker_resume_wait_for_cycle(my_gen);
+}
+
+/// WORKER side (E1-c, Round-4 F2): park on [`RESUME_CONDVAR`] until the cycle the
+/// worker parked for ENDS (`GC_CYCLE_GEN != my_gen`), then return. Gating on the
+/// cycle GENERATION — not the boolean `GC_REQUESTED` — is the F2 fix: ≥10
+/// non-driver callers set `GC_REQUESTED`, so a back-to-back UNRELATED trigger could
+/// re-set it and a boolean-gated resume would re-block (or miss its wake); the gen
+/// only ever ADVANCES, so `!= my_gen` is monotone-correct. Lost-wakeup-safe:
+/// [`RESUME_MUTEX`] held across the predicate + `wait_for`; the requestor bumps the
+/// gen (under [`RENDEZVOUS_MUTEX`]) BEFORE [`resume_workers`]'s notify (under
+/// [`RESUME_MUTEX`]), and the RESUME_MUTEX HB carries the gen's visibility to the
+/// woken worker. The 5 s `wait_for` is a warn-and-recheck liveness backstop.
+///
+/// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §1.3.
+#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
+    let mut lock = RESUME_MUTEX.lock();
+    while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
+        let result = RESUME_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
+        if result.timed_out() && GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
+            tracing::warn!(
+                "worker_resume_wait_for_cycle: still in cycle gen {} after {:?} — re-checking",
+                my_gen,
+                RENDEZVOUS_WAIT_TIMEOUT,
+            );
+        }
+    }
+}
+
 /// WORKER side: park on [`RESUME_CONDVAR`] until the requestor clears
 /// `GC_REQUESTED` (HB4), then return.
 ///
@@ -3149,6 +3226,33 @@ pub(crate) fn requestor_wait_for_parked() {
                 RENDEZVOUS_WAIT_TIMEOUT,
             );
             // Loop re-checks the real predicate; a timeout is a benign retry.
+        }
+    }
+}
+
+/// REQUESTOR side (E1-c): block until exactly `n` workers have parked
+/// (`WORKERS_PARKED_FOR_GC == n`). Unlike [`requestor_wait_for_parked`] (which
+/// gates on `active_evaluator_count()==0`), this gates on the per-THREAD parked
+/// count — the count the dedicated-GC-thread driver snapshots as `n = n_threads()`
+/// AFTER closing admission (the §Part-2 admission-before-snapshot). Single-location
+/// Acquire/Release HB (the parker's `fetch_add(AcqRel)` in
+/// [`worker_park_and_root_in_cycle`] release-fences its buffer append, HB2), so a
+/// `== n` observation sees all `n` workers' roots — SC-faithful, no SeqCst. The
+/// 5 s `wait_for` is a warn-and-recheck liveness backstop.
+///
+/// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §2.
+#[allow(dead_code)] // DEAD until E1-c B wires the FANOUT>0 driver.
+pub(crate) fn requestor_wait_for_parked_count(n: u32) {
+    let mut lock = RENDEZVOUS_MUTEX.lock();
+    while WORKERS_PARKED_FOR_GC.load(Ordering::Acquire) != n {
+        let result = RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
+        if result.timed_out() && WORKERS_PARKED_FOR_GC.load(Ordering::Acquire) != n {
+            tracing::warn!(
+                "requestor_wait_for_parked_count: parked={} != n={} after {:?} — re-checking",
+                WORKERS_PARKED_FOR_GC.load(Ordering::Acquire),
+                n,
+                RENDEZVOUS_WAIT_TIMEOUT,
+            );
         }
     }
 }
@@ -4689,6 +4793,48 @@ pub fn drop_eval_guard_for_safepoint() {
     }
 }
 
+/// Current thread's EvalGuard nesting depth (the thread-local `EVAL_GUARD_DEPTH`).
+/// Used by the safepoint sites to guard `depth>0` before
+/// [`drop_eval_guard_for_safepoint_full`] (a depth==0 caller — e.g. the
+/// post-EvalGuard type-fixpoint / MORK path — is not in the active set and must
+/// not park; design Part 8).
+#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+pub fn eval_guard_depth() -> u32 {
+    EVAL_GUARD_DEPTH.with(|d| d.get())
+}
+
+/// E1-c (design §Part 9): like [`drop_eval_guard_for_safepoint`] but drains the
+/// FULL thread-local guard NESTING in one shot — decrement `ACTIVE_EVALUATORS` by
+/// the whole depth, set depth to 0, leave the active-thread set (`N_THREADS--`),
+/// and return the drained depth for [`reacquire_eval_guard_after_safepoint_full`]
+/// to restore. The one-level [`drop_eval_guard_for_safepoint`] mis-counts a
+/// depth>1 worker (it would leave `active`/`N_THREADS` off by `depth-1`), so a
+/// parking worker that may be nested MUST use this. Callers MUST guard `depth>0`
+/// (depth==0 ⇒ not in the active set ⇒ must not park, Part 8).
+///
+/// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §Part 9.
+#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+pub fn drop_eval_guard_for_safepoint_full() -> u32 {
+    let depth = EVAL_GUARD_DEPTH.with(|d| {
+        let v = d.get();
+        d.set(0);
+        v
+    });
+    assert!(
+        depth > 0,
+        "drop_eval_guard_for_safepoint_full called without active guard"
+    );
+    let prev = ACTIVE_EVALUATORS.fetch_sub(depth, Ordering::AcqRel);
+    if prev == depth {
+        // Transitioned to quiescent (0 active) — notify waiters (generalized
+        // `prev == 1` from the one-level variant).
+        let _lock = QUIESCENT_MUTEX.lock();
+        QUIESCENT_CONDVAR.notify_all();
+    }
+    N_THREADS.fetch_sub(1, Ordering::AcqRel);
+    depth
+}
+
 /// Re-acquire the EvalGuard after a GC safepoint completes.
 ///
 /// Increments `ACTIVE_EVALUATORS`, blocking if `GC_IN_PROGRESS` is set
@@ -4728,6 +4874,47 @@ pub fn reacquire_eval_guard_after_safepoint() {
             N_THREADS.fetch_add(1, Ordering::AcqRel);
         }
     });
+}
+
+/// E1-c (design §Part 9 + Round-4 F2): re-acquire after a full-depth safepoint
+/// drain. (1) Wait until the cycle the worker parked for has ENDED (`gen !=
+/// my_gen`, via [`worker_resume_wait_for_cycle`]); (2) pass the `GC_IN_PROGRESS`
+/// admission gate ONCE; (3) restore the full depth in a SINGLE
+/// `fetch_add(saved_depth)` + rejoin the active-thread set + restore the
+/// thread-local depth. The single-shot add (vs a loop of gated single increments)
+/// eliminates the partial-increment / mis-`n_threads` race. Admission stays on
+/// `GC_IN_PROGRESS` (driver-exclusive, correct) — NOT `GC_REQUESTED` (the §9.1
+/// switch was rejected by F2; `GC_REQUESTED` is set by many non-driver callers).
+///
+/// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §Part 9.
+#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+pub fn reacquire_eval_guard_after_safepoint_full(saved_depth: u32, my_gen: u64) {
+    /// Maximum time to wait for GC_IN_PROGRESS to clear before retrying.
+    const GC_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    // F2: wait until MY cycle ended (the gen advanced), then re-admit.
+    worker_resume_wait_for_cycle(my_gen);
+    // Admission: GC_IN_PROGRESS gate, passed ONCE (no per-level race).
+    loop {
+        if !GC_IN_PROGRESS.load(Ordering::Acquire) {
+            break;
+        }
+        let mut lock = GC_PROGRESS_MUTEX.lock();
+        while GC_IN_PROGRESS.load(Ordering::Acquire) {
+            let result = GC_PROGRESS_CONDVAR.wait_for(&mut lock, GC_WAIT_TIMEOUT);
+            if result.timed_out() && GC_IN_PROGRESS.load(Ordering::Acquire) {
+                tracing::warn!(
+                    "reacquire_eval_guard_after_safepoint_full(): GC_IN_PROGRESS still set after {:?} — retrying",
+                    GC_WAIT_TIMEOUT,
+                );
+                break;
+            }
+        }
+        drop(lock);
+    }
+    ACTIVE_EVALUATORS.fetch_add(saved_depth, Ordering::AcqRel);
+    N_THREADS.fetch_add(1, Ordering::AcqRel);
+    EVAL_GUARD_DEPTH.with(|d| d.set(saved_depth));
 }
 
 /// Get the committed bytes from the global allocator's atomic counter.
@@ -7908,6 +8095,40 @@ mod tests {
         })
         .join()
         .expect("n_threads test thread panicked");
+    }
+
+    /// E1-c §Part 9: the full-depth drain/reacquire handles guard NESTING (depth>1)
+    /// — a depth-2 worker fully LEAVES the active set on `drop_full` and is RESTORED
+    /// on `reacquire_full`. Runs on a fresh thread (depth starts 0); asserts the
+    /// thread-local depth transitions (robust) + the returned saved-depth. Bumps
+    /// `GC_CYCLE_GEN` manually to stand in for the driver's cycle-end so the
+    /// gen-gated reacquire (`worker_resume_wait_for_cycle`) releases immediately.
+    #[test]
+    fn full_depth_drain_and_reacquire_handles_nesting() {
+        std::thread::spawn(|| {
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 0, "fresh thread: depth 0");
+            let g1 = EvalGuard::enter(); // depth 0->1
+            let g2 = EvalGuard::enter(); // depth 1->2 (nested)
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 2);
+            assert_eq!(eval_guard_depth(), 2, "accessor agrees with thread-local");
+
+            let my_gen = current_cycle_gen();
+            let saved = drop_eval_guard_for_safepoint_full(); // drains ALL levels at once
+            assert_eq!(saved, 2, "full drain returns the whole nesting depth");
+            assert_eq!(eval_guard_depth(), 0, "depth fully drained to 0");
+
+            // Stand in for the driver's cycle-end gen bump so the gen-gated
+            // reacquire releases immediately (single-threaded; no real driver).
+            GC_CYCLE_GEN.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            reacquire_eval_guard_after_safepoint_full(saved, my_gen);
+            assert_eq!(eval_guard_depth(), 2, "full depth restored in one shot");
+
+            drop(g2); // 2->1
+            drop(g1); // 1->0 (the guards' own Drop balances ACTIVE/N_THREADS)
+            assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 0, "balanced");
+        })
+        .join()
+        .expect("full-depth drain test thread panicked");
     }
 
     // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.

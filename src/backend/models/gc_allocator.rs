@@ -3281,6 +3281,25 @@ pub(crate) fn reset_rendezvous_counters() {
     WORKER_ROOT_BUFFER.lock().clear();
 }
 
+/// REQUESTOR side (E1-c): END the current rendezvous cycle — bump [`GC_CYCLE_GEN`]
+/// + reset the parked-count/buffer, ALL under [`RENDEZVOUS_MUTEX`], so the gen
+/// advance (which releases parked workers' gen-gated [`worker_resume_wait_for_cycle`]
+/// and excludes late stragglers in [`worker_park_and_root_in_cycle`]) is atomic
+/// w.r.t. those parker critical sections. The dedicated GC thread calls this at
+/// cycle END, BEFORE [`resume_workers`]'s notify (so the gen has advanced when a
+/// woken worker re-checks). A SEPARATE fn from [`reset_rendezvous_counters`] (which
+/// existing D2.x tests call without expecting the mutex/gen) to avoid a
+/// reentrant-lock deadlock.
+///
+/// DEAD until E1-c step 2 wires the gc_driver rendezvous. See design §1.3 + Round-4 F2.
+#[allow(dead_code)] // DEAD until E1-c step 2 wires the gc_driver rendezvous.
+pub(crate) fn end_rendezvous_cycle() {
+    let _lock = RENDEZVOUS_MUTEX.lock();
+    GC_CYCLE_GEN.fetch_add(1, Ordering::AcqRel);
+    WORKERS_PARKED_FOR_GC.store(0, Ordering::Release);
+    WORKER_ROOT_BUFFER.lock().clear();
+}
+
 /// REQUESTOR side: clear `GC_REQUESTED` and wake all parked workers, atomically
 /// w.r.t. the worker park.
 ///
@@ -8097,6 +8116,12 @@ mod tests {
         .expect("n_threads test thread panicked");
     }
 
+    /// Serializes the rendezvous tests that assert EXACT global parked-count/buffer
+    /// state or bump `GC_CYCLE_GEN` (V1 + the full-depth nesting test) so they do not
+    /// interleave under `cargo test` threads. (The gate runs them process-isolated
+    /// under nextest regardless; this also keeps a bare `cargo test` robust.)
+    static RENDEZVOUS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// E1-c §Part 9: the full-depth drain/reacquire handles guard NESTING (depth>1)
     /// — a depth-2 worker fully LEAVES the active set on `drop_full` and is RESTORED
     /// on `reacquire_full`. Runs on a fresh thread (depth starts 0); asserts the
@@ -8105,6 +8130,8 @@ mod tests {
     /// gen-gated reacquire (`worker_resume_wait_for_cycle`) releases immediately.
     #[test]
     fn full_depth_drain_and_reacquire_handles_nesting() {
+        // Serialize against the V1 rendezvous test — both bump GC_CYCLE_GEN.
+        let _serial = RENDEZVOUS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::thread::spawn(|| {
             assert_eq!(EVAL_GUARD_DEPTH.with(|d| d.get()), 0, "fresh thread: depth 0");
             let g1 = EvalGuard::enter(); // depth 0->1
@@ -8129,6 +8156,61 @@ mod tests {
         })
         .join()
         .expect("full-depth drain test thread panicked");
+    }
+
+    /// E1-c step 2 (V1): the FANOUT>0 rendezvous DRAIN sequence — the heart of
+    /// `gc_driver::gc_driver_rendezvous_cycle` steps (4)-(7)+(9) — exercised
+    /// cross-thread WITHOUT the eval_loop safepoint wiring (step 3) or a real
+    /// collection (gated). `N` worker threads each park + self-root a DISTINCT value
+    /// via `worker_park_and_root_in_cycle` (publish + bump the parked count + notify,
+    /// then block on the gen-gated resume); the test thread plays the DRIVER:
+    /// `requestor_wait_for_parked_count(N)` (the single-location parked-count
+    /// happens-before barrier) → `drain_worker_root_buffer` → assert the drain is
+    /// EXACTLY the union of the `N` self-roots → `end_rendezvous_cycle` (bump the
+    /// gen) → `resume_workers` (notify). Proves the parked-count gate is the correct
+    /// drain barrier — no self-root is missed, and none is read before its worker
+    /// published it (RT Option-B) — and that the gen bump + notify resumes all `N`.
+    #[test]
+    fn rendezvous_drains_union_of_worker_self_roots_then_resumes_all() {
+        let _serial = RENDEZVOUS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Fresh cycle: reset the parked count + buffer; snapshot the gen all N agree
+        // on (no other thread bumps it — RENDEZVOUS_TEST_LOCK is held).
+        reset_rendezvous_counters();
+        let my_gen = current_cycle_gen();
+        const N: u32 = 4;
+        let mut handles = Vec::with_capacity(N as usize);
+        for i in 0..N {
+            let g = my_gen;
+            handles.push(std::thread::spawn(move || {
+                let f = global_factory();
+                // publish [1000+i] + bump parked count + notify, THEN block on the
+                // gen-gated resume (returns once the driver bumps GC_CYCLE_GEN).
+                worker_park_and_root_in_cycle(&[f.long(1000 + i as i64)], g);
+            }));
+        }
+        // DRIVER (steps 4-7,9): wait for all N parked, drain, assert the union, end.
+        requestor_wait_for_parked_count(N);
+        let mut drained: Vec<MettaValue> = Vec::new();
+        drain_worker_root_buffer(&mut drained);
+        assert_eq!(
+            drained.len(),
+            N as usize,
+            "drain after the parked-count gate must see EXACTLY all N self-roots"
+        );
+        let mut longs: Vec<i64> = drained.iter().filter_map(|v| v.as_long()).collect();
+        longs.sort_unstable();
+        assert_eq!(
+            longs,
+            (0..N).map(|i| 1000 + i as i64).collect::<Vec<_>>(),
+            "the drained union is exactly the N distinct worker self-roots"
+        );
+        // (7) bump the gen + (9) notify — releases every parked worker's gen-gated wait.
+        end_rendezvous_cycle();
+        resume_workers();
+        for h in handles {
+            h.join()
+                .expect("a parked worker thread panicked / never resumed");
+        }
     }
 
     // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.

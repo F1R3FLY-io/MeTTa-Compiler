@@ -50,18 +50,31 @@ struct GcDriverDone(#[allow(dead_code)] bool);
 enum GcDriverRequest {
     /// Collect from these structural roots (MOVED to the GC thread so it owns them
     /// for the whole mark — they ARE the roots the in-place mark reads), then send
-    /// the outcome back on the per-request response channel.
+    /// the outcome back on the per-request response channel. (QUIESCENCE path —
+    /// `n_threads()==0`, the sole mutator blocked on the reply.)
     Collect(Vec<MettaValue>, mpsc::Sender<GcDriverDone>),
+    /// E1-c (FANOUT>0): run the §Part-2 rendezvous — wait for every active mutator
+    /// to park + self-root, drain their structural machines (∪ driver-C) and
+    /// collect, then resume them via the cycle-generation bump + `resume_workers`.
+    /// Fire-and-forget: it carries NO payload (the roots are pulled from
+    /// `WORKER_ROOT_BUFFER`, not sent) and sends NO reply (the parked workers
+    /// resume on the gen bump, not on a channel) — so it adds nothing to the
+    /// `unsafe impl Send` obligation, which is solely about `Collect`'s Vec.
+    CollectRendezvous,
     /// Graceful shutdown (sent from `Drop`).
     Shutdown,
 }
 
-// SAFETY: in index mode a `MettaValue` is a NaN-boxed `Addr` — a plain index into
-// the process-global index heap; the referenced nodes are `'static` (owned by the
-// heap) and immutable after publish. The dedicated path only ever runs under
-// `gc_mode_is_index()` at TRUE QUIESCENCE (`n_threads()==0`, the sole mutator
-// blocked on its response), so there is no concurrent reader/writer of those nodes
-// while the Vec is in flight; the mutator does not touch the Vec after sending.
+// SAFETY: the ONLY non-auto-`Send` payload is `Collect`'s `Vec<MettaValue>`
+// (`CollectRendezvous`/`Shutdown` carry no payload). In index mode a `MettaValue`
+// is a NaN-boxed `Addr` — a plain index into the process-global index heap; the
+// referenced nodes are `'static` (owned by the heap) and immutable after publish.
+// The `Collect` (quiescence) path only ever runs under `gc_mode_is_index()` at TRUE
+// QUIESCENCE (`n_threads()==0`, the sole mutator blocked on its response), so there
+// is no concurrent reader/writer of those nodes while the Vec is in flight; the
+// mutator does not touch the Vec after sending. (The `CollectRendezvous` FANOUT>0
+// path sends NO Vec — its roots are drained from `WORKER_ROOT_BUFFER` on the GC
+// thread AFTER all mutators have parked, so it adds nothing to this obligation.)
 // This is the identical `Send` justification the slab `GcRequest` makes
 // (`gc_thread.rs`). The embedded `Sender<GcDriverDone>` is genuinely `Send`. The
 // channel is never exercised in slab mode (the call site's `dedicated_gc_enabled()`
@@ -95,21 +108,125 @@ static GLOBAL_GC_DRIVER: OnceLock<Option<GcDriver>> = OnceLock::new();
 /// collection, so the roots stay alive exactly while the in-place mark reads them.
 fn gc_driver_main(request_rx: mpsc::Receiver<GcDriverRequest>) {
     while let Ok(req) = request_rx.recv() {
-        let (roots, resp_tx) = match req {
-            GcDriverRequest::Collect(roots, resp_tx) => (roots, resp_tx),
+        match req {
             GcDriverRequest::Shutdown => break,
-        };
-        // `run_collection_if_triggered` re-checks `gate_open()` (the no-hang
-        // backoff under FANOUT>0) then `mark_sweep_if_over_watermark`, which takes
-        // `GcInProgressGuard::try_enter()` + the heap `.write()` across mark+sweep.
-        // catch_unwind so a panicked cycle reports "did not run" and the thread
-        // survives (the mutator unblocks; the next quiescence collection reclaims).
-        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots)
-        }))
-        .unwrap_or(false);
-        // `roots` drops HERE, after the cycle — never before the mark completes.
-        let _ = resp_tx.send(GcDriverDone(ran)); // ignore if the mutator is gone
+            // QUIESCENCE (E1-a.3): synchronous handoff — collect from the mutator's
+            // roots, reply with the outcome. The mutator is blocked on `resp_tx`.
+            GcDriverRequest::Collect(roots, resp_tx) => {
+                // `run_collection_if_triggered` re-checks `gate_open()` (the no-hang
+                // backoff under FANOUT>0) then `mark_sweep_if_over_watermark`, which
+                // takes `GcInProgressGuard::try_enter()` + the heap `.write()` across
+                // mark+sweep. catch_unwind so a panicked cycle reports "did not run"
+                // and the thread survives (the mutator unblocks; the next quiescence
+                // collection reclaims). `roots` drops HERE, after the cycle — never
+                // before the mark completes.
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots)
+                }))
+                .unwrap_or(false);
+                let _ = resp_tx.send(GcDriverDone(ran)); // ignore if the mutator is gone
+            }
+            // E1-c (FANOUT>0): the §Part-2 rendezvous — fire-and-forget; the parked
+            // workers resume via the cycle-gen bump, not a reply channel.
+            GcDriverRequest::CollectRendezvous => gc_driver_rendezvous_cycle(),
+        }
+    }
+}
+
+/// E1-c (FANOUT>0): the dedicated GC thread's §Part-2 rendezvous cycle. The
+/// triggering mutator has already `request_gc()`'d (so every active mutator polls
+/// `is_gc_requested()` at its next safepoint, self-roots its machine ∪ E₀ into
+/// `WORKER_ROOT_BUFFER`, and parks). Here the GC thread — which is NOT a mutator, so
+/// there is no "the requestor must also pump the dispatch" deadlock (the rejected
+/// Phase-D rendezvous) — drives the cycle:
+///
+/// ```text
+///   (2) try_enter GcInProgressGuard            // become the sole collector; close admission
+///   (3) n := n_threads()                       // snapshot AFTER admission (admission-before-snapshot)
+///   (4) requestor_wait_for_parked_count(n)     // single-location parked-count HB (SC-faithful)
+///   (5) roots := drain(WORKER_ROOT_BUFFER) ∪ collect_safepoint_roots()   // ∪ driver-C
+///   (6) run_collection_if_triggered(roots)     // GATED: gate_open() still wants !worker_ever_spawned()
+///   (7) end_rendezvous_cycle()                 // bump GC_CYCLE_GEN + reset (releases gen-gated resume)
+///   (8) drop _gip                              // GC_IN_PROGRESS=false (wakes enter-parkers)
+///   (9) resume_workers()                       // GC_REQUESTED=false + notify RESUME_CONDVAR
+/// ```
+///
+/// Until **E1-FLIP**, `gate_open()` still requires `!worker_ever_spawned()`, so under
+/// FANOUT>0 step (6) backs off to a no-op — but the rendezvous (park/drain/resume)
+/// still runs end-to-end, which is exactly what the V1/V4 gate exercises. The cleanup
+/// (7)-(9) runs even if (6) panics (catch_unwind), so parked workers are ALWAYS
+/// released — a panicked cycle never wedges the mutators.
+///
+/// E₀ is covered without the GC thread holding an env handle: every parked worker
+/// self-roots its machine via `collect_machine_roots_live` (⊇ `collect_persistent_roots`,
+/// i.e. E₀), and `n ≥ 1` always (the trigger itself parks), so E₀ is in the drained
+/// buffer. driver-C (`SAFEPOINT_ROOTS`, the batch-finisher F1 roots) is read directly.
+fn gc_driver_rendezvous_cycle() {
+    use crate::backend::models::gc_allocator as ga;
+    // (2) admission: become the sole collector. Brief yield-retry if a slab cron /
+    // session-release path momentarily holds GC_IN_PROGRESS (design Part-12 #6).
+    let _gip = loop {
+        match ga::GcInProgressGuard::try_enter() {
+            Some(g) => break g,
+            None => std::thread::yield_now(),
+        }
+    };
+    // (3) snapshot the per-thread count AFTER admission closed (so a thread entering
+    // after this point parks at EvalGuard::enter and is excluded), then (4) wait for
+    // all n to park + publish their self-roots.
+    let n = ga::n_threads();
+    ga::requestor_wait_for_parked_count(n);
+    // (5) the structural root union: parked workers' machines (∪ E₀) + driver-C.
+    let mut roots: Vec<MettaValue> = Vec::new();
+    ga::drain_worker_root_buffer(&mut roots);
+    ga::collect_safepoint_roots(&mut roots);
+    // (6) collect (catch_unwind so the cleanup below ALWAYS releases parked workers).
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots)
+    }));
+    // `roots` drops HERE, after the cycle — never before the mark completes.
+    drop(roots);
+    // (7) END the cycle: bump GC_CYCLE_GEN + reset parked-count/buffer (releases the
+    // parked workers' gen-gated resume-wait); (8) drop _gip (wakes enter-parkers);
+    // (9) resume_workers (clears GC_REQUESTED + notifies RESUME_CONDVAR). Order:
+    // gen-bump BEFORE the resume notify so a woken worker re-checks an advanced gen.
+    ga::end_rendezvous_cycle();
+    drop(_gip);
+    ga::resume_workers();
+}
+
+/// E1-c (FANOUT>0): trigger a rendezvous collection on the dedicated GC thread
+/// (fire-and-forget). Called from a mutator safepoint that observes the watermark
+/// while other mutators are live (`n_threads() > 1`). It (a) sets `GC_REQUESTED` so
+/// every active mutator parks at its next safepoint, and (b) hands the cycle to the
+/// GC thread. The caller then parks at its OWN next safepoint as one of the `n`
+/// participants (so the GC thread's `requestor_wait_for_parked_count(n)` completes).
+///
+/// DORMANT until E1-c step 3 wires the FANOUT>0 safepoint trigger + park path; until
+/// then nothing calls this, so the default build is byte-identical.
+#[allow(dead_code)] // DEAD until E1-c step 3 wires the FANOUT>0 safepoint trigger.
+pub(crate) fn request_concurrent_collection() {
+    if !dedicated_gc_enabled() {
+        return;
+    }
+    // Signal every active mutator to poll + park at its next safepoint.
+    crate::backend::models::gc_allocator::request_gc();
+    // Hand the cycle to the dedicated GC thread (fire-and-forget). If the thread
+    // could not be spawned, fall back to clearing the request so mutators do not
+    // park forever waiting for a driver that will never run.
+    match GLOBAL_GC_DRIVER.get_or_init(spawn_gc_driver).as_ref() {
+        Some(driver) => {
+            let sent = driver
+                .request_tx
+                .lock()
+                .ok()
+                .map(|tx| tx.send(GcDriverRequest::CollectRendezvous).is_ok())
+                .unwrap_or(false);
+            if !sent {
+                crate::backend::models::gc_allocator::resume_workers();
+            }
+        }
+        None => crate::backend::models::gc_allocator::resume_workers(),
     }
 }
 

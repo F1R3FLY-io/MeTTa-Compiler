@@ -8213,6 +8213,72 @@ mod tests {
         }
     }
 
+    /// E1-c step 3: the FULL site-#1 worker-park SEQUENCE
+    /// (`drop_eval_guard_for_safepoint_full` → `worker_park_and_root_in_cycle` →
+    /// `reacquire_eval_guard_after_safepoint_full`) across N CONCURRENT workers, each
+    /// holding a REAL nested `EvalGuard` (depth 2 — the worker is mid-nested-eval) —
+    /// the exact sequence the eval_loop midloop branch (site #1) runs. Extends V1
+    /// (which parked via `worker_park_and_root_in_cycle` alone, no guard depth) and
+    /// the single-threaded full_depth test. Proves under CONCURRENCY that: (a) every
+    /// worker fully LEAVES the active set on the full drain and is RESTORED on
+    /// reacquire (thread-local depth round-trips 2→0→2); (b) the parked-count gate
+    /// drains EXACTLY the N self-roots (CESK-completeness — no root missed, none read
+    /// pre-publish); (c) the gen bump + notify resumes all N (bounded join, no hang).
+    /// Serialized by RENDEZVOUS_TEST_LOCK. (Uses explicit N for the gate — the test
+    /// owns the participant set; the production driver uses `n_threads()`. Does NOT
+    /// take `GcInProgressGuard` in the driver: the admission interaction is proven in
+    /// the design's Scenario B + covered by the EvalGuard/n_threads tests, and taking
+    /// it here would race the workers' `EvalGuard::enter` at admission.)
+    #[test]
+    fn step3_full_depth_park_sequence_across_n_concurrent_workers() {
+        let _serial = RENDEZVOUS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_rendezvous_counters();
+        let my_gen = current_cycle_gen();
+        const N: u32 = 4;
+        let mut handles = Vec::with_capacity(N as usize);
+        for i in 0..N {
+            let g = my_gen;
+            handles.push(std::thread::spawn(move || {
+                let f = global_factory();
+                // Real nested guards: depth 2 (worker mid-nested-eval).
+                let g1 = EvalGuard::enter();
+                let g2 = EvalGuard::enter();
+                assert_eq!(eval_guard_depth(), 2, "depth 2 before park");
+                // ── the EXACT site-#1 sequence ──
+                let saved = drop_eval_guard_for_safepoint_full();
+                assert_eq!(saved, 2, "full drain returns the nesting depth");
+                assert_eq!(eval_guard_depth(), 0, "fully left the active set");
+                worker_park_and_root_in_cycle(&[f.long(2000 + i as i64)], g);
+                reacquire_eval_guard_after_safepoint_full(saved, g);
+                assert_eq!(eval_guard_depth(), 2, "full depth restored after resume");
+                drop(g2);
+                drop(g1);
+            }));
+        }
+        // DRIVER (explicit-N gate): wait for all N parked, drain, assert the union, end.
+        requestor_wait_for_parked_count(N);
+        let mut drained: Vec<MettaValue> = Vec::new();
+        drain_worker_root_buffer(&mut drained);
+        assert_eq!(
+            drained.len(),
+            N as usize,
+            "drain after the parked-count gate sees EXACTLY all N self-roots"
+        );
+        let mut longs: Vec<i64> = drained.iter().filter_map(|v| v.as_long()).collect();
+        longs.sort_unstable();
+        assert_eq!(
+            longs,
+            (0..N).map(|i| 2000 + i as i64).collect::<Vec<_>>(),
+            "the drained union is exactly the N distinct worker self-roots"
+        );
+        end_rendezvous_cycle();
+        resume_workers();
+        for h in handles {
+            h.join()
+                .expect("a parked worker (full-depth sequence) never resumed");
+        }
+    }
+
     // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
     #[cfg(not(feature = "index-gc"))]
     #[test]

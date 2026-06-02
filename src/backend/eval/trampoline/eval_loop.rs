@@ -178,6 +178,46 @@ pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
     if !gc_allocator::is_gc_requested() {
         return;
     }
+
+    // ── E1-c step 3: DEDICATED GC THREAD park on the index path ──
+    // When the dedicated GC thread is driving a FANOUT>0 rendezvous, a worker that
+    // reaches a cooperative safepoint must PARK (self-root + block) so the driver's
+    // `requestor_wait_for_parked_count(n)` can balance. BYTE-IDENTICAL WHEN DORMANT:
+    // `dedicated_gc_enabled()` first → when OFF, control falls through to the
+    // unchanged slab/async register-temporary-roots path below.
+    //
+    // NOTE: this fn is dead-by-call-graph at E1-c step 3 (the index VM/JIT tiers do
+    // not call it until E1-d wires their poll edges with complete `extra_roots`); the
+    // edit makes the FUNCTION park correctly + is unit-testable, but only fires once
+    // those edges land. We do NOT wire the tier callers here (§Part-6 / E1-d).
+    if gc_allocator::dedicated_gc_enabled() {
+        // §Part-8 depth==0 guard: N_THREADS counts the depth 0→1 EvalGuard transition
+        // ONLY, and `drop_eval_guard_for_safepoint_full` asserts depth>0 + decrements
+        // N_THREADS. A caller at depth==0 is NOT in the active set `n` the driver
+        // snapshots, so it must NOT park (parking would over-decrement N_THREADS AND
+        // bump a parked-count the driver never expects → `requestor_wait_for_parked_
+        // count` over-counts and hangs). At depth==0 the worker is between activations
+        // and holds no machine the driver must drain ⇒ return without parking.
+        if gc_allocator::eval_guard_depth() == 0 {
+            return;
+        }
+        // depth>0: park exactly like the midloop site, but the structural roots here
+        // are the caller-supplied tier "hot values" (`extra_roots`) — the VM operand
+        // stack / JIT register file the trampoline-level walker cannot see while this
+        // call is parked OUTSIDE the trampoline loop (the enclosing activation's C/K
+        // are still covered by its own K-spine guard). The dedicated thread drains
+        // WORKER_ROOT_BUFFER, so we MUST publish `extra_roots` there (genuine CESK:
+        // the caller self-reads its own live values). F2 gen-gating as at site #1.
+        let my_gen = gc_allocator::current_cycle_gen();
+        let saved_depth = gc_allocator::drop_eval_guard_for_safepoint_full();
+        gc_allocator::worker_park_and_root_in_cycle(extra_roots, my_gen);
+        gc_allocator::reacquire_eval_guard_after_safepoint_full(saved_depth, my_gen);
+        // L1-FLAW-1: drop ABA-sensitive per-thread caches after a possible sweep.
+        clear_aba_sensitive_caches();
+        return;
+    }
+
+    // ── Default / slab path (UNCHANGED, byte-identical) ──
     // Collect parent-class roots: walk the frame chain that this thread
     // entered through (matches what the trampoline safepoint registers).
     let mut roots: Vec<MettaValue> = Vec::with_capacity(extra_roots.len() + 16);
@@ -3827,27 +3867,41 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Independent of `ctx.should_safepoint()`: the index GC's own
             // committed-bytes watermark drives the trigger (the slab `is_gc_
             // requested()`-gated safepoint dance below is a separate path).
-            // ── D2.1 worker self-root at the midloop poll point (DORMANT behind
-            //    `rendezvous_enabled()`, default OFF → byte-identical) ──
-            // SIBLING (`if … else if …`) to the single-threaded `should_collect_
-            // midloop()` collect below: a parallel-eval WORKER that observes a
-            // pending rendezvous GC self-collects its OWN structural roots (the
-            // collector cannot read a parked worker's native-stack registers —
-            // the genuine-CESK crux) into the shared buffer, drops its EvalGuard
-            // so `active_evaluator_count()` can reach 0, then parks until the
-            // requestor finishes marking. The two are mutually exclusive by
-            // construction: `should_collect_midloop()` already requires
-            // `!worker_ever_spawned()` (single-threaded regime), and this branch
-            // requires `rendezvous_enabled()` (default OFF) — so they never both
-            // fire, and the `else if` guarantees at most one runs per safepoint
-            // (no double-collect). When `rendezvous_enabled()` is OFF (default),
-            // the leading conjunct short-circuits WITHOUT calling
-            // `is_gc_requested()`, so control falls straight to the unchanged
-            // `else if should_collect_midloop()` — byte-identical to the prior
-            // bare `if`. The requestor that SETS `GC_REQUESTED` + drains + marks
-            // is D2.3 (not this increment); for D2.1 the only driver is the
-            // integration test, which plays requestor manually.
-            if crate::backend::models::gc_allocator::rendezvous_enabled()
+            // ── E1-c step 3: midloop FANOUT>0 trigger + worker self-root/park for
+            //    the DEDICATED GC THREAD (upgrades the dormant D2.1 branch) ──
+            // Two SIBLING branches (`if … else if …`) ahead of the single-threaded
+            // `should_collect_midloop()` collect below — mutually exclusive with it
+            // (it requires `!worker_ever_spawned()`; these require the FANOUT>0
+            // regime) and with each other (trigger requires `!is_gc_requested()`,
+            // park requires `is_gc_requested()`). The collector cannot read a parked
+            // worker's native-stack registers — the genuine-CESK crux — so each
+            // worker SELF-ROOTS its own machine into the shared buffer and parks; the
+            // dedicated GC thread drains the BUFFER, never the parked stacks.
+            //
+            // BYTE-IDENTICAL WHEN DORMANT: `dedicated_gc_enabled()` (a cached OnceLock
+            // bool, const-OFF by default) is the FIRST conjunct of BOTH branches, so
+            // when OFF they short-circuit WITHOUT reading `n_threads()` / the watermark
+            // / `is_gc_requested()`, and control falls straight to the unchanged
+            // `else if should_collect_midloop()` — identical to the prior bare path.
+            // In the slab build `gc_mode_is_index()` (inside the watermark heap read
+            // and the midloop gate) const-folds away too.
+
+            // (A) FANOUT>0 WATERMARK TRIGGER: a worker that observes the heap watermark
+            // while OTHER mutators are live (`n_threads() > 1` — it holds its own
+            // EvalGuard, so `> 1` means ≥1 OTHER live mutator) and no cycle is pending
+            // (`!is_gc_requested()`) hands the cycle to the dedicated GC thread
+            // (`request_concurrent_collection` sets GC_REQUESTED + posts
+            // CollectRendezvous), then keeps reducing and parks via branch (B) at its
+            // NEXT safepoint as one of the `n` participants (trigger latency ≤ one
+            // 4096-iter cadence). No roots are sent here — every participant
+            // self-roots at its own park.
+            if crate::backend::models::gc_allocator::dedicated_gc_enabled()
+                && crate::backend::models::gc_allocator::n_threads() > 1
+                && !crate::backend::models::gc_allocator::is_gc_requested()
+                && crate::backend::eval::cesk::index_heap::index_gc::watermark_due_for_concurrent()
+            {
+                crate::backend::eval::cesk::gc_driver::request_concurrent_collection();
+            } else if crate::backend::models::gc_allocator::dedicated_gc_enabled()
                 && crate::backend::models::gc_allocator::is_gc_requested()
             {
                 // Self-collect MY machine roots (same structural reader the
@@ -3871,13 +3925,34 @@ fn eval_trampoline_inner<C: EvalContext>(
                 for deferred_env in &deferred_shared_drops {
                     deferred_env.as_ref().collect_roots_into(&mut my_roots);
                 }
-                // Leave the active set BEFORE parking so the requestor's
-                // `active_evaluator_count()==0` (the TLA+ `BeginMark` predicate)
-                // can be reached, publish my roots + signal parked + park until
-                // the requestor clears `GC_REQUESTED`, then rejoin the active set.
-                crate::backend::models::gc_allocator::drop_eval_guard_for_safepoint();
-                crate::backend::models::gc_allocator::worker_park_and_root(&my_roots);
-                crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint();
+                // (B) PARK: capture my_gen BEFORE leaving the active set (F2 gen-gating
+                // — a cycle-end gen bump that races my park is then observed by the
+                // gen-gated primitives: `worker_park_and_root_in_cycle` drops stale
+                // roots without bumping the count; `reacquire_full` waits for
+                // `gen != my_gen`). Full-depth drain (this worker may be at nested-eval
+                // depth>1): one-shot ACTIVE_EVALUATORS-=depth + N_THREADS-=1, returns the
+                // depth to restore. Then publish my roots ∪ E₀ into WORKER_ROOT_BUFFER +
+                // bump WORKERS_PARKED_FOR_GC (the Option-B parked-count gate's HB carrier)
+                // + notify the GC thread, and park on RESUME_CONDVAR until the cycle ends
+                // (`GC_CYCLE_GEN != my_gen`) — all inside `worker_park_and_root_in_cycle`.
+                let my_gen = crate::backend::models::gc_allocator::current_cycle_gen();
+                let saved_depth =
+                    crate::backend::models::gc_allocator::drop_eval_guard_for_safepoint_full();
+                crate::backend::models::gc_allocator::worker_park_and_root_in_cycle(
+                    &my_roots, my_gen,
+                );
+                // Resume: wait for `gen != my_gen` (idempotent), pass the GC_IN_PROGRESS
+                // admission gate ONCE, restore the full guard depth + N_THREADS in a
+                // single fetch_add (no partial-increment race).
+                crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint_full(
+                    saved_depth, my_gen,
+                );
+                // L1-FLAW-1: after a possible sweep, a reused young Addr (a slot swept
+                // by the GC thread then re-bumped by a later alloc) would alias the
+                // prior occupant in any per-thread cache keyed by Addr — drop them,
+                // exactly as the index collector does at its own safepoints (the C1.c
+                // slab-parity invalidation contract).
+                clear_aba_sensitive_caches();
             } else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {
                 // A4.4 FLIP (midloop): feed the collector from the STRUCTURAL machine reader —
                 //   collect_machine_roots(S, C, K, E₀) ∪ the deferred-drop transient register

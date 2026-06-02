@@ -1825,6 +1825,36 @@ pub mod index_gc {
             || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
     }
 
+    /// E1-c step 3: the WATERMARK disjunction ONLY (no single-threaded gate), for
+    /// the dedicated-GC-thread FANOUT>0 trigger ([`eval_loop`] safepoint). Identical
+    /// clauses to [`should_collect`] / [`should_collect_midloop`], but WITHOUT
+    /// `gate_open*` — those require `active_evaluator_count()` ∈ {0,1} AND
+    /// `!worker_ever_spawned()`, both FALSE under FANOUT>0, so neither probe can ever
+    /// fire there. The CALLER supplies the FANOUT>0 gate
+    /// (`dedicated_gc_enabled() && n_threads() > 1`), so this is pure "is the heap
+    /// over a trigger watermark?" — one read-lock + a few relaxed loads. Its sole
+    /// caller short-circuits on `dedicated_gc_enabled()` (default OFF), so the
+    /// default/slab build never reaches it (byte-identical). Keeps the watermark
+    /// constants module-private (the alternative — inlining at the call site —
+    /// would have to expose them).
+    #[allow(dead_code)] // DEAD until E1-c step 3 wires the FANOUT>0 safepoint trigger.
+    pub fn watermark_due_for_concurrent() -> bool {
+        let (committed, young_alloc, old_live, nursery_pending) = {
+            let heap = global_index_heap().read().expect("index heap");
+            (
+                heap.committed_bytes(),
+                heap.young_alloc_bytes(),
+                heap.old_live_bytes(),
+                heap.nursery_full_pending(),
+            )
+        };
+        young_alloc > YOUNG_BUDGET
+            || nursery_pending
+            || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+            || committed > max_bytes()
+            || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
+    }
+
     /// `METTATRON_INDEX_GC_DISABLE=1` forces the collector off (parsed once).
     /// Used by the RSS-reclamation validation to measure the no-collection
     /// baseline; default is enabled.

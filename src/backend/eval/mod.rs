@@ -305,7 +305,11 @@ pub fn eval(
         // thread-local cache snapshot). NOT replaced by the structural reader —
         // dropping it would free the driver's accumulated results → UAF. (A5.4 narrows.)
         crate::backend::models::collect_safepoint_roots(&mut roots);
-        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots);
+        // E1-a.3: route the SAME roots to the dedicated GC thread when
+        // METTATRON_INDEX_GC_DEDICATED=1 (default OFF ⇒ inline, byte-identical).
+        // The EvalGuard dropped above ⇒ n_threads()==0 here ⇒ the dedicated cycle
+        // is reachable + cannot hang (FANOUT>0 backs off via gate_open()).
+        crate::backend::eval::cesk::gc_driver::collect_quiescence(roots);
     }
 
     // Phase 10.5: Run type fixpoint if rules were added during this eval.

@@ -42,6 +42,7 @@ pub mod continuation_compression;
 pub mod coroutine;
 pub mod discrimination_tree;
 pub mod enhanced_matcher;
+pub mod gc_driver;
 pub mod incremental_gc;
 pub mod index_arena;
 pub mod index_heap;

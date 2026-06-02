@@ -2992,6 +2992,40 @@ pub(crate) fn force_rendezvous_enabled_for_test(on: bool) {
 #[cfg(test)]
 static RENDEZVOUS_FORCED_FOR_TEST: AtomicBool = AtomicBool::new(false);
 
+/// Whether the quiescence index collection is driven by the DEDICATED GC THREAD
+/// (env `METTATRON_INDEX_GC_DEDICATED=1`, default OFF). Parsed once + cached,
+/// exactly like [`rendezvous_enabled`] above. Default OFF ⇒ the inline collection
+/// at the quiescence call site runs UNCHANGED (byte-identical). When ON, the
+/// mutator hands its already-built structural root set to the GC thread and BLOCKS
+/// for completion (output-equivalent — it would have blocked for the inline
+/// collection too). E1-a fires at quiescence only (`n_threads()==0`); under
+/// FANOUT>0 both `should_collect()` and the GC thread's `gate_open()` re-check
+/// return false (`worker_ever_spawned()`), so it backs off to a no-op — no hang
+/// (no park wait is engaged until E1-c). See
+/// `docs/cesk-gc/phase-de-concurrent-collector-design.md` (E1-a.3).
+pub(crate) fn dedicated_gc_enabled() -> bool {
+    #[cfg(test)]
+    {
+        if DEDICATED_GC_FORCED_FOR_TEST.load(Ordering::Acquire) {
+            return true;
+        }
+    }
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("METTATRON_INDEX_GC_DEDICATED").as_deref() == Ok("1"))
+}
+
+/// TEST-ONLY: force [`dedicated_gc_enabled`] to return `true` regardless of the
+/// env OnceLock (parsed once per process). Lets an E1-a.3 / E1-c test engage the
+/// dedicated-thread path deterministically. Reset to `false` at the end.
+#[cfg(test)]
+#[allow(dead_code)] // engaged by E1-a.3 ON-path / E1-c tests (not yet wired)
+pub(crate) fn force_dedicated_gc_enabled_for_test(on: bool) {
+    DEDICATED_GC_FORCED_FOR_TEST.store(on, Ordering::Release);
+}
+/// Backing flag for [`force_dedicated_gc_enabled_for_test`]. Test-only.
+#[cfg(test)]
+static DEDICATED_GC_FORCED_FOR_TEST: AtomicBool = AtomicBool::new(false);
+
 /// Acquire the rendezvous as the sole collector (one collector at a time).
 ///
 /// CAS [`GC_REQUESTOR_ACTIVE`] `false→true` (AcqRel on success so the subsequent

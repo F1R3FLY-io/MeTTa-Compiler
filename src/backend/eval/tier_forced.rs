@@ -322,7 +322,9 @@ pub fn eval_with_tier(
         // KEPT narrow driver-transport channel: SAFEPOINT_ROOTS (driver result
         // accumulator + cache snapshot). NOT replaced by the structural reader.
         crate::backend::models::collect_safepoint_roots(&mut roots);
-        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots);
+        // E1-a.3: route to the dedicated GC thread when enabled (default OFF ⇒
+        // inline, byte-identical) — mirrors eval/mod.rs.
+        crate::backend::eval::cesk::gc_driver::collect_quiescence(roots);
     }
 
     outcome

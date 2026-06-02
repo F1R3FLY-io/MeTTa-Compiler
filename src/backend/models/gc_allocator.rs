@@ -3582,7 +3582,13 @@ pub fn session_release_inhibitors() -> u32 {
 
 /// RAII guard that sets `GC_IN_PROGRESS = true` on creation and clears it on drop.
 /// Ensures the flag is always cleared, even if the GC snapshot path panics.
-pub(super) struct GcInProgressGuard;
+///
+/// `pub(crate)` (Phase D+E E1-a.2): the index-gc collector
+/// (`backend::eval::cesk::index_heap`) holds this across its mark+sweep so a
+/// concurrent `EvalGuard::enter` / `reacquire_eval_guard_after_safepoint`
+/// (mid-spawn admission) parks until the sweep completes — the dedicated-GC-thread
+/// driver's admission handshake.
+pub(crate) struct GcInProgressGuard;
 
 impl GcInProgressGuard {
     #[allow(dead_code)]
@@ -3594,7 +3600,7 @@ impl GcInProgressGuard {
     /// Try to enter GC-in-progress state. Returns None if another thread
     /// already holds the guard (e.g., maybe_quiescent_gc() or another
     /// session release cycle).
-    pub(super) fn try_enter() -> Option<Self> {
+    pub(crate) fn try_enter() -> Option<Self> {
         if GC_IN_PROGRESS
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()

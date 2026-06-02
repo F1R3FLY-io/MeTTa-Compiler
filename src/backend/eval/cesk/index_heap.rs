@@ -1962,6 +1962,17 @@ pub mod index_gc {
         //          through an old node (Phase C1.c §A; the young-only mark theorem).
         // `promote_young` reclassifies the swept young segments as old (so only the
         // active + future segments stay young) AND resets the young-alloc odometer.
+        // E1-a.2: hold the GC-in-progress handshake across the reclaim so a
+        // concurrent EvalGuard::enter / reacquire_eval_guard_after_safepoint
+        // (mid-spawn admission) parks until the sweep + side-free + cache-clear
+        // complete — the foundation for collecting while workers exist (the
+        // dedicated-GC-thread driver, Phase D+E E1). Best-effort: under index-gc
+        // no other collector sets GC_IN_PROGRESS, so `try_enter` succeeds; if it
+        // (defensively) does not, we still collect — byte-identical to today and
+        // sound at the current single-threaded gate (`!worker_ever_spawned()`),
+        // where no concurrent entrant exists. The guard drops at fn end, releasing
+        // any parked entrant via GC_PROGRESS_CONDVAR.
+        let _gip = crate::backend::models::gc_allocator::GcInProgressGuard::try_enter();
         let (live_after, old_live_after, stats, did_major) = {
             let mut heap = global_index_heap().write().expect("index heap");
             let (stats, did_major) = if do_major {
@@ -2571,10 +2582,57 @@ impl<T: ?Sized> Drop for SideColumn<T> {
 unsafe impl<T: ?Sized + Send> Send for SideColumn<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for SideColumn<T> {}
 
+// Shared by the test submodules that flip the PROCESS-GLOBAL gc-mode flag
+// (`mod tests` and `mod tsan_concurrent_factory`, both file-root siblings). Both
+// MUST serialize on the SAME lock — a per-module lock would not prevent a
+// cross-module race (one module flipping to slab while another's INDEX_KEY_TAG
+// value is live → use-after-free in `MettaValue::is_atom`, ASAN-confirmed under
+// parallel `cargo test`; `nextest` isolates per-process so it never raced). The
+// real slab reset is deferred to the guard's Drop (which runs AFTER the test's
+// index values drop, since the guard is bound as the first local) and is robust to
+// a missing reset / a panic (RAII + poison recovery). `#[cfg(test)]` here is a
+// superset of `tsan_concurrent_factory`'s cfg, so these exist whenever it compiles;
+// `pub(super)` so both children pick them up via their `use super::*;`.
+#[cfg(test)]
+pub(super) use crate::backend::models::metta_value::{
+    reset_gc_mode_slab as real_reset_gc_mode_slab,
+    set_gc_mode_index as real_set_gc_mode_index,
+};
+#[cfg(test)]
+static GC_MODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(test)]
+pub(super) struct IndexModeTestGuard {
+    #[allow(dead_code)] // held for RAII: Drop resets the mode + releases the lock
+    lock: std::sync::MutexGuard<'static, ()>,
+}
+#[cfg(test)]
+impl Drop for IndexModeTestGuard {
+    fn drop(&mut self) {
+        // Reset to slab UNDER the lock (the `lock` field drops after this body),
+        // AFTER the test's index-mode values/heaps have dropped (this guard is
+        // bound first, so it drops last).
+        real_reset_gc_mode_slab();
+    }
+}
+#[cfg(test)]
+#[must_use = "bind as `let _mode = enter_index_mode_for_test();` to hold the lock for the test"]
+pub(super) fn enter_index_mode_for_test() -> IndexModeTestGuard {
+    let lock = GC_MODE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    real_set_gc_mode_index();
+    IndexModeTestGuard { lock }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::models::metta_value::{reset_gc_mode_slab, set_gc_mode_index};
+    // The gc-mode serialization lock + the `enter_index_mode_for_test` RAII guard
+    // live at the file-root module (above) so `mod tsan_concurrent_factory` shares
+    // the SAME lock; both submodules pick them up via `use super::*;`. Only the
+    // no-op `reset_gc_mode_slab` shadow stays module-local (only `mod tests` makes
+    // those calls; the real slab reset is deferred to the guard's Drop).
+    /// No-op shadow: the real slab reset is deferred to `IndexModeTestGuard::drop`.
+    #[allow(dead_code)]
+    fn reset_gc_mode_slab() {}
 
     #[test]
     fn sexpr_children_roundtrip_and_co_locate() {
@@ -2630,7 +2688,7 @@ mod tests {
     fn transitive_mark_resolves_sexpr_children_from_side_arena() {
         // SExpr children that are arena handles require Index mode for
         // as_arena_addr to decode them. nextest isolates this in its own process.
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         let mut heap = IndexHeap::with_segment_capacity(64);
         // Two leaf atoms; reference them from a SExpr as index handles.
         let l1 = heap.alloc_atom("a");
@@ -2658,7 +2716,7 @@ mod tests {
     fn segment_release_co_releases_side_arenas() {
         // Fill segment 0 with variable-length (string) nodes, keep a live node in
         // segment 1, then sweep: segment 0 dies and its byte side-arena is reset.
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         let mut heap = IndexHeap::with_segment_capacity(2);
         let _d0 = heap.alloc_string("dead-zero");
         let _d1 = heap.alloc_string("dead-one"); // segment 0 full
@@ -2682,7 +2740,7 @@ mod tests {
         // released, else the trigger never re-arms. Fill segment 0 with dead
         // strings, keep a live node in segment 1, sweep, and assert committed
         // bytes fell.
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         let mut heap = IndexHeap::with_segment_capacity(2);
         let _d0 = heap.alloc_string("dead-zero");
         let _d1 = heap.alloc_string("dead-one"); // segment 0 full
@@ -2706,7 +2764,7 @@ mod tests {
         // The single-threaded safety gate must latch shut the instant any eval
         // worker is noted as spawned. (Process-global flag; nextest isolates this
         // test in its own process so the latch does not leak.)
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         // No worker yet and a single (this) caller → gate may open. We don't
         // assert it's open here (active_evaluator_count depends on guards), but we
         // DO assert that after note_worker_spawned() it is definitively closed.
@@ -2733,7 +2791,7 @@ mod tests {
         // Index mode so `as_arena_addr` decodes the factory's handles. (We do NOT
         // use `==` on index handles here — `PartialEq` is mode-aware only in 2a-5;
         // we compare via `.tagged` / `as_arena_addr` / heap accessors instead.)
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         let f = IndexFactory;
 
         // Heap-allocated atom: decodes to an Addr, content roundtrips.
@@ -2804,7 +2862,7 @@ mod tests {
         use crate::backend::models::metta_value::ValueView;
         use crate::backend::models::MettaValueFactory;
         use crate::ir::{Position, Span};
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         let f = IndexFactory;
 
         // Heap composites: the `'static`-laundered content roundtrips through view().
@@ -2887,7 +2945,7 @@ mod tests {
         use crate::backend::models::metta_value_trait::MettaValueTrait; // hash_value
         use crate::backend::models::MettaValueFactory;
         use crate::ir::{Position, Span};
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         clear_inner_shadow();
         let f = IndexFactory;
 
@@ -3020,7 +3078,7 @@ mod tests {
         // keyed by child HANDLE identity (tagged bits), ground-only. Equal child
         // handles ⇒ one Addr ⇒ one inner_ptr key (the R9 fixpoint-identity parity).
         use crate::backend::models::MettaValueFactory;
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         let f = IndexFactory;
 
         // Inline-only children share identical tagged bits → dedup.
@@ -3073,7 +3131,7 @@ mod tests {
         // the same canonical Addr, while dead content is forgotten and re-allocated
         // fresh (never a dangling hit on a reclaimed-but-intact slot).
         use crate::backend::models::MettaValueFactory;
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         let f = IndexFactory;
         let mut heap = IndexHeap::with_segment_capacity(64);
 
@@ -3140,7 +3198,7 @@ mod tests {
         // peel_span and returns the bare handle (NOT via from_inner round-trip).
         use crate::backend::models::MettaValueFactory;
         use crate::ir::{Position, Span};
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         let f = IndexFactory;
         let span = Span {
             start: Position {
@@ -3334,7 +3392,6 @@ mod tests {
 #[cfg(all(test, feature = "index-gc", not(loom)))]
 mod tsan_concurrent_factory {
     use super::*;
-    use crate::backend::models::metta_value::set_gc_mode_index;
     use crate::backend::models::{note_worker_spawned, MettaValueFactory};
     use std::sync::{Arc, Barrier};
 
@@ -3343,7 +3400,7 @@ mod tsan_concurrent_factory {
         // Index value mode (so `from_addr`/`view` decode the arena Addr) + close the
         // single-threaded collector gate (the regime in which concurrent `.read()`
         // allocation occurs; the collector backs off).
-        set_gc_mode_index();
+        let _mode = enter_index_mode_for_test();
         note_worker_spawned();
         assert!(
             crate::backend::models::worker_ever_spawned(),

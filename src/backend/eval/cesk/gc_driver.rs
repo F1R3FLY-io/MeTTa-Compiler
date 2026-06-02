@@ -175,14 +175,23 @@ fn gc_driver_rendezvous_cycle() {
     // after this point parks at EvalGuard::enter and is excluded), then (4) wait for
     // all n to park + publish their self-roots.
     let n = ga::n_threads();
+    // E1-FLIP: publish the snapshot `n` that gate_open_rendezvous reads — taken AFTER
+    // admission closed (try_enter above), BEFORE the parked-count wait, so the gate
+    // witnesses the SAME `n` the parked-count balanced against.
+    ga::set_n_threads_at_snapshot(n);
     ga::requestor_wait_for_parked_count(n);
     // (5) the structural root union: parked workers' machines (∪ E₀) + driver-C.
     let mut roots: Vec<MettaValue> = Vec::new();
     ga::drain_worker_root_buffer(&mut roots);
     ga::collect_safepoint_roots(&mut roots);
     // (6) collect (catch_unwind so the cleanup below ALWAYS releases parked workers).
+    // E1-FLIP: the RENDEZVOUS entry — gates on gate_open_rendezvous (completeness
+    // witness, NOT !worker_ever_spawned which is false here) + labels the cycle
+    // "rendezvous" (side-Box frees deferred; parked workers may hold laundered refs).
+    // Pre-FLIP (dedicated default OFF) this driver is unreachable; post-FLIP it is the
+    // FANOUT>0 collect that actually sweeps.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots)
+        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered_rendezvous(&roots)
     }));
     // `roots` drops HERE, after the cycle — never before the mark completes.
     drop(roots);

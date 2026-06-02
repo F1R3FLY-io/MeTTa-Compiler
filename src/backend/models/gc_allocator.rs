@@ -2919,6 +2919,73 @@ pub(crate) fn current_cycle_gen() -> u64 {
     GC_CYCLE_GEN.load(Ordering::Acquire)
 }
 
+/// E1-FLIP: the `n` the dedicated GC thread snapshotted for THIS cycle (set in
+/// `gc_driver_rendezvous_cycle` AFTER admission closed [`GcInProgressGuard`], BEFORE
+/// `requestor_wait_for_parked_count`). Read by `gate_open_rendezvous` so the
+/// rendezvous-collect completeness gate observes the SAME `n` the parked-count was
+/// waited against — the witness that every snapshot participant has self-rooted into
+/// `WORKER_ROOT_BUFFER` (HB2) before the sweep runs.
+///
+/// DEAD until E1-FLIP routes the rendezvous collect through the gate.
+#[allow(dead_code)]
+pub(crate) static N_THREADS_AT_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
+
+/// E1-FLIP: read the snapshot `n` for the in-flight rendezvous cycle.
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn n_threads_at_snapshot() -> u32 {
+    N_THREADS_AT_SNAPSHOT.load(Ordering::Acquire)
+}
+
+/// E1-FLIP: publish the snapshot `n` (driver, post-admission, pre-wait).
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn set_n_threads_at_snapshot(n: u32) {
+    N_THREADS_AT_SNAPSHOT.store(n, Ordering::Release);
+}
+
+/// E1-FLIP: parked-count reader for `gate_open_rendezvous` (Acquire — pairs with the
+/// parkers'/finishers' AcqRel `fetch_add`, HB2).
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn workers_parked_for_gc() -> u32 {
+    WORKERS_PARKED_FOR_GC.load(Ordering::Acquire)
+}
+
+/// E1-FLIP: GC-in-progress reader for `gate_open_rendezvous` (Acquire). True ⇒ the
+/// dedicated GC thread holds the rendezvous (admission closed).
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn gc_in_progress() -> bool {
+    GC_IN_PROGRESS.load(Ordering::Acquire)
+}
+
+thread_local! {
+    /// E1-FLIP §Part 3: the `GC_CYCLE_GEN` this thread has ALREADY balanced
+    /// (parked-count-bumped) for. `None` ⇒ not yet bumped this cycle. Prevents the
+    /// `EvalGuard::drop` panic/cancel finish-bump from DOUBLE-counting a worker that
+    /// already bumped via the normal finisher (`worker_finish_into_buffer`) or a park
+    /// (`worker_park_and_root_in_cycle`). Self-invalidates across cycles: the stored
+    /// `Some(old_gen)` no longer `== Some(current_gen)` once the gen advances, so no
+    /// explicit per-cycle clear is needed.
+    static GC_CYCLE_BUMPED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// E1-FLIP §Part 3: record that THIS thread has balanced the parked-count for cycle
+/// `gen` (idempotent per cycle). Called by every bump site that actually bumped.
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn note_cycle_bumped(gen: u64) {
+    GC_CYCLE_BUMPED.with(|c| c.set(Some(gen)));
+}
+
+/// E1-FLIP §Part 3: has THIS thread already balanced the parked-count for `gen`?
+#[allow(dead_code)]
+#[inline]
+pub(crate) fn already_bumped_this_cycle(gen: u64) -> bool {
+    GC_CYCLE_BUMPED.with(|c| c.get() == Some(gen))
+}
+
 /// `true` while a rendezvous-collector requestor owns the rendezvous (one
 /// collector at a time). Set by [`begin_gc_rendezvous`] via a `false→true` CAS
 /// (AcqRel) and cleared by [`end_gc_rendezvous`] (Release). A second would-be
@@ -3136,6 +3203,9 @@ pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
             WORKER_ROOT_BUFFER.lock().extend_from_slice(roots);
             WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);
             RENDEZVOUS_CONDVAR.notify_all();
+            // E1-FLIP §Part 3: this thread has now balanced the parked-count for
+            // `my_gen` — suppress a redundant EvalGuard::drop finish-bump this cycle.
+            note_cycle_bumped(my_gen);
         }
         // else: my cycle already ended → stale roots dropped, no bump.
     }
@@ -3175,6 +3245,9 @@ pub(crate) fn worker_finish_into_buffer(roots: &[MettaValue], my_gen: u64) {
         WORKER_ROOT_BUFFER.lock().extend_from_slice(roots);
         WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);
         RENDEZVOUS_CONDVAR.notify_all();
+        // E1-FLIP §Part 3: balanced the parked-count for `my_gen` — suppress a
+        // redundant EvalGuard::drop finish-bump this cycle.
+        note_cycle_bumped(my_gen);
     }
     // else: my cycle already ended → stale roots dropped, no bump (straggler exclusion).
 }
@@ -3677,6 +3750,28 @@ impl Drop for EvalGuard {
                 // §1.2: leave the active-thread set on the OUTERMOST drop only.
                 if depth == 1 {
                     N_THREADS.fetch_sub(1, Ordering::AcqRel);
+                    // E1-FLIP §Part 3: if this thread is leaving the active set while a
+                    // rendezvous cycle is in flight and it has NOT yet balanced the
+                    // parked-count (panic / BranchCancelled / any non-finisher exit),
+                    // finish-bump NOW with ZERO roots so the driver's
+                    // requestor_wait_for_parked_count(n) does not stall on the 5 s
+                    // backstop. Zero roots is correct: a dying worker's in-flight value
+                    // is dead (never stored to results[slot]); a NORMALLY-finishing
+                    // worker already bumped via the Ok-path finisher and is suppressed by
+                    // already_bumped_this_cycle. Cheap (gated dedicated + one
+                    // is_gc_requested() load, only on depth 1→0). worker_finish_into_buffer
+                    // locks a parking_lot mutex (no poison, unwind-safe) + only infallible
+                    // ops, so it is safe during a panic-unwind drop (no double-panic).
+                    // BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+                    #[cfg(feature = "index-gc")]
+                    {
+                        if dedicated_gc_enabled() && is_gc_requested() {
+                            let my_gen = current_cycle_gen();
+                            if !already_bumped_this_cycle(my_gen) {
+                                worker_finish_into_buffer(&[], my_gen);
+                            }
+                        }
+                    }
                 }
             }
         });

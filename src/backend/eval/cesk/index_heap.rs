@@ -1753,6 +1753,37 @@ pub mod index_gc {
         gc_mode_is_index() && !worker_ever_spawned() && active_evaluator_count() == 0 && !disabled()
     }
 
+    /// E1-FLIP — the gate for the DEDICATED-GC-THREAD rendezvous collect (the ONLY
+    /// path that may sweep while eval workers are live). Unlike [`gate_open`] it does
+    /// NOT require `!worker_ever_spawned()` (false under FANOUT>0 by construction);
+    /// instead it requires the rendezvous COMPLETENESS WITNESS: this thread holds
+    /// `GcInProgressGuard` (`gc_in_progress()`, admission closed) AND every snapshot
+    /// participant has parked/finished and published its machine roots
+    /// (`workers_parked_for_gc() >= n_threads_at_snapshot()`, already waited on by
+    /// `requestor_wait_for_parked_count` before this call).
+    ///
+    /// SOUNDNESS (sweep runs ⟺ root set complete): the sole caller is
+    /// `gc_driver::gc_driver_rendezvous_cycle`, which calls this AFTER (2) try_enter
+    /// GcInProgressGuard, (3) `n := n_threads()` post-admission + `set_n_threads_at_snapshot(n)`,
+    /// (4) `requestor_wait_for_parked_count(n)`, (5) drain `WORKER_ROOT_BUFFER ∪
+    /// collect_safepoint_roots`. So when this returns true the drained union is
+    /// `⋃ᵢ machineᵢ ∪ E₀ ∪ driver-C` — the complete live set (HB2 via the parked-count
+    /// AcqRel). `active_evaluator_count()==0` is NOT required (a finisher that
+    /// bumped-then-kept-running may still hold a guard); completeness comes from the
+    /// buffer drain gated by the parked-count, not from active==0.
+    ///
+    /// DORMANT until E1-FLIP's default-flip (only reachable on the GC thread, only
+    /// spun under `dedicated_gc_enabled()`); the slab build const-folds `gc_mode_is_index()`.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn gate_open_rendezvous() -> bool {
+        gc_mode_is_index()
+            && !disabled()
+            && crate::backend::models::gc_allocator::gc_in_progress()
+            && crate::backend::models::gc_allocator::workers_parked_for_gc()
+                >= crate::backend::models::gc_allocator::n_threads_at_snapshot()
+    }
+
     /// The provable single-threaded gate for the MID-LOOP (mid-directive)
     /// collector:
     ///
@@ -1897,6 +1928,32 @@ pub mod index_gc {
             return false;
         }
         mark_sweep_if_over_watermark(roots, "quiescence")
+    }
+
+    /// E1-FLIP — the DEDICATED-GC-THREAD rendezvous collect entry (GC thread ONLY).
+    /// Identical to [`run_collection_if_triggered`] EXCEPT it gates on
+    /// [`gate_open_rendezvous`] (the completeness witness — NO `!worker_ever_spawned()`,
+    /// which is false under FANOUT>0) and labels the cycle `"rendezvous"`.
+    ///
+    /// `roots` MUST be the COMPLETE union the driver drained
+    /// (`WORKER_ROOT_BUFFER ∪ collect_safepoint_roots` = `⋃ᵢ machineᵢ ∪ E₀ ∪ driver-C`);
+    /// [`gate_open_rendezvous`] is the completeness witness (all `n` parked/finished +
+    /// GcInProgressGuard held). The shared `mark_sweep_if_over_watermark` body is the
+    /// same proven mark/sweep.
+    ///
+    /// ⚠️ The `"rendezvous"` phase string (≠ `"quiescence"`) is LOAD-BEARING: it makes
+    /// `mark_sweep_if_over_watermark` reclaim node slots ONLY and NOT free side-`Box`es
+    /// this cycle (the side-`Box` free is `phase == "quiescence"`-gated). A parked
+    /// worker may hold a laundered `&'static MettaValueInner` into a side-`Box`, so the
+    /// rendezvous must defer side-`Box` frees to the next quiescence sweep (no-recycle
+    /// idempotence). Passing `"quiescence"` here would free a side-`Box` a parked worker
+    /// still references → UAF.
+    #[allow(dead_code)]
+    pub fn run_collection_if_triggered_rendezvous(roots: &[MettaValue]) -> bool {
+        if !gate_open_rendezvous() {
+            return false;
+        }
+        mark_sweep_if_over_watermark(roots, "rendezvous")
     }
 
     /// Run a MID-LOOP (mid-directive) mark+sweep cycle IF the mid-loop safety

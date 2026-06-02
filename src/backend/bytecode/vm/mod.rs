@@ -1336,9 +1336,22 @@ where
         loop {
             iter_counter = iter_counter.wrapping_add(1);
             if iter_counter & 0xFF == 0 {
-                let is_worker = crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER
-                    .with(|f| f.get());
-                if is_worker && crate::backend::models::gc_allocator::is_gc_requested() {
+                // E1-c step 4 (design §Part-6): widen the poll gate so a VM worker
+                // also parks on the INDEX path. Under index-gc the dedicated GC
+                // thread's `requestor_wait_for_parked_count(n)` counts EVERY thread
+                // holding an EvalGuard (driver + batch + dispatch), not only
+                // `IS_PARALLEL_WORKER`-flagged ones, so the gate must fire for any
+                // such thread that observes `is_gc_requested()`. On slab,
+                // `cfg!(feature = "index-gc")` const-folds to `false`, so the `||`
+                // short-circuits to the `is_worker` TLS read — BYTE-IDENTICAL to the
+                // prior `is_worker && is_gc_requested()`. Index-default (dedicated
+                // OFF): nothing sets GC_REQUESTED under FANOUT>0, so the body never
+                // runs (and `worker_cooperative_safepoint` fast-returns regardless).
+                if crate::backend::models::gc_allocator::is_gc_requested()
+                    && (cfg!(feature = "index-gc")
+                        || crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER
+                            .with(|f| f.get()))
+                {
                     self.run_cooperative_safepoint();
                 }
             }

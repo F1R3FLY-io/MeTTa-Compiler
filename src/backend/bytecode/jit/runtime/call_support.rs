@@ -158,18 +158,40 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     // must surrender their EvalGuard so quiescence-driven GC can fire; the walker
     // registers JitContext slab roots + the local `arg` before the safepoint.
     //
-    // SLAB-ONLY (B4.2 cfg-wall): this is a discovery-style channel
+    // SLAB ARM (B4.2 cfg-wall): on slab this is a discovery-style channel
     // (collect_jit_roots_into → worker_cooperative_safepoint, on the slab
-    // parallel-worker `is_gc_requested()` rendezvous). Under index-gc the JIT
-    // roots are STRUCTURAL — the `VmLeaf::Jit` K-leaf pushed around `native_fn`
-    // (hybrid/arena.rs), read by `collect_k_spine`. Compiling this out of the
-    // index build keeps that path unambiguous and honors the Phase-A invariant
-    // (no discovery side-channel under index-gc).
+    // parallel-worker `is_gc_requested()` rendezvous).
     #[cfg(not(feature = "index-gc"))]
     {
         let is_worker =
             crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER.with(|f| f.get());
         if is_worker && crate::backend::models::gc_allocator::is_gc_requested() {
+            let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
+            roots.push(arg.clone());
+            crate::backend::bytecode::jit::runtime::gc_roots::collect_jit_roots_into(
+                ctx_ref, &mut roots,
+            );
+            crate::backend::eval::trampoline::eval_loop::worker_cooperative_safepoint(&roots);
+        }
+    }
+    // INDEX ARM (E1-c step 4, design §Part-6): the JIT tier must also PARK for the
+    // dedicated GC thread under FANOUT>0. This adds LIVENESS (the cooperative
+    // safepoint), NOT discovery — the same register-file values are ALSO structural
+    // via the `VmLeaf::Jit` K-leaf pushed around `native_fn` (hybrid/arena.rs), read
+    // by `collect_k_spine`. We self-root them eagerly here only so the park-window
+    // snapshot is complete the instant the worker leaves the trampoline loop (the
+    // dedicated thread drains WORKER_ROOT_BUFFER, not the parked register file), so
+    // the Phase-A "no discovery side-channel" invariant is preserved (discovery stays
+    // structural; this is the §Part-8 self-root-then-park). The gate omits `is_worker`
+    // (the dedicated driver counts every EvalGuard-holding thread). `collect_jit_
+    // roots_into` is index-aware (reconstructs the arena `Addr` handle, never derefs).
+    // BYTE-IDENTICAL WHEN DORMANT: with the dedicated GC OFF (default) nothing sets
+    // GC_REQUESTED under FANOUT>0 (`request_concurrent_collection` early-returns on
+    // `!dedicated_gc_enabled()`), so `is_gc_requested()` is false and the body never
+    // runs; `worker_cooperative_safepoint` also fast-returns on the same flag.
+    #[cfg(feature = "index-gc")]
+    {
+        if crate::backend::models::gc_allocator::is_gc_requested() {
             let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
             roots.push(arg.clone());
             crate::backend::bytecode::jit::runtime::gc_roots::collect_jit_roots_into(

@@ -2565,6 +2565,54 @@ fn parallel_dispatch(
                     if any_non_empty {
                         cancel_token.record_non_empty_branch();
                     }
+                    // ── E1-c finisher (design §1.1): close the §1.1 hang ──
+                    // This worker is about to RETURN its in-flight result into the
+                    // parent's `results[slot]`. Until that store completes the result
+                    // `(value, bindings)` set is live ONLY on this worker's stack —
+                    // invisible to the collector's structural walk. If the dedicated
+                    // GC thread is mid-rendezvous, dropping our outermost `EvalGuard`
+                    // (which `N_THREADS.fetch_sub`s) would leave the active set without
+                    // a matching parked-count bump → `requestor_wait_for_parked_count`
+                    // caps below `n` and hangs. So we self-root the about-to-return set
+                    // and bump the parked-count via the finisher (publish + bump +
+                    // notify, NO park), then return normally; the parent's
+                    // `WaitForParallel` K-frame roots the result thereafter.
+                    //
+                    // BYTE-IDENTICAL WHEN DORMANT: the block is behind the
+                    // `#[cfg(feature = "index-gc")]` wall AND `dedicated_gc_enabled()`
+                    // is the FIRST conjunct (cached OnceLock bool, const-OFF default),
+                    // so slab does not compile it and index-default short-circuits it
+                    // to one predicted-false read off the worker-return path.
+                    #[cfg(feature = "index-gc")]
+                    {
+                        if crate::backend::models::gc_allocator::dedicated_gc_enabled()
+                            && crate::backend::models::gc_allocator::is_gc_requested()
+                            && crate::backend::models::gc_allocator::eval_guard_depth() > 0
+                        {
+                            // Capture my_gen BEFORE the publish (and before the guard
+                            // drops on closure exit) so a racing cycle-end gen bump is
+                            // observed by the finisher's gen-gate → stale roots dropped,
+                            // no over-count (§1.3 straggler exclusion). The `_guard`
+                            // (entered above) is still held here, so depth > 0.
+                            let my_gen =
+                                crate::backend::models::gc_allocator::current_cycle_gen();
+                            // Genuine-CESK self-read of the about-to-return result set:
+                            // every value ∪ every binding value (the exact idiom
+                            // `ParallelDispatchRootProvider::collect_roots` uses).
+                            let mut finish_roots: Vec<crate::backend::models::MettaValue> =
+                                Vec::with_capacity(eval_results.len() * 4);
+                            for (value, bindings) in eval_results.iter() {
+                                finish_roots.push(*value);
+                                for (_, bound) in bindings.iter() {
+                                    finish_roots.push(*bound);
+                                }
+                            }
+                            crate::backend::models::gc_allocator::worker_finish_into_buffer(
+                                &finish_roots,
+                                my_gen,
+                            );
+                        }
+                    }
                     let mut guard = results.lock().expect("results mutex poisoned");
                     guard[slot] = Some(eval_results.into_iter().collect());
                 }
@@ -3095,6 +3143,33 @@ fn parallel_collapse_dispatch(
                 results
             };
 
+            // ── E1-c finisher (design §1.1): close the §1.1 hang (collapse worker) ──
+            // Sibling of the parallel_dispatch finisher above; see the full rationale
+            // there. The collapse worker's `eval_results: SmallVec<[BoundValue; 2]>`
+            // is about to move into `results[slot]`; until then it is live only on
+            // this stack. BYTE-IDENTICAL WHEN DORMANT via the `#[cfg(feature =
+            // "index-gc")]` wall + `dedicated_gc_enabled()`-first short-circuit.
+            #[cfg(feature = "index-gc")]
+            {
+                if crate::backend::models::gc_allocator::dedicated_gc_enabled()
+                    && crate::backend::models::gc_allocator::is_gc_requested()
+                    && crate::backend::models::gc_allocator::eval_guard_depth() > 0
+                {
+                    let my_gen = crate::backend::models::gc_allocator::current_cycle_gen();
+                    let mut finish_roots: Vec<crate::backend::models::MettaValue> =
+                        Vec::with_capacity(eval_results.len() * 4);
+                    for (value, bindings) in eval_results.iter() {
+                        finish_roots.push(*value);
+                        for (_, bound) in bindings.iter() {
+                            finish_roots.push(*bound);
+                        }
+                    }
+                    crate::backend::models::gc_allocator::worker_finish_into_buffer(
+                        &finish_roots,
+                        my_gen,
+                    );
+                }
+            }
             {
                 let mut guard = results.lock().expect("results mutex poisoned");
                 guard[slot] = Some(eval_results.into_iter().collect());

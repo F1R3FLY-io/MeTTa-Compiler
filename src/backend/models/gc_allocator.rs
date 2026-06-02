@@ -3142,6 +3142,43 @@ pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
     worker_resume_wait_for_cycle(my_gen);
 }
 
+/// WORKER side (E1-c §1.1): the FINISHER — the cycle-generation-gated sibling of
+/// [`worker_park_and_root_in_cycle`] WITHOUT the trailing
+/// [`worker_resume_wait_for_cycle`] park. A worker about to RETURN its in-flight
+/// result (and drop its outermost [`EvalGuard`], whose `N_THREADS.fetch_sub`
+/// silently removes it from the active set) while a rendezvous cycle is pending
+/// publishes its result roots + bumps the parked-count, then RETURNS (does NOT
+/// park). This balances the driver's [`requestor_wait_for_parked_count`] gate for a
+/// worker that FINISHES rather than reaching a park safepoint — without it the gate
+/// caps below `n` and hangs forever (the §1.1 hang).
+///
+/// Gen-gating (§1.3): publish + bump ONLY if `GC_CYCLE_GEN == my_gen`, all under
+/// [`RENDEZVOUS_MUTEX`] (atomic w.r.t. the driver's cycle-end gen bump in
+/// [`end_rendezvous_cycle`], same mutex). A STRAGGLER whose cycle already ended finds
+/// `gen != my_gen`, DROPS its (stale) roots, and does NOT bump — so it cannot
+/// over-count the NEXT cycle's gate. Sound because such a finisher stored its result
+/// into the parent's slot before the next cycle's `n` snapshot (the parent's
+/// `WaitForParallel` K-frame then roots it structurally), so dropping its buffer
+/// contribution loses nothing live. HB2 is identical to the parker: the AcqRel
+/// `fetch_add` release-fences the buffer append. NO park: after the bump the worker
+/// keeps running (its later allocations during a concurrent mark are covered by
+/// allocate-black).
+///
+/// DEAD until E1-c wires the FANOUT>0 finish sites. See design §1.1 + §1.3.
+#[allow(dead_code)] // DEAD until E1-c wires the eval_loop finish sites.
+pub(crate) fn worker_finish_into_buffer(roots: &[MettaValue], my_gen: u64) {
+    let _lock = RENDEZVOUS_MUTEX.lock();
+    if GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
+        // still my cycle: publish roots; the AcqRel fetch_add release-fences the
+        // append (HB2); then wake the requestor. NO worker_resume_wait_for_cycle —
+        // the finisher returns to drop its EvalGuard and complete normally.
+        WORKER_ROOT_BUFFER.lock().extend_from_slice(roots);
+        WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);
+        RENDEZVOUS_CONDVAR.notify_all();
+    }
+    // else: my cycle already ended → stale roots dropped, no bump (straggler exclusion).
+}
+
 /// WORKER side (E1-c, Round-4 F2): park on [`RESUME_CONDVAR`] until the cycle the
 /// worker parked for ENDS (`GC_CYCLE_GEN != my_gen`), then return. Gating on the
 /// cycle GENERATION — not the boolean `GC_REQUESTED` — is the F2 fix: ≥10
@@ -3244,11 +3281,21 @@ pub(crate) fn requestor_wait_for_parked() {
 #[allow(dead_code)] // DEAD until E1-c B wires the FANOUT>0 driver.
 pub(crate) fn requestor_wait_for_parked_count(n: u32) {
     let mut lock = RENDEZVOUS_MUTEX.lock();
-    while WORKERS_PARKED_FOR_GC.load(Ordering::Acquire) != n {
+    // Wait until AT LEAST `n` participants have bumped (`>= n`, i.e. loop while
+    // `< n`) — NOT exactly `== n`. A worker EXCLUDED from the snapshot `n` (it left
+    // the active set — via a parker's full-depth drain or a finisher's guard-drop —
+    // before the driver's `n = n_threads()` read) can still bump the count (the bump
+    // precedes the drop in program order), so the count may OVERSHOOT `n`. A condvar
+    // wake can skip the transient `== n` (two bumps between wakes), so an `!= n`
+    // predicate would hang on the overshoot. `< n` exits on `>= n`: an overshoot is
+    // benign — the extra bump published valid roots and that worker has already left,
+    // so the drained union is a sound (over-)approximation. (The count only ever
+    // increases during a cycle; `end_rendezvous_cycle` zeroes it at the END.)
+    while WORKERS_PARKED_FOR_GC.load(Ordering::Acquire) < n {
         let result = RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
-        if result.timed_out() && WORKERS_PARKED_FOR_GC.load(Ordering::Acquire) != n {
+        if result.timed_out() && WORKERS_PARKED_FOR_GC.load(Ordering::Acquire) < n {
             tracing::warn!(
-                "requestor_wait_for_parked_count: parked={} != n={} after {:?} — re-checking",
+                "requestor_wait_for_parked_count: parked={} < n={} after {:?} — re-checking",
                 WORKERS_PARKED_FOR_GC.load(Ordering::Acquire),
                 n,
                 RENDEZVOUS_WAIT_TIMEOUT,
@@ -8277,6 +8324,51 @@ mod tests {
             h.join()
                 .expect("a parked worker (full-depth sequence) never resumed");
         }
+    }
+
+    /// E1-c §1.1 finisher: a worker that FINISHES mid-cycle (publishes + bumps, NO
+    /// park) balances the driver's parked-count gate just like a parker — and the
+    /// §1.3 gen-gate DROPS a straggler whose cycle already ended (no over-count of
+    /// the next cycle). N finisher threads return IMMEDIATELY (no block); the driver
+    /// gate balances at N from finish-bumps alone, then a late finisher with the
+    /// ended cycle's gen must not bump. Serialized by RENDEZVOUS_TEST_LOCK.
+    #[test]
+    fn finisher_balances_gate_without_parking_and_excludes_stragglers() {
+        let _serial = RENDEZVOUS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_rendezvous_counters();
+        let my_gen = current_cycle_gen();
+        const N: u32 = 4;
+        let mut handles = Vec::with_capacity(N as usize);
+        for i in 0..N {
+            let g = my_gen;
+            handles.push(std::thread::spawn(move || {
+                let f = global_factory();
+                // publish [3000+i] + bump + notify, then RETURN immediately (no park).
+                worker_finish_into_buffer(&[f.long(3000 + i as i64)], g);
+            }));
+        }
+        // The gate balances at N from FINISH-bumps alone (zero parkers).
+        requestor_wait_for_parked_count(N);
+        let mut drained: Vec<MettaValue> = Vec::new();
+        drain_worker_root_buffer(&mut drained);
+        assert_eq!(
+            drained.len(),
+            N as usize,
+            "finish-bumps balance the gate; the drained union is the N self-roots"
+        );
+        for h in handles {
+            h.join().expect("a finisher thread panicked / blocked");
+        }
+        // §1.3 straggler exclusion: END the cycle (bump gen + reset), THEN a late
+        // finisher carrying the ENDED cycle's gen must be DROPPED (no bump).
+        end_rendezvous_cycle();
+        let f = global_factory();
+        worker_finish_into_buffer(&[f.long(9999)], my_gen);
+        assert_eq!(
+            WORKERS_PARKED_FOR_GC.load(Ordering::Acquire),
+            0,
+            "a straggler from the ended cycle must NOT bump (gen-gated drop)"
+        );
     }
 
     // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.

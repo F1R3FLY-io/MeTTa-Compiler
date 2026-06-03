@@ -195,6 +195,24 @@ fn gc_driver_rendezvous_cycle() {
     // point parks at EvalGuard::enter (admission-blocked) and acquires `acquired>cur_gen`
     // ⇒ excluded from the wait (S3).
     let cur_gen = ga::current_cycle_gen();
+    // E5 (the straddle-deadlock fix,
+    // docs/cesk-gc/e1-flip-deadlock-straddle-rootcause-2026-06-03.md): publish that a
+    // LIVE driver has STARTED cycle `cur_gen`. The straddle re-park gate keys on this
+    // (NOT `GC_CYCLE_GEN`, which is bumped at cycle END and so, in the teardown window,
+    // already names the next — not-yet-started — cycle). A worker can therefore never
+    // re-park for a cycle no driver has begun (the phantom-cycle hang). The Release
+    // store is ordered-AFTER the `try_enter` gip-CAS (AcqRel, above), which is the HB
+    // that carries `cur_gen` to the straddle's lock-free Acquire read; the debug_assert
+    // pins that the gip is set before the store (so the order is not silently broken by
+    // a future refactor that moves the store before admission). MUST NOT be under any
+    // mutex (the straddle body locks RENDEZVOUS_MUTEX non-reentrantly — see
+    // `GC_CYCLE_STARTED`).
+    debug_assert!(
+        ga::gc_in_progress(),
+        "E5: set_current_cycle_started must run AFTER try_enter closed admission (the \
+         gip-CAS is the HB that carries `cur_gen` to the straddle's Acquire read)"
+    );
+    ga::set_current_cycle_started(cur_gen);
     // (4) WITNESS WAIT: block until every occupied slot satisfies the strict-`>`
     // predicate for `cur_gen` (LIVE-RE-WALK each wake — A-straddle-2). The snapshot is
     // a non-empty hint; the authoritative scan is the live re-walk inside the wait.

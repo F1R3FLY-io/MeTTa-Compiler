@@ -2932,6 +2932,66 @@ pub(crate) fn current_cycle_gen() -> u64 {
     GC_CYCLE_GEN.load(Ordering::Acquire)
 }
 
+/// E5 (the straddle-deadlock fix, `docs/cesk-gc/e1-flip-deadlock-straddle-rootcause-2026-06-03.md`):
+/// the generation of a cycle that a LIVE driver has ACTUALLY STARTED (committed to),
+/// as distinct from [`GC_CYCLE_GEN`] (which is bumped only at cycle END and thus, in
+/// the few-instruction teardown window between `end_rendezvous_cycle`'s gen-bump and
+/// the `GC_IN_PROGRESS` clear, already names the NEXT — not-yet-started — cycle).
+///
+/// **Premise (load-bearing):** there is NO start-of-cycle gen bump. The driver READS
+/// `cur_gen = current_cycle_gen()` at its prologue (gc_driver.rs:~197) and the witness
+/// predicate keys on it; `GC_CYCLE_STARTED := that cur_gen`. So during cycle K it equals
+/// `GC_CYCLE_GEN` (both K), and it is always `<= GC_CYCLE_GEN`. In the teardown window
+/// it is `started = K < gen = K+1` — which is EXACTLY why the straddle re-park, gated on
+/// `started > my_reparked_gen`, does NOT phantom-re-park there (`started=K ≯ my=K`).
+///
+/// **MUST be lock-free Release/Acquire — NEVER read/stored under [`RENDEZVOUS_MUTEX`].**
+/// The straddle body calls `worker_park_and_root_in_cycle` → `RENDEZVOUS_MUTEX.lock()`
+/// (non-reentrant), so any mutex-guarded `started` read in the straddle self-deadlocks
+/// 100% (a previously-rejected round). The happens-before that makes a Release store at
+/// the driver prologue visible to the straddle's Acquire read comes from the gip-CAS
+/// (`GcInProgressGuard::try_enter`, AcqRel) being ordered-before the prologue store; the
+/// driver `debug_assert!(gc_in_progress())`s right before the store to pin that order.
+///
+/// **Starts at 0** (not 1): before ANY driver has run, no cycle is started, and the
+/// init value must be `< GC_CYCLE_GEN`'s init (1) so a worker that somehow reaches the
+/// straddle before the first rendezvous never re-parks for a phantom "started" cycle.
+///
+/// DEAD until E5 wires the FANOUT>0 dedicated driver + straddle re-park.
+#[allow(dead_code)] // DEAD until E5 wires the dedicated driver straddle path.
+pub(crate) static GC_CYCLE_STARTED: AtomicU64 = AtomicU64::new(0);
+
+/// E5: generation of the cycle a live driver has ACTUALLY STARTED (Acquire). See
+/// [`GC_CYCLE_STARTED`]. Read in the straddle re-park loop's `started`-gate (lock-free).
+#[allow(dead_code)] // DEAD until E5.
+#[inline]
+pub(crate) fn current_cycle_started() -> u64 {
+    GC_CYCLE_STARTED.load(Ordering::Acquire)
+}
+
+/// E5: publish that the driver has STARTED cycle `g` (Release), called ONLY at the
+/// driver prologue AFTER `try_enter` closed admission (so the gip-CAS AcqRel is
+/// ordered-before this store — the HB that carries `g` to the straddle's Acquire read).
+/// ALSO notifies [`GC_PROGRESS_CONDVAR`] (under [`GC_PROGRESS_MUTEX`]) to wake any
+/// worker parked in the straddle's teardown-window else-arm (which waits on that
+/// condvar for `!gc_in_progress() || started>my`) — without it that worker would sleep
+/// to its 5 s `wait_for` timeout when the NEXT cycle starts. Lock-free w.r.t. the
+/// `started` value itself; the GC_PROGRESS_MUTEX is taken ONLY to make the notify
+/// lost-wakeup-safe (Mesa discipline — the else-arm re-checks `started`/`gip` under the
+/// same mutex). MUST NOT be called under [`RENDEZVOUS_MUTEX`] (see [`GC_CYCLE_STARTED`]).
+#[allow(dead_code)] // DEAD until E5.
+#[inline]
+pub(crate) fn set_current_cycle_started(g: u64) {
+    GC_CYCLE_STARTED.store(g, Ordering::Release);
+    // Wake the straddle teardown-window else-arm waiters (lost-wakeup-safe: the
+    // else-arm holds GC_PROGRESS_MUTEX across its predicate re-check + wait). A
+    // spurious wake is absorbed by that re-check; it can never cause incorrectness.
+    {
+        let _lock = GC_PROGRESS_MUTEX.lock();
+        GC_PROGRESS_CONDVAR.notify_all();
+    }
+}
+
 /// E1-FLIP: the `n` the dedicated GC thread snapshotted for THIS cycle (set in
 /// `gc_driver_rendezvous_cycle` AFTER admission closed [`GcInProgressGuard`], BEFORE
 /// `requestor_wait_for_parked_count`). Read by `gate_open_rendezvous` so the
@@ -3810,23 +3870,47 @@ pub(crate) fn worker_finish_into_buffer(roots: &[MettaValue], my_gen: u64) {
     // else: my cycle already ended → stale roots dropped, no bump (straggler exclusion).
 }
 
-/// WORKER side (E1-c, Round-4 F2): park on [`RESUME_CONDVAR`] until the cycle the
-/// worker parked for ENDS (`GC_CYCLE_GEN != my_gen`), then return. Gating on the
-/// cycle GENERATION — not the boolean `GC_REQUESTED` — is the F2 fix: ≥10
-/// non-driver callers set `GC_REQUESTED`, so a back-to-back UNRELATED trigger could
-/// re-set it and a boolean-gated resume would re-block (or miss its wake); the gen
-/// only ever ADVANCES, so `!= my_gen` is monotone-correct. Lost-wakeup-safe:
-/// [`RESUME_MUTEX`] held across the predicate + `wait_for`; the requestor bumps the
-/// gen (under [`RENDEZVOUS_MUTEX`]) BEFORE [`resume_workers`]'s notify (under
-/// [`RESUME_MUTEX`]), and the RESUME_MUTEX HB carries the gen's visibility to the
-/// woken worker. The 5 s `wait_for` is a warn-and-recheck liveness backstop.
+/// WORKER side (E1-c, Round-4 F2): park until the cycle the worker parked for ENDS
+/// (`GC_CYCLE_GEN != my_gen`), then return. Gating on the cycle GENERATION — not the
+/// boolean `GC_REQUESTED` — is the F2 fix: ≥10 non-driver callers set `GC_REQUESTED`,
+/// so a back-to-back UNRELATED trigger could re-set it and a boolean-gated resume
+/// would re-block (or miss its wake); the gen only ever ADVANCES, so `!= my_gen` is
+/// monotone-correct.
+///
+/// ── E5 (Mesa-correct gen-wait, docs/cesk-gc/e1-flip-deadlock-straddle-rootcause-
+/// 2026-06-03.md §Step 2) ──────────────────────────────────────────────────────────
+/// This wait is now keyed on [`RENDEZVOUS_CONDVAR`] holding [`RENDEZVOUS_MUTEX`] — the
+/// SAME mutex/condvar under which `GC_CYCLE_GEN` is bumped (`end_rendezvous_cycle`).
+/// PREVIOUSLY it waited under [`RESUME_MUTEX`] on [`RESUME_CONDVAR`] while the gen was
+/// bumped under [`RENDEZVOUS_MUTEX`] — a cross-mutex Mesa-monitor violation
+/// (predicate-lock ≠ wait-lock): a worker could read `gen == my_gen`, then the bump +
+/// notify run, then the worker locks RESUME_MUTEX + waits and MISSES the wake — a
+/// lost-wakeup that self-healed only via the 5 s `wait_for` timeout (a per-occurrence
+/// stall that widened the hang window). Waiting on the gen-bump's OWN mutex makes the
+/// predicate-check and the bump atomic w.r.t. each other: the worker either observes
+/// the advanced gen (and never waits) or is guaranteed to be woken by
+/// `end_rendezvous_cycle`'s `RENDEZVOUS_CONDVAR.notify_all()` (under the same mutex,
+/// after the bump). NO timeout is required for correctness; the 5 s `wait_for` is kept
+/// purely as a warn-and-recheck liveness backstop (the loom `mod loom_straddle` model
+/// drops it to a plain `wait` so a lost-wakeup would show as a PERMANENT deadlock).
+///
+/// Mesa discipline (preserves the witness protocol): [`RENDEZVOUS_CONDVAR`] is ALSO the
+/// condvar the driver's witness wait (`requestor_wait_for_all_reified_parked`) and the
+/// parkers (`worker_park_and_root_in_cycle`) use. Mixing gen-resume-waiters onto it is
+/// SAFE because every waiter re-checks its OWN predicate under the lock on each wake —
+/// a parker's notify (or a witness-satisfied notify) that spuriously wakes a
+/// resume-waiter is absorbed by its `while gen == my_gen` re-check, and vice versa. No
+/// reentrancy: `worker_park_and_root_in_cycle` releases [`RENDEZVOUS_MUTEX`] (its stamp
+/// block ends) BEFORE calling this. No new lock-order edge: this takes ONLY
+/// [`RENDEZVOUS_MUTEX`] (the cross-mutex W2 RENDEZVOUS→RESUME notify that the old design
+/// needed is thereby ELIMINATED).
 ///
 /// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §1.3.
 #[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
 pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
-    let mut lock = RESUME_MUTEX.lock();
+    let mut lock = RENDEZVOUS_MUTEX.lock();
     while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
-        let result = RESUME_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
+        let result = RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
         if result.timed_out() && GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
             tracing::warn!(
                 "worker_resume_wait_for_cycle: still in cycle gen {} after {:?} — re-checking",
@@ -3983,6 +4067,22 @@ pub(crate) fn end_rendezvous_cycle() {
     // until the NEXT cycle's driver re-proves the witness — closing the cross-cycle window
     // where the prior cycle's `true` would falsely admit a sweep before the new wait.
     set_current_witness_ok(false);
+    // ── E5 Mesa-correct gen-resume notify ──────────────────────────────────────
+    // docs/cesk-gc/e1-flip-deadlock-straddle-rootcause-2026-06-03.md §Step 2. The gen
+    // bump above is the RESUME CONDITION for `worker_resume_wait_for_cycle` (W2), which
+    // now WAITS on `RENDEZVOUS_CONDVAR` holding THIS SAME `RENDEZVOUS_MUTEX` (keyed on
+    // `GC_CYCLE_GEN != my_gen`). So the notify is issued HERE, under the lock we already
+    // hold, AFTER the bump — making {bump, notify} atomic w.r.t. W2's `while gen==my {
+    // wait }` predicate re-check on the same mutex (Mesa-correct: NO cross-mutex
+    // lost-wakeup). This SUPERSEDES the prior W2-notify-to-RESUME_CONDVAR hardening: W2
+    // no longer waits on RESUME_CONDVAR, so the cross-lock RENDEZVOUS→RESUME notify (and
+    // its lock-order edge) is ELIMINATED. A spurious wake of the driver's witness wait
+    // (also on RENDEZVOUS_CONDVAR) is impossible here — `end_rendezvous_cycle` runs at
+    // teardown, AFTER the witness wait has already returned; even if it fired, that wait
+    // re-checks its own predicate (Mesa). `resume_workers()` still notifies
+    // RESUME_CONDVAR separately for `worker_wait_for_resume` (the WorkerEnter gate, which
+    // keys on `GC_REQUESTED` under RESUME_MUTEX) — a DISTINCT waiter, unaffected.
+    RENDEZVOUS_CONDVAR.notify_all();
 }
 
 /// REQUESTOR side: clear `GC_REQUESTED` and wake all parked workers, atomically
@@ -6057,56 +6157,132 @@ pub fn reacquire_eval_guard_after_safepoint_full(
             // released at the safepoint drop) — so the pre-loop acquire is a
             // RESTAMP, not an acquire (V4 §"the slot lifecycle"). `my_reparked_gen`
             // = the gen this thread originally parked for.
+            //
+            // ── E5 (the straddle-deadlock fix) ──────────────────────────────────
+            // docs/cesk-gc/e1-flip-deadlock-straddle-rootcause-2026-06-03.md.
+            // The re-park gate now keys on `current_cycle_started()` (the gen of a
+            // cycle a LIVE driver has ACTUALLY committed to), NOT `current_cycle_gen()`.
+            // The original `gc_in_progress() && gen != my` test could not distinguish
+            // "tail of K, gen pre-bumped to K+1, gip still true" (the teardown window
+            // between `end_rendezvous_cycle`'s gen-bump and the `_gip` drop) from
+            // "K+1 genuinely collecting" → a worker re-parked for a PHANTOM cycle K+1
+            // that no driver runs → permanent-false predicate → hang. `started` stays
+            // = K through that window (it is bumped to K+1 only at K+1's prologue, by a
+            // live driver), so the `started > my` gate does NOT phantom-re-park.
+            //
+            // THE B-CLOSURE: the gate alone closes the step1→step2 window but leaves a
+            // terminal-break mis-skip — A breaks with stale `started=K ∧ !gip`, then the
+            // driver starts K+1 (begins waiting on A's occupied,published=K slot), and A
+            // sits in a NON-publishing admission wait → driver waits forever. So the
+            // re-park gate is RE-EVALUATED at the rejoin tail too (one labeled loop):
+            // before the rejoin admission wait, re-read `started`; if it advanced past
+            // `my_reparked_gen`, go BACK into the straddle re-park (which republishes via
+            // `note_reified_park`), never a terminal occupied-unpublished break (R1).
             let mut my_reparked_gen = my_gen;
-            loop {
-                let g = current_cycle_gen();
-                if gc_in_progress() && g != my_reparked_gen {
-                    // A NEW cycle is collecting while T was parked — re-park for it.
-                    // Restamp keeps the slot OCCUPIED (never released across the
-                    // straddle); the re-park re-publishes T's machine into g's buffer
-                    // + stamps published=g + waits g-end (inside
-                    // worker_park_and_root_in_cycle).
-                    witness_restamp_acquired(g);
-                    worker_park_and_root_in_cycle(reparked_roots, g);
-                    my_reparked_gen = g;
-                    continue;
-                } else if !gc_in_progress() {
-                    // No cycle in flight — rejoin (handled after the loop, sharing the
-                    // restamp + the single-shot fetch_add). Break to the rejoin.
+            'straddle: loop {
+                // ── Straddle re-park phase: `started`-gated (NOT gen-gated) ──
+                loop {
+                    let started = current_cycle_started();
+                    if started > my_reparked_gen {
+                        // A REAL, started, later cycle needs this thread. Restamp keeps
+                        // the slot OCCUPIED (never released across the straddle); the
+                        // re-park re-publishes T's machine into `started`'s buffer +
+                        // stamps published=started (gen-gated inside
+                        // worker_park_and_root_in_cycle: it publishes only if
+                        // GC_CYCLE_GEN==started, the live cycle) + waits `started`-end.
+                        witness_restamp_acquired(started);
+                        worker_park_and_root_in_cycle(reparked_roots, started);
+                        my_reparked_gen = started;
+                        continue;
+                    }
+                    if gc_in_progress() {
+                        if current_cycle_gen() == my_reparked_gen {
+                            // MY cycle is genuinely DRAINING (gen == my, gip set, no later
+                            // started cycle). Wait for it to end (gen advance), then
+                            // re-check. Lost-wakeup-safe: gen-gated on RENDEZVOUS_MUTEX
+                            // (E5 — the bump in `end_rendezvous_cycle` + this wait share
+                            // that mutex/condvar; no cross-mutex window).
+                            worker_resume_wait_for_cycle(my_reparked_gen);
+                        } else {
+                            // TEARDOWN WINDOW: gip still set but gen != my AND
+                            // started <= my ⇒ this is the tail of an OLDER cycle whose
+                            // gen was pre-bumped but whose `_gip` is not yet cleared (and
+                            // no later cycle has STARTED). A `worker_resume_wait_for_cycle`
+                            // would return instantly (gen != my) and spin; instead wait on
+                            // the gip transition so we do NOT busy-spin. Re-checks both
+                            // `gip` AND `started` under GC_PROGRESS_MUTEX so a newly-STARTED
+                            // cycle (set_current_cycle_started notifies this condvar) breaks
+                            // us out to re-park, and the `_gip` clear (GcInProgressGuard::drop
+                            // notifies this condvar under this mutex) wakes us to break.
+                            let mut l = GC_PROGRESS_MUTEX.lock();
+                            while GC_IN_PROGRESS.load(Ordering::Acquire)
+                                && current_cycle_started() <= my_reparked_gen
+                            {
+                                let result = GC_PROGRESS_CONDVAR.wait_for(&mut l, GC_WAIT_TIMEOUT);
+                                if result.timed_out()
+                                    && GC_IN_PROGRESS.load(Ordering::Acquire)
+                                    && current_cycle_started() <= my_reparked_gen
+                                {
+                                    tracing::warn!(
+                                        "reacquire_eval_guard_after_safepoint_full() [E5 straddle \
+                                         teardown-window]: GC_IN_PROGRESS still set (gen {} != my \
+                                         {}, started <= my) after {:?} — re-checking",
+                                        current_cycle_gen(),
+                                        my_reparked_gen,
+                                        GC_WAIT_TIMEOUT,
+                                    );
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    // started <= my && !gip ⇒ no started cycle waits on this thread →
+                    // proceed to the rejoin tail.
                     break;
-                } else {
-                    // g == my_reparked_gen && gc_in_progress: the cycle T last parked
-                    // for is still DRAINING. Wait for it to end (gen advance), then
-                    // re-check (it may be followed by yet another cycle). Lost-wakeup-
-                    // safe: gen-gated on RESUME_MUTEX (same as the base resume-wait).
-                    worker_resume_wait_for_cycle(my_reparked_gen);
-                    // After this returns gen != my_reparked_gen; loop re-reads g.
-                    continue;
                 }
-            }
-            // Rejoin (V4): restamp the slot for the current gen (resumes WITNESSED —
-            // the next cycle waits for T until it parks again, steady-state), pass the
-            // admission gate ONCE, then the single-shot depth/N_THREADS restore. NO
-            // witness_release_slot (the slot stays occupied; release is ONLY at the
-            // outermost EvalGuard::drop).
-            witness_restamp_acquired(current_cycle_gen());
-            loop {
-                if !GC_IN_PROGRESS.load(Ordering::Acquire) {
-                    break;
-                }
-                let mut lock = GC_PROGRESS_MUTEX.lock();
-                while GC_IN_PROGRESS.load(Ordering::Acquire) {
-                    let result = GC_PROGRESS_CONDVAR.wait_for(&mut lock, GC_WAIT_TIMEOUT);
-                    if result.timed_out() && GC_IN_PROGRESS.load(Ordering::Acquire) {
-                        tracing::warn!(
-                            "reacquire_eval_guard_after_safepoint_full() [V4 straddle]: \
-                             GC_IN_PROGRESS still set after {:?} — retrying",
-                            GC_WAIT_TIMEOUT,
-                        );
+
+                // ── Rejoin tail (V4 + the E5 B-CLOSURE) ──
+                // Restamp the slot for the current gen (resumes WITNESSED — the next
+                // cycle waits for T until it parks again, steady-state). NO
+                // witness_release_slot (the slot stays occupied; release is ONLY at the
+                // outermost EvalGuard::drop).
+                witness_restamp_acquired(current_cycle_gen());
+                loop {
+                    // B-CLOSURE (R1): re-read `started` INSIDE the admission loop. If a
+                    // driver has STARTED a cycle later than my last reparked gen while we
+                    // were about to rejoin, we must NOT sit in this non-publishing wait
+                    // (that is the relocated hang — the driver is now waiting on our
+                    // occupied,published<started slot). Go BACK into the straddle re-park,
+                    // which REPUBLISHES (note_reified_park) for `started`.
+                    if current_cycle_started() > my_reparked_gen {
+                        continue 'straddle;
+                    }
+                    if !GC_IN_PROGRESS.load(Ordering::Acquire) {
                         break;
                     }
+                    let mut lock = GC_PROGRESS_MUTEX.lock();
+                    while GC_IN_PROGRESS.load(Ordering::Acquire)
+                        && current_cycle_started() <= my_reparked_gen
+                    {
+                        let result = GC_PROGRESS_CONDVAR.wait_for(&mut lock, GC_WAIT_TIMEOUT);
+                        if result.timed_out()
+                            && GC_IN_PROGRESS.load(Ordering::Acquire)
+                            && current_cycle_started() <= my_reparked_gen
+                        {
+                            tracing::warn!(
+                                "reacquire_eval_guard_after_safepoint_full() [E5 straddle rejoin]: \
+                                 GC_IN_PROGRESS still set after {:?} — re-checking",
+                                GC_WAIT_TIMEOUT,
+                            );
+                            break;
+                        }
+                    }
+                    drop(lock);
+                    // Loop re-checks both the B-closure `started` gate and `gip`.
                 }
-                drop(lock);
+                // Admission passed with no later started cycle and `!gip` (or `!gip` with
+                // the B-closure re-check having held) — rejoin for good.
+                break 'straddle;
             }
             ACTIVE_EVALUATORS.fetch_add(saved_depth, Ordering::AcqRel);
             N_THREADS.fetch_add(1, Ordering::AcqRel);
@@ -9870,6 +10046,558 @@ mod loom_rendezvous {
                 winners.load(Ordering::Acquire),
                 1,
                 "exactly one requestor may win the begin_gc_rendezvous CAS"
+            );
+        });
+    }
+}
+
+// ============================================================================
+// LOOM MODEL — E5 the STRADDLE re-park deadlock + the Fix-B B-CLOSURE
+// ============================================================================
+//
+// Compiled ONLY under `--cfg loom` (a dedicated capped lane; never in the normal
+// build/test graph). Companion to `loom_rendezvous` above — that model checks the
+// §D1 rendezvous (1 requestor + N fungible-count workers, ONE cycle, no witness
+// slots / gen / straddle), which STRUCTURALLY cannot reach the E5 bug. This model
+// adds exactly what the E5 root-cause needs (per
+// docs/cesk-gc/e1-flip-deadlock-straddle-rootcause-2026-06-03.md §"loom"):
+//
+//   (i)   a PER-SLOT witness `{acq, pub_, occ}` (one slot — worker A) with the
+//         production strict-`>` predicate `published>=cur_gen OR acquired>cur_gen`.
+//   (ii)  `GC_CYCLE_GEN` bumped at cycle END (NOT at start) — the load-bearing
+//         premise; `GC_CYCLE_STARTED` set at the driver prologue (Fix-B variants).
+//   (iii) the driver's 3-store / 3-lock cycle-end teardown as 3 SEPARATE steps in
+//         the BUGGY order: (1) gen-bump under RENDEZVOUS_MUTEX, (2) gip-clear under
+//         GC_PROGRESS_MUTEX, (3) resume under RESUME_MUTEX.
+//   (iv)  the straddle re-park loop VERBATIM (the three production variants gated by
+//         `VARIANT`): BUG-REPRO (gen-gated, no `started`), Fix-B-without-closure
+//         (`started`-gated re-park but the OLD non-publishing rejoin tail), and
+//         Fix-B-with-closure (the real fix — `started`-gated + the B-closure
+//         re-read in the rejoin tail).
+//   (v)   `GC_CYCLE_STARTED` for the Fix-B variants.
+//
+// CRITICAL loom adaptation (load-bearing, per the doc): every production
+// `wait_for(_, 5s)` is modelled as a plain `wait` (NO timeout). The real 5 s
+// timeout is a benign liveness backstop that re-checks the predicate; modelling it
+// as `wait` makes loom report a deadlock IFF a predicate is PERMANENTLY false (the
+// E5 bug / the R1 relocated-hang), ignoring benign 5-s-recoverable lost-wakeups.
+//
+// SCENARIO (two cycles K, K+1 — see the doc §"loom MUST assert R1"):
+//   * Worker A has ALREADY parked for and been released from cycle K=1 (occupied,
+//     published=1, acquired=1, my_reparked_gen=1) and is now in the straddle.
+//   * Cycle 1 (= "K", the cycle A parked for): the driver does its TEARDOWN (the
+//     buggy 3 steps). A's straddle observes the teardown window.
+//   * Cycle 2 (= "K+1", a genuinely NEW triggered cycle): runs ONLY in the Fix-B
+//     variants (where the bug is fixed and A reaches a sane state). In BUG-REPRO the
+//     driver idles after cycle-1 teardown (faithful: "the driver returns to idle"),
+//     so A's phantom re-park for gen=2 — a cycle no driver ever runs — is PERMANENT.
+//
+// EXPECTED loom outcomes (the user's witness protocol — this IS the gate):
+//   * BUG-REPRO              → `a.join()` MUST DEADLOCK (confirms the model captures
+//                              the bug; loom finds the gen-read-in-teardown-window
+//                              schedule and the phantom park hangs forever).
+//   * Fix-B-without-closure  → R1 MUST FAIL (the relocated hang: A breaks, cycle 2
+//                              starts, A sits in the non-publishing admission wait
+//                              while the driver waits on A's occupied,published<2
+//                              slot → both block forever).
+//   * Fix-B-with-closure     → ALL joins return + R1 holds (driver-waiting-on-A ⟹ A
+//                              re-observes started≥2 and REPUBLISHES) + the safety
+//                              co-assertion (no sweep while A occupied∧published<cur)
+//                              + the RENDEZVOUS→RESUME lock-order assertion.
+//
+// VERIFIED-GREEN command (capped lane; `-C target-cpu=native` re-added because
+// setting RUSTFLAGS overrides .cargo/config.toml's gxhash AES/SSE2 flags; the large
+// crate's DEBUG frames overflow loom's coroutine stack ⇒ `--release`):
+//   RUSTFLAGS="--cfg loom -C target-cpu=native" LOOM_MAX_PREEMPTIONS=3 \
+//     systemd-run --user --scope -q -p MemoryMax=22G -p MemorySwapMax=0 \
+//       -p CPUQuota=1600% \
+//     cargo test --release loom_straddle -- --nocapture
+#[cfg(loom)]
+mod loom_straddle {
+    use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use loom::sync::{Arc, Condvar, Mutex};
+    use loom::thread;
+
+    /// Which straddle implementation the worker runs. The driver + statics are
+    /// IDENTICAL across variants; only the worker's straddle body + whether cycle 2
+    /// is driven change — so the model isolates exactly the fix's effect.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Variant {
+        /// The BUG: straddle re-park gates on `GC_CYCLE_GEN` (the teardown-window
+        /// gen), with NO `GC_CYCLE_STARTED`. Driver idles after cycle-1 teardown.
+        BugRepro,
+        /// Fix-B `started`-gate in the re-park phase, but the OLD non-publishing
+        /// rejoin tail (NO B-closure re-read). Driver runs cycle 2 → exposes R1.
+        FixBNoClosure,
+        /// The REAL fix: `started`-gate + the B-closure re-read in the rejoin tail.
+        /// Driver runs cycle 2; everything must converge.
+        FixBWithClosure,
+    }
+
+    /// Loom surrogate for the real E5 statics + the single witness slot (worker A's).
+    /// One instance per `loom::model` execution, shared by `Arc`. Field roles mirror
+    /// the production primitives 1:1.
+    struct St {
+        /// Surrogate for `GC_CYCLE_GEN` (bumped at cycle END only — the premise).
+        gen: AtomicU64,
+        /// Surrogate for `GC_CYCLE_STARTED` (set at the driver prologue; Fix-B).
+        started: AtomicU64,
+        /// Surrogate for `GC_IN_PROGRESS` (the `_gip` guard's flag).
+        gip: AtomicBool,
+
+        // ── Worker A's single witness slot ──
+        slot_acq: AtomicU64,
+        slot_pub: AtomicU64,
+        slot_occ: AtomicBool,
+
+        /// Set true the instant the driver SWEEPS cycle 2 (after its witness wait).
+        /// Read by the safety co-assertion.
+        swept_cur_gen: AtomicU64,
+
+        // ── Locks (production names) ──
+        /// `RENDEZVOUS_MUTEX` — guards the gen bump + the gen-bump notify + the
+        /// witness wait + the gen-gated resume wait (E5: the resume wait MOVED onto
+        /// this mutex/condvar so the gen-bump and the gen-wait are Mesa-correct on the
+        /// SAME lock — no cross-mutex lost-wakeup).
+        rdv_mutex: Mutex<()>,
+        rdv_cond: Condvar,
+        /// `GC_PROGRESS_MUTEX` — guards the gip clear + the straddle admission/else
+        /// waits + the `set_current_cycle_started` notify.
+        gip_mutex: Mutex<()>,
+        gip_cond: Condvar,
+
+        /// E5 lock-order witness (NOW expected to stay 0): incremented while a thread
+        /// HOLDS rdv_mutex inside ANOTHER lock's critical section (a nest), so the model
+        /// can assert NO such nest exists after the E5 fix eliminated the cross-mutex
+        /// RENDEZVOUS↔RESUME edge. (Pre-E5 this tracked RESUME holders for the
+        /// RENDEZVOUS→RESUME nest; that nest is gone, so it now documents the absence of
+        /// ANY rdv-inside-other nest.) A thread WAITING on rdv_cond has RELEASED
+        /// rdv_mutex, so it does NOT count — only genuine holders inside a nest do.
+        rdv_nest_held: AtomicU64,
+    }
+
+    impl St {
+        fn new() -> Self {
+            St {
+                gen: AtomicU64::new(1),     // cycle K = 1
+                started: AtomicU64::new(0), // no cycle started yet
+                gip: AtomicBool::new(false),
+                // A parked for cycle 1 and was released: occupied, published=1.
+                slot_acq: AtomicU64::new(1),
+                slot_pub: AtomicU64::new(1),
+                slot_occ: AtomicBool::new(true),
+                swept_cur_gen: AtomicU64::new(0),
+                rdv_mutex: Mutex::new(()),
+                rdv_cond: Condvar::new(),
+                gip_mutex: Mutex::new(()),
+                gip_cond: Condvar::new(),
+                rdv_nest_held: AtomicU64::new(0),
+            }
+        }
+
+        /// Production `witness_slot_satisfied`: `published>=cur_gen OR acquired>cur_gen`.
+        fn slot_satisfied(&self, cur_gen: u64) -> bool {
+            self.slot_pub.load(Ordering::Acquire) >= cur_gen
+                || self.slot_acq.load(Ordering::Acquire) > cur_gen
+        }
+    }
+
+    /// Surrogate for `set_current_cycle_started`: Release store + notify gip_cond
+    /// (lost-wakeup-safe wake of the straddle teardown-window else-arm). NEVER under
+    /// rdv_mutex (the straddle body locks rdv_mutex non-reentrantly).
+    fn set_started(s: &Arc<St>, g: u64) {
+        s.started.store(g, Ordering::Release);
+        let _g = s.gip_mutex.lock().expect("gip lock");
+        s.gip_cond.notify_all();
+    }
+
+    /// Surrogate for `GcInProgressGuard::drop`: clear gip under gip_mutex + notify
+    /// gip_cond (the production Drop does exactly this).
+    fn drop_gip(s: &Arc<St>) {
+        {
+            let _g = s.gip_mutex.lock().expect("gip lock");
+            s.gip.store(false, Ordering::Release);
+        }
+        s.gip_cond.notify_all();
+    }
+
+    /// Surrogate for `worker_resume_wait_for_cycle(my)` (E5 Mesa-correct) — gen-gated
+    /// wait under `rdv_mutex`/`rdv_cond` (the SAME mutex/condvar the gen bump +
+    /// gen-bump-notify hold in `driver_cycle`'s teardown), plain `wait` (NO timeout, so
+    /// a genuine lost-wakeup shows as a PERMANENT deadlock). This waiter holds NO other
+    /// lock and, while in `wait`, has RELEASED `rdv_mutex` — so it does NOT touch
+    /// `rdv_nest_held` (it is the OUTERMOST lock here, not a nest). Mesa discipline: the
+    /// `while gen==my` predicate is re-checked under the lock on each wake, absorbing any
+    /// spurious wake (e.g. a parker's `rdv_cond` notify).
+    fn worker_resume_wait_for_cycle(s: &Arc<St>, my: u64) {
+        let mut g = s.rdv_mutex.lock().expect("rdv lock");
+        while s.gen.load(Ordering::Acquire) == my {
+            g = s.rdv_cond.wait(g).expect("rdv wait");
+        }
+        drop(g);
+    }
+
+    /// Surrogate for `worker_park_and_root_in_cycle(roots, g)`: under rdv_mutex,
+    /// gen-gated publish (`note_reified_park`: stamp published=g IFF gen==g), then
+    /// the resume-wait. A straggler whose cycle already ended (gen!=g) drops its
+    /// roots and does NOT stamp (production straggler exclusion).
+    fn worker_park_and_root_in_cycle(s: &Arc<St>, g: u64) {
+        {
+            let _l = s.rdv_mutex.lock().expect("rdv lock");
+            if s.gen.load(Ordering::Acquire) == g {
+                // THE STAMP — the sole published-setter (gen-gated, occupied&&acq==g).
+                if s.slot_occ.load(Ordering::Acquire) && s.slot_acq.load(Ordering::Acquire) == g {
+                    s.slot_pub.store(g, Ordering::Release);
+                }
+                // wake the requestor's witness wait (under rdv_mutex — lost-wakeup-safe).
+                s.rdv_cond.notify_all();
+            }
+        }
+        worker_resume_wait_for_cycle(s, g);
+    }
+
+    /// WORKER A — the FAITHFUL lifecycle: (i) park for cycle 1 (publish + resume-wait
+    /// until cycle 1 ENDS), THEN (ii) the straddle body VERBATIM from
+    /// `reacquire_eval_guard_after_safepoint_full` (gc_allocator.rs), parameterised by
+    /// `VARIANT`, THEN (iii) RELEASE the witness slot (the outermost `EvalGuard::drop` →
+    /// `witness_release_slot`). Returns when A fully rejoins+finishes (its `join()`
+    /// returning = no deadlock).
+    ///
+    /// ── FIDELITY (E5, 2026-06-03): why (i) + (iii) are LOAD-BEARING ──────────────────
+    /// An earlier model started A mid-straddle (`my_reparked_gen=1`, gip=false) and let A
+    /// RETURN with its slot still occupied. Both were UNFAITHFUL and SPURIOUSLY
+    /// deadlocked Fix-B-with-closure:
+    ///   (i) In production A reaches the straddle ONLY after parking for cycle 1 and being
+    ///       released by cycle 1's teardown (gen already advanced to 2) — A never
+    ///       "straddles cycle 1 from scratch with gip=false". Without (i), loom schedules
+    ///       A's entire straddle BEFORE the driver even takes cycle 1's gip: A breaks
+    ///       immediately (started=0, gip=false) and terminates with published=1, then
+    ///       cycle 2 blocks on its stale slot — a phantom the B-closure cannot catch
+    ///       (started was 0 the whole time A ran).
+    ///  (iii) In production a worker that FINISHES drops its outermost `EvalGuard` →
+    ///       `witness_release_slot` clears `occupied` + notifies (the LOST-NOTIFY FIX),
+    ///       removing it from the driver's witness predicate. Without (iii), a returned A
+    ///       is an immortal occupied-but-unpublished slot that hangs every later cycle —
+    ///       the witness-sole-gate proof's S2 ("finished+released") is simply missing.
+    /// With BOTH, Fix-B-with-closure converges (B-closure republishes OR the release
+    /// satisfies the wait) while Fix-B-no-closure STILL fails R1 for the RIGHT reason: A
+    /// blocks in the non-publishing admission wait (cycle 2 holds gip) while the driver
+    /// blocks on A's occupied,published=1<2 slot — neither's release runs (mutual block).
+    fn worker_a(s: &Arc<St>, variant: Variant) {
+        // (i) PARK for cycle 1 (faithful entry): publish=1 (already the init state) and
+        // resume-wait until cycle 1 ENDS (gen advances to 2). Production: A reaches the
+        // straddle via `worker_park_and_root_in_cycle(1)`'s trailing resume-wait
+        // returning. Only THEN does A run the straddle — in the teardown window or after
+        // a later cycle has started, never from a pristine gip=false/started=0 state.
+        worker_park_and_root_in_cycle(s, 1);
+
+        let mut my_reparked_gen: u64 = 1;
+        'straddle: loop {
+            // ── Straddle re-park phase ──
+            loop {
+                match variant {
+                    Variant::BugRepro => {
+                        // THE BUG: gen-gated (no `started`).
+                        let g = s.gen.load(Ordering::Acquire);
+                        if s.gip.load(Ordering::Acquire) && g != my_reparked_gen {
+                            // restamp acquired=g (occupied stays true)
+                            s.slot_acq.store(g, Ordering::Release);
+                            worker_park_and_root_in_cycle(s, g);
+                            my_reparked_gen = g;
+                            continue;
+                        } else if !s.gip.load(Ordering::Acquire) {
+                            break;
+                        } else {
+                            worker_resume_wait_for_cycle(s, my_reparked_gen);
+                            continue;
+                        }
+                    }
+                    Variant::FixBNoClosure | Variant::FixBWithClosure => {
+                        // Fix B: `started`-gated re-park.
+                        let started = s.started.load(Ordering::Acquire);
+                        if started > my_reparked_gen {
+                            s.slot_acq.store(started, Ordering::Release); // restamp acquired
+                            worker_park_and_root_in_cycle(s, started);
+                            my_reparked_gen = started;
+                            continue;
+                        }
+                        if s.gip.load(Ordering::Acquire) {
+                            if s.gen.load(Ordering::Acquire) == my_reparked_gen {
+                                worker_resume_wait_for_cycle(s, my_reparked_gen);
+                            } else {
+                                // teardown-window else-arm: wait on gip transition (not spin),
+                                // re-checking gip AND started under gip_mutex (plain wait).
+                                let mut l = s.gip_mutex.lock().expect("gip lock");
+                                while s.gip.load(Ordering::Acquire)
+                                    && s.started.load(Ordering::Acquire) <= my_reparked_gen
+                                {
+                                    l = s.gip_cond.wait(l).expect("gip wait");
+                                }
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // ── Rejoin tail ──
+            // restamp acquired = current gen (V4; occupied stays true). NOTE: this does
+            // NOT publish — only a genuine park does.
+            s.slot_acq.store(s.gen.load(Ordering::Acquire), Ordering::Release);
+
+            match variant {
+                // BUG-REPRO + Fix-B-WITHOUT-closure: the OLD non-publishing admission
+                // wait (no B-closure re-read of `started`).
+                Variant::BugRepro | Variant::FixBNoClosure => loop {
+                    if !s.gip.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let mut l = s.gip_mutex.lock().expect("gip lock");
+                    while s.gip.load(Ordering::Acquire) {
+                        l = s.gip_cond.wait(l).expect("gip wait");
+                    }
+                    drop(l);
+                },
+                // Fix-B-WITH-closure: re-read `started` INSIDE the admission loop; if it
+                // advanced past my_reparked_gen, go BACK into the straddle re-park
+                // (republish). THE B-CLOSURE (R1).
+                Variant::FixBWithClosure => loop {
+                    if s.started.load(Ordering::Acquire) > my_reparked_gen {
+                        continue 'straddle;
+                    }
+                    if !s.gip.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let mut l = s.gip_mutex.lock().expect("gip lock");
+                    while s.gip.load(Ordering::Acquire)
+                        && s.started.load(Ordering::Acquire) <= my_reparked_gen
+                    {
+                        l = s.gip_cond.wait(l).expect("gip wait");
+                    }
+                    drop(l);
+                },
+            }
+            break 'straddle;
+        }
+        // (iii) A has fully rejoined and now FINISHES its whole evaluation → the outermost
+        // `EvalGuard::drop` → `witness_release_slot`: clear `occupied` (Release) + notify
+        // `rdv_cond` under `rdv_mutex` (the production LOST-NOTIFY FIX). A driver blocked
+        // in its witness wait on A's (now-released) slot wakes, re-walks, SKIPS the
+        // un-occupied slot, and proceeds — so A's finish can never strand a later cycle.
+        // Faithful to the V4 slot lifecycle: release is ONCE, here, at the outermost drop.
+        s.slot_occ.store(false, Ordering::Release);
+        {
+            let _l = s.rdv_mutex.lock().expect("rdv lock");
+            s.rdv_cond.notify_all();
+        }
+    }
+
+    /// Run ONE driver cycle `cyc` (= cur_gen): prologue (set started + gip already
+    /// held), witness-wait on A's slot, sweep, then the BUGGY-ORDER teardown
+    /// (gen-bump → gip-clear → resume). `fix_b` ⇒ publish `GC_CYCLE_STARTED`.
+    /// Precondition: the caller has already taken the `_gip` guard (set gip=true).
+    fn driver_cycle(s: &Arc<St>, cyc: u64, fix_b: bool) {
+        // (3) prologue: publish that a LIVE driver STARTED `cyc`. (Fix-B only.)
+        debug_assert!(s.gip.load(Ordering::Acquire), "gip must be set at prologue");
+        if fix_b {
+            set_started(s, cyc);
+        }
+        // (4) WITNESS WAIT: block until A's occupied slot satisfies the strict-`>`
+        // predicate for `cyc` (lost-wakeup-safe: rdv_mutex held across predicate +
+        // wait, matching the parker's stamp+notify; plain `wait`, no timeout).
+        {
+            let mut g = s.rdv_mutex.lock().expect("rdv lock");
+            while s.slot_occ.load(Ordering::Acquire) && !s.slot_satisfied(cyc) {
+                g = s.rdv_cond.wait(g).expect("rdv wait");
+            }
+        }
+        // SAFETY co-assertion: at the sweep instant, A's slot is NOT
+        // (occupied ∧ published<cyc). The witness wait guarantees it.
+        assert!(
+            !(s.slot_occ.load(Ordering::Acquire) && s.slot_pub.load(Ordering::Acquire) < cyc),
+            "SAFETY: the driver swept cur_gen {} while worker A's slot was occupied and \
+             published<cur_gen (published={}) — an unpublished live machine would be \
+             freed (UAF). The witness wait must not have held.",
+            cyc,
+            s.slot_pub.load(Ordering::Acquire),
+        );
+        s.swept_cur_gen.store(cyc, Ordering::Release);
+
+        // ── BUGGY-ORDER 3-store teardown (the production order; gc_driver.rs:268-270) ──
+        // The gen (naming the NEXT cycle) becomes visible at step (1), BEFORE gip is
+        // cleared at step (2) — the ordering inversion the straddle `started`-gate must
+        // tolerate. This order is preserved verbatim (the fix is in the straddle/wait,
+        // NOT in re-ordering the safety-critical teardown).
+        // (1) end_rendezvous_cycle (E5 Mesa-correct): bump gen under rdv_mutex AND notify
+        //     rdv_cond under the SAME lock, after the bump — so W2's gen-gated resume wait
+        //     (now on rdv_mutex/rdv_cond) cannot miss the wake. NO resume_mutex nest: the
+        //     E5 fix moved the gen-wait onto rdv_mutex, ELIMINATING the cross-mutex
+        //     RENDEZVOUS→RESUME edge the pre-E5 model asserted against.
+        {
+            // LOCK-ORDER witness (now expected 0): no thread holds rdv_mutex inside
+            // another lock's critical section while we take it here — i.e. no rdv-inside-
+            // other nest exists. A thread WAITING on rdv_cond has released rdv_mutex, so it
+            // does not count. (Pre-E5 this guarded RENDEZVOUS→RESUME; that nest is gone.)
+            let _l = s.rdv_mutex.lock().expect("rdv lock");
+            assert_eq!(
+                s.rdv_nest_held.load(Ordering::Acquire),
+                0,
+                "LOCK ORDER (E5): no thread may hold rdv_mutex INSIDE another lock while \
+                 the teardown acquires it; the E5 fix removed the cross-mutex \
+                 RENDEZVOUS↔RESUME nest, so this must stay 0 (a thread merely WAITING on \
+                 rdv_cond has released the mutex and does not count)."
+            );
+            s.gen.fetch_add(1, Ordering::AcqRel);
+            // E5: notify rdv_cond (the gen-resume-waiters' condvar) under THIS lock, after
+            // the bump. Mesa-correct: a woken W2 waiter re-checks `gen != my` under the
+            // same mutex; the driver's own witness wait (also rdv_cond) has already
+            // returned, and would re-check its predicate anyway.
+            s.rdv_cond.notify_all();
+        }
+        // (2) drop _gip: clear gip under gip_mutex + notify gip_cond.
+        drop_gip(s);
+        // (3) resume_workers: in production this clears GC_REQUESTED + notifies
+        //     RESUME_CONDVAR for the WorkerEnter gate (`worker_wait_for_resume`), a
+        //     DISTINCT waiter NOT modelled here (this model has only worker A's
+        //     gen-resume path, which step (1) already woke via rdv_cond). Modelled as a
+        //     no-op to keep the 3-step teardown shape faithful.
+    }
+
+    /// The full driver: run cycle 1's TEARDOWN-relevant cycle, then (Fix-B variants
+    /// only) a genuinely-new cycle 2. In BUG-REPRO the driver IDLES after cycle 1
+    /// (faithful: "the driver returns to idle"), so A's phantom re-park for gen=2 is
+    /// permanent.
+    fn driver(s: &Arc<St>, variant: Variant) {
+        let fix_b = variant != Variant::BugRepro;
+
+        // Cycle K=1: A already parked+published for it. The driver takes the `_gip`
+        // guard for cycle 1 (CAS false→true), runs the cycle (witness already
+        // satisfied: A published=1), and tears it down in the buggy order. A's
+        // straddle observes the teardown window (gen 1→2 visible before gip clears).
+        let entered = s
+            .gip
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok();
+        assert!(entered, "driver must win the cycle-1 gip CAS (sole collector)");
+        driver_cycle(s, 1, fix_b);
+
+        // Cycle K+1=2: a genuinely NEW triggered cycle — ONLY in the Fix-B variants
+        // (the R1 stressor). After cycle 1 fully ended, gen==2; cycle 2's prologue
+        // reads cur_gen==2. A must (with the B-closure) republish for gen 2.
+        if fix_b {
+            let entered2 = loop {
+                match s
+                    .gip
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+                {
+                    Ok(_) => break true,
+                    Err(_) => thread::yield_now(),
+                }
+            };
+            assert!(entered2, "driver must win the cycle-2 gip CAS");
+            let cur_gen2 = s.gen.load(Ordering::Acquire); // == 2 (cycle 1 end-bumped)
+            driver_cycle(s, cur_gen2, true);
+        }
+    }
+
+    /// BUG-REPRO: the gen-gated straddle (no `started`) + driver idling after cycle-1
+    /// teardown. `a.join()` MUST DEADLOCK — A slips its gen read into cycle-1's
+    /// teardown window (gen=2 ∧ gip=true), phantom-parks for gen=2 (a cycle no driver
+    /// runs), and waits for gen!=2 forever. Loom reports the deadlock (confirms the
+    /// model is NON-VACUOUS — it captures the real bug).
+    #[test]
+    fn loom_straddle_bug_repro_deadlocks() {
+        loom::model(|| {
+            let s = Arc::new(St::new());
+            let a = {
+                let s = s.clone();
+                thread::spawn(move || worker_a(&s, Variant::BugRepro))
+            };
+            let d = {
+                let s = s.clone();
+                thread::spawn(move || driver(&s, Variant::BugRepro))
+            };
+            // If A phantom-parks, its join never returns → loom flags a DEADLOCK here
+            // (the expected, model-validating outcome). The driver always returns.
+            d.join().expect("driver");
+            a.join().expect("worker A");
+        });
+    }
+
+    /// Fix-B-WITHOUT-closure: the `started`-gate closes the original teardown-window
+    /// phantom, but the OLD non-publishing rejoin tail RELOCATES the hang (R1). A
+    /// breaks in cycle-1's teardown window, cycle 2 starts, and A sits in the
+    /// non-publishing admission wait (gip=true held by cycle-2's driver) while the
+    /// driver's witness wait blocks on A's occupied,published=1<2 slot → both forever.
+    /// R1 MUST FAIL ⇒ loom reports the deadlock (PROVES the B-closure is necessary).
+    #[test]
+    fn loom_straddle_fix_b_no_closure_fails_r1() {
+        loom::model(|| {
+            let s = Arc::new(St::new());
+            let a = {
+                let s = s.clone();
+                thread::spawn(move || worker_a(&s, Variant::FixBNoClosure))
+            };
+            let d = {
+                let s = s.clone();
+                thread::spawn(move || driver(&s, Variant::FixBNoClosure))
+            };
+            // EXPECTED: at least one schedule deadlocks (the post-break-K+1-starts R1
+            // schedule). Loom reports it — the gate's "Fix-B-without-closure fails R1".
+            d.join().expect("driver");
+            a.join().expect("worker A");
+        });
+    }
+
+    /// Fix-B-WITH-closure (THE REAL FIX): `started`-gate + the B-closure re-read in
+    /// the rejoin tail. ALL joins MUST return; the safety co-assertion (no sweep while
+    /// A occupied∧published<cur — inside `driver_cycle`) and the lock-order assertion
+    /// hold across EVERY interleaving. If THIS deadlocks or fails an assertion, the
+    /// fix has a bug.
+    #[test]
+    fn loom_straddle_fix_b_with_closure_converges() {
+        loom::model(|| {
+            let s = Arc::new(St::new());
+            let a = {
+                let s = s.clone();
+                thread::spawn(move || worker_a(&s, Variant::FixBWithClosure))
+            };
+            let d = {
+                let s = s.clone();
+                thread::spawn(move || driver(&s, Variant::FixBWithClosure))
+            };
+            // (R1 + no-lost-wakeup) both joins MUST return for EVERY schedule. If the
+            // driver were stuck waiting on A's slot (R1) or A missed its resume, loom
+            // would deadlock here.
+            d.join().expect("driver — possible R1 (driver stuck on A's slot)");
+            a.join().expect("worker A — possible relocated hang / lost wakeup");
+
+            // Cycle 2 must have actually swept at cur_gen 2 (liveness: the fix does not
+            // merely avoid the hang by skipping the cycle).
+            assert_eq!(
+                s.swept_cur_gen.load(Ordering::Acquire),
+                2,
+                "the fix must let cycle 2 actually sweep (cur_gen 2), not deadlock-avoid \
+                 by never collecting"
+            );
+            // R1-CLOSED witness: A must have ended in a state that could not strand cycle
+            // 2 — EITHER it republished its machine for cycle 2 (`published>=2`, the
+            // B-closure path) OR it FINISHED and released its slot (`!occupied`, the
+            // S2/LOST-NOTIFY-FIX path). BOTH are valid non-hang outcomes (which one a
+            // given interleaving takes depends on whether cycle 2 had started while A was
+            // still straddling). The forbidden terminal — the relocated hang — is
+            // `occupied ∧ published<2`, which would have DEADLOCKED the driver's witness
+            // wait above (so we'd never reach here); this is the structural cross-check.
+            let occ = s.slot_occ.load(Ordering::Acquire);
+            let pubd = s.slot_pub.load(Ordering::Acquire);
+            assert!(
+                pubd >= 2 || !occ,
+                "R1: A must end republished-for-2 (published>=2) OR released (!occupied), \
+                 never left occupied,published<2 (the relocated hang). Got occupied={}, \
+                 published={}.",
+                occ,
+                pubd,
             );
         });
     }

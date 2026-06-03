@@ -105,8 +105,28 @@ pub(crate) fn normal_form_reject_count() -> u64 {
 /// definition). Cheap: one atom lookup + one match. The bloom is
 /// purely an optimization hint — wrong answers must never let us
 /// skip evaluation of an expression that has rules to apply.
+/// DIAGNOSTIC kill-switch (env `METTATRON_DISABLE_NORMAL_FORM_BLOOM=1`): when set,
+/// `is_memoized_normal_form` always returns `false`, forcing every expression to be
+/// evaluated (the bloom skip-eval is disabled entirely). Dormant by default (unset ⇒
+/// byte-identical). Used to discriminate whether a residual DEDICATED=1 wrong-subset
+/// corruption flows through the bloom/skip-eval decision (a stale bloom / VALUE_HASH_CACHE
+/// probe under the index collector) vs elsewhere — a normal-form skip is purely an
+/// optimization hint, so disabling it is always semantically safe (only slower).
+fn normal_form_bloom_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var("METTATRON_DISABLE_NORMAL_FORM_BLOOM")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
+}
+
 #[inline]
 pub fn is_memoized_normal_form<V: MettaValueTrait>(value: &V) -> bool {
+    // DIAGNOSTIC kill-switch (dormant by default; see `normal_form_bloom_disabled`).
+    if normal_form_bloom_disabled() {
+        return false;
+    }
     // Fast path: if no entries have been inserted since the last clear,
     // skip bloom hash computation entirely.
     if !NORMAL_FORM_BLOOM_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {

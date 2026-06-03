@@ -206,6 +206,44 @@ fold transient momentarily unrooted before its next safepoint); (ii) a pooled wo
 second task whose thread-local σ-caches were cleared only on the prior task's `EvalGuard` drop. To
 be root-caused + fixed AFTER FIX A is validated (Explore→Plan→converge, same pattern).
 
+## RESIDUAL #2 (corruption) — bloom hypothesis BOUNDED to PARTIAL-at-best (2026-06-03)
+
+The Explore agent's leading hypothesis (the residual ~3.75% corruption flows through the global
+`NORMAL_FORM_BLOOM` skip-eval decision keyed via the thread-local `VALUE_HASH_CACHE`, whose
+`gc_sweep_epoch` self-heal never fires under index-gc) was tested with a DISCRIMINATING EXPERIMENT: a
+dormant env kill-switch `METTATRON_DISABLE_NORMAL_FORM_BLOOM=1` (added to `dispatch_hints.rs`
+`is_memoized_normal_form`; byte-identical when unset) that forces every collapse item to be evaluated.
+
+Result (robot @ FANOUT=8 DEDICATED=1 MIN=131072): **bloom-DISABLED = 1 hang + 1 corrupt / 60** vs
+**bloom-ENABLED control = 1 hang + 3 corrupt / 80**. So disabling the bloom *may* have roughly halved
+the corruption (3.75%→1.67%) — but the samples are too small to be conclusive, and it **did NOT
+eliminate** it. ⟹ the corruption is **MULTI-MECHANISM**: the bloom is at most ONE partial contributor
+(its epoch-self-heal-under-index-gc fix — bump an index sweep-epoch so VALUE_HASH_CACHE + the bloom
+self-heal — would address only that partial share), and a DISTINCT missed-root mechanism remains (the
+Explore agent's secondary candidate: a grounded op CoW-forking `shared` mid-VM-tier-run, covered by
+neither the closure-top B2′ registration nor the env0-less `TierLeaf` contribution — the same CLASS as
+the 803bd19 collapse-worker-env gap, one level deeper).
+
+## OVERALL STATUS (2026-06-03) — 2 fixes committed; 2 rare multi-mechanism residuals remain
+
+| Item | State |
+|---|---|
+| Headline ~100% DEDICATED=1 corruption | **FIXED + committed `803bd19`** (collapse-worker env + cross-thread cache hygiene) |
+| Lost-notify deadlock (witness_release_slot) | **FIXED + committed `e18bc16`** (one confirmed mechanism; reduced hang ~6%→~1.5%) |
+| Rejoin-deadlock "FIX A" | **FALSIFIED + reverted** (validation 3 hang/55, unchanged) |
+| Bloom-corruption hypothesis | **PARTIAL-at-best** (kill-switch experiment: 1 corrupt/60 vs 3/80; not eliminated) |
+| Residual hang (~1.25-1.67%) | OPEN — rare, multi-mechanism (lost-notify fixed; a subtler residual remains) |
+| Residual corruption (~1.67-3.75%) | OPEN — rare, multi-mechanism (bloom partial; a distinct missed-root remains) |
+
+**The dedicated collector is opt-in (default OFF), so both residuals block ONLY the default-flip, not
+the production default.** Two leading "guaranteed-by-construction" hypotheses (rejoin-deadlock,
+bloom-corruption) have been empirically refuted/bounded — this race class defeats autonomous source +
+single-experiment analysis. **Recommended next tools (deliberate efforts, deserve fresh context / user
+direction): task #17 E5** — TLA+ of the witness/rendezvous + park/resume/straddle/release, and loom of
+the same — for the rare deadlock; and a **systematic root-coverage audit** (enumerate EVERY live-value
+holder under FANOUT>0 vs the 4 rendezvous root sources, incl. mid-VM-run CoW-forked sub-envs) + possibly
+TSAN, for the missed-root corruption. The bloom kill-switch is kept as a permanent dormant diagnostic.
+
 ## Validation plan (after the primary-fix release build)
 1. Quick: robot @ FANOUT=8 DEDICATED=1 MIN=131072 ×5 → ✅ + 404, no ❌/OOM/HANG.
 2. Full discriminator `scripts/e1_flip_discriminator.sh` ×16 arms A/B/C (A reclaim>0 non-vacuity).

@@ -716,6 +716,15 @@ fn eval_metta(
         // Use trace-aware eval when a trace collector is active.
         // Tier-forced execution goes through eval_with_tier; Auto delegates to eval().
         // --cross-tier-check runs through all applicable tiers and reports divergences.
+        //
+        // E1-FLIP Path B V4 — B3: the Auto branch (`eval()`) is the COVERED path that
+        // returns a leaving-park handle (index-gc 3-tuple). The other branches
+        // (`eval_with_trace`, `run_cross_tier_check`, `eval_with_tier`) are 2-tuples /
+        // out-of-scope. So the block stays typed `(results, new_env)` in BOTH builds, and
+        // the Auto branch threads its handle out via `b3_root_handle` (declared here so it
+        // outlives result consumption — the F1 ride; dropped with `_result_roots` below).
+        #[cfg(feature = "index-gc")]
+        let mut b3_root_handle: Option<mettatron::backend::models::SafepointRootHandle> = None;
         #[cfg(feature = "trace")]
         let (results, new_env) = {
             if let Some(ref collector) = trace_collector {
@@ -727,7 +736,16 @@ fn eval_metta(
                 }
                 (results, env)
             } else if matches!(options.tier, TierSelection::Auto) {
-                eval(expr, env, &state)
+                #[cfg(not(feature = "index-gc"))]
+                {
+                    eval(expr, env, &state)
+                }
+                #[cfg(feature = "index-gc")]
+                {
+                    let (r, e, h) = eval(expr, env, &state);
+                    b3_root_handle = h;
+                    (r, e)
+                }
             } else {
                 let outcome =
                     eval_with_tier(expr, env, &state, options.tier, options.on_tier_unavailable);
@@ -742,7 +760,16 @@ fn eval_metta(
             }
             (results, env)
         } else if matches!(options.tier, TierSelection::Auto) {
-            eval(expr, env, &state)
+            #[cfg(not(feature = "index-gc"))]
+            {
+                eval(expr, env, &state)
+            }
+            #[cfg(feature = "index-gc")]
+            {
+                let (r, e, h) = eval(expr, env, &state);
+                b3_root_handle = h;
+                (r, e)
+            }
         } else {
             let outcome =
                 eval_with_tier(expr, env, &state, options.tier, options.on_tier_unavailable);
@@ -807,9 +834,13 @@ fn eval_metta(
             output.push_str(&format!("{}\n", format_results(&filtered_results)));
         }
 
-        // Drop order: result_roots first (unregister temporary roots),
-        // then gc_hold (allow session-release GC to run),
-        // then guard (enqueue async release_session).
+        // Drop order: B3 leaving-park handle + result_roots first (unregister temporary
+        // roots — AFTER format_results consumed the values), then gc_hold (allow
+        // session-release GC to run), then guard (enqueue async release_session). The B3
+        // handle (index-gc) kept the leaving roots in SAFEPOINT_ROOTS across the sliver
+        // [eval() returns, main re-registers via _result_roots] + the format above.
+        #[cfg(feature = "index-gc")]
+        drop(b3_root_handle);
         drop(_result_roots);
         drop(gc_hold);
         drop(guard);
@@ -1043,7 +1074,13 @@ fn run_repl(options: &Options) {
                             let guard = SessionGuard::enter();
                             let gc_hold = GcHoldGuard::enter();
 
+                            // B3 (index-gc): ride the leaving-park handle to a NAMED local
+                            // (F1, C-0c) so it outlives the format below; dropped with
+                            // `_result_roots`. Slab return is the unchanged 2-tuple.
+                            #[cfg(not(feature = "index-gc"))]
                             let (results, updated_env) = eval(expr, env, &state);
+                            #[cfg(feature = "index-gc")]
+                            let (results, updated_env, _b3_root_handle) = eval(expr, env, &state);
                             env = updated_env;
 
                             // Format results WHILE guard is alive — values not yet released.

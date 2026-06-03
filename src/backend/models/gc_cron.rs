@@ -313,7 +313,13 @@ fn execute_memory_monitor(
     monitor.prev_reachable_counter = current_reachable;
     super::gc_allocator::set_backpressure_level(bp_level);
 
-    if should_gc {
+    // E1-FLIP coordination fix (①c): under the dedicated GC thread the cron is a
+    // driver-less GC_REQUESTED producer (and `maybe_async_gc` a 2nd collector regime)
+    // that would strand parked rendezvous workers — the dedicated regime triggers
+    // collection via the worker-safepoint watermark (`request_concurrent_collection`),
+    // the SOLE producer under dedicated. Byte-identical OFF (dedicated default OFF).
+    // `should_gc` is still RETURNED below for the unit tests' TOCTOU check.
+    if should_gc && !super::gc_allocator::dedicated_gc_enabled() {
         // Phase 9: set the flag AND immediately attempt async GC from the
         // cron thread. `maybe_async_gc` honors the purely-async mandate —
         // it does NOT require `ACTIVE_EVALUATORS == 0`, so it can fire

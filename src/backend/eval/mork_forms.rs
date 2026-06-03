@@ -27,6 +27,76 @@ use crate::backend::models::{GenericBindings, MettaValueFactory, MettaValueTrait
 /// Generic result type for MORK operations
 pub type GenericMorkResult<V, F> = (Vec<V>, GenericEnvironment<V, F>);
 
+/// E1-FLIP Path B V4 — Step 3: MORK long-loop LIVENESS poll (index-gc only).
+///
+/// A long depth>=1 conjunction-expansion / sink / join loop runs as a single native
+/// region: while it executes WITHOUT reaching a safepoint, the running thread's witness
+/// slot stays OCCUPIED-and-unstamped-for-this-cycle, so a dedicated-GC-thread rendezvous
+/// driver's `requestor_wait_for_all_reified_parked` WAITS for it (never sweeps) — SAFE by
+/// construction (the witness-hang). This poll exists purely for LIVENESS: it lets the
+/// thread PARK mid-loop so the driver does not block for the loop's full duration. A
+/// MISSED poll is therefore a HANG, never a UAF (docs/cesk-gc/e1-flip-pathB-v2-impl.md
+/// §Step 3 + §"Secondary residuals").
+///
+/// `counter` is a per-loop local throttle (poll only every 4096 iterations — `& 0xFFF`).
+/// When the throttle fires AND a cycle is in flight (`is_gc_requested()`), it publishes a
+/// SUPERSET of the loop's live in-flight `MettaValue`s as `extra_roots` — the accumulated
+/// `results` ∪ every value bound in the in-flight `bindings` alternatives — so that the
+/// mid-loop park is SAFE (those Addrs are Rust locals, NOT on the K-spine the parked
+/// worker self-roots; a superset over-roots harmlessly, never a UAF). `worker_cooperative_
+/// safepoint` itself re-checks `is_gc_requested()` and, under DEDICATED, parks + stamps the
+/// witness (`note_reified_park`).
+///
+/// TypeId-gated `V == MettaValue` + slice transmute (the established VM pattern,
+/// `bytecode/vm/mod.rs::run_cooperative_safepoint`); for non-`MettaValue`
+/// monomorphizations the body dead-code-eliminates. `#[cfg(index-gc)]`: the dedicated
+/// rendezvous is an index-only construct.
+#[cfg(feature = "index-gc")]
+#[inline]
+fn mork_liveness_poll<V>(
+    counter: &mut u64,
+    results: &[V],
+    bindings_a: &[GenericBindings<V>],
+    bindings_b: &[GenericBindings<V>],
+) where
+    V: MettaValueTrait + Clone + 'static,
+{
+    use crate::backend::models::gc_allocator;
+    use crate::backend::models::MettaValue;
+    use std::any::TypeId;
+
+    *counter = counter.wrapping_add(1);
+    // Cheap throttle: skip the gc-flag load + root build on all but every 4096th iter.
+    if *counter & 0xFFF != 0 {
+        return;
+    }
+    // Only a `V == MettaValue` monomorphization can produce index `Addr`s the GC sweeps.
+    if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
+        return;
+    }
+    // Cheap gc-pressure gate (Relaxed load) before building the inflight superset.
+    if !gc_allocator::is_gc_requested() {
+        return;
+    }
+    // Build the complete in-flight superset: accumulated results ∪ all bound values in
+    // BOTH binding lists (the accumulator + the just-dequeued in-flight alternative).
+    let mut inflight: Vec<V> =
+        Vec::with_capacity(results.len() + (bindings_a.len() + bindings_b.len()) * 4 + 16);
+    inflight.extend_from_slice(results);
+    for b in bindings_a.iter().chain(bindings_b.iter()) {
+        for (_, v) in b.iter() {
+            inflight.push(v.clone());
+        }
+    }
+    // SAFETY: `V == MettaValue` verified via TypeId; `&[V]` and `&[MettaValue]` have
+    // identical layout (the same transmute the VM uses at vm/mod.rs:1274). The slice is
+    // read-only for the duration of the park.
+    let mv: &[MettaValue] = unsafe {
+        std::slice::from_raw_parts(inflight.as_ptr() as *const MettaValue, inflight.len())
+    };
+    crate::backend::eval::trampoline::eval_loop::worker_cooperative_safepoint(mv);
+}
+
 // ============================================================================
 // Generic Helper Functions
 // ============================================================================
@@ -184,10 +254,18 @@ where
         "count" => binding_sets.len().to_string(),
         _ => {
             // The matched group { θ·e : θ ∈ Θ } as textual payloads.
-            let group: Vec<String> = binding_sets
-                .iter()
-                .map(|theta| apply_bindings_generic(e, theta, factory).friendly_repr())
-                .collect();
+            // E1-FLIP Path B V4 — Step 3: this materialization is the long SINK op over
+            // the join's binding alternatives; poll for liveness (in-flight = the whole
+            // `binding_sets`, which carries live MettaValues the caller holds across this
+            // reduction). Explicit counted loop (was `.map().collect()`) to host the poll.
+            #[cfg(feature = "index-gc")]
+            let mut gc_poll_counter: u64 = 0;
+            let mut group: Vec<String> = Vec::with_capacity(binding_sets.len());
+            for theta in binding_sets.iter() {
+                #[cfg(feature = "index-gc")]
+                mork_liveness_poll(&mut gc_poll_counter, &[], binding_sets, &[]);
+                group.push(apply_bindings_generic(e, theta, factory).friendly_repr());
+            }
             match head {
                 "sum" => {
                     let mut acc: u64 = 0;
@@ -308,7 +386,18 @@ where
     let mut all_results = Vec::new();
     let mut final_env = env;
 
+    // E1-FLIP Path B V4 — Step 3: per-loop liveness throttle (index-gc only).
+    #[cfg(feature = "index-gc")]
+    let mut gc_poll_counter: u64 = 0;
     for bindings in binding_sets {
+        // E1-FLIP Path B V4 — Step 3: liveness poll (results so far ∪ this binding set).
+        #[cfg(feature = "index-gc")]
+        mork_liveness_poll(
+            &mut gc_poll_counter,
+            &all_results,
+            std::slice::from_ref(&bindings),
+            &[],
+        );
         // Apply bindings to consequent
         let instantiated_consequent = apply_bindings_generic(consequent, &bindings, factory);
 
@@ -402,7 +491,19 @@ where
 
     let mut next_bindings = Vec::new();
 
+    // E1-FLIP Path B V4 — Step 3: per-loop liveness throttle (index-gc only).
+    #[cfg(feature = "index-gc")]
+    let mut gc_poll_counter: u64 = 0;
     for bindings in current_bindings {
+        // E1-FLIP Path B V4 — Step 3: liveness poll. In-flight = the accumulated
+        // `next_bindings` alternatives ∪ the just-dequeued `bindings` being expanded.
+        #[cfg(feature = "index-gc")]
+        mork_liveness_poll(
+            &mut gc_poll_counter,
+            &[],
+            &next_bindings,
+            std::slice::from_ref(&bindings),
+        );
         // Apply current bindings to goal
         let instantiated_goal = apply_bindings_generic(goal, &bindings, factory);
 
@@ -472,6 +573,9 @@ where
     // Stack-safe (iterative loop, no recursion).
     let mut binding_alternatives: Vec<GenericBindings<V>> = vec![initial_bindings.clone()];
 
+    // E1-FLIP Path B V4 — Step 3: per-loop liveness throttle (index-gc only).
+    #[cfg(feature = "index-gc")]
+    let mut gc_poll_counter: u64 = 0;
     for goal in goals.iter() {
         // Skip exec forms in pass 1
         if is_exec_form_generic(goal) {
@@ -482,6 +586,15 @@ where
             Vec::with_capacity(binding_alternatives.len());
 
         for current_bindings in binding_alternatives.iter() {
+            // E1-FLIP Path B V4 — Step 3: liveness poll. In-flight = the source
+            // `binding_alternatives` ∪ the accumulating `next_alternatives`.
+            #[cfg(feature = "index-gc")]
+            mork_liveness_poll(
+                &mut gc_poll_counter,
+                &[],
+                &binding_alternatives,
+                &next_alternatives,
+            );
             let instantiated_goal = apply_bindings_generic(goal, current_bindings, factory);
 
             // If goal has variables, fan out across all matches in space.
@@ -522,6 +635,15 @@ where
     let mut all_results: Vec<V> = Vec::with_capacity(binding_alternatives.len() * goals.len());
 
     for current_bindings in binding_alternatives.iter() {
+        // E1-FLIP Path B V4 — Step 3: liveness poll. In-flight = the emitted
+        // `all_results` so far ∪ the remaining `binding_alternatives` to instantiate.
+        #[cfg(feature = "index-gc")]
+        mork_liveness_poll(
+            &mut gc_poll_counter,
+            &all_results,
+            &binding_alternatives,
+            &[],
+        );
         for goal in goals.iter() {
             let fully_instantiated = apply_bindings_generic(goal, current_bindings, factory);
 

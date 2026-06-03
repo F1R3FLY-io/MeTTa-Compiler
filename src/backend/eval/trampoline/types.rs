@@ -238,6 +238,17 @@ pub struct ParallelDispatchHandle {
     /// which previously forced all four dispatch sites sequential inside
     /// PLN's `(let $derivations (collapse ...) ...)` body.
     pub tracked_vars_hint: Option<Arc<SmallVec<[&'static str; 4]>>>,
+    /// E1-FLIP / CEX-1 (D2): RAII registration of this dispatch's fan-out in the
+    /// global `LIVE_DISPATCHES` anchor, so the dedicated GC thread can walk the
+    /// branch INPUTS + completed OUTPUTS for the dispatch's lifetime
+    /// (park-timing-independently). Dropping this handle (when `WaitForParallel`
+    /// is consumed) frees the anchor slot. `Some` only in the index-gc build under
+    /// `dedicated_gc_enabled() && n_threads()>1`; `None` otherwise (default OFF,
+    /// FANOUT=0) — so dormant behaviour is byte-identical. Stored last so it drops
+    /// AFTER the provider Arc it downgraded (Rust drops fields in declaration
+    /// order; the Weak in the anchor is harmless once upgraded-to-None).
+    #[cfg(feature = "index-gc")]
+    pub(crate) _live_dispatch: Option<crate::backend::models::gc_allocator::LiveDispatchHandle>,
 }
 
 impl std::fmt::Debug for ParallelDispatchHandle {
@@ -338,6 +349,39 @@ impl crate::backend::models::gc_allocator::RootProvider for ParallelDispatchRoot
     }
 }
 
+/// E1-FLIP / CEX-1 (D2): the index-gc dispatch-fan-out anchor. The dedicated GC
+/// thread walks this through `LIVE_DISPATCHES` (the typed analogue of the slab
+/// `ROOT_REGISTRY`'s `RootProvider`), park-timing-independently — covering a
+/// dispatch's INPUT branches + completed OUTPUTS even when the holding worker is
+/// admission-blocked / not-yet-started. The body is BYTE-IDENTICAL to the slab
+/// `collect_roots` above (inputs from the immutable `branches` Arc; outputs via
+/// `results.try_lock()`, never a blocking `lock` — a contended `results` means a
+/// worker mid-write holding its EvalGuard, which self-rooted that value as a
+/// rendezvous participant, so skipping is safe).
+#[cfg(feature = "index-gc")]
+impl crate::backend::models::gc_allocator::DispatchRoots for ParallelDispatchRootProvider {
+    fn collect_dispatch_roots(&self, roots: &mut Vec<MettaValue>) {
+        // INPUTS first — no Mutex, direct iter (immutable Arc).
+        for (value, bindings) in self.branches.iter() {
+            roots.push(*value);
+            for (_, bound) in bindings.iter() {
+                roots.push(*bound);
+            }
+        }
+        // OUTPUTS — try_lock (never blocking lock; see the doc comment above).
+        if let Ok(guard) = self.results.try_lock() {
+            for slot in guard.iter().flatten() {
+                for (v, bindings) in slot.iter() {
+                    roots.push(*v);
+                    for (_, bound) in bindings.iter() {
+                        roots.push(*bound);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Handle for a trampolinized parallel-collapse dispatch.
 ///
 /// Mirrors `ParallelDispatchHandle` for the `parallel_collapse_eval` path.
@@ -363,6 +407,9 @@ pub struct ParallelCollapseDispatchHandle {
     pub(crate) _root_provider_arc: Arc<ParallelCollapseRootProvider>,
     /// See `ParallelDispatchHandle::tracked_vars_hint` (Phase 10.A).
     pub tracked_vars_hint: Option<Arc<SmallVec<[&'static str; 4]>>>,
+    /// E1-FLIP / CEX-1 (D2): see `ParallelDispatchHandle::_live_dispatch`.
+    #[cfg(feature = "index-gc")]
+    pub(crate) _live_dispatch: Option<crate::backend::models::gc_allocator::LiveDispatchHandle>,
 }
 
 impl std::fmt::Debug for ParallelCollapseDispatchHandle {
@@ -405,6 +452,33 @@ impl crate::backend::models::gc_allocator::RootProvider for ParallelCollapseRoot
             }
         }
         // OUTPUTS — try_lock per Phase 6 rationale.
+        if let Ok(guard) = self.results.try_lock() {
+            for slot in guard.iter().flatten() {
+                for (v, bindings) in slot.iter() {
+                    roots.push(*v);
+                    for (_, bound) in bindings.iter() {
+                        roots.push(*bound);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// E1-FLIP / CEX-1 (D2): the index-gc collapse-dispatch fan-out anchor. See
+/// `ParallelDispatchRootProvider`'s `DispatchRoots` impl — identical rationale and
+/// body (collapse workers capture `items` by-move identically).
+#[cfg(feature = "index-gc")]
+impl crate::backend::models::gc_allocator::DispatchRoots for ParallelCollapseRootProvider {
+    fn collect_dispatch_roots(&self, roots: &mut Vec<MettaValue>) {
+        // INPUTS first — no Mutex, direct iter (immutable Arc).
+        for (value, bindings) in self.items.iter() {
+            roots.push(*value);
+            for (_, bound) in bindings.iter() {
+                roots.push(*bound);
+            }
+        }
+        // OUTPUTS — try_lock (never blocking lock; see the dispatch impl above).
         if let Ok(guard) = self.results.try_lock() {
             for slot in guard.iter().flatten() {
                 for (v, bindings) in slot.iter() {

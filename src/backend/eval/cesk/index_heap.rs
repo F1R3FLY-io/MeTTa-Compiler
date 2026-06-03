@@ -1757,10 +1757,13 @@ pub mod index_gc {
     /// path that may sweep while eval workers are live). Unlike [`gate_open`] it does
     /// NOT require `!worker_ever_spawned()` (false under FANOUT>0 by construction);
     /// instead it requires the rendezvous COMPLETENESS WITNESS: this thread holds
-    /// `GcInProgressGuard` (`gc_in_progress()`, admission closed) AND every snapshot
-    /// participant has parked/finished and published its machine roots
-    /// (`workers_parked_for_gc() >= n_threads_at_snapshot()`, already waited on by
-    /// `requestor_wait_for_parked_count` before this call).
+    /// `GcInProgressGuard` (`gc_in_progress()`, admission closed) AND the PER-SLOT
+    /// witness gate is satisfied (`current_witness_ok()` — the driver proved every
+    /// OCCUPIED witness slot was stamped this cycle by a genuine reified park, already
+    /// waited on by `requestor_wait_for_all_reified_parked` before this call). E1-FLIP
+    /// Path B V4 REPLACED the fungible `workers_parked_for_gc() >= n_threads_at_snapshot()`
+    /// conjunct here (the publish-timing UAF: a finisher's count "covered" for a parent's
+    /// not-yet-published machine — see docs/cesk-gc/e1-flip-VALIDATION-FAILED-2026-06-02.md).
     ///
     /// SOUNDNESS (sweep runs ⟺ root set complete): the sole caller is
     /// `gc_driver::gc_driver_rendezvous_cycle`, which calls this AFTER (2) try_enter
@@ -1777,11 +1780,17 @@ pub mod index_gc {
     #[inline]
     #[allow(dead_code)]
     pub fn gate_open_rendezvous() -> bool {
+        // E1-FLIP Path B V4 — the witness SOLE gate: the sweep proceeds ⟺ the driver
+        // proved every OCCUPIED witness slot was stamped this cycle by a genuine reified
+        // park (`current_witness_ok()`, set true only after
+        // `requestor_wait_for_all_reified_parked` returns). REPLACES the fungible
+        // `workers_parked_for_gc() >= n_threads_at_snapshot()` conjunct (which let the
+        // driver proceed while a COUNTED participant had not yet published its machine —
+        // the publish-timing UAF; see docs/cesk-gc/e1-flip-VALIDATION-FAILED-2026-06-02.md).
         gc_mode_is_index()
             && !disabled()
             && crate::backend::models::gc_allocator::gc_in_progress()
-            && crate::backend::models::gc_allocator::workers_parked_for_gc()
-                >= crate::backend::models::gc_allocator::n_threads_at_snapshot()
+            && crate::backend::models::gc_allocator::current_witness_ok()
     }
 
     /// The provable single-threaded gate for the MID-LOOP (mid-directive)

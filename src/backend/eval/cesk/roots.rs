@@ -313,12 +313,23 @@ pub fn collect_global_anchors(out: &mut Vec<crate::backend::models::MettaValue>)
     // roots (eval_loop.rs:3533-3536). In the single-threaded index-gc regime the
     // calling thread is the SOLE owner of σ, so these thread-locals are
     // machine-global σ-value holders read by name — the same contract as the five
-    // persistent anchors above. (`collect_binding_capture_roots` is an empty
-    // no-op, so it is deliberately omitted.)
+    // persistent anchors above.
     crate::backend::eval::trampoline::dispatch_hints::collect_eval_memo_roots(out);
     crate::backend::eval::trampoline::dispatch_hints::collect_match_result_roots(out);
     crate::backend::eval::cesk::tabling::collect_subgoal_roots(out);
     crate::backend::eval::cesk::thunk::collect_thunk_roots(out);
+    // E1-FLIP / CEX-1 (D1): the collapse-bind capture frames, folded in HERE — the
+    // ONE canonical place every thread-local cache source lives. Today
+    // `collect_binding_capture_roots` is an empty no-op (bindings travel with each
+    // `BoundValue` and are walked via WorkItem/Continuation; eval_loop.rs ~2176),
+    // so this adds zero roots and is byte-identical. It is folded in NOT for present
+    // correctness but for ANTI-FRAGILITY: should the capture frame ever again hold
+    // `Addr`s directly, this single line propagates them to EVERY safepoint /
+    // park / finisher site — none of which need to be touched — because they all go
+    // through this reader (via `collect_persistent_roots` → `collect_machine_roots*`
+    // → `collect_complete_thread_contribution`). The pre-CEX-1 WIP listed it at each
+    // of the 4 self-root sites instead; this fold makes those redundant.
+    crate::backend::eval::trampoline::eval_loop::collect_binding_capture_roots(out);
 }
 
 /// CESK Phase A4.2b — the single **structural machine-root** reader. The one
@@ -384,6 +395,131 @@ pub fn collect_machine_roots_live(
     rs.collect_all_live(operand_stack, current_work, work_stack, continuations);
     out.extend(rs.drain_into_vec());
     collect_persistent_roots(out, env0);
+}
+
+/// E1-FLIP / CEX-1 (D1) — the env-struct-LESS persistent structural root reader,
+/// for sites that have NO `env0` handle in scope (the `TierLeaf` contribution):
+///
+/// ```text
+/// persistent_roots_no_env0 = collect_global_anchors  — E₀'s global singleton caches (5+4+binding-capture)
+///                          ∪ collect_k_spine          — the native-stack K-spine
+/// ```
+///
+/// This is exactly [`collect_persistent_roots`] MINUS the `env0.collect_roots_into`
+/// term (the per-env environment STRUCT: named_spaces / bindings / types /
+/// rule_index). There is no global accessor for E₀ (it is per-`MettaState`,
+/// reachable only from an env handle), so a tier-leaf thread parked OUTSIDE the
+/// trampoline loop physically cannot read it. That term is supplied **N×, by the
+/// trampoline participants**: the dedicated-GC-thread rendezvous always has ≥1
+/// `Trampoline` participant whose `collect_machine_roots_live` walks E₀'s struct
+/// (the requestor itself parks at branch (B) of the midloop `if/else if`, which is
+/// a `Trampoline` site). So the union over all participants always includes E₀'s
+/// struct; this reader contributes the rest of the persistent set that a leaf
+/// thread CAN read. Appends to `out` (never clears).
+#[cfg(feature = "index-gc")]
+pub fn collect_persistent_roots_no_env0(out: &mut Vec<crate::backend::models::MettaValue>) {
+    // ∪ E₀'s global singleton caches (5 OnceLock + 4 thread-local + binding-capture).
+    collect_global_anchors(out);
+    // ∪ the native-stack K-spine (suspended activations + live VM leaves).
+    super::k_spine::collect_k_spine(out);
+}
+
+/// E1-FLIP / CEX-1 (D1) — the SINGLE canonical per-thread root contribution for the
+/// dedicated-GC-thread rendezvous. Every mutator self-root site (park / finisher /
+/// safepoint) publishes its complete `σ|_Reachable` contribution into the shared
+/// `WORKER_ROOT_BUFFER` through THIS one function, so that:
+///
+///   1. there is no per-site source enumeration to keep in sync (the pre-CEX-1 WIP
+///      manually re-listed memo/match/subgoal/thunk/binding-capture/k-spine/anchors
+///      at each of 4 sites — redundant, since [`collect_machine_roots_live`] /
+///      [`collect_persistent_roots_no_env0`] already contain all of them transitively);
+///   2. a future thread-local root source is added in exactly ONE place
+///      ([`collect_global_anchors`]) and EVERY site inherits it; and
+///   3. the only two register-provenance shapes are captured as enum variants, so a
+///      missing field is a compile error rather than a silent under-mark.
+///
+/// `MettaValue` is a `Copy` 8-byte `Addr`, the caches are behind `thread_local!`, so
+/// the GC thread physically cannot reach thread B's caches — B MUST self-publish
+/// (this function, on B's own thread). The shared dispatch fan-out is walked
+/// separately by the GC thread itself (D2 / `collect_live_dispatch_anchors`).
+#[cfg(feature = "index-gc")]
+pub enum ThreadContribution<'a> {
+    /// Sites #1 (midloop park), #3 (dispatch finisher), #4 (collapse finisher),
+    /// #5 (slab/midloop safepoint) — a live trampoline activation with in-scope
+    /// S / C / K registers and an `env0` handle. `extra` carries any caller-known
+    /// hot values not in S/C/K (e.g. the about-to-return result set at a finisher).
+    Trampoline {
+        operand_stack: &'a OperandStack<crate::backend::models::MettaValue>,
+        current_work: &'a WorkItem,
+        work_stack: &'a [WorkItem],
+        continuations: &'a [Continuation],
+        env0: &'a crate::backend::environment::core::GenericEnvironmentShared<
+            crate::backend::models::MettaValue,
+        >,
+        deferred_envs: &'a [std::sync::Arc<
+            crate::backend::environment::GenericEnvironmentShared<
+                crate::backend::models::MettaValue,
+            >,
+        >],
+        extra: &'a [crate::backend::models::MettaValue],
+    },
+    /// Site #2 (`worker_cooperative_safepoint`) — a VM/JIT tier leaf parked OUTSIDE
+    /// the trampoline loop. It has NO in-scope S/C/K and NO `env0` handle; the
+    /// enclosing trampoline activation's pending S/C/K are reachable via the
+    /// K-spine (the activation registered a `SuspendedActivation::Spine`). `extra`
+    /// carries the tier hot values (VM value_stack / locals / results; JIT register
+    /// file) that the trampoline walker cannot see while this call is parked.
+    TierLeaf {
+        extra: &'a [crate::backend::models::MettaValue],
+    },
+}
+
+/// E1-FLIP / CEX-1 (D1) — collect THIS thread's complete reachable contribution.
+/// See [`ThreadContribution`]. Appends to `out` (never clears).
+#[cfg(feature = "index-gc")]
+pub fn collect_complete_thread_contribution(
+    out: &mut Vec<crate::backend::models::MettaValue>,
+    ctx: ThreadContribution<'_>,
+) {
+    match ctx {
+        ThreadContribution::Trampoline {
+            operand_stack,
+            current_work,
+            work_stack,
+            continuations,
+            env0,
+            deferred_envs,
+            extra,
+        } => {
+            // Caller-known hot values first (e.g. a finisher's about-to-return set).
+            out.extend_from_slice(extra);
+            // S ∪ C ∪ K (K narrowed via Might–Shivers abstract-GC) ∪ reach(E₀-env)
+            // ∪ global anchors (incl. the 4 thread-local caches + binding-capture)
+            // ∪ K-spine — the COMPLETE machine reader. NOTE: this transitively
+            // contains every collector the pre-CEX-1 WIP listed per-site.
+            collect_machine_roots_live(
+                out,
+                operand_stack,
+                current_work,
+                work_stack,
+                continuations,
+                env0,
+            );
+            // ∪ the deferred-drop transient register (a per-activation local, not a
+            // machine-global — values reachable only through envs awaiting drop).
+            for e in deferred_envs {
+                e.as_ref().collect_roots_into(out);
+            }
+        }
+        ThreadContribution::TierLeaf { extra } => {
+            // The tier hot values (VM stacks / JIT registers) the walker can't see.
+            out.extend_from_slice(extra);
+            // ∪ anchors ∪ K-spine (the enclosing activation's pending S/C/K). E₀'s
+            // env STRUCT is supplied N× by the trampoline participants (see
+            // `collect_persistent_roots_no_env0`); a tier leaf has no env0 handle.
+            collect_persistent_roots_no_env0(out);
+        }
+    }
 }
 
 /// CESK Phase A4.4 — the **persistent** structural root reader: the machine-global
@@ -459,6 +595,18 @@ pub fn assert_quiescence_superset(
     // NEW = the structural PERSISTENT reader (reach E₀-env ∪ global anchors ∪ K-spine)
     // ∪ the about-to-return result values. (No collect_machine_roots: C∪K are empty at
     // quiescence, so there is no current WorkItem and no control registers.)
+    //
+    // E1-FLIP / CEX-1: this IS the quiescence projection of the canonical reader
+    // `collect_complete_thread_contribution(Trampoline{..})` — with empty S/C/K,
+    // empty `extra`, and empty `deferred_envs`, that reader reduces EXACTLY to
+    // `collect_machine_roots_live(empty S/C/K, env0)` = `collect_persistent_roots(env0)`
+    // (the control-register terms contribute ∅). So calling `collect_persistent_roots`
+    // here is byte-identical to routing through the canonical reader, without
+    // synthesizing throwaway empty registers. The thread-local half of the canonical
+    // reader (the 4 caches + binding-capture + K-spine, folded into
+    // `collect_global_anchors`/`collect_persistent_roots`) is exercised end-to-end at
+    // the midloop A4.3 oracle (eval_loop.rs ~3879), which feeds NEW via
+    // `collect_complete_thread_contribution` over LIVE S/C/K — the byte-for-byte check.
     let mut new_vals: Vec<crate::backend::models::MettaValue> = Vec::with_capacity(old.len() + 64);
     collect_persistent_roots(&mut new_vals, env0);
     new_vals.extend(result.iter().copied());

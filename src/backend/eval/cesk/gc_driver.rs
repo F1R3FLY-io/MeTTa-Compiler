@@ -142,11 +142,14 @@ fn gc_driver_main(request_rx: mpsc::Receiver<GcDriverRequest>) {
 ///
 /// ```text
 ///   (2) try_enter GcInProgressGuard            // become the sole collector; close admission
-///   (3) n := n_threads()                       // snapshot AFTER admission (admission-before-snapshot)
-///   (4) requestor_wait_for_parked_count(n)     // single-location parked-count HB (SC-faithful)
-///   (5) roots := drain(WORKER_ROOT_BUFFER) ∪ collect_safepoint_roots()   // ∪ driver-C
-///   (6) run_collection_if_triggered(roots)     // GATED: gate_open() still wants !worker_ever_spawned()
-///   (7) end_rendezvous_cycle()                 // bump GC_CYCLE_GEN + reset (releases gen-gated resume)
+///   (3) n := n_threads(); set_n_threads_at_snapshot(n)   // VESTIGIAL post-flip (oracle/liveness)
+///       cur_gen := current_cycle_gen()         // AFTER admission (under _gip) — the witness cycle
+///   (4) snap := snapshot_witness(cur_gen)
+///       requestor_wait_for_all_reified_parked(&snap, cur_gen)   // WITNESS gate: ∀ occupied slot
+///       set_current_witness_ok(true)           //   published>=cur_gen OR acquired>cur_gen (live-re-walk)
+///   (5) roots := drain(WORKER_ROOT_BUFFER) ∪ collect_safepoint_roots() ∪ collect_live_env_anchors()  // ∪ driver-C
+///   (6) run_collection_if_triggered(roots)     // GATED: gate_open_rendezvous() reads current_witness_ok()
+///   (7) end_rendezvous_cycle()                 // bump GC_CYCLE_GEN + reset + clear witness_ok (releases resume)
 ///   (8) drop _gip                              // GC_IN_PROGRESS=false (wakes enter-parkers)
 ///   (9) resume_workers()                       // GC_REQUESTED=false + notify RESUME_CONDVAR
 /// ```
@@ -174,16 +177,61 @@ fn gc_driver_rendezvous_cycle() {
     // (3) snapshot the per-thread count AFTER admission closed (so a thread entering
     // after this point parks at EvalGuard::enter and is excluded), then (4) wait for
     // all n to park + publish their self-roots.
+    //
+    // E1-FLIP Path B V4 — THE ATOMIC FLIP (witness SOLE gate). The fungible
+    // parked-count (`requestor_wait_for_parked_count(n)`) is REPLACED by the per-slot
+    // WITNESS predicate: the sweep proceeds only when every OCCUPIED witness slot was
+    // STAMPED this cycle by a genuine reified park (`note_reified_park`, the SOLE
+    // published-setter). See docs/cesk-gc/e1-flip-pathB-v2-impl.md §Step 2.
     let n = ga::n_threads();
-    // E1-FLIP: publish the snapshot `n` that gate_open_rendezvous reads — taken AFTER
-    // admission closed (try_enter above), BEFORE the parked-count wait, so the gate
-    // witnesses the SAME `n` the parked-count balanced against.
+    // Pin 1 (VESTIGIAL-but-harmless): `n`/`set_n_threads_at_snapshot` are no longer the
+    // safety gate post-flip (the witness is). Kept computed-and-published because the
+    // D5 oracle / liveness backstops may read the snapshot `n`. Taken AFTER admission
+    // closed (try_enter above), BEFORE the witness wait.
     ga::set_n_threads_at_snapshot(n);
-    ga::requestor_wait_for_parked_count(n);
-    // (5) the structural root union: parked workers' machines (∪ E₀) + driver-C.
+    // `cur_gen` MUST be read AFTER admission closed (under `_gip`) so the witness
+    // predicate (`published>=cur_gen OR acquired>cur_gen`) and the snapshot agree on
+    // the cycle a parked thread must have stamped. A thread that enters after this
+    // point parks at EvalGuard::enter (admission-blocked) and acquires `acquired>cur_gen`
+    // ⇒ excluded from the wait (S3).
+    let cur_gen = ga::current_cycle_gen();
+    // (4) WITNESS WAIT: block until every occupied slot satisfies the strict-`>`
+    // predicate for `cur_gen` (LIVE-RE-WALK each wake — A-straddle-2). The snapshot is
+    // a non-empty hint; the authoritative scan is the live re-walk inside the wait.
+    let snap = ga::snapshot_witness(cur_gen);
+    ga::requestor_wait_for_all_reified_parked(&snap, cur_gen);
+    // Publish the witness-satisfied flag — the SOLE thing `gate_open_rendezvous` reads.
+    // Set true only AFTER the wait returns; cleared at `end_rendezvous_cycle`.
+    ga::set_current_witness_ok(true);
+    // (5) the structural root union: parked workers' machines (∪ E₀) + driver-C +
+    // the live parallel-dispatch fan-out + the B2′ global live-env (E₀) registry.
     let mut roots: Vec<MettaValue> = Vec::new();
     ga::drain_worker_root_buffer(&mut roots);
     ga::collect_safepoint_roots(&mut roots);
+    // E1-FLIP Path B V4 (B2′): walk EVERY live env's persistent E₀ roots — participant-
+    // independently — so E₀ is covered even when no Trampoline participant happens to be
+    // parked (C-0b: a trigger that finished-via-TierLeaf + all workers finished leaves no
+    // Trampoline participant). `#[cfg(index-gc)]`: the registry + register_live_env sites
+    // are index-only; in slab nothing ever registers, so the walk is empty.
+    #[cfg(feature = "index-gc")]
+    ga::collect_live_env_anchors(&mut roots);
+    // E1-FLIP / CEX-1 (D2): walk the live dispatch fan-out (branch INPUTS +
+    // completed OUTPUTS) structurally on the GC thread — park-timing-independently,
+    // so a worker that is admission-blocked at `EvalGuard::enter` or not-yet-started
+    // (never a rendezvous participant, never self-rooted) still has its captured
+    // `branch_expr`/`branch_bindings` + its slot's results covered. This is the
+    // structural replacement for the slab `ParallelDispatchRootProvider` walk that
+    // A5 deleted from `ROOT_REGISTRY` without re-homing — the CEX-1 residual bug.
+    // `#[cfg(index-gc)]`: the anchor (`LIVE_DISPATCHES`) and the `register_live_dispatch`
+    // sites are index-only; in slab nothing ever registers, so the walk is empty.
+    #[cfg(feature = "index-gc")]
+    ga::collect_live_dispatch_anchors(&mut roots);
+    // (5b) E1-FLIP / CEX-1 (D5): the PERMANENT rendezvous-union machine-equivalence
+    // oracle — assert the drained union is complete BEFORE the sweep. Zero-cost in
+    // release (cfg'd out). A future forgotten thread-local source / unregistered
+    // dispatch trips a NAMED debug panic here, not a silent corruption.
+    #[cfg(all(feature = "index-gc", debug_assertions))]
+    assert_rendezvous_union_complete(&roots, n);
     // (6) collect (catch_unwind so the cleanup below ALWAYS releases parked workers).
     // E1-FLIP: the RENDEZVOUS entry — gates on gate_open_rendezvous (completeness
     // witness, NOT !worker_ever_spawned which is false here) + labels the cycle
@@ -202,6 +250,101 @@ fn gc_driver_rendezvous_cycle() {
     ga::end_rendezvous_cycle();
     drop(_gip);
     ga::resume_workers();
+}
+
+/// E1-FLIP / CEX-1 (D5) — the PERMANENT rendezvous-union machine-equivalence oracle.
+/// Called by `gc_driver_rendezvous_cycle` AFTER the drain (`WORKER_ROOT_BUFFER` ∪
+/// `collect_safepoint_roots` ∪ `collect_live_dispatch_anchors`) and BEFORE the sweep.
+/// Asserts the two completeness obligations of the concurrent completeness theorem:
+///
+///   (a) **dispatch-fan-out coverage** — every CURRENTLY-registered live dispatch's
+///       INPUT∪OUTPUT `Addr`s are present in the drained `roots`. An independent
+///       re-walk (`snapshot_live_dispatch_witness`, no pruning) must be ⊆ `roots`.
+///       A registered dispatch the driver failed to walk (a future regression that
+///       drops the D2 `collect_live_dispatch_anchors` call) is a NAMED panic here.
+///
+///   (b) **participant coverage** — E1-FLIP Path B V4: the PER-SLOT WITNESS predicate
+///       (`all_occupied_slots_satisfied(cur_gen)`), NOT the fungible parked-count.
+///       Every OCCUPIED witness slot must satisfy `published>=cur_gen OR acquired>cur_gen`
+///       — the SAME strict-`>` live-re-walk `requestor_wait_for_all_reified_parked` used.
+///       A per-slot violator means a counted-AND-occupied mutator never reached a genuine
+///       reified park to `note_reified_park` this cycle, so its unpublished machine is NOT
+///       in the drained union → under-mark. (The fungible `workers_parked_for_gc() >= n`
+///       is no longer the gate: a finisher's bump could "cover" for a parent's not-yet-
+///       published machine — exactly the publish-timing UAF the witness fixes.)
+///
+/// The thread-local half of D1 (the 4 caches + binding-capture + K-spine folded into
+/// `collect_global_anchors`/`collect_machine_roots*`) is checked end-to-end by the
+/// EXISTING A4.3 midloop oracle (eval_loop.rs ~3915), which proves the FULL structural
+/// machine reader ⊇ the independently-discovered `root_set` over LIVE S/C/K. Together
+/// (a)+(b)+A4.3 discharge `reachable(R) ⊇ every live value`. Debug-only; zero-cost in
+/// release (the call site is `#[cfg(debug_assertions)]`). `#[cfg(index-gc)]`: the
+/// dispatch-witness helper it calls is index-only (the anchor is too).
+#[cfg(all(feature = "index-gc", debug_assertions))]
+fn assert_rendezvous_union_complete(roots: &[MettaValue], n_snapshot: u32) {
+    use crate::backend::models::gc_allocator as ga;
+    // `inner_ptr()` is an inherent method on `MettaValue` (metta_value.rs:1275), so no
+    // `MettaValueTrait` import is needed.
+
+    // (a) dispatch-fan-out coverage. `roots` is the union actually fed to the mark
+    // (it already contains the `collect_live_dispatch_anchors` walk). The witness is
+    // an INDEPENDENT re-walk (no pruning) of the SAME registry — every witnessed
+    // `Addr` must appear in `roots`. (At the rendezvous all participants have parked/
+    // finished, so each handle's `results` is stable across the two walks.)
+    let (witness_vals, live_handles) = ga::snapshot_live_dispatch_witness();
+    if !witness_vals.is_empty() {
+        let mut fed: Vec<usize> = roots.iter().map(|v| v.inner_ptr() as usize).collect();
+        fed.sort_unstable();
+        fed.dedup();
+        let missing: Vec<usize> = witness_vals
+            .iter()
+            .map(|v| v.inner_ptr() as usize)
+            .filter(|p| fed.binary_search(p).is_err())
+            .collect();
+        if !missing.is_empty() {
+            let sample: Vec<String> = missing.iter().take(16).map(|p| format!("{:#x}", p)).collect();
+            panic!(
+                "E1-FLIP/CEX-1 D5 rendezvous-union oracle FAILED (a): {} live dispatch \
+                 handle(s) registered, but {} of their INPUT∪OUTPUT Addr(s) are NOT in the \
+                 drained root union fed to the sweep.\n  sample missing inner_ptrs (<=16): \
+                 [{}]\n  A registered parallel-dispatch fan-out was not walked — check that \
+                 `gc_driver_rendezvous_cycle` calls `collect_live_dispatch_anchors` (D2) and \
+                 that `register_live_dispatch` stored the handle in the dispatch handle's \
+                 `_live_dispatch` field.",
+                live_handles,
+                missing.len(),
+                sample.join(", "),
+            );
+        }
+    }
+
+    // (b) participant coverage — E1-FLIP Path B V4: the PER-SLOT witness predicate
+    // (NOT the fungible parked-count). Re-read `cur_gen` (an independent re-walk, like
+    // (a)) and assert EVERY occupied witness slot satisfies the strict-`>` predicate
+    // `published>=cur_gen OR acquired>cur_gen` — the SAME live-re-walk the driver wait
+    // used. The fungible `workers_parked_for_gc() >= n_snapshot` is NO LONGER the gate
+    // (a finisher's bump could "cover" for a parent's not-yet-published machine — the
+    // publish-timing UAF the witness fixes); a per-slot violator means a counted-AND-
+    // occupied mutator never reified-parked-and-stamped this cycle → under-mark. `n_snapshot`
+    // is retained in the message for diagnostics (Pin 1: vestigial on the safety path).
+    let cur_gen = ga::current_cycle_gen();
+    let (all_ok, violator) = ga::all_occupied_slots_satisfied(cur_gen);
+    assert!(
+        all_ok,
+        "E1-FLIP Path B V4 D5 rendezvous-union oracle FAILED (b): witness slot {:?} is \
+         OCCUPIED but NOT stamped for cur_gen {} (published<cur_gen AND acquired<=cur_gen) — \
+         a counted-AND-occupied mutator never reached a genuine reified park to \
+         `note_reified_park` this cycle, so its (unpublished) machine is NOT in the drained \
+         root union (under-mark → the sweep would free a slot a live mutator still holds). \
+         This is a per-slot participant-coverage shortfall (n_threads_at_snapshot was {}); \
+         the witness gate `current_witness_ok()` should NOT have been set true. The driver's \
+         `requestor_wait_for_all_reified_parked` and this oracle use the SAME predicate, so a \
+         failure here means a slot was re-occupied for cur_gen AFTER the wait returned and \
+         BEFORE this check — a straddle re-park ordering bug.",
+        violator,
+        cur_gen,
+        n_snapshot,
+    );
 }
 
 /// E1-c (FANOUT>0): trigger a rendezvous collection on the dedicated GC thread

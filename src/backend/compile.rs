@@ -764,7 +764,7 @@ mod tests {
         let input = r#"!(error failure-code 42)"#;
         let state = compile(input).expect("compile failed");
         let env = new_env();
-        let (results, _env) = eval(
+        let (results, _env, ..) = eval(
             {
                 let s = state.source();
                 s[0]

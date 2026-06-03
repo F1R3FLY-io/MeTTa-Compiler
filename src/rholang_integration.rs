@@ -336,7 +336,15 @@ pub fn run_state(
 
         let guard = SessionGuard::enter();
 
+        // B3 (index-gc): bind the leaving-park handle to a NAMED local that outlives the
+        // result consumption below (the F1 ride-to-caller, C-0c). Slab return is the
+        // 2-tuple (no handle); index-gc adds the third element. Dropped at the end of the
+        // loop body, AFTER `drop(guard)` — so during the sliver `[eval() returns, results
+        // pushed]` the leaving roots stay in SAFEPOINT_ROOTS for a concurrent cycle.
+        #[cfg(not(feature = "index-gc"))]
         let (results, new_env) = eval(expr, env, compiled_state);
+        #[cfg(feature = "index-gc")]
+        let (results, new_env, _b3_root_handle) = eval(expr, env, compiled_state);
         env = new_env;
 
         // Push results to GC-rooted state BEFORE guard drops
@@ -429,7 +437,9 @@ pub async fn run_state_async(
 
         // If this is a rule definition or ground fact, execute it sequentially
         if is_rule_def || is_ground_fact {
-            let (_results, new_env) = eval(expr, env, compiled_state);
+            // B3 (index-gc): results discarded (rule-def / ground-fact side effect); the
+            // `..` rest-pattern compiles for both backends and drops the leaving handle.
+            let (_results, new_env, ..) = eval(expr, env, compiled_state);
             env = new_env;
         } else {
             current_batch.push((idx, expr, is_eval_expr));
@@ -706,7 +716,12 @@ pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
 
         let guard = SessionGuard::enter();
 
+        // B3 (index-gc): bind the leaving-park handle to a NAMED local outliving the
+        // result consumption below (F1 ride-to-caller, C-0c). Slab is the 2-tuple.
+        #[cfg(not(feature = "index-gc"))]
         let (results, new_env) = eval(expr, env, &state);
+        #[cfg(feature = "index-gc")]
+        let (results, new_env, _b3_root_handle) = eval(expr, env, &state);
         env = new_env;
 
         // Consume results WHILE guard alive — values not yet released
@@ -794,7 +809,12 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
 
         let guard = SessionGuard::enter();
 
+        // B3 (index-gc): bind the leaving-park handle to a NAMED local outliving the
+        // result consumption below (F1 ride-to-caller, C-0c). Slab is the 2-tuple.
+        #[cfg(not(feature = "index-gc"))]
         let (results, new_env) = eval(expr, env, &state);
+        #[cfg(feature = "index-gc")]
+        let (results, new_env, _b3_root_handle) = eval(expr, env, &state);
         env = new_env;
 
         // Consume results WHILE guard alive — values not yet released

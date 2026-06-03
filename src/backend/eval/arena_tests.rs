@@ -1195,7 +1195,7 @@ mod tests {
 
         let source_exprs: Vec<_> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (results, new_env) = eval(expr, env, &state);
+            let (results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             for result in &results {
                 all_results.push(result.to_string());

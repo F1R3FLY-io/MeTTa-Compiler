@@ -239,7 +239,14 @@ impl<'s> EvalContext for SessionContext<'s> {
     /// trampoline's reachable values visible.
     fn perform_safepoint(&self, roots: Vec<MettaValue>) {
         let _root_handle = register_temporary_roots(roots);
-        request_gc();
+        // E1-FLIP coordination fix (①c): under the dedicated GC thread this legacy
+        // request_gc() is a driver-less producer that would strand parked rendezvous
+        // workers — suppress it under dedicated (the rendezvous owns GC). The
+        // register_temporary_roots above is harmless under dedicated (a persistent root
+        // the collector also reads via collect_safepoint_roots). Byte-identical OFF.
+        if !crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+            request_gc();
+        }
         // _root_handle drops here → unregisters temporary roots.
     }
 

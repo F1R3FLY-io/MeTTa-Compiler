@@ -51,7 +51,8 @@ pub mod tree_sitter_parser;
 /// let mut env = new_env();
 /// let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
 /// for expr in source_exprs {
-///     let (results, new_env) = eval(expr, env, &state);
+///     // `..` ignores the index-gc-only B3 leaving-park handle (3rd tuple element).
+///     let (results, new_env, ..) = eval(expr, env, &state);
 ///     env = new_env;
 ///
 ///     for result in results {
@@ -229,7 +230,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].inner(), MettaValueInner::Long(30)));
     }
@@ -249,7 +250,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, new_env) = eval(expr, env, &state);
+        let (results, new_env, ..) = eval(expr, env, &state);
         env = new_env;
         // Rule definition returns empty list
         assert!(results.is_empty());
@@ -258,7 +259,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[1];
-        let (results, _env) = eval(expr, env, &state);
+        let (results, _env, ..) = eval(expr, env, &state);
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].inner(), MettaValueInner::Long(42)));
     }
@@ -277,7 +278,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
 
             if !expr_results.is_empty() {
@@ -306,7 +307,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for (i, expr) in source_exprs.iter().copied().enumerate() {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
 
             if !expr_results.is_empty() {
@@ -327,7 +328,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].inner(), MettaValueInner::String(s) if *s == "yes"));
@@ -340,7 +341,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "equal");
@@ -359,7 +360,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -383,7 +384,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -410,7 +411,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -437,7 +438,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -460,7 +461,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "both-true");
@@ -473,7 +474,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_long(results[0], 5);
@@ -493,7 +494,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -513,7 +514,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert!(
@@ -537,7 +538,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert!(matches!(results[0].inner(), MettaValueInner::Error(_, _)));
@@ -558,7 +559,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert!(
@@ -588,7 +589,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -625,7 +626,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -651,7 +652,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "default-value");
@@ -664,7 +665,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_long(results[0], 12);
@@ -682,7 +683,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_string(results[0], "outer-default");
@@ -695,7 +696,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         // Phase 1.1 PT-canonical: Error(Type, Ctx). Type is the message.
@@ -713,7 +714,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         assert_bool(results[0], true);
@@ -726,7 +727,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         // Arena evaluator may return multiple results; check that at least one is Bool(false)
         assert!(!results.is_empty(), "Expected at least one result");
@@ -761,7 +762,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 results.extend(expr_results);
@@ -786,7 +787,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(r) = expr_results.first() {
                 // Phase 1.1 PT-canonical: Error(Type, Ctx). Type is message.
@@ -817,7 +818,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -852,7 +853,7 @@ mod tests {
         // SAFE: MutexGuard dropped at semicolon, before eval() runs.
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let expr = state.source()[0];
-        let (results, _env) = eval(expr, new_env(), &state);
+        let (results, _env, ..) = eval(expr, new_env(), &state);
 
         assert_eq!(results.len(), 1);
         // Phase 1.1 PT-canonical: Error(Type, Ctx) where Type=message, Ctx=offending.
@@ -883,7 +884,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 results.extend(expr_results);
@@ -915,7 +916,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 last_result = Some(r);
@@ -940,7 +941,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -965,7 +966,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -991,7 +992,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1016,7 +1017,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 last_result = Some(r);
@@ -1040,7 +1041,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1076,7 +1077,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1102,7 +1103,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1128,7 +1129,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1175,7 +1176,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1215,7 +1216,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1241,7 +1242,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 result = Some(r);
@@ -1274,7 +1275,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if let Some(&r) = expr_results.last() {
                 last_result = Some(r);
@@ -1328,7 +1329,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1358,7 +1359,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1390,7 +1391,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1429,7 +1430,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1467,7 +1468,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1508,7 +1509,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1543,7 +1544,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1580,7 +1581,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1611,7 +1612,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1642,7 +1643,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1687,7 +1688,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1720,7 +1721,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for (i, expr) in source_exprs.iter().copied().enumerate() {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             // Capture results from the last expression (the match)
             if i == source_exprs.len() - 1 {
@@ -1750,7 +1751,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 result = Some(expr_results);
@@ -1789,7 +1790,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for (i, expr) in source_exprs.iter().copied().enumerate() {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             // Capture results from the last expression (the match)
             if i == source_exprs.len() - 1 {
@@ -1840,7 +1841,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 last_result = expr_results.to_vec();
@@ -1878,7 +1879,7 @@ mod tests {
 
         let source_exprs: Vec<MettaValue> = state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (expr_results, new_env) = eval(expr, env, &state);
+            let (expr_results, new_env, ..) = eval(expr, env, &state);
             env = new_env;
             if !expr_results.is_empty() {
                 last_result = expr_results.to_vec();

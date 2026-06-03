@@ -59,7 +59,14 @@ pub trait EvalContext {
     /// always return `false`.
     #[inline]
     fn should_safepoint(&self) -> bool {
+        // E1-FLIP coordination fix (①c): under the dedicated GC thread the legacy
+        // async safepoint (`perform_safepoint` = register_temporary_roots + request_gc)
+        // is a driver-less GC_REQUESTED producer that would strand parked rendezvous
+        // workers — so the SessionContext does not safepoint under dedicated (the
+        // dedicated rendezvous + the quiescence collector own GC there). Byte-identical
+        // OFF (dedicated default OFF).
         crate::backend::models::gc_allocator::is_gc_requested()
+            && !crate::backend::models::gc_allocator::dedicated_gc_enabled()
     }
 
     /// Perform a GC safepoint with the provided roots from trampoline state.
@@ -272,10 +279,19 @@ fn parallel_safepoint_threshold() -> u64 {
 }
 
 /// Whether parallel-branch GC cooperation is enabled.
-/// Parallel workers always participate in GC cooperation.
+/// Whether the LEGACY Phase-9 async-cooperative GC path participates (the parent
+/// pump + worker `perform_safepoint`, both gated on this).
+///
+/// E1-FLIP coordination fix (①a): OFF under the dedicated GC thread so the rendezvous
+/// is the SOLE collection regime. With both regimes live, the parent fires a
+/// driver-less `request_gc()` and self-roots via `register_temporary_roots` WITHOUT
+/// parking — a rendezvous participant by `n_threads()` count but not by protocol — so
+/// its in-flight transient is unrooted across the dedicated sweep → the valid-but-wrong
+/// PLN subset (sweep-independent, present in the committed baseline). Default build
+/// (dedicated OFF) ⇒ `true` ⇒ byte-identical legacy behavior.
 #[inline]
 pub(super) fn parallel_gc_coop_enabled() -> bool {
-    true
+    !crate::backend::models::gc_allocator::dedicated_gc_enabled()
 }
 
 /// Evaluation context for parallel branch worker threads.

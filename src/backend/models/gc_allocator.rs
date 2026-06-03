@@ -2910,8 +2910,21 @@ pub(crate) static WORKERS_PARKED_FOR_GC: AtomicU32 = AtomicU32::new(0);
 ///
 /// DEAD until E1-c wires the FANOUT>0 driver. See
 /// `docs/cesk-gc/phase-de-concurrent-collector-design.md` §1.3 + Round-4 F2.
+///
+/// **Starts at 1, NOT 0 (E1-FLIP Path B V4 requirement).** The V4 witness uses
+/// `published_gen = acquired_gen - 1` as the "not-yet-published-this-cycle" sentinel
+/// (`witness_acquire_slot`). With unsigned wraparound, `acquired_gen == 0` would set
+/// `published_gen = u64::MAX`, which the strict-`>` predicate (`published >= cur_gen`)
+/// would read as SATISFIED for `cur_gen == 0` — a freshly-acquired, unpublished slot
+/// would spuriously pass the gate on the VERY FIRST rendezvous (gen 0), reopening the
+/// publish-timing UAF on cycle #1. Because the driver bumps the gen only at cycle END,
+/// cycle #1 runs at the initial value; starting at 1 guarantees `cur_gen >= 1` for
+/// every rendezvous, so `published = acquired - 1` never wraps and the red-teamed
+/// strict-`>` algebra is exactly correct for ALL cycles. The existing gen-gated
+/// primitives compare a CAPTURED `my_gen` for equality and only ever `fetch_add`, so
+/// they are agnostic to the initial value (no code depends on it being 0).
 #[allow(dead_code)] // DEAD until E1-c B/C wires the FANOUT>0 park-and-collect.
-pub(crate) static GC_CYCLE_GEN: AtomicU64 = AtomicU64::new(0);
+pub(crate) static GC_CYCLE_GEN: AtomicU64 = AtomicU64::new(1);
 
 /// Current GC cycle generation (Acquire). See [`GC_CYCLE_GEN`].
 #[allow(dead_code)] // DEAD until E1-c.
@@ -2984,6 +2997,515 @@ pub(crate) fn note_cycle_bumped(gen: u64) {
 #[inline]
 pub(crate) fn already_bumped_this_cycle(gen: u64) -> bool {
     GC_CYCLE_BUMPED.with(|c| c.get() == Some(gen))
+}
+
+// ============================================================================
+// E1-FLIP Path B V4 — the WITNESS directory (reified-park-only, witness-SOLE-gate)
+// ============================================================================
+//
+// THE FIX for the publish-timing UAF (docs/cesk-gc/e1-flip-VALIDATION-FAILED-2026-06-02.md):
+// the fungible parked-count gate (`WORKERS_PARKED_FOR_GC >= n`) lets the driver proceed
+// while a COUNTED participant has not yet published its machine (a finisher's bump "covers"
+// for the parent's not-yet-published `work_stack`). The witness replaces the fungible count
+// with a PER-SLOT predicate: the sweep runs ONLY when every OCCUPIED slot was STAMPED this
+// cycle by a genuine reified park (`note_reified_park`, the SOLE published-setter).
+//
+// V4 slot lifecycle (the crux; docs/cesk-gc/e1-flip-pathB-v2-impl.md §"V4 — the slot
+// lifecycle"): a slot is OCCUPIED ⟺ the thread holds an unpublished-this-cycle LIVE machine
+// — from `EvalGuard::enter` (prev==0) continuously to the OUTERMOST `EvalGuard::drop`
+// (depth==1), INCLUDING across every park. DECOUPLED from `N_THREADS` (which releases at a
+// park; a parked thread is not "active"). Intra-slot atomic order: write `acquired`(Release)
+// → `published`(Release) → `occupied=true`(Release LAST); read `occupied`(Acq) →
+// `acquired`(Acq) → `published`(Acq). TWO `AtomicU64` (not packed). The driver gate is the
+// strict-`>` predicate `published>=cur_gen OR acquired>cur_gen` over a LIVE-RE-WALK of the
+// never-realloc chunk list (A-straddle-2: a value-snapshot would miss a slot re-occupied
+// AFTER the snapshot instant → sweep-without-waiting → UAF).
+//
+// DORMANT until Step 2's atomic flip; `#[cfg(index-gc)] && dedicated_gc_enabled()` walls at
+// the wiring sites keep DEDICATED=0 byte-identical (this directory is dead code regardless).
+
+/// One witness slot — owned by exactly one mutator thread for its lifetime (the
+/// thread-local [`MY_WITNESS_SLOT`] points at it; slots are grow-only and never
+/// reused across threads, so there is no slot-ABA). `acquired_gen`/`published_gen`
+/// are the two un-packed `AtomicU64` (rt2 RT-3); `occupied` is the `AtomicBool`
+/// that gates whether this slot participates in a snapshot.
+///
+/// DEAD until E1-FLIP Path B V4 Step 1 wires the slot lifecycle.
+#[allow(dead_code)] // DEAD until Step 1 (the 6-site slot lifecycle).
+pub(crate) struct WitnessSlot {
+    /// The `GC_CYCLE_GEN` this slot's owner most-recently ACQUIRED/RESTAMPED for.
+    /// `acquired > cur_gen` ⇒ a post-snapshot entrant (excluded from the wait).
+    acquired_gen: AtomicU64,
+    /// The `GC_CYCLE_GEN` this slot's owner has PUBLISHED a complete machine for
+    /// (the SOLE setter is [`note_reified_park`]). `published >= cur_gen` ⇒ this
+    /// participant's machine is in `cur_gen`'s `WORKER_ROOT_BUFFER` (or B3's
+    /// SAFEPOINT_ROOTS) — the driver may mark it.
+    published_gen: AtomicU64,
+    /// `true` ⟺ the owning thread holds an unpublished-this-cycle live machine
+    /// (enter→outermost-drop, across parks). Snapshot collects ONLY occupied slots.
+    occupied: AtomicBool,
+}
+
+/// A grow-only never-realloc chunk of [`WitnessSlot`]s. New chunks are appended via
+/// `next` (an `AtomicPtr`) so a slot POINTER handed out earlier stays valid forever
+/// (the live-re-walk + [`MY_WITNESS_SLOT`] rely on this). 256 slots/chunk amortizes
+/// allocation; a chunk is `Box::leak`ed (lives for the process).
+///
+/// DEAD until E1-FLIP Path B V4 Step 1.
+#[allow(dead_code)] // DEAD until Step 1.
+struct WitnessChunk {
+    slots: [WitnessSlot; 256],
+    /// Next chunk in the grow-only list (null = end). Published Release on growth,
+    /// read Acquire on walk.
+    next: AtomicPtr<WitnessChunk>,
+}
+
+#[allow(dead_code)] // DEAD until Step 1.
+impl WitnessChunk {
+    /// Allocate a fresh all-zero chunk and leak it (process-lifetime). `acquired`/
+    /// `published` start 0, `occupied` false — a free slot.
+    fn new_leaked() -> *mut WitnessChunk {
+        // Build 256 zeroed slots. `from_fn` avoids needing `Copy` on the atomics.
+        let slots = std::array::from_fn(|_| WitnessSlot {
+            acquired_gen: AtomicU64::new(0),
+            published_gen: AtomicU64::new(0),
+            occupied: AtomicBool::new(false),
+        });
+        Box::into_raw(Box::new(WitnessChunk {
+            slots,
+            next: AtomicPtr::new(ptr::null_mut()),
+        }))
+    }
+}
+
+/// HEAD of the grow-only witness chunk list (null until the first acquire). Both
+/// the per-thread acquire (which may grow it) and the driver's live-re-walk read
+/// from HEAD; growth is a Release CAS on a chunk's `next` (or on HEAD for the very
+/// first chunk).
+///
+/// DEAD until E1-FLIP Path B V4 Step 1.
+#[allow(dead_code)] // DEAD until Step 1.
+static WITNESS_HEAD: AtomicPtr<WitnessChunk> = AtomicPtr::new(ptr::null_mut());
+
+/// Global cursor of the next free slot INDEX across the whole chunk list (a flat
+/// index; chunk = idx/256, slot = idx%256). Bumped with `fetch_add` at acquire;
+/// when it crosses a 256 boundary the acquiring thread grows a new chunk. Only
+/// EVER increases (slots are never freed back — grow-only), so no ABA.
+///
+/// DEAD until E1-FLIP Path B V4 Step 1.
+#[allow(dead_code)] // DEAD until Step 1.
+static WITNESS_NEXT_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// This thread's permanently-owned witness slot pointer (null until the first
+    /// [`witness_acquire_slot`]). Process-lifetime + never-realloc ⇒ the raw
+    /// pointer stays valid for the thread's life. Used by restamp/release to reach
+    /// THIS thread's slot in O(1) without re-walking.
+    ///
+    /// DEAD until E1-FLIP Path B V4 Step 1.
+    static MY_WITNESS_SLOT: Cell<*const WitnessSlot> = const { Cell::new(ptr::null()) };
+}
+
+/// Set true by the driver (`set_current_witness_ok(true)`) ONLY after
+/// [`requestor_wait_for_all_reified_parked`] proves every occupied slot is stamped
+/// for `cur_gen`; cleared at `end_rendezvous_cycle`. The SOLE sweep gate
+/// (`gate_open_rendezvous` reads [`current_witness_ok`]). rt1 #4: one predicate,
+/// two readers.
+///
+/// DEAD until E1-FLIP Path B V4 Step 2.
+#[allow(dead_code)] // DEAD until Step 2 (the atomic flip).
+static CURRENT_WITNESS_OK: AtomicBool = AtomicBool::new(false);
+
+/// Resolve (lazily allocating/growing) the chunk + slot for a flat slot `index`.
+/// Walks the grow-only list from HEAD, appending chunks as needed. Append is a
+/// Release CAS (HEAD for the first chunk, else the predecessor's `next`); a lost
+/// CAS means a peer grew it — re-read and continue. Returns a stable `*const`.
+///
+/// DEAD until E1-FLIP Path B V4 Step 1.
+#[allow(dead_code)] // DEAD until Step 1.
+fn witness_slot_at(index: usize) -> *const WitnessSlot {
+    let chunk_idx = index / 256;
+    let slot_idx = index % 256;
+    // Ensure HEAD exists.
+    let mut head = WITNESS_HEAD.load(Ordering::Acquire);
+    if head.is_null() {
+        let fresh = WitnessChunk::new_leaked();
+        match WITNESS_HEAD.compare_exchange(
+            ptr::null_mut(),
+            fresh,
+            Ordering::Release,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => head = fresh,
+            Err(actual) => {
+                // A peer won — reclaim our leak and use theirs.
+                // SAFETY: `fresh` came from Box::into_raw and was never published.
+                drop(unsafe { Box::from_raw(fresh) });
+                head = actual;
+            }
+        }
+    }
+    // Walk to the target chunk, growing as needed.
+    let mut cur = head;
+    for _ in 0..chunk_idx {
+        // SAFETY: every chunk pointer in the list is a leaked Box (process-lifetime).
+        let next = unsafe { (*cur).next.load(Ordering::Acquire) };
+        if next.is_null() {
+            let fresh = WitnessChunk::new_leaked();
+            // SAFETY: `cur` is a valid leaked chunk.
+            match unsafe {
+                (*cur).next.compare_exchange(
+                    ptr::null_mut(),
+                    fresh,
+                    Ordering::Release,
+                    Ordering::Acquire,
+                )
+            } {
+                Ok(_) => cur = fresh,
+                Err(actual) => {
+                    // SAFETY: `fresh` was never published.
+                    drop(unsafe { Box::from_raw(fresh) });
+                    cur = actual;
+                }
+            }
+        } else {
+            cur = next;
+        }
+    }
+    // SAFETY: `cur` is a valid leaked chunk; `slot_idx < 256`.
+    unsafe { &(*cur).slots[slot_idx] as *const WitnessSlot }
+}
+
+/// V4 slot ACQUIRE — called ONLY at `EvalGuard::enter` (`prev==0`), BEFORE the
+/// `N_THREADS.fetch_add` is observable (RT-1, so every counted thread is in `snap`).
+/// On the thread's FIRST acquire it claims a fresh grow-only slot (recorded in
+/// [`MY_WITNESS_SLOT`]); thereafter it reuses the same slot. Sets
+/// `acquired=current_cycle_gen()`, `published=acquired-1` (so a stale stamp can
+/// never satisfy `published>=cur_gen`), `occupied=true` LAST (Release).
+///
+/// DEAD until E1-FLIP Path B V4 Step 1.
+#[allow(dead_code)] // DEAD until Step 1.
+pub(crate) fn witness_acquire_slot() {
+    let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
+    let slot_ptr = if slot_ptr.is_null() {
+        let index = WITNESS_NEXT_INDEX.fetch_add(1, Ordering::AcqRel);
+        let p = witness_slot_at(index);
+        MY_WITNESS_SLOT.with(|c| c.set(p));
+        p
+    } else {
+        slot_ptr
+    };
+    // SAFETY: `slot_ptr` is a process-lifetime never-realloc slot owned by THIS thread.
+    let slot = unsafe { &*slot_ptr };
+    let g = current_cycle_gen();
+    // Intra-slot order: acquired (Release) → published (Release) → occupied (Release LAST).
+    slot.acquired_gen.store(g, Ordering::Release);
+    slot.published_gen.store(g.wrapping_sub(1), Ordering::Release);
+    slot.occupied.store(true, Ordering::Release);
+    // MINOR liveness (v3 pin): a driver blocked in the 5 s warn-loop on new-chunk
+    // growth wakes promptly. Not safety (new entrants are admission-blocked).
+    {
+        let _lock = RENDEZVOUS_MUTEX.lock();
+        RENDEZVOUS_CONDVAR.notify_all();
+    }
+}
+
+/// V4 slot RELEASE — called ONLY at the OUTERMOST `EvalGuard::drop` (`depth==1`),
+/// AFTER the `N_THREADS.fetch_sub`. Clears `occupied` (Release). This is the ONLY
+/// site that un-occupies a slot; the frozen machine of a PARKED thread keeps its
+/// slot occupied (do NOT release at any safepoint drop — Pin 3).
+///
+/// DEAD until E1-FLIP Path B V4 Step 1.
+#[allow(dead_code)] // DEAD until Step 1.
+pub(crate) fn witness_release_slot() {
+    let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
+    if slot_ptr.is_null() {
+        return; // never acquired on this thread (e.g. a depth bookkeeping edge)
+    }
+    // SAFETY: process-lifetime never-realloc slot owned by THIS thread.
+    let slot = unsafe { &*slot_ptr };
+    slot.occupied.store(false, Ordering::Release);
+}
+
+/// V4 slot RESTAMP — called at BOTH `reacquire_*` (`:5190` non-full, `:5232` full)
+/// and at EACH straddle re-park iteration. Updates `acquired=g` (Release) WITHOUT
+/// toggling `occupied` (the slot stays occupied across the whole resume). Does NOT
+/// touch `published` — only a genuine [`note_reified_park`] re-publishes.
+///
+/// DEAD until E1-FLIP Path B V4 Step 1.
+#[allow(dead_code)] // DEAD until Step 1.
+pub(crate) fn witness_restamp_acquired(g: u64) {
+    let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
+    if slot_ptr.is_null() {
+        return;
+    }
+    // SAFETY: process-lifetime never-realloc slot owned by THIS thread.
+    let slot = unsafe { &*slot_ptr };
+    slot.acquired_gen.store(g, Ordering::Release);
+}
+
+/// V4 STAMP — the SOLE setter of `published_gen`. Sets `published=g` IFF this
+/// thread's slot is `occupied && acquired==g` (a genuine reified park of THIS
+/// cycle's machine). Called ONLY from inside [`worker_park_and_root_in_cycle`]
+/// (the 2 reified parks + the straddle re-park) — after the machine is in
+/// `WORKER_ROOT_BUFFER` — and from B3 (after register+fence). The finishers
+/// ([`worker_finish_into_buffer`]) + the zero-root drop bump get NO stamp ⇒ they
+/// can NEVER satisfy the witness BY CONSTRUCTION.
+///
+/// DEAD until E1-FLIP Path B V4 Step 1.
+#[allow(dead_code)] // DEAD until Step 1.
+pub(crate) fn note_reified_park(g: u64) {
+    let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
+    if slot_ptr.is_null() {
+        return;
+    }
+    // SAFETY: process-lifetime never-realloc slot owned by THIS thread.
+    let slot = unsafe { &*slot_ptr };
+    // Read occupied (Acq) → acquired (Acq) before publishing.
+    if slot.occupied.load(Ordering::Acquire) && slot.acquired_gen.load(Ordering::Acquire) == g {
+        slot.published_gen.store(g, Ordering::Release);
+    }
+}
+
+/// A stable snapshot of the witness directory for the driver: the list of slot
+/// POINTERS that are occupied at the snapshot instant (taken AFTER admission
+/// closed). The pointers are process-lifetime never-realloc, so
+/// [`requestor_wait_for_all_reified_parked`] can LIVE-RE-WALK them (and the whole
+/// grow-only list from HEAD) on every wake. `_cur_gen` is accepted for symmetry
+/// with the predicate; the snapshot itself is gen-agnostic (it is just "who is
+/// occupied now").
+///
+/// DEAD until E1-FLIP Path B V4 Step 2.
+#[allow(dead_code)] // DEAD until Step 2.
+pub(crate) fn snapshot_witness(_cur_gen: u64) -> Vec<*const WitnessSlot> {
+    let mut out: Vec<*const WitnessSlot> = Vec::new();
+    let mut cur = WITNESS_HEAD.load(Ordering::Acquire);
+    while !cur.is_null() {
+        // SAFETY: every chunk pointer is a leaked Box (process-lifetime).
+        let chunk = unsafe { &*cur };
+        for slot in chunk.slots.iter() {
+            if slot.occupied.load(Ordering::Acquire) {
+                out.push(slot as *const WitnessSlot);
+            }
+        }
+        cur = chunk.next.load(Ordering::Acquire);
+    }
+    out
+}
+
+/// The strict-`>` per-slot witness predicate: `published_gen >= cur_gen OR
+/// acquired_gen > cur_gen`. NEVER `acquired >= cur_gen` (a re-stamped-but-not-yet-
+/// republished slot `acquired==cur_gen, published<cur_gen` MUST read "wait"). Read
+/// order: occupied is NOT re-checked here (the caller decides scope); `published`
+/// (Acq) then `acquired` (Acq).
+///
+/// DEAD until E1-FLIP Path B V4 Step 2.
+#[allow(dead_code)] // DEAD until Step 2.
+#[inline]
+fn witness_slot_satisfied(slot: &WitnessSlot, cur_gen: u64) -> bool {
+    slot.published_gen.load(Ordering::Acquire) >= cur_gen
+        || slot.acquired_gen.load(Ordering::Acquire) > cur_gen
+}
+
+/// REQUISITE driver wait (replaces `requestor_wait_for_parked_count`): block until
+/// EVERY occupied witness slot satisfies the strict-`>` predicate for `cur_gen`.
+/// LIVE-RE-WALKS the grow-only chunk list from HEAD on every wake (A-straddle-2:
+/// picks up a slot re-occupied-for-`cur_gen` AFTER the snapshot + newly-grown
+/// chunks). `snap` is consulted only as a non-empty hint; the authoritative scan
+/// is the live re-walk (an occupied slot NOT in `snap` — a straddle re-occupant —
+/// is still required to satisfy). Waits on [`RENDEZVOUS_CONDVAR`] holding
+/// [`RENDEZVOUS_MUTEX`] across {predicate, wait_for} (lost-wakeup-safe: the
+/// parker's stamp+notify is under the same mutex). 5 s warn-recheck — NEVER
+/// proceed-on-timeout (witness-sole-gate ⇒ a proceed-on-timeout = silent UAF).
+///
+/// DEAD until E1-FLIP Path B V4 Step 2.
+#[allow(dead_code)] // DEAD until Step 2.
+pub(crate) fn requestor_wait_for_all_reified_parked(snap: &[*const WitnessSlot], cur_gen: u64) {
+    // `snap` is retained for the caller's diagnostics / future use; the wait scans
+    // the LIVE directory each wake (A-straddle-2). Touch it so the param is not
+    // flagged unused if the live walk is the sole authority.
+    let _ = snap;
+    let mut lock = RENDEZVOUS_MUTEX.lock();
+    loop {
+        // LIVE re-walk from HEAD: ∀ occupied slot: predicate holds?
+        let mut all_ok = true;
+        let mut cur = WITNESS_HEAD.load(Ordering::Acquire);
+        while !cur.is_null() {
+            // SAFETY: process-lifetime leaked chunk.
+            let chunk = unsafe { &*cur };
+            for slot in chunk.slots.iter() {
+                if slot.occupied.load(Ordering::Acquire) && !witness_slot_satisfied(slot, cur_gen) {
+                    all_ok = false;
+                    break;
+                }
+            }
+            if !all_ok {
+                break;
+            }
+            cur = chunk.next.load(Ordering::Acquire);
+        }
+        if all_ok {
+            return;
+        }
+        let result = RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
+        if result.timed_out() {
+            tracing::warn!(
+                "requestor_wait_for_all_reified_parked: not all occupied witness slots stamped \
+                 for cur_gen {} after {:?} — re-checking (NEVER proceeding on timeout)",
+                cur_gen,
+                RENDEZVOUS_WAIT_TIMEOUT,
+            );
+        }
+    }
+}
+
+/// Per-slot oracle predicate (the SAME live-re-walk the driver wait uses), exposed
+/// for the D5 oracle (`assert_rendezvous_union_complete`). Returns `(all_ok,
+/// first_violator_ptr)`. Debug-only callers.
+///
+/// DEAD until E1-FLIP Path B V4 Step 2.
+#[allow(dead_code)] // DEAD until Step 2.
+pub(crate) fn all_occupied_slots_satisfied(cur_gen: u64) -> (bool, *const WitnessSlot) {
+    let mut cur = WITNESS_HEAD.load(Ordering::Acquire);
+    while !cur.is_null() {
+        // SAFETY: process-lifetime leaked chunk.
+        let chunk = unsafe { &*cur };
+        for slot in chunk.slots.iter() {
+            if slot.occupied.load(Ordering::Acquire) && !witness_slot_satisfied(slot, cur_gen) {
+                return (false, slot as *const WitnessSlot);
+            }
+        }
+        cur = chunk.next.load(Ordering::Acquire);
+    }
+    (true, ptr::null())
+}
+
+/// Driver: publish that the witness gate is SATISFIED for the in-flight cycle (the
+/// SOLE thing `gate_open_rendezvous` reads). Set true only AFTER
+/// [`requestor_wait_for_all_reified_parked`] returns; cleared at
+/// `end_rendezvous_cycle` via [`clear_current_witness_ok`].
+///
+/// DEAD until E1-FLIP Path B V4 Step 2.
+#[allow(dead_code)] // DEAD until Step 2.
+#[inline]
+pub(crate) fn set_current_witness_ok(ok: bool) {
+    CURRENT_WITNESS_OK.store(ok, Ordering::Release);
+}
+
+/// Reader for `gate_open_rendezvous` (Acquire). True ⟺ the driver proved every
+/// occupied slot stamped this cycle.
+///
+/// DEAD until E1-FLIP Path B V4 Step 2.
+#[allow(dead_code)] // DEAD until Step 2.
+#[inline]
+pub(crate) fn current_witness_ok() -> bool {
+    CURRENT_WITNESS_OK.load(Ordering::Acquire)
+}
+
+// ============================================================================
+// E1-FLIP Path B V4 — B2′: the GC-walked global live-env (E₀) registry
+// ============================================================================
+//
+// B2′ (docs/cesk-gc/e1-flip-pathB-design.md §B2′): E₀'s env STRUCT
+// (named_spaces/bindings/types/states/...) is per-`GenericEnvironmentShared` (CoW-
+// cloned at fork), NOT one process-global Arc — so the GC thread cannot reach it
+// from a global handle. This registry (modeled byte-for-byte on `LIVE_DISPATCHES`)
+// lets the driver walk EVERY live env's roots each cycle, participant-independently,
+// so E₀ is covered even when no Trampoline participant happens to be parked.
+
+/// E1-FLIP Path B V4 (B2′): a GC-thread-readable live environment whose persistent
+/// E₀ roots the driver walks every cycle. Implemented by
+/// `GenericEnvironmentShared<MettaValue>` (delegating to the verified-complete
+/// `collect_roots_into`, core.rs:2170).
+///
+/// DEAD until E1-FLIP Path B V4 Step 0 wiring.
+#[cfg(feature = "index-gc")]
+pub trait EnvRoots: Send + Sync {
+    fn collect_env_roots(&self, out: &mut Vec<MettaValue>);
+}
+
+/// E1-FLIP Path B V4 (B2′): the registry of live env structs. `None` marks a free
+/// slot (kept, not removed — the `LIVE_DISPATCHES`/`SAFEPOINT_ROOTS` discipline).
+/// Each entry is a `Weak` so an env dropped without deregistering self-prunes on the
+/// next walk. Fully-qualified `std::sync::Weak` because the `use std::sync::Weak` is
+/// `#[cfg(not(index-gc))]`-gated (keeps the 49-warning baseline in both builds).
+#[cfg(feature = "index-gc")]
+static LIVE_ENVS: OnceLock<Mutex<Vec<Option<std::sync::Weak<dyn EnvRoots>>>>> = OnceLock::new();
+
+#[cfg(feature = "index-gc")]
+fn live_envs() -> &'static Mutex<Vec<Option<std::sync::Weak<dyn EnvRoots>>>> {
+    LIVE_ENVS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// E1-FLIP Path B V4 (B2′): RAII handle that frees its [`LIVE_ENVS`] slot on drop.
+/// Held for the lifetime of the registration scope (every `EvalGuard::enter` +
+/// every branch-worker spawn). Mirrors `LiveDispatchHandle`.
+///
+/// DEAD until E1-FLIP Path B V4 Step 1 wiring.
+#[cfg(feature = "index-gc")]
+pub struct LiveEnvHandle {
+    idx: usize,
+}
+
+#[cfg(feature = "index-gc")]
+impl Drop for LiveEnvHandle {
+    fn drop(&mut self) {
+        let registry = live_envs();
+        let mut guard = registry.lock();
+        if self.idx < guard.len() {
+            guard[self.idx] = None;
+        }
+    }
+}
+
+/// E1-FLIP Path B V4 (B2′): register a live env so the driver can walk its E₀ roots
+/// for the registration's lifetime. Stores `Arc::downgrade(e)` (a `Weak`); reuses a
+/// free slot or appends. Call (RAII) at `EvalGuard::enter` + branch-worker spawn.
+///
+/// DEAD until E1-FLIP Path B V4 Step 1 wiring.
+#[cfg(feature = "index-gc")]
+pub fn register_live_env(e: &Arc<dyn EnvRoots>) -> LiveEnvHandle {
+    let registry = live_envs();
+    let mut guard = registry.lock();
+    let weak = Arc::downgrade(e);
+    for (idx, slot) in guard.iter_mut().enumerate() {
+        if slot.is_none() {
+            *slot = Some(weak);
+            return LiveEnvHandle { idx };
+        }
+    }
+    let idx = guard.len();
+    guard.push(Some(weak));
+    LiveEnvHandle { idx }
+}
+
+/// E1-FLIP Path B V4 (B2′): walk every live env's E₀ roots into `out`, pruning slots
+/// whose `Weak` no longer upgrades. Called by the driver every cycle (beside
+/// `collect_safepoint_roots`). The `collect_env_roots` body uses blocking `.read()`
+/// (via `collect_roots_into`); the B2′-deadlock-unreachable argument (no park site
+/// spans an env `.write()`, design §"Source-verified facts") makes this safe.
+///
+/// DEAD until E1-FLIP Path B V4 Step 2.
+#[cfg(feature = "index-gc")]
+pub fn collect_live_env_anchors(out: &mut Vec<MettaValue>) {
+    if let Some(registry) = LIVE_ENVS.get() {
+        let mut guard = registry.lock();
+        for slot in guard.iter_mut() {
+            let prune = match slot {
+                Some(weak) => match weak.upgrade() {
+                    Some(strong) => {
+                        strong.collect_env_roots(out);
+                        false
+                    }
+                    None => true,
+                },
+                None => false,
+            };
+            if prune {
+                *slot = None;
+            }
+        }
+    }
 }
 
 /// `true` while a rendezvous-collector requestor owns the rendezvous (one
@@ -3206,8 +3728,23 @@ pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
             // E1-FLIP §Part 3: this thread has now balanced the parked-count for
             // `my_gen` — suppress a redundant EvalGuard::drop finish-bump this cycle.
             note_cycle_bumped(my_gen);
+            // ── E1-FLIP Path B V4 — THE STAMP (the SOLE published-setter) ──
+            // The machine is now in WORKER_ROOT_BUFFER (above, publish-BEFORE-stamp);
+            // stamp this thread's witness slot `published=my_gen` IFF it is
+            // occupied && acquired==my_gen. Inside the gen-gated RENDEZVOUS_MUTEX
+            // block so {publish, count-bump, notify, STAMP} are atomic w.r.t. the
+            // driver's cycle-end gen bump (same mutex) and the parker's notify
+            // (above) is never lost. The finishers + the zero-root drop bump get NO
+            // note_reified_park ⇒ they can NEVER satisfy the witness BY CONSTRUCTION.
+            // BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+            #[cfg(feature = "index-gc")]
+            {
+                if dedicated_gc_enabled() {
+                    note_reified_park(my_gen);
+                }
+            }
         }
-        // else: my cycle already ended → stale roots dropped, no bump.
+        // else: my cycle already ended → stale roots dropped, no bump, no stamp.
     }
     worker_resume_wait_for_cycle(my_gen);
 }
@@ -3418,6 +3955,13 @@ pub(crate) fn end_rendezvous_cycle() {
     GC_CYCLE_GEN.fetch_add(1, Ordering::AcqRel);
     WORKERS_PARKED_FOR_GC.store(0, Ordering::Release);
     WORKER_ROOT_BUFFER.lock().clear();
+    // E1-FLIP Path B V4: clear the witness-satisfied flag for the NEXT cycle, under the
+    // SAME RENDEZVOUS_MUTEX as the gen-bump + buffer-clear so the {gen advance, witness
+    // reset} is atomic w.r.t. a parker's gen-gated critical section. A `gate_open_rendezvous`
+    // re-check by a woken-then-re-collecting path now reads `current_witness_ok()==false`
+    // until the NEXT cycle's driver re-proves the witness — closing the cross-cycle window
+    // where the prior cycle's `true` would falsely admit a sweep before the new wait.
+    set_current_witness_ok(false);
 }
 
 /// REQUESTOR side: clear `GC_REQUESTED` and wake all parked workers, atomically
@@ -3600,6 +4144,212 @@ mod rendezvous_d1_1_tests {
         GC_REQUESTED.store(false, O::Release);
         GC_REQUESTOR_ACTIVE.store(false, O::Release);
     }
+
+    // ====================================================================
+    // E1-FLIP Path B V4 — witness directory unit tests (Step 0 + Step 1)
+    // ====================================================================
+    //
+    // The witness slot is THREAD-LOCAL (`MY_WITNESS_SLOT`), so each test runs its
+    // mutator role on a FRESHLY SPAWNED thread (a fresh thread starts with a null
+    // slot and acquires its own grow-only slot). `GC_CYCLE_GEN` is process-global;
+    // these tests drive it explicitly and reset it at the end.
+
+    /// Step 0: a NON-reified bump does NOT satisfy the witness. A thread acquires a
+    /// slot for gen K, then `worker_finish_into_buffer(&[], K)` (a finisher bump) —
+    /// the SOLE non-stamp path — leaves `published` UNSTAMPED (still K-1), so the
+    /// strict-`>` predicate reads "wait". Only `note_reified_park(K)` stamps it.
+    #[test]
+    fn test_witness_non_reified_bump_does_not_satisfy() {
+        use std::sync::atomic::Ordering as O;
+        use std::time::{Duration, Instant};
+
+        // Drive the cycle gen to a known value K.
+        let k = current_cycle_gen();
+
+        // Run the mutator role on a fresh thread (fresh thread-local slot). It
+        // acquires, finish-bumps (NON-reified), and reports its slot pointer.
+        let (tx, rx) = std::sync::mpsc::channel::<usize>();
+        let worker = std::thread::spawn(move || {
+            witness_acquire_slot(); // occupied=true, acquired=K, published=K-1
+            let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
+            // A finisher bump for gen K — must NOT stamp `published`.
+            worker_finish_into_buffer(&[], k);
+            tx.send(slot_ptr as usize).expect("send slot ptr");
+            // Park briefly so the slot stays occupied while the main thread asserts.
+            std::thread::sleep(Duration::from_millis(50));
+            // Release the slot before exit.
+            witness_release_slot();
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let slot_ptr_usize = loop {
+            if let Ok(p) = rx.recv_timeout(Duration::from_millis(100)) {
+                break p;
+            }
+            assert!(Instant::now() < deadline, "worker never reported its slot");
+        };
+        let slot = unsafe { &*(slot_ptr_usize as *const WitnessSlot) };
+
+        // After a NON-reified finisher bump: occupied, acquired==K, published==K-1.
+        assert!(slot.occupied.load(O::Acquire), "slot should be occupied");
+        assert_eq!(slot.acquired_gen.load(O::Acquire), k, "acquired should be K");
+        assert_eq!(
+            slot.published_gen.load(O::Acquire),
+            k.wrapping_sub(1),
+            "a finisher bump must NOT stamp published (the SOLE stamp is note_reified_park)"
+        );
+        // Strict-`>` predicate for cur_gen=K: NOT satisfied (published K-1 < K; acquired K !> K).
+        assert!(
+            !witness_slot_satisfied(slot, k),
+            "non-reified bump must leave the witness UNSATISFIED for cur_gen=K"
+        );
+
+        worker.join().expect("worker panicked");
+        // GC_CYCLE_GEN is left as-is (we never bumped it).
+        let _ = k;
+    }
+
+    /// Step 0/1: `note_reified_park(K)` IS the stamp — after it, the slot satisfies
+    /// the strict-`>` predicate for cur_gen=K. Complements the negative test above.
+    #[test]
+    fn test_witness_reified_park_satisfies() {
+        use std::sync::atomic::Ordering as O;
+        use std::time::{Duration, Instant};
+
+        let k = current_cycle_gen();
+        let (tx, rx) = std::sync::mpsc::channel::<usize>();
+        let worker = std::thread::spawn(move || {
+            witness_acquire_slot();
+            let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
+            // The genuine reified-park stamp.
+            note_reified_park(k);
+            tx.send(slot_ptr as usize).expect("send slot ptr");
+            std::thread::sleep(Duration::from_millis(50));
+            witness_release_slot();
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let slot_ptr_usize = loop {
+            if let Ok(p) = rx.recv_timeout(Duration::from_millis(100)) {
+                break p;
+            }
+            assert!(Instant::now() < deadline, "worker never reported its slot");
+        };
+        let slot = unsafe { &*(slot_ptr_usize as *const WitnessSlot) };
+        assert_eq!(
+            slot.published_gen.load(O::Acquire),
+            k,
+            "note_reified_park(K) must stamp published=K"
+        );
+        assert!(
+            witness_slot_satisfied(slot, k),
+            "a reified park must SATISFY the witness for cur_gen=K"
+        );
+        worker.join().expect("worker panicked");
+    }
+
+    /// Step 1 STRADDLE (single re-park): a thread parks for cycle K, then — its slot
+    /// STILL OCCUPIED (V4 decoupling: no release at the park) — re-stamps + re-parks
+    /// for cycle K+1. Assert: across the K→K+1 seam the slot stays OCCUPIED, and the
+    /// driver's strict-`>` predicate reads "wait" for K+1 until the re-park stamps
+    /// K+1, then "satisfied". Drives the slot lifecycle the re-park loop performs.
+    #[test]
+    fn test_witness_straddle_park_k_then_repark_k_plus_1() {
+        use std::sync::atomic::Ordering as O;
+
+        // Use an isolated thread so the slot is fresh; drive gens by hand.
+        let slot_ptr_usize = std::thread::spawn(|| {
+            let start = current_cycle_gen();
+            // Acquire for K (=start). occupied, acquired=K, published=K-1.
+            witness_acquire_slot();
+            let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
+            let slot = unsafe { &*slot_ptr };
+
+            // Park for K: stamp published=K.
+            note_reified_park(start);
+            assert!(slot.occupied.load(O::Acquire));
+            assert!(
+                witness_slot_satisfied(slot, start),
+                "K-park satisfies cur_gen=K"
+            );
+
+            // --- the seam: cycle advances to K+1 (the driver bumped GC_CYCLE_GEN) ---
+            // V4: the slot is NOT released here — it stays OCCUPIED across the seam.
+            let next = start.wrapping_add(1);
+            // Before the re-park, the slot is occupied + acquired=K + published=K:
+            // for cur_gen=K+1 the predicate must read WAIT (published K !>= K+1;
+            // acquired K !> K+1).
+            assert!(slot.occupied.load(O::Acquire), "slot stays occupied at seam");
+            assert!(
+                !witness_slot_satisfied(slot, next),
+                "an un-re-parked straddler must read WAIT for K+1"
+            );
+
+            // The straddle re-park: restamp acquired=K+1, then stamp published=K+1.
+            witness_restamp_acquired(next);
+            note_reified_park(next);
+            assert!(
+                witness_slot_satisfied(slot, next),
+                "after re-park the straddler satisfies cur_gen=K+1"
+            );
+
+            let ptr = slot_ptr as usize;
+            witness_release_slot();
+            ptr
+        })
+        .join()
+        .expect("straddle worker panicked");
+
+        // After release the slot is unoccupied (so a later snapshot excludes it).
+        let slot = unsafe { &*(slot_ptr_usize as *const WitnessSlot) };
+        assert!(
+            !slot.occupied.load(O::Acquire),
+            "outermost release must un-occupy the slot"
+        );
+    }
+
+    /// Step 1 BACK-TO-BACK STRADDLE: a thread parks for K, then BEFORE it would
+    /// rejoin, cycles K+1 AND K+2 fire in succession. Assert the slot stays
+    /// OCCUPIED across BOTH seams (no window where it is occupied-but-unsatisfied for
+    /// a cycle it has not yet stamped, and never unoccupied-while-live), and each
+    /// cycle's predicate flips to satisfied only after that cycle's re-park stamp.
+    /// This is the v3 attack-#3 (back-to-back) coverage.
+    #[test]
+    fn test_witness_back_to_back_straddle() {
+        use std::sync::atomic::Ordering as O;
+
+        std::thread::spawn(|| {
+            let k = current_cycle_gen();
+            witness_acquire_slot();
+            let slot = unsafe { &*MY_WITNESS_SLOT.with(|c| c.get()) };
+
+            // Park@K.
+            note_reified_park(k);
+            assert!(witness_slot_satisfied(slot, k));
+
+            // Two intervening cycles, no release between them (V4 continuous occupancy).
+            for step in 1..=2u64 {
+                let g = k.wrapping_add(step);
+                // At the seam, before this cycle's re-park: occupied, but unsatisfied
+                // for g (published is the PREVIOUS gen).
+                assert!(slot.occupied.load(O::Acquire), "occupied across seam {step}");
+                assert!(
+                    !witness_slot_satisfied(slot, g),
+                    "straddler must read WAIT for cycle {g} until it re-parks"
+                );
+                // The re-park for cycle g.
+                witness_restamp_acquired(g);
+                note_reified_park(g);
+                assert!(
+                    witness_slot_satisfied(slot, g),
+                    "after re-park the straddler satisfies cycle {g}"
+                );
+            }
+            witness_release_slot();
+        })
+        .join()
+        .expect("back-to-back straddle worker panicked");
+    }
 }
 
 /// Set when a GC snapshot is sent to the GC thread, cleared when the response
@@ -3733,6 +4483,19 @@ impl EvalGuard {
             // GC_IN_PROGRESS joins the active-thread set (the Phase D+E
             // dedicated-GC-thread driver's `n_threads()` rendezvous gate).
             if prev == 0 {
+                // ── E1-FLIP Path B V4 — slot ACQUIRE (RT-1) ──
+                // OCCUPY this thread's witness slot BEFORE the N_THREADS.fetch_add is
+                // observable, so EVERY thread the driver counts in its post-admission
+                // `n` snapshot is also present (occupied) in the witness snapshot. The
+                // slot stays occupied continuously from here to the OUTERMOST drop
+                // (across parks) — DECOUPLED from N_THREADS (which releases at a park).
+                // BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+                #[cfg(feature = "index-gc")]
+                {
+                    if dedicated_gc_enabled() {
+                        witness_acquire_slot();
+                    }
+                }
                 N_THREADS.fetch_add(1, Ordering::AcqRel);
             }
         });
@@ -3770,6 +4533,18 @@ impl Drop for EvalGuard {
                             if !already_bumped_this_cycle(my_gen) {
                                 worker_finish_into_buffer(&[], my_gen);
                             }
+                        }
+                    }
+                    // ── E1-FLIP Path B V4 — slot RELEASE (the ONLY un-occupy site) ──
+                    // AFTER the N_THREADS.fetch_sub. This thread's live machine is gone
+                    // (true outermost drop), so un-occupy its witness slot. A safepoint
+                    // (park) drop does NOT release — the frozen machine is still live —
+                    // so this is reached ONLY at the genuine end of the thread's
+                    // evaluation. BYTE-IDENTICAL WHEN DORMANT: cfg + dedicated-first.
+                    #[cfg(feature = "index-gc")]
+                    {
+                        if dedicated_gc_enabled() {
+                            witness_release_slot();
                         }
                     }
                 }
@@ -4708,6 +5483,161 @@ pub fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
     }
 }
 
+// ============================================================================
+// E1-FLIP / CEX-1 (D2) — Live Parallel-Dispatch Fan-Out Anchor
+// ============================================================================
+//
+// The dedicated-GC-thread rendezvous collector marks from
+// `drain(WORKER_ROOT_BUFFER) ∪ collect_safepoint_roots() ∪
+// collect_live_dispatch_anchors()`. The buffer carries each PARTICIPATING
+// thread's self-published thread-local contribution (D1). But a worker closure's
+// dispatch INPUTS (`branch_expr`/`branch_bindings`, moved into the closure) and a
+// completed branch's OUTPUTS (`results[slot]`) are reachable from the parent's
+// `Continuation::WaitForParallel` fan-out — a SHARED `Arc` the GC thread CAN read.
+// A worker that is admission-blocked at `EvalGuard::enter` (parked on
+// `GC_PROGRESS_CONDVAR`) or not-yet-started is NOT a rendezvous participant and
+// never self-roots, yet holds those live `Addr`s. This anchor walks the fan-out
+// structurally — park-timing-independently — closing that hole.
+//
+// SOUNDNESS (NOT a discovery side-channel): `LIVE_DISPATCHES` is the reification
+// of the live parallel-K tree's fork nodes (`WaitForParallel`). Sequential K is
+// one native stack (walked by `collect_k_spine`); a forked K is a tree, whose
+// pending `(expr, bindings)` are un-entered sub-continuation INPUTS and
+// `results[slot]` the completed OUTPUTS — both `σ|_Reachable` of the parallel K.
+// The set of live dispatches IS machine state (in-flight parallel continuations),
+// read structurally by name, with a bounded shape; nothing opts in except the
+// dispatch op, and what it yields is determined entirely by K-structure. It is the
+// parallel analogue of `collect_k_spine`'s `SUSPENDED_ACTIVATIONS`. (The slab build
+// did exactly this via `ParallelDispatchRootProvider` in `ROOT_REGISTRY`; A5 deleted
+// the registry and never replaced the walk — that omission is the residual bug D2
+// fixes. We do NOT reuse `ROOT_REGISTRY`: this is a typed, dispatch-only anchor.)
+//
+// Modeled byte-for-byte on `SAFEPOINT_ROOTS` above: a global `Mutex<Vec<Option<…>>>`,
+// RAII slot-free on `Drop`, free-slot reuse on register. The stored handle is a
+// `Weak` so a panicked worker that skips deregistration self-heals (the upgrade
+// fails and the slot is pruned), exactly like the slab `ROOT_REGISTRY`'s
+// `Weak<dyn RootProvider>`.
+
+/// E1-FLIP / CEX-1 (D2): the GC-thread-readable view of one in-flight parallel
+/// dispatch's fan-out (`branches`/`items` INPUTS + `results` OUTPUTS). Implemented
+/// by `ParallelDispatchRootProvider` / `ParallelCollapseRootProvider` (types.rs),
+/// whose bodies are the SAME `collect_roots` the slab `RootProvider` impls run
+/// (inputs from the immutable `Arc<Vec<…>>`; outputs via `results.try_lock()`,
+/// NEVER `lock` — a contended `results` ⇒ a worker mid-write holding its EvalGuard
+/// is a participant who self-rooted that value, so skipping is safe).
+#[cfg(feature = "index-gc")]
+pub trait DispatchRoots: Send + Sync {
+    fn collect_dispatch_roots(&self, out: &mut Vec<MettaValue>);
+}
+
+/// E1-FLIP / CEX-1 (D2): the registry of live parallel-dispatch fan-outs. `None`
+/// marks a free slot (kept, not removed, so other handles' indices stay valid —
+/// the `SAFEPOINT_ROOTS` discipline). Each entry is a `Weak` so a dispatch handle
+/// that drops without deregistering (panic) self-prunes on the next walk.
+// NOTE: `std::sync::Weak` is fully-qualified here because the `use std::sync::Weak`
+// import above is `#[cfg(not(index-gc))]`-gated (it was slab-ROOT_REGISTRY-only); the
+// fully-qualified path keeps that import — and the 49-warning baseline — untouched in
+// both builds.
+#[cfg(feature = "index-gc")]
+static LIVE_DISPATCHES: OnceLock<Mutex<Vec<Option<std::sync::Weak<dyn DispatchRoots>>>>> =
+    OnceLock::new();
+
+#[cfg(feature = "index-gc")]
+fn live_dispatches() -> &'static Mutex<Vec<Option<std::sync::Weak<dyn DispatchRoots>>>> {
+    LIVE_DISPATCHES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// E1-FLIP / CEX-1 (D2): RAII handle that frees its `LIVE_DISPATCHES` slot on drop.
+/// Stored in the dispatch handle's `_live_dispatch` field, so the slot is released
+/// when the `WaitForParallel`(`Collapse`) continuation is consumed (the dispatch
+/// finishes / cancels). Mirrors `SafepointRootHandle`.
+#[cfg(feature = "index-gc")]
+pub struct LiveDispatchHandle {
+    idx: usize,
+}
+
+#[cfg(feature = "index-gc")]
+impl Drop for LiveDispatchHandle {
+    fn drop(&mut self) {
+        let registry = live_dispatches();
+        let mut guard = registry.lock();
+        if self.idx < guard.len() {
+            guard[self.idx] = None;
+        }
+    }
+}
+
+/// E1-FLIP / CEX-1 (D2): register a live dispatch fan-out so the GC thread can walk
+/// its INPUTS/OUTPUTS for the dispatch's lifetime. Stores `Arc::downgrade(d)` (a
+/// `Weak` — never extends the lifetime); reuses a free slot or appends. The
+/// returned handle frees the slot on drop. Call at dispatch construction
+/// (`parallel_dispatch` / `parallel_collapse_dispatch`).
+#[cfg(feature = "index-gc")]
+pub fn register_live_dispatch(d: &Arc<dyn DispatchRoots>) -> LiveDispatchHandle {
+    let registry = live_dispatches();
+    let mut guard = registry.lock();
+    let weak = Arc::downgrade(d);
+    for (idx, slot) in guard.iter_mut().enumerate() {
+        if slot.is_none() {
+            *slot = Some(weak);
+            return LiveDispatchHandle { idx };
+        }
+    }
+    let idx = guard.len();
+    guard.push(Some(weak));
+    LiveDispatchHandle { idx }
+}
+
+/// E1-FLIP / CEX-1 (D2): walk every live dispatch fan-out into `out`, pruning slots
+/// whose `Weak` no longer upgrades (a handle dropped without deregistering — panic).
+/// Called by the dedicated GC thread (`gc_driver_rendezvous_cycle`) after draining
+/// `WORKER_ROOT_BUFFER` and `collect_safepoint_roots`. Lock order: `LIVE_DISPATCHES`
+/// then per-handle `results.try_lock()` (inside `collect_dispatch_roots`, never a
+/// blocking `lock`); the GC thread holds no other lock here.
+#[cfg(feature = "index-gc")]
+pub fn collect_live_dispatch_anchors(out: &mut Vec<MettaValue>) {
+    if let Some(registry) = LIVE_DISPATCHES.get() {
+        let mut guard = registry.lock();
+        for slot in guard.iter_mut() {
+            let prune = match slot {
+                Some(weak) => match weak.upgrade() {
+                    Some(strong) => {
+                        strong.collect_dispatch_roots(out);
+                        false
+                    }
+                    None => true, // dead Weak — prune (handle dropped w/o deregister)
+                },
+                None => false,
+            };
+            if prune {
+                *slot = None;
+            }
+        }
+    }
+}
+
+/// E1-FLIP / CEX-1 (D5 oracle support): snapshot every live dispatch's INPUT∪OUTPUT
+/// `Addr`s (as `inner_ptr` usizes) WITHOUT pruning — the witness multiset the
+/// rendezvous-union oracle checks `collect_live_dispatch_anchors` covered. Returns
+/// the live-handle count too. Debug-only callers.
+#[cfg(all(feature = "index-gc", debug_assertions))]
+pub fn snapshot_live_dispatch_witness() -> (Vec<MettaValue>, usize) {
+    let mut out = Vec::new();
+    let mut live = 0usize;
+    if let Some(registry) = LIVE_DISPATCHES.get() {
+        let guard = registry.lock();
+        for slot in guard.iter() {
+            if let Some(weak) = slot {
+                if let Some(strong) = weak.upgrade() {
+                    live += 1;
+                    strong.collect_dispatch_roots(&mut out);
+                }
+            }
+        }
+    }
+    (out, live)
+}
+
 /// Collect roots from all registered providers using a read lock (no pruning).
 ///
 /// Unlike `collect_all_roots()` which uses `ROOT_REGISTRY.write()` to prune
@@ -5032,27 +5962,133 @@ pub fn reacquire_eval_guard_after_safepoint() {
         // §1.2: rejoin the active-thread set when resuming from a park. Placed
         // AFTER the admission loop (same discipline as EvalGuard::enter).
         if prev == 0 {
+            // ── E1-FLIP Path B V4 — slot RESTAMP (non-full reacquire) ──
+            // V4 §"V4 CONVERGED": restamp acquired=current_cycle_gen WITHOUT release
+            // (the slot stays occupied from enter to the outermost drop). This
+            // non-full reacquire is reached only by the test-only safepoint pair in
+            // production (the FANOUT>0 reified parks use the `_full` variant), so the
+            // restamp is inert there, but it is wired for lifecycle consistency with
+            // the `_full` rejoin. BYTE-IDENTICAL WHEN DORMANT: cfg + dedicated-first.
+            #[cfg(feature = "index-gc")]
+            {
+                if dedicated_gc_enabled() {
+                    witness_restamp_acquired(current_cycle_gen());
+                }
+            }
             N_THREADS.fetch_add(1, Ordering::AcqRel);
         }
     });
 }
 
-/// E1-c (design §Part 9 + Round-4 F2): re-acquire after a full-depth safepoint
-/// drain. (1) Wait until the cycle the worker parked for has ENDED (`gen !=
-/// my_gen`, via [`worker_resume_wait_for_cycle`]); (2) pass the `GC_IN_PROGRESS`
-/// admission gate ONCE; (3) restore the full depth in a SINGLE
-/// `fetch_add(saved_depth)` + rejoin the active-thread set + restore the
-/// thread-local depth. The single-shot add (vs a loop of gated single increments)
-/// eliminates the partial-increment / mis-`n_threads` race. Admission stays on
-/// `GC_IN_PROGRESS` (driver-exclusive, correct) — NOT `GC_REQUESTED` (the §9.1
-/// switch was rejected by F2; `GC_REQUESTED` is set by many non-driver callers).
+/// E1-c (design §Part 9 + Round-4 F2) + **E1-FLIP Path B V4 straddle re-park**:
+/// re-acquire after a full-depth safepoint drain. The base protocol (1) waits until
+/// the cycle the worker parked for has ENDED (`gen != my_gen`); (2) passes the
+/// `GC_IN_PROGRESS` admission gate ONCE; (3) restores the full depth in a SINGLE
+/// `fetch_add(saved_depth)` + rejoins the active-thread set + restores the
+/// thread-local depth. The single-shot add eliminates the partial-increment /
+/// mis-`n_threads` race. Admission stays on `GC_IN_PROGRESS` (driver-exclusive) —
+/// NOT `GC_REQUESTED` (the §9.1 switch was rejected by F2).
+///
+/// **V4 STRADDLE re-park (the crux — docs/cesk-gc/e1-flip-pathB-v2-impl.md §"V4 —
+/// the slot lifecycle" + §"V4 straddle trace"):** a thread T parked for cycle K,
+/// snapshotted into K's `WORKER_ROOT_BUFFER` (CLEARED at `end_rendezvous_cycle`),
+/// wakes to find cycle K+1 already collecting. T's machine (its `work_stack` on its
+/// paused Rust stack, captured in `reparked_roots`) is NOT in K+1's buffer and NOT
+/// globally walked ⇒ K+1 would sweep it → UAF on resume. FIX = re-park on EVERY new
+/// intervening cycle until none is in flight, with T's witness slot held OCCUPIED
+/// THROUGHOUT (V4: the slot was acquired at `EvalGuard::enter` and is NOT released
+/// at the safepoint drop — so the driver WAITS for T at every cycle until T
+/// re-stamps for it). Each intervening cycle does `witness_restamp_acquired(g)` →
+/// `worker_park_and_root_in_cycle(reparked_roots, g)` (re-publish T's machine into
+/// g's buffer + `note_reified_park(g)` + wait g-end). NO seam — closes attacks
+/// #1/#3/#4 by construction. Correct ONLY because the collector is NON-MOVING
+/// (re-publishing the same Addrs across cycles is sound; a surviving Addr stays at
+/// its slot). NO release here (the rejoin restamps + N_THREADS++; release is ONLY at
+/// the outermost EvalGuard::drop).
+///
+/// `reparked_roots` is the thread's reified machine roots for THIS park (the
+/// in-scope `park_roots`/`my_roots` at the call site; the borrow spans the loop —
+/// T runs nothing during the straddle so the snapshot stays complete).
 ///
 /// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §Part 9.
 #[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
-pub fn reacquire_eval_guard_after_safepoint_full(saved_depth: u32, my_gen: u64) {
+pub fn reacquire_eval_guard_after_safepoint_full(
+    reparked_roots: &[MettaValue],
+    saved_depth: u32,
+    my_gen: u64,
+) {
     /// Maximum time to wait for GC_IN_PROGRESS to clear before retrying.
     const GC_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+    // ── E1-FLIP Path B V4: the STRADDLE re-park loop ──
+    // Engaged ONLY when the dedicated GC thread is driving (cfg + dedicated). When
+    // dormant, falls through to the unchanged base protocol below (BYTE-IDENTICAL).
+    #[cfg(feature = "index-gc")]
+    {
+        if dedicated_gc_enabled() {
+            // The slot is ALREADY occupied (acquired at EvalGuard::enter, never
+            // released at the safepoint drop) — so the pre-loop acquire is a
+            // RESTAMP, not an acquire (V4 §"the slot lifecycle"). `my_reparked_gen`
+            // = the gen this thread originally parked for.
+            let mut my_reparked_gen = my_gen;
+            loop {
+                let g = current_cycle_gen();
+                if gc_in_progress() && g != my_reparked_gen {
+                    // A NEW cycle is collecting while T was parked — re-park for it.
+                    // Restamp keeps the slot OCCUPIED (never released across the
+                    // straddle); the re-park re-publishes T's machine into g's buffer
+                    // + stamps published=g + waits g-end (inside
+                    // worker_park_and_root_in_cycle).
+                    witness_restamp_acquired(g);
+                    worker_park_and_root_in_cycle(reparked_roots, g);
+                    my_reparked_gen = g;
+                    continue;
+                } else if !gc_in_progress() {
+                    // No cycle in flight — rejoin (handled after the loop, sharing the
+                    // restamp + the single-shot fetch_add). Break to the rejoin.
+                    break;
+                } else {
+                    // g == my_reparked_gen && gc_in_progress: the cycle T last parked
+                    // for is still DRAINING. Wait for it to end (gen advance), then
+                    // re-check (it may be followed by yet another cycle). Lost-wakeup-
+                    // safe: gen-gated on RESUME_MUTEX (same as the base resume-wait).
+                    worker_resume_wait_for_cycle(my_reparked_gen);
+                    // After this returns gen != my_reparked_gen; loop re-reads g.
+                    continue;
+                }
+            }
+            // Rejoin (V4): restamp the slot for the current gen (resumes WITNESSED —
+            // the next cycle waits for T until it parks again, steady-state), pass the
+            // admission gate ONCE, then the single-shot depth/N_THREADS restore. NO
+            // witness_release_slot (the slot stays occupied; release is ONLY at the
+            // outermost EvalGuard::drop).
+            witness_restamp_acquired(current_cycle_gen());
+            loop {
+                if !GC_IN_PROGRESS.load(Ordering::Acquire) {
+                    break;
+                }
+                let mut lock = GC_PROGRESS_MUTEX.lock();
+                while GC_IN_PROGRESS.load(Ordering::Acquire) {
+                    let result = GC_PROGRESS_CONDVAR.wait_for(&mut lock, GC_WAIT_TIMEOUT);
+                    if result.timed_out() && GC_IN_PROGRESS.load(Ordering::Acquire) {
+                        tracing::warn!(
+                            "reacquire_eval_guard_after_safepoint_full() [V4 straddle]: \
+                             GC_IN_PROGRESS still set after {:?} — retrying",
+                            GC_WAIT_TIMEOUT,
+                        );
+                        break;
+                    }
+                }
+                drop(lock);
+            }
+            ACTIVE_EVALUATORS.fetch_add(saved_depth, Ordering::AcqRel);
+            N_THREADS.fetch_add(1, Ordering::AcqRel);
+            EVAL_GUARD_DEPTH.with(|d| d.set(saved_depth));
+            return;
+        }
+    }
+
+    // ── Base protocol (DORMANT-path / slab) — UNCHANGED, byte-identical ──
     // F2: wait until MY cycle ended (the gen advanced), then re-admit.
     worker_resume_wait_for_cycle(my_gen);
     // Admission: GC_IN_PROGRESS gate, passed ONCE (no per-level race).
@@ -5076,6 +6112,9 @@ pub fn reacquire_eval_guard_after_safepoint_full(saved_depth: u32, my_gen: u64) 
     ACTIVE_EVALUATORS.fetch_add(saved_depth, Ordering::AcqRel);
     N_THREADS.fetch_add(1, Ordering::AcqRel);
     EVAL_GUARD_DEPTH.with(|d| d.set(saved_depth));
+    // `reparked_roots` is only used by the V4 straddle path above; in the dormant/
+    // slab path it is intentionally unused (the base protocol does not re-publish).
+    let _ = reparked_roots;
 }
 
 /// Get the committed bytes from the global allocator's atomic counter.
@@ -8289,7 +9328,9 @@ mod tests {
             // Stand in for the driver's cycle-end gen bump so the gen-gated
             // reacquire releases immediately (single-threaded; no real driver).
             GC_CYCLE_GEN.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            reacquire_eval_guard_after_safepoint_full(saved, my_gen);
+            // V4: no straddle in this single-threaded test (gen bumped past my_gen,
+            // no GC_IN_PROGRESS) ⇒ empty reparked_roots.
+            reacquire_eval_guard_after_safepoint_full(&[], saved, my_gen);
             assert_eq!(eval_guard_depth(), 2, "full depth restored in one shot");
 
             drop(g2); // 2->1
@@ -8391,7 +9432,10 @@ mod tests {
                 assert_eq!(saved, 2, "full drain returns the nesting depth");
                 assert_eq!(eval_guard_depth(), 0, "fully left the active set");
                 worker_park_and_root_in_cycle(&[f.long(2000 + i as i64)], g);
-                reacquire_eval_guard_after_safepoint_full(saved, g);
+                // V4: this test does not force dedicated mode (the straddle re-park
+                // branch is dormant) and bumps the gen past `g` with no GC_IN_PROGRESS,
+                // so no re-park fires ⇒ empty reparked_roots.
+                reacquire_eval_guard_after_safepoint_full(&[], saved, g);
                 assert_eq!(eval_guard_depth(), 2, "full depth restored after resume");
                 drop(g2);
                 drop(g1);

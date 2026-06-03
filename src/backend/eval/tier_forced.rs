@@ -245,7 +245,16 @@ pub fn eval_with_tier(
     if matches!(tier, TierSelection::Auto) {
         // `super::eval()` already runs the Inc-6 quiescence collector on its own
         // EvalGuard-drop, so no extra collection is needed for the Auto path.
-        let (results, env) = super::eval(value, env, state);
+        //
+        // E1-FLIP Path B V4 — B3: forced-tier (`eval_with_tier`/`--tier`) + DEDICATED is
+        // OUT-OF-SCOPE (guard-less; validation is the Auto path via `eval()` only). The
+        // `..` rest-pattern compiles for BOTH the slab 2-tuple and the index-gc 3-tuple,
+        // dropping the B3 leaving-park handle here — so this delegation gets NO B3 ride
+        // coverage. That is intentional and safe for the covered gate: the conformance
+        // gate runs FANOUT=0 with DEDICATED off, where B3 never fires (`is_gc_requested()`
+        // is never true without a concurrent dedicated cycle). Threading the handle
+        // through `TierEvalOutcome` would be churn for an out-of-scope path.
+        let (results, env, ..) = super::eval(value, env, state);
         return TierEvalOutcome::Ok {
             results: results.into_iter().collect(),
             env,

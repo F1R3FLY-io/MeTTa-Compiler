@@ -201,17 +201,45 @@ pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
         if gc_allocator::eval_guard_depth() == 0 {
             return;
         }
-        // depth>0: park exactly like the midloop site, but the structural roots here
-        // are the caller-supplied tier "hot values" (`extra_roots`) — the VM operand
-        // stack / JIT register file the trampoline-level walker cannot see while this
-        // call is parked OUTSIDE the trampoline loop (the enclosing activation's C/K
-        // are still covered by its own K-spine guard). The dedicated thread drains
-        // WORKER_ROOT_BUFFER, so we MUST publish `extra_roots` there (genuine CESK:
-        // the caller self-reads its own live values). F2 gen-gating as at site #1.
+        // depth>0: park like the midloop site. The dedicated GC thread drains ONLY
+        // `WORKER_ROOT_BUFFER` (it never runs `collect_k_spine` / the cache collectors
+        // itself), so — unlike the SLAB collector, which DOES walk those during its own
+        // mark — this worker MUST publish its COMPLETE per-thread reachable set here, or
+        // the collector sweeps a slot the worker still holds.
+        //
+        // E1-FLIP / CEX-1 (D1): this is a `TierLeaf` contribution — a VM/JIT tier leaf
+        // parked OUTSIDE the trampoline loop, with NO in-scope S/C/K and NO env0 handle.
+        // The ONE canonical `collect_complete_thread_contribution` publishes the full
+        // leaf set: `extra_roots` (the tier hot values — VM value_stack/locals/results,
+        // JIT register file — the trampoline walker can't see) ∪ `collect_global_anchors`
+        // (E₀'s singleton caches + the 4 thread-local eval caches + binding-capture) ∪
+        // `collect_k_spine` (the ENCLOSING activation's pending S/C/K, registered as a
+        // `SuspendedActivation::Spine`, + every other on-stack VM leaf). E₀'s env STRUCT
+        // (named_spaces/bindings/types/rule_index) is supplied N× by the trampoline
+        // participants (the requestor always parks at a `Trampoline` site whose
+        // `collect_machine_roots_live` walks it) — a leaf thread has no env0 handle.
+        // The pre-CEX-1 WIP enumerated those sources inline here; routing through the
+        // canonical reader makes a future thread-local source propagate automatically.
+        // F2 gen-gating as at site #1.
+        let mut park_roots: Vec<MettaValue> = Vec::with_capacity(extra_roots.len() + 128);
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::roots::collect_complete_thread_contribution(
+            &mut park_roots,
+            crate::backend::eval::cesk::roots::ThreadContribution::TierLeaf { extra: extra_roots },
+        );
+        // Slab build: the dedicated rendezvous is an index-only construct
+        // (`gate_open_rendezvous` const-folds `gc_mode_is_index()` false in slab), so
+        // this branch is effectively dead there; publish only `extra_roots` to keep the
+        // slab path byte-identical to the pre-CEX-1 behaviour.
+        #[cfg(not(feature = "index-gc"))]
+        park_roots.extend_from_slice(extra_roots);
         let my_gen = gc_allocator::current_cycle_gen();
         let saved_depth = gc_allocator::drop_eval_guard_for_safepoint_full();
-        gc_allocator::worker_park_and_root_in_cycle(extra_roots, my_gen);
-        gc_allocator::reacquire_eval_guard_after_safepoint_full(saved_depth, my_gen);
+        gc_allocator::worker_park_and_root_in_cycle(&park_roots, my_gen);
+        // E1-FLIP Path B V4: thread `&park_roots` (THIS park's reified machine) so the
+        // straddle re-park can re-publish it on every intervening cycle (the borrow
+        // spans the resume; T runs nothing during the straddle).
+        gc_allocator::reacquire_eval_guard_after_safepoint_full(&park_roots, saved_depth, my_gen);
         // L1-FLAW-1: drop ABA-sensitive per-thread caches after a possible sweep.
         clear_aba_sensitive_caches();
         return;
@@ -2502,11 +2530,13 @@ fn parallel_dispatch(
             // EvalGuard::enter)" — the design's stated requirement — is the very
             // TOP of the closure, here. Parking here (a bare wait, since this
             // worker has not yet joined `active` and has no machine roots to
-            // contribute) realizes the admission guard faithfully. Gated on
-            // `rendezvous_enabled()` (cached env OnceLock; default OFF), so when
-            // OFF this is one short-circuited boolean read off the worker-spawn
-            // path and never parks — byte-identical to the prior behaviour.
-            if crate::backend::models::gc_allocator::rendezvous_enabled() {
+            // contribute) realizes the admission guard faithfully. E1-FLIP fix (②):
+            // gated on `dedicated_gc_enabled()` (NOT the dormant `rendezvous_enabled()`)
+            // — the dedicated rendezvous is the real regime, and a new worker must park
+            // at admission during a dedicated cycle (else it joins the active set after
+            // the driver's `n` snapshot — the "new mutator mid-cycle" hole). Default OFF
+            // ⇒ one short-circuited boolean read, byte-identical.
+            if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                 crate::backend::models::gc_allocator::worker_wait_for_resume();
             }
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
@@ -2552,6 +2582,25 @@ fn parallel_dispatch(
             // load — empirically it inflates compose's freshened-binding
             // chain past the canary at `:6457`.
             let _cache_root_refresh = crate::backend::eval::CacheRootRefreshGuard::new();
+
+            // ── E1-FLIP Path B V4 — B2′ (branch-worker granularity (a)) ──
+            // Register THIS worker's branch env in the global live-env registry so
+            // the dedicated GC thread walks its E₀ roots EVERY cycle — covering the
+            // CoW-FORKED child bindings that live in a DIFFERENT `shared` Arc than the
+            // parent's (core.rs:916), which the parent's eval/mod.rs registration does
+            // NOT cover. Registered BEFORE `env` is moved into the eval; the RAII
+            // handle is held for the whole closure body (the worker's lifetime).
+            // BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+            #[cfg(feature = "index-gc")]
+            let _worker_live_env = {
+                if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+                    let dyn_env: Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
+                        env.shared.clone();
+                    Some(crate::backend::models::gc_allocator::register_live_env(&dyn_env))
+                } else {
+                    None
+                }
+            };
 
             let cancel_outer = Arc::clone(&cancel_token);
             let unwind_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2599,14 +2648,44 @@ fn parallel_dispatch(
                             // Genuine-CESK self-read of the about-to-return result set:
                             // every value ∪ every binding value (the exact idiom
                             // `ParallelDispatchRootProvider::collect_roots` uses).
-                            let mut finish_roots: Vec<crate::backend::models::MettaValue> =
+                            let mut result_roots: Vec<crate::backend::models::MettaValue> =
                                 Vec::with_capacity(eval_results.len() * 4);
                             for (value, bindings) in eval_results.iter() {
-                                finish_roots.push(*value);
+                                result_roots.push(*value);
                                 for (_, bound) in bindings.iter() {
-                                    finish_roots.push(*bound);
+                                    result_roots.push(*bound);
                                 }
                             }
+                            // ── E1-FLIP / CEX-1 (D1): the finisher does NOT park — it bumps
+                            //    the parked-count and KEEPS RUNNING, so the dedicated GC
+                            //    thread may mark/sweep while this thread's THREAD-LOCAL
+                            //    caches are still live. The ONE canonical
+                            //    `collect_complete_thread_contribution` publishes the
+                            //    finisher's complete σ|_Reachable contribution.
+                            //    DEVIATION-FROM-DOC (justified): the doc lists site #3 as
+                            //    `Trampoline+extra=result`, but at the finisher the worker's
+                            //    OWN trampoline (`eval_trampoline_with_carrying`) has already
+                            //    RETURNED — its operand_stack/work/continuations are gone from
+                            //    scope. So the correct register-provenance shape is `TierLeaf`:
+                            //    `extra = result_roots` (the about-to-return set, co-held by
+                            //    the dispatch anchor D2 walks) ∪ `collect_global_anchors`
+                            //    (the 4 thread-local caches — freshened `($__fr_E_* ↦ …)`
+                            //    bindings, cached `rhs`/`rhs_type`, memo, subgoals, thunks —
+                            //    + binding-capture + E₀'s singleton caches) ∪ `collect_k_spine`
+                            //    (empty for a returned worker; non-empty would be MORE
+                            //    complete). This is a sound superset of the pre-CEX-1 WIP's
+                            //    explicit 4-cache enumeration. The dispatch's INPUTS + this
+                            //    OUTPUT set are ALSO walked park-timing-independently by the
+                            //    D2 anchor on the GC thread, so even a straggler that misses
+                            //    this finisher is covered.
+                            let mut finish_roots: Vec<crate::backend::models::MettaValue> =
+                                Vec::with_capacity(result_roots.len() + 64);
+                            crate::backend::eval::cesk::roots::collect_complete_thread_contribution(
+                                &mut finish_roots,
+                                crate::backend::eval::cesk::roots::ThreadContribution::TierLeaf {
+                                    extra: &result_roots,
+                                },
+                            );
                             crate::backend::models::gc_allocator::worker_finish_into_buffer(
                                 &finish_roots,
                                 my_gen,
@@ -2689,6 +2768,38 @@ fn parallel_dispatch(
             as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
     );
 
+    // E1-FLIP / CEX-1 (D2): register this dispatch's fan-out in the global
+    // `LIVE_DISPATCHES` anchor so the dedicated GC thread can walk the branch
+    // INPUTS + completed OUTPUTS for the dispatch's lifetime
+    // (park-timing-independently — covering a worker that is admission-blocked at
+    // `EvalGuard::enter` or not-yet-started, which never self-roots). The
+    // `LiveDispatchHandle` is moved into the handle's `_live_dispatch` field; it
+    // frees the anchor slot when the `WaitForParallel` continuation is consumed.
+    //
+    // GATE = `dedicated_gc_enabled()` ALONE (the dormancy switch; default OFF →
+    // byte-identical, the anchor never even initialises). The hard-constraint's
+    // "+ n_threads()>1" is a RUNTIME-COLLECTION-PATH dormancy condition, NOT a
+    // registration condition: at THIS site `n_threads()` is RACY — the parent holds
+    // its EvalGuard (count ≥ 1) but the just-`spawn`ed workers have NOT yet run
+    // `EvalGuard::enter()` (they are queued in the pool), so `n_threads() > 1` is
+    // almost always FALSE here and would SKIP registration → the anchor stays empty
+    // → the class-2 fan-out (the exact CEX-1 hole) is never walked. The dispatch
+    // ITSELF is the parallelism witness (it exists only because FANOUT triggered ≥2
+    // branches — `num_branches >= 2` here), so `dedicated_gc_enabled()` is the
+    // correct, non-racy registration gate; FANOUT=0 reaches no dispatch site, so the
+    // anchor stays empty there regardless. Reuses the SAME `root_provider` Arc
+    // (constructed in both builds) — no new allocation; `DispatchRoots` and
+    // `RootProvider` are distinct traits on it.
+    #[cfg(feature = "index-gc")]
+    let live_dispatch = if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+        Some(crate::backend::models::gc_allocator::register_live_dispatch(
+            &(Arc::clone(&root_provider)
+                as Arc<dyn crate::backend::models::gc_allocator::DispatchRoots>),
+        ))
+    } else {
+        None
+    };
+
     // Phase 10.A: capture the parent's tracked-vars union BEFORE spawning
     // any worker. The union is later re-established as a shadow frame on
     // each worker thread via `WorkerCaptureScope::enter`. If no
@@ -2710,6 +2821,9 @@ fn parallel_dispatch(
         stall_state: Mutex::new(StallState::default()),
         _root_provider_arc: root_provider,
         tracked_vars_hint,
+        // E1-FLIP / CEX-1 (D2): RAII anchor deregistration (None when dormant).
+        #[cfg(feature = "index-gc")]
+        _live_dispatch: live_dispatch,
     }
 }
 
@@ -3156,14 +3270,30 @@ fn parallel_collapse_dispatch(
                     && crate::backend::models::gc_allocator::eval_guard_depth() > 0
                 {
                     let my_gen = crate::backend::models::gc_allocator::current_cycle_gen();
-                    let mut finish_roots: Vec<crate::backend::models::MettaValue> =
+                    let mut result_roots: Vec<crate::backend::models::MettaValue> =
                         Vec::with_capacity(eval_results.len() * 4);
                     for (value, bindings) in eval_results.iter() {
-                        finish_roots.push(*value);
+                        result_roots.push(*value);
                         for (_, bound) in bindings.iter() {
-                            finish_roots.push(*bound);
+                            result_roots.push(*bound);
                         }
                     }
+                    // ── E1-FLIP / CEX-1 (D1): the collapse finisher — same as the
+                    //    parallel_dispatch finisher (site #3) above. The worker's OWN
+                    //    trampoline has returned (no in-scope S/C/K), so the canonical
+                    //    `TierLeaf` contribution (`extra = result_roots` ∪ global anchors
+                    //    incl. the 4 thread-local caches + binding-capture ∪ K-spine) is
+                    //    the correct register-provenance shape. Sound superset of the
+                    //    pre-CEX-1 explicit enumeration; the collapse INPUTS + this OUTPUT
+                    //    set are also walked by the D2 anchor on the GC thread.
+                    let mut finish_roots: Vec<crate::backend::models::MettaValue> =
+                        Vec::with_capacity(result_roots.len() + 64);
+                    crate::backend::eval::cesk::roots::collect_complete_thread_contribution(
+                        &mut finish_roots,
+                        crate::backend::eval::cesk::roots::ThreadContribution::TierLeaf {
+                            extra: &result_roots,
+                        },
+                    );
                     crate::backend::models::gc_allocator::worker_finish_into_buffer(
                         &finish_roots,
                         my_gen,
@@ -3216,6 +3346,20 @@ fn parallel_collapse_dispatch(
             as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
     );
 
+    // E1-FLIP / CEX-1 (D2): register the collapse fan-out (see `parallel_dispatch` —
+    // GATE = `dedicated_gc_enabled()` ALONE; `n_threads()>1` is racy at this setup
+    // site and would skip registration before workers enter, leaving the anchor
+    // empty → the class-2 hole unwalked).
+    #[cfg(feature = "index-gc")]
+    let live_dispatch = if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+        Some(crate::backend::models::gc_allocator::register_live_dispatch(
+            &(Arc::clone(&root_provider)
+                as Arc<dyn crate::backend::models::gc_allocator::DispatchRoots>),
+        ))
+    } else {
+        None
+    };
+
     ParallelCollapseDispatchHandle {
         results,
         remaining,
@@ -3232,6 +3376,9 @@ fn parallel_collapse_dispatch(
         // Phase 10.A: handed off to the WaitForParallelCollapse continuation
         // for sidecar per-branch binding-projection reconstruction.
         tracked_vars_hint: parent_tracked_vars,
+        // E1-FLIP / CEX-1 (D2): RAII anchor deregistration (None when dormant).
+        #[cfg(feature = "index-gc")]
+        _live_dispatch: live_dispatch,
     }
 }
 
@@ -3609,6 +3756,17 @@ fn eval_trampoline_inner<C: EvalContext>(
     // Increased from u8 (256) to reduce maybe_process_gc_response overhead (4.9% → ~1%).
     let mut gc_counter: u16 = 0;
 
+    // E1-FLIP Path B V4 — Step 4: DEBUG-ONLY missed-poll/livelock tripwire. Counts
+    // CONSECUTIVE 4096-iter safepoint edges at which a DEDICATED rendezvous was in flight
+    // (`is_gc_requested()`) yet this trampoline did NOT park (branch-B). Under DEDICATED,
+    // a GC-pending safepoint edge MUST park (the only way to stamp the witness + let the
+    // driver's `requestor_wait_for_all_reified_parked` complete); a run of unparked
+    // GC-pending edges means a poll/park edge was structurally missed → the driver would
+    // HANG (witness-sole-gate ⇒ a missed poll is a HANG, never a UAF). Release-inert
+    // (`#[cfg(debug_assertions)]`). Reset whenever GC is not pending OR a park fired.
+    #[cfg(debug_assertions)]
+    let mut gc_requested_unparked_edges: u32 = 0;
+
     // I-18: Reduction counter for cooperative yielding.
     // Initializes from resume_reductions for lifetime tracking across yields.
     let mut reduction_counter = crate::backend::eval::cesk::ReductionCounter::new();
@@ -3840,6 +3998,26 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // NEW = collect_machine_roots(C,E,K,E₀) ∪ the deferred-drop transient
                 // register (the one discovered source that is a per-activation local,
                 // not a machine-global — appended exactly as the A4.4 flip will).
+                //
+                // E1-FLIP / CEX-1 (D5, thread-local half): NEW is the canonical
+                // per-thread reader's `Trampoline` form, deliberately on the FULL
+                // `collect_machine_roots` (NOT the narrowed `collect_machine_roots_live`
+                // that `collect_complete_thread_contribution` uses). DEVIATION-FROM-DOC
+                // (the edit list says "update NEW to the canonical reader"): routing NEW
+                // through the NARROWED canonical reader would re-introduce the unsound
+                // narrowed-vs-full mismatch the C #D work already rejected — OLD
+                // (`root_set`, built with the FULL `collect_all` at ~3834) can hold a
+                // post-cut-dead K-frame iterator value that the narrowed reader legitimately
+                // drops, false-failing the oracle. Since `collect_machine_roots` (full) ⊇
+                // `collect_machine_roots_live` (narrowed) ∪-with the same `deferred`,
+                // proving `full-NEW ⊇ OLD` is STRICTLY STRONGER than proving the canonical
+                // reader's published set ⊇ OLD: it validates D1's `Trampoline` completeness
+                // for every non-narrowed root, while the narrowed-only drops are covered by
+                // the read-site coupling tripwires (eval_loop.rs:8556/14762/15611). So this
+                // oracle IS the byte-for-byte D1 thread-local-half check, kept sound. (An
+                // equivalence oracle MUST compute OLD and NEW by INDEPENDENT paths; OLD is
+                // the discovered `root_set` built at site #5 above, NEW the structural reader
+                // here — routing BOTH through the canonical reader would make it vacuous.)
                 let mut new_roots: Vec<MettaValue> = Vec::with_capacity(old.len() + 64);
                 crate::backend::eval::cesk::roots::collect_machine_roots(
                     &mut new_roots,
@@ -3989,16 +4167,50 @@ fn eval_trampoline_inner<C: EvalContext>(
                 let mut my_roots: Vec<MettaValue> = Vec::with_capacity(
                     work_stack.len() * 2 + continuations.len() * 4 + 64,
                 );
-                crate::backend::eval::cesk::roots::collect_machine_roots_live(
+                // ── E1-FLIP / CEX-1 (D1): site #1 — a LIVE trampoline activation with
+                //    in-scope S/C/K and an env0 handle. The ONE canonical
+                //    `collect_complete_thread_contribution(Trampoline{..})` publishes
+                //    this worker's COMPLETE σ|_Reachable contribution in a single call:
+                //    S∪C∪K (K narrowed via Might–Shivers abstract-GC) ∪ reach(E₀-env) ∪
+                //    global anchors (the 4 thread-local eval caches — freshened
+                //    `($__fr_E_* ↦ …)` bindings, cached `rhs`/`rhs_type`, memo, subgoals,
+                //    thunks — + binding-capture + E₀'s singleton caches) ∪ K-spine ∪ the
+                //    deferred-drop transient register. The pre-CEX-1 WIP listed the 4
+                //    caches + binding-capture INLINE here (redundant — they are already
+                //    inside `collect_machine_roots_live` via `collect_global_anchors`);
+                //    routing through the canonical reader makes a future thread-local
+                //    source propagate to every site with one edit in `collect_global_anchors`.
+                #[cfg(feature = "index-gc")]
+                crate::backend::eval::cesk::roots::collect_complete_thread_contribution(
                     &mut my_roots,
-                    &machine_operand_stack,
-                    &work,
-                    &work_stack,
-                    &continuations,
-                    env.shared.as_ref(),
+                    crate::backend::eval::cesk::roots::ThreadContribution::Trampoline {
+                        operand_stack: &machine_operand_stack,
+                        current_work: &work,
+                        work_stack: &work_stack,
+                        continuations: &continuations,
+                        env0: env.shared.as_ref(),
+                        deferred_envs: &deferred_shared_drops,
+                        extra: &[],
+                    },
                 );
-                for deferred_env in &deferred_shared_drops {
-                    deferred_env.as_ref().collect_roots_into(&mut my_roots);
+                // Slab build: this branch is runtime-dead (the dedicated rendezvous is
+                // index-only — `gate_open_rendezvous` const-folds `gc_mode_is_index()`
+                // false), but must compile. Build `my_roots` via the same components the
+                // canonical reader's `Trampoline` arm expands to (machine-live ∪ deferred)
+                // so the slab path stays byte-identical to the pre-CEX-1 behaviour.
+                #[cfg(not(feature = "index-gc"))]
+                {
+                    crate::backend::eval::cesk::roots::collect_machine_roots_live(
+                        &mut my_roots,
+                        &machine_operand_stack,
+                        &work,
+                        &work_stack,
+                        &continuations,
+                        env.shared.as_ref(),
+                    );
+                    for deferred_env in &deferred_shared_drops {
+                        deferred_env.as_ref().collect_roots_into(&mut my_roots);
+                    }
                 }
                 // (B) PARK: capture my_gen BEFORE leaving the active set (F2 gen-gating
                 // — a cycle-end gen bump that races my park is then observed by the
@@ -4019,8 +4231,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // Resume: wait for `gen != my_gen` (idempotent), pass the GC_IN_PROGRESS
                 // admission gate ONCE, restore the full guard depth + N_THREADS in a
                 // single fetch_add (no partial-increment race).
+                // E1-FLIP Path B V4: thread `&my_roots` (THIS park's reified machine)
+                // so the straddle re-park re-publishes it on every intervening cycle.
                 crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint_full(
-                    saved_depth, my_gen,
+                    &my_roots, saved_depth, my_gen,
                 );
                 // L1-FLAW-1: after a possible sweep, a reused young Addr (a slot swept
                 // by the GC thread then re-bumped by a later alloc) would alias the
@@ -15127,6 +15341,20 @@ fn process_continuation<C: EvalContext>(
 
                 let mut merged = base_results;
                 let guard = handle.results.lock().expect("results mutex poisoned");
+                // E1-FLIP ③ (red-team C3): tripwire — if `done_now` fired via the cancel
+                // disjunct (remaining != 0) while a slot is still `None`, a parked
+                // worker's branch would be silently dropped (a valid-but-wrong subset).
+                // The enclosing `collapse` shadows demand to `All`, so the cancel
+                // disjunct is inert for collapse (remaining==0 when done) — this asserts
+                // that invariant and catches any future non-`All` demand reaching here.
+                // Debug-only (release-inert).
+                debug_assert!(
+                    handle.remaining.load(Ordering::Acquire) == 0
+                        || guard.iter().all(|s| s.is_some()),
+                    "WaitForParallel(dispatch) done via cancel-disjunct with an unstored \
+                     (parked-worker) slot — a branch would be dropped. remaining={}",
+                    handle.remaining.load(Ordering::Acquire),
+                );
                 for slot in guard.iter() {
                     if let Some(slot_results) = slot.as_ref() {
                         match merge_mode {
@@ -15241,6 +15469,19 @@ fn process_continuation<C: EvalContext>(
                 // (matches parallel_collapse_eval merge semantics).
                 let mut evaluated: Vec<BoundValue> = Vec::new();
                 let guard = handle.results.lock().expect("results mutex poisoned");
+                // E1-FLIP ③ (red-team C3): tripwire — if `done_now` fired via the cancel
+                // disjunct (remaining != 0) while a slot is still `None`, a parked
+                // worker's branch would be silently dropped (a valid-but-wrong subset).
+                // `collapse` evaluates under demand `All`, so the cancel disjunct is inert
+                // here (remaining==0 when done) — this asserts that invariant and catches
+                // any future non-`All` demand reaching the collapse merge. Debug-only.
+                debug_assert!(
+                    handle.remaining.load(Ordering::Acquire) == 0
+                        || guard.iter().all(|s| s.is_some()),
+                    "WaitForParallelCollapse done via cancel-disjunct with an unstored \
+                     (parked-worker) slot — a branch would be dropped. remaining={}",
+                    handle.remaining.load(Ordering::Acquire),
+                );
                 for slot in guard.iter() {
                     if let Some(slot_results) = slot.as_ref() {
                         for bv_item in slot_results.iter() {

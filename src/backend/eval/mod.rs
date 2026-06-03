@@ -83,6 +83,37 @@ use crate::backend::models::{MettaValue, MettaValueTrait, SafepointRootHandle};
 /// allocation for the common single-result case.
 pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 
+/// The return type of the public [`eval`] entry point.
+///
+/// In the **default (slab)** build this is EXACTLY [`EvalResult`] (the `(results, env)`
+/// 2-tuple) — the slab signature is UNCHANGED, so every existing slab caller (and the
+/// `examples/` + integration `tests/`, which are slab-only) compiles verbatim.
+///
+/// In the **`index-gc`** build it gains a third element: an `Option<SafepointRootHandle>`
+/// carrying the E1-FLIP Path B V4 **B3 directive-exit leaving-park** handle. B3 registers
+/// the leaving root set (`reach(E₀) ∪ results`) into the gen-unconditional `SAFEPOINT_ROOTS`
+/// channel just before `eval()`'s `EvalGuard` drops, then stamps the witness
+/// (`note_reified_park`). The handle MUST RIDE to the caller (the F1 ride-to-caller pattern,
+/// design C-0c) and drop only AFTER the caller consumes `results` — a held-in-`eval()`-scope
+/// handle leaves a sliver `[eval() returns, caller re-registers]` during which a concurrent
+/// dedicated-GC cycle that snapshots the witness (this thread's slot is RELEASED at the
+/// outermost `EvalGuard::drop`, so it is NOT waited for) would sweep `results`. `None`
+/// whenever B3 did not fire (the default: DEDICATED off, or no concurrent cycle in flight).
+///
+/// Production callers therefore bind the third element to a NAMED local (NOT `_`) whose
+/// scope outlives result consumption; test callers (no concurrent GC under DEDICATED-off)
+/// use the `(results, env, ..)` rest-pattern, which is valid for BOTH the 2-tuple (slab)
+/// and the 3-tuple (index-gc) and harmlessly drops the always-`None` handle.
+#[cfg(not(feature = "index-gc"))]
+pub type EvalReturn = EvalResult;
+/// See [`EvalReturn`] (slab variant). The third element rides the B3 leaving-park handle.
+#[cfg(feature = "index-gc")]
+pub type EvalReturn = (
+    SmallVec<[MettaValue; 2]>,
+    MettaEnvironment,
+    Option<SafepointRootHandle>,
+);
+
 // =============================================================================
 // Thread-Local Cache Root Snapshot
 // =============================================================================
@@ -207,7 +238,7 @@ pub fn eval(
     value: MettaValue,
     env: MettaEnvironment,
     state: &crate::backend::models::MettaState,
-) -> EvalResult {
+) -> EvalReturn {
     use crate::backend::models::EvalGuard;
 
     // S1 TOPLEVEL (2026-05-13): the programmatic `eval()` API is HE
@@ -235,10 +266,92 @@ pub fn eval(
     env.set_interpret_mode(true);
     env.set_bang_body(false);
 
+    // E1-FLIP Path B V4 — B3 directive-exit leaving-park handle (the F1 ride-to-caller).
+    // Built INSIDE the `_guard` scope (after `eval_inner` returns, before the guard drops);
+    // declared here so it ESCAPES that scope AND the post-processing below, riding out in
+    // the returned `EvalReturn` so the caller drops it only AFTER consuming the results.
+    // `None` whenever B3 does not fire. Index-gc only (slab return is the unchanged 2-tuple).
+    #[cfg(feature = "index-gc")]
+    let mut b3_root_handle: Option<SafepointRootHandle> = None;
+
     // Scope the EvalGuard so it drops after eval completes.
     let mut result = {
         let _guard = EvalGuard::enter();
+
+        // ── E1-FLIP Path B V4 — B2′: register E₀'s env struct in the global
+        // live-env registry so the dedicated GC thread can walk it EVERY cycle,
+        // participant-independently (the env struct is per-`GenericEnvironmentShared`
+        // CoW-cloned at fork, NOT one process-global Arc — so the GC thread cannot
+        // reach it from a global handle without this registry). Registered BEFORE
+        // `env` is moved into `eval_inner`; the RAII handle is held for the whole
+        // `_guard` scope (so E₀ is covered for the directive's lifetime). Covers the
+        // CoW-forked child bindings via the branch-spawn registration too (granularity
+        // (a)). BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+        #[cfg(feature = "index-gc")]
+        let _live_env_handle = {
+            if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+                let dyn_env: std::sync::Arc<
+                    dyn crate::backend::models::gc_allocator::EnvRoots,
+                > = env.shared.clone();
+                Some(crate::backend::models::gc_allocator::register_live_env(&dyn_env))
+            } else {
+                None
+            }
+        };
+
         let r = eval_inner(value, env, state);
+
+        // ── E1-FLIP Path B V4 — B3: the directive-exit LEAVING-PARK ──
+        // This thread is about to drop its outermost `EvalGuard` (→ N_THREADS--, and the
+        // V4 witness slot RELEASES at the outermost drop) while it still carries live
+        // values: `r.0` (the about-to-return results) and `reach(E₀)` (the env it leaves
+        // behind). A concurrent dedicated-GC cycle that snapshots the witness AFTER this
+        // thread's slot releases will NOT wait for this thread — so those values MUST
+        // already be in the gen-unconditional `SAFEPOINT_ROOTS` channel (drained EVERY
+        // cycle, Pin 2) for that cycle to mark them, AND this thread must STAMP the
+        // witness so a cycle in flight RIGHT NOW (whose snapshot still sees this slot
+        // occupied) does not proceed until this publish is visible.
+        //
+        // Gated `dedicated_gc_enabled() && is_gc_requested()`: B3 fires ONLY when a
+        // dedicated cycle is actually in flight (the only time the leaving-park matters).
+        // BYTE-IDENTICAL when dormant (DEDICATED off ⇒ `request_concurrent_collection`
+        // early-returns ⇒ `is_gc_requested()` is never true ⇒ this block is inert; in
+        // slab the whole thing is `#[cfg]`'d out). The `leaving` set uses the SAME reader
+        // the quiescence hook below uses (`collect_persistent_roots(E₀) ∪ r.0`), NOT a
+        // bare TierLeaf — so E₀ is fully covered (B2′ makes E₀ global, but the leaving
+        // thread also routes it through SAFEPOINT_ROOTS for the snapshot-after-release
+        // window). Registering a SUPERSET of the final result (pre-error-filter `r.0`) is
+        // SOUND: extra dead roots defer one cycle, never a UAF.
+        #[cfg(feature = "index-gc")]
+        {
+            use crate::backend::models::gc_allocator::{
+                current_cycle_gen, dedicated_gc_enabled, is_gc_requested, note_reified_park,
+            };
+            use crate::backend::models::register_temporary_roots;
+            if dedicated_gc_enabled() && is_gc_requested() {
+                let mut leaving: Vec<MettaValue> = Vec::with_capacity(r.0.len() + 64);
+                crate::backend::eval::cesk::roots::collect_persistent_roots(
+                    &mut leaving,
+                    r.1.shared.as_ref(),
+                );
+                leaving.extend(r.0.iter().copied());
+                // Register into SAFEPOINT_ROOTS BEFORE the stamp+fence so the roots are
+                // visible to the driver's drain the instant the witness says "published".
+                b3_root_handle = Some(register_temporary_roots(leaving));
+                // Release fence: publish the SAFEPOINT_ROOTS registration to any GC thread
+                // that subsequently observes our witness stamp (Acquire). The stamp is the
+                // synchronizing write; the fence orders the registration before it.
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                // The empty-machine LEAVING stamp: mark the witness published for the
+                // current cycle so an in-flight snapshot that still sees this slot occupied
+                // proceeds only after `leaving ⊆ SAFEPOINT_ROOTS` is visible. SOUND because
+                // E₀ ∈ B2′ + r.0 ∈ the persistent channel + the thread is leaving;
+                // gen-unconditional (no per-cycle-buffer dependency).
+                if is_gc_requested() {
+                    note_reified_park(current_cycle_gen());
+                }
+            }
+        }
 
         // Snapshot thread-local cache roots into the safepoint root registry
         // BEFORE the EvalGuard drops (while ACTIVE_EVALUATORS > 0).
@@ -338,7 +451,16 @@ pub fn eval(
     // top-level expressions. No post-eval GC lifecycle needed here — the caller
     // (main.rs, rholang_integration.rs) manages SessionGuard around eval+format.
 
-    result
+    // E1-FLIP Path B V4 — B3: ride the leaving-park handle out so the caller drops it
+    // only AFTER consuming the results (C-0c). Slab return is the unchanged 2-tuple.
+    #[cfg(not(feature = "index-gc"))]
+    {
+        result
+    }
+    #[cfg(feature = "index-gc")]
+    {
+        (result.0, result.1, b3_root_handle)
+    }
 }
 
 /// Evaluate an MettaValue with bytecode/JIT tiering and trace collection.

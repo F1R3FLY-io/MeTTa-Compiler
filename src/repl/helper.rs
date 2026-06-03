@@ -417,7 +417,9 @@ mod tests {
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let source_exprs: Vec<_> = state.source().iter().copied().collect();
         for &expr in source_exprs.iter() {
-            let (_, updated_env) = eval(expr, env, &state);
+            // B3 (index-gc): results are discarded for completion-preview eval; the `..`
+            // rest-pattern compiles for both backends and drops the unused leaving handle.
+            let (_, updated_env, ..) = eval(expr, env, &state);
             env = updated_env;
         }
 
@@ -447,7 +449,9 @@ mod tests {
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let source_exprs: Vec<_> = state.source().iter().copied().collect();
         for &expr in source_exprs.iter() {
-            let (_, updated_env) = eval(expr, env, &state);
+            // B3 (index-gc): results are discarded for completion-preview eval; the `..`
+            // rest-pattern compiles for both backends and drops the unused leaving handle.
+            let (_, updated_env, ..) = eval(expr, env, &state);
             env = updated_env;
         }
 
@@ -475,7 +479,9 @@ mod tests {
         // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
         let source_exprs: Vec<_> = state.source().iter().copied().collect();
         for &expr in source_exprs.iter() {
-            let (_, updated_env) = eval(expr, env, &state);
+            // B3 (index-gc): results are discarded for completion-preview eval; the `..`
+            // rest-pattern compiles for both backends and drops the unused leaving handle.
+            let (_, updated_env, ..) = eval(expr, env, &state);
             env = updated_env;
         }
 

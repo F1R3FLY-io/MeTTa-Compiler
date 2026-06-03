@@ -2419,6 +2419,44 @@ unsafe fn collect_parallel_collapse_frame_roots(data: *const (), out: &mut Vec<M
     collect_parallel_result_roots(&frame.results, out);
 }
 
+/// **Completion-counter RAII (TLA+ `CollapseCompletion.tla`, 2026-06-03)**.
+///
+/// A per-worker completion guard whose `Drop` performs the SOLE
+/// `remaining.fetch_sub(1)` for that worker — on EVERY exit path, including a
+/// panic-unwind. This closes the dominant ~2% Robot.metta hang under
+/// `FANOUT>0` + dedicated index GC: a worker that panicked (or whose finisher
+/// /result-lock paths panicked AFTER the old `catch_unwind`) skipped its
+/// decrement, so `remaining` never reached 0, the `done` flag was never set,
+/// and the parent pumped `wait_timeout(done, 100µs)` forever (SIGUSR1: all
+/// threads idle, no GC). The TLC liveness model proves the panic-skips-decrement
+/// variant VIOLATES `<>(parentDone)`; decrementing on the unwind edge too makes
+/// it HOLD. The guard is constructed exactly once per worker (so the decrement
+/// fires exactly once — no `AtomicU32` underflow), at the closure top, OUTSIDE
+/// any `catch_unwind` block, so its `Drop` runs even if a `resume_unwind`
+/// re-panics.
+struct CompletionGuard {
+    remaining: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    done_pair: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Drop for CompletionGuard {
+    fn drop(&mut self) {
+        // Fires on normal return AND on panic-unwind ⇒ exactly-once decrement
+        // per worker (the guard is constructed exactly once per closure, and no
+        // manual `remaining.fetch_sub` remains in either worker).
+        if self.remaining.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {
+            let (lock, cvar) = &*self.done_pair;
+            // POISON-RECOVER: a panic that poisoned `done` must still complete
+            // the group (otherwise a poisoned mutex re-converts into a hang via
+            // a different door).
+            let mut done = lock.lock().unwrap_or_else(|e| e.into_inner());
+            *done = true;
+            drop(done);
+            cvar.notify_one();
+        }
+    }
+}
+
 /// **Stack-safety mandate (2026-05-15)**: Non-blocking parallel-dispatch.
 ///
 /// Spawns all N branches to the work pool (NO inline branch-0) and returns
@@ -2618,6 +2656,20 @@ fn parallel_dispatch(
             }
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
             let _guard = EvalGuard::enter();
+            // ── CompletionGuard (TLA+ `CollapseCompletion.tla`, 2026-06-03) ──
+            // The SOLE `remaining.fetch_sub` for this worker. Constructed at the
+            // closure TOP (before the `catch_unwind` below) so its `Drop` fires
+            // on EVERY exit path — normal return, a `BranchCancelled` swallow,
+            // OR a `resume_unwind` re-panic — guaranteeing an exactly-once
+            // decrement + done-set + notify even when the body panics. The old
+            // manual decrements (the `Err`-arm at the former `:2790` and the
+            // closure tail at the former `:2803`) are DELETED; the count no
+            // longer depends on the `catch_unwind`/`resume_unwind` control flow
+            // (which is retained ONLY for cancellation propagation).
+            let _completion = CompletionGuard {
+                remaining: Arc::clone(&remaining),
+                done_pair: Arc::clone(&done_pair),
+            };
             // E1-FLIP Path B V4 (H1): clear THIS worker's thread-local σ-caches at task
             // teardown so an idle pooled worker carries no stale σ-Addr into the next
             // dedicated collection. Drops just before `_guard` releases the witness, and
@@ -2787,12 +2839,12 @@ fn parallel_dispatch(
                         let mut guard = results.lock().expect("results mutex poisoned");
                         guard[slot] = None;
                         drop(guard);
-                        if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-                            let (lock, cvar) = &*done_pair;
-                            let mut done = lock.lock().expect("done mutex poisoned");
-                            *done = true;
-                            cvar.notify_one();
-                        }
+                        // NOTE: no manual `remaining.fetch_sub` here — the
+                        // `CompletionGuard` (constructed at the closure top,
+                        // outside this `catch_unwind`) performs the SOLE
+                        // exactly-once decrement during the `resume_unwind`
+                        // unwind below. Decrementing here too would
+                        // double-count and underflow the `AtomicU32`.
                         std::panic::resume_unwind(payload);
                     }
                     let mut guard = results.lock().expect("results mutex poisoned");
@@ -2800,12 +2852,9 @@ fn parallel_dispatch(
                 }
             }
 
-            if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-                let (lock, cvar) = &*done_pair;
-                let mut done = lock.lock().expect("done mutex poisoned");
-                *done = true;
-                cvar.notify_one();
-            }
+            // The completion decrement + done-set + notify is performed by
+            // `_completion`'s `Drop` (constructed at the closure top), firing on
+            // every exit path — normal return here OR the `resume_unwind` above.
         };
 
         // Inc 6: latch the "a worker has been spawned" flag BEFORE handing the
@@ -3459,6 +3508,21 @@ fn parallel_collapse_dispatch(
             }
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
             let _guard = EvalGuard::enter();
+            // ── CompletionGuard (TLA+ `CollapseCompletion.tla`, 2026-06-03) ──
+            // The SOLE `remaining.fetch_sub` for this collapse worker. Constructed
+            // at the closure TOP so its `Drop` performs an exactly-once decrement +
+            // done-set + notify on EVERY exit path. The collapse eval below
+            // (`eval_trampoline_with_carrying`) has NO `catch_unwind`, so a panic
+            // there previously bypassed the manual decrement (the former
+            // `:3612-3617`) entirely — `remaining` never hit 0, `done` was never
+            // set, and the parent's collapse pump waited forever (the dominant
+            // ~2% Robot hang the TLC model proved). The manual decrement is now
+            // DELETED; the guard's `Drop` (firing during the panic-unwind too)
+            // is the replacement.
+            let _completion = CompletionGuard {
+                remaining: Arc::clone(&remaining),
+                done_pair: Arc::clone(&done_pair),
+            };
             // E1-FLIP Path B V4 (H1): clear THIS worker's thread-local σ-caches at task
             // teardown so an idle pooled worker carries no stale σ-Addr into the next
             // dedicated collection (the collapse worker's `is_memoized_normal_form` →
@@ -3529,10 +3593,18 @@ fn parallel_collapse_dispatch(
             //     entries past this worker boundary adds memory pressure
             //     with no correctness benefit.
             //
-            // (c) `Demand::All` + no `catch_unwind` plumbing means the
-            //     worker always exits through the closure tail. Unlike
-            //     the branch worker, there is no panic-unwind path that
-            //     would skip natural cache cleanup.
+            // (c) The collapse eval below has no `catch_unwind`, so a
+            //     worker panic unwinds straight out of this closure. The
+            //     `CacheRootRefreshGuard` would buy nothing on that edge
+            //     (its caches are not re-entered on the parent's merge —
+            //     see (b)). NOTE: that same no-`catch_unwind` shape USED to
+            //     let a panic skip the worker's completion decrement (the
+            //     dominant ~2% Robot hang, TLA+ `CollapseCompletion.tla`);
+            //     that is now closed structurally by the `CompletionGuard`
+            //     RAII at the closure top, whose `Drop` decrements +
+            //     done-sets + notifies on the panic-unwind edge too. The
+            //     omission here is therefore deliberate and cache-only, NOT
+            //     a claim that this worker never unwinds.
             //
             // Empirical confirmation: adding the guard here regresses
             // Robot.metta from 40-85 SELECTED outputs to 19-21 AND trips
@@ -3609,12 +3681,10 @@ fn parallel_collapse_dispatch(
                 guard[slot] = Some(eval_results.into_iter().collect());
             }
 
-            if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
-                let (lock, cvar) = &*done_pair;
-                let mut done = lock.lock().expect("done mutex poisoned");
-                *done = true;
-                cvar.notify_one();
-            }
+            // The completion decrement + done-set + notify is performed by
+            // `_completion`'s `Drop` (constructed at the closure top), firing on
+            // every exit path — this normal return OR a panic-unwind from the
+            // eval above (which has no `catch_unwind`).
         };
 
         // Inc 6: latch the "a worker has been spawned" flag (see the matching

@@ -240,8 +240,11 @@ pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
         // straddle re-park can re-publish it on every intervening cycle (the borrow
         // spans the resume; T runs nothing during the straddle).
         gc_allocator::reacquire_eval_guard_after_safepoint_full(&park_roots, saved_depth, my_gen);
-        // L1-FLAW-1: drop ABA-sensitive per-thread caches after a possible sweep.
-        clear_aba_sensitive_caches();
+        // L1-FLAW-1 + E1-FLIP Path B V4 (H2): drop this thread's σ-caches after a
+        // possible sweep. On the dedicated path this is the FULL set (the GC thread
+        // could not reach this thread's thread-locals); off it, byte-identical to the
+        // prior `clear_aba_sensitive_caches()`.
+        clear_worker_caches_on_resume();
         return;
     }
 
@@ -293,6 +296,80 @@ pub(crate) fn clear_aba_sensitive_caches() {
     // Do not clear the normal-form bloom here. It is content-addressed and
     // records within-query semantic state for freeze-tuple/collapse handling;
     // query boundaries and rule mutations invalidate it explicitly.
+}
+
+/// E1-FLIP Path B V4 — the COMPLETE per-worker-thread σ-cache clear for the
+/// DEDICATED concurrent collector. The dedicated GC thread runs the sweep on a
+/// SEPARATE thread, so the post-sweep thread-local invalidation it performs
+/// (`index_heap.rs:2119-2128`: `clear_aba_sensitive_caches` + `clear_inner_shadow`
+/// + `clear_eval_memo` + `clear_match_result_cache`) clears the GC THREAD's
+/// (empty) thread-locals — NOT the worker threads' caches, which still hold
+/// σ-`Addr`s keyed by content-hash / Addr. After the sweep reuses those slots the
+/// entries are STALE (a reused Addr serves the prior occupant's content), so a
+/// worker that later reads them — e.g. the collapse worker's
+/// `is_memoized_normal_form(&item_expr)` → `hash_value()` → the thread-local
+/// `VALUE_HASH_CACHE` — gets a wrong answer → corrupted `(collapse …)` result. Each
+/// worker MUST therefore clear its OWN thread-local σ-caches; this is that
+/// comprehensive clear, the SAME set the single-threaded collector clears, run on
+/// the thread that OWNS the caches. (In the single-threaded regime the collector
+/// already runs on that thread, so this is unneeded there.)
+#[cfg(feature = "index-gc")]
+pub(crate) fn clear_all_worker_thread_local_caches() {
+    // (i) The ABA-sensitive interned/Addr-keyed set: VALUE_HASH_CACHE (the
+    //     `is_memoized_normal_form` smoking gun), MORK byte/ground-fragment caches,
+    //     hash-cons table, operator dispatch cache. (Same call the park-resume sites
+    //     already make — kept here so this is the ONE complete clear.)
+    clear_aba_sensitive_caches();
+    // (ii) The value-bearing σ memos NOT in the ABA set — index_heap.rs:2122-2128 parity.
+    crate::backend::models::metta_value::clear_inner_shadow();
+    crate::backend::eval::trampoline::dispatch_hints::clear_eval_memo();
+    crate::backend::eval::trampoline::dispatch_hints::clear_match_result_cache();
+    // (iii) The DIRTY-gated tabling/thunk value tables — near-zero cost when the
+    //       worker did no tabling; they ARE published as roots (roots.rs:319-320) so
+    //       an idle pooled worker can hold swept Addrs in them across the next cycle.
+    crate::backend::eval::cesk::tabling::clear_subgoal_table();
+    crate::backend::eval::cesk::thunk::clear_thunk_table();
+}
+
+/// Worker park-RESUME cache clear. On the DEDICATED path a sweep may have run while
+/// this worker was parked, so it must drop the FULL σ-cache set (the GC thread could
+/// not reach this thread's caches). Off the dedicated path (slab build, or index
+/// DEDICATED=0) this is BYTE-IDENTICAL to the prior `clear_aba_sensitive_caches()`
+/// the call site made.
+#[inline]
+fn clear_worker_caches_on_resume() {
+    #[cfg(feature = "index-gc")]
+    {
+        if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+            clear_all_worker_thread_local_caches();
+            return;
+        }
+    }
+    clear_aba_sensitive_caches();
+}
+
+/// E1-FLIP Path B V4 — RAII guard whose `Drop` clears this worker's thread-local
+/// σ-caches at task teardown (closes H1: an IDLE pooled worker that finished a task,
+/// dropped its `EvalGuard` / witness slot, and would otherwise carry stale σ-`Addr`s
+/// in its thread-locals into the NEXT collection cycle — unrooted because it is no
+/// longer a rendezvous participant, and uncleared because the GC thread's post-sweep
+/// clear cannot reach this thread). Declared right after `EvalGuard::enter()` in each
+/// worker closure so it drops just before the guard releases the witness, and AFTER
+/// the finisher has published this worker's roots into `WORKER_ROOT_BUFFER` (the
+/// publish copies `Addr`s by value into a GC-thread-owned `Vec`, so clearing the
+/// source thread-local afterwards is race-free). BYTE-IDENTICAL when dormant: the
+/// `Drop` body is a single `dedicated_gc_enabled()` load that short-circuits OFF by
+/// default; the struct is `#[cfg(index-gc)]`.
+#[cfg(feature = "index-gc")]
+struct WorkerCacheTeardownGuard;
+#[cfg(feature = "index-gc")]
+impl Drop for WorkerCacheTeardownGuard {
+    #[inline]
+    fn drop(&mut self) {
+        if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+            clear_all_worker_thread_local_caches();
+        }
+    }
 }
 
 static DROP_SENDER: OnceLock<std::sync::mpsc::Sender<Vec<SharedEnvArc>>> = OnceLock::new();
@@ -2541,6 +2618,13 @@ fn parallel_dispatch(
             }
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
             let _guard = EvalGuard::enter();
+            // E1-FLIP Path B V4 (H1): clear THIS worker's thread-local σ-caches at task
+            // teardown so an idle pooled worker carries no stale σ-Addr into the next
+            // dedicated collection. Drops just before `_guard` releases the witness, and
+            // after the finisher has published this worker's roots (publish copies Addrs
+            // by value ⇒ clearing the source thread-local afterwards is race-free).
+            #[cfg(feature = "index-gc")]
+            let _cache_teardown = WorkerCacheTeardownGuard;
             // Phase 9.1: register `branch_expr` as a per-thread current-iter
             // GC root for the worker's lifetime. Drops on closure exit
             // (normal OR panic-unwind) and clears the cell. Closes the
@@ -2984,6 +3068,21 @@ fn pump_parallel_wait(
         crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint_full(
             &my_roots, saved_depth, my_gen,
         );
+        // Addr-reuse ABA — MUST clear AFTER resume, mirroring
+        // `worker_cooperative_safepoint` (:244). While this parent was parked the
+        // dedicated collector may have swept + bump-reused arena slots, so a
+        // pointer/Addr-keyed cache entry (VALUE_HASH_CACHE, the thread-local MORK
+        // serialization caches, the operator dispatch cache, the hash-cons table)
+        // now serves a STALE value. The parent's very next act on this path is a
+        // set-op / filter that buckets by `hash_value()` — a stale entry there
+        // re-admits an atom that should have been excluded (observed: a spurious
+        // `(detection person …)` surviving `PLNobjectsOfCategory`). The full-
+        // Trampoline park replaced `worker_cooperative_safepoint`, which used to
+        // do this clear, so it must be performed explicitly here. On the dedicated
+        // path this drops the FULL σ-cache set (eval-memo / match-result / inner-shadow
+        // / subgoal / thunk included), since the GC thread could not reach this
+        // parent thread's thread-locals; off it, byte-identical clear_aba_sensitive_caches.
+        clear_worker_caches_on_resume();
     }
     // Slab/DEDICATED=0: the new full-park params are unused on this path (the index
     // collector is the only consumer). Borrow them once to keep `-D warnings` quiet
@@ -3164,6 +3263,14 @@ fn pump_parallel_collapse_wait(
         crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint_full(
             &my_roots, saved_depth, my_gen,
         );
+        // Addr-reuse ABA — clear AFTER resume (see `pump_parallel_wait` for the
+        // full rationale): a slot swept + bump-reused while this parent was parked
+        // leaves a stale pointer/Addr-keyed cache entry that would corrupt the
+        // collapse's subsequent set-op / filter. `worker_cooperative_safepoint`
+        // does this on resume; the full-Trampoline park replaced that helper. On the
+        // dedicated path this drops the FULL σ-cache set (the GC thread could not reach
+        // this parent thread's thread-locals); off it, byte-identical.
+        clear_worker_caches_on_resume();
     }
     // Slab/DEDICATED=0: borrow the new params once (no-op) to keep `-D warnings` quiet.
     #[cfg(not(feature = "index-gc"))]
@@ -3352,6 +3459,42 @@ fn parallel_collapse_dispatch(
             }
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
             let _guard = EvalGuard::enter();
+            // E1-FLIP Path B V4 (H1): clear THIS worker's thread-local σ-caches at task
+            // teardown so an idle pooled worker carries no stale σ-Addr into the next
+            // dedicated collection (the collapse worker's `is_memoized_normal_form` →
+            // VALUE_HASH_CACHE smoking gun). Drops just before `_guard` releases the
+            // witness, after the finisher published this worker's roots.
+            #[cfg(feature = "index-gc")]
+            let _cache_teardown = WorkerCacheTeardownGuard;
+            // ── E1-FLIP Path B V4 — B2′ (collapse-worker granularity) ──
+            // SIBLING of the branch-worker registration at `:2594-2603`. Register
+            // THIS collapse worker's env in the global live-env registry so the
+            // dedicated GC thread walks its E₀ roots EVERY cycle — covering the
+            // CoW-FORKED child bindings that, the instant this item's eval binds a
+            // variable, live in a DIFFERENT `shared` Arc than the parent's
+            // (core.rs:916). That forked `shared` is covered by NONE of the four
+            // rendezvous root sources otherwise: not the parent's eval/mod.rs
+            // registration (different Arc), not the D2 `LIVE_DISPATCHES` walk (which
+            // walks `items`+`results` only, never the worker's binding table), and
+            // NOT the worker's finisher (`ThreadContribution::TierLeaf` has no env0
+            // term — roots.rs). Without this a young `Addr` reachable ONLY through
+            // this worker's forked binding is unmarked → swept → its arena slot
+            // bump-reused → the parent's `collapse`/filter merge reads a stale value
+            // (the observed nondeterministic wrong-subset corruption under
+            // DEDICATED=1 FANOUT=8). Registered BEFORE `env` is moved into the eval
+            // at `:3432`; the RAII handle is held for the whole closure body (the
+            // worker's lifetime). BYTE-IDENTICAL WHEN DORMANT: the #[cfg(index-gc)]
+            // wall + `dedicated_gc_enabled()`-first short-circuit (default OFF).
+            #[cfg(feature = "index-gc")]
+            let _worker_live_env = {
+                if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+                    let dyn_env: Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
+                        env.shared.clone();
+                    Some(crate::backend::models::gc_allocator::register_live_env(&dyn_env))
+                } else {
+                    None
+                }
+            };
             // Phase 9.1: register `item_expr` as a per-thread current-iter
             // GC root for the worker's lifetime (mirrors branch worker at
             // `:1730`). See `current_iter_root` module docs.
@@ -4401,8 +4544,10 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // by the GC thread then re-bumped by a later alloc) would alias the
                 // prior occupant in any per-thread cache keyed by Addr — drop them,
                 // exactly as the index collector does at its own safepoints (the C1.c
-                // slab-parity invalidation contract).
-                clear_aba_sensitive_caches();
+                // slab-parity invalidation contract). E1-FLIP Path B V4 (H2): on the
+                // dedicated path drop the FULL σ-cache set (the GC thread could not
+                // reach this worker's thread-locals); off it, byte-identical.
+                clear_worker_caches_on_resume();
             } else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {
                 // A4.4 FLIP (midloop): feed the collector from the STRUCTURAL machine reader —
                 //   collect_machine_roots(S, C, K, E₀) ∪ the deferred-drop transient register

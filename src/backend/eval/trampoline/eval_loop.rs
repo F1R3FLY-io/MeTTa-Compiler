@@ -2903,6 +2903,41 @@ fn pump_parallel_wait(
     // `stable_branches` is still used below in the GC-drop path as a root
     // source.
 
+    // E1-FLIP Path B V4 — the PARENT must PARK (stamp its witness slot) while spinning
+    // in the pump, or the witness wait DEADLOCKS: the dedicated collector's wait blocks
+    // on EVERY occupied slot, and the parent (holding its directive EvalGuard) is
+    // occupied. `parallel_gc_coop_enabled()` is FALSE under dedicated (①a), so the legacy
+    // coop block below is skipped — this is its dedicated replacement: build the parent's
+    // in-flight roots (stable_branches ∪ handle.results) and park+stamp via
+    // `worker_cooperative_safepoint` (→ worker_park_and_root_in_cycle → note_reified_park).
+    // The park drains+restores the parent's depth and blocks until the cycle resumes.
+    // Byte-identical at DEDICATED=0 (the conjunct short-circuits).
+    #[cfg(feature = "index-gc")]
+    if crate::backend::models::gc_allocator::dedicated_gc_enabled()
+        && crate::backend::models::gc_allocator::is_gc_requested()
+        && handle.remaining.load(Ordering::Acquire) > 0
+    {
+        let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
+        for (value, bindings) in stable_branches.iter() {
+            parent_roots.push(value.clone());
+            for (_, bound) in bindings.iter() {
+                parent_roots.push(bound.clone());
+            }
+        }
+        {
+            let g = handle.results.lock().expect("results mutex poisoned");
+            for slot in g.iter().flatten() {
+                for (val, bindings) in slot.iter() {
+                    parent_roots.push(val.clone());
+                    for (_, v) in bindings.iter() {
+                        parent_roots.push(v.clone());
+                    }
+                }
+            }
+        }
+        worker_cooperative_safepoint(&parent_roots);
+    }
+
     // (2) Periodic cooperative GC drop — gated by alloc-delta or explicit
     //     gc-request. Mirrors the original wait loop's logic at
     //     parallel_branch_eval:1975-2037.
@@ -3008,6 +3043,37 @@ fn pump_parallel_collapse_wait(
 
     if handle.cancel_token.is_satisfied() {
         return;
+    }
+
+    // E1-FLIP Path B V4 — the COLLAPSE parent must PARK (stamp its witness slot) while
+    // spinning in the pump (same deadlock fix as pump_parallel_wait; the witness wait
+    // blocks on the parent's occupied slot, and `parallel_gc_coop_enabled()` is FALSE
+    // under dedicated). Park+stamp via worker_cooperative_safepoint with the collapse
+    // parent's in-flight roots (stable_items ∪ handle.results). Byte-identical DEDICATED=0.
+    #[cfg(feature = "index-gc")]
+    if crate::backend::models::gc_allocator::dedicated_gc_enabled()
+        && crate::backend::models::gc_allocator::is_gc_requested()
+        && handle.remaining.load(Ordering::Acquire) > 0
+    {
+        let mut parent_roots: Vec<MettaValue> = Vec::with_capacity(64);
+        for (value, bindings) in stable_items.iter() {
+            parent_roots.push(value.clone());
+            for (_, bound) in bindings.iter() {
+                parent_roots.push(bound.clone());
+            }
+        }
+        {
+            let g = handle.results.lock().expect("results mutex poisoned");
+            for slot in g.iter().flatten() {
+                for (val, bindings) in slot.iter() {
+                    parent_roots.push(val.clone());
+                    for (_, v) in bindings.iter() {
+                        parent_roots.push(v.clone());
+                    }
+                }
+            }
+        }
+        worker_cooperative_safepoint(&parent_roots);
     }
 
     // (2) Periodic cooperative GC drop (no work-stealing per mandate).

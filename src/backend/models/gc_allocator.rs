@@ -4770,14 +4770,20 @@ pub fn gc_sweep_epoch() -> u64 {
     GC_SWEEP_EPOCH.load(Ordering::Acquire)
 }
 
-/// Increment the GC sweep epoch after dead slab slots have been freed.
+/// Increment the GC sweep epoch after dead slab/index slots have been freed.
 ///
-/// Thread-local caches that store or key by slab pointers compare their local
-/// epoch against this value and self-invalidate before the next lookup. This is
-/// required for work-pool threads that were idle or outside their own safepoint
-/// while another thread completed a GC sweep.
+/// Thread-local caches that store or key by slab pointers / index `Addr`s compare
+/// their local epoch against this value and self-invalidate before the next lookup.
+/// This is required for work-pool threads that were idle or outside their own
+/// safepoint while another thread completed a GC sweep.
+///
+/// `pub(crate)` (not `pub(super)`) so the index collector (`cesk::index_heap`) can
+/// bump it at its dedicated-cycle sweep too — restoring exact slab parity for the
+/// cross-thread lazy self-heal (the dedicated GC thread is NOT the threads that
+/// hold the stale `VALUE_HASH_CACHE` / MORK / hash-cons entries, so an eager clear
+/// on the sweeping thread cannot reach them; the epoch bump does, lazily on read).
 #[inline]
-pub(super) fn bump_gc_sweep_epoch() {
+pub(crate) fn bump_gc_sweep_epoch() {
     GC_SWEEP_EPOCH.fetch_add(1, Ordering::AcqRel);
 }
 

@@ -671,7 +671,65 @@ pub fn eval_memo_key(expr_hash: u64, tracked_key: u64) -> u64 {
 }
 
 #[inline]
+/// DIAGNOSTIC kill-switch (env `METTATRON_DISABLE_EVAL_CACHES=1`): when set, the
+/// value-bearing eval-scoped memos (EVAL_MEMO + MATCH_RESULT_CACHE) always MISS,
+/// forcing re-evaluation / re-matching. Dormant by default (unset ⇒ byte-identical).
+/// A memo miss is always semantically safe (recompute), so this is correctness-
+/// preserving (only slower). Used to discriminate whether a residual DEDICATED=1
+/// wrong-subset corruption flows through a STALE MEMO VALUE (a worker memo entry whose
+/// cached σ-`Addr` was swept+reused in the no-park window) vs VALUE_HASH_CACHE (now
+/// epoch-healed), the bloom (its own kill-switch), or a MISSED ROOT (none of the caches
+/// — which would redirect the diagnosis to rooting).
+fn eval_caches_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var("METTATRON_DISABLE_EVAL_CACHES")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
+}
+
+thread_local! {
+    /// The `gc_sweep_epoch` this thread's EVAL_MEMO + MATCH_RESULT_CACHE were last known
+    /// coherent for. Index `Addr`-reuse after a dedicated-collector sweep can make a memo
+    /// entry's cached σ-`Addr` stale (the slot was bump-reused for new content), so when
+    /// the global epoch advances (the index collector bumps it post-sweep — slab parity),
+    /// the next memo lookup on THIS thread clears both memos before returning. This is the
+    /// cross-thread LAZY self-heal that reaches work-pool workers which held their
+    /// EvalGuard across a witness-gated cycle WITHOUT ever hitting a park safepoint (the
+    /// VM/JIT poll cadence) — the no-park window that both the eager sweep-thread clear
+    /// (index_heap.rs:2128) and the park/teardown hygiene miss. (VALUE_HASH_CACHE already
+    /// self-heals this way; these two value-memos did NOT — the residual ~3.75% DEDICATED=1
+    /// wrong-subset corruption, confirmed by the eval-caches-disabled discriminator 0/40.)
+    #[cfg(feature = "index-gc")]
+    static EVAL_CACHES_GC_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Clear EVAL_MEMO + MATCH_RESULT_CACHE on THIS thread if a GC sweep advanced the epoch
+/// since the last check — slab-parity with `metta_value::ensure_value_hash_cache_epoch_current`.
+/// A memo MISS is always safe (recompute), so this is correctness-by-construction.
+/// `#[cfg(index-gc)]`: the slab build protects these memos via query-gen/mutation-epoch (NOT
+/// gc_sweep_epoch), so adding a gc-epoch clear there would change slab behaviour; gating to
+/// the index build keeps the slab path byte-identical.
+#[cfg(feature = "index-gc")]
+#[inline]
+fn ensure_eval_caches_gc_epoch_current() {
+    let current = crate::backend::models::gc_allocator::gc_sweep_epoch();
+    EVAL_CACHES_GC_EPOCH.with(|e| {
+        if e.get() != current {
+            EVAL_MEMO.with(|c| c.borrow_mut().clear());
+            MATCH_RESULT_CACHE.with(|c| c.borrow_mut().clear());
+            e.set(current);
+        }
+    });
+}
+
 pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>> {
+    if eval_caches_disabled() {
+        return None;
+    }
+    #[cfg(feature = "index-gc")]
+    ensure_eval_caches_gc_epoch_current();
     let expr_hash = eval_memo_key(expr_hash, tracked_key);
     let current_epoch = mutation_epoch();
     let current_query_gen = query_generation();
@@ -789,6 +847,11 @@ pub fn match_result_get(
     expr_hash: u64,
     expr_arity: usize,
 ) -> Option<Vec<(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>)>> {
+    if eval_caches_disabled() {
+        return None;
+    }
+    #[cfg(feature = "index-gc")]
+    ensure_eval_caches_gc_epoch_current();
     // I-9: Epoch check removed — deterministic GC keeps state garbage-free.
     let current_rule_epoch = RULE_EPOCH.load(Ordering::Acquire);
     let current_mutation_epoch = mutation_epoch();

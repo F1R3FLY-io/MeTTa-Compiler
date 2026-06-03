@@ -2112,10 +2112,25 @@ pub mod index_gc {
         // already-wired `clear_aba_sensitive_caches()` — restoring slab parity:
         //   VALUE_HASH_CACHE (Addr-keyed in index mode — the PRIMARY cause of the
         //   set-op divergences), the MORK bytes + ground-fragment caches, and the
-        //   operator cache. (The slab bumps `gc_sweep_epoch`, which VALUE_HASH_CACHE /
-        //   MORK self-read to lazily self-clear; the index collector cannot call the
-        //   `pub(super)` epoch bump, so it uses the same public clear path the slab
-        //   path uses — minimal surface, exact parity.)
+        //   operator cache.
+        //
+        // ── CROSS-THREAD COHERENCE (2026-06-03): bump the sweep epoch FIRST ──
+        // The eager `clear_aba_sensitive_caches()` below clears only the SWEEPING
+        // thread's thread-locals. Under the dedicated collector that thread is the GC
+        // thread — NOT the work-pool workers that hold the stale Addr→hash entries — and
+        // a worker that held its EvalGuard across this (witness-gated) cycle WITHOUT
+        // ever hitting a park safepoint (the VM/JIT `0xFFF` poll cadence) is reached by
+        // neither the park-resume nor the teardown cache hygiene. So bump
+        // `gc_sweep_epoch` exactly as the slab sweep does: every thread lazily self-
+        // invalidates its epoch-protected thread-local caches (VALUE_HASH_CACHE, MORK
+        // ground-fragment, hash-cons) on its NEXT read (via
+        // `ensure_value_hash_cache_epoch_current` etc.) — the documented purpose of
+        // `bump_gc_sweep_epoch` ("work-pool threads idle/outside their own safepoint")
+        // and the residual ~2-4% DEDICATED=1 wrong-subset corruption's root cause (a
+        // stale Addr→hash after a reused-slot bump flips set-op bucketing / skip-eval).
+        // Bump BEFORE the eager clear so `clear_value_hash_cache` syncs the sweeping
+        // thread's local epoch to the post-bump value (no redundant re-clear there).
+        crate::backend::models::gc_allocator::bump_gc_sweep_epoch();
         crate::backend::eval::trampoline::eval_loop::clear_aba_sensitive_caches();
         // Index-only: the laundered-`MettaValueInner` shadow keyed by `Addr` (a reused
         // Addr invalidates any cached inner). Not part of the slab ABA set.

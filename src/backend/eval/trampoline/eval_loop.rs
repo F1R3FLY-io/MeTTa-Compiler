@@ -2847,6 +2847,18 @@ fn parallel_dispatch(
 fn pump_parallel_wait(
     handle: &crate::backend::eval::trampoline::types::ParallelDispatchHandle,
     stable_branches: &[ParallelBranch],
+    // E1-FLIP Path B V4 — the parent's trampoline machine, threaded so the
+    // dedicated-GC park below can publish a FULL `Trampoline` witness (S∪C∪K∪E₀∪
+    // deferred) rather than an incomplete `TierLeaf`. Borrowed slices/handles: cheap,
+    // and usable in BOTH builds (the slab arm only forwards them into the same canonical
+    // reader its `parent_roots` already feeds). `env` arrives as `SharedEnv`
+    // (`Arc<MettaEnvironment>`) — the `WaitForParallel` arm's `env` field type.
+    work_stack: &[WorkItem],
+    continuations: &[Continuation],
+    env: &SharedEnv,
+    deferred_shared_drops: &[std::sync::Arc<
+        crate::backend::environment::GenericEnvironmentShared<MettaValue>,
+    >],
 ) {
     use std::time::Duration;
 
@@ -2907,10 +2919,19 @@ fn pump_parallel_wait(
     // in the pump, or the witness wait DEADLOCKS: the dedicated collector's wait blocks
     // on EVERY occupied slot, and the parent (holding its directive EvalGuard) is
     // occupied. `parallel_gc_coop_enabled()` is FALSE under dedicated (①a), so the legacy
-    // coop block below is skipped — this is its dedicated replacement: build the parent's
-    // in-flight roots (stable_branches ∪ handle.results) and park+stamp via
-    // `worker_cooperative_safepoint` (→ worker_park_and_root_in_cycle → note_reified_park).
-    // The park drains+restores the parent's depth and blocks until the cycle resumes.
+    // coop block below is skipped — this is its dedicated replacement.
+    //
+    // ⚠️ CORRECTNESS (the DEDICATED=1 deadlock/corruption fix): the parent here is
+    // SUSPENDED MID-TRAMPOLINE — its `work_stack` + `continuations` (the `WaitForParallel`
+    // K-frame plus everything beneath it) hold live `MettaValue`s that the sweep WILL drop
+    // unless the park PUBLISHES them. A `TierLeaf`/`worker_cooperative_safepoint` park does
+    // NOT (it has no S/C/K). So we park with the FULL `Trampoline` contribution — exactly
+    // the branch-B finisher park (eval_loop.rs ~4249) — with `extra` = the parent's
+    // in-flight result set (`stable_branches` ∪ `handle.results`). The machine is otherwise
+    // quiescent at this point (we are inside the pump, not stepping), so the synthetic S/
+    // current-work are empty: `operand_stack` = a fresh empty `OperandStack`, `current_work`
+    // = a synthetic empty `Resume`. The park drains+restores the parent's full depth (it may
+    // be at nested-eval depth>1) and blocks until the cycle resumes.
     // Byte-identical at DEDICATED=0 (the conjunct short-circuits).
     #[cfg(feature = "index-gc")]
     if crate::backend::models::gc_allocator::dedicated_gc_enabled()
@@ -2935,7 +2956,41 @@ fn pump_parallel_wait(
                 }
             }
         }
-        worker_cooperative_safepoint(&parent_roots);
+        // FULL park (mirror branch-B template @ ~4249, `extra: &parent_roots`).
+        let mut my_roots: Vec<MettaValue> = Vec::with_capacity(
+            work_stack.len() * 2 + continuations.len() * 4 + parent_roots.len() + 64,
+        );
+        crate::backend::eval::cesk::roots::collect_complete_thread_contribution(
+            &mut my_roots,
+            crate::backend::eval::cesk::roots::ThreadContribution::Trampoline {
+                // The pump is not stepping ⟹ S (tree-walker operand stack) is empty.
+                operand_stack: &crate::backend::eval::cesk::OperandStack::<MettaValue>::new(),
+                // No current WorkItem in the pump ⟹ a synthetic empty Resume (∅ result,
+                // this arm's env). `env` is `SharedEnv` = the `EvalResult` env slot.
+                current_work: &WorkItem::Resume {
+                    result: (smallvec::SmallVec::new(), env.clone()),
+                },
+                work_stack,
+                continuations,
+                env0: env.shared.as_ref(),
+                deferred_envs: deferred_shared_drops,
+                extra: &parent_roots,
+            },
+        );
+        let my_gen = crate::backend::models::gc_allocator::current_cycle_gen();
+        let saved_depth =
+            crate::backend::models::gc_allocator::drop_eval_guard_for_safepoint_full();
+        crate::backend::models::gc_allocator::worker_park_and_root_in_cycle(&my_roots, my_gen);
+        crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint_full(
+            &my_roots, saved_depth, my_gen,
+        );
+    }
+    // Slab/DEDICATED=0: the new full-park params are unused on this path (the index
+    // collector is the only consumer). Borrow them once to keep `-D warnings` quiet
+    // without perturbing behaviour (no-op; the values are untouched).
+    #[cfg(not(feature = "index-gc"))]
+    {
+        let _ = (work_stack, continuations, env, deferred_shared_drops);
     }
 
     // (2) Periodic cooperative GC drop — gated by alloc-delta or explicit
@@ -3018,6 +3073,14 @@ fn pump_parallel_wait(
 fn pump_parallel_collapse_wait(
     handle: &crate::backend::eval::trampoline::types::ParallelCollapseDispatchHandle,
     stable_items: &[crate::backend::eval::trampoline::types::BoundValue],
+    // E1-FLIP Path B V4 — parent trampoline machine (see `pump_parallel_wait`): threaded so
+    // the dedicated-GC park publishes a FULL `Trampoline` witness, not an incomplete leaf.
+    work_stack: &[WorkItem],
+    continuations: &[Continuation],
+    env: &SharedEnv,
+    deferred_shared_drops: &[std::sync::Arc<
+        crate::backend::environment::GenericEnvironmentShared<MettaValue>,
+    >],
 ) {
     use std::time::Duration;
 
@@ -3046,10 +3109,13 @@ fn pump_parallel_collapse_wait(
     }
 
     // E1-FLIP Path B V4 — the COLLAPSE parent must PARK (stamp its witness slot) while
-    // spinning in the pump (same deadlock fix as pump_parallel_wait; the witness wait
-    // blocks on the parent's occupied slot, and `parallel_gc_coop_enabled()` is FALSE
-    // under dedicated). Park+stamp via worker_cooperative_safepoint with the collapse
-    // parent's in-flight roots (stable_items ∪ handle.results). Byte-identical DEDICATED=0.
+    // spinning in the pump (same deadlock/corruption fix as `pump_parallel_wait`: the
+    // witness wait blocks on the parent's occupied slot, and `parallel_gc_coop_enabled()`
+    // is FALSE under dedicated). The parent is suspended mid-trampoline at the
+    // `WaitForParallelCollapse` K-frame, so its `work_stack`/`continuations` hold live
+    // values the sweep would drop — publish the FULL `Trampoline` contribution (mirror of
+    // branch-B @ ~4249), `extra` = the collapse parent's in-flight roots (stable_items ∪
+    // handle.results). Byte-identical DEDICATED=0.
     #[cfg(feature = "index-gc")]
     if crate::backend::models::gc_allocator::dedicated_gc_enabled()
         && crate::backend::models::gc_allocator::is_gc_requested()
@@ -3073,7 +3139,36 @@ fn pump_parallel_collapse_wait(
                 }
             }
         }
-        worker_cooperative_safepoint(&parent_roots);
+        // FULL park (mirror branch-B template @ ~4249, `extra: &parent_roots`).
+        let mut my_roots: Vec<MettaValue> = Vec::with_capacity(
+            work_stack.len() * 2 + continuations.len() * 4 + parent_roots.len() + 64,
+        );
+        crate::backend::eval::cesk::roots::collect_complete_thread_contribution(
+            &mut my_roots,
+            crate::backend::eval::cesk::roots::ThreadContribution::Trampoline {
+                operand_stack: &crate::backend::eval::cesk::OperandStack::<MettaValue>::new(),
+                current_work: &WorkItem::Resume {
+                    result: (smallvec::SmallVec::new(), env.clone()),
+                },
+                work_stack,
+                continuations,
+                env0: env.shared.as_ref(),
+                deferred_envs: deferred_shared_drops,
+                extra: &parent_roots,
+            },
+        );
+        let my_gen = crate::backend::models::gc_allocator::current_cycle_gen();
+        let saved_depth =
+            crate::backend::models::gc_allocator::drop_eval_guard_for_safepoint_full();
+        crate::backend::models::gc_allocator::worker_park_and_root_in_cycle(&my_roots, my_gen);
+        crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint_full(
+            &my_roots, saved_depth, my_gen,
+        );
+    }
+    // Slab/DEDICATED=0: borrow the new params once (no-op) to keep `-D warnings` quiet.
+    #[cfg(not(feature = "index-gc"))]
+    {
+        let _ = (work_stack, continuations, env, deferred_shared_drops);
     }
 
     // (2) Periodic cooperative GC drop (no work-stealing per mandate).
@@ -15460,8 +15555,19 @@ fn process_continuation<C: EvalContext>(
                 return;
             }
 
-            // (b) one-step pump
-            pump_parallel_wait(&handle, &stable_branches_snapshot);
+            // (b) one-step pump.
+            // E1-FLIP Path B V4: thread the parent's trampoline machine so the pump's
+            // dedicated-GC park publishes a FULL `Trampoline` witness (S∪C∪K∪E₀∪deferred)
+            // — `env` here is still the `WaitForParallel` arm's `SharedEnv` (it is moved
+            // into the continuation push below, AFTER this borrow).
+            pump_parallel_wait(
+                &handle,
+                &stable_branches_snapshot,
+                &*work_stack,
+                &*continuations,
+                &env,
+                &*deferred_shared_drops,
+            );
 
             // (c) re-push the continuation (move handle; _root_guard is
             //     not Clone so the variant must transfer ownership).
@@ -15644,8 +15750,18 @@ fn process_continuation<C: EvalContext>(
                 return;
             }
 
-            // (b) one-step pump
-            pump_parallel_collapse_wait(&handle, &stable_items_snapshot);
+            // (b) one-step pump.
+            // E1-FLIP Path B V4: thread the parent's trampoline machine (see the dispatch
+            // site above). `env` is the `WaitForParallelCollapse` arm's `SharedEnv`, moved
+            // into the continuation push below AFTER this borrow.
+            pump_parallel_collapse_wait(
+                &handle,
+                &stable_items_snapshot,
+                &*work_stack,
+                &*continuations,
+                &env,
+                &*deferred_shared_drops,
+            );
 
             // (c) re-push (move handle; _root_guard is not Clone)
             let env_for_resume = env.clone();

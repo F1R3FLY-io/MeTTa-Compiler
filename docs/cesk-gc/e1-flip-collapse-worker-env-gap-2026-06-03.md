@@ -137,6 +137,75 @@ caches the same `gc_sweep_epoch()` auto-clear the other two already have (elimin
 "remember-to-clear-at-every-resume-site" fragility entirely). **Decision deferred to the empirical result
 of the primary fix** (scientific isolation: test one variable first).
 
+## GATE RESULTS (2026-06-03, post-commit `803bd19`)
+
+**Headline GREEN (the realistic/default configs):**
+- robot @ FANOUT=8 DEDICATED=1 **MIN=131072** (major+minor): discriminator **arm A 0/16** ×2 independent runs + ASAN **0-UAF with 96 rendezvous cycles** + correct.
+- discriminator **arm B 0/16** (DEDICATED=0 control).
+- raven @ FANOUT=8 DEDICATED=1 MIN=131072: ASAN **0-UAF, 19 cycles**, correct.
+- conformance **DEDICATED=0 FANOUT=0 = 483/0** (byte-identical dormant) and **DEDICATED=1 FANOUT=8 MIN=131072 = 483/0** (no regression).
+
+**Two residual issues surfaced by the gate (NEITHER blocks the headline; the default flip is user-gated and the default config is clean):**
+
+1. **arm C (DEDICATED=1, MIN=4294967295 = 4 GiB major floor → MINOR-only regime): rare ~1/16 (6%) intermittent FAILURE** — one HANG (rc=124) + one wrong-subset corruption across ~32 runs. This is an ARTIFICIAL config (disables major collection; no realistic deployment sets a 4 GiB floor). The headline major+minor config (arm A) is clean. Root-cause UNCONFIRMED: an Explore pass hypothesized "minors don't bump `GC_CYCLE_GEN` → witness hangs" but that is **REFUTED** (`end_rendezvous_cycle` bumps the gen unconditionally per cycle, gc_allocator.rs:3955). The real mechanism is a rare race in the high-frequency minor-only rendezvous — pending a runtime deadlock-dump. Candidate safe fix (if confirmed): under `dedicated_gc_enabled() && FANOUT>0`, promote a due minor to a full major in the rendezvous (the validated path), or defer minors to the next major — both gated, correctness-by-construction, perf-only cost. Because a fix touches the delicate 4-red-team-round witness protocol (high regression blast radius) for an edge config, it is being root-caused + red-team-designed before any change.
+
+2. **stress_multidir.metta @ FANOUT=8: PRE-EXISTING crash (NOT this work).** DEDICATED=0 (the validated baseline path) **SIGSEGVs (rc=139)**; DEDICATED=1 the dedicated collector's assertion catches it first as a panic (`index_heap.rs:694 str_slice "live Atom/String slot"`, rc=101, 0 UAF). Both fail ⇒ the fixture has a pre-existing rooting gap in the FANOUT=8 directive-parallel index path, independent of the dedicated collector (memory: "baseline-confirmed, NOT mine"). Separate issue.
+
+## RESIDUAL #1 (the deadlock) — ROOT-CAUSED + FIXED (FIX A), red-teamed to convergence
+
+The ~6% residual is (mostly) a **rendezvous DEADLOCK** in the straddle-rejoin of
+`reacquire_eval_guard_after_safepoint_full` (gc_allocator.rs:6034-6087). Confirmed by a
+debug-assertions diag dump (all 68 threads `futex_do_wait`, the dedicated GC thread waiting) +
+code inspection + two Plan-agent red-teams.
+
+**Mechanism:** on resume with `!gc_in_progress()`, the worker `break`-ed, restamped `acquired`
+ONLY (never `published`), then BLOCKED in a non-publishing `GC_IN_PROGRESS`-wait admission loop.
+If a new cycle K+1 began in that window, the driver's live witness re-walk saw the still-occupied
+slot (`published=K < cur_gen=K+1`) and waited forever, while the worker — blocked in the
+non-publishing wait, not running to its next safepoint where it would re-park+publish — waited for
+`GC_IN_PROGRESS` to clear, which the stuck driver never cleared. Circular wait.
+
+**⚠️ FIX A FAILED VALIDATION (2026-06-03) — UNCOMMITTED, diagnosis falsified.** Robot @ FANOUT=8
+DEDICATED=1 MIN=131072 with FIX A: **3 hangs / ~55 runs ≈ 5.5%** — statistically UNCHANGED from the
+pre-fix ~6%. So removing the rejoin non-publishing admission loop did NOT fix the deadlock ⇒ the
+"rejoin-admission-wait is the deadlock" root-cause (two Plan-agent red-team rounds, "guaranteed-by-
+construction") is **empirically WRONG or incomplete**. (Corruption: 0/55 — possibly incidentally
+reduced, inconclusive.) This is the SECOND falsified "guaranteed" analysis of this witness protocol
+(cf. the prior coordination fix in `e1-flip-VALIDATION-FAILED-2026-06-02.md`). CONCLUSION: this race
+defeats source/hand analysis; the principled next tool is **FORMAL MODELING (task #17 E5: TLA+ of the
+witness/rendezvous + loom of the park/resume/straddle handshake)** to find the interleaving analysis
+keeps missing — plus a SYMBOLIZED FIX-A hang dump (rebuild sym+FIXA, repro-to-hang) to see whether
+FIX A's hang is still the rejoin path or a distinct mechanism. FIX A is left UNCOMMITTED in the
+working tree (NOT reverted, per the standing no-revert-without-approval directive); recommend the
+user decide: revert to the known `803bd19` (~6% deadlock) baseline, or keep FIX A as a step and
+pursue E5. The headline commit `803bd19` is INTACT and is the user's actual goal (the ~100%
+corruption → fixed). The original (superseded) FIX-A rationale follows for the record:
+
+**FIX A (FAILED — see above):** delete the redundant non-publishing admission loop;
+on `!gc_in_progress()` restamp `acquired` + restore counters + return (no wait). The witness
+invariant ALREADY supplies the admission safety: a cycle cannot sweep until every occupied slot
+is published (strict-`>` predicate + live re-walk + `current_witness_ok` gate), so a rejoined-and-
+running worker (`published=K < cur_gen=K+1`, `acquired=K+1 ≯ K+1`) is WAITED-FOR by any concurrent
+cycle (it cannot sweep) and discharges that wait at its next safepoint (`is_gc_requested()` still
+set) or its outermost `EvalGuard::drop`. The resume is gen-gated POST-sweep, so zero overlap with
+the just-parked cycle either. Guaranteed-by-construction; gated `#[cfg(index-gc)] &&
+dedicated_gc_enabled()` ⇒ byte-identical dormant.
+
+**Convergence (net-subtractive):** a fresh red-team REJECTED the alternative "wrap the rejoin +
+driver prologue in `RENDEZVOUS_MUTEX`" fix — it **self-deadlocks 100%** (the re-park calls
+`worker_park_and_root_in_cycle`, whose first line locks the same non-reentrant `RENDEZVOUS_MUTEX`)
+and adds a new lock-order edge to close a non-existent hole. FIX A is correct AND minimal.
+
+## RESIDUAL #2 (the corruption) — DISTINCT, still open
+
+The red-team determined the ~3% wrong-subset CORRUPTION is **distinct** from the deadlock (the
+strict-`>` predicate prevents the deadlock race from sweeping-too-early). It is a separate residual
+root-completeness hole. Highest-value suspects (per the red-team): (i) the FANOUT-pump early-return
+path (parent returns from the pump before parking when `done` is already set, leaving an in-flight
+fold transient momentarily unrooted before its next safepoint); (ii) a pooled worker reused for a
+second task whose thread-local σ-caches were cleared only on the prior task's `EvalGuard` drop. To
+be root-caused + fixed AFTER FIX A is validated (Explore→Plan→converge, same pattern).
+
 ## Validation plan (after the primary-fix release build)
 1. Quick: robot @ FANOUT=8 DEDICATED=1 MIN=131072 ×5 → ✅ + 404, no ❌/OOM/HANG.
 2. Full discriminator `scripts/e1_flip_discriminator.sh` ×16 arms A/B/C (A reclaim>0 non-vacuity).

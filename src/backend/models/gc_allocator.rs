@@ -3225,6 +3225,27 @@ pub(crate) fn witness_release_slot() {
     // SAFETY: process-lifetime never-realloc slot owned by THIS thread.
     let slot = unsafe { &*slot_ptr };
     slot.occupied.store(false, Ordering::Release);
+    // ── LOST-NOTIFY FIX (2026-06-03) ──────────────────────────────────────────
+    // Clearing `occupied` REMOVES this slot from the driver's witness predicate
+    // (`requestor_wait_for_all_reified_parked` skips un-occupied slots), so this
+    // store can flip the driver's all-satisfied predicate false→true. The driver
+    // may be blocked on `RENDEZVOUS_CONDVAR` waiting for EXACTLY this — a worker it
+    // is waiting on (occupied, published<cur_gen) that simply FINISHES and drops its
+    // outermost `EvalGuard` (releasing its slot) instead of re-parking+publishing.
+    // `witness_acquire_slot` already notifies on the symmetric occupied=false→true
+    // transition; release MUST notify too. Without it the driver sleeps to its 5 s
+    // `wait_for` timeout on every such release, and robot's many FANOUT=8 rendezvous
+    // cycles accumulate those stalls past the test budget — the observed ~6%
+    // "deadlock" (all threads parked in a diag snapshot). A notify is SAFE-BY-
+    // CONSTRUCTION: it can only cause a spurious wake, which the driver's predicate
+    // re-check absorbs (Mesa-monitor discipline) — it can never cause a sweep-too-
+    // early or any incorrectness. Taken under RENDEZVOUS_MUTEX, mirroring
+    // `witness_acquire_slot` (no new lock-order edge: both acquire & release run at
+    // EvalGuard enter/drop and take ONLY this mutex, briefly).
+    {
+        let _lock = RENDEZVOUS_MUTEX.lock();
+        RENDEZVOUS_CONDVAR.notify_all();
+    }
 }
 
 /// V4 slot RESTAMP — called at BOTH `reacquire_*` (`:5190` non-full, `:5232` full)

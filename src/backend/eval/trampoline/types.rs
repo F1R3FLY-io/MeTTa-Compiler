@@ -1827,12 +1827,68 @@ pub enum Continuation {
 // The exhaustive match on each enum ensures compile-time safety: adding a new
 // variant without updating collect_values() causes a compile error.
 
+/// Collect the live `Addr`-roots held in a per-frame env's CoW-diverged maps.
+///
+/// `fork_for_nondeterminism` (environment/core.rs:908-939) deep-copies EXACTLY
+/// these five `Addr`-bearing maps into a fresh `shared` Arc, so a forked env
+/// (created inside a collapse/branch worker's reduction) holds live young-arena
+/// `Addr`s that exist in NO other reachable structure. Walking them here puts a
+/// frame's environment `E` structurally into `σ|_Reachable(⟨C,E,K⟩)`, so the
+/// concurrent index collector marks (and never reclaims) those slots while the
+/// forked env is still on a live frame.
+///
+/// The Arc-SHARED registries (`atom_space`, `rule_index`, `tokenizer`,
+/// `module_registry`, `fuzzy_matcher`, `scope_tracker`, …) are `Arc::clone`d on
+/// fork (core.rs:906/937), i.e. they are == `E₀`, which is already walked ONCE
+/// per loop at the loop level. They are intentionally NOT walked here: doing so
+/// would re-walk all of `E₀` per frame (O(|E₀|) per frame). `subtypes` holds
+/// only `Vec<String>` (no `Addr`s) and is likewise skipped.
+#[cfg(feature = "index-gc")]
+#[inline]
+fn collect_fork_local_roots(env: &SharedEnv, out: &mut Vec<MettaValue>) {
+    let s = &env.shared;
+    out.extend(s.bindings.read().values().copied());
+    for tv in s.types.read().values() {
+        out.extend(tv.iter().copied());
+    }
+    out.extend(s.states.read().values().copied());
+    for (_name, atoms) in s.named_spaces.read().values() {
+        out.extend(atoms.iter().copied());
+    }
+    for entry in s.inferred_fn_types.iter() {
+        out.extend(entry.value().iter().copied());
+    }
+}
+
 impl WorkItem {
+    /// The per-frame environment carried by this work item, if any.
+    ///
+    /// EXHAUSTIVE match (no `_` arm): adding a new `WorkItem` variant forces a
+    /// compile error here until it is classified env-carrying or env-free — so
+    /// a future variant holding a forked env cannot silently escape the root
+    /// walk in [`Self::collect_values`].
+    #[cfg(feature = "index-gc")]
+    fn frame_env(&self) -> Option<&SharedEnv> {
+        match self {
+            Self::Eval { env, .. } | Self::EvalWithBindings { env, .. } => Some(env),
+            // The result's env is rooted via the result-value walk / WaitFor* frame.
+            Self::Resume { .. } => None,
+        }
+    }
+
     /// Collect all MettaValue values reachable from this work item into `out`.
     ///
     /// Used by the safepoint GC protocol to register trampoline state as
     /// temporary roots before dropping the EvalGuard.
     pub fn collect_values(&self, out: &mut Vec<MettaValue>) {
+        // Root the frame's forked-env-local Addrs (CoW-diverged maps) so a
+        // concurrent index sweep does not reclaim slots held only by a worker's
+        // fork_for_nondeterminism child env. Index-only: slab roots env via the
+        // ROOT_REGISTRY/RootProvider apparatus, so this would be redundant there.
+        #[cfg(feature = "index-gc")]
+        if let Some(e) = self.frame_env() {
+            collect_fork_local_roots(e, out);
+        }
         match self {
             Self::Eval {
                 value,
@@ -1907,6 +1963,99 @@ fn collect_cartesian_values(
 }
 
 impl Continuation {
+    /// The per-frame environment carried by this continuation, if any.
+    ///
+    /// EXHAUSTIVE match (no `_` arm): adding a new `Continuation` variant forces
+    /// a compile error here until it is classified env-carrying or env-free — so
+    /// a future variant holding a forked env cannot silently escape the root
+    /// walk in [`Self::collect_values`] / [`Self::collect_live_values`].
+    ///
+    /// Exactly three variants are env-free (`Done`, `ProcessOnceRestore`,
+    /// `ReexportLetBindings`); `CollectSExpr` names its env field `original_env`
+    /// (the naming trap); every other variant carries `env`.
+    #[cfg(feature = "index-gc")]
+    fn frame_env(&self) -> Option<&SharedEnv> {
+        match self {
+            // ── env-free variants ──
+            Self::Done | Self::ProcessOnceRestore { .. } | Self::ReexportLetBindings { .. } => None,
+            // ── the naming trap: env lives in `original_env` ──
+            Self::CollectSExpr { original_env, .. } => Some(original_env),
+            // ── every remaining variant carries `env` ──
+            Self::ProcessRuleMatches { env, .. }
+            | Self::ProcessRuleMatchesLazy { env, .. }
+            | Self::ProcessGroundedOp { env, .. }
+            | Self::ProcessGroundedOpFanout { env, .. }
+            | Self::ProcessCombinations { env, .. }
+            | Self::ProcessCombinationsBound { env, .. }
+            | Self::ProcessLet { env, .. }
+            | Self::CollectGroundedArg { env, .. }
+            | Self::CollectApplicativeResults { env, .. }
+            | Self::ProcessMapAtom { env, .. }
+            | Self::ProcessFilterAtom { env, .. }
+            | Self::ProcessFoldlAtom { env, .. }
+            | Self::ProcessIfCondition { env, .. }
+            | Self::ProcessCaseAtom { env, .. }
+            | Self::ProcessEvalEval { env, .. }
+            | Self::ProcessReturn { env, .. }
+            | Self::ProcessChainExpr { env, .. }
+            | Self::ProcessChainBody { env, .. }
+            | Self::ProcessFunction { env, .. }
+            | Self::ProcessIsError { env, .. }
+            | Self::ProcessCatch { env, .. }
+            | Self::ProcessConjunction { env, .. }
+            | Self::ProcessUnifyPattern1 { env, .. }
+            | Self::ProcessUnifyPattern1Iter { env, .. }
+            | Self::ProcessUnifyPattern2 { env, .. }
+            | Self::ProcessUnifyBodies { env, .. }
+            | Self::ProcessCollapse { env, .. }
+            | Self::ProcessCollapseBind { env, .. }
+            | Self::ProcessCollapseEvalResults { env, .. }
+            | Self::ProcessAmb { env, .. }
+            | Self::WaitForParallel { env, .. }
+            | Self::WaitForParallelCollapse { env, .. }
+            | Self::ProcessGuard { env, .. }
+            | Self::ProcessGetAtoms { env, .. }
+            | Self::ProcessGetTypeSpace { env, .. }
+            | Self::ProcessMemoTable { env, .. }
+            | Self::ProcessMemoExpr { env, .. }
+            | Self::ProcessNewMemoName { env, .. }
+            | Self::ProcessNewMemoSize { env, .. }
+            | Self::ProcessMemoOp { env, .. }
+            | Self::ProcessMatchSpace { env, .. }
+            | Self::ProcessMatchTemplates { env, .. }
+            | Self::ProcessAddAtomSpace { env, .. }
+            | Self::ProcessRemoveAtomSpace { env, .. }
+            | Self::ProcessNewState { env, .. }
+            | Self::ProcessGetState { env, .. }
+            | Self::ProcessChangeStateRef { env, .. }
+            | Self::ProcessChangeStateValue { env, .. }
+            | Self::ProcessCasStateRef { env, .. }
+            | Self::ProcessCasExpected { env, .. }
+            | Self::ProcessCasNewValue { env, .. }
+            | Self::ProcessLoopStateRef { env, .. }
+            | Self::ProcessLoopTarget { env, .. }
+            | Self::ProcessRepr { env, .. }
+            | Self::ProcessFormatArgsString { env, .. }
+            | Self::ProcessFormatArgsArgs { env, .. }
+            | Self::ProcessPrintln { env, .. }
+            | Self::ProcessTraceMessage { env, .. }
+            | Self::ProcessTraceValue { env, .. }
+            | Self::ProcessGetMetatype { env, .. }
+            | Self::ProcessBind { env, .. }
+            | Self::ProcessIfReducible { env, .. }
+            | Self::ProcessMatchOrSpace { env, .. }
+            | Self::ProcessSortTuple { env, .. }
+            | Self::ProcessBestCandidate { env, .. }
+            | Self::ProcessCaseMultiResults { env, .. }
+            | Self::ProcessCaseEvalScrutineeResults { env, .. }
+            | Self::MemoizeResult { env, .. }
+            | Self::ProcessLetStar { env, .. }
+            | Self::CompleteSubgoal { env, .. }
+            | Self::CompleteThunk { env, .. }
+            | Self::CollectFreezeArgs { env, .. } => Some(env),
+        }
+    }
+
     /// Collect all MettaValue values reachable from this continuation into `out`.
     ///
     /// Used by the safepoint GC protocol to register trampoline state as
@@ -1914,6 +2063,12 @@ impl Continuation {
     /// ensures compile-time safety — any new variant causes a compile error
     /// until root collection is added.
     pub fn collect_values(&self, out: &mut Vec<MettaValue>) {
+        // Root the frame's forked-env-local Addrs (CoW-diverged maps) — see
+        // `WorkItem::collect_values` for the rationale. Index-only.
+        #[cfg(feature = "index-gc")]
+        if let Some(e) = self.frame_env() {
+            collect_fork_local_roots(e, out);
+        }
         match self {
             Self::Done => {}
 
@@ -2934,8 +3089,16 @@ impl Continuation {
                 current_branch_bindings,
                 outer_carrying,
                 cut_barrier,
+                env,
                 ..
             } => {
+                // Forked-env-local roots — these three narrowed arms do NOT
+                // delegate to `collect_values`, so the env walk is repeated here
+                // (the `_` catch-all gets it via `collect_values`). Index-only.
+                #[cfg(feature = "index-gc")]
+                collect_fork_local_roots(env, out);
+                #[cfg(not(feature = "index-gc"))]
+                let _ = env;
                 // `remaining_matches` is dead once the cut fired for this barrier.
                 if !cut_fired_peek(*cut_barrier) {
                     for (rhs, bindings) in remaining_matches.as_slice() {
@@ -2955,8 +3118,13 @@ impl Continuation {
                 results,
                 outer_carrying,
                 cut_barrier,
+                env,
                 ..
             } => {
+                #[cfg(feature = "index-gc")]
+                collect_fork_local_roots(env, out);
+                #[cfg(not(feature = "index-gc"))]
+                let _ = env;
                 if !cut_fired_peek(*cut_barrier) {
                     for (v, bindings) in remaining_alts.as_slice().iter() {
                         out.push(*v);
@@ -2974,8 +3142,13 @@ impl Continuation {
                 results,
                 outer_carrying,
                 cut_barrier,
+                env,
                 ..
             } => {
+                #[cfg(feature = "index-gc")]
+                collect_fork_local_roots(env, out);
+                #[cfg(not(feature = "index-gc"))]
+                let _ = env;
                 if !cut_fired_peek(*cut_barrier) {
                     out.extend(remaining_templates.as_slice().iter().copied());
                 }

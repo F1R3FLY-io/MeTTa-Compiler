@@ -250,3 +250,141 @@ TSAN, for the missed-root corruption. The bloom kill-switch is kept as a permane
 3. FANOUT=0 conformance 483/0 both backends × DEDICATED={0,1} (byte-identical dormant).
 4. V4 ASAN 0-UAF + cycles>0; slab nextest; ×20 determinism; per-slot oracle (debug-assertions); `cargo test --lib`.
 5. Default flip (`gc_allocator.rs` `dedicated_gc_enabled` `== Ok("1")` → `!= Ok("0")`) RESERVED for explicit user go-ahead.
+
+## RESIDUAL #2 (corruption) — ✅ ROOT-CAUSED (SOURCE-CONCLUSIVE) + FIXED (2026-06-03)
+
+**This SUPERSEDES the "PARTIAL-at-best / multi-mechanism" framing above** (which was an artifact of
+small samples + an incomplete first-pass). After the cross-thread cache-hygiene fix (`88485f1`:
+VALUE_HASH_CACHE epoch-self-heal via `bump_gc_sweep_epoch`, + EVAL_MEMO/MATCH_RESULT_CACHE gc-epoch
+guards) the corruption was bounded to **~1% / 100**, and an `eval-caches-disabled` discriminator
+(EVAL_MEMO + MATCH_RESULT + bloom all OFF) was **0 / 40**. Clearing the bloom *on the dedicated sweep*
+was **refuted** (2 corrupt / 150) — proving the bad probe is BETWEEN sweeps. A focused root-cause agent
+(read-only, source-conclusive) then isolated the exact mechanism:
+
+**The global `NORMAL_FORM_BLOOM` is the ONLY skip-eval cache with no validity tag, and a FACT added to
+the space during eval invalidates the value-memos but NOT the bloom.**
+- `EVAL_MEMO` entries carry `(query_gen, mutation_epoch, scope_gen)` and are rejected on lookup if any
+  differ (`dispatch_hints.rs:741`); `MATCH_RESULT_CACHE` carries `(query_gen, rule_epoch, mutation_epoch, …)`
+  (`:861`). `NORMAL_FORM_BLOOM` (`:59`) carries **nothing** — `is_memoized_normal_form` trusts raw
+  membership (`:160`). Its correctness depends ENTIRELY on being cleared on every state change that can
+  flip a normal-form verdict.
+- `add_rule` (`rule_management.rs:2925`) and ALL `remove_*` paths (`core.rs:2767/2881/3191`) call
+  `invalidate_normal_form_memo()`. But `add_to_space_shared` — the **interior-mutability fact-add used
+  during eval** (`core.rs:2930`, the Gap-A global-atomspace path) — bumps only `mutation_epoch`
+  (`eval_loop.rs:16528`) and **never clears the bloom**. `mutation_epoch` is thread-local
+  (`dispatch_hints.rs:455`); the bloom is a single GLOBAL filter — so a worker's fact-add invalidates
+  only that worker's value-memos and never touches the bloom at all.
+- Robot's collapse filter (`PLNcategorizeObject` → `PLN.Query`) is **space-dependent** (queries the KB +
+  PLN-derived inheritances added during the run via `add_to_space_shared`). A worker memoizes value V as
+  normal-form (correct against the space at that instant); another worker adds a fact making V reducible
+  *without clearing the bloom*; a later probe of V returns a stale `true` ⟹ the collapse worker emits V
+  verbatim instead of re-querying the now-larger space ⟹ the wrong `(detection …)` subset.
+
+**Why dedicated-specific / benign on slab+D0:** the staleness window is bounded by clear frequency. On
+slab / single-threaded-index the bloom is cleared eagerly *in-line on the eval thread* by the GC sweep
+(`index_heap.rs:2145`) AND at every `!` query boundary (`clear_normal_form_memo_for_new_query`), keeping
+the live entry set tiny ⟹ the gap stays benign (conformance 483/0). Under the dedicated collector the
+sweep runs on a SEPARATE thread at witness-gated rendezvous points, so far more entries persist between
+clears while workers keep adding facts ⟹ the staleness rises into the observed ~1%.
+
+This explains EVERYTHING the experiments showed: disabling the probe → 0 (every value re-evaluated);
+clearing on the sweep → still corrupt (the bad probe is between sweeps, after a fact-add); the
+VALUE_HASH/memo epoch fixes didn't touch it (it is *logical* staleness, not a hash/Addr artifact —
+`hash_value` is content-based + epoch-self-healed, so insert-hash == probe-hash).
+
+### FIX (applied; #1 = the correctness fix for the dedicated case)
+**Gate the bloom skip-eval OFF under `dedicated_gc_enabled()`** (`dispatch_hints.rs`
+`is_memoized_normal_form` + `memoize_normal_form` return early; `#[cfg(feature = "index-gc")]` ⟹ slab
+byte-identical; off by default ⟹ index-D0 byte-identical). Rationale: a normal-form skip is purely an
+advisory hint, so re-evaluating every item is always semantically safe (only slower), and the dedicated
+path's gap is GC/alloc-bound not skip-eval-bound (per MEMORY benchmark finding) ⟹ small cost. The
+determination-vs-insert window for a *global* bloom under concurrent fact-adds cannot be closed
+race-free cheaply (a per-entry epoch is impossible for a bloom; a bare clear races a concurrent insert),
+so the concurrent collector simply does not use the optimization. The discriminator PROVES this yields
+0. The moot sweep-time clear (tried + refuted) was reverted (`index_heap.rs` post-sweep block).
+
+### Serial-path soundness (#2, follow-up) — the latent gap on slab/D0
+The fact-add-does-not-clear-the-bloom gap is a PRE-EXISTING latent soundness hole on ALL paths (a
+fact-add within a single `!` query that makes a memoized value reducible → a stale skip), merely masked
+on slab/D0 by the frequent query-boundary + in-line-sweep clears (robot/slab + conformance all correct).
+The principled close is an `add_to_space_shared` bloom invalidation (mirroring `add_rule`/`remove_*`) —
+to be done race-safely (epoch-distrust to preserve the within-query optimization rather than
+clear-on-every-fact-add) as a separate, separately-validated increment, NOT gated to dedicated.
+
+| Item | State |
+|---|---|
+| Residual corruption (the bloom) | ❌ REFUTED — bloom off under dedicated still ~1% (`bj0r7i22h`: 2 corrupt / 200). Bloom is NOT robot's cause. |
+| Serial-path latent bloom gap (fact-add) | follow-up increment (benign on slab/D0; epoch-distrust close) — a real but robot-irrelevant hole |
+| Residual deadlock hang (~0.5-1%) | OPEN — task #17 E5 (TLA+/loom of witness/rendezvous + park/resume/straddle/release) |
+
+## ⚠️ REFRAME 2026-06-03 (afternoon): the corruption is CACHE-INDEPENDENT — all three cache hypotheses REFUTED by experiment; the real cause is a MISSED-ROOT
+
+**This corrects the "ROOT-CAUSED + FIXED" claims above.** Three successive cache hypotheses were each
+plausible-from-source but **refuted by larger-sample experiment**:
+1. **Normal-form bloom** (the `add_to_space_shared`-never-clears-it gap, source-conclusive): disabling
+   it under dedicated → STILL 2 corrupt / 200 (`bj0r7i22h`). Robot's PLN is purely functional anyway
+   (threads the KB as a value; no `add-atom`/`match`), so the bloom's logical-staleness never arises.
+2. **Logical memo staleness** (thread-local `mutation_epoch` not bumped cross-thread): refuted — no space
+   mutation in robot's collapse.
+3. **Memo-held swept σ-`Addr`s** (EVAL_MEMO/MATCH_RESULT hold `Addr`s unrooted on non-parking workers):
+   disabling EVAL_MEMO + MATCH_RESULT + bloom ALL TOGETHER under dedicated → STILL **3 corrupt / 172
+   clean-load runs** (`bt1un1zo3`, ~1.7%). Two of the corrupts (run145, run172) were under clean load
+   (no concurrent benchmark), so it is not a contention artifact.
+
+**The decisive methodological error:** the "all-caches-off → 0/40" and "→ 0/60" discriminators that drove
+hypotheses 1–3 were **lucky 0-samples at a ~1% true rate** (0/100 at p=0.01 ≈ 37% by chance). At ~1%,
+0/N for N≈40–100 does NOT establish 0 — it is statistically indistinguishable from the unfixed rate.
+Guess-and-check discriminators are UNRELIABLE here and must be replaced by (a) ≥200-run arms AND/OR
+(b) a deterministic root-completeness ORACLE (forced-sweep-every-alloc, or a per-slot generation tag that
+panics on a live-handle reused-slot read, or a shadow complete-root scan asserting 4-source ⊇ shadow).
+
+**Conclusion:** the ~1% wrong-subset is a **cache-independent MISSED-ROOT** — a live index-arena `Addr`
+held by a FANOUT=8 collapse worker that is in NONE of the dedicated driver's 4 root sources
+(`drain_worker_root_buffer` [published parks only], `collect_safepoint_roots`, `collect_live_env_anchors`,
+`collect_live_dispatch_anchors`), so a concurrent sweep reclaims + **bump-reuses its arena slot** and the
+holder reads the wrong (new occupant's) content. ASAN-INVISIBLE (the slot is valid memory, repurposed —
+not a heap free), which is why it survived the ASAN gates. Leading candidates (a fresh systematic
+root-coverage audit is in flight): the FANOUT-pump PARENT-side in-flight branch transients in the
+publish-buffer↔`results[slot]` window (eval_loop.rs:2667/2674); a branch worker returning early without
+parking; a mid-VM CoW-forked `TierLeaf` sub-env. The fix must ROOT the holder (genuine-CESK
+`σ\|_Reachable`), NOT toggle another cache.
+
+**Status of the uncommitted cache-disable edits** (dispatch_hints.rs bloom-off + `eval_caches_disabled`
+dedicated gate + put-guards): they do NOT fix robot's corruption, so they are NOT committed as such. They
+close real-but-robot-irrelevant latent holes (bloom staleness for space-MUTATING fixtures; memo-held
+`Addr`s) — keep-vs-revert deferred until the audit identifies the real missed-root and whether a clean
+base is wanted to apply the real fix. The dedicated collector remains opt-in (default OFF), so this blocks
+ONLY the default-flip, not the production default.
+
+## ✅ ROOT CAUSE CONFIRMED (source-conclusive, 3rd audit) — the missed-root is a FORKED ENV's bindings
+
+The cache-independent missed-root is: **a `fork_for_nondeterminism()`-forked environment created INSIDE a
+collapse worker's own trampoline reduction**, whose `bindings`/`types`/`states` maps hold live young
+σ-`Addr`s, reachable by NONE of the dedicated driver's 4 root sources. Two compounding structural gaps:
+1. **The structural root walk DROPS the `env` field.** `WorkItem::collect_values`
+   (`src/backend/eval/trampoline/types.rs:1837-1849`) and every `Continuation::collect_values` arm
+   destructure with `..`, discarding `env: SharedEnv`. The design (roots.rs:209/248) assumed
+   "E_local rides inside C/K as `carrying_bindings`" / "env roots managed via RootProvider" — FALSE for a
+   forked env's own `bindings`. So even a PARKED worker's self-root (`collect_machine_roots` →
+   `collect_values`) never publishes the forked env's Addrs; and a short collapse item (<4096 iters)
+   never even reaches the `0xFFF` publishing park.
+2. **The index-regime `try_register_env_roots` is an EMPTY stub** (`gc_allocator.rs:6286`, vs the slab
+   ROOT_REGISTRY version `:6245`). So `fork_for_nondeterminism` (`core.rs:894`, deep-copies bindings at
+   `:916`) registers the forked env NOWHERE under index-gc.
+A concurrent STW-at-store sweep (the 4-source mark set, `gc_driver.rs:205-228`; `index_heap.rs:2073`)
+reclaims + bump-reuses (`index_arena.rs:555 write_reused`, same `Addr`) those slots; the worker resumes,
+resolves `$prem`/`$conc` from the forked env's bindings (`index_arena.rs:605 get`), reads the new occupant
+→ wrong `(detection …)` subset. **This is the DEEPER variant of the 803bd19 fix** (which registered only
+the collapse worker's INITIAL env at eval_loop.rs:3493 — not forks created during the reduction). It
+manifests on robot because PLN's multi-premise `match`-against-KB derivations fork an env per matched
+template during the collapse item's reduction. Cache-independent + ASAN-invisible — explains every prior
+refutation.
+
+**THE FIX (genuine-CESK — root the E-component structurally, NOT a cache toggle):** make
+`WorkItem`/`Continuation::collect_values` ALSO fold each frame's `env` roots, walking only the
+fork-distinct (CoW-diverged) `bindings`/`types`/`states` (not the Arc-shared E₀) — so E becomes part of
+`σ|_Reachable(⟨C,E,K⟩)`, exactly the CESK formula. The dropped `env` IS the bug. (Alt: register forked
+envs in LIVE_ENVS via the index `try_register_env_roots` — more invasive.) Design red-team (Plan agent)
++ a reliable validator (low `MIN_BYTES` amplifies the ~1% to a high rate for one-run confirmation) in
+flight. This will be the genuine corruption fix; the cache-disable edits will then be reverted (they
+target robot-irrelevant secondary/tertiary holes).

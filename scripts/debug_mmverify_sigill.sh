@@ -7,8 +7,8 @@
 # Usage: ./scripts/debug_mmverify_sigill.sh
 #
 # Output files:
-#   /tmp/sigill_debug.log     - GDB logging output
-#   /tmp/sigill_gdb_output.txt - Full GDB session output
+#   sigill_debug.log      - GDB logging output
+#   sigill_gdb_output.txt - Full GDB session output
 
 set -e
 
@@ -19,18 +19,22 @@ cd "$PROJECT_DIR"
 # Configuration
 NUM_THREADS="${METTATRON_NUM_THREADS:-18}"
 CPU_AFFINITY="${CPU_AFFINITY:-0-17}"
-LOG_FILE="/tmp/sigill_debug.log"
-OUTPUT_FILE="/tmp/sigill_gdb_output.txt"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -t "sigill_debug.XXXXXXXX")}"
+LOG_FILE="$LOG_DIR/sigill_debug.log"
+OUTPUT_FILE="$LOG_DIR/sigill_gdb_output.txt"
+BUILD_CAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000%)
+RUN_CAP=(systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=1000%)
 
 echo "=== SIGILL Debug Script for mmverify_benchmark ==="
 echo "Project directory: $PROJECT_DIR"
 echo "Threads: $NUM_THREADS"
 echo "CPU affinity: $CPU_AFFINITY"
+echo "Logs: $LOG_DIR"
 echo ""
 
 # Build with debug symbols
 echo "Building with release-with-debug profile..."
-cargo build --profile release-with-debug --bench mmverify_benchmark
+"${BUILD_CAP[@]}" cargo build --profile release-with-debug --bench mmverify_benchmark
 
 # Find benchmark binary
 BENCH_BIN=$(find target/release-with-debug/deps -name 'mmverify_benchmark-*' -executable -type f 2>/dev/null | head -1)
@@ -44,11 +48,11 @@ echo "Benchmark binary: $BENCH_BIN"
 echo ""
 
 # Create GDB script
-GDB_SCRIPT=$(mktemp --suffix=.gdb)
-cat > "$GDB_SCRIPT" << 'GDBEOF'
+GDB_SCRIPT="$LOG_DIR/debug_sigill.gdb"
+printf 'set logging file %s\n' "$LOG_FILE" > "$GDB_SCRIPT"
+cat >> "$GDB_SCRIPT" << 'GDBEOF'
 # debug_sigill.gdb - Catch SIGILL and dump full diagnostics
 set pagination off
-set logging file /tmp/sigill_debug.log
 set logging overwrite on
 set logging enabled on
 
@@ -136,7 +140,7 @@ echo ""
 
 # Set environment and run
 METTATRON_NUM_THREADS="$NUM_THREADS" \
-taskset -c "$CPU_AFFINITY" \
+"${RUN_CAP[@]}" taskset -c "$CPU_AFFINITY" \
 gdb -batch -x "$GDB_SCRIPT" "$BENCH_BIN" 2>&1 | tee "$OUTPUT_FILE"
 
 EXIT_CODE=${PIPESTATUS[0]}

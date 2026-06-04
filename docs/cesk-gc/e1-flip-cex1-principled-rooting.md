@@ -132,7 +132,7 @@ zero-code: `METTATRON_INDEX_GC_DEDICATED=0`.
 ## Risks
 - `collect_live_dispatch_anchors` lock order: `LIVE_DISPATCHES.lock()` then per-handle `results.try_lock()` (never `lock` — a contended `results` ⇒ a worker mid-write holding its EvalGuard = a class-1 participant who self-rooted that value; skip is safe). Driver holds no other lock at :186.
 - `Weak` upgrade race at deregistration: upgrade-succeeds (over-count, sound) or fails (complete, results in parent K) — both sound.
-- Byte-identical dormant: all `#[cfg(index-gc)]` + `dedicated_gc_enabled()` + `n_threads()>1`; FANOUT=0 never registers; slab providers stay constructed (no dead_code).
+- Byte-identical dormant: all `#[cfg(index-gc)]` + `dedicated_gc_enabled()`; FANOUT=0 never reaches a dispatch registration site, and `n_threads()>1` is intentionally not used there because workers may not have entered yet.
 - Over-count (E₀ N×, all live dispatches): sound (dedup at the `as_arena_addr` mark projection); throughput-only, measured at Phase F.
 - The original expectation was that this would close the `stress_multidir` recycle panic;
   later validation reclassified that fixture as a pre-existing FANOUT=8 baseline crash

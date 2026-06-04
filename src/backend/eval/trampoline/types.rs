@@ -243,10 +243,13 @@ pub struct ParallelDispatchHandle {
     /// branch INPUTS + completed OUTPUTS for the dispatch's lifetime
     /// (park-timing-independently). Dropping this handle (when `WaitForParallel`
     /// is consumed) frees the anchor slot. `Some` only in the index-gc build under
-    /// `dedicated_gc_enabled() && n_threads()>1`; `None` otherwise (default OFF,
-    /// FANOUT=0) — so dormant behaviour is byte-identical. Stored last so it drops
-    /// AFTER the provider Arc it downgraded (Rust drops fields in declaration
-    /// order; the Weak in the anchor is harmless once upgraded-to-None).
+    /// `dedicated_gc_enabled()`: registration happens at dispatch construction,
+    /// before worker threads have necessarily entered, so `n_threads()>1` is a
+    /// racy runtime-collection predicate and must not gate the anchor. `None`
+    /// otherwise (default OFF, FANOUT=0) — so dormant behaviour is byte-identical.
+    /// Stored last so it drops AFTER the provider Arc it downgraded (Rust drops
+    /// fields in declaration order; the Weak in the anchor is harmless once
+    /// upgraded-to-None).
     #[cfg(feature = "index-gc")]
     pub(crate) _live_dispatch: Option<crate::backend::models::gc_allocator::LiveDispatchHandle>,
 }

@@ -29,9 +29,11 @@ is the same legacy path. Explains baseline + sweep-independence + the signature.
   — legacy `register_temporary_roots`+`request_gc` producers.
 So the "exactly one regime" invariant requires gating ALL of them, not just `parallel_gc_coop_enabled`.
 
-**② Mis-keyed admission gate.** WorkerEnter (`eval_loop.rs:2534`) checks `rendezvous_enabled()` not
-`dedicated_gc_enabled()`; in the dedicated-ON/rendezvous-OFF regime a new worker doesn't park at admission
+**② Mis-keyed admission gate.** WorkerEnter must check `dedicated_gc_enabled()`, not
+`rendezvous_enabled()`; in the dedicated-ON/rendezvous-OFF regime a new worker doesn't park at admission
 → joins after the driver's `n=n_threads()` snapshot (`gc_driver.rs:177`) → "new mutator mid-cycle" hole.
+The branch-dispatch worker was already keyed correctly; the collapse-dispatch worker had the same stale
+legacy gate and was corrected on 2026-06-04.
 
 **③ (possible) done-gate cancel disjunct.** `eval_loop.rs:15288` `done_now = remaining==0 ||
 cancel_token.is_satisfied()`; merge skips `None` slots → a parked worker's branch dropped under non-`All`
@@ -57,7 +59,7 @@ thread-local-arena reset across park (the park touches only sync counters; `clea
    parent to pump (work-pool dispatch + done_pair do not block on the parent during a cycle); resume order =
    gen-bump → drop _gip → resume_workers. (This is why the dedicated-thread design — not the rejected
    Phase-D parent-as-requestor — makes parent-parking safe.)
-4. **②** `eval_loop.rs:2534` — re-key WorkerEnter early-park `rendezvous_enabled()` → `dedicated_gc_enabled()`.
+4. **②** `eval_loop.rs` branch + collapse WorkerEnter — re-key early-park `rendezvous_enabled()` → `dedicated_gc_enabled()`.
 5. **③** `eval_loop.rs:15282/15306` — `#[cfg(debug_assertions)]` assert the cancel disjunct doesn't drop a
    live `None` slot under `Demand::All` (confirm/refute; debug-only, byte-identical).
 6. **Compose with CEX-1 — KEEP all** (D1 canonical collector + D2 LIVE_DISPATCHES anchor + D5 oracle): ①

@@ -2630,8 +2630,21 @@ fn parallel_dispatch(
         let effective_pri = scheduler.effective_priority(cost_class, ctx_hash);
 
         let closure = move || {
+            // ── CompletionGuard (TLA+ `CollapseCompletion.tla`, 2026-06-03) ──
+            // The SOLE `remaining.fetch_sub` for this worker. Constructed as the
+            // literal first closure action so its `Drop` fires on EVERY closure
+            // exit path after the work-pool starts the task: admission wait,
+            // `EvalGuard::enter`, the `catch_unwind` body below, normal return,
+            // OR a `resume_unwind` re-panic. The old manual decrement lived
+            // after result storage; this guard makes completion independent of
+            // the `catch_unwind`/`resume_unwind` control flow and of pre-eval
+            // admission/setup edges.
+            let _completion = CompletionGuard {
+                remaining: Arc::clone(&remaining),
+                done_pair: Arc::clone(&done_pair),
+            };
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
-            // ── D2.1 WorkerEnter gate (DORMANT behind `rendezvous_enabled()`,
+            // ── D2.1 WorkerEnter gate (DORMANT behind `dedicated_gc_enabled()`,
             //    default OFF → byte-identical) ──
             // The TLA+ `WorkerEnter` admission guard (`~gcRequested`): a NEW
             // worker must NOT join the active eval set while a rendezvous GC is
@@ -2656,20 +2669,6 @@ fn parallel_dispatch(
             }
             let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
             let _guard = EvalGuard::enter();
-            // ── CompletionGuard (TLA+ `CollapseCompletion.tla`, 2026-06-03) ──
-            // The SOLE `remaining.fetch_sub` for this worker. Constructed at the
-            // closure TOP (before the `catch_unwind` below) so its `Drop` fires
-            // on EVERY exit path — normal return, a `BranchCancelled` swallow,
-            // OR a `resume_unwind` re-panic — guaranteeing an exactly-once
-            // decrement + done-set + notify even when the body panics. The old
-            // manual decrements (the `Err`-arm at the former `:2790` and the
-            // closure tail at the former `:2803`) are DELETED; the count no
-            // longer depends on the `catch_unwind`/`resume_unwind` control flow
-            // (which is retained ONLY for cancellation propagation).
-            let _completion = CompletionGuard {
-                remaining: Arc::clone(&remaining),
-                done_pair: Arc::clone(&done_pair),
-            };
             // E1-FLIP Path B V4 (H1): clear THIS worker's thread-local σ-caches at task
             // teardown so an idle pooled worker carries no stale σ-Addr into the next
             // dedicated collection. Drops just before `_guard` releases the witness, and
@@ -3494,35 +3493,35 @@ fn parallel_collapse_dispatch(
             crate::backend::scheduler::TaskDescriptor::pack(head_hash, arity, depth_bucket, 0);
 
         let closure = move || {
-            PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
-            // ── D2.1 WorkerEnter gate (DORMANT behind `rendezvous_enabled()`,
-            //    default OFF → byte-identical) ── mirror of the parallel-dispatch
-            //    worker above; see the full rationale there. Blocks a new collapse
-            //    worker from joining `active` while a rendezvous GC is pending
-            //    (TLA+ `WorkerEnter` `~gcRequested`, Risk R2). Placed at the
-            //    closure TOP (before `EvalGuard::enter()`) because that is the
-            //    only genuine "before joining the active set" site in this
-            //    codebase. OFF by default → one short-circuited boolean read.
-            if crate::backend::models::gc_allocator::rendezvous_enabled() {
-                crate::backend::models::gc_allocator::worker_wait_for_resume();
-            }
-            let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
-            let _guard = EvalGuard::enter();
             // ── CompletionGuard (TLA+ `CollapseCompletion.tla`, 2026-06-03) ──
             // The SOLE `remaining.fetch_sub` for this collapse worker. Constructed
-            // at the closure TOP so its `Drop` performs an exactly-once decrement +
-            // done-set + notify on EVERY exit path. The collapse eval below
-            // (`eval_trampoline_with_carrying`) has NO `catch_unwind`, so a panic
-            // there previously bypassed the manual decrement (the former
-            // `:3612-3617`) entirely — `remaining` never hit 0, `done` was never
-            // set, and the parent's collapse pump waited forever (the dominant
-            // ~2% Robot hang the TLC model proved). The manual decrement is now
-            // DELETED; the guard's `Drop` (firing during the panic-unwind too)
-            // is the replacement.
+            // as the literal first closure action so its `Drop` performs an
+            // exactly-once decrement + done-set + notify on EVERY closure exit
+            // path after the work-pool starts the task: admission wait,
+            // `EvalGuard::enter`, eval panic-unwind, normal return, or pre-eval
+            // setup failure. The collapse eval below has NO `catch_unwind`, so
+            // this guard is the structural completion witness.
             let _completion = CompletionGuard {
                 remaining: Arc::clone(&remaining),
                 done_pair: Arc::clone(&done_pair),
             };
+            PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
+            // ── D2.1 WorkerEnter gate (DORMANT behind `dedicated_gc_enabled()`,
+            //    default OFF → byte-identical) ── mirror of the parallel-dispatch
+            //    worker above; see the full rationale there. Blocks a new collapse
+            //    worker from joining `active` while a dedicated rendezvous GC is
+            //    pending (TLA+ `WorkerEnter` `~gcRequested`, Risk R2). Placed at
+            //    the closure TOP (before `EvalGuard::enter()`) because that is
+            //    the only genuine "before joining the active set" site in this
+            //    codebase. E1-FLIP fix (②): gate on `dedicated_gc_enabled()`, not
+            //    the legacy dormant `rendezvous_enabled()`, so collapse workers
+            //    cannot join after the dedicated driver's participant snapshot.
+            //    OFF by default → one short-circuited boolean read.
+            if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+                crate::backend::models::gc_allocator::worker_wait_for_resume();
+            }
+            let _region_guard = crate::backend::eval::cesk::RegionGuard::enter();
+            let _guard = EvalGuard::enter();
             // E1-FLIP Path B V4 (H1): clear THIS worker's thread-local σ-caches at task
             // teardown so an idle pooled worker carries no stale σ-Addr into the next
             // dedicated collection (the collapse worker's `is_memoized_normal_form` →

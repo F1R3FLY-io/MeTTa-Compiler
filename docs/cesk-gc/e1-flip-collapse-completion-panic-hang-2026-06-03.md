@@ -48,13 +48,37 @@ N=3):
 A module-local `CompletionGuard { remaining, done_pair }` whose `Drop` (eval_loop.rs:2447) is the SOLE
 `remaining.fetch_sub(1, AcqRel)`, sets `*done = true` + `notify_one()` on the `==1` last-out, and recovers
 a poisoned `done` mutex (`lock().unwrap_or_else(|e| e.into_inner())` — so a poison can't re-convert into a
-hang). Constructed exactly once at the TOP of each worker closure (collapse :3522, branch :2669, right
-after `EvalGuard::enter`, before the eval), so its `Drop` fires on normal return AND on panic-unwind
-(including a re-panicking `resume_unwind`) ⟹ exactly-once decrement on every exit path. The manual
+hang). Constructed exactly once as the literal FIRST action of each worker closure (before the WorkerEnter
+admission wait, `RegionGuard::enter`, and `EvalGuard::enter`), so its `Drop` fires on normal return AND on
+panic-unwind (including a re-panicking `resume_unwind`) and on pre-eval admission/setup exits ⟹
+exactly-once decrement on every closure-started exit path. The manual
 decrements (former collapse :3612, branch :2790 + :2803) were deleted; the branch `catch_unwind`/
 `resume_unwind` is kept for cancellation propagation but the count no longer depends on it. Verified: the
 only `remaining.fetch_sub` in the file is the guard's; the guard is constructed exactly twice ⟹ no
 double-decrement/underflow. Builds clean both backends (49-warning baseline).
+
+### Update 2026-06-04 — closure-top meant literal closure entry
+
+The first post-R-FL bounded Robot smoke reproduced the same all-idle shape on run 5 with the new
+`RUN_TIMEOUT` harness: `gc_cycle_in_flight=false`, `gc_requested=false`, `active_evaluators=0`, work-pool
+threads asleep, and a partial 223-line output. The source bug was not the guard mechanism; it was placement.
+The comments said "closure TOP", but both worker closures still constructed `CompletionGuard` after the
+WorkerEnter admission wait, `RegionGuard::enter`, and `EvalGuard::enter`. That leaves pre-guard admission/setup
+exits outside the liveness proof.
+
+The guard is now the literal first closure action in both `parallel_dispatch` and
+`parallel_collapse_dispatch`. Drop order is also improved: because the guard is declared before `EvalGuard`,
+it drops after the active evaluator guard, so the parent is notified only after the worker has left the active
+set. Focused validation on 2026-06-04:
+- `cargo check --features index-gc --bin mettatron` passed under a 24 GiB cap.
+- `cargo build --release --features index-gc --bin mettatron` passed under a 24 GiB cap.
+- `RUN_TIMEOUT=180s NORMALIZE_FRESHVARS=1 SORT_OUTPUT=1 scripts/drlock_determinism.sh ... Robot.metta`
+  passed 20/20 under `FANOUT=8`, `MTT_GC=index`, `METTATRON_INDEX_GC_DEDICATED=1`,
+  `METTATRON_INDEX_GC_MIN_BYTES=131072`; all 20 canonical hashes were
+  `82c18bdf4e76ae0b7d66321d38c68144dea24d1e5b124d7e8d3f1bd91870cbb4`.
+- TLC fixed config (`CollapseCompletion_fix.cfg`) passed: 28 states generated, 9 distinct, no temporal error.
+- TLC bug config (`CollapseCompletion_bug.cfg`) still failed as expected: 55 states generated, 21 distinct;
+  counterexample left `remaining = 2`, `parentDone = FALSE`.
 
 ## Relationship to the corruption (the deeper root)
 The swept-`Addr` corruption (`e1-flip-collapse-worker-env-gap`) is the prime PANIC FEEDER for this hang.

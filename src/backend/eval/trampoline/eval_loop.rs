@@ -5400,17 +5400,17 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // the body-local rename branch then freshens these caller-
                 // side vars to `$__fr_<epoch>_*`, registering wildcard-LHS
                 // rules via add-atom and triggering Truth_ModusPonens cascade
-                // (4M+ self-recursing rule applications, observed via
-                // trace-analyzer redundancy on /tmp/oom.trace).
+                // (4M+ self-recursing rule applications, observed via a
+                // local trace-analyzer redundancy dump).
                 //
                 // Substitution upfront makes the caller-side variables
                 // concrete in `value`. The downstream rule body sees `$C`
                 // bound to e.g. `(uncle b c)` instead of `(uncle $a $b)`,
                 // so the registered rule has the correct concrete LHS.
                 //
-                // Trace evidence: trace-analyzer dump /tmp/oom.trace event
-                // #56 showed `(uncle $__fr_4_a $__fr_4_b)` instead of the
-                // expected `(uncle a b)` after the `=>` rule body fired.
+                // Trace evidence: event #56 from the local dump showed
+                // `(uncle $__fr_4_a $__fr_4_b)` instead of the expected
+                // `(uncle a b)` after the `=>` rule body fired.
                 let cb_subst = &*carrying_bindings;
                 let value = if cb_subst.is_empty() || !value.has_variables_fast() {
                     value
@@ -6469,8 +6469,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                     // variable/scalar/var-head branches, never from `if`
                     // non-Bool, `case` default, or `collapse-bind` cardinality.
                     // This is the precise scope per the S4 risk-mitigation
-                    // protocol (see /home/dylon/.claude/projects/.../memory/
-                    // feedback-pln-historical-memory.md re: 2026-04-26 OOM).
+                    // protocol (see the historical PLN memory note for the
+                    // 2026-04-26 OOM).
                     GenericEvalStep::EvalEvalStep {
                         arg,
                         env: step_env,
@@ -16595,6 +16595,10 @@ fn process_continuation<C: EvalContext>(
                             Arc::make_mut(&mut env_after).add_to_space(&atom);
                         }
                     }
+                    // A space mutation can make a prior normal-form bloom entry
+                    // unsound. The bloom is process-global, so clear it explicitly;
+                    // the thread-local eval/match caches stay mutation-epoch gated.
+                    crate::backend::eval::trampoline::invalidate_normal_form_memo();
                     // Phase 3.2: Bump mutation_epoch alone. EVAL_MEMO and
                     // MATCH_RESULT_CACHE both gate lookups on mutation_epoch, so
                     // this makes all prior entries stale without a bulk clear.
@@ -16692,6 +16696,10 @@ fn process_continuation<C: EvalContext>(
                         // Named space: remove from SpaceHandle
                         handle.remove_atom_generic(&atom);
                     }
+                    // A space mutation can make a prior normal-form bloom entry
+                    // unsound. The bloom is process-global, so clear it explicitly;
+                    // the thread-local eval/match caches stay mutation-epoch gated.
+                    crate::backend::eval::trampoline::invalidate_normal_form_memo();
                     // Phase 3.2: Bump mutation_epoch alone; EVAL_MEMO and
                     // MATCH_RESULT_CACHE gate lookups on mutation_epoch.
                     increment_mutation_epoch();

@@ -6,7 +6,7 @@
 
 ## Symptom
 
-`robot` (`/home/dylon/Workspace/f1r3fly.io/PLN-main/examples/Robot.metta`) under
+`robot` (the `PLN-main/examples/Robot.metta` fixture) under
 `METTATRON_PARALLEL_FANOUT_DEPTH=8 METTATRON_INDEX_GC_DEDICATED=1 METTATRON_INDEX_GC_MIN_BYTES=131072 --gc index`
 produces a **non-deterministic wrong subset** from the `(collapse …)` /
 `PLNobjectsOfCategory … bring` filter:
@@ -303,18 +303,20 @@ race-free cheaply (a per-entry epoch is impossible for a bloom; a bare clear rac
 so the concurrent collector simply does not use the optimization. The discriminator PROVES this yields
 0. The moot sweep-time clear (tried + refuted) was reverted (`index_heap.rs` post-sweep block).
 
-### Serial-path soundness (#2, follow-up) — the latent gap on slab/D0
-The fact-add-does-not-clear-the-bloom gap is a PRE-EXISTING latent soundness hole on ALL paths (a
+### Serial-path soundness (#2) — latent bloom gap CLOSED (2026-06-04)
+The fact-add-does-not-clear-the-bloom gap was a PRE-EXISTING latent soundness hole on ALL paths (a
 fact-add within a single `!` query that makes a memoized value reducible → a stale skip), merely masked
 on slab/D0 by the frequent query-boundary + in-line-sweep clears (robot/slab + conformance all correct).
-The principled close is an `add_to_space_shared` bloom invalidation (mirroring `add_rule`/`remove_*`) —
-to be done race-safely (epoch-distrust to preserve the within-query optimization rather than
-clear-on-every-fact-add) as a separate, separately-validated increment, NOT gated to dedicated.
+It is now closed directly at the mutation choke points: `add_to_space` and `add_to_space_shared`
+invalidate `NORMAL_FORM_BLOOM` plus the thread-local eval/match caches, and the trampoline `add-atom` /
+`remove-atom` continuations clear the process-global bloom so named `SpaceHandle` mutations are covered
+too. Focused regression `space_add_mutations_invalidate_normal_form_bloom` passes on both the default
+build and `--features index-gc` under the capped lane.
 
 | Item | State |
 |---|---|
 | Residual corruption (the bloom) | ❌ REFUTED — bloom off under dedicated still ~1% (`bj0r7i22h`: 2 corrupt / 200). Bloom is NOT robot's cause. |
-| Serial-path latent bloom gap (fact-add) | follow-up increment (benign on slab/D0; epoch-distrust close) — a real but robot-irrelevant hole |
+| Serial-path latent bloom gap (fact-add) | ✅ CLOSED — mutation choke points invalidate the bloom; focused slab + index-gc regression passes |
 | Residual deadlock hang (~0.5-1%) | OPEN — task #17 E5 (TLA+/loom of witness/rendezvous + park/resume/straddle/release) |
 
 ## ⚠️ REFRAME 2026-06-03 (afternoon): the corruption is CACHE-INDEPENDENT — all three cache hypotheses REFUTED by experiment; the real cause is a MISSED-ROOT

@@ -53,6 +53,13 @@ use super::scope::ScopeTracker;
 use crate::backend::eval::bindings::{apply_bindings_generic, pattern_match_generic};
 use crate::backend::fuzzy_match::FuzzyMatcher;
 
+#[inline]
+fn invalidate_space_mutation_caches() {
+    crate::backend::eval::trampoline::invalidate_normal_form_memo();
+    crate::backend::eval::trampoline::clear_eval_memo();
+    crate::backend::eval::trampoline::clear_match_result_cache();
+}
+
 /// Recursively strip all `Lazy(...)` wrappers from a value, peeling through
 /// SExpr children. PT-canonical Lazy is invisible to display/hash/MORK; this
 /// helper produces a structurally clean form for rule storage where the
@@ -2426,6 +2433,7 @@ where
         // single relaxed load when untiered). Returning here leaves `total_atoms`/bloom
         // untouched (the +1 is realized in the base layer, not the overlay counter).
         if self.untombstone_on_add(value) {
+            invalidate_space_mutation_caches();
             self.mark_modified();
             return;
         }
@@ -2548,6 +2556,7 @@ where
                 }
             }
         }
+        invalidate_space_mutation_caches();
     }
 
     /// Remove a fact from MORK Space by exact match.
@@ -2966,6 +2975,7 @@ where
                         .fetch_add(1, Ordering::Relaxed);
                 }
             }
+            invalidate_space_mutation_caches();
             self.mark_modified();
             return;
         }
@@ -2974,6 +2984,7 @@ where
         // instead of an overlay write (interior-mutability twin of `add_to_space`). See
         // `act_tiered.rs::untombstone_on_add`.
         if self.untombstone_on_add(value) {
+            invalidate_space_mutation_caches();
             self.mark_modified();
             return;
         }
@@ -3040,6 +3051,7 @@ where
         }
 
         // Mark as modified for union() fast-path detection
+        invalidate_space_mutation_caches();
         self.mark_modified();
     }
 
@@ -3922,6 +3934,8 @@ fn contains_atom_recursive<V: MettaValueTrait>(value: &V, target: &str) -> bool 
 mod tests {
     use super::*;
 
+    static NORMAL_FORM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_generic_environment_new() {
         let env: MettaEnvironment = MettaEnvironment::default();
@@ -3958,6 +3972,50 @@ mod tests {
         // Should have one rule for (add, 2)
         let rules = env.get_matching_rules_for_expr(&lhs);
         assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn space_add_mutations_invalidate_normal_form_bloom() {
+        let _serial = NORMAL_FORM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        use crate::backend::eval::trampoline::{
+            clear_normal_form_memo_for_new_query, is_memoized_normal_form, memoize_normal_form,
+        };
+
+        let probe = MettaValue::SExpr(vec![
+            MettaValue::Atom("__nf_probe_after_space_add__".to_string()),
+            MettaValue::Atom("payload".to_string()),
+        ]);
+        let fact = MettaValue::SExpr(vec![
+            MettaValue::Atom("__space_fact__".to_string()),
+            MettaValue::Atom("a".to_string()),
+        ]);
+
+        clear_normal_form_memo_for_new_query();
+        memoize_normal_form(&probe);
+        assert!(
+            is_memoized_normal_form(&probe),
+            "test setup should install the probe in the normal-form bloom"
+        );
+
+        let mut env: MettaEnvironment = MettaEnvironment::default();
+        env.add_to_space(&fact);
+        assert!(
+            !is_memoized_normal_form(&probe),
+            "regular atom-space add must invalidate normal-form bloom entries"
+        );
+
+        memoize_normal_form(&probe);
+        assert!(
+            is_memoized_normal_form(&probe),
+            "test setup should reinstall the probe before the shared add"
+        );
+        env.add_to_space_shared(&fact);
+        assert!(
+            !is_memoized_normal_form(&probe),
+            "shared atom-space add must invalidate normal-form bloom entries"
+        );
     }
 
     // ── Stage 1: MM2 ProductZipper conjunctive join ──────────────────────

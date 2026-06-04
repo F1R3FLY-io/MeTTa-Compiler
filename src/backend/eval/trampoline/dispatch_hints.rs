@@ -48,9 +48,10 @@ use super::context::EvalContext;
 /// inserted into this filter. Subsequent evaluations of the same structure skip
 /// the entire eval_step_generic call.
 ///
-/// Invalidated on `add_rule()` and at top-level query boundaries. New rules may
-/// make previously normal-form expressions reducible, while query boundaries
-/// prevent bloom false positives from leaking across unrelated evaluations.
+/// Invalidated on atom-space mutations and at top-level query boundaries. New
+/// rules or facts may make previously normal-form expressions reducible, while
+/// query boundaries prevent bloom false positives from leaking across unrelated
+/// evaluations.
 ///
 /// False positives are benign: they cause us to skip evaluation for an
 /// expression that might have been reducible, but since the expression was

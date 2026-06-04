@@ -1300,8 +1300,8 @@ systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400% \
 ---
 
 ### Critical Files for Implementation
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/src/backend/eval/cesk/index_arena.rs  (the total rewrite — every struct/method/test/loom block above lands here)
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/src/backend/eval/cesk/index_heap.rs  (the caller; do NOT edit — verified its `mark`/`sweep` borrow-split and write-lock serialization are the byte-identity guarantee; lines 75, 159-248, 380-430, 476-481)
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/Cargo.toml  (add `[target.'cfg(loom)'.dependencies] loom = "0.7"`; `[features] index-gc` at line 280 unchanged)
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/build.rs  (add `cargo::rustc-check-cfg=cfg(loom)` in `main()` to preserve the lib-49-warnings gate)
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/src/backend/eval/cesk/index_node.rs  (defines `Node: Copy` + `ChildRef`/`ByteRef`/`SpanRef`; confirms `Node: Send + Sync`, which the `unsafe impl Sync` relies on)
+- `src/backend/eval/cesk/index_arena.rs`  (the total rewrite — every struct/method/test/loom block above lands here)
+- `src/backend/eval/cesk/index_heap.rs`  (the caller; do NOT edit — verified its `mark`/`sweep` borrow-split and write-lock serialization are the byte-identity guarantee; lines 75, 159-248, 380-430, 476-481)
+- `Cargo.toml`  (add `[target.'cfg(loom)'.dependencies] loom = "0.7"`; `[features] index-gc` at line 280 unchanged)
+- `build.rs`  (add `cargo::rustc-check-cfg=cfg(loom)` in `main()` to preserve the lib-49-warnings gate)
+- `src/backend/eval/cesk/index_node.rs`  (defines `Node: Copy` + `ChildRef`/`ByteRef`/`SpanRef`; confirms `Node: Send + Sync`, which the `unsafe impl Sync` relies on)

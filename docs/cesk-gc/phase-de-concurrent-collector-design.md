@@ -497,11 +497,11 @@ NO registry/RootProvider; structural roots only. The JIT/VM index polls (§Part 
 ---
 
 ### Critical Files for Implementation
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/src/backend/models/gc_allocator.rs (EvalGuard enter/drop :3460/:3493, the parked-count/RENDEZVOUS primitives :2887-3210, drop/reacquire-for-safepoint :4643/:4663, GcInProgressGuard :3600, bump_gc_sweep_epoch :3694 — the spine: §1.2 N_THREADS, §1.3 cycle-gen, §Part 2 admission, §Part 9 full-depth/unified-resume, §5.2 pub(crate))
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/src/backend/eval/cesk/index_heap.rs (mark_sweep_if_over_watermark :2010 with write()-across-mark :2073-2076, gate_open_rendezvous :1870, cache clears :2119-2129 — §Part 3 mark-under-read split + brief-write sweep, E1-FLIP)
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/src/backend/eval/trampoline/eval_loop.rs (worker closures finish sites :2522/:3043, worker_cooperative_safepoint stub :174, clear_aba_sensitive_caches :211 — §1.1 finisher placement, §6.1 index park)
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/src/backend/eval/cesk/roots.rs (collect_persistent_roots :404, collect_global_anchors :301 — the canonical 9-anchor SATB derivation, §Part 4)
-- /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/src/rholang_integration.rs (evaluate_batch_parallel_arena :466, batch EvalGuard::enter :500, caller consume :413/:436 — §Part 2 batch admission, §Part 7 caller window) and /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler/src/backend/eval/trampoline/dispatch_hints.rs (OPERATOR_CACHE :908, EVAL_MEMO/MATCH evictions :692/:810 — §Part 4 LRU barrier, §5.1 OPERATOR_CACHE epoch)
+- `src/backend/models/gc_allocator.rs` (EvalGuard enter/drop :3460/:3493, the parked-count/RENDEZVOUS primitives :2887-3210, drop/reacquire-for-safepoint :4643/:4663, GcInProgressGuard :3600, bump_gc_sweep_epoch :3694 — the spine: §1.2 N_THREADS, §1.3 cycle-gen, §Part 2 admission, §Part 9 full-depth/unified-resume, §5.2 pub(crate))
+- `src/backend/eval/cesk/index_heap.rs` (mark_sweep_if_over_watermark :2010 with write()-across-mark :2073-2076, gate_open_rendezvous :1870, cache clears :2119-2129 — §Part 3 mark-under-read split + brief-write sweep, E1-FLIP)
+- `src/backend/eval/trampoline/eval_loop.rs` (worker closures finish sites :2522/:3043, worker_cooperative_safepoint stub :174, clear_aba_sensitive_caches :211 — §1.1 finisher placement, §6.1 index park)
+- `src/backend/eval/cesk/roots.rs` (collect_persistent_roots :404, collect_global_anchors :301 — the canonical 9-anchor SATB derivation, §Part 4)
+- `src/rholang_integration.rs` (evaluate_batch_parallel_arena :466, batch EvalGuard::enter :500, caller consume :413/:436 — §Part 2 batch admission, §Part 7 caller window) and `src/backend/eval/trampoline/dispatch_hints.rs` (OPERATOR_CACHE :908, EVAL_MEMO/MATCH evictions :692/:810 — §Part 4 LRU barrier, §5.1 OPERATOR_CACHE epoch)
 
 
 ## Red-team log

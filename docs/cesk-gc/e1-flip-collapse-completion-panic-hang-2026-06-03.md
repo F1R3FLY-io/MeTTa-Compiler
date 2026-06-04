@@ -9,7 +9,7 @@ handshake, not the GC rendezvous.
 
 ## Diagnosis (SIGUSR1 thread-dump — the decisive evidence)
 Caught a permanent hang (robot run 129) and dumped thread states via SIGUSR1
-(`/tmp/hang_dump_129_{a,b}.txt`): `gc_cycle_in_flight=false`, `gc_requested=false`, `active_evaluators=0`,
+(temporary `hang_dump_129_{a,b}.txt` logs): `gc_cycle_in_flight=false`, `gc_requested=false`, `active_evaluators=0`,
 and ALL 77 threads `S (sleeping)` on `futex_do_wait` (main + ~56 `work-pool-N` + 4 `mettatron-gc-po` +
 `mettatron-index` + `work-pool-overf`), one `mettatron-work-` on `hrtimer_nanosleep` (a Tokio thread,
 incidental). **No GC is in flight** ⟹ not a GC-rendezvous deadlock. It is the collapse-completion poll

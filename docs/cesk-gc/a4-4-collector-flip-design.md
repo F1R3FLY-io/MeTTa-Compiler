@@ -528,7 +528,10 @@ ps aux | grep -E 'cargo|rustc|mtt-conformance' | grep -v grep || echo "no other 
 ### Step 1 — capped ASAN build (FOREGROUND, ≤32G, low -j)
 The `-Zbuild-std` rebuild of std+core under ASAN is the memory-heavy part; serialize it.
 ```bash
-cd /home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler
+REPO="${REPO:-$(pwd)}"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -t a4_4.XXXXXXXX)}"
+CONFORMANCE_DIR="${CONFORMANCE_DIR:?set CONFORMANCE_DIR to the conformance checkout}"
+cd "$REPO"
 systemd-run --user --scope \
     -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=800% -p TasksMax=256 \
     env RUSTFLAGS="-Zsanitizer=address -C target-cpu=native" \
@@ -538,7 +541,7 @@ systemd-run --user --scope \
         --target x86_64-unknown-linux-gnu \
         --bin mtt-conformance \
         -j 4 \
-    2>&1 | tee /tmp/a4_4_asan_build.log | tail -30
+    2>&1 | tee "$LOG_DIR/a4_4_asan_build.log" | tail -30
 ```
 (`-j 4` bounds peak compiler RSS well under 32G; raise only if `free -h` shows ample
 headroom and no other builds. The ASAN binary lands at
@@ -571,8 +574,8 @@ systemd-run --user --scope \
         ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
     ./target/x86_64-unknown-linux-gnu/debug/mettatron \
         examples/cesk-gc/stress_multidir.metta \
-    2>&1 | tee /tmp/a4_4_asan_quiescence.log | tail -40
-echo "rc=$? ; grep INDEX_GC_CYCLES_RUN /tmp/a4_4_asan_quiescence.log"
+    2>&1 | tee "$LOG_DIR/a4_4_asan_quiescence.log" | tail -40
+echo "rc=$? ; grep INDEX_GC_CYCLES_RUN $LOG_DIR/a4_4_asan_quiescence.log"
 ```
 (Build the `mettatron` CLI bin with the SAME `systemd-run` + `-Zbuild-std` invocation as
 Step 1, swapping `--bin mtt-conformance` → `--bin mettatron`, OR add `--bin mettatron` to
@@ -594,8 +597,8 @@ systemd-run --user --scope \
         ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
     ./target/x86_64-unknown-linux-gnu/debug/mettatron \
         examples/cesk-gc/stress_alloc.metta \
-    2>&1 | tee /tmp/a4_4_asan_midloop.log | tail -40
-echo "rc=$? ; grep INDEX_GC_CYCLES_RUN /tmp/a4_4_asan_midloop.log"
+    2>&1 | tee "$LOG_DIR/a4_4_asan_midloop.log" | tail -40
+echo "rc=$? ; grep INDEX_GC_CYCLES_RUN $LOG_DIR/a4_4_asan_midloop.log"
 ```
 
 **(c) A small conformance SUBSET under ASAN (optional, higher coverage of Flip 3).** A few
@@ -609,10 +612,10 @@ systemd-run --user --scope \
         METTATRON_INDEX_GC_REPORT=1 \
         ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
     "$ASAN_BIN" --strict \
-        --conformance-dir /home/dylon/Workspace/f1r3fly.io/mettatron-specification/conformance \
+        --conformance-dir "$CONFORMANCE_DIR" \
         --module M11-bisimilarity-pt \
-    2>&1 | tee /tmp/a4_4_asan_conf_subset.log | tail -40
-echo "rc=$? ; grep -E 'INDEX_GC_CYCLES_RUN|FAIL' /tmp/a4_4_asan_conf_subset.log"
+    2>&1 | tee "$LOG_DIR/a4_4_asan_conf_subset.log" | tail -40
+echo "rc=$? ; grep -E 'INDEX_GC_CYCLES_RUN|FAIL' $LOG_DIR/a4_4_asan_conf_subset.log"
 ```
 
 **ASAN acceptance:** each run `rc=0`, `INDEX_GC_CYCLES_RUN > 0` (non-vacuous — the flipped
@@ -638,13 +641,13 @@ results); the slab arm must be byte-identical by construction (every flip is ind
 ```bash
 # 1. SLAB nextest — byte-identical (flip is index-only; debug_assertions OFF in release).
 systemd-run --user --scope -p MemoryMax=48G -p MemorySwapMax=0 -p CPUQuota=1800% \
-    cargo nextest run --release 2>&1 | tee /tmp/a4_4_slab_nextest.log | tail -5
+    cargo nextest run --release 2>&1 | tee "$LOG_DIR/a4_4_slab_nextest.log" | tail -5
 #   EXPECT: 4325 passed, 0 failed  (the single-threaded-collector RESULTS baseline:
 #           4312 historical + the collector unit tests; re-confirm the current count).
 
 # 2. INDEX nextest — byte-identical.
 systemd-run --user --scope -p MemoryMax=48G -p MemorySwapMax=0 -p CPUQuota=1800% \
-    cargo nextest run --release --features index-gc 2>&1 | tee /tmp/a4_4_index_nextest.log | tail -5
+    cargo nextest run --release --features index-gc 2>&1 | tee "$LOG_DIR/a4_4_index_nextest.log" | tail -5
 #   EXPECT: 4177 passed, 0 failed.
 
 # 3. INDEX conformance — byte-identical 483/221/40 AND cycles>0 (the flipped feed fires
@@ -656,8 +659,8 @@ systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=400% 
         METTATRON_INDEX_GC_MIN_BYTES=262144 \
         METTATRON_INDEX_GC_REPORT=1 \
     ./target/release/mtt-conformance --strict \
-        --conformance-dir /home/dylon/Workspace/f1r3fly.io/mettatron-specification/conformance \
-    2>&1 | tee /tmp/a4_4_index_conf.log | tail -10
+        --conformance-dir "$CONFORMANCE_DIR" \
+    2>&1 | tee "$LOG_DIR/a4_4_index_conf.log" | tail -10
 #   EXPECT: 483 pass / M11-pt 221 / M11-he 40 / FAIL=0 / INDEX_GC_CYCLES_RUN > 0 (was 840).
 
 # 4. SLAB conformance — byte-identical (sanity; the default binary).
@@ -665,8 +668,8 @@ systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=400% 
     cargo build --release --bin mtt-conformance 2>&1 | tail -1
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=400% \
     ./target/release/mtt-conformance --strict \
-        --conformance-dir /home/dylon/Workspace/f1r3fly.io/mettatron-specification/conformance \
-    2>&1 | tee /tmp/a4_4_slab_conf.log | tail -10
+        --conformance-dir "$CONFORMANCE_DIR" \
+    2>&1 | tee "$LOG_DIR/a4_4_slab_conf.log" | tail -10
 #   EXPECT: 483 / 221 / 40 / FAIL=0 ; INDEX_GC_CYCLES_RUN=0 (collector inert in slab).
 ```
 
@@ -682,15 +685,15 @@ systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=400% 
         METTATRON_INDEX_GC_MIN_BYTES=131072 \
         METTATRON_INDEX_GC_REPORT=1 \
     ./target/debug/mtt-conformance --strict \
-        --conformance-dir /home/dylon/Workspace/f1r3fly.io/mettatron-specification/conformance \
+        --conformance-dir "$CONFORMANCE_DIR" \
         --module M11-bisimilarity-pt \
-    2>&1 | tee /tmp/a4_4_debug_subset.log | tail -10
+    2>&1 | tee "$LOG_DIR/a4_4_debug_subset.log" | tail -10
 #   EXPECT: rc=0, no oracle panic, cycles>0.
 
 # DEBUG index nextest (the index-gc cesk/gc subset; also fires both oracles in-process tests
 # incl. the new a4_4_quiescence_oracle_holds CI test).
 systemd-run --user --scope -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=1800% \
-    cargo nextest run --features index-gc 2>&1 | tee /tmp/a4_4_debug_nextest.log | tail -5
+    cargo nextest run --features index-gc 2>&1 | tee "$LOG_DIR/a4_4_debug_nextest.log" | tail -5
 #   EXPECT: 0 failed (the A4.3 + A4.4 oracle CI tests green).
 ```
 

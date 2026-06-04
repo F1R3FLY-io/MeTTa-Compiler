@@ -4,7 +4,7 @@ HEAD `390b743` (A4.4). This corrects a DRIFT: chasing the midloop oracle's caugh
 last (uncommitted) change threaded `*const MettaState` through the bytecode VM — "patching
 root-discovery into machine internals," the anti-CESK pattern that derailed the prior session.
 **That VM-state plumbing was REVERTED to `390b743`** (drift saved recoverably at
-`/tmp/vm_plumbing_drift_from_390b743.patch`). The committed A4.1–A4.4 ARE genuine CESK and stand.
+the temporary `vm_plumbing_drift_from_390b743.patch` artifact). The committed A4.1–A4.4 ARE genuine CESK and stand.
 
 ## STANDING ANTI-DRIFT GUARDRAIL (read before every GC change)
 A change is **CESK migration** iff it: (a) reifies more machine state into the readable registers

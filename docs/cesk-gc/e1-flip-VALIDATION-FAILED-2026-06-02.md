@@ -126,11 +126,11 @@ legacy path.**
 4. Deadlock on the no-major arm (arm C HANG) — a separate coordination defect in the rendezvous when no major fires.
 
 ## H2 (regression-vs-pre-existing) — attempted, deferred; conclusion holds regardless
-Tried to build HEAD `8070c78` (no coordination edits) in a `/tmp` git worktree to test whether DEDICATED=1
+Tried to build HEAD `8070c78` (no coordination edits) in a temporary git worktree to test whether DEDICATED=1
 breaks there too. **Build failed:** the repo is a `[workspace]` with **relative path-deps** (`../MORK/kernel`,
-`../PathMap`, `../f1r3node-rust/models`) that don't resolve from `/tmp`. **Retry recipe:** put the worktree at a
-**sibling path** of the repo (e.g. `/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler-head-8070c78`) so `../`
-resolves identically — `scripts/e1_flip_h2_head_compare.sh` just needs its `WT=` changed. **But H2 is not
+`../PathMap`, `../f1r3node-rust/models`) that don't resolve from arbitrary temp locations. **Retry recipe:** put
+the worktree at a **sibling path** of the repo so `../` resolves identically; `scripts/e1_flip_h2_head_compare.sh`
+now derives that path by default. **But H2 is not
 decisive:** the summary already records HEAD `8070c78` DEDICATED=1 as broken (its "V4" run), and my edits only
 change the failure *shape* (HEAD ran BOTH the legacy coop path AND the rendezvous; my ①a/①c gate the legacy path
 OFF under dedicated → sole-collector → adds OOM/truncation). **Either way the root cause is the same: the
@@ -143,6 +143,6 @@ edits; that's a user call (the prior design is falsified).
 ## Standing facts
 - Default build + slab: untouched, byte-identical (cargo check 49-warn baseline both backends — done this session).
 - Both backends compile cleanly with the full working-tree fix (slab + index-gc cargo check ✅).
-- Evidence logs: `/tmp/e1_disc/`, `/tmp/d0_*.txt`, `/tmp/d1_*.txt`, the probe `b220itbc2.output`.
+- Evidence logs: discriminator scratch dir, D0/D1 run logs, and the probe `b220itbc2.output`.
 - The discriminator script `scripts/e1_flip_discriminator.sh` (written this tick) must be FIXED to score on
   **`✅`-presence + line-count**, not `❌`-count (the artifact). A truncated/❌-free run is a FAILURE, not a pass.

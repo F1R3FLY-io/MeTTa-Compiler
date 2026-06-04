@@ -18,26 +18,33 @@
 #       cycles == 0 (the ST collectors are gated off by worker_ever_spawned);
 #   (c) correct result (no Error / StackOverflow).
 #
-# CAPPED build 24G / run 20G, MemorySwapMax=0, -j4, tee'd. Check `free -h` first (a
-# sibling build may be live in /var/tmp/wt-fork-fix → drop to -j3). NEVER background an
+# CAPPED build 24G / run 20G, MemorySwapMax=0, -j4. Check `free -h` first (a
+# sibling build may be live in another worktree → drop to -j3). NEVER background an
 # UNCAPPED ASAN build (a prior uncapped backgrounded ASAN+stress run OOM-crashed the box).
 set -uo pipefail
-REPO=/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler
-PLN=/home/dylon/Workspace/f1r3fly.io/PLN-main
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
+PLN="${PLN:-$REPO_PARENT/PLN-main}"
 cd "$REPO"
 BIN="$REPO/target/x86_64-unknown-linux-gnu/release/mettatron"
-P=/tmp/e1_flip_v4
+LOG_DIR="${LOG_DIR:-$(mktemp -d -t "e1_flip_v4.XXXXXXXX")}"
+P="$LOG_DIR/e1_flip_v4"
 MIN_BYTES=131072   # 128 KiB major floor — forces the rendezvous collector to fire
 
 echo "===== E1-FLIP V4 ASAN (FANOUT>0 + DEDICATED=1, env-forced) ====="; date; free -h | head -2
+echo "repo=$REPO"
+echo "pln=$PLN"
+echo "logs=$LOG_DIR"
 
 echo "### build mettatron index-gc ASAN (release, -Zbuild-std, -j4, capped 24G)"
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000% -p TasksMax=512 --quiet \
   env RUSTFLAGS="-Zsanitizer=address -Cdebuginfo=2 -Ctarget-cpu=native" \
   cargo +nightly build --release -Zbuild-std --target x86_64-unknown-linux-gnu \
-    --bin mettatron -j4 --features index-gc 2>&1 | tee "${P}_build.log"
-BUILD_RC=${PIPESTATUS[0]}
+    --bin mettatron -j4 --features index-gc > "${P}_build.log" 2>&1
+BUILD_RC=$?
 echo "build_rc=$BUILD_RC"
+tail -5 "${P}_build.log"
 if [ "$BUILD_RC" -ne 0 ] || [ ! -x "$BIN" ]; then
   echo "BUILD FAILED — aborting V4 (binary not produced)"; exit 1
 fi

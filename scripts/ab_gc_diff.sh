@@ -20,10 +20,15 @@
 
 set -uo pipefail
 
-CONF_DIR="${CONFORMANCE_DIR:-/home/dylon/Workspace/f1r3fly.io/mettatron-specification/conformance}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
+CONF_DIR="${CONFORMANCE_DIR:-$REPO_PARENT/mettatron-specification/conformance}"
 RUN_NEXTEST=1
-CELL="systemd-run --user --scope -p MemoryMax=96G -p CPUQuota=1800%"
-OUT="$(mktemp -d /tmp/ab_gc_diff.XXXXXX)"
+BUILD_CAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000%)
+NEXTEST_CAP=(systemd-run --user --scope -p MemoryMax=96G -p MemorySwapMax=0 -p CPUQuota=1800%)
+OUT="$(mktemp -d -t "ab_gc_diff.XXXXXXXX")"
+cd "$REPO"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,6 +39,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "== A/B GC differential =="
+echo "repo:            $REPO"
 echo "conformance-dir: $CONF_DIR"
 echo "scratch:         $OUT"
 
@@ -60,13 +66,13 @@ run_conformance () {  # $1 = binary path, $2 = label
 }
 
 echo "-- building + running SLAB arm --"
-cargo build --release --bin mtt-conformance 2>&1 | tail -1
+"${BUILD_CAP[@]}" cargo build --release --bin mtt-conformance 2>&1 | tail -1
 run_conformance ./target/release/mtt-conformance slab
 
 RC=0
 if [[ "$HAVE_INDEX_FEATURE" == "1" ]]; then
   echo "-- building + running INDEX arm (--features index-gc) --"
-  cargo build --release --features index-gc --bin mtt-conformance 2>&1 | tail -1
+  "${BUILD_CAP[@]}" cargo build --release --features index-gc --bin mtt-conformance 2>&1 | tail -1
   # the index binary overwrites target/release/mtt-conformance; it is the index build now
   run_conformance ./target/release/mtt-conformance index
 
@@ -79,8 +85,8 @@ if [[ "$HAVE_INDEX_FEATURE" == "1" ]]; then
 
   if [[ "$RUN_NEXTEST" == "1" ]]; then
     echo "-- nextest under both arms (canonicalized pass/fail) --"
-    $CELL cargo nextest run 2>&1 | grep -E '^\s+(PASS|FAIL)' | awk '{print $1, $NF}' | sort > "$OUT/nt_slab.txt" || true
-    $CELL cargo nextest run --features index-gc 2>&1 | grep -E '^\s+(PASS|FAIL)' | awk '{print $1, $NF}' | sort > "$OUT/nt_index.txt" || true
+    "${NEXTEST_CAP[@]}" cargo nextest run 2>&1 | grep -E '^\s+(PASS|FAIL)' | awk '{print $1, $NF}' | sort > "$OUT/nt_slab.txt" || true
+    "${NEXTEST_CAP[@]}" cargo nextest run --features index-gc 2>&1 | grep -E '^\s+(PASS|FAIL)' | awk '{print $1, $NF}' | sort > "$OUT/nt_index.txt" || true
     if diff -u "$OUT/nt_slab.txt" "$OUT/nt_index.txt" > "$OUT/nt_diff.txt"; then
       echo "  NEXTEST: IDENTICAL ✓"
     else
@@ -88,7 +94,7 @@ if [[ "$HAVE_INDEX_FEATURE" == "1" ]]; then
     fi
   fi
   # restore the default (slab) binary so the tree is left in the default state
-  cargo build --release --bin mtt-conformance 2>&1 | tail -1
+  "${BUILD_CAP[@]}" cargo build --release --bin mtt-conformance 2>&1 | tail -1
 fi
 
 echo "== result: $([[ $RC -eq 0 ]] && echo 'ACCEPT (no divergence)' || echo 'REJECT (divergence)') =="

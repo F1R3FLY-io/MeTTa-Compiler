@@ -26,12 +26,16 @@
 #
 # FANOUT_DEPTH=0 (single-threaded). REPORT=2 prints the minor/major split for non-vacuity.
 set -uo pipefail
-REPO=/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 cd "$REPO"
 BIN="$REPO/target/x86_64-unknown-linux-gnu/debug/mettatron"
-P="/tmp/d_midloop_asan"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -t "d_midloop_asan.XXXXXXXX")}"
+P="$LOG_DIR/d_midloop_asan"
 GIB=$((1024*1024*1024))
 echo "===== C #D-2 MIDLOOP NARROWING ASAN ====="; date
+echo "repo=$REPO"
+echo "logs=$LOG_DIR"
 
 echo "### build mettatron index-gc ASAN bin"
 systemd-run --user --scope -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=800% -p TasksMax=256 \
@@ -58,7 +62,7 @@ run_arm midloop METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIDLOOP=1 M
 run_arm control METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=$GIB METTATRON_INDEX_GC_REPORT=2
 
 echo "===== C #D-2 MIDLOOP NARROWING ASAN VERDICT ====="
-ARMS_WITH_UAF=$(grep -lE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free' ${P}_midloop.log ${P}_control.log 2>/dev/null | wc -l)
+ARMS_WITH_UAF=$(grep -lE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free' "${P}_midloop.log" "${P}_control.log" 2>/dev/null | wc -l)
 echo "arms with UAF: ${ARMS_WITH_UAF} (expect 0)"
-echo "midloop minors (expect >0, non-vacuous): $(grep -cE 'minor cycle' ${P}_midloop.log)"
+echo "midloop minors (expect >0, non-vacuous): $(grep -cE 'minor cycle' "${P}_midloop.log")"
 echo "===== C #D-2 MIDLOOP NARROWING ASAN DONE ====="; date

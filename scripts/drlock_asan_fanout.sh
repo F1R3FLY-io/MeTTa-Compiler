@@ -9,12 +9,18 @@
 # CAPPED build 24G / run 20G, MemorySwapMax=0, FOREGROUND, -j4 (RAM-mindful; the
 # prior OOM was an UNCAPPED BACKGROUNDED ASAN build).
 set -uo pipefail
-REPO=/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler
-PLN=/home/dylon/Workspace/f1r3fly.io/PLN-main
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
+PLN="${PLN:-$REPO_PARENT/PLN-main}"
 cd "$REPO"
 BIN="$REPO/target/x86_64-unknown-linux-gnu/release/mettatron"
-P=/tmp/drlock_asan
+LOG_DIR="${LOG_DIR:-$(mktemp -d -t "drlock_asan.XXXXXXXX")}"
+P="$LOG_DIR/drlock_asan"
 echo "===== D-RLOCK.2 ASAN FANOUT>0 ====="; date
+echo "repo=$REPO"
+echo "pln=$PLN"
+echo "logs=$LOG_DIR"
 
 echo "### build mettatron index-gc ASAN (release, -Zbuild-std, -j4, capped 24G)"
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000% -p TasksMax=256 --quiet \
@@ -42,6 +48,6 @@ run_arm raven_f8 "$PLN/examples/FlyingRaven.metta" 8
 run_arm stress_f8 "$REPO/examples/cesk-gc/stress_multidir.metta" 8
 
 echo "===== D-RLOCK.2 ASAN VERDICT ====="
-TOTAL=$(grep -cE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free|heap-buffer-overflow' ${P}_robot_f8.log ${P}_raven_f8.log ${P}_stress_f8.log 2>/dev/null | awk -F: '{s+=$2} END{print s}')
+TOTAL=$(grep -cE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free|heap-buffer-overflow' "${P}_robot_f8.log" "${P}_raven_f8.log" "${P}_stress_f8.log" 2>/dev/null | awk -F: '{s+=$2} END{print s}')
 echo "total UAF/ASAN lines across arms: $TOTAL (expect 0)"
 echo "===== D-RLOCK.2 ASAN DONE ====="; date

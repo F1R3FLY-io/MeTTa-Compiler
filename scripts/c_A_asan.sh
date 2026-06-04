@@ -19,12 +19,16 @@
 # All FANOUT_DEPTH=0 (single-threaded quiescence collector). REPORT=2 prints the
 # minor/major split so we can confirm the intended collection type fired (non-vacuous).
 set -uo pipefail
-REPO=/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 cd "$REPO"
 BIN="$REPO/target/x86_64-unknown-linux-gnu/debug/mettatron"
-P="/tmp/c_A_asan"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -t "c_A_asan.XXXXXXXX")}"
+P="$LOG_DIR/c_A_asan"
 GIB=$((1024*1024*1024))
 echo "===== C #A SIDE-FREE ASAN ====="; date
+echo "repo=$REPO"
+echo "logs=$LOG_DIR"
 
 echo "### build mettatron index-gc ASAN bin"
 systemd-run --user --scope -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=800% -p TasksMax=256 \
@@ -54,6 +58,6 @@ run_arm midloop_gate side_free_minor.metta \
   METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=$GIB METTATRON_INDEX_GC_MIDLOOP=1 METTATRON_INDEX_GC_REPORT=2
 
 echo "===== C #A SIDE-FREE ASAN VERDICT ====="
-TOTAL_UAF=$(grep -lcE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free' ${P}_quiescence_major.log ${P}_quiescence_minor.log ${P}_midloop_gate.log 2>/dev/null | grep -v ':0' | wc -l)
-echo "arms with UAF: (expect 0 above)"
+TOTAL_UAF=$(grep -lcE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free' "${P}_quiescence_major.log" "${P}_quiescence_minor.log" "${P}_midloop_gate.log" 2>/dev/null | grep -v ':0' | wc -l)
+echo "arms with UAF: $TOTAL_UAF (expect 0)"
 echo "===== C #A SIDE-FREE ASAN DONE ====="; date

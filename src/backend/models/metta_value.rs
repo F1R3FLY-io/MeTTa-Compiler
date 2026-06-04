@@ -1007,6 +1007,11 @@ impl MettaValue {
         let raw = (self.tagged >> 4) as u32;
         INNER_SHADOW.with(|c| {
             let mut m = c.borrow_mut();
+            // HIT iff the Addr is already cached: then `or_insert_with` runs NO
+            // closure (no heap read-lock taken below), so the swept check's lone
+            // read-lock is unnested. On a MISS the closure takes+releases the lock
+            // before `or_insert_with` returns, and `was_hit` is false ⇒ no check.
+            let was_hit = m.contains_key(&raw);
             let boxed = m.entry(raw).or_insert_with(|| {
                 let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(raw);
                 Box::new(
@@ -1020,7 +1025,35 @@ impl MettaValue {
             // (HashMap growth relocates only the 8-byte Box value, not its target),
             // and the entry is removed only by clear_inner_shadow() at a quiescent
             // point — so the laundered &'static outlives this borrow_mut guard.
-            unsafe { &*(&**boxed as *const MettaValueInner) }
+            let out = unsafe { &*(&**boxed as *const MettaValueInner) };
+            // DEBUG-ONLY swept-slot oracle (INNER_SHADOW-cache-hit extension): a
+            // HIT for a swept Addr by a NON-collector thread is a stale ABA read —
+            // the slot was swept+reused, but this per-thread shadow cache still
+            // holds the OLD occupant's box (the cache is keyed by the raw u32 Addr,
+            // not the live node), so the holder reads stale content WITHOUT going
+            // through the swept-checked `arena.get()`. Panic so the backtrace names
+            // the missed-root holder. Gated on the oracle env flag (no-op when off,
+            // so non-oracle/slab runs are byte-identical) and exempts the dedicated
+            // collector thread (its re-walks legitimately read swept slots). The
+            // read-lock here is safe: this branch only runs on a HIT (the miss path
+            // above took NO lock), and no heap lock is held inside `INNER_SHADOW`.
+            if was_hit
+                && crate::backend::eval::cesk::index_arena::swept_oracle_enabled()
+                && !crate::backend::eval::cesk::index_arena::in_collector_read_scope_pub()
+            {
+                let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(raw);
+                if crate::backend::eval::cesk::index_heap::global_index_heap()
+                    .read()
+                    .expect("index heap poisoned")
+                    .is_addr_swept(addr)
+                {
+                    panic!(
+                        "SWEPT INNER_SHADOW HIT (ABA missed-root): addr={:?} raw={}",
+                        addr, raw
+                    );
+                }
+            }
+            out
         })
     }
 

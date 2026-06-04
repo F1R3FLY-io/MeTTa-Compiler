@@ -50,8 +50,8 @@ Keep the committed `on_free_list` `AtomicBool` shadow + `freelist_check_enabled(
   - `repeated_current_segment_minor_does_not_duplicate_free_list_entry`
   - `minor_release_drains_listed_entries_for_released_segment`
 - `cargo check --features index-gc`: passed after the source/TLA changes (warning baseline remains).
-- TLC positive: `MC_RFL_freebit.cfg` passed with `NoDuplicateFreeListEntries` and `FreeBitExact`, including the release-drain transition.
-- TLC negative: `MC_RFL_bug.cfg` still fails as expected with `freeList = <<0, 0>>`.
+- TLC positive: `MC_RFL_freebit.cfg` passed with `NoDuplicateFreeListEntries` and `FreeBitExact`, including the release-drain transition. Re-run under `systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400%` on 2026-06-04: exhaustive search, 54 states generated, 17 distinct states, 0 states left on queue, no errors.
+- TLC negative: `MC_RFL_bug.cfg` still fails as expected with `freeList = <<0, 0>>`. Re-run under the same cap on 2026-06-04: TLC violated `NoDuplicateFreeListEntries` at depth 4 after sweeping slot 0 twice, producing `freeList = <<0, 0>>`.
 - Broad filtered compile/run after the `eval` return-shape fallout: `cargo test --features index-gc index_arena::tests -- --nocapture` passed after `70ab067`.
 - Bounded evaluator churn gate: `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=300% cargo test --test rfl_forced_gc --features index-gc -- --nocapture` passed, 1/1, 23.36s. The test enables `METTATRON_INDEX_GC_FREELIST_CHECK=1`, drives the public compile/eval path through generated allocation churn, and asserts `cycles_run()`, `minor_cycles_run()`, and `major_cycles_run()` all increase so the run is non-vacuous and covers both sweep kinds.
 - Repeated FANOUT=0 post-fix gate: `scripts/rfl_forced_gc_x20.sh 20` passed under the capped lane, runs=20 failures=0, using the same detector-backed evaluator churn harness. The script derives the checkout path from its own location and uses `mktemp` for logs, so it is not tied to one local workspace path.

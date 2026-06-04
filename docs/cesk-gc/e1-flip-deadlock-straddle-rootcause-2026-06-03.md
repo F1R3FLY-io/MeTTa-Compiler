@@ -41,7 +41,7 @@ The design doc already flagged this class as an accepted liveness residual:
 `docs/cesk-gc/e1-flip-pathB-v2-impl.md:93,159` ("miss = HANG not UAF"). The whole protocol is
 fail-safe-toward-HANG, which is why it's a `timeout` kill, never a UAF.
 
-## Fix (to implement after the corruption fix is committed)
+## Fix (implemented)
 
 **Fix B (preferred — unambiguous start-vs-end gen).** Add `GC_CYCLE_STARTED: AtomicU64`, set to `cur_gen`
 when the driver COMMITS to a cycle (gc_driver.rs:~197, paired with the straddle read's lock), distinct
@@ -67,11 +67,11 @@ under one lock to avoid a new entrant reading the pre-bump gen). Then `gc_in_pro
 can never be true for the just-finished cycle's bump. Slightly riskier (touches the safety-critical
 sequence); prefer Fix B.
 
-**W2 notify hardening (defence-in-depth).** `worker_resume_wait_for_cycle` (W2) keys resume on
-`GC_CYCLE_GEN != my_gen` (bumped under `RENDEZVOUS_MUTEX`) but is woken under `RESUME_MUTEX` — different
-locks ⇒ a latent lost-wakeup that today self-heals only via the 5 s timeout. Also notify `RESUME_CONDVAR`
-from `end_rendezvous_cycle` (which holds `RENDEZVOUS_MUTEX` + does the gen bump), OR move the gen bump
-under `RESUME_MUTEX`. Removes the per-occurrence 5 s stalls that widen the hang window.
+**W2 notify hardening (implemented as Mesa-correct gen wait).** `worker_resume_wait_for_cycle` (W2)
+now waits on `RENDEZVOUS_CONDVAR` while holding `RENDEZVOUS_MUTEX`, the same mutex/condvar pair used by
+`end_rendezvous_cycle` to bump `GC_CYCLE_GEN` and notify. This removes the old cross-mutex
+`RENDEZVOUS_MUTEX`→`RESUME_MUTEX` notify edge entirely; `resume_workers()` remains responsible only for
+the distinct `GC_REQUESTED`/WorkerEnter gate.
 
 ## Validation: a loom model (the reliable tool)
 
@@ -87,7 +87,7 @@ loom reports a deadlock IFF a predicate is permanently false (this bug), ignorin
 - BUG-REPRO variant (current order, no `started`) → `a.join()` deadlocks → prints the §3 schedule.
 - Fix-B variant (`started` gate) → all joins return; safety co-assertion (no sweep while A
   occupied-and-unpublished for the swept gen) still holds.
-Run: `RUSTFLAGS="--cfg loom" cargo test --release loom_straddle -- --nocapture`, `LOOM_MAX_PREEMPTIONS=3`
+Run: `RUSTFLAGS="--cfg loom -C target-cpu=native" LOOM_MAX_PREEMPTIONS=3 cargo test --release --lib loom_straddle -- --nocapture`
 (needs ~2 preemptions: slip A's gen-read between the driver's gen-bump and _gip-drop, then let the driver
 finish past A). Full surrogate map + thread bodies are in the audit agent's report (this session).
 
@@ -150,12 +150,10 @@ loop {
 // (B-closure). The current bare non-publishing admission wait is the relocated-hang and must change.
 ```
 
-**W2-notify hardening (complementary):** in `end_rendezvous_cycle` (under RENDEZVOUS_MUTEX, after the gen
-bump) ALSO `{ let _r = RESUME_MUTEX.lock(); RESUME_CONDVAR.notify_all(); }` — removes the per-occurrence
-5 s stall (W2 keys on GC_CYCLE_GEN under RENDEZVOUS_MUTEX but is woken under RESUME_MUTEX). New
-`RENDEZVOUS→RESUME` nest is safe today (the reverse nest doesn't exist — verified) but the loom model
-MUST assert the lock-order. Also have `set_current_cycle_started` notify `GC_PROGRESS_CONDVAR` (for the
-else-arm wait + the symmetric-TOCTOU wake).
+**W2-notify hardening (implemented form):** `worker_resume_wait_for_cycle` was moved onto
+`RENDEZVOUS_MUTEX`/`RENDEZVOUS_CONDVAR`, so `end_rendezvous_cycle`'s gen bump and W2 wake share one
+Mesa monitor and no cross-lock `RENDEZVOUS→RESUME` nest is introduced. `set_current_cycle_started`
+also notifies `GC_PROGRESS_CONDVAR` for the teardown-window wait and the symmetric TOCTOU wake.
 
 **Loom (`mod loom_straddle`) MUST assert R1** (the relocated-hang catch): driver loops TWO cycles (K, K+1);
 `wait_for(5s)`→plain `wait` (no timeout); BUG-REPRO (gen-gate, no started)→deadlock; Fix-B-without-closure
@@ -170,8 +168,13 @@ transient — benign iff R1 holds; (3) lock-free `started` visibility — pin wi
 (4) W2 lock-order — assert in loom; (5) teardown-window spin — removed by the else-arm condvar wait.
 
 ## Status
-Root-caused source-conclusive + **design CONVERGED via red-team (Fix B + the B-closure + W2 hardening +
-loom-R1)**. The red-team caught that the bare `started`-gate would relocate the hang — the B-closure is
-mandatory. To IMPLEMENT after the corruption fix (Fix #1 forked-env rooting) is validated + committed —
-sequence the two concurrency changes, not juggle them. Implement WITH build+loom feedback (do not write
-blind). This is task #17 (E5) for the deadlock half of E1-FLIP.
+Root-caused source-conclusive + **implemented in source**: `GC_CYCLE_STARTED`, the started-gated
+straddle re-park, the B-closure re-read in the rejoin tail, and the Mesa-correct W2 gen wait are all
+present in `src/backend/models/gc_allocator.rs`, with the driver prologue publishing `cur_gen` in
+`src/backend/eval/cesk/gc_driver.rs`.
+
+Validation on 2026-06-04:
+`systemd-run --user --scope -q -p MemoryMax=22G -p MemorySwapMax=0 -p CPUQuota=1600% --setenv=RUSTFLAGS='--cfg loom -C target-cpu=native' --setenv=LOOM_MAX_PREEMPTIONS=3 cargo test --release --lib loom_straddle -- --nocapture`
+passed: 1 fixed model passed, 2 expected-fail variants ignored/manual, 3998 filtered out. The expected-fail
+variants are intentionally `#[ignore]` because loom's deadlock report can abort during cleanup instead of
+unwinding cleanly through `#[should_panic]`.

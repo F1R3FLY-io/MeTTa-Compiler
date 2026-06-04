@@ -10093,14 +10093,16 @@ mod loom_rendezvous {
 //     so A's phantom re-park for gen=2 — a cycle no driver ever runs — is PERMANENT.
 //
 // EXPECTED loom outcomes (the user's witness protocol — this IS the gate):
-//   * BUG-REPRO              → `a.join()` MUST DEADLOCK (confirms the model captures
-//                              the bug; loom finds the gen-read-in-teardown-window
-//                              schedule and the phantom park hangs forever).
-//   * Fix-B-without-closure  → R1 MUST FAIL (the relocated hang: A breaks, cycle 2
-//                              starts, A sits in the non-publishing admission wait
-//                              while the driver waits on A's occupied,published<2
-//                              slot → both block forever).
-//   * Fix-B-with-closure     → ALL joins return + R1 holds (driver-waiting-on-A ⟹ A
+//   * BUG-REPRO              → manual expected-fail model: `a.join()` MUST DEADLOCK
+//                              (confirms the model captures the bug; loom finds the
+//                              gen-read-in-teardown-window schedule and the phantom
+//                              park hangs forever).
+//   * Fix-B-without-closure  → manual expected-fail model: R1 MUST FAIL (the relocated
+//                              hang: A breaks, cycle 2 starts, A sits in the
+//                              non-publishing admission wait while the driver waits on
+//                              A's occupied,published<2 slot → both block forever).
+//   * Fix-B-with-closure     → green model: ALL joins return + R1 holds
+//                              (driver-waiting-on-A ⟹ A
 //                              re-observes started≥2 and REPUBLISHES) + the safety
 //                              co-assertion (no sweep while A occupied∧published<cur)
 //                              + the RENDEZVOUS→RESUME lock-order assertion.
@@ -10111,7 +10113,9 @@ mod loom_rendezvous {
 //   RUSTFLAGS="--cfg loom -C target-cpu=native" LOOM_MAX_PREEMPTIONS=3 \
 //     systemd-run --user --scope -q -p MemoryMax=22G -p MemorySwapMax=0 \
 //       -p CPUQuota=1600% \
-//     cargo test --release loom_straddle -- --nocapture
+//     cargo test --release --lib loom_straddle -- --nocapture
+// The two expected-fail variants are `#[ignore]` because loom's deadlock report can
+// abort during cleanup instead of unwinding cleanly through `#[should_panic]`.
 #[cfg(loom)]
 mod loom_straddle {
     use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -10507,6 +10511,7 @@ mod loom_straddle {
     /// runs), and waits for gen!=2 forever. Loom reports the deadlock (confirms the
     /// model is NON-VACUOUS — it captures the real bug).
     #[test]
+    #[ignore = "manual expected-fail loom model: deadlocks when the bug is present"]
     fn loom_straddle_bug_repro_deadlocks() {
         loom::model(|| {
             let s = Arc::new(St::new());
@@ -10532,6 +10537,7 @@ mod loom_straddle {
     /// driver's witness wait blocks on A's occupied,published=1<2 slot → both forever.
     /// R1 MUST FAIL ⇒ loom reports the deadlock (PROVES the B-closure is necessary).
     #[test]
+    #[ignore = "manual expected-fail loom model: deadlocks without the B-closure"]
     fn loom_straddle_fix_b_no_closure_fails_r1() {
         loom::model(|| {
             let s = Arc::new(St::new());

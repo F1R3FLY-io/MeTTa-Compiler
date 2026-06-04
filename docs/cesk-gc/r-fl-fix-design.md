@@ -1,7 +1,7 @@
 # R-FL fix — idempotent free-list push (converged, red-teamed design)
 
 **Date:** 2026-06-03
-**Status:** IMPLEMENTED + scoped-verified. Production idempotent push in `add0585`; release-drain invariant in `ae61034`; index-gc integration test API fallout fixed in `70ab067`; bounded forced evaluator churn gate added in `tests/rfl_forced_gc.rs`, strengthened with minor/major counters in `d101e1b`, and repeated by `scripts/rfl_forced_gc_x20.sh` (`a017488`, path-derived in `3b7e645`). The post-fix FANOUT=0 ×20 gate is green; `rendezvous_forced_churn_reuses_free_list_without_duplicates` now exercises the dedicated `"rendezvous"` sweep entry directly with the free-list checker enabled. The pre-fix-bite gate remains separate (see "Remaining gate").
+**Status:** IMPLEMENTED + scoped-verified. Production idempotent push in `add0585`; release-drain invariant in `ae61034`; index-gc integration test API fallout fixed in `70ab067`; bounded forced evaluator churn gate added in `tests/rfl_forced_gc.rs`, strengthened with minor/major counters in `d101e1b`, and repeated by `scripts/rfl_forced_gc_x20.sh` (`a017488`, path-derived in `3b7e645`). The post-fix FANOUT=0 ×20 gate is green; `rendezvous_forced_churn_reuses_free_list_without_duplicates` now exercises the dedicated `"rendezvous"` sweep entry directly with the free-list checker enabled. The historical pre-fix bite is covered by `scripts/rfl_pre_fix_bite.sh`.
 **Root cause:** `docs/cesk-gc/e1-flip-collapse-worker-env-gap-2026-06-03.md` (§"R-FL CONFIRMED").
 
 ## The bug (one line)
@@ -56,16 +56,17 @@ Keep the committed `on_free_list` `AtomicBool` shadow + `freelist_check_enabled(
 - Bounded evaluator churn gate: `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=300% cargo test --test rfl_forced_gc --features index-gc -- --nocapture` passed, 1/1, 23.36s. The test enables `METTATRON_INDEX_GC_FREELIST_CHECK=1`, drives the public compile/eval path through generated allocation churn, and asserts `cycles_run()`, `minor_cycles_run()`, and `major_cycles_run()` all increase so the run is non-vacuous and covers both sweep kinds.
 - Repeated FANOUT=0 post-fix gate: `scripts/rfl_forced_gc_x20.sh 20` passed under the capped lane, runs=20 failures=0, using the same detector-backed evaluator churn harness. The script derives the checkout path from its own location and uses `mktemp` for logs, so it is not tied to one local workspace path.
 - Dedicated-phase unit gate: `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=300% cargo test -q rendezvous_forced_churn_reuses_free_list_without_duplicates --features index-gc -- --nocapture` passed, 1/1. The test opens the production rendezvous gate via `GcInProgressGuard` + the witness flag, runs the shared `run_collection_if_triggered_rendezvous` entry twice, asserts rendezvous counters advance, and leaves duplicate detection to `METTATRON_INDEX_GC_FREELIST_CHECK=1`.
+- Historical pre-fix bite: `scripts/rfl_pre_fix_bite.sh` passed. It checks out `add0585^` into a temporary sibling worktree, injects a unit test that asserts the current-segment dead slot appears at most once in `free_list` across repeated young sweeps, and requires the old checkout to fail with `pre-fix bite: duplicate free-list entry`. This is intentionally source-level: the detector-backed panic did not exist until the fix commit, so the old binary cannot be tested with that detector without first patching it.
 
 ### Remaining gate
 
-A bounded Rust harness now covers the post-fix FANOUT=0 evaluator-level non-vacuity check without relying on the earlier recursive MeTTa fixture. It builds+discards enough transient expressions to force both minor and major collection in every run; the post-fix ×20 arm is green. The **linchpin pre-fix bite** remains: the *pre-fix* binary should panic `DUPLICATE FREE-LIST PUSH` on the same detector-backed gate (reproduce first), and the *post-fix* binary should complete with 0 panics.
+A bounded Rust harness now covers the post-fix FANOUT=0 evaluator-level non-vacuity check without relying on the earlier recursive MeTTa fixture. It builds+discards enough transient expressions to force both minor and major collection in every run; the post-fix ×20 arm is green. The pre-fix bite is discharged by `scripts/rfl_pre_fix_bite.sh`; because the detector was introduced with the fix, the durable historical check injects the no-duplicate assertion into the old checkout and requires that assertion to fail for the expected duplicate-listing reason.
 
 The current forced-MeTTa fixture attempt timed out rather than producing a clean gate result. Do not count V2/V3 below as fully discharged until the bounded deterministic harness also covers the dedicated-collector and robot-correctness cases.
 
 | # | Check | Pass |
 |---|---|---|
-| V1 | detector ON, forced GC, FANOUT=0, ×20 | post-fix bounded evaluator churn passes ×20 with cycles>0, minors>0, majors>0; pre-fix-bite still pending |
+| V1 | detector ON, forced GC, FANOUT=0, ×20 | post-fix bounded evaluator churn passes ×20 with cycles>0, minors>0, majors>0; historical pre-fix bite reproduces the duplicate free-list invariant violation |
 | V2 | detector ON, forced GC, dedicated rendezvous sweep path | direct rendezvous unit gate passes with counters>0; full FANOUT=8 ×20 remains a broader E1 gate |
 | V3 | robot correctness, FANOUT=0 AND FANOUT=8 DEDICATED=1, forced GC | wrong-subset rate 0% (was ~3-5%) both modes |
 | V4 | conformance, slab AND index-gc, FANOUT=0 | 483/0 both (functional + slab parity) |

@@ -145,6 +145,14 @@ of the primary fix** (scientific isolation: test one variable first).
 - raven @ FANOUT=8 DEDICATED=1 MIN=131072: ASAN **0-UAF, 19 cycles**, correct.
 - conformance **DEDICATED=0 FANOUT=0 = 483/0** (byte-identical dormant) and **DEDICATED=1 FANOUT=8 MIN=131072 = 483/0** (no regression).
 
+### UPDATE 2026-06-04 — post-R-FL discriminator re-run
+
+After the R-FL idempotent free-list fix and historical pre-fix bite gate, the current release binary was rebuilt with `--features index-gc` and the capped discriminator was re-run:
+
+`systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1200% --quiet env N=16 bash scripts/e1_flip_discriminator.sh`
+
+Result: robot @ FANOUT=8 was 0/16 failures in all three arms: sweeping dedicated (`DEDICATED=1`, `MIN=131072`), baseline (`DEDICATED=0`), and no-sweep dedicated (`DEDICATED=1`, `MIN=4294967295`). The non-vacuity report showed rendezvous major/minor cycles with reclaimed slots and a segment release. The historical arm-C residual below was not reproduced in this run; keep it as a longer-run watch item until the full determinism gate supersedes it. The default flip remains reserved for explicit approval.
+
 **Two residual issues surfaced by the gate (NEITHER blocks the headline; the default flip is user-gated and the default config is clean):**
 
 1. **arm C (DEDICATED=1, MIN=4294967295 = 4 GiB major floor → MINOR-only regime): rare ~1/16 (6%) intermittent FAILURE** — one HANG (rc=124) + one wrong-subset corruption across ~32 runs. This is an ARTIFICIAL config (disables major collection; no realistic deployment sets a 4 GiB floor). The headline major+minor config (arm A) is clean. Root-cause UNCONFIRMED: an Explore pass hypothesized "minors don't bump `GC_CYCLE_GEN` → witness hangs" but that is **REFUTED** (`end_rendezvous_cycle` bumps the gen unconditionally per cycle, gc_allocator.rs:3955). The real mechanism is a rare race in the high-frequency minor-only rendezvous — pending a runtime deadlock-dump. Candidate safe fix (if confirmed): under `dedicated_gc_enabled() && FANOUT>0`, promote a due minor to a full major in the rendezvous (the validated path), or defer minors to the next major — both gated, correctness-by-construction, perf-only cost. Because a fix touches the delicate 4-red-team-round witness protocol (high regression blast radius) for an edge config, it is being root-caused + red-team-designed before any change.

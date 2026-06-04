@@ -1,7 +1,18 @@
 # E1-FLIP / CEX-1 — Principled, Fully-Generalized Rendezvous Root Completeness
 
-**Status:** designed (Plan agent, 2026-06-02), implementation pending. Supersedes the
-per-site manual root enumeration WIP (which is to be reverted + redone canonically).
+**Status:** implemented in source; retained as the design record. The described
+canonical per-thread contribution, live-dispatch anchors, and rendezvous-union oracle
+are present in `roots.rs`, `gc_allocator.rs`, `gc_driver.rs`, `types.rs`, and
+`eval_loop.rs`. Later E1 ledgers supersede the original validation/default-flip plan;
+the dedicated collector remains opt-in and the default flip is still gated.
+
+**Implementation audit (2026-06-04):** the stale WIP patch
+`docs/cesk-gc/wip-cex1-principled-impl.patch` no longer applies because its edit sites
+are already represented in current source: `ThreadContribution` /
+`collect_complete_thread_contribution`, `collect_live_dispatch_anchors`,
+`register_live_dispatch`, `snapshot_live_dispatch_witness`,
+`collect_live_dispatch_anchors(&mut roots)`, and `assert_rendezvous_union_complete`.
+Do not reapply the patch.
 
 ## Why (the anti-fragility mandate)
 
@@ -114,11 +125,15 @@ dispatch trips a debug panic, not a corruption bug.
 5. ×20 determinism (robot @ FANOUT=8 DEDICATED=1, byte-identical canonical output).
 6. The new oracle (debug) over the discriminator + V4 fixtures: 0 oracle panics.
 
-Then: commit CEX-1 → re-run V4 → the 1-line default flip (`dedicated_gc_enabled()` gc_allocator.rs:3103 `== Ok("1")` → `!= Ok("0")`) = E1-FLIP Commit B. Rollback = zero-code `METTATRON_INDEX_GC_DEDICATED=0`.
+CEX-1 itself is committed. The 1-line default flip remains reserved for explicit user
+approval after the current E1/R-FL gates are green. Rollback for the opt-in path remains
+zero-code: `METTATRON_INDEX_GC_DEDICATED=0`.
 
 ## Risks
 - `collect_live_dispatch_anchors` lock order: `LIVE_DISPATCHES.lock()` then per-handle `results.try_lock()` (never `lock` — a contended `results` ⇒ a worker mid-write holding its EvalGuard = a class-1 participant who self-rooted that value; skip is safe). Driver holds no other lock at :186.
 - `Weak` upgrade race at deregistration: upgrade-succeeds (over-count, sound) or fails (complete, results in parent K) — both sound.
 - Byte-identical dormant: all `#[cfg(index-gc)]` + `dedicated_gc_enabled()` + `n_threads()>1`; FANOUT=0 never registers; slab providers stay constructed (no dead_code).
 - Over-count (E₀ N×, all live dispatches): sound (dedup at the `as_arena_addr` mark projection); throughput-only, measured at Phase F.
-- Closes the stress_multidir `live Atom/String slot` recycle panic (same incomplete-mark cause; the `"rendezvous"`-phase side-Box deferral is defense-in-depth).
+- The original expectation was that this would close the `stress_multidir` recycle panic;
+  later validation reclassified that fixture as a pre-existing FANOUT=8 baseline crash
+  tracked separately in `e1-flip-collapse-worker-env-gap-2026-06-03.md`.

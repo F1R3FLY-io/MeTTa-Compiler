@@ -15,10 +15,14 @@
 # Runs the PREBUILT index binary directly (no cargo) → valid under sibling build load
 # (output is CPU-independent; ample thread headroom rules out the work-pool EAGAIN flake).
 set -uo pipefail
-BIN="${BIN:-/tmp/mettatron-index-gc}"
-ROBOT="${ROBOT:-/home/dylon/Workspace/f1r3fly.io/PLN-main/examples/Robot.metta}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
+PLN_DIR="${PLN_DIR:-$REPO_PARENT/PLN-main}"
+BIN="${BIN:-$REPO/target/release/mettatron}"
+ROBOT="${ROBOT:-$PLN_DIR/examples/Robot.metta}"
 N="${N:-16}"
-P=/tmp/e1_disc
+P="${P:-$(mktemp -d -t "e1_disc.XXXXXXXX")}"
 mkdir -p "$P"
 
 # CORRECT METRIC (the prior "count ❌" was an ARTIFACT — a run that drops a live
@@ -42,6 +46,8 @@ run_verdict() { # $1=dedic $2=min  → echoes "PASS"|"FAIL(reason)"
 
 echo "===== E1-FLIP DISCRIMINATOR (robot @ FANOUT=8 ×$N, 3 arms) ====="; date
 echo "BIN=$BIN  metric=✅-present-and-no-❌ (truncation/HANG/OOM = FAIL)"
+echo "robot=$ROBOT"
+echo "scratch=$P"
 
 declare -A DEDIC=( [A]=1 [B]=0 [C]=1 )
 declare -A MIN=(  [A]=131072 [B]=131072 [C]=4294967295 )

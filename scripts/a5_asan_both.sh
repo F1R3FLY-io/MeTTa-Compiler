@@ -14,17 +14,24 @@
 # Both -Zbuild-std nightly ASAN, capped 32G build / 24G run, FOREGROUND, serial.
 set -uo pipefail
 LABEL="${1:?usage: a5_asan_both.sh <label>}"
-REPO=/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler
-CONF="${CONFORMANCE_DIR:-/home/dylon/Workspace/f1r3fly.io/mettatron-specification/conformance}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
+CONF="${CONFORMANCE_DIR:-$REPO_PARENT/mettatron-specification/conformance}"
 cd "$REPO"
 BIN="$REPO/target/x86_64-unknown-linux-gnu/debug/mtt-conformance"
-P="/tmp/a5_${LABEL}_asan"
+SAFE_LABEL="${LABEL//[^A-Za-z0-9_.-]/_}"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -t "a5_${SAFE_LABEL}_asan.XXXXXXXX")}"
+P="$LOG_DIR/a5_${SAFE_LABEL}_asan"
 build_asan() {  # $1... = extra cargo args (e.g. --features index-gc)
   systemd-run --user --scope -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=800% -p TasksMax=256 \
     env RUSTFLAGS="-Zsanitizer=address -C target-cpu=native" \
     cargo +nightly build -Zbuild-std --target x86_64-unknown-linux-gnu --bin mtt-conformance -j4 "$@"
 }
 echo "===== A5 ASAN BOTH [$LABEL] ====="; date
+echo "repo=$REPO"
+echo "conformance_dir=$CONF"
+echo "logs=$LOG_DIR"
 
 echo "### build SLAB ASAN bin"
 build_asan > "${P}_slab_build.log" 2>&1; echo "slab_build_rc=$?"; tail -2 "${P}_slab_build.log"

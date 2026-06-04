@@ -10,20 +10,47 @@
 # this is NOT a stash/reset/checkout of my uncommitted edits). Worktree removed at end.
 # Capped; correct metric (✅-present + no-❌; truncation/HANG/OOM = FAIL).
 set -uo pipefail
-REPO=/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler
-WT=/tmp/mtt-head-8070c78
-RB=/home/dylon/Workspace/f1r3fly.io/PLN-main/examples/Robot.metta
-echo "===== H2: HEAD 8070c78 DEDICATED=1 robot @ FANOUT=8 ====="; date
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
+TARGET_REF="${TARGET_REF:-8070c78}"
+PLN_DIR="${PLN_DIR:-$REPO_PARENT/PLN-main}"
+RB="${ROBOT:-$PLN_DIR/examples/Robot.metta}"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -t "e1_h2.XXXXXXXX")}"
+if [ -z "${WT:-}" ]; then
+  WT="$(mktemp -d -p "$REPO_PARENT" "mtt-head-${TARGET_REF}.XXXXXXXX")"
+  rmdir "$WT"
+fi
+WORKTREE_ADDED=0
+cleanup() {
+  if [ "$WORKTREE_ADDED" -eq 1 ]; then
+    git -C "$REPO" worktree remove --force "$WT" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
-git -C "$REPO" worktree remove --force "$WT" 2>/dev/null || true
-git -C "$REPO" worktree add --force --detach "$WT" 8070c78 2>&1 | tail -2 || { echo "worktree add FAILED"; exit 1; }
+echo "===== H2: HEAD $TARGET_REF DEDICATED=1 robot @ FANOUT=8 ====="; date
+echo "repo=$REPO"
+echo "worktree=$WT"
+echo "robot=$RB"
+echo "logs=$LOG_DIR"
+
+if [ -e "$WT" ]; then
+  echo "worktree path already exists: $WT" >&2
+  exit 1
+fi
+git -C "$REPO" worktree add --force --detach "$WT" "$TARGET_REF" 2>&1 | tail -2 || { echo "worktree add FAILED"; exit 1; }
+WORKTREE_ADDED=1
 
 cd "$WT"
 echo "--- build index-gc release at 8070c78 (capped 24G, separate target/) ---"
+BUILD_LOG="$LOG_DIR/h2_build.log"
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=2400% --quiet \
-  cargo build --release --features index-gc 2>&1 | tee /tmp/h2_build.log | grep -E "Compiling mettatron|^error|Finished" | tail -5
+  cargo build --release --features index-gc > "$BUILD_LOG" 2>&1
+echo "build_rc=$?"
+grep -E "Compiling mettatron|^error|Finished" "$BUILD_LOG" | tail -5
 HEADBIN="$WT/target/release/mettatron"
-if [ ! -x "$HEADBIN" ]; then echo "HEAD BUILD FAILED — aborting"; cd "$REPO"; git worktree remove --force "$WT" 2>/dev/null; exit 1; fi
+if [ ! -x "$HEADBIN" ]; then echo "HEAD BUILD FAILED — aborting"; exit 1; fi
 
 echo "--- HEAD 8070c78 DEDICATED=1 (the FANOUT=8 broken config) ×4 ---"
 for i in 1 2 3 4; do
@@ -43,5 +70,7 @@ out=$(timeout 120 env METTATRON_PARALLEL_FANOUT_DEPTH=8 METTATRON_INDEX_GC_DEDIC
   "$HEADBIN" --gc index "$RB" 2>/dev/null)
 echo "  HEAD D0: ❌=$(printf '%s' "$out"|grep -c '❌') ✅=$(printf '%s' "$out"|grep -c '✅') lines=$(printf '%s' "$out"|grep -vE '^\[index_gc\]'|grep -c .)"
 
-cd "$REPO"; git worktree remove --force "$WT" 2>&1 | tail -1
+cd "$REPO"
+git -C "$REPO" worktree remove --force "$WT" 2>&1 | tail -1
+WORKTREE_ADDED=0
 echo "===== H2 DONE — interpretation: HEAD-FAIL ⇒ bug pre-dates my edits; HEAD-PASS/cleaner ⇒ my ①a/①c regressed it ====="; date

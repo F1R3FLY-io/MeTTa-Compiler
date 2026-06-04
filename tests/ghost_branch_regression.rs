@@ -47,7 +47,7 @@ fn eval_last(source: &str) -> Vec<String> {
 // Category 1 & 2: CollectSExpr / conjunction binding-conflict → drop
 // ============================================================================
 
-/// Reproducer confirmed by Explore agent (`/tmp/test_conj.metta`).
+/// Reproducer confirmed by Explore agent with a standalone conjunction fixture.
 ///
 /// Before Phase 2.B fix (rendered with Workstream B's HE-style bindings):
 /// ```

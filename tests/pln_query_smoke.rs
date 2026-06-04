@@ -5,8 +5,8 @@
 //! query-side bindings (e.g. `$1 → Anna`) must flow through to the
 //! compiled-RHS BindingFrame so PushVariable resolves transitively.
 //!
-//! See `/home/dylon/.claude/plans/pln-perf-principled-solution.md` for
-//! the full diagnosis (R1: binding-loss between rule-match and case body).
+//! See the PLN performance plan ledger for the full diagnosis
+//! (R1: binding-loss between rule-match and case body).
 
 use mettatron::{compile, eval, new_env};
 

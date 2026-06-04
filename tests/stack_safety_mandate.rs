@@ -10,7 +10,7 @@
 //! for naïve recursion regardless of build profile).
 //!
 //! Audit reference: see [[parallel-dispatch-trampolinization]] in user
-//! memory and `/home/dylon/.claude/plans/i-got-the-following-idempotent-globe.md`.
+//! memory and the stack-safety plan ledger.
 
 use mettatron::backend::models::{global_factory, MettaValue, MettaValueFactory, MettaValueTrait};
 

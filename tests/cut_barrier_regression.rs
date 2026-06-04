@@ -20,8 +20,8 @@
 //! transcribed INLINE here (do NOT read it from `/PeTTa/`) so this test is
 //! self-contained and pins the exact committed result.
 //!
-//! Oracle: `cd /home/dylon/Workspace/f1r3fly.io/PeTTa && sh run.sh
-//! examples/cut.metta silent` → `(bar 1)` (cut commits to the FIRST match).
+//! Oracle: running `examples/cut.metta` in the sibling PeTTa checkout with
+//! silent output returns `(bar 1)` (cut commits to the FIRST match).
 //!
 //! Adding or modifying tests here requires re-running the full lib/nextest
 //! suite + mtt-conformance + the PLN-main examples to confirm no regression.

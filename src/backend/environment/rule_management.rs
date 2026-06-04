@@ -3962,8 +3962,8 @@ where
                         // into the freshened RHS, leaving freshened body-
                         // only vars (epoch-unique) for downstream.
                         //
-                        // HE parity: mirrors `CachingMapper` per-query at
-                        // `/home/dylon/Workspace/f1r3fly.io/hyperon-experimental/hyperon-space/src/index/trie.rs:262`.
+                        // HE parity: mirrors `CachingMapper` per-query in
+                        // `hyperon-space/src/index/trie.rs`.
                         // P2 + Option D: HE-style stored-side rename then scope tag.
                         //
                         // The matcher emits `bindings` keyed on rule's ORIGINAL

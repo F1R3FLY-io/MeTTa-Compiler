@@ -1020,8 +1020,8 @@ where
                 // (legacy `EvalEval`) to preserve PLN. Treating `reduce` as a
                 // one-step alias of `eval` (as the S4 plan text suggested)
                 // would break Direct/Smokes' multi-step `(stv ...)` derivations.
-                // See `/home/dylon/Workspace/f1r3fly.io/PLN/examples/Direct.metta:42`
-                // — `(collapse (reduce (eval $grounded)))` needs the outer
+                // See `PLN/examples/Direct.metta` — `(collapse (reduce
+                // (eval $grounded)))` needs the outer
                 // `reduce` to enumerate all rule applications.
                 "reduce" => {
                     if items.len() != 2 {

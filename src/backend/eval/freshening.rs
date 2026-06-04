@@ -74,8 +74,8 @@ where
 ///
 /// Used to mint per-invocation epochs at rule-match time so each rule
 /// dispatch produces globally-distinct `$__fr_{epoch}_*` variable
-/// names (mirrors HE's `CachingMapper::new(|v| v.make_unique())` at
-/// `/home/dylon/Workspace/f1r3fly.io/hyperon-experimental/hyperon-space/src/index/trie.rs:262`).
+/// names (mirrors HE's `CachingMapper::new(|v| v.make_unique())` in
+/// `hyperon-space/src/index/trie.rs`).
 #[inline]
 pub fn allocate_epoch() -> u64 {
     FRESHEN_COUNTER.fetch_add(1, Ordering::Relaxed)

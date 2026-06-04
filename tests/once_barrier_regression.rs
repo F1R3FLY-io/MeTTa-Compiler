@@ -14,8 +14,8 @@
 //! (never memoized — the cut_nested lesson) and is routed to the T0 trampoline
 //! by `can_compile_with_env` (the T1 bytecode VM has no `once` lowering).
 //!
-//! Oracle (live PeTTa): `cd /home/dylon/Workspace/f1r3fly.io/PeTTa &&
-//! sh run.sh examples/once.metta silent` → `(bar 1)`.
+//! Oracle (live PeTTa): running `examples/once.metta` in the sibling PeTTa
+//! checkout with silent output returns `(bar 1)`.
 //!
 //! Adding or modifying tests here requires re-running the full lib/nextest
 //! suite + mtt-conformance + the PLN-main examples to confirm no regression.

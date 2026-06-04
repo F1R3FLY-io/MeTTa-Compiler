@@ -1576,6 +1576,9 @@ pub mod index_gc {
     /// total cycle count alone is too weak for that gate.
     static MINOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
     static MAJOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
+    static RENDEZVOUS_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
+    static RENDEZVOUS_MINOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
+    static RENDEZVOUS_MAJOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
 
     /// Adaptive committed-bytes watermark. The collector fires when the index
     /// heap's committed bytes exceed this; recomputed after each cycle as
@@ -1708,6 +1711,24 @@ pub mod index_gc {
     #[inline]
     pub fn major_cycles_run() -> u64 {
         MAJOR_CYCLES_RUN.load(Ordering::Relaxed)
+    }
+
+    /// Number of cycles run by the dedicated rendezvous collector.
+    #[inline]
+    pub fn rendezvous_cycles_run() -> u64 {
+        RENDEZVOUS_CYCLES_RUN.load(Ordering::Relaxed)
+    }
+
+    /// Number of minor cycles run by the dedicated rendezvous collector.
+    #[inline]
+    pub fn rendezvous_minor_cycles_run() -> u64 {
+        RENDEZVOUS_MINOR_CYCLES_RUN.load(Ordering::Relaxed)
+    }
+
+    /// Number of major cycles run by the dedicated rendezvous collector.
+    #[inline]
+    pub fn rendezvous_major_cycles_run() -> u64 {
+        RENDEZVOUS_MAJOR_CYCLES_RUN.load(Ordering::Relaxed)
     }
 
     /// Cheap pre-check for the call sites: is a collection plausibly due?
@@ -2211,6 +2232,13 @@ pub mod index_gc {
         GC_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
         if phase == "midloop" {
             MIDLOOP_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
+        } else if phase == "rendezvous" {
+            RENDEZVOUS_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
+            if did_major {
+                RENDEZVOUS_MAJOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
+            } else {
+                RENDEZVOUS_MINOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
+            }
         }
 
         // Optional ops trace (METTATRON_INDEX_GC_REPORT=2): per-cycle reclaim, with

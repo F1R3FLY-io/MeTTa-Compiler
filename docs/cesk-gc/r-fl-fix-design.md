@@ -1,7 +1,7 @@
 # R-FL fix — idempotent free-list push (converged, red-teamed design)
 
 **Date:** 2026-06-03
-**Status:** IMPLEMENTED + scoped-verified. Production idempotent push in `add0585`; release-drain invariant in `ae61034`; index-gc integration test API fallout fixed in `70ab067`; bounded forced evaluator churn gate added in `tests/rfl_forced_gc.rs`. The broader ×20 / dedicated-collector / pre-fix-bite gates remain separate (see "Remaining gate").
+**Status:** IMPLEMENTED + scoped-verified. Production idempotent push in `add0585`; release-drain invariant in `ae61034`; index-gc integration test API fallout fixed in `70ab067`; bounded forced evaluator churn gate added in `tests/rfl_forced_gc.rs`, strengthened with minor/major counters in `d101e1b`, and repeated by `scripts/rfl_forced_gc_x20.sh` (`a017488`, path-derived in `3b7e645`). The post-fix FANOUT=0 ×20 gate is green; the dedicated-collector and pre-fix-bite gates remain separate (see "Remaining gate").
 **Root cause:** `docs/cesk-gc/e1-flip-collapse-worker-env-gap-2026-06-03.md` (§"R-FL CONFIRMED").
 
 ## The bug (one line)
@@ -54,16 +54,17 @@ Keep the committed `on_free_list` `AtomicBool` shadow + `freelist_check_enabled(
 - TLC negative: `MC_RFL_bug.cfg` still fails as expected with `freeList = <<0, 0>>`.
 - Broad filtered compile/run after the `eval` return-shape fallout: `cargo test --features index-gc index_arena::tests -- --nocapture` passed after `70ab067`.
 - Bounded evaluator churn gate: `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=300% cargo test --test rfl_forced_gc --features index-gc -- --nocapture` passed, 1/1, 23.36s. The test enables `METTATRON_INDEX_GC_FREELIST_CHECK=1`, drives the public compile/eval path through generated allocation churn, and asserts `cycles_run()`, `minor_cycles_run()`, and `major_cycles_run()` all increase so the run is non-vacuous and covers both sweep kinds.
+- Repeated FANOUT=0 post-fix gate: `scripts/rfl_forced_gc_x20.sh 20` passed under the capped lane, runs=20 failures=0, using the same detector-backed evaluator churn harness. The script derives the checkout path from its own location and uses `mktemp` for logs, so it is not tied to one local workspace path.
 
 ### Remaining gate
 
-A bounded Rust harness now covers the post-fix FANOUT=0 evaluator-level non-vacuity check without relying on the earlier recursive MeTTa fixture. The broader forced-GC fixture still needs either repair or replacement before counting the full gate: it must build+discard enough transient expressions to cross `YOUNG_BUDGET` (2 MiB) several times and, with low `METTATRON_INDEX_GC_MIN_BYTES`, cross `MAJOR_CADENCE=16` — guaranteeing the major→minor and minor→minor sequences. The **linchpin V1** remains: the *pre-fix* binary should panic `DUPLICATE FREE-LIST PUSH` on that extended gate (reproduce first), and the *post-fix* binary should complete with 0 panics.
+A bounded Rust harness now covers the post-fix FANOUT=0 evaluator-level non-vacuity check without relying on the earlier recursive MeTTa fixture. It builds+discards enough transient expressions to force both minor and major collection in every run; the post-fix ×20 arm is green. The **linchpin pre-fix bite** remains: the *pre-fix* binary should panic `DUPLICATE FREE-LIST PUSH` on the same detector-backed gate (reproduce first), and the *post-fix* binary should complete with 0 panics.
 
-The current forced-MeTTa fixture attempt timed out rather than producing a clean gate result. Do not count V1/V2/V3 below as fully discharged until the extended gate is repaired or replaced with a bounded deterministic harness that covers the ×20 and dedicated-collector cases.
+The current forced-MeTTa fixture attempt timed out rather than producing a clean gate result. Do not count V2/V3 below as fully discharged until the bounded deterministic harness also covers the dedicated-collector and robot-correctness cases.
 
 | # | Check | Pass |
 |---|---|---|
-| V1 | detector ON, forced GC, FANOUT=0, ×20 | partially: bounded post-fix 1× evaluator churn passes with cycles>0, minors>0, majors>0; ×20 and pre-fix-bite still pending |
+| V1 | detector ON, forced GC, FANOUT=0, ×20 | post-fix bounded evaluator churn passes ×20 with cycles>0, minors>0, majors>0; pre-fix-bite still pending |
 | V2 | detector ON, forced GC, FANOUT=8 DEDICATED=1, ×20 | 0 duplicates (mode-independence) |
 | V3 | robot correctness, FANOUT=0 AND FANOUT=8 DEDICATED=1, forced GC | wrong-subset rate 0% (was ~3-5%) both modes |
 | V4 | conformance, slab AND index-gc, FANOUT=0 | 483/0 both (functional + slab parity) |

@@ -24,15 +24,27 @@ fn forced_evaluator_churn_runs_gc_with_freelist_checker() {
     std::env::set_var("METTATRON_PARALLEL_FANOUT_DEPTH", "0");
 
     let cycles_before = index_gc::cycles_run();
+    let minors_before = index_gc::minor_cycles_run();
+    let majors_before = index_gc::major_cycles_run();
 
     for round in 0..ROUNDS {
         run_generated_round(round);
     }
 
     let cycles_after = index_gc::cycles_run();
+    let minors_after = index_gc::minor_cycles_run();
+    let majors_after = index_gc::major_cycles_run();
     assert!(
         cycles_after > cycles_before,
         "forced churn must run at least one index-GC cycle: before={cycles_before}, after={cycles_after}"
+    );
+    assert!(
+        minors_after > minors_before,
+        "forced churn must run at least one minor cycle: before={minors_before}, after={minors_after}"
+    );
+    assert!(
+        majors_after > majors_before,
+        "forced churn must run at least one major cycle: before={majors_before}, after={majors_after}"
     );
 }
 

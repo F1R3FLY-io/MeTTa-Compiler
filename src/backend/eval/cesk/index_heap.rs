@@ -1571,6 +1571,12 @@ pub mod index_gc {
     /// stack) and that the run was ASAN-clean.
     static MIDLOOP_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
 
+    /// Validation observability for the generational split. The R-FL regression
+    /// requires forced workloads that exercise both minor and major sweep paths;
+    /// total cycle count alone is too weak for that gate.
+    static MINOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
+    static MAJOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
+
     /// Adaptive committed-bytes watermark. The collector fires when the index
     /// heap's committed bytes exceed this; recomputed after each cycle as
     /// `max(live_bytes_after_sweep * GROWTH, min_threshold())`. A plain
@@ -1690,6 +1696,18 @@ pub mod index_gc {
     #[inline]
     pub fn midloop_cycles_run() -> u64 {
         MIDLOOP_CYCLES_RUN.load(Ordering::Relaxed)
+    }
+
+    /// Number of minor (young-only) cycles run so far.
+    #[inline]
+    pub fn minor_cycles_run() -> u64 {
+        MINOR_CYCLES_RUN.load(Ordering::Relaxed)
+    }
+
+    /// Number of major (full-heap) cycles run so far.
+    #[inline]
+    pub fn major_cycles_run() -> u64 {
+        MAJOR_CYCLES_RUN.load(Ordering::Relaxed)
     }
 
     /// Cheap pre-check for the call sites: is a collection plausibly due?
@@ -2165,6 +2183,7 @@ pub mod index_gc {
         // post-full-sweep live bytes and resets the minor cadence; a minor only
         // advances the cadence (its young odometer was reset by `promote_young`).
         if did_major {
+            MAJOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
             // B.4: rearm the major watermark from the post-promote OLD-gen live high-water
             // (trigger == rearm metric, both `old_live` ⇒ geometric doubling ⇒ no immediate
             // re-fire; the major now fires only when the old gen genuinely re-grows). On the
@@ -2185,6 +2204,7 @@ pub mod index_gc {
                 CAP_FLOOR.store(0, Ordering::Relaxed);
             }
         } else {
+            MINOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
             MINORS_SINCE_MAJOR.fetch_add(1, Ordering::Relaxed);
         }
 

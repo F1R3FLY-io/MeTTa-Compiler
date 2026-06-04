@@ -53,7 +53,7 @@ Keep the committed `on_free_list` `AtomicBool` shadow + `freelist_check_enabled(
 - TLC positive: `MC_RFL_freebit.cfg` passed with `NoDuplicateFreeListEntries` and `FreeBitExact`, including the release-drain transition.
 - TLC negative: `MC_RFL_bug.cfg` still fails as expected with `freeList = <<0, 0>>`.
 - Broad filtered compile/run after the `eval` return-shape fallout: `cargo test --features index-gc index_arena::tests -- --nocapture` passed after `70ab067`.
-- Bounded evaluator churn gate: `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=300% cargo test --test rfl_forced_gc --features index-gc -- --nocapture` passed, 1/1, 23.09s. The test enables `METTATRON_INDEX_GC_FREELIST_CHECK=1`, drives the public compile/eval path through generated allocation churn, and asserts `index_gc::cycles_run()` increases so the run is non-vacuous.
+- Bounded evaluator churn gate: `systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=300% cargo test --test rfl_forced_gc --features index-gc -- --nocapture` passed, 1/1, 23.36s. The test enables `METTATRON_INDEX_GC_FREELIST_CHECK=1`, drives the public compile/eval path through generated allocation churn, and asserts `cycles_run()`, `minor_cycles_run()`, and `major_cycles_run()` all increase so the run is non-vacuous and covers both sweep kinds.
 
 ### Remaining gate
 
@@ -63,7 +63,7 @@ The current forced-MeTTa fixture attempt timed out rather than producing a clean
 
 | # | Check | Pass |
 |---|---|---|
-| V1 | detector ON, forced GC, FANOUT=0, ×20 | partially: bounded post-fix 1× evaluator churn passes with cycles>0; ×20 and pre-fix-bite still pending |
+| V1 | detector ON, forced GC, FANOUT=0, ×20 | partially: bounded post-fix 1× evaluator churn passes with cycles>0, minors>0, majors>0; ×20 and pre-fix-bite still pending |
 | V2 | detector ON, forced GC, FANOUT=8 DEDICATED=1, ×20 | 0 duplicates (mode-independence) |
 | V3 | robot correctness, FANOUT=0 AND FANOUT=8 DEDICATED=1, forced GC | wrong-subset rate 0% (was ~3-5%) both modes |
 | V4 | conformance, slab AND index-gc, FANOUT=0 | 483/0 both (functional + slab parity) |

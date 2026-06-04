@@ -391,8 +391,8 @@ target robot-irrelevant secondary/tertiary holes).
 
 ## ⭐ NO-RECYCLE SWEPT-BITMAP ORACLE (2026-06-03, on the post-Fix#1 `58598e7` + `cb94de8` + `762c4db` tree) — the RESIDUAL corruption is REUSE-DEPENDENT and BYPASSES `get()`
 
-A deterministic swept-bitmap oracle (env `METTATRON_INDEX_GC_SWEPT_ORACLE=1`; UNCOMMITTED in
-`index_arena.rs`/`index_heap.rs`/`gc_driver.rs`): per-slot `swept: Box<[AtomicBool]>` allocated only when
+A deterministic swept-bitmap oracle (env `METTATRON_INDEX_GC_SWEPT_ORACLE=1`; committed in the arena and
+completed for collector scopes / `INNER_SHADOW` hits in `c14d5ff`): per-slot `swept: Box<[AtomicBool]>` allocated only when
 on, marked Release on **every** sweep-reclaim arm (both the all-dead-word fast path AND the per-bit arm),
 **NO-RECYCLE** (`pop_young_free_slot` returns `None` + the sweep SKIPS the free-list push ⇒ no slot is
 ever reused ⇒ a swept slot's bytes are never overwritten), and `IndexArena::get()` panics on a NON-collector
@@ -430,7 +430,7 @@ which of the dedicated driver's 4 root sources fails to cover the holder. Then r
 fix (root the holder structurally OR extend the value-view release handshake) with a Plan agent; CONFIRM
 empirically by extending the oracle's swept-check to the identified bypass read site (targeted, cheap,
 no-build-cost) and/or TSan (path-agnostic: allocator reuse-write vs holder-read race). The swept-bitmap
-oracle (uncommitted) is a KEEPER diagnostic — env-gated, default-off, byte-identical when off.
+oracle is a KEEPER diagnostic — env-gated, default-off, byte-identical when off.
 
 ### Source-tracing the get()-bypass (2026-06-03) — the SOLE bypass is the `INNER_SHADOW` cache HIT (ABA), NOT a laundered slice
 

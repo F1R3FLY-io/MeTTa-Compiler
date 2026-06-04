@@ -40,7 +40,7 @@ Give each `Segment` a persistent word-packed `free_bit: Box<[AtomicU64]>` (exact
 - **NO change** to `promote_young`, the driver (`index_heap.rs`), the sweep signatures, or `SweepStats` (the decisive simplicity win — the fix is local to push/pop/drain + one field).
 
 ## Detector interaction (keep as a permanent cross-check)
-Keep the uncommitted `on_free_list` `AtomicBool` shadow + `freelist_check_enabled()` (env `METTATRON_INDEX_GC_FREELIST_CHECK=1`). **Repurpose** the three push-arm panics: they currently panic when `is_on_freelist` is set — after (A) that is the *expected* skip, so move the assertion to panic on **disagreement** between the production `free_bit` and the detector shadow (`seg.is_free_bit(off) != seg.is_on_freelist(off)`) at push/pop. Keep the pop "popped ⇒ was-listed" assert. Zero-cost when off; the standing oracle against a future re-regression of this subtle bug.
+Keep the committed `on_free_list` `AtomicBool` shadow + `freelist_check_enabled()` (env `METTATRON_INDEX_GC_FREELIST_CHECK=1`). **Repurpose** the three push-arm panics: they currently panic when `is_on_freelist` is set — after (A) that is the *expected* skip, so move the assertion to panic on **disagreement** between the production `free_bit` and the detector shadow (`seg.is_free_bit(off) != seg.is_on_freelist(off)`) at push/pop. Keep the pop "popped ⇒ was-listed" assert. Zero-cost when off; the standing oracle against a future re-regression of this subtle bug.
 
 ## Verification (conformance does 0 GC cycles — must FORCE GC)
 

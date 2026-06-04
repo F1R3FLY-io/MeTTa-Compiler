@@ -4,16 +4,17 @@
 # Runs the bounded evaluator-level R-FL regression (`tests/rfl_forced_gc.rs`) N
 # times under the index collector with the free-list detector enabled by the
 # test itself. Each cargo invocation is capped and foregrounded; per-run logs
-# are kept under /tmp for audit.
+# are kept in a temporary directory for audit.
 #
 # Usage:
 #   scripts/rfl_forced_gc_x20.sh [runs]
 set -uo pipefail
 
-REPO="${REPO:-/home/dylon/Workspace/f1r3fly.io/MeTTa-Compiler}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 RUNS="${1:-${RUNS:-20}}"
 LABEL="${LABEL:-rfl_forced_gc_x${RUNS}}"
-P="${P:-/tmp/${LABEL}_$(date +%Y%m%d_%H%M%S)}"
+P="${P:-$(mktemp -d -t "${LABEL}_XXXXXXXX")}"
 CAP=(
   systemd-run --user --scope
   -p MemoryMax="${MEMORY_MAX:-16G}"

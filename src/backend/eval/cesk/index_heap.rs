@@ -2811,6 +2811,36 @@ mod tests {
     #[allow(dead_code)]
     fn reset_gc_mode_slab() {}
 
+    struct RendezvousWitnessTestGuard;
+
+    impl RendezvousWitnessTestGuard {
+        fn enter() -> Self {
+            crate::backend::models::gc_allocator::set_current_witness_ok(true);
+            Self
+        }
+    }
+
+    impl Drop for RendezvousWitnessTestGuard {
+        fn drop(&mut self) {
+            crate::backend::models::gc_allocator::set_current_witness_ok(false);
+        }
+    }
+
+    fn run_rendezvous_collection_for_test(roots: &[MettaValue]) -> bool {
+        let _gip = crate::backend::models::gc_allocator::GcInProgressGuard::try_enter()
+            .expect("test rendezvous collection must acquire GC_IN_PROGRESS");
+        let _witness = RendezvousWitnessTestGuard::enter();
+        index_gc::run_collection_if_triggered_rendezvous(roots)
+    }
+
+    fn allocate_dead_fixed_nodes(count: usize, salt: usize) {
+        let mut heap = global_index_heap().write().expect("index heap write lock");
+        for i in 0..count {
+            let n = (salt as f64) * 1_000_000.0 + i as f64 + 0.25;
+            let _ = heap.alloc_fixed(Node::Float(n));
+        }
+    }
+
     #[test]
     fn sexpr_children_roundtrip_and_co_locate() {
         // Inline-scalar children (Bool/Long) don't depend on the value mode.
@@ -2950,6 +2980,53 @@ mod tests {
             !index_gc::gate_open(),
             "gate must be closed once a worker has ever been spawned"
         );
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn rendezvous_forced_churn_reuses_free_list_without_duplicates() {
+        std::env::set_var("METTATRON_INDEX_GC_FREELIST_CHECK", "1");
+        let _mode = enter_index_mode_for_test();
+        let target_young_bytes = 3 * 1024 * 1024;
+        let nodes_to_force_minor = target_young_bytes / std::mem::size_of::<Node>().max(1) + 1;
+        let first_dead_count = nodes_to_force_minor + nodes_to_force_minor / 2;
+
+        allocate_dead_fixed_nodes(first_dead_count, 1);
+        let live = {
+            let mut heap = global_index_heap().write().expect("index heap write lock");
+            let live_addr = heap.alloc_fixed(Node::Float(42.0));
+            MettaValue::from_addr(live_addr, 0)
+        };
+        let roots = vec![live];
+
+        let cycles_before = index_gc::rendezvous_cycles_run();
+        let minors_before = index_gc::rendezvous_minor_cycles_run();
+
+        assert!(
+            run_rendezvous_collection_for_test(&roots),
+            "first forced rendezvous collection must run"
+        );
+
+        // Reuse many, but not all, of the first sweep's current-segment free slots.
+        // The second rendezvous sweep re-sees the still-listed dead slots; the
+        // production free_bit must suppress duplicate pushes.
+        allocate_dead_fixed_nodes(nodes_to_force_minor, 2);
+        assert!(
+            run_rendezvous_collection_for_test(&roots),
+            "second forced rendezvous collection must run"
+        );
+
+        let cycles_after = index_gc::rendezvous_cycles_run();
+        let minors_after = index_gc::rendezvous_minor_cycles_run();
+        assert!(
+            cycles_after >= cycles_before + 2,
+            "forced dedicated gate must run two rendezvous cycles: before={cycles_before}, after={cycles_after}"
+        );
+        assert!(
+            minors_after > minors_before,
+            "forced dedicated gate must include a minor rendezvous cycle: before={minors_before}, after={minors_after}"
+        );
+
         reset_gc_mode_slab();
     }
 

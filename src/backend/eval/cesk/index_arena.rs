@@ -582,11 +582,10 @@ impl<N: Copy> Segment<N> {
         // DEBUG-ONLY oracle: a released segment can never be read (`get`
         // debug-asserts `!released`), so its swept bitmap can be dropped too.
         self.swept = Box::new([]);
-        // DEBUG-ONLY free-list integrity: a released segment's slots are never
-        // pushed (the release `continue`s before the reclaim loop) and never
-        // popped (`pop_young_free_slot` discards non-`cur_seg` Addrs, and a
-        // released segment is never `cur_seg`), and the next major's `clear`
-        // no-ops on an empty box — so drop the shadow with the storage.
+        // DEBUG-ONLY free-list integrity: `sweep_range` drains this segment's
+        // existing free-list entries before calling `release`, and the release
+        // `continue`s before the reclaim loop can push new ones. The bitmap can
+        // therefore be dropped with the node storage.
         self.on_free_list = Box::new([]);
         freed
     }
@@ -633,6 +632,39 @@ fn push_free_list_entry<N: Copy>(
         // say "already listed" instead of panicking on the duplicate opportunity.
         assert_free_tracking_agrees(seg, addr, off, "skip-duplicate-push");
     }
+}
+
+#[inline]
+fn drain_free_list_entries_for_released_segment<N: Copy>(
+    seg: &Segment<N>,
+    free_list: &mut Vec<Addr>,
+    segment_index: usize,
+    check: bool,
+) {
+    // A fresh-bump/TLAB allocation path can advance `cur_seg` without consuming
+    // this segment's current free-list entries. If the now-non-current young
+    // segment dies, release must remove those entries before dropping `free_bits`,
+    // preserving `free_bit(addr) set <=> addr occurs in free_list`.
+    free_list.retain(|addr| {
+        if addr.segment() != segment_index {
+            return true;
+        }
+        let off = addr.offset();
+        if check {
+            assert_free_tracking_agrees(seg, *addr, off, "before-release-drain");
+            if !seg.is_free_bit(off) {
+                panic!(
+                    "RELEASE DRAIN OF NON-FREELIST SLOT: addr={:?} seg={} off={}",
+                    addr,
+                    addr.segment(),
+                    off
+                );
+            }
+            seg.clear_on_freelist(off);
+        }
+        seg.clear_free_bit(off);
+        false
+    });
 }
 
 /// Outcome of a [`IndexArena::sweep`].
@@ -1358,6 +1390,8 @@ impl<N: Copy> IndexArena<N> {
             let fully_dead = unsafe { (*seg_ptr).is_fully_dead() };
 
             if fully_dead && !is_current {
+                let seg: &Segment<N> = unsafe { &*seg_ptr };
+                drain_free_list_entries_for_released_segment(seg, &mut self.free_list, si, check);
                 on_release(si);
                 // Take a `&mut Segment` through the raw pointer to drop its storage.
                 // SAFETY: `&mut self` is exclusive; no other reference to this
@@ -1901,6 +1935,49 @@ mod tests {
         assert_eq!(*arena.get(live), 111);
         assert_eq!(*arena.get(reused), 333);
         assert_eq!(*arena.get(fresh), 444);
+    }
+
+    #[test]
+    fn minor_release_drains_listed_entries_for_released_segment() {
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(4);
+
+        // Fill segment 0, then allocate two slots in segment 1. The first minor
+        // leaves a free-list entry in the current segment.
+        for n in 0..4 {
+            arena.alloc_bump(n);
+        }
+        let live = arena.alloc_bump(100);
+        let listed_dead = arena.alloc_bump(200);
+        assert_eq!(live.segment(), 1);
+        assert_eq!(listed_dead.segment(), 1);
+
+        arena.mark(live);
+        let first_minor = arena.sweep_young();
+        assert_eq!(first_minor.reclaimed_to_free_list, 1);
+        assert_eq!(arena.free_list, vec![listed_dead]);
+        arena.promote_young();
+        assert_eq!(arena.young_floor(), 1);
+
+        // Fresh-bump allocation does not consume the free list. It can therefore
+        // advance the current segment while the prior young segment still has a
+        // listed free slot.
+        let filler_a = arena.alloc_bump(300);
+        let filler_b = arena.alloc_bump(400);
+        let survivor = arena.alloc_bump(500);
+        assert_eq!(filler_a.segment(), 1);
+        assert_eq!(filler_b.segment(), 1);
+        assert_eq!(survivor.segment(), 2);
+        assert_eq!(arena.free_list, vec![listed_dead]);
+
+        // Segment 1 is now young, non-current, and fully dead. Releasing it must
+        // drain its stale free-list entry before dropping that segment's bitmaps.
+        arena.mark(survivor);
+        let second_minor = arena.sweep_young();
+        assert_eq!(second_minor.segments_released, 1);
+        assert!(
+            arena.free_list.is_empty(),
+            "release drains listed entries for the released segment"
+        );
     }
 
     #[test]

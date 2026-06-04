@@ -21,7 +21,7 @@ fn run_all_exprs(source: &str) -> Vec<Vec<String>> {
     let mut env = env;
     let mut all = Vec::with_capacity(exprs.len());
     for expr in &exprs {
-        let (results, new_env) = eval(*expr, env, &state);
+        let (results, new_env, ..) = eval(*expr, env, &state);
         env = new_env;
         let strs: Vec<String> = results.into_iter().map(|v| format!("{}", v)).collect();
         all.push(strs);

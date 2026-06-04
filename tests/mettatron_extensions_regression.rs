@@ -20,7 +20,7 @@ fn run_one(source: &str) -> Vec<MettaValue> {
     let mut last: Vec<MettaValue> = Vec::new();
     let exprs: Vec<MettaValue> = state.source().iter().copied().collect();
     for expr in exprs {
-        let (results, new_env) = eval(expr, env, &state);
+        let (results, new_env, ..) = eval(expr, env, &state);
         env = new_env;
         if !results.is_empty() {
             last = results.to_vec();

@@ -24,7 +24,7 @@ fn test_remove_exact_fact() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results, _) = eval(expr, env.clone(), &query_state);
+    let (results, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(results.len(), 1, "Fact should exist before removal");
 
     // Remove the fact
@@ -34,7 +34,7 @@ fn test_remove_exact_fact() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results_after, _) = eval(expr, env.clone(), &query_state);
+    let (results_after, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(results_after.len(), 0, "Fact should be removed");
 }
 
@@ -81,7 +81,7 @@ fn test_remove_from_multiple_facts() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr1 = query1_state.source()[0];
-    let (results1, _) = eval(expr1, env.clone(), &query1_state);
+    let (results1, _, ..) = eval(expr1, env.clone(), &query1_state);
     assert_eq!(results1.len(), 1, "First fact should still exist");
 
     let query3_state =
@@ -89,7 +89,7 @@ fn test_remove_from_multiple_facts() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr3 = query3_state.source()[0];
-    let (results3, _) = eval(expr3, env.clone(), &query3_state);
+    let (results3, _, ..) = eval(expr3, env.clone(), &query3_state);
     assert_eq!(results3.len(), 1, "Third fact should still exist");
 
     // Verify middle is gone
@@ -98,7 +98,7 @@ fn test_remove_from_multiple_facts() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr2 = query2_state.source()[0];
-    let (results2, _) = eval(expr2, env.clone(), &query2_state);
+    let (results2, _, ..) = eval(expr2, env.clone(), &query2_state);
     assert_eq!(results2.len(), 0, "Middle fact should be removed");
 }
 
@@ -124,7 +124,7 @@ fn test_operation_remove_via_direct_api() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results, _) = eval(expr, env.clone(), &query_state);
+    let (results, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(results.len(), 1, "Fact should be added");
 
     // Remove the fact directly
@@ -134,7 +134,7 @@ fn test_operation_remove_via_direct_api() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results_after, _) = eval(expr, env.clone(), &query_state);
+    let (results_after, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(results_after.len(), 0, "Fact should be removed");
 }
 
@@ -162,7 +162,7 @@ fn test_remove_and_readd() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results, _) = eval(expr, env.clone(), &query_state);
+    let (results, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(results.len(), 1, "Fact should exist after re-adding");
 }
 
@@ -190,7 +190,7 @@ fn test_remove_multiple_identical_facts() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results, _) = eval(expr, env.clone(), &query_state);
+    let (results, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(
         results.len(),
         2,
@@ -204,7 +204,7 @@ fn test_remove_multiple_identical_facts() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results_after_first_remove, _) = eval(expr, env.clone(), &query_state);
+    let (results_after_first_remove, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(
         results_after_first_remove.len(),
         1,
@@ -218,7 +218,7 @@ fn test_remove_multiple_identical_facts() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results_after_second_remove, _) = eval(expr, env.clone(), &query_state);
+    let (results_after_second_remove, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(
         results_after_second_remove.len(),
         0,
@@ -245,7 +245,7 @@ fn test_remove_complex_sexpr() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results, _) = eval(expr, env.clone(), &query_state);
+    let (results, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(results.len(), 1, "Complex fact should exist");
 
     // Remove
@@ -255,6 +255,6 @@ fn test_remove_complex_sexpr() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results_after, _) = eval(expr, env.clone(), &query_state);
+    let (results_after, _, ..) = eval(expr, env.clone(), &query_state);
     assert_eq!(results_after.len(), 0, "Complex fact should be removed");
 }

@@ -37,7 +37,7 @@ fn run_one(source: &str) -> Vec<String> {
     let mut env = env;
     let mut last_results: Vec<mettatron::MettaValue> = Vec::new();
     for expr in &exprs {
-        let (results, new_env) = eval(*expr, env, &state);
+        let (results, new_env, ..) = eval(*expr, env, &state);
         env = new_env;
         last_results = results.into_iter().collect();
     }

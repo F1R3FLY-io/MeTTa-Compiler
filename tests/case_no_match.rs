@@ -22,7 +22,7 @@ fn run_one(source: &str) -> Vec<mettatron::backend::models::MettaValue> {
     let mut env = env;
     let mut last_results = Vec::new();
     for expr in &exprs {
-        let (results, new_env) = eval(*expr, env, &state);
+        let (results, new_env, ..) = eval(*expr, env, &state);
         env = new_env;
         last_results = results.into_iter().collect();
     }

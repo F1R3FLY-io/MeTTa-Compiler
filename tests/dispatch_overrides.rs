@@ -31,7 +31,7 @@ fn run_program(source: &str) -> Vec<MettaValue> {
     assert!(!exprs.is_empty(), "source had no expressions");
     let mut last_results = Vec::new();
     for expr in &exprs {
-        let (results, new_env) = eval(*expr, env, &state);
+        let (results, new_env, ..) = eval(*expr, env, &state);
         env = new_env;
         last_results = results.into_iter().collect();
     }
@@ -44,7 +44,7 @@ fn run_program_collect_all(source: &str) -> Vec<Vec<MettaValue>> {
     let exprs = state.source_snapshot();
     let mut all = Vec::new();
     for expr in &exprs {
-        let (results, new_env) = eval(*expr, env, &state);
+        let (results, new_env, ..) = eval(*expr, env, &state);
         env = new_env;
         all.push(results.into_iter().collect());
     }

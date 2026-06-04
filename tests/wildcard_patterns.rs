@@ -21,7 +21,7 @@ fn test_underscore_wildcard() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results, _) = eval(expr, env, &query_state);
+    let (results, _, ..) = eval(expr, env, &query_state);
 
     assert_eq!(results.len(), 3, "Should match all three facts");
 }
@@ -44,7 +44,7 @@ fn test_dollar_underscore_wildcard() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results, _) = eval(expr, env, &query_state);
+    let (results, _, ..) = eval(expr, env, &query_state);
 
     assert_eq!(results.len(), 3, "Should match all generation levels");
 }
@@ -65,7 +65,7 @@ fn test_multiple_wildcards() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results, _) = eval(expr, env, &query_state);
+    let (results, _, ..) = eval(expr, env, &query_state);
 
     assert_eq!(results.len(), 2, "Should match both records");
 }
@@ -86,7 +86,7 @@ fn test_wildcard_in_nested_pattern() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query_state.source()[0];
-    let (results, _) = eval(expr, env, &query_state);
+    let (results, _, ..) = eval(expr, env, &query_state);
 
     assert_eq!(results.len(), 2, "Should match both nested patterns");
 }
@@ -108,7 +108,7 @@ fn test_wildcard_vs_variable() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr1 = query1_state.source()[0];
-    let (results1, _) = eval(expr1, env.clone(), &query1_state);
+    let (results1, _, ..) = eval(expr1, env.clone(), &query1_state);
     assert_eq!(results1.len(), 2, "Should match pairs with same values");
 
     // Match with wildcard (ignores first value)
@@ -116,6 +116,6 @@ fn test_wildcard_vs_variable() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr2 = query2_state.source()[0];
-    let (results2, _) = eval(expr2, env, &query2_state);
+    let (results2, _, ..) = eval(expr2, env, &query2_state);
     assert_eq!(results2.len(), 3, "Should match all pairs");
 }

@@ -30,7 +30,7 @@ fn run_one(source: &str) -> Vec<String> {
     let mut env = env;
     let mut last = Vec::new();
     for expr in &exprs {
-        let (results, new_env) = eval(*expr, env, &state);
+        let (results, new_env, ..) = eval(*expr, env, &state);
         env = new_env;
         last = results.into_iter().collect();
     }

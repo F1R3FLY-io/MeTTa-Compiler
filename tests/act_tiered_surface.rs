@@ -23,7 +23,7 @@ fn eval_metta_last(source: &str) -> Vec<MettaValue> {
     let mut last = Vec::new();
     let src: Vec<MettaValue> = state.source().iter().copied().collect();
     for &expr in &src {
-        let (results, new_env) = eval(expr, env, &state);
+        let (results, new_env, ..) = eval(expr, env, &state);
         env = new_env;
         last = results.into_vec();
     }

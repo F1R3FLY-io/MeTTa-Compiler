@@ -31,7 +31,7 @@ fn eval_last(source: &str) -> Vec<String> {
     let expr_count = state.source().len();
     for (idx, expr) in state.source().iter().enumerate() {
         let expr = *expr;
-        let (results, env_after) = eval(expr, env, &state);
+        let (results, env_after, ..) = eval(expr, env, &state);
         env = env_after;
         if idx == expr_count - 1 {
             last = results
@@ -262,7 +262,7 @@ fn cross_top_level_query_isolation_is_stable() {
         let mut run_results: Vec<Vec<String>> = Vec::new();
         for expr in state.source().iter() {
             let expr = *expr;
-            let (results, env_after) = eval(expr, env, &state);
+            let (results, env_after, ..) = eval(expr, env, &state);
             env = env_after;
             let mut strs: Vec<String> = results
                 .iter()
@@ -573,7 +573,7 @@ fn conjunction_ghost_elimination_deterministic_20_runs() {
         let expr_count = state.source().len();
         for (idx, expr) in state.source().iter().enumerate() {
             let expr = *expr;
-            let (r, env_after) = eval(expr, env, &state);
+            let (r, env_after, ..) = eval(expr, env, &state);
             env = env_after;
             if idx == expr_count - 1 {
                 for v in r {

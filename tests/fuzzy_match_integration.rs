@@ -521,7 +521,7 @@ fn test_eval_arithmetic() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state.source()[0];
-    let (results, _) = eval(expr, env, &state);
+    let (results, _, ..) = eval(expr, env, &state);
 
     assert!(!results.is_empty(), "Should have results");
     if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
@@ -541,7 +541,7 @@ fn test_eval_if_true() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state.source()[0];
-    let (results, _) = eval(expr, env, &state);
+    let (results, _, ..) = eval(expr, env, &state);
 
     assert!(!results.is_empty(), "Should have results");
     if let MettaValueInner::Long(n) = results.first().expect("results").inner() {
@@ -561,7 +561,7 @@ fn test_eval_if_false() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state.source()[0];
-    let (results, _) = eval(expr, env, &state);
+    let (results, _, ..) = eval(expr, env, &state);
 
     assert!(!results.is_empty(), "Should have results");
     if let MettaValueInner::Long(n) = results.first().expect("results").inner() {

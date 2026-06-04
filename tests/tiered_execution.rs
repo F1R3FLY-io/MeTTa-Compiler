@@ -193,7 +193,7 @@ fn test_path_a_tiered_cache_bytecode_progression() {
     // bytecode compilation asynchronously.
     let mut env = env;
     for _ in 0..BYTECODE_THRESHOLD {
-        let (results, new_env) = eval(expr, env, &state);
+        let (results, new_env, ..) = eval(expr, env, &state);
         assert_eq!(results.len(), 1, "Expected exactly one result");
         assert_eq!(format!("{}", results[0]), "3", "Expected 3 from (+ 1 2)");
         env = new_env;
@@ -242,7 +242,7 @@ fn test_path_a_tiered_cache_bytecode_progression() {
     );
 
     // Step 7: Second eval — now Path A fires (tiered cache Ready)
-    let (results2, _env) = eval(expr, env, &state);
+    let (results2, _env, ..) = eval(expr, env, &state);
     assert_eq!(
         results2.len(),
         1,
@@ -311,7 +311,7 @@ fn test_path_b_bang_prefixed_inline_bytecode() {
     );
 
     // Step 2: Eval → result 42
-    let (results, _env) = eval(expr, env, &state);
+    let (results, _env, ..) = eval(expr, env, &state);
     assert_eq!(results.len(), 1, "Expected exactly one result");
     assert_eq!(
         format!("{}", results[0]),
@@ -366,7 +366,7 @@ fn test_path_c_interpreter_fallback() {
         can_compile_with_env(&rule_expr),
         "Rule definition (= ...) should pass can_compile_with_env (whitelisted)"
     );
-    let (rule_results, new_env) = eval(rule_expr, env, &rule_state);
+    let (rule_results, new_env, ..) = eval(rule_expr, env, &rule_state);
     let _ = rule_results;
     env = new_env;
 
@@ -383,7 +383,7 @@ fn test_path_c_interpreter_fallback() {
         can_compile_with_env(&match_expr),
         "!(match &self ...) should pass can_compile_with_env (native MatchSelf)"
     );
-    let (match_results, new_env) = eval(match_expr, env, &match_state);
+    let (match_results, new_env, ..) = eval(match_expr, env, &match_state);
     let _ = match_results;
     env = new_env;
 
@@ -400,7 +400,7 @@ fn test_path_c_interpreter_fallback() {
         can_compile_with_env(&collapse_expr),
         "!(collapse ...) should pass can_compile_with_env (user-defined dispatch)"
     );
-    let (collapse_results, _env) = eval(collapse_expr, env, &collapse_state);
+    let (collapse_results, _env, ..) = eval(collapse_expr, env, &collapse_state);
     let _ = collapse_results;
 
     // --- Verify execution completed ---
@@ -439,7 +439,7 @@ fn test_semantic_equivalence_across_tiers() {
     );
 
     // First eval — via Path B (inline bytecode, tiered cache not Ready yet)
-    let (results_first, new_env) = eval(bare_expr, env, &bare_state);
+    let (results_first, new_env, ..) = eval(bare_expr, env, &bare_state);
     let mut first_strs: Vec<String> = results_first.iter().map(|v| format!("{}", v)).collect();
     first_strs.sort();
     assert_eq!(
@@ -462,7 +462,7 @@ fn test_semantic_equivalence_across_tiers() {
     }
 
     // Second eval — via Path A if compilation completed (tiered cache Ready)
-    let (results_second, new_env) = eval(bare_expr, env, &bare_state);
+    let (results_second, new_env, ..) = eval(bare_expr, env, &bare_state);
     let mut second_strs: Vec<String> = results_second.iter().map(|v| format!("{}", v)).collect();
     second_strs.sort();
     assert_eq!(
@@ -484,7 +484,7 @@ fn test_semantic_equivalence_across_tiers() {
         "!(superpose ...) should pass can_compile_with_env"
     );
 
-    let (results_bang, _env) = eval(bang_expr, env, &bang_state);
+    let (results_bang, _env, ..) = eval(bang_expr, env, &bang_state);
     let mut bang_strs: Vec<String> = results_bang.iter().map(|v| format!("{}", v)).collect();
     bang_strs.sort();
     assert_eq!(
@@ -514,7 +514,7 @@ fn test_background_compilation_lifecycle() {
     // We'll check it becomes tracked AFTER eval.
 
     // Step 2: Eval once → result 42
-    let (results, _env) = eval(expr, env, &state);
+    let (results, _env, ..) = eval(expr, env, &state);
     assert_eq!(results.len(), 1, "Expected exactly one result");
     assert_eq!(format!("{}", results[0]), "42", "Expected 42 from (* 7 6)");
 
@@ -607,7 +607,7 @@ fn test_superpose_nondeterminism_via_bytecode() {
     );
 
     // First eval — Path B (inline bytecode, tiered cache not Ready yet)
-    let (results1, env) = eval(expr, env, &state);
+    let (results1, env, ..) = eval(expr, env, &state);
     let mut strs1: Vec<String> = results1.iter().map(|v| format!("{}", v)).collect();
     strs1.sort();
     assert_eq!(
@@ -633,7 +633,7 @@ fn test_superpose_nondeterminism_via_bytecode() {
     );
 
     // Second eval — Path A (tiered cache Ready)
-    let (results2, _env) = eval(expr, env, &state);
+    let (results2, _env, ..) = eval(expr, env, &state);
     let mut strs2: Vec<String> = results2.iter().map(|v| format!("{}", v)).collect();
     strs2.sort();
     assert_eq!(
@@ -670,7 +670,7 @@ fn test_bang_superpose_nondeterminism() {
     );
 
     // Eval — Path B
-    let (results, _env) = eval(expr, env, &state);
+    let (results, _env, ..) = eval(expr, env, &state);
     let mut strs: Vec<String> = results.iter().map(|v| format!("{}", v)).collect();
     strs.sort();
     assert_eq!(
@@ -704,7 +704,7 @@ fn test_jit_stage1_tier_promotion() {
 
     // Execute 250 times (well above JIT1_THRESHOLD=200) to trigger JIT1 compilation
     for i in 0..250 {
-        let (results, new_env) = eval(expr, env, &state);
+        let (results, new_env, ..) = eval(expr, env, &state);
         assert_eq!(
             results.len(),
             1,
@@ -731,7 +731,7 @@ fn test_jit_stage1_tier_promotion() {
     // Each eval calls record_execution() → maybe_trigger_jit1(), which re-checks
     // count >= threshold AND status == NotStarted → retries spawn_compile().
     for _ in 0..20 {
-        let (results, new_env) = eval(expr, env, &state);
+        let (results, new_env, ..) = eval(expr, env, &state);
         assert_eq!(format!("{}", results[0]), "3");
         env = new_env;
         // Short sleep to let work pool drain between attempts
@@ -756,7 +756,7 @@ fn test_jit_stage1_tier_promotion() {
         );
 
         // Verify result is still correct via JIT1 path
-        let (results, _env) = eval(expr, env, &state);
+        let (results, _env, ..) = eval(expr, env, &state);
         assert_eq!(
             results.len(),
             1,
@@ -807,7 +807,7 @@ fn test_jit_stage2_tier_promotion() {
 
     // Execute 2100 times (well above JIT2_THRESHOLD=2000)
     for i in 0..2100 {
-        let (results, new_env) = eval(expr, env, &state);
+        let (results, new_env, ..) = eval(expr, env, &state);
         assert_eq!(
             results.len(),
             1,
@@ -834,7 +834,7 @@ fn test_jit_stage2_tier_promotion() {
     // Each eval calls record_execution() → maybe_trigger_jit2(), which re-checks
     // count >= threshold AND status == NotStarted → retries spawn_compile().
     for _ in 0..20 {
-        let (results, new_env) = eval(expr, env, &state);
+        let (results, new_env, ..) = eval(expr, env, &state);
         assert_eq!(format!("{}", results[0]), "7");
         env = new_env;
         // Short sleep to let work pool drain between attempts
@@ -860,7 +860,7 @@ fn test_jit_stage2_tier_promotion() {
         );
 
         // Verify result is still correct via JIT2 path
-        let (results, _env) = eval(expr, env, &state);
+        let (results, _env, ..) = eval(expr, env, &state);
         assert_eq!(
             results.len(),
             1,

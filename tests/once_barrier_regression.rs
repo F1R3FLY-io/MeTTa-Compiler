@@ -36,7 +36,7 @@ fn eval_bang_results(source: &str) -> Vec<String> {
             .and_then(|items| items.first())
             .and_then(|h| h.as_atom())
             .is_some_and(|s| s == "!");
-        let (results, env_after) = eval(expr, env, &state);
+        let (results, env_after, ..) = eval(expr, env, &state);
         env = env_after;
         if is_bang {
             for v in results {
@@ -57,7 +57,7 @@ fn eval_last(source: &str) -> Vec<String> {
     let expr_count = state.source().len();
     for (idx, expr) in state.source().iter().enumerate() {
         let expr = *expr;
-        let (results, env_after) = eval(expr, env, &state);
+        let (results, env_after, ..) = eval(expr, env, &state);
         env = env_after;
         if idx == expr_count - 1 {
             last = results

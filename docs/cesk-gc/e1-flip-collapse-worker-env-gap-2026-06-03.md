@@ -388,3 +388,157 @@ envs in LIVE_ENVS via the index `try_register_env_roots` — more invasive.) Des
 + a reliable validator (low `MIN_BYTES` amplifies the ~1% to a high rate for one-run confirmation) in
 flight. This will be the genuine corruption fix; the cache-disable edits will then be reverted (they
 target robot-irrelevant secondary/tertiary holes).
+
+## ⭐ NO-RECYCLE SWEPT-BITMAP ORACLE (2026-06-03, on the post-Fix#1 `58598e7` + `cb94de8` + `762c4db` tree) — the RESIDUAL corruption is REUSE-DEPENDENT and BYPASSES `get()`
+
+A deterministic swept-bitmap oracle (env `METTATRON_INDEX_GC_SWEPT_ORACLE=1`; UNCOMMITTED in
+`index_arena.rs`/`index_heap.rs`/`gc_driver.rs`): per-slot `swept: Box<[AtomicBool]>` allocated only when
+on, marked Release on **every** sweep-reclaim arm (both the all-dead-word fast path AND the per-bit arm),
+**NO-RECYCLE** (`pop_young_free_slot` returns `None` + the sweep SKIPS the free-list push ⇒ no slot is
+ever reused ⇒ a swept slot's bytes are never overwritten), and `IndexArena::get()` panics on a NON-collector
+read of a swept slot (collector reads exempt via a thread-local `COLLECTOR_READ_DEPTH` scope held by
+`gc_driver_main` for the GC thread's whole lifetime; `gc_driver.rs` + `index_arena.rs`).
+
+**Result** (robot @ FANOUT=8 DEDICATED=1 MIN=131072, debug-symbols release build): **38/38 completed runs
+byte-identical CORRECT** (run 38 ends with the expected `✅` detection result; run 39 was killed mid-stream
+when the subagent's systemd scope tore down — no panic, no error), and the **SWEPT-SLOT READ panic NEVER
+fired.**
+
+**Two ROBUST conclusions** (robust because the marking is verified complete — the no-recycle is *total*:
+the free-list is neither populated nor popped, so `corruption→0` *proves* the corrupting reuse path was
+gated, hence its slot WAS marked swept):
+
+1. **The residual corruption is REUSE-DEPENDENT.** No-recycle eliminated it entirely (38/38 correct vs
+   ~4.7% corrupt with recycling). The mechanism IS a swept slot bump-reused while a handle still points at
+   it — confirming the swept-Addr-reuse family at the mechanism level.
+2. **The stale read BYPASSES `arena.get()`.** The corrupting slot is marked swept and never reused, so a
+   `get()` of it would panic (the swept bit stays set forever under no-recycle, and the reader is a
+   worker/parent — NOT the exempt collector thread). The panic never fired ⟹ the holder reads that slot
+   through a path that never calls `get()`. **Prime suspect: a laundered `&'static` `MettaValue`/`Node`
+   view (`view()`/`inner_ref()`) or a cached raw pointer held across a collection** — the get()-based
+   oracle is blind to it BY CONSTRUCTION.
+
+**Why this is consistent with Fix#1 (`58598e7`) reducing-but-not-eliminating the corruption:** Fix#1
+rooted forked-env bindings that the worker resolves via `index_arena.rs:605 get()` — a get()-PATH holder.
+The residual is a DISTINCT get()-BYPASSING holder, untouched by Fix#1. (Methodological win over the
+prior ~6 refuted hypotheses: a *deterministic* oracle gave a robust mechanism + read-path narrowing, vs
+the lucky-0 guess-and-check discriminators that the 2026-06-03-afternoon REFRAME flagged as unreliable.)
+
+**NEXT** (Explore agent `a8f67d71` in flight): enumerate every get()-bypassing read path (laundered
+`&'static` views, cached raw pointers, direct `node_at`/`inner_ptr` reads held across a sweep+reuse) +
+which of the dedicated driver's 4 root sources fails to cover the holder. Then red-team a CESK-faithful
+fix (root the holder structurally OR extend the value-view release handshake) with a Plan agent; CONFIRM
+empirically by extending the oracle's swept-check to the identified bypass read site (targeted, cheap,
+no-build-cost) and/or TSan (path-agnostic: allocator reuse-write vs holder-read race). The swept-bitmap
+oracle (uncommitted) is a KEEPER diagnostic — env-gated, default-off, byte-identical when off.
+
+### Source-tracing the get()-bypass (2026-06-03) — the SOLE bypass is the `INNER_SHADOW` cache HIT (ABA), NOT a laundered slice
+
+Traced every node-content read under index-gc:
+- `IndexHeap::children` (665), `str_slice` (685), `view_at` (730), `materialize_inner` (776) ALL read the node
+  via `self.arena.get(addr)` — the swept-checked `IndexArena::get()` (724). So a `view()`/`inner_ref()`
+  fresh-materialize of a SWEPT Addr would PANIC under the oracle. It never did ⟹ no holder fresh-reads a
+  swept Addr through get().
+- The laundered `&'static [MettaValue]` / `&'static str` (`launder(self.children(a))` /
+  `launder(self.str_slice(a))`, index_heap.rs:752-760, 778-808) point into the **side-arena**
+  (`side.children` / `side.strings`), which per D-TLAB-1.0 is **append-only, NEVER recycled**. So a held
+  laundered slice/str reads its original (correct) bytes even after the owning NODE slot is reused ⟹ the
+  laundered slices are **SAFE** — NOT the bug. (This also means TSan would likely find NO data race here:
+  the only mutated-then-read memory is the node slot, and every node read goes through get().)
+- ⟹ the SOLE get()-bypassing read of node *content* is the **`INNER_SHADOW` cache HIT** in
+  `MettaValue::inner_ref_index` (`metta_value.rs:1006-1025`): on a hit it returns the cached
+  `Box<MettaValueInner>` WITHOUT calling `materialize_inner`/`get()`, keyed by the raw `Addr` (u32). A
+  swept+reused Addr can HIT a STALE box (the prior occupant's `MettaValueInner`). **This is an ABA
+  hazard, and it is THREAD-LOCAL LOGICAL STALENESS — not a data race** (the box is thread-local, the read
+  is single-threaded), which is precisely **why TSan would be BLIND to it** — confirming TSan is the wrong
+  tool here and the get()-oracle's "no panic" is genuine (the read truly bypasses get(), via the cache).
+
+This fits ALL evidence: get()-bypassing (cache hit, no swept-check), reuse-dependent (no-recycle ⟹ Addr
+never reused ⟹ never a stale-key hit ⟹ 38/38 correct), and consistent with the post-`58598e7`/`88485f1`
+residual (those rooted get()-path holders + cleared caches on worker teardown/resume; a remaining
+INNER_SHADOW-hit window — likely on the PARENT pump path, or a clear-timing gap — would still ABA).
+
+**CONFIRMATION EXPERIMENT IN FLIGHT (agent `ab95e87b`):** extend the oracle to panic on an `INNER_SHADOW`
+HIT of a swept Addr (`was_hit && swept_oracle_enabled() && !in_collector_read_scope() &&
+heap.is_addr_swept(addr)` → panic), rebuild (debug-symbols, no -Zbuild-std → fast), re-run robot under
+no-recycle. If it TRIPS → the backtrace names the ABA holder (CONFIRMED; fix = clear/validate
+INNER_SHADOW on that thread/path after every dedicated sweep, OR make the cache key ABA-safe — e.g.
+distrust on a per-Addr sweep-generation). If it does NOT trip in 40 runs → REFUTES INNER_SHADOW-ABA and a
+different get()-bypass remains (next: a per-read sweep-generation tag, since TSan is ruled out for a
+thread-local staleness).
+
+### VERDICT (2026-06-03) — INNER_SHADOW-ABA **REFUTED** (61/61 clean); the swept-oracle CANNOT pinpoint by construction; pivot to TSan
+
+The INNER_SHADOW-hit-of-swept oracle ran **61 robot runs total (11 + 50), ALL clean, NO trip** (one 42577-
+vs-42574-byte run = benign 3-byte ordering variance, still carries the correct result — not the
+wrong-subset signature). At ~4.7%, P(no trip in 61) is about 0.05, so **the holder does NOT do an
+`inner_ref` cache-hit on a swept Addr** — INNER_SHADOW-ABA is refuted.
+
+**The deeper methodological finding:** the swept-oracle family (NO-RECYCLE) can only *confirm reuse-
+dependence* — it **cannot pinpoint the holder BY CONSTRUCTION**, because no-recycle disables the very
+thing under study (slot reuse). It also REFUTES the two simplest hypotheses: (a) a genuinely-missed-root
+slot would stay swept under no-recycle and the holder's `get()` would have PANICKED — it never did across
+all runs; (b) the INNER_SHADOW ABA — 61 clean. Net: **under no-recycle no thread ever reads (via `get()`
+or an `inner_ref` hit) a currently-swept slot.** So the corruption is NOT "read a swept slot" — it is a
+**cross-thread reuse RACE on the Node slot bytes that only manifests WITH reuse on**: one thread's
+`write_reused`/alloc-write (or the sweep's free-list manipulation) races another thread's `get()`/deref-
+read of the same slot, with missing happens-before. Two surviving mechanisms, both cross-thread races:
+- **(R-FL) Free-list management bug** — `write_reused` hands out a slot that is still live (a stale/
+  duplicate free-list entry, or a minor/major free-list interaction), overwriting a value a *rooted*
+  holder still reads. (Consistent: no-recycle disables reuse so no overwrite; the slot is never swept so
+  no swept-panic.)
+- **(R-TOCTOU) Timing-dependent missed-root** — a transient is momentarily unrooted exactly when the
+  dedicated sweep fires (e.g. the parallel-dispatch result-publication window, `result_roots`->buffer
+  before `results[slot]`), swept, reused, then read; no-recycle's altered heap-growth/GC-timing shifts
+  the window so it doesn't coincide.
+
+**CORRECTION to the earlier "TSan is ruled out" note:** that applied ONLY to the (now-refuted) thread-
+local INNER_SHADOW ABA. Both surviving mechanisms are **cross-thread races on the slot bytes**, which is
+exactly what TSan detects. **TSan binary build + robot-in-NORMAL-recycle-mode IN FLIGHT (agent
+`a9872e28`):** `-Zsanitizer=thread -Zbuild-std` (RUSTFLAGS keeps `-Ctarget-cpu=native` for gxhash),
+`DEDICATED=1 FANOUT=8 MIN=131072`, x3 runs, capped 32G build / 48G run. Deliverable = both racing stacks
+(the WRITE — `write_reused`/alloc/sweep — and the READ — `get`/`node_at`/`children`/deref in the
+collapse-merge path) + the two threads. If TSan finds NO race across 3 runs, the race is happens-before-
+masked by the witness/rendezvous protocol -> redirect to a sweep-time **root-coverage assertion**
+(4-source roots superset of an over-approx reachable set scoped to in-flight result transients + thread
+caches — finds R-TOCTOU at sweep time) and/or a **free-list integrity check** (`write_reused` asserts the
+popped slot is not marked-live + no duplicate free-list entries — finds R-FL).
+
+### TSan VERDICT (2026-06-03) — ZERO data races; triangulation ⟹ R-FL (free-list integrity bug), NOT a missed-root
+
+TSan build succeeded (`-Zsanitizer=thread -Zbuild-std`, target-cpu=native, 4m39s, 49-warning baseline) and ran robot ×3 in NORMAL recycle mode (DEDICATED=1 FANOUT=8 MIN=131072), **77 threads live (64 work-pool + dedicated GC), all correct, and "ThreadSanitizer" appears NOWHERE — zero data races, zero warnings of any kind.** The concurrent corruption regime was genuinely exercised. ⟹ the reuse-write and the holder-read are **happens-before-ordered** by the witness/rendezvous protocol (collector mark/sweep under the heap `.write()`; workers self-root+park; `write_reused` is `&mut self` at quiescence), NOT concurrent.
+
+**Triangulation (neither tool alone pinpoints; together they eliminate):**
+| Evidence | Rules out |
+|---|---|
+| no-recycle: no swept-slot read in 99 runs (post-Fix#1) | **missed-root** (its holder read would hit the swept slot → panic; never did) |
+| TSan: 0 data races in 3 concurrent runs | **memory-level race** |
+| no-recycle: 0 corruption | confirms **reuse-dependent** |
+
+The TSan agent proposed "logical missed-root," but that is **inconsistent with the no-recycle no-panic**: a missed-root slot is *swept* (the oracle marks it), stays swept under no-recycle, and the holder's `get()` would panic — it never did across 99 runs, and the only get()-bypasses (INNER_SHADOW, laundered slices) are refuted/safe. So the residual is **NOT a missed-root** (Fix#1 + any uncovered missed-root would both show as swept-reads).
+
+**By elimination ⟹ R-FL: a free-list integrity bug.** `write_reused` hands out a slot whose `Addr` is **erroneously on the free-list while the slot is still LIVE** (rooted). The slot is therefore never swept (marked live ⟹ no swept-bit ⟹ no-recycle keeps it intact ⟹ no panic, no corruption); the clobbering reuse-write and the holder's read are lock-ordered (⟹ TSan-silent); disabling reuse removes the overwrite (⟹ reuse-dependent). The prime mechanism: a slot pushed to the free-list by a **major**, then **re-pushed by a later minor** (minors append + retain the major's entries; if the minor's sweep re-pushes a slot already on the retained free-list ⟹ a **DUPLICATE entry** ⟹ two `write_reused` pops hand out the same slot for two different values ⟹ the first is clobbered when the second is allocated). Other R-FL variants: a double-free, or a pop of a slot re-allocated since being freed.
+
+**CONFIRMATION EXPERIMENT (next): a free-list integrity check** (reuse stays ON, unlike no-recycle): a per-slot `on_free_list` shadow bit — set on push (sweep reclaim), reset on pop (`write_reused`/`pop_young_free_slot`) and on `free_list.clear()` (major rebuild); **assert `!on_free_list` on every push** (catches the duplicate) and `on_free_list` on every pop. Build debug-symbols (no -Zbuild-std → fast), run robot NORMAL recycle mode → the assertion backtrace names the exact duplicate push/pop site + cycle type → fix (dedup the minor's push against the retained free-list, or the correct free-list lifecycle). This is deterministic and reuse-ON, so it pinpoints where the no-recycle oracle (reuse-OFF) structurally cannot.
+
+### ✅ R-FL CONFIRMED (2026-06-03, deterministic, run 1) — duplicate free-list push of the current segment
+
+The free-list integrity check **tripped on run 1**, deterministically:
+```
+DUPLICATE FREE-LIST PUSH: addr=Addr(561) seg=0 off=561 sweep=minor   (index_arena.rs partial-last-word push arm, on mettatron-index-gc)
+```
+Zero `POP OF NON-FREELIST` ⟹ the shadow stayed consistent ⟹ a genuine still-on-list re-push, not an instrumentation gap. `sweep=minor` (not major) ⟹ the clear-site reset works (a major's own clear+rebuild does not false-fire); only a MINOR re-pushing a slot a preceding sweep already listed fires.
+
+**The bug (source-cited):** the current bump segment is **always young** (`promote_young` index_arena.rs:1089 sets `young_floor=current_seg()`, but the doc-comment at :1085 states "the current segment stays young (the live allocation target)"), so EVERY collection re-sweeps it, and `sweep_range`'s free-list push is **non-idempotent**:
+1. MAJOR `do_major` (index_heap.rs:2092) → `sweep_with`→`sweep_range(0, clear=true)`: `free_list.clear()` (index_arena.rs:1207) then rebuilds, pushing every unmarked slot in `[0,seg_count)` INCLUDING the current segment (partially-live) → `Addr(561)` pushed.
+2. `promote_young` (index_heap.rs:2114) sets `young_floor=current_seg`; current segment stays young.
+3. MINOR `do_minor` (index_heap.rs:2098) → `sweep_young_with`→`sweep_range(young_floor, clear=false)` APPEND: re-sweeps the current segment, finds `Addr(561)` still unmarked + still on the list → pushes it AGAIN (index_arena.rs:1330) → DUPLICATE.
+Two `pop_young_free_slot` (index_arena.rs:770) pops hand the SAME slot to two `MettaValue`s → the first is clobbered → the wrong-subset corruption. The `sweep_young_with` doc-comment's invariant "a young slot is swept at most once before promotion" is **FALSE for the current segment** (never promoted out, re-swept every cycle).
+
+**This explains EVERYTHING** (every triangulation result): never swept (slot stays live ⟹ no swept-panic, no-recycle keeps it intact), lock-ordered clobber+read (⟹ TSan/ASAN silent), reuse-dependent (⟹ no-recycle eliminates it).
+
+**Scope:** the bug is in `sweep_range` ⟹ **mode-INDEPENDENT** (both the single-threaded FANOUT=0 index collector AND the dedicated FANOUT>0 collector). Conformance passes today ONLY because its fixtures do 0 GC cycles (young<2MiB). The fix is a **core index-gc free-list-lifecycle fix, NOT dedicated-gated**; slab is a separate collector (byte-identical). **minor→minor duplicates are likely ALSO possible** (every consecutive pair of collections re-sweeps the current segment), so the fix must be robust to all duplicate patterns.
+
+**FIX IMPLEMENTED + SCOPED VERIFIED:** `add0585` implements the converged fix: idempotent free-list push via a persistent per-slot `free_bit`, pop clear-before-branch, major reset-before-clear, and the direct allocator regression for repeated current-segment minors. `ae61034` closes the post-implementation audit edge where a D/TLAB fresh-bump interleaving can advance `cur_seg` while a prior young segment still has listed free slots; release now drains that segment's free-list entries before dropping its bitmaps. `70ab067` fixes the `index-gc` integration-test compile fallout from the extra `eval` return field.
+
+Scoped verification completed: allocator tests with `METTATRON_INDEX_GC_FREELIST_CHECK=1` passed 23/23; `cargo check --features index-gc` passed; TLC fixed config `MC_RFL_freebit.cfg` passed `NoDuplicateFreeListEntries` and `FreeBitExact`; TLC bug config `MC_RFL_bug.cfg` still fails as expected with `freeList = <<0, 0>>`. **Not yet claimed:** the full forced-MeTTa/robot/conformance/ASAN/determinism gate; the current forced-churn fixture attempt timed out and needs a bounded replacement before V1/V2/V3 can be counted.

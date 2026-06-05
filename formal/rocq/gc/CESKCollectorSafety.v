@@ -9,6 +9,9 @@
     - sweep frees only unmarked addresses;
     - young-only minor marking retains every reachable young address when there
       is no old-to-young edge.
+    - E2 concurrent marking retains every snapshot-live address covered by
+      initial roots, rendezvous driver roots, SATB deletion shades, or
+      allocate-black publication.
 
     These are parametric theorems over the store graph and do not assume a finite
     TLC state space.
@@ -27,6 +30,11 @@ Section CESKCollectorSafetyModel.
       (StructuralRoot DriverRoot : Addr -> Prop)
       (a : Addr) : Prop :=
     StructuralRoot a \/ DriverRoot a.
+
+  Definition ConcurrentCollectorRoot
+      (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
+      (a : Addr) : Prop :=
+    InitialRoot a \/ DriverRoot a \/ ShadedDeletion a \/ AllocateBlack a.
 
   Theorem rendezvous_participant_root_survives_collection :
     forall (Occupied Published : Slot -> Prop)
@@ -99,6 +107,27 @@ Section CESKCollectorSafetyModel.
     intros Root Young Marked Freed Edge Hroot Hno_old_to_young Hclosed Hsweep a Hreach Hyoung Hfreed.
     apply (Hsweep a Hfreed).
     eapply young_reachable_marked; eauto.
+  Qed.
+
+  Theorem e2_snapshot_live_survives_collection :
+    forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed SnapshotLive : Addr -> Prop),
+      (forall a,
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a ->
+          Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      (forall a,
+          SnapshotLive a ->
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a) ->
+      forall a, SnapshotLive a -> ~ Freed a.
+  Proof.
+    intros InitialRoot DriverRoot ShadedDeletion AllocateBlack Edge Marked Freed SnapshotLive
+           Hmark Hsweep Hcovered a Hlive Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply Hcovered.
+    exact Hlive.
   Qed.
 End CESKCollectorSafetyModel.
 

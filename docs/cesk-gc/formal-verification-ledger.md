@@ -17,7 +17,8 @@ the legacy slab mark-sweep collector.
   participant root is in the driver root set and cannot be freed after mark/sweep.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
   sweep-only-unmarked, and young-minor obligations into explicit no-UAF theorems for participant roots, future CESK
-  touches, and reachable young nodes.
+  touches, reachable young nodes, and E2 snapshot-live nodes covered by initial roots, driver roots, SATB shades, or
+  allocate-black publication.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, shaded deletion pre-images, or allocate-black roots, sweep cannot
   free them.

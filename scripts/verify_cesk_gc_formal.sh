@@ -148,5 +148,9 @@ run_tlc "satb_phase_gate" "MC_SATBPhaseGate.tla" "MC_SATBPhaseGate_gate.cfg" \
   pass ""
 run_tlc "satb_phase_race" "MC_SATBPhaseGate.tla" "MC_SATBPhaseGate_race.cfg" \
   fail "Invariant NoSnapshotLiveFreed is violated"
+run_tlc "satb_sweep_gate" "MC_SATBSweepGate.tla" "MC_SATBSweepGate_gate.cfg" \
+  pass ""
+run_tlc "satb_sweep_race" "MC_SATBSweepGate.tla" "MC_SATBSweepGate_race.cfg" \
+  fail "Invariant NoSnapshotLiveFreed is violated"
 
 echo "CESK GC formal checks passed"

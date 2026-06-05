@@ -55,6 +55,9 @@ read-locked concurrent mark, the brief stop-the-world sweep gate, SATB drain/fix
   clearing a value-bearing E0 cache preserves snapshot-live safety; clearing without shading frees one.
 - `tla/SATBPhaseGate.tla`: checks the E2 marker-start/deletion race. A read/write phase gate prevents marker
   start from straddling a deletion that observed "not marking"; without the gate a snapshot-live entry can be freed.
+- `tla/SATBSweepGate.tla`: checks the E2 sweep/deletion race. Sweep must wait for in-flight deletion barriers
+  after mark completion; otherwise a deletion can remove a snapshot-live E0 entry before shading it and sweep can free
+  the pre-image before the shade becomes visible.
 
 ## Source coupling
 

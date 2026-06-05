@@ -174,17 +174,46 @@ fn gc_driver_main(request_rx: mpsc::Receiver<GcDriverRequest>) {
 /// i.e. E₀), and `n ≥ 1` always (the trigger itself parks), so E₀ is in the drained
 /// buffer. driver-C (`SAFEPOINT_ROOTS`, the batch-finisher F1 roots) is read directly.
 fn gc_driver_rendezvous_cycle() {
+    let _gip = acquire_gc_in_progress_for_rendezvous();
+    let roots = prepare_rendezvous_roots();
+
+    if crate::backend::eval::cesk::index_heap::index_gc::concurrent_satb_enabled() {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            gc_driver_satb_rendezvous_cycle(roots, _gip);
+        }));
+        return;
+    }
+
+    // (6) collect (catch_unwind so the cleanup below ALWAYS releases parked workers).
+    // E1-FLIP: the RENDEZVOUS entry — gates on gate_open_rendezvous (completeness
+    // witness, NOT !worker_ever_spawned which is false here) + labels the cycle
+    // "rendezvous" (side-Box frees deferred; parked workers may hold laundered refs).
+    // Pre-FLIP (dedicated default OFF) this driver is unreachable; post-FLIP it is the
+    // FANOUT>0 collect that actually sweeps.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered_rendezvous(&roots)
+    }));
+    // `roots` drops HERE, after the cycle — never before the mark completes.
+    drop(roots);
+    close_open_rendezvous_cycle(Some(_gip));
+}
+
+fn acquire_gc_in_progress_for_rendezvous() -> crate::backend::models::gc_allocator::GcInProgressGuard {
     use crate::backend::models::gc_allocator as ga;
-    // (2) admission: become the sole collector. Brief yield-retry if a slab cron /
+    // Admission: become the sole collector. Brief yield-retry if a slab cron /
     // session-release path momentarily holds GC_IN_PROGRESS (design Part-12 #6).
-    let _gip = loop {
+    loop {
         match ga::GcInProgressGuard::try_enter() {
             Some(g) => break g,
             None => std::thread::yield_now(),
         }
-    };
-    // (3) snapshot the per-thread count AFTER admission closed (so a thread entering
-    // after this point parks at EvalGuard::enter and is excluded), then (4) wait for
+    }
+}
+
+fn prepare_rendezvous_roots() -> Vec<MettaValue> {
+    use crate::backend::models::gc_allocator as ga;
+    // Snapshot the per-thread count AFTER admission closed (so a thread entering
+    // after this point parks at EvalGuard::enter and is excluded), then wait for
     // all n to park + publish their self-roots.
     //
     // E1-FLIP Path B V4 — THE ATOMIC FLIP (witness SOLE gate). The fungible
@@ -198,85 +227,123 @@ fn gc_driver_rendezvous_cycle() {
     // D5 oracle / liveness backstops may read the snapshot `n`. Taken AFTER admission
     // closed (try_enter above), BEFORE the witness wait.
     ga::set_n_threads_at_snapshot(n);
-    // `cur_gen` MUST be read AFTER admission closed (under `_gip`) so the witness
-    // predicate (`published>=cur_gen OR acquired>cur_gen`) and the snapshot agree on
-    // the cycle a parked thread must have stamped. A thread that enters after this
-    // point parks at EvalGuard::enter (admission-blocked) and acquires `acquired>cur_gen`
-    // ⇒ excluded from the wait (S3).
+    // `cur_gen` MUST be read AFTER admission closed so the witness predicate
+    // (`published>=cur_gen OR acquired>cur_gen`) and the snapshot agree on the
+    // cycle a parked thread must have stamped.
     let cur_gen = ga::current_cycle_gen();
-    // E5 (the straddle-deadlock fix,
-    // docs/cesk-gc/e1-flip-deadlock-straddle-rootcause-2026-06-03.md): publish that a
-    // LIVE driver has STARTED cycle `cur_gen`. The straddle re-park gate keys on this
-    // (NOT `GC_CYCLE_GEN`, which is bumped at cycle END and so, in the teardown window,
-    // already names the next — not-yet-started — cycle). A worker can therefore never
-    // re-park for a cycle no driver has begun (the phantom-cycle hang). The Release
-    // store is ordered-AFTER the `try_enter` gip-CAS (AcqRel, above), which is the HB
-    // that carries `cur_gen` to the straddle's lock-free Acquire read; the debug_assert
-    // pins that the gip is set before the store (so the order is not silently broken by
-    // a future refactor that moves the store before admission). MUST NOT be under any
-    // mutex (the straddle body locks RENDEZVOUS_MUTEX non-reentrantly — see
-    // `GC_CYCLE_STARTED`).
     debug_assert!(
         ga::gc_in_progress(),
         "E5: set_current_cycle_started must run AFTER try_enter closed admission (the \
          gip-CAS is the HB that carries `cur_gen` to the straddle's Acquire read)"
     );
     ga::set_current_cycle_started(cur_gen);
-    // (4) WITNESS WAIT: block until every occupied slot satisfies the strict-`>`
-    // predicate for `cur_gen` (LIVE-RE-WALK each wake — A-straddle-2). The snapshot is
-    // a non-empty hint; the authoritative scan is the live re-walk inside the wait.
     let snap = ga::snapshot_witness(cur_gen);
     ga::requestor_wait_for_all_reified_parked(&snap, cur_gen);
     // Publish the witness-satisfied flag — the SOLE thing `gate_open_rendezvous` reads.
     // Set true only AFTER the wait returns; cleared at `end_rendezvous_cycle`.
     ga::set_current_witness_ok(true);
-    // (5) the structural root union: parked workers' machines (∪ E₀) + driver-C +
+
+    // The structural root union: parked workers' machines (∪ E₀) + driver-C +
     // the live parallel-dispatch fan-out + the B2′ global live-env (E₀) registry.
     let mut roots: Vec<MettaValue> = Vec::new();
     ga::drain_worker_root_buffer(&mut roots);
     ga::collect_safepoint_roots(&mut roots);
-    // E1-FLIP Path B V4 (B2′): walk EVERY live env's persistent E₀ roots — participant-
-    // independently — so E₀ is covered even when no Trampoline participant happens to be
-    // parked (C-0b: a trigger that finished-via-TierLeaf + all workers finished leaves no
-    // Trampoline participant). `#[cfg(index-gc)]`: the registry + register_live_env sites
-    // are index-only; in slab nothing ever registers, so the walk is empty.
     #[cfg(feature = "index-gc")]
     ga::collect_live_env_anchors(&mut roots);
-    // E1-FLIP / CEX-1 (D2): walk the live dispatch fan-out (branch INPUTS +
-    // completed OUTPUTS) structurally on the GC thread — park-timing-independently,
-    // so a worker that is admission-blocked at `EvalGuard::enter` or not-yet-started
-    // (never a rendezvous participant, never self-rooted) still has its captured
-    // `branch_expr`/`branch_bindings` + its slot's results covered. This is the
-    // structural replacement for the slab `ParallelDispatchRootProvider` walk that
-    // A5 deleted from `ROOT_REGISTRY` without re-homing — the CEX-1 residual bug.
-    // `#[cfg(index-gc)]`: the anchor (`LIVE_DISPATCHES`) and the `register_live_dispatch`
-    // sites are index-only; in slab nothing ever registers, so the walk is empty.
     #[cfg(feature = "index-gc")]
     ga::collect_live_dispatch_anchors(&mut roots);
-    // (5b) E1-FLIP / CEX-1 (D5): the PERMANENT rendezvous-union machine-equivalence
-    // oracle — assert the drained union is complete BEFORE the sweep. Zero-cost in
-    // release (cfg'd out). A future forgotten thread-local source / unregistered
-    // dispatch trips a NAMED debug panic here, not a silent corruption.
     #[cfg(all(feature = "index-gc", debug_assertions))]
     assert_rendezvous_union_complete(&roots, n);
-    // (6) collect (catch_unwind so the cleanup below ALWAYS releases parked workers).
-    // E1-FLIP: the RENDEZVOUS entry — gates on gate_open_rendezvous (completeness
-    // witness, NOT !worker_ever_spawned which is false here) + labels the cycle
-    // "rendezvous" (side-Box frees deferred; parked workers may hold laundered refs).
-    // Pre-FLIP (dedicated default OFF) this driver is unreachable; post-FLIP it is the
-    // FANOUT>0 collect that actually sweeps.
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered_rendezvous(&roots)
-    }));
-    // `roots` drops HERE, after the cycle — never before the mark completes.
-    drop(roots);
-    // (7) END the cycle: bump GC_CYCLE_GEN + reset parked-count/buffer (releases the
-    // parked workers' gen-gated resume-wait); (8) drop _gip (wakes enter-parkers);
-    // (9) resume_workers (clears GC_REQUESTED + notifies RESUME_CONDVAR). Order:
+    roots
+}
+
+fn close_open_rendezvous_cycle(
+    gip: Option<crate::backend::models::gc_allocator::GcInProgressGuard>,
+) {
+    use crate::backend::models::gc_allocator as ga;
+    // END the cycle: bump GC_CYCLE_GEN + reset parked-count/buffer (releases the
+    // parked workers' gen-gated resume-wait); drop gip (wakes enter-parkers);
+    // resume_workers clears GC_REQUESTED + notifies RESUME_CONDVAR. Order:
     // gen-bump BEFORE the resume notify so a woken worker re-checks an advanced gen.
     ga::end_rendezvous_cycle();
-    drop(_gip);
+    drop(gip);
     ga::resume_workers();
+}
+
+struct SatbRendezvousCleanup {
+    gip: Option<crate::backend::models::gc_allocator::GcInProgressGuard>,
+    cycle_open: bool,
+    request_open: bool,
+}
+
+impl SatbRendezvousCleanup {
+    fn new(gip: crate::backend::models::gc_allocator::GcInProgressGuard) -> Self {
+        SatbRendezvousCleanup {
+            gip: Some(gip),
+            cycle_open: true,
+            request_open: true,
+        }
+    }
+
+    fn close_cycle(&mut self) {
+        close_open_rendezvous_cycle(self.gip.take());
+        self.cycle_open = false;
+        self.request_open = false;
+    }
+
+    fn request_next_cycle(&mut self) {
+        crate::backend::models::gc_allocator::request_gc();
+        self.request_open = true;
+    }
+
+    fn open_cycle(&mut self, gip: crate::backend::models::gc_allocator::GcInProgressGuard) {
+        self.gip = Some(gip);
+        self.cycle_open = true;
+    }
+}
+
+impl Drop for SatbRendezvousCleanup {
+    fn drop(&mut self) {
+        if self.cycle_open {
+            close_open_rendezvous_cycle(self.gip.take());
+        } else if self.request_open {
+            crate::backend::models::gc_allocator::resume_workers();
+        }
+    }
+}
+
+fn gc_driver_satb_rendezvous_cycle(
+    initial_roots: Vec<MettaValue>,
+    initial_gip: crate::backend::models::gc_allocator::GcInProgressGuard,
+) {
+    let mut cleanup = SatbRendezvousCleanup::new(initial_gip);
+    let satb_guard = crate::backend::eval::cesk::index_heap::index_gc::enter_satb_marking();
+
+    // Release the initial snapshot rendezvous before the read-locked mark so
+    // mutators can continue allocating. Allocate-black and SATB deletion barriers
+    // are armed before this point.
+    cleanup.close_cycle();
+
+    crate::backend::eval::cesk::index_heap::index_gc::mark_concurrent_roots(&initial_roots);
+    drop(initial_roots);
+
+    // Brief final rendezvous: stop mutators, wait for their structural roots,
+    // then close the SATB phase and sweep under the heap write lock.
+    cleanup.request_next_cycle();
+    cleanup.open_cycle(acquire_gc_in_progress_for_rendezvous());
+    let final_roots = prepare_rendezvous_roots();
+
+    // Dropping the guard takes the SATB phase write lock. Since admission is
+    // closed and workers are parked, this waits out in-flight deletion barriers
+    // and prevents new ones before the sweep.
+    drop(satb_guard);
+
+    crate::backend::eval::cesk::index_heap::index_gc::sweep_after_concurrent_mark(
+        &final_roots,
+        "rendezvous",
+    );
+    drop(final_roots);
+    cleanup.close_cycle();
 }
 
 /// E1-FLIP / CEX-1 (D5) — the PERMANENT rendezvous-union machine-equivalence oracle.

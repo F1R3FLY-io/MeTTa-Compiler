@@ -5,13 +5,14 @@ the legacy slab mark-sweep collector.
 
 ## Verified implementation boundary
 
-The live collector verified here is the CESK-based generational `index-gc` collector's E1 path:
+The default live collector verified here is the CESK-based generational `index-gc` collector's E1 path:
 single-threaded/midloop/rendezvous collection computes structural roots, then marks and sweeps while holding the index
-heap write lock. The E2 SATB artifacts below verify the deletion-barrier, phase-gate, and allocate-black obligations
-that the future concurrent marker must satisfy, but they are not a claim that E2-b is live. The source-coupling gate
-therefore also asserts that `enter_satb_marking()` has no runtime call site yet and that no `mark_concurrent` path exists
-in `index_heap.rs`. When E2-b lands, those boundary assertions must be replaced with source-coupled checks for the
-read-locked concurrent mark, the brief stop-the-world sweep gate, SATB drain/fixpoint, and abort-to-STW backstop.
+heap write lock. There is also an opt-in E2 SATB major path (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
+uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and
+allocate-black, releases workers while it marks under a shared heap read lock, then requests a second rendezvous,
+waits out in-flight deletion barriers by dropping the SATB guard, and performs a full-major final mark/sweep under the
+heap write lock. E2 SATB currently sweeps as a full major only; young-only SATB needs a separate proof that old marks
+introduced by SATB barriers cannot remain stale across a minor.
 
 ## Checked obligations
 
@@ -58,6 +59,9 @@ read-locked concurrent mark, the brief stop-the-world sweep gate, SATB drain/fix
 - `tla/SATBSweepGate.tla`: checks the E2 sweep/deletion race. Sweep must wait for in-flight deletion barriers
   after mark completion; otherwise a deletion can remove a snapshot-live E0 entry before shading it and sweep can free
   the pre-image before the shade becomes visible.
+- `tla/SATBFinalRemark.tla`: checks the E2 final-rendezvous remark. Roots captured after the concurrent mark window
+  must be re-marked before the exclusive sweep; omitting that remark frees a final root that was not in the initial
+  snapshot.
 
 ## Source coupling
 
@@ -80,9 +84,12 @@ facts the proofs rely on:
   side while flipping `SATB_MARKING_DEPTH`, and cache deletion takes the read side around check, shade, and delete.
 - Fresh bump allocation realizes allocate-black for E2 SATB: `IndexArena` writes the claimed slot, marks it if
   `satb_marking_in_progress`, and only then publishes the slot through `len`.
-- The current live collection body is still E1/STW: `mark_sweep_if_over_watermark` enters `GcInProgressGuard`, takes the
-  index heap write lock, marks before sweep (full or young), and only then reclaims. E2 marker activation is explicitly
-  absent until source-coupled `mark_concurrent` obligations are added.
+- The E2 SATB marker path is source-coupled: `gc_driver_satb_rendezvous_cycle` arms `enter_satb_marking`, closes the
+  initial rendezvous before `mark_concurrent_roots`, requests a final rendezvous, drops the SATB guard before
+  `sweep_after_concurrent_mark`, and has RAII cleanup for an open rendezvous/request on panic.
+- `mark_concurrent_roots` marks under `global_index_heap().read()` through `IndexHeap::mark_concurrent`; the final E2
+  sweep takes `global_index_heap().write()`, re-marks the final rendezvous roots, runs a full `heap.sweep()`, then
+  promotes and clears all mark bits. The FANOUT trigger is suppressed while `satb_marking_in_progress()`.
 - The rooted global bytecode `MemoCache<MettaValue>` shades overwritten, LRU-evicted, and bulk-cleared cached results
   under the same SATB phase gate; non-`MettaValue` generic cache instantiations do not contribute index roots.
 - The rooted global space registry shades the `SpaceHandle::collect_gc_values` roots for overwritten, removed, and

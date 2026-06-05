@@ -4524,6 +4524,7 @@ fn eval_trampoline_inner<C: EvalContext>(
             if crate::backend::models::gc_allocator::dedicated_gc_enabled()
                 && crate::backend::models::gc_allocator::n_threads() > 1
                 && !crate::backend::models::gc_allocator::is_gc_requested()
+                && !crate::backend::eval::cesk::index_heap::index_gc::satb_marking_in_progress()
                 && crate::backend::eval::cesk::index_heap::index_gc::watermark_due_for_concurrent()
             {
                 crate::backend::eval::cesk::gc_driver::request_concurrent_collection();

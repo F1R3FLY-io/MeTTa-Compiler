@@ -840,6 +840,14 @@ impl IndexHeap {
         })
     }
 
+    /// E2 SATB concurrent mark entry. This is intentionally a thin wrapper over
+    /// the existing full transitive mark: the distinction is the caller's lock
+    /// regime. The dedicated GC thread calls this while holding only a shared heap
+    /// read lock, after SATB deletion barriers and allocate-black have been armed.
+    pub fn mark_concurrent(&self, roots: &[Addr]) -> usize {
+        self.mark(roots)
+    }
+
     /// C1.c: YOUNG-ONLY mark — the MINOR's mark (see
     /// [`IndexArena::mark_young_from_roots_with`] for the soundness theorem). Same
     /// child resolution as [`mark`] (inline handles + SExpr/Conjunction side-arena
@@ -1594,6 +1602,13 @@ pub mod index_gc {
         depth > 0
     }
 
+    /// Opt-in E2 SATB concurrent marker path. Default-off until the full
+    /// FANOUT>0 ASAN/TSan/loom/perf gate is green.
+    pub(crate) fn concurrent_satb_enabled() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("METTATRON_INDEX_GC_SATB").as_deref() == Ok("1"))
+    }
+
     /// Runs one E0 deletion/eviction under the SATB phase gate.
     ///
     /// The marker flips `SATB_MARKING_DEPTH` while holding the write side. A
@@ -1606,10 +1621,8 @@ pub mod index_gc {
     }
 
     /// Nested-safe guard used by the E2 concurrent marker to arm cache barriers.
-    #[allow(dead_code)]
     pub(crate) struct SatbMarkingGuard;
 
-    #[allow(dead_code)]
     pub(crate) fn enter_satb_marking() -> SatbMarkingGuard {
         let _phase = SATB_PHASE_LOCK.write().expect("SATB phase lock poisoned");
         SATB_MARKING_DEPTH.fetch_add(1, Ordering::AcqRel);
@@ -1651,6 +1664,29 @@ pub mod index_gc {
 
         let heap = global_index_heap().read().expect("index heap");
         heap.mark(&addrs);
+    }
+
+    fn project_roots_to_addrs(
+        roots: &[MettaValue],
+    ) -> Vec<crate::backend::eval::cesk::index_arena::Addr> {
+        let mut addrs: Vec<crate::backend::eval::cesk::index_arena::Addr> =
+            Vec::with_capacity(roots.len());
+        for v in roots {
+            if let Some(a) = v.as_arena_addr() {
+                addrs.push(a);
+            }
+        }
+        addrs
+    }
+
+    /// E2 SATB read-locked concurrent mark. The caller must have armed
+    /// `enter_satb_marking` before releasing mutators from the snapshot
+    /// rendezvous. Fresh allocations are allocate-black, and E0 deletions shade
+    /// their pre-images while this mark runs.
+    pub(crate) fn mark_concurrent_roots(roots: &[MettaValue]) -> usize {
+        let addrs = project_roots_to_addrs(roots);
+        let heap = global_index_heap().read().expect("index heap");
+        heap.mark_concurrent(&addrs)
     }
 
     /// Adaptive committed-bytes watermark. The collector fires when the index
@@ -2108,6 +2144,82 @@ pub mod index_gc {
             return false;
         }
         mark_sweep_if_over_watermark(roots, "midloop")
+    }
+
+    /// E2 SATB final stop-the-world remark+sweep. Called by the dedicated GC
+    /// thread after the read-locked concurrent mark has completed, after the
+    /// second rendezvous has parked mutators, and after `SatbMarkingGuard` has
+    /// been dropped to wait out in-flight deletion barriers.
+    ///
+    /// This first SATB implementation is deliberately full-major-only: SATB
+    /// deletion barriers can mark old nodes during a minor window, and a young
+    /// sweep would not clear those old marks. A full sweep clears every mark bit
+    /// it can set, preserving the existing mark lifecycle while still moving the
+    /// expensive transitive mark out from under the heap write lock.
+    pub(crate) fn sweep_after_concurrent_mark(roots: &[MettaValue], phase: &str) -> bool {
+        if !gate_open_rendezvous() {
+            return false;
+        }
+        let _collector_scope =
+            crate::backend::eval::cesk::index_arena::enter_collector_read_scope();
+        let addrs = project_roots_to_addrs(roots);
+        let (committed, young_alloc, cap_major) = {
+            let heap = global_index_heap().read().expect("index heap");
+            let committed = heap.committed_bytes();
+            (
+                committed,
+                heap.young_alloc_bytes(),
+                committed > max_bytes().max(CAP_FLOOR.load(Ordering::Relaxed)),
+            )
+        };
+
+        let (live_after, old_live_after, stats) = {
+            let mut heap = global_index_heap().write().expect("index heap");
+            heap.mark(&addrs);
+            let stats = heap.sweep();
+            if phase == "quiescence" {
+                let reclaimed = std::mem::take(&mut heap.last_reclaimed);
+                heap.free_reclaimed_side_slots(&reclaimed);
+            }
+            heap.promote_young();
+            (heap.live_bytes(), heap.old_live_bytes(), stats)
+        };
+
+        crate::backend::models::gc_allocator::bump_gc_sweep_epoch();
+        crate::backend::eval::trampoline::eval_loop::clear_aba_sensitive_caches();
+        clear_inner_shadow();
+        crate::backend::eval::trampoline::dispatch_hints::clear_eval_memo();
+        crate::backend::eval::trampoline::dispatch_hints::clear_match_result_cache();
+
+        MAJOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
+        WATERMARK.store(
+            old_live_after.saturating_mul(GROWTH).max(min_threshold()),
+            Ordering::Relaxed,
+        );
+        MINORS_SINCE_MAJOR.store(0, Ordering::Relaxed);
+        if cap_major && stats.segments_released == 0 {
+            CAP_FLOOR.store(committed, Ordering::Relaxed);
+        } else if stats.segments_released > 0 {
+            CAP_FLOOR.store(0, Ordering::Relaxed);
+        }
+
+        GC_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
+        if phase == "rendezvous" {
+            RENDEZVOUS_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
+            RENDEZVOUS_MAJOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);
+        }
+
+        if std::env::var("METTATRON_INDEX_GC_REPORT").as_deref() == Ok("2") {
+            eprintln!(
+                "[index_gc] {phase} satb-major cycle: roots={} live_bytes={live_after} old_live_after={old_live_after} committed={committed} young_alloc_pre={young_alloc} reclaimed_slots={} released_segs={} bytes_freed={} minors_since_major={}",
+                addrs.len(),
+                stats.reclaimed_to_free_list,
+                stats.segments_released,
+                stats.bytes_released,
+                MINORS_SINCE_MAJOR.load(Ordering::Relaxed),
+            );
+        }
+        true
     }
 
     /// Shared collection core for both the quiescence and mid-loop entry points

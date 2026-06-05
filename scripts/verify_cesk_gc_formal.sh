@@ -152,5 +152,9 @@ run_tlc "satb_sweep_gate" "MC_SATBSweepGate.tla" "MC_SATBSweepGate_gate.cfg" \
   pass ""
 run_tlc "satb_sweep_race" "MC_SATBSweepGate.tla" "MC_SATBSweepGate_race.cfg" \
   fail "Invariant NoSnapshotLiveFreed is violated"
+run_tlc "satb_final_remark" "MC_SATBFinalRemark.tla" "MC_SATBFinalRemark_remark.cfg" \
+  pass ""
+run_tlc "satb_no_final_remark" "MC_SATBFinalRemark.tla" "MC_SATBFinalRemark_none.cfg" \
+  fail "Invariant NoFinalRootFreed is violated"
 
 echo "CESK GC formal checks passed"

@@ -12,7 +12,9 @@ revision, NOT a separate CESK-inspired GC. Grounded:
   machine (Phase A; E₀ via `collect_persistent_roots`/`collect_global_anchors`, S∪C∪K via
   `collect_machine_roots`/`collect_k_spine`), with NO `ROOT_REGISTRY` discovery apparatus (A5 cfg-scoped it
   to slab; the machine-equivalence oracle is a permanent CI invariant). **C1's minor marks from these SAME
-  structural roots** — it adds no new root source.
+  structural roots** — it adds no new root source. The generic safety theorem is now checked in
+  `formal/lean/gc/StructuralRoots.lean`: if future machine touches stay inside the structural-root closure and
+  sweep frees only unmarked nodes, a future-touched node cannot be freed.
 - **C operates on the CESK store σ** (`IndexArena`/`IndexHeap`), NOT the slab `gc_allocator` (which stays
   byte-identical — the gate's slab nextest 4331/0 proves it). So C improves the CESK collector, not the legacy GC.
 - **C2 is literally a CESK-machine GC technique** — Might–Shivers abstract garbage collection: the

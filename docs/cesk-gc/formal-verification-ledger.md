@@ -3,6 +3,16 @@
 This ledger tracks the mechanically checked proof artifacts for the CESK-based `index-gc` collector. It is not about
 the legacy slab mark-sweep collector.
 
+## Verified implementation boundary
+
+The live collector verified here is the CESK-based generational `index-gc` collector's E1 path:
+single-threaded/midloop/rendezvous collection computes structural roots, then marks and sweeps while holding the index
+heap write lock. The E2 SATB artifacts below verify the deletion-barrier, phase-gate, and allocate-black obligations
+that the future concurrent marker must satisfy, but they are not a claim that E2-b is live. The source-coupling gate
+therefore also asserts that `enter_satb_marking()` has no runtime call site yet and that no `mark_concurrent` path exists
+in `index_heap.rs`. When E2-b lands, those boundary assertions must be replaced with source-coupled checks for the
+read-locked concurrent mark, the brief stop-the-world sweep gate, SATB drain/fixpoint, and abort-to-STW backstop.
+
 ## Checked obligations
 
 - `formal/rocq/gc/FreeList.v` and `formal/lean/gc/FreeList.lean`: the R-FL free-list lifecycle preserves
@@ -67,6 +77,9 @@ facts the proofs rely on:
   side while flipping `SATB_MARKING_DEPTH`, and cache deletion takes the read side around check, shade, and delete.
 - Fresh bump allocation realizes allocate-black for E2 SATB: `IndexArena` writes the claimed slot, marks it if
   `satb_marking_in_progress`, and only then publishes the slot through `len`.
+- The current live collection body is still E1/STW: `mark_sweep_if_over_watermark` enters `GcInProgressGuard`, takes the
+  index heap write lock, marks before sweep (full or young), and only then reclaims. E2 marker activation is explicitly
+  absent until source-coupled `mark_concurrent` obligations are added.
 - The rooted global bytecode `MemoCache<MettaValue>` shades overwritten, LRU-evicted, and bulk-cleared cached results
   under the same SATB phase gate; non-`MettaValue` generic cache instantiations do not contribute index roots.
 - The rooted global space registry shades the `SpaceHandle::collect_gc_values` roots for overwritten, removed, and

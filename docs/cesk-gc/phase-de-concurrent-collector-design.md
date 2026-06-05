@@ -1,6 +1,11 @@
 # Phase D+E — Genuine-CESK Parallel/Concurrent GC (dedicated GC thread) — **v3**
 
-**Status:** PROPOSED **v3** (post-round-2 red-team). Supersedes v2. Architecture is **settled and PASSED genuine-CESK review twice** (dedicated GC thread + cooperative-safepoint structural per-mutator self-root; Option-B parked-count gate). v3 does NOT redesign the architecture — it **revises the mechanism** to close the 9 round-2 clusters. The 5 converged areas (genuine-CESK fidelity, allocate-black ordering, abort-to-STW, result-ordering determinism, cache-reuse ordering) are **preserved unchanged** and are not re-opened.
+**Status:** PROPOSED **v3** (post-round-2 red-team). Supersedes v2. Architecture is **settled and PASSED genuine-CESK review twice** (dedicated GC thread + cooperative-safepoint structural per-mutator self-root; rendezvous gate). v3 does NOT redesign the architecture — it **revises the mechanism** to close the 9 round-2 clusters. The 5 converged areas (genuine-CESK fidelity, allocate-black ordering, abort-to-STW, result-ordering determinism, cache-reuse ordering) are **preserved unchanged** and are not re-opened.
+
+**Current implementation note:** the early v3 narrative below still records the parked-count design history. The
+source-coupled implementation has superseded that gate with the per-slot reified witness:
+`requestor_wait_for_all_reified_parked` sets `CURRENT_WITNESS_OK`, and `gate_open_rendezvous` reads
+`current_witness_ok`. The formal ledger (`formal-verification-ledger.md`) is the current checked boundary.
 
 All file:line citations below were re-verified against the working tree (branch `feature/petta-semantics`); where v2's doc cited an abbreviated or drifted line, v3 gives the **verified current** location.
 
@@ -21,14 +26,14 @@ All file:line citations below were re-verified against the working tree (branch 
 | `RESUME_MUTEX`/`_CONDVAR` | gc_allocator.rs:2929/2930 | resume handshake (keyed on `GC_REQUESTED`) |
 | `worker_park_and_root` | gc_allocator.rs:3037 (buffer-append → `WORKERS_PARKED_FOR_GC.fetch_add(1,AcqRel)` :3040 → notify under RENDEZVOUS_MUTEX → `worker_wait_for_resume`) | |
 | `worker_wait_for_resume` | gc_allocator.rs:3071 (waits `is_gc_requested()` under RESUME_MUTEX) | **waits on GC_REQUESTED** |
-| `requestor_wait_for_parked_count(n)` | gc_allocator.rs:3143 (waits `WORKERS_PARKED_FOR_GC==n` under RENDEZVOUS_MUTEX) | the gate |
+| `requestor_wait_for_all_reified_parked` / `current_witness_ok` | gc_allocator.rs:3404 / :3482 | current per-slot witness gate; supersedes parked-count as the collection predicate |
 | `reset_rendezvous_counters` | gc_allocator.rs:3178 (`WORKERS_PARKED_FOR_GC.store(0,Release)` + buffer clear; **no mutex**) | |
 | `resume_workers` | gc_allocator.rs:3206 (RESUME_MUTEX across `GC_REQUESTED.store(false)` + notify) | |
 | `drop_eval_guard_for_safepoint` | gc_allocator.rs:4643; **asserts depth>0** :4646; drops **ONE** level :4649 + single `fetch_sub` :4652; `prev==1` notify :4654 | |
 | `reacquire_eval_guard_after_safepoint` | gc_allocator.rs:4663; **waits on GC_IN_PROGRESS** :4670-4684; single `fetch_add` :4670; `EVAL_GUARD_DEPTH+1` :4691 | |
 | `GcInProgressGuard::try_enter` | gc_allocator.rs:3612 (CAS `false→true` AcqRel → `Option<Self>`); `Drop` clears under GC_PROGRESS_MUTEX + notifies GC_PROGRESS_CONDVAR :3624-3633 | |
 | `note_worker_spawned` / `worker_ever_spawned` | gc_allocator.rs:3524 / :3533 | |
-| `bump_gc_sweep_epoch` | gc_allocator.rs:3694 — **`pub(super)`** | must become `pub(crate)` |
+| `bump_gc_sweep_epoch` | gc_allocator.rs:4886 — **`pub(crate)`** | usable by the index collector and cache epoch guards |
 | `gc_sweep_epoch` | gc_allocator.rs:3683 — `pub` | |
 | `mark_sweep_if_over_watermark` | index_heap.rs:2010; **`global_index_heap().write()` at :2073 held across `mark`:2075 AND `sweep`:2076** ("true quiescence" :2062-2064) | the STW-by-RwLock |
 | alloc fast path | index_heap.rs:1249 (`.read()` :1257) | concurrent bump |
@@ -179,16 +184,16 @@ This subsumes the v2 "WorkerEnter gate at every closure top" — there is now ON
 fn mark_sweep_concurrent(roots, n_threads_snapshot) {
     // (a) BRIEF root-snapshot + handshake under GcInProgressGuard:
     //     GcInProgressGuard is held ONLY here (admission gate §Part 2) — closes enter().
-    //     Snapshot n_threads, requestor_wait_for_parked_count(n), drain WORKER_ROOT_BUFFER ∪ E₀ ∪ driver-C.
+    //     Snapshot n_threads, wait on the per-slot reified witness, drain WORKER_ROOT_BUFFER ∪ E₀ ∪ driver-C.
     //     Arm the SATB barrier (marking_in_progress() := true) and allocate-black BEFORE releasing the gate.
     //     Then DROP GcInProgressGuard so mutators may re-enter (alloc concurrently).
     // (b) CONCURRENT MARK under global_index_heap().read():
     let heap = global_index_heap().read();      // SHARED — alloc_*_concurrent (:1257) + allocate-black run in parallel
-    heap.mark_concurrent(&addrs);               // SATB-driven transitive mark; drains SATB + gray to fixpoint
+    heap.mark_concurrent(&addrs);               // transitive mark from initial roots; barriers synchronously mark evicted roots
     drop(heap);
     // (c) BRIEF SWEEP ALONE under global_index_heap().write():
     let mut heap = global_index_heap().write(); // EXCLUSIVE — only for the reclaim step
-    let stats = heap.sweep();                    // or sweep_young for a minor
+    let stats = heap.sweep();                    // current E2 path is full-major-only
     heap.promote_young();
     drop(heap);
     marking_in_progress() := false;
@@ -199,11 +204,11 @@ fn mark_sweep_concurrent(roots, n_threads_snapshot) {
 
 **The soundness invariant for a `.read()`-locked concurrent mark** (the theorem E2 rests on):
 
-> **Invariant E2-MARK.** A node N that is live at any instant during the concurrent mark is marked black before the sweep frees it, PROVIDED: (i) **SATB** — every mutator overwrite/deletion/eviction that drops the last mutator-visible reference to a still-unmarked node shades that node (Yuasa pre-image / evicted-value barrier, §Part 4); (ii) **allocate-black** — every node allocated during marking sets its mark bit (`set_mark` AcqRel, index_arena.rs:193) BEFORE its slot is published into `len` (Release, :304/:139), and the marker scans by `len` (Acquire, :228), so any slot the marker can observe was marked-black-first (the converged finding #8, preserved); (iii) **parked-snapshot of K** — every mutator that was `active` at the snapshot (the `n_threads` set) has self-rooted its machine ⟨C,E_local,K⟩ into `WORKER_ROOT_BUFFER` before the mark reads roots (the parked-count gate, HB2), so its stack-reachable nodes are in the initial gray set.
+> **Invariant E2-MARK.** A node N that is live at any instant during the concurrent mark is marked black before the sweep frees it, PROVIDED: (i) **SATB** — every mutator overwrite/deletion/eviction that drops the last mutator-visible reference to a still-unmarked node shades that node synchronously (Yuasa pre-image / evicted-value barrier, §Part 4); (ii) **allocate-black** — every node allocated during marking sets its mark bit (`set_mark` AcqRel, index_arena.rs:193) BEFORE its slot is published into `len` (Release, :304/:139), and the marker scans by `len` (Acquire, :228), so any slot the marker can observe was marked-black-first (the converged finding #8, preserved); (iii) **reified witness snapshot of K** — every mutator that was `active` at the snapshot satisfies the strict per-slot witness and has self-rooted its machine ⟨C,E_local,K⟩ into `WORKER_ROOT_BUFFER` before the mark reads roots, so its stack-reachable nodes are in the initial root set.
 
-Under (i)+(ii)+(iii), the only nodes the sweep can reclaim are those unreachable from {roots ∪ SATB-shaded ∪ allocate-black} = the snapshot-live set plus everything that became reachable or was retained during the mark — i.e. exactly the dead set. Floating garbage (a node that died during the mark but was shaded by SATB) is retained this cycle and reclaimed next (no-recycle idempotence, index_heap.rs:940-957). This is the standard Yuasa-SATB soundness argument, now grounded in the verified `len`/`set_mark` ordering and the verified parked-count HB.
+Under (i)+(ii)+(iii), the only nodes the sweep can reclaim are those unreachable from {roots ∪ SATB-shaded ∪ allocate-black} = the snapshot-live set plus everything that became reachable or was retained during the mark — i.e. exactly the dead set. Floating garbage (a node that died during the mark but was shaded by SATB) is retained this cycle and reclaimed next (no-recycle idempotence, index_heap.rs:940-957). This is the standard Yuasa-SATB soundness argument, now grounded in the verified `len`/`set_mark` ordering and the verified reified-witness HB.
 
-**E1 unchanged:** the STW path (`gate_open_midloop` / quiescence at eval/mod.rs:276-309, where `active==0`) keeps `write()`-across-mark (index_heap.rs:2073). E1 is the **abort-to-STW backstop** (converged finding #9): on the abort trigger (2× watermark growth, index_heap.rs:1109; or `N_abort=3` ragged rounds), the E2 path drops to a full STW round — re-acquire `GcInProgressGuard`, `requestor_wait_for_parked_count`, drain ALL SATB+gray to fixpoint under `.write()`, then sweep. The two paths share `mark`/`sweep`; E2 adds `mark_concurrent` (the read-locked, SATB-fed variant) and the brief-gate split.
+**E1 unchanged:** the STW path (`gate_open_midloop` / quiescence at eval/mod.rs:276-309, where `active==0`) keeps `write()`-across-mark (index_heap.rs:2073). E1 is the **abort-to-STW backstop** (converged finding #9): on SATB abort, the E2 path re-issues `request_gc`, re-acquires `GcInProgressGuard`, waits on the per-slot reified witness, drains structural roots, performs a full mark/sweep under `.write()`, then closes the cycle. The two paths share `mark`/`sweep`; E2 adds `mark_concurrent` (the read-locked variant), synchronous SATB barrier marking, and the brief-gate split.
 
 ---
 
@@ -453,9 +458,9 @@ This also reconciles the v2 fix #7 ("drain the FULL depth") with the verified cu
 - **E1-f** — cache-epoch: `bump_gc_sweep_epoch` → `pub(crate)` (§5.2), OPERATOR_CACHE epoch guard (§5.1), INNER_SHADOW no-launder guard-rail (§5.4). Oracle-gated (machine-equivalence oracle eval_loop.rs:3690 as the L3-1 detector).
 - **E1-FLIP** — drop `worker_ever_spawned` from the driver predicate `gate_open_rendezvous` (index_heap.rs:1870-1871; verified this is the real fn, v2's "gate_open_concurrent:1871" was the abbreviation); default ON. The one non-value-equivalent commit; gate ASAN FANOUT>0 + PLN budgets at FANOUT=8.
 - **E2-a** — SATB at the complete site set (§Part 4): the 9-anchor-derived set with the LRU-evicted-value barrier shape; guard-rail at all anchors; `remove_from_space_shared` correction (no `btm.remove` barrier; `remove_rule*` already KEPT); compact-space barrier (§Part 4 item 2).
-- **E2-b** — concurrent marker (§Part 3): `mark_concurrent` under `.read()` + brief `.write()` sweep + brief-gate split + allocate-black PRIMARY (converged #8) + abort-to-STW backstop (converged #9, drops to E1's write-across-mark) + in-place not-done pump (converged #10). Welch benchmark.
+- **E2-b** — concurrent marker (§Part 3): `mark_concurrent` under `.read()` + brief full-major `.write()` sweep + brief-gate split + synchronous SATB barrier marking + allocate-black PRIMARY (converged #8) + abort-to-STW backstop (converged #9, drops to E1's write-across-mark) + in-place not-done pump (converged #10). Welch benchmark.
 
-**Gate (per increment):** ASAN FANOUT>0 0-UAF + `cycles_run()>0` ×20, capped `systemd-run -p MemoryMax=20G -p MemorySwapMax=0` (heavy ASAN builds: `-Zbuild-std` ≤48G low-`-j`, foreground, tee'd; the 125 GiB cap for the heaviest). **TLA+ (E5):** extend `StoreCentricGC.tla` — GcThread-driver (not in `active`); **parked-COUNT == n_threads** gate (single-location HB, SC-faithful); finisher-as-immediate-counter (no park); **cycle-generation straggler exclusion** (NEW — a bump with `gen != cur_gen` is a no-op); mid-spawn admission via GC_IN_PROGRESS-before-snapshot (the §Part 2 interleaving); SATB Shade over the 9-anchor set incl. LRU-evicted-value; allocate-black; **mark-under-read-lock soundness** (NEW — Invariant E2-MARK: the read-locked concurrent mark + SATB + allocate-black + parked-K-snapshot reclaims exactly the dead set); re-prove QuiescenceInvariant / NoUseAfterFree / NoConcurrentFree / NoUnshadedDeletion / NoUnpublishedAllocSwept / MarkTerminates(+abort backstop) + **NoUncountedLiveMutator** (NEW, §Part 2) + **NoStragglerBump** (NEW, §1.3) + **DepthBalance** (NEW, §Part 9). **loom:** GC-thread-driver + finisher + cycle-gen + full-depth reacquire (the relaxed-memory obligation). **TSan** on FANOUT>0 (esp. the read-locked concurrent mark vs `alloc_*_concurrent`). 20-run determinism; machine-equivalence oracle as the L3-1 detector; mmverify "Correct"; HE-bisim 40/40; conformance 483/221/40 value-equivalent cycles>0; PLN budgets (Robot ≤12s/≤8GB, Toothbrush/FlyingRaven ≤25s/≤4GB).
+**Gate (per increment):** ASAN FANOUT>0 0-UAF + `cycles_run()>0` ×20, capped `systemd-run -p MemoryMax=20G -p MemorySwapMax=0` (heavy ASAN builds: `-Zbuild-std` ≤48G low-`-j`, foreground, tee'd; the 125 GiB cap for the heaviest). **TLA+ (E5):** extend `StoreCentricGC.tla` — GcThread-driver (not in `active`); **per-slot reified witness** gate (single-location HB, SC-faithful); finisher-as-immediate-counter (no park); **cycle-generation straggler exclusion** (NEW — a bump with `gen != cur_gen` is a no-op); mid-spawn admission via GC_IN_PROGRESS-before-snapshot (the §Part 2 interleaving); SATB Shade over the 9-anchor set incl. LRU-evicted-value; allocate-black; **mark-under-read-lock soundness** (NEW — Invariant E2-MARK: the read-locked concurrent mark + synchronous SATB shades + allocate-black + reified-K snapshot preserves every live node); re-prove QuiescenceInvariant / NoUseAfterFree / NoConcurrentFree / NoUnshadedDeletion / NoUnpublishedAllocSwept / MarkTerminates(+abort backstop) + **NoUncountedLiveMutator** (NEW, §Part 2) + **NoStragglerBump** (NEW, §1.3) + **DepthBalance** (NEW, §Part 9). **loom:** GC-thread-driver + finisher + cycle-gen + full-depth reacquire (the relaxed-memory obligation). **TSan** on FANOUT>0 (esp. the read-locked concurrent mark vs `alloc_*_concurrent`). 20-run determinism; machine-equivalence oracle as the L3-1 detector; mmverify "Correct"; HE-bisim 40/40; conformance 483/221/40 value-equivalent cycles>0; PLN budgets (Robot ≤12s/≤8GB, Toothbrush/FlyingRaven ≤25s/≤4GB).
 
 ---
 
@@ -486,7 +491,7 @@ NO registry/RootProvider; structural roots only. The JIT/VM index polls (§Part 
 
 6. **"compact-space! clears `variable_atoms` (act_tiered.rs:781) while the E2 marker is mid-mark — the cleared values are unshaded."** Closed by §Part 4 item 2: v3 ships a barrier that shades the cleared values when `marking_in_progress()`. If compact-space is later proven gate-holding, the barrier downgrades to a debug-assert.
 
-7. **"The abort-to-STW re-acquires `GcInProgressGuard` while a concurrent-mark `.read()` lock is held — deadlock (write-after-read on the same RwLock)."** No: the abort path (§Part 3, E2-b) first DROPS the `.read()` mark lock, then re-acquires `GcInProgressGuard` (admission) and the `.write()` lock for the STW drain+sweep. The read and write locks are never held simultaneously by the GC thread (the brief-gate split, §Part 3, sequences them: read for mark, drop, write for sweep).
+7. **"The abort-to-STW re-acquires `GcInProgressGuard` while a concurrent-mark `.read()` lock is held — deadlock (write-after-read on the same RwLock)."** No: the abort path (§Part 3, E2-b) first leaves the SATB function, dropping the read-locked mark scope and RAII-cleaning any open rendezvous/request; then it re-issues `request_gc`, re-acquires `GcInProgressGuard` (admission), and uses the normal STW write-across-mark path. The read and write locks are never held simultaneously by the GC thread.
 
 8. **"A depth==0 type-fixpoint MORK conversion (eval/mod.rs:316) that allocates heavily never yields to GC → OOM on the 4GB budget."** Bounded: depth==0 means `active==0` for that thread (it's the driver post-eval); the index quiescence collector (eval/mod.rs:276-309) already fires at this exact point BEFORE the type-fixpoint (the `should_collect()` block precedes `maybe_run_type_fixpoint`). If the type-fixpoint itself allocates past the watermark, the next directive's quiescence collection reclaims it; and abort-to-STW (2× watermark) bounds RSS within the fixpoint if a worker is concurrently live.
 
@@ -519,8 +524,8 @@ pump; L2-4 MORK no-park; L2-6 not the sole `GcInProgressGuard` taker. ALL fixed 
 ### Round 2 — NET-ADDITIVE (architecture + genuine-CESK PASS AGAIN; residue clustered + shrinking → v3)
 CONVERGED (net-subtractive) in: genuine-CESK fidelity (PASS — batch gather-root/finisher/SATB-barriers all
 structural); allocate-black ordering (#8 SOUND — `set_mark` before `len`-publish; marker scans by `len`, not
-the bump cursor); abort-to-STW (#9 SOUND — through the parked-count gate; drain-to-fixpoint terminates under
-STW); cache-reuse ordering (worker self-clear then read — NO FLAW; slot reuse is write-lock-gated, epoch-bump
+the bump cursor); abort-to-STW (#9 SOUND — through the per-slot witness gate and fresh fallback request; full
+STW mark/sweep terminates under the write lock); cache-reuse ordering (worker self-clear then read — NO FLAW; slot reuse is write-lock-gated, epoch-bump
 Release before reuse); result-ordering determinism (results sorted by slot index → value-equivalence holds);
 `inner_ptr` cache inventory (VALUE_HASH_CACHE + MORK covered). **No round-2 finding refutes the ARCHITECTURE**
 — all are mis-placed/incomplete/mis-cited mechanisms (refinement, not refutation). Convergence is near.

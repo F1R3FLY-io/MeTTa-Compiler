@@ -64,6 +64,7 @@ run_tlc() {
 run_lean "formal/lean/gc/FreeList.lean"
 run_lean "formal/lean/gc/YoungMark.lean"
 run_lean "formal/lean/gc/StructuralRoots.lean"
+run_lean "formal/lean/gc/RendezvousWitness.lean"
 
 run_tlc "rfl_freebit" "MC_StoreCentricGC_RFL.tla" "MC_RFL_freebit.cfg" \
   pass ""

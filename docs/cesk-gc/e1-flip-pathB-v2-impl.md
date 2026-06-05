@@ -93,6 +93,11 @@ in-native → must reach a park to stamp ⟹ sweep WAITS (hang, fail-safe, no ra
 results → SAFEPOINT_ROOTS. Straddle → re-park (above). Every state ⊆ R ⟹ reclaim only dead. ∎ Liveness residual
 = the Step-3 poll enumeration (miss = HANG, debuggable via oracle + 5s warn-loop), NOT a UAF.
 
+Mechanical proof hook: `formal/lean/gc/RendezvousWitness.lean` proves the root-union obligation used here. If the
+live-re-walk wait has published every occupied slot, publication buffered that slot's structural roots, and the
+driver drains the buffer into its root set, then every occupied participant root is in the driver root set. Combined
+with mark-from-driver-roots and sweep-only-unmarked, those roots cannot be freed.
+
 ## Byte-identical DEDICATED=0 / edit ordering / gate
 NO unconditional hot-path atomic (no NATIVE_OP_DEPTH). All witness/B2′/B3 ops `#[cfg(index-gc)] &&
 dedicated_gc_enabled()` (cached OnceLock); slab const-folds out; B3 body gated dedicated&&is_gc_requested (=

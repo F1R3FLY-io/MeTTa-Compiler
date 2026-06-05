@@ -147,7 +147,7 @@ pub struct SubgoalTable<V: MettaValueTrait> {
     total_misses: u64,
 }
 
-impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
+impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
     pub fn new() -> Self {
         Self::with_capacity(1024)
     }
@@ -160,6 +160,99 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
         }
     }
 
+    #[cfg(feature = "index-gc")]
+    fn shade_values<I>(values: I)
+    where
+        V: 'static,
+        I: IntoIterator<Item = V>,
+    {
+        let mut roots = Vec::new();
+        for value in values {
+            let any = &value as &dyn std::any::Any;
+            if let Some(root) = any.downcast_ref::<MettaValue>() {
+                roots.push(root.clone());
+            }
+        }
+        crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn shade_entry(entry: TableEntry<V>)
+    where
+        V: 'static,
+    {
+        Self::shade_values(entry.results);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn insert_entry_with_satb(&mut self, expr_hash: u64, entry: TableEntry<V>)
+    where
+        V: 'static,
+    {
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                let old = self.entries.insert(expr_hash, entry);
+                if satb_active {
+                    if let Some(old) = old {
+                        Self::shade_entry(old);
+                    }
+                }
+            },
+        );
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    fn insert_entry_with_satb(&mut self, expr_hash: u64, entry: TableEntry<V>) {
+        self.entries.insert(expr_hash, entry);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn remove_entry_with_satb(&mut self, expr_hash: u64)
+    where
+        V: 'static,
+    {
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                let old = self.entries.remove(&expr_hash);
+                if satb_active {
+                    if let Some(old) = old {
+                        Self::shade_entry(old);
+                    }
+                }
+            },
+        );
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    fn remove_entry_with_satb(&mut self, expr_hash: u64) {
+        self.entries.remove(&expr_hash);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn clear_entries_with_satb(&mut self)
+    where
+        V: 'static,
+    {
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                if satb_active {
+                    let roots: Vec<V> = self
+                        .entries
+                        .values()
+                        .flat_map(|entry| entry.results.iter().cloned())
+                        .collect();
+                    Self::shade_values(roots);
+                }
+                self.entries.clear();
+            },
+        );
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    fn clear_entries_with_satb(&mut self) {
+        self.entries.clear();
+    }
+
     /// Look up a cached result by expression hash.
     ///
     /// Returns `Complete(results)` on cache hit, `Absent` on miss.
@@ -170,7 +263,7 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
         if let Some(entry) = self.entries.get_mut(&expr_hash) {
             if entry.mutation_epoch != current_epoch {
                 // Stale — evict (epoch mismatch)
-                self.entries.remove(&expr_hash);
+                self.remove_entry_with_satb(expr_hash);
                 self.total_misses += 1;
                 return TableLookup::Absent;
             }
@@ -196,7 +289,7 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
     pub fn complete(&mut self, expr_hash: u64, results: SmallVec<[V; 2]>) {
         let epoch = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
         let gen = crate::backend::eval::trampoline::dispatch_hints::cache_generation();
-        self.entries.insert(
+        self.insert_entry_with_satb(
             expr_hash,
             TableEntry {
                 results,
@@ -209,7 +302,7 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
 
     /// Remove a cached entry (e.g., for selective invalidation).
     pub fn remove_entry(&mut self, expr_hash: u64) {
-        self.entries.remove(&expr_hash);
+        self.remove_entry_with_satb(expr_hash);
     }
 
     /// Check if a hash has a cached Complete result.
@@ -226,13 +319,13 @@ impl<V: MettaValueTrait + Clone> SubgoalTable<V> {
     }
 
     pub fn clear(&mut self) {
-        self.entries.clear();
+        self.clear_entries_with_satb();
         self.total_hits = 0;
         self.total_misses = 0;
     }
 
     pub fn invalidate_all(&mut self) {
-        self.entries.clear();
+        self.clear_entries_with_satb();
     }
 
     /// Collect GC roots from cached results.

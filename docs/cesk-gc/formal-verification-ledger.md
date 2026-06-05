@@ -69,6 +69,8 @@ facts the proofs rely on:
   under the same SATB phase gate; non-`MettaValue` generic cache instantiations do not contribute index roots.
 - The rooted tiered compilation cache shades pending bytecode source roots on overwrite, cancellation, task-drop, and
   guard drop, and shades pending roots plus compiled bytecode constants before full cache clear.
+- The rooted thread-local subgoal and thunk tables shade cached result values on stale eviction, overwrite, explicit
+  removal, invalidation, full clear, and thunk result replacement.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

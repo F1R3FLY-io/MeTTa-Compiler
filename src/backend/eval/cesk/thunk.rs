@@ -137,7 +137,7 @@ pub struct ThunkTable<V: MettaValueTrait> {
     pub total_hits: u64,
 }
 
-impl<V: MettaValueTrait + Clone> ThunkTable<V> {
+impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
     /// Create a new thunk table.
     pub fn new() -> Self {
         Self {
@@ -145,6 +145,99 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
             total_cycles: 0,
             total_hits: 0,
         }
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn shade_values<I>(values: I)
+    where
+        V: 'static,
+        I: IntoIterator<Item = V>,
+    {
+        let mut roots = Vec::new();
+        for value in values {
+            let any = &value as &dyn std::any::Any;
+            if let Some(root) = any.downcast_ref::<MettaValue>() {
+                roots.push(root.clone());
+            }
+        }
+        crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn shade_thunk(thunk: Thunk<V>)
+    where
+        V: 'static,
+    {
+        Self::shade_values(thunk.results);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn insert_thunk_with_satb(&mut self, expr_hash: u64, thunk: Thunk<V>)
+    where
+        V: 'static,
+    {
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                let old = self.entries.insert(expr_hash, thunk);
+                if satb_active {
+                    if let Some(old) = old {
+                        Self::shade_thunk(old);
+                    }
+                }
+            },
+        );
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    fn insert_thunk_with_satb(&mut self, expr_hash: u64, thunk: Thunk<V>) {
+        self.entries.insert(expr_hash, thunk);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn remove_thunk_with_satb(&mut self, expr_hash: u64)
+    where
+        V: 'static,
+    {
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                let old = self.entries.remove(&expr_hash);
+                if satb_active {
+                    if let Some(old) = old {
+                        Self::shade_thunk(old);
+                    }
+                }
+            },
+        );
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    fn remove_thunk_with_satb(&mut self, expr_hash: u64) {
+        self.entries.remove(&expr_hash);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn clear_entries_with_satb(&mut self)
+    where
+        V: 'static,
+    {
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                if satb_active {
+                    let roots: Vec<V> = self
+                        .entries
+                        .values()
+                        .flat_map(|thunk| thunk.results.iter().cloned())
+                        .collect();
+                    Self::shade_values(roots);
+                }
+                self.entries.clear();
+            },
+        );
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    fn clear_entries_with_satb(&mut self) {
+        self.entries.clear();
     }
 
     /// Look up or create a thunk for the given expression hash.
@@ -163,8 +256,8 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
             // branch N+1's evaluation by falsely detecting cycles.
             if !crate::backend::eval::trampoline::dispatch_hints::is_scope_visible(thunk.scope_gen)
             {
-                self.entries.remove(&expr_hash);
-                self.entries.insert(expr_hash, Thunk::new_suspended());
+                self.remove_thunk_with_satb(expr_hash);
+                self.insert_thunk_with_satb(expr_hash, Thunk::new_suspended());
                 return ThunkLookup::Absent;
             }
             thunk.access_count += 1;
@@ -184,8 +277,8 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
                         crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
                     if thunk.mutation_epoch != current_epoch {
                         // Stale — evict and treat as new
-                        self.entries.remove(&expr_hash);
-                        self.entries.insert(expr_hash, Thunk::new_suspended());
+                        self.remove_thunk_with_satb(expr_hash);
+                        self.insert_thunk_with_satb(expr_hash, Thunk::new_suspended());
                         return ThunkLookup::Absent;
                     }
                     self.total_hits += 1;
@@ -194,7 +287,7 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
                 ThunkState::Error => ThunkLookup::Error,
             }
         } else {
-            self.entries.insert(expr_hash, Thunk::new_suspended());
+            self.insert_thunk_with_satb(expr_hash, Thunk::new_suspended());
             ThunkLookup::Absent
         }
     }
@@ -205,11 +298,29 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
     /// successful evaluation.
     pub fn update(&mut self, expr_hash: u64, results: SmallVec<[V; 2]>) {
         if let Some(thunk) = self.entries.get_mut(&expr_hash) {
-            thunk.state = ThunkState::Evaluated;
-            thunk.results = results;
-            thunk.mutation_epoch =
-                crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
-            thunk.scope_gen = crate::backend::eval::trampoline::dispatch_hints::cache_generation();
+            #[cfg(feature = "index-gc")]
+            crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+                |satb_active| {
+                    if satb_active {
+                        Self::shade_values(thunk.results.iter().cloned());
+                    }
+                    thunk.state = ThunkState::Evaluated;
+                    thunk.results = results;
+                    thunk.mutation_epoch =
+                        crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+                    thunk.scope_gen =
+                        crate::backend::eval::trampoline::dispatch_hints::cache_generation();
+                },
+            );
+            #[cfg(not(feature = "index-gc"))]
+            {
+                thunk.state = ThunkState::Evaluated;
+                thunk.results = results;
+                thunk.mutation_epoch =
+                    crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
+                thunk.scope_gen =
+                    crate::backend::eval::trampoline::dispatch_hints::cache_generation();
+            }
         }
     }
 
@@ -222,7 +333,7 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
 
     /// Remove a thunk (e.g., after scope exit or invalidation).
     pub fn remove(&mut self, expr_hash: u64) {
-        self.entries.remove(&expr_hash);
+        self.remove_thunk_with_satb(expr_hash);
     }
 
     /// Check if a thunk is in blackhole state (being evaluated).
@@ -247,7 +358,7 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
 
     /// Clear all thunks.
     pub fn clear(&mut self) {
-        self.entries.clear();
+        self.clear_entries_with_satb();
         self.total_cycles = 0;
         self.total_hits = 0;
     }
@@ -261,11 +372,11 @@ impl<V: MettaValueTrait + Clone> ThunkTable<V> {
 
     /// Invalidate all thunks (after space mutation).
     pub fn invalidate_all(&mut self) {
-        self.entries.clear();
+        self.clear_entries_with_satb();
     }
 }
 
-impl<V: MettaValueTrait + Clone> Default for ThunkTable<V> {
+impl<V: MettaValueTrait + Clone + 'static> Default for ThunkTable<V> {
     fn default() -> Self {
         Self::new()
     }

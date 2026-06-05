@@ -240,6 +240,23 @@ assert_after_before "src/backend/bytecode/memo_cache.rs" "pub fn insert" "evicte
 assert_after_before "src/backend/bytecode/memo_cache.rs" "pub fn insert" "evicted.push(old.result);" "shade_evicted_values(evicted);"
 assert_after_before "src/backend/bytecode/memo_cache.rs" "pub fn clear" "with_satb_deletion_barrier" "self.cache.clear();"
 assert_after_before "src/backend/bytecode/memo_cache.rs" "pub fn clear" "shade_evicted_values(roots);" "self.cache.clear();"
+assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_global_anchors" "collect_subgoal_roots(out);" "collect_thunk_roots(out);"
+assert_after_before "src/backend/eval/cesk/tabling.rs" "fn shade_values" "downcast_ref::<MettaValue>()" "satb_shade_evicted_roots(roots);"
+assert_after_before "src/backend/eval/cesk/tabling.rs" "fn insert_entry_with_satb" "with_satb_deletion_barrier" "self.entries.insert(expr_hash, entry);"
+assert_after_before "src/backend/eval/cesk/tabling.rs" "fn insert_entry_with_satb" "self.entries.insert(expr_hash, entry);" "Self::shade_entry(old);"
+assert_after_before "src/backend/eval/cesk/tabling.rs" "fn remove_entry_with_satb" "with_satb_deletion_barrier" "self.entries.remove(&expr_hash);"
+assert_after_before "src/backend/eval/cesk/tabling.rs" "fn remove_entry_with_satb" "self.entries.remove(&expr_hash);" "Self::shade_entry(old);"
+assert_after_before "src/backend/eval/cesk/tabling.rs" "fn clear_entries_with_satb" "with_satb_deletion_barrier" "self.entries.clear();"
+assert_after_before "src/backend/eval/cesk/tabling.rs" "fn clear_entries_with_satb" "Self::shade_values(roots);" "self.entries.clear();"
+assert_after_before "src/backend/eval/cesk/thunk.rs" "fn shade_values" "downcast_ref::<MettaValue>()" "satb_shade_evicted_roots(roots);"
+assert_after_before "src/backend/eval/cesk/thunk.rs" "fn insert_thunk_with_satb" "with_satb_deletion_barrier" "self.entries.insert(expr_hash, thunk);"
+assert_after_before "src/backend/eval/cesk/thunk.rs" "fn insert_thunk_with_satb" "self.entries.insert(expr_hash, thunk);" "Self::shade_thunk(old);"
+assert_after_before "src/backend/eval/cesk/thunk.rs" "fn remove_thunk_with_satb" "with_satb_deletion_barrier" "self.entries.remove(&expr_hash);"
+assert_after_before "src/backend/eval/cesk/thunk.rs" "fn remove_thunk_with_satb" "self.entries.remove(&expr_hash);" "Self::shade_thunk(old);"
+assert_after_before "src/backend/eval/cesk/thunk.rs" "fn clear_entries_with_satb" "with_satb_deletion_barrier" "self.entries.clear();"
+assert_after_before "src/backend/eval/cesk/thunk.rs" "fn clear_entries_with_satb" "Self::shade_values(roots);" "self.entries.clear();"
+assert_after_before "src/backend/eval/cesk/thunk.rs" "pub fn update" "with_satb_deletion_barrier" "thunk.results = results;"
+assert_after_before "src/backend/eval/cesk/thunk.rs" "pub fn update" "Self::shade_values(thunk.results.iter().cloned());" "thunk.results = results;"
 
 # Witness stamping: the stale-stamp reset and the genuine reified-park stamp are
 # the only writes to published_gen. That keeps the witness theorem's

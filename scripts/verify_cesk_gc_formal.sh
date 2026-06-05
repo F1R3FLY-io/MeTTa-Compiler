@@ -132,5 +132,9 @@ run_tlc "satb_deletion_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBar
   pass ""
 run_tlc "satb_no_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_none.cfg" \
   fail "Invariant NoSnapshotLiveFreed is violated"
+run_tlc "allocate_black_mark_first" "MC_AllocateBlackPublish.tla" "MC_AllocateBlackPublish_mark_first.cfg" \
+  pass ""
+run_tlc "allocate_black_publish_first" "MC_AllocateBlackPublish.tla" "MC_AllocateBlackPublish_publish_first.cfg" \
+  fail "Invariant NoPublishedAllocSwept is violated"
 
 echo "CESK GC formal checks passed"

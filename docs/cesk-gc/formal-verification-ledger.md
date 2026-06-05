@@ -36,6 +36,8 @@ the legacy slab mark-sweep collector.
   reuse preserves bump order; any-young reuse admits an old-parent to young-child edge after promotion.
 - `tla/SATBDeletionBarrier.tla`: checks the E2 Yuasa deletion-barrier obligation. Shading the removed pre-image
   preserves snapshot-live safety; omitting the barrier frees a snapshot-live value.
+- `tla/AllocateBlackPublish.tla`: checks the E2 allocate-black publication order. Marking before publication
+  preserves safety; publishing first allows a visible allocation to be swept.
 
 ## Source coupling
 

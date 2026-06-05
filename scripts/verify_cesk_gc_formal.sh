@@ -83,12 +83,14 @@ run_lean "formal/lean/gc/FreeList.lean"
 run_lean "formal/lean/gc/YoungMark.lean"
 run_lean "formal/lean/gc/StructuralRoots.lean"
 run_lean "formal/lean/gc/RendezvousWitness.lean"
+run_lean "formal/lean/gc/DriverCPublication.lean"
 run_lean "formal/lean/gc/SATB.lean"
 
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/RendezvousWitness.v"
+run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/SATB.v"
 run_rocq "formal/rocq/gc/CESKCollectorSafety.v"
 
@@ -116,6 +118,10 @@ run_tlc "driver_root_union_missing_env" "MC_DriverRootUnion.tla" "MC_DriverRootU
   fail "Invariant RootUnionComplete is violated"
 run_tlc "driver_root_union_missing_dispatch" "MC_DriverRootUnion.tla" "MC_DriverRootUnion_missing_dispatch.cfg" \
   fail "Invariant RootUnionComplete is violated"
+run_tlc "driver_c_publication_published" "MC_DriverCPublication.tla" "MC_DriverCPublication_published.cfg" \
+  pass ""
+run_tlc "driver_c_publication_missing" "MC_DriverCPublication.tla" "MC_DriverCPublication_missing.cfg" \
+  fail "Invariant DriverCVisibleOnSweep is violated"
 run_tlc "started_cycle_gate_started" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_started.cfg" \
   pass ""
 run_tlc "started_cycle_gate_gen" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_gen.cfg" \

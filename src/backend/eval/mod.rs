@@ -266,6 +266,17 @@ pub fn eval(
     env.set_interpret_mode(true);
     env.set_bang_body(false);
 
+    // Driver-C publication: `state.source/output` are control held by the caller
+    // above the CESK machine. Midloop/rendezvous collections cannot read `state`
+    // directly, so publish those values to the narrow safepoint channel for this
+    // eval interval; quiescence still also reads `state` structurally by name.
+    #[cfg(feature = "index-gc")]
+    let _driver_c_handle = {
+        let mut driver_roots = Vec::new();
+        state.collect_driver_program_roots(&mut driver_roots);
+        crate::backend::models::register_temporary_roots(driver_roots)
+    };
+
     // E1-FLIP Path B V4 — B3 directive-exit leaving-park handle (the F1 ride-to-caller).
     // Built INSIDE the `_guard` scope (after `eval_inner` returns, before the guard drops);
     // declared here so it ESCAPES that scope AND the post-processing below, riding out in
@@ -290,10 +301,11 @@ pub fn eval(
         #[cfg(feature = "index-gc")]
         let _live_env_handle = {
             if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
-                let dyn_env: std::sync::Arc<
-                    dyn crate::backend::models::gc_allocator::EnvRoots,
-                > = env.shared.clone();
-                Some(crate::backend::models::gc_allocator::register_live_env(&dyn_env))
+                let dyn_env: std::sync::Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
+                    env.shared.clone();
+                Some(crate::backend::models::gc_allocator::register_live_env(
+                    &dyn_env,
+                ))
             } else {
                 None
             }

@@ -49,6 +49,9 @@ barriers cannot remain stale across a minor.
 - `tla/DriverRootUnion.tla`: checks the E1 driver root-union channels. Including worker-buffer, safepoint,
   live-env/E0, and live-dispatch channels preserves root-union completeness; omitting live-env or live-dispatch
   violates it.
+- `tla/DriverCPublication.tla`: checks that public eval entry publishes driver-C (`MettaState.source/output`) to
+  the safepoint channel before midloop/rendezvous roots can be built. Omitting that publication violates
+  `DriverCVisibleOnSweep`, matching a caller-held source/output value that can be freed while eval is still live.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 - `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end
@@ -94,6 +97,9 @@ facts the proofs rely on:
 - `gate_open_rendezvous` is keyed by `current_witness_ok`, not the obsolete parked-count gate.
 - Live envs and parallel fan-outs are registered through RAII handles, and the live-env/live-dispatch registry walks
   delegate to the structural `EnvRoots`/`DispatchRoots` readers used by the driver-root-union proof.
+- Both public eval boundaries (`eval` and `eval_with_tier`) publish `MettaState.source/output` into
+  `SAFEPOINT_ROOTS` before the live transition begins, so midloop/rendezvous collection sees the caller's driver-C
+  even when an outer CLI/REPL/conformance loop has not installed its own batch guard.
 - OPERATOR_CACHE is guarded by `gc_sweep_epoch` in index mode before pointer-keyed lookup, so a parked worker
   self-invalidates after another thread completes a sweep.
 - Value-bearing E0 LRU anchors (`EVAL_MEMO`, `MATCH_RESULT_CACHE`, and `BYTECODE_CACHE`) use `LruCache::push`

@@ -162,13 +162,18 @@ assert_after_before "src/backend/eval/cesk/index_arena.rs" "#[cfg(test)]" "*aren
 # B2'/D2 source-channel registration: the driver-root-union proof only applies
 # if live envs and parallel fan-outs are registered for their lifetimes and the
 # registry walkers delegate to the structural root readers.
-assert_count "src/backend/eval/mod.rs" "register_live_env(&dyn_env)" "1"
+assert_count "src/backend/eval/mod.rs" "register_live_env(" "1"
 assert_count "src/backend/eval/trampoline/eval_loop.rs" "register_live_env(&dyn_env)" "2"
-assert_after_before "src/backend/eval/mod.rs" "let _live_env_handle = {" "register_live_env(&dyn_env)" "let r = eval_inner(value, env, state);"
+assert_after_before "src/backend/eval/mod.rs" "let _live_env_handle = {" "register_live_env(" "let r = eval_inner(value, env, state);"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Register THIS worker's branch env" "register_live_env(&dyn_env)" "eval_trampoline_with_carrying(branch_expr, env"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "THIS collapse worker's env" "register_live_env(&dyn_env)" "eval_trampoline_with_carrying("
 assert_after_before "src/backend/environment/core.rs" "impl crate::backend::models::gc_allocator::EnvRoots for GenericEnvironmentShared<MettaValue>" "self.collect_roots_into(out);" "#[cfg(not(feature = \"index-gc\"))]"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_env_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_env_roots(out);"
+
+assert_after_before "src/backend/eval/mod.rs" "pub fn eval(" "state.collect_driver_program_roots(&mut driver_roots);" "let _guard = EvalGuard::enter();"
+assert_after_before "src/backend/eval/mod.rs" "pub fn eval(" "crate::backend::models::register_temporary_roots(driver_roots)" "let _guard = EvalGuard::enter();"
+assert_after_before "src/backend/eval/tier_forced.rs" "pub fn eval_with_tier(" "state.collect_driver_program_roots(&mut driver_roots);" "let outcome = if let Err(reason) = tier_applicable"
+assert_after_before "src/backend/eval/tier_forced.rs" "pub fn eval_with_tier(" "crate::backend::models::register_temporary_roots(driver_roots)" "let outcome = if let Err(reason) = tier_applicable"
 
 assert_count "src/backend/eval/trampoline/eval_loop.rs" "register_live_dispatch(" "2"
 assert_count "src/backend/eval/trampoline/eval_loop.rs" "_live_dispatch: live_dispatch" "2"

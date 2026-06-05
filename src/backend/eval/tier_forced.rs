@@ -262,6 +262,17 @@ pub fn eval_with_tier(
         };
     }
 
+    // Driver-C publication for forced tiers. `eval_with_tier` bypasses `eval()`,
+    // so it must carry the same midloop/rendezvous guarantee itself: the caller's
+    // MettaState source/output stay visible through SAFEPOINT_ROOTS for the whole
+    // tier-specific transition.
+    #[cfg(feature = "index-gc")]
+    let _driver_c_handle = {
+        let mut driver_roots = Vec::new();
+        state.collect_driver_program_roots(&mut driver_roots);
+        crate::backend::models::register_temporary_roots(driver_roots)
+    };
+
     let outcome = if let Err(reason) = tier_applicable(&value, &env, tier) {
         match policy {
             FallbackPolicy::SilentDemote => {

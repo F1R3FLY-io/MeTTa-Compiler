@@ -50,6 +50,10 @@ barriers cannot remain stale across a minor.
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
   a root captured by the final remark cannot be freed by the exclusive sweep.
+- `formal/rocq/gc/E0MutationSites.v` and `formal/lean/gc/E0MutationSites.lean`: bridge the E2 value-bearing E0
+  mutation-site enumeration into the SATB theorem. If every removed pre-image from the pinned space-local, rule-index,
+  and environment/token/state categories is shaded, then any snapshot-live value removed through those E0 categories is
+  a SATB root and cannot be freed by sweep.
 - `tla/RendezvousWitness.tla`: checks the E1 witness gate predicate. The strict `published>=cur_gen OR
   acquired>cur_gen` model preserves root completeness at sweep; the negative `acquired>=cur_gen` model violates it.
 - `tla/WitnessSlotLifecycle.tla`: checks the V4 slot lifecycle. Keeping the slot occupied across safepoint drop

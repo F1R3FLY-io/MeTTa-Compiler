@@ -29,6 +29,8 @@ the legacy slab mark-sweep collector.
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 - `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end
   prevents the previous cycle's true flag from admitting a next-cycle sweep before the next witness wait.
+- `tla/CurSegReuseOrder.tla`: checks the C1 no-old-to-young premise for young-only minor marking. Cur-segment-only
+  reuse preserves bump order; any-young reuse admits an old-parent to young-child edge after promotion.
 
 ## Source coupling
 
@@ -41,7 +43,8 @@ facts the proofs rely on:
 - `gate_open_rendezvous` is keyed by `current_witness_ok`, not the obsolete parked-count gate.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
-- C1 source order keeps reuse current-segment-only and young minor marking restricted to young roots/children.
+- C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment
+  retargeting monotone, promotion at `current_seg`, and young minor marking restricted to young roots/children.
 - `published_gen` writes remain restricted to stale-stamp reset plus the genuine `note_reified_park` stamp, with
   worker root-buffer publication before the stamp.
 - The V4 witness slot is acquired before `N_THREADS++`, released only after the true outermost `EvalGuard::drop`

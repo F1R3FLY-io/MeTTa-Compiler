@@ -122,5 +122,9 @@ run_tlc "witness_ok_reset_clear" "MC_WitnessOkReset.tla" "MC_WitnessOkReset_clea
   pass ""
 run_tlc "witness_ok_reset_stale" "MC_WitnessOkReset.tla" "MC_WitnessOkReset_stale.cfg" \
   fail "Invariant NoStaleWitnessCollect is violated"
+run_tlc "cur_seg_reuse_order_cur" "MC_CurSegReuseOrder.tla" "MC_CurSegReuseOrder_cur.cfg" \
+  pass ""
+run_tlc "cur_seg_reuse_order_any" "MC_CurSegReuseOrder.tla" "MC_CurSegReuseOrder_any.cfg" \
+  fail "Invariant NoOldToYoungAfterPromotion is violated"
 
 echo "CESK GC formal checks passed"

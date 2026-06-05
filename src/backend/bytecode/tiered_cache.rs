@@ -876,9 +876,28 @@ struct PendingBytecodeRootGuard {
     roots: Arc<DashMap<u64, MettaValue, IdentityU64BuildHasher>>,
 }
 
+#[cfg(feature = "index-gc")]
+fn shade_tiered_roots(roots: Vec<MettaValue>) {
+    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+}
+
 impl Drop for PendingBytecodeRootGuard {
     fn drop(&mut self) {
-        self.roots.remove(&self.expr_hash);
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                let removed = self.roots.remove(&self.expr_hash).map(|(_hash, root)| root);
+                if satb_active {
+                    if let Some(root) = removed {
+                        shade_tiered_roots(vec![root]);
+                    }
+                }
+            },
+        );
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.roots.remove(&self.expr_hash);
+        }
     }
 }
 
@@ -1095,7 +1114,21 @@ impl TieredCache {
         expr_hash: u64,
         expr: MettaValue,
     ) -> PendingBytecodeRootGuard {
-        self.pending_bytecode_roots.insert(expr_hash, expr);
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                let old = self.pending_bytecode_roots.insert(expr_hash, expr);
+                if satb_active {
+                    if let Some(root) = old {
+                        shade_tiered_roots(vec![root]);
+                    }
+                }
+            },
+        );
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.pending_bytecode_roots.insert(expr_hash, expr);
+        }
         PendingBytecodeRootGuard {
             expr_hash,
             roots: Arc::clone(&self.pending_bytecode_roots),
@@ -1242,7 +1275,24 @@ impl TieredCache {
         if !enqueued {
             // Task dropped due to backpressure — revert state so future
             // executions can re-trigger compilation
-            self.pending_bytecode_roots.remove(&state.expr_hash);
+            #[cfg(feature = "index-gc")]
+            crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+                |satb_active| {
+                    let removed = self
+                        .pending_bytecode_roots
+                        .remove(&state.expr_hash)
+                        .map(|(_hash, root)| root);
+                    if satb_active {
+                        if let Some(root) = removed {
+                            shade_tiered_roots(vec![root]);
+                        }
+                    }
+                },
+            );
+            #[cfg(not(feature = "index-gc"))]
+            {
+                self.pending_bytecode_roots.remove(&state.expr_hash);
+            }
             state.revert_bytecode_to_not_started();
             #[cfg(feature = "track-stats")]
             self.bytecode_compilations_triggered
@@ -1810,8 +1860,32 @@ impl TieredCache {
 
     /// Clear the entire cache
     pub fn clear(&self) {
-        self.entries.clear();
-        self.pending_bytecode_roots.clear();
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                if satb_active {
+                    let mut roots = Vec::new();
+                    roots.extend(
+                        self.pending_bytecode_roots
+                            .iter()
+                            .map(|entry| *entry.value()),
+                    );
+                    for entry in self.entries.iter() {
+                        if let Some(chunk) = entry.value().bytecode_chunk() {
+                            super::cache::collect_chunk_constants(&chunk, &mut roots);
+                        }
+                    }
+                    shade_tiered_roots(roots);
+                }
+                self.entries.clear();
+                self.pending_bytecode_roots.clear();
+            },
+        );
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.entries.clear();
+            self.pending_bytecode_roots.clear();
+        }
         #[cfg(feature = "track-stats")]
         self.reset_stats();
     }

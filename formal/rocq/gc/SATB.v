@@ -39,6 +39,23 @@ Section SATBModel.
     right; right; right; exact Hblack.
   Qed.
 
+  Theorem no_driver_root_uaf :
+    forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, Reach (SATBRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, DriverRoot a -> ~ Freed a.
+  Proof.
+    intros InitialRoot DriverRoot ShadedDeletion AllocateBlack Edge Marked Freed
+           Hmark Hsweep a Hdriver Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    apply driver_root_is_satb_root.
+    exact Hdriver.
+  Qed.
+
   Theorem no_snapshot_live_uaf :
     forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
            (Edge : Addr -> Addr -> Prop)

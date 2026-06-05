@@ -32,7 +32,8 @@ introduced by SATB barriers cannot remain stale across a minor.
   allocate-black publication.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
-  allocate-black roots, sweep cannot free them.
+  allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
+  a root captured by the final remark cannot be freed by the exclusive sweep.
 - `tla/RendezvousWitness.tla`: checks the E1 witness gate predicate. The strict `published>=cur_gen OR
   acquired>cur_gen` model preserves root completeness at sweep; the negative `acquired>=cur_gen` model violates it.
 - `tla/WitnessSlotLifecycle.tla`: checks the V4 slot lifecycle. Keeping the slot occupied across safepoint drop

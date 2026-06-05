@@ -43,6 +43,20 @@ theorem allocate_black_is_satb_root
   intro h
   exact Or.inr (Or.inr (Or.inr h))
 
+theorem no_driver_root_uaf
+    {InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop}
+    {Edge : Addr -> Addr -> Prop}
+    {Marked Freed : Addr -> Prop}
+    (markComplete :
+      forall {a : Addr}, Reach (SATBRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a -> Marked a)
+    (sweepOnlyUnmarked : forall {a : Addr}, Freed a -> Not (Marked a)) :
+    forall {a : Addr}, DriverRoot a -> Not (Freed a) := by
+  intro a hdriver hfreed
+  have hreach : Reach (SATBRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a :=
+    Reach.root (driver_root_is_satb_root hdriver)
+  have hmarked := markComplete hreach
+  exact sweepOnlyUnmarked hfreed hmarked
+
 theorem no_snapshot_live_uaf
     {InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop}
     {Edge : Addr -> Addr -> Prop}

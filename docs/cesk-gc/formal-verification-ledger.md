@@ -44,8 +44,8 @@ barriers cannot remain stale across a minor.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
   roots, caller-held driver-C roots, future CESK touches, reachable young nodes under both the no-old-to-young and
-  conservative-minor traversals, and E2 snapshot-live nodes covered by initial roots, driver roots, SATB shades, or
-  allocate-black publication.
+  conservative-minor traversals, E2 snapshot-live nodes covered by initial roots, driver roots, SATB shades, or
+  allocate-black publication, and E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:

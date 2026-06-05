@@ -15,7 +15,10 @@
       marker traverses the whole reachable graph but only marks young nodes;
     - E2 concurrent marking retains every snapshot-live address covered by
       initial roots, rendezvous driver roots, SATB deletion shades, or
-      allocate-black publication.
+      allocate-black publication;
+    - E2 value-bearing E0 deletion categories compose into that SATB coverage
+      when removed space-local, rule-index, and environment/token/state
+      pre-images are shaded.
 
     These are parametric theorems over the store graph and do not assume a finite
     TLC state space.
@@ -39,6 +42,11 @@ Section CESKCollectorSafetyModel.
       (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
       (a : Addr) : Prop :=
     InitialRoot a \/ DriverRoot a \/ ShadedDeletion a \/ AllocateBlack a.
+
+  Definition E0RemovedPreimage
+      (SpacePreimage RulePreimage EnvPreimage : Addr -> Prop)
+      (a : Addr) : Prop :=
+    SpacePreimage a \/ RulePreimage a \/ EnvPreimage a.
 
   Theorem rendezvous_participant_root_survives_collection :
     forall (Occupied Published : Slot -> Prop)
@@ -191,6 +199,36 @@ Section CESKCollectorSafetyModel.
     apply Hmark.
     apply Hcovered.
     exact Hlive.
+  Qed.
+
+  Theorem e2_e0_removed_snapshot_live_survives_collection :
+    forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack
+            SpacePreimage RulePreimage EnvPreimage : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed SnapshotLive : Addr -> Prop),
+      (forall a, SpacePreimage a -> ShadedDeletion a) ->
+      (forall a, RulePreimage a -> ShadedDeletion a) ->
+      (forall a, EnvPreimage a -> ShadedDeletion a) ->
+      (forall a,
+          SnapshotLive a ->
+          E0RemovedPreimage SpacePreimage RulePreimage EnvPreimage a) ->
+      (forall a,
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a ->
+          Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, SnapshotLive a -> ~ Freed a.
+  Proof.
+    intros InitialRoot DriverRoot ShadedDeletion AllocateBlack
+           SpacePreimage RulePreimage EnvPreimage Edge Marked Freed SnapshotLive
+           Hspace Hrule Henv Hremoved Hmark Hsweep a Hlive Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right; right; left.
+    destruct (Hremoved a Hlive) as [Hspace_a | [Hrule_a | Henv_a]].
+    - apply Hspace; exact Hspace_a.
+    - apply Hrule; exact Hrule_a.
+    - apply Henv; exact Henv_a.
   Qed.
 End CESKCollectorSafetyModel.
 

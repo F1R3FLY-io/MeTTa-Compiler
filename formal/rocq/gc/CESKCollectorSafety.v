@@ -21,6 +21,8 @@
     - E2 final-rendezvous roots survive the exclusive sweep, and a completed
       SATB request is backed by either the final SATB sweep or the abort-to-STW
       backstop;
+    - E2 SATB mark bits cannot leak into later cycles when the final sweep is a
+      full major that clears every swept address before promotion;
     - E2 value-bearing E0 cache capacity-eviction, overwrite, and bulk-clear
       pre-images compose into SATB coverage when those removed values are
       shaded;
@@ -303,6 +305,33 @@ Section CESKCollectorSafetyModel.
     destruct (Hdone_case Hdone) as [Hsuccess | Habort].
     - left. apply Hsuccess_swept. exact Hsuccess.
     - right. apply Habort_stw. exact Habort.
+  Qed.
+
+  Theorem e2_full_major_clears_all_satb_marks :
+    forall (SATBMarked Swept Cleared : Addr -> Prop),
+      (forall a, SATBMarked a -> Swept a) ->
+      (forall a, Swept a -> Cleared a) ->
+      forall a, SATBMarked a -> Cleared a.
+  Proof.
+    intros SATBMarked Swept Cleared Hsatb_swept Hswept_cleared a Hmarked.
+    apply Hswept_cleared.
+    apply Hsatb_swept.
+    exact Hmarked.
+  Qed.
+
+  Theorem e2_full_major_leaves_no_stale_mark_after_promotion :
+    forall (Swept MarkedAfterSweep MarkedAfterPromotion : Addr -> Prop),
+      (forall a, Swept a) ->
+      (forall a, Swept a -> ~ MarkedAfterSweep a) ->
+      (forall a, MarkedAfterPromotion a -> MarkedAfterSweep a) ->
+      forall a, ~ MarkedAfterPromotion a.
+  Proof.
+    intros Swept MarkedAfterSweep MarkedAfterPromotion
+           Hfull Hcleared Hpromotion_no_set a Hmarked_after_promotion.
+    apply (Hcleared a).
+    - apply Hfull.
+    - apply Hpromotion_no_set.
+      exact Hmarked_after_promotion.
   Qed.
 
   Theorem e2_e0_cache_removed_snapshot_live_survives_collection :

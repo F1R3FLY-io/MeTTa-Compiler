@@ -16,8 +16,9 @@ allocate-black, releases workers while it marks under a shared heap read lock, t
 waits out in-flight deletion barriers by dropping the SATB guard, and performs a full-major final mark/sweep under the
 heap write lock. If that SATB rendezvous aborts, or if the final sweep reports that its rendezvous witness gate closed,
 RAII closes any open rendezvous/request and the driver immediately runs a fresh normal STW rendezvous. E2 SATB
-currently sweeps as a full major only; young-only SATB needs a separate proof that old marks introduced by SATB
-barriers cannot remain stale across a minor.
+currently sweeps as a full major only. The formal/source-coupling gate pins that boundary: a final SATB sweep uses
+`heap.sweep()`, not `sweep_young`, and the full sweep clears every SATB mark before promotion. Young-only SATB still
+requires a new stale-old-mark proof before it can be introduced.
 
 ## Checked obligations
 
@@ -46,8 +47,9 @@ barriers cannot remain stale across a minor.
   roots, caller-held driver-C roots, future CESK touches, reachable young nodes under both the no-old-to-young and
   conservative-minor traversals, E2 snapshot-live nodes covered by initial roots, driver roots, SATB shades, or
   allocate-black publication, E2 freshly published allocate-black allocations, E2 final-rendezvous roots and
-  abort-to-STW finalization, E2 snapshot-live values removed by value-bearing E0 cache capacity eviction, overwrite,
-  and bulk clear, and E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories.
+  abort-to-STW finalization, E2 full-major SATB mark lifecycle, E2 snapshot-live values removed by value-bearing E0
+  cache capacity eviction, overwrite, and bulk clear, and E2 snapshot-live values removed from the pinned
+  value-bearing E0 mutation categories.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
@@ -59,6 +61,10 @@ barriers cannot remain stale across a minor.
   obligations into the SATB safety story. Final-rendezvous roots survive because they are re-marked before the
   exclusive sweep; if the final sweep gate is closed, the checked result must run the STW backstop; and an aborted SATB
   request is handled only after a freshly requested STW rendezvous runs.
+- `formal/rocq/gc/FullMajorSweep.v` and `formal/lean/gc/FullMajorSweep.lean`: pin the E2 full-major-only mark
+  lifecycle. If every SATB-marked address is in the full-major swept range and every swept address is cleared before
+  promotion, no SATB mark can remain stale for a later cycle; the source-coupling harness rejects `sweep_young` inside
+  the final SATB sweep path.
 - `formal/rocq/gc/E0MutationSites.v` and `formal/lean/gc/E0MutationSites.lean`: bridge the E2 value-bearing E0
   mutation-site enumeration into the SATB theorem. If every removed pre-image from the pinned space-local, rule-index,
   and environment/token/state categories is shaded, then any snapshot-live value removed through those E0 categories is

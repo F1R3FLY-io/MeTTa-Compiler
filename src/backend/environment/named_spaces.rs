@@ -88,16 +88,41 @@ where
     {
         self.make_owned();
 
-        let mut guard = self.shared.named_spaces.write();
-        if let Some((_, atoms)) = guard.get_mut(&space_id) {
-            // Remove first matching atom
-            if let Some(pos) = atoms.iter().position(|x| x == value) {
-                atoms.remove(pos);
-                self.modified.store(true, Ordering::Release);
-                return true;
+        #[cfg(feature = "index-gc")]
+        let removed = super::core::with_env_satb_deletion_barrier(|satb_active| {
+            let mut guard = self.shared.named_spaces.write();
+            if let Some((_, atoms)) = guard.get_mut(&space_id) {
+                // Remove first matching atom
+                if let Some(pos) = atoms.iter().position(|x| x == value) {
+                    let removed = atoms.remove(pos);
+                    drop(guard);
+                    if satb_active {
+                        super::core::shade_generic_values_for_satb(std::iter::once(removed));
+                    }
+                    return true;
+                }
             }
+            false
+        });
+        #[cfg(not(feature = "index-gc"))]
+        let removed = {
+            let mut guard = self.shared.named_spaces.write();
+            if let Some((_, atoms)) = guard.get_mut(&space_id) {
+                // Remove first matching atom
+                if let Some(pos) = atoms.iter().position(|x| x == value) {
+                    atoms.remove(pos);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        if removed {
+            self.modified.store(true, Ordering::Release);
         }
-        false
+        removed
     }
 
     /// Get atoms from a named space (collects into Vec).

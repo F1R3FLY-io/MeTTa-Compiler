@@ -380,20 +380,56 @@ impl SpaceHandle {
             SpaceBacking::Owned { space } => {
                 if has_pattern_variables(atom) {
                     // Variable atom → remove from Vec
-                    let mut var_atoms = space.variable_atoms.write();
-                    if let Some(idx) = var_atoms.iter().position(|(v, _)| v == atom) {
-                        let count = &mut var_atoms[idx].1;
-                        if *count > 1 {
-                            *count -= 1;
+                    #[cfg(feature = "index-gc")]
+                    {
+                        return crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+                            |satb_active| {
+                                let mut removed_root = None;
+                                let removed = {
+                                    let mut var_atoms = space.variable_atoms.write();
+                                    if let Some(idx) = var_atoms.iter().position(|(v, _)| v == atom) {
+                                        let count = &mut var_atoms[idx].1;
+                                        if *count > 1 {
+                                            *count -= 1;
+                                        } else {
+                                            removed_root = Some(var_atoms.swap_remove(idx).0);
+                                        }
+                                        space
+                                            .total_atoms
+                                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                };
+                                if satb_active {
+                                    if let Some(root) = removed_root {
+                                        crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(
+                                            std::iter::once(root),
+                                        );
+                                    }
+                                }
+                                removed
+                            },
+                        );
+                    }
+                    #[cfg(not(feature = "index-gc"))]
+                    {
+                        let mut var_atoms = space.variable_atoms.write();
+                        if let Some(idx) = var_atoms.iter().position(|(v, _)| v == atom) {
+                            let count = &mut var_atoms[idx].1;
+                            if *count > 1 {
+                                *count -= 1;
+                            } else {
+                                var_atoms.swap_remove(idx);
+                            }
+                            space
+                                .total_atoms
+                                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                            true
                         } else {
-                            var_atoms.swap_remove(idx);
+                            false
                         }
-                        space
-                            .total_atoms
-                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                        true
-                    } else {
-                        false
                     }
                 } else {
                     // Ground atom → MORK PathMap

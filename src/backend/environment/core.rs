@@ -102,6 +102,28 @@ use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
 use crate::backend::wide_mork::decode::wide_bytes_to_generic_value;
 use crate::backend::wide_mork::encoding::encode_wide_storage;
 
+#[cfg(feature = "index-gc")]
+pub(crate) fn shade_generic_values_for_satb<V, I>(values: I)
+where
+    V: Clone + 'static,
+    I: IntoIterator<Item = V>,
+{
+    let mut roots = Vec::new();
+    for value in values {
+        let any = &value as &dyn std::any::Any;
+        if let Some(root) = any.downcast_ref::<MettaValue>() {
+            roots.push(root.clone());
+        }
+    }
+    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+}
+
+#[cfg(feature = "index-gc")]
+#[inline]
+pub(crate) fn with_env_satb_deletion_barrier<R>(f: impl FnOnce(bool) -> R) -> R {
+    crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(f)
+}
+
 // ============================================================================
 // Static Sentinel for Unmodified Environments
 // ============================================================================
@@ -2586,14 +2608,40 @@ where
                         ":" => {
                             if let Some(name) = items[1].as_atom() {
                                 let typ = &items[2];
-                                let mut types = self.shared.types.write();
-                                if let Some(vec) = types.get_mut(name) {
-                                    vec.retain(|t| t != typ);
-                                    if vec.is_empty() {
-                                        types.remove(name);
+                                #[cfg(feature = "index-gc")]
+                                with_env_satb_deletion_barrier(|satb_active| {
+                                    let mut removed = Vec::new();
+                                    {
+                                        let mut types = self.shared.types.write();
+                                        if let Some(vec) = types.get_mut(name) {
+                                            let mut idx = 0;
+                                            while idx < vec.len() {
+                                                if &vec[idx] == typ {
+                                                    removed.push(vec.remove(idx));
+                                                } else {
+                                                    idx += 1;
+                                                }
+                                            }
+                                            if vec.is_empty() {
+                                                types.remove(name);
+                                            }
+                                        }
                                     }
+                                    if satb_active {
+                                        shade_generic_values_for_satb(removed);
+                                    }
+                                });
+                                #[cfg(not(feature = "index-gc"))]
+                                {
+                                    let mut types = self.shared.types.write();
+                                    if let Some(vec) = types.get_mut(name) {
+                                        vec.retain(|t| t != typ);
+                                        if vec.is_empty() {
+                                            types.remove(name);
+                                        }
+                                    }
+                                    drop(types);
                                 }
-                                drop(types);
                                 self.shared.type_index_dirty.store(true, Ordering::Release);
                                 is_type_removal = true;
                             }

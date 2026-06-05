@@ -21,10 +21,26 @@ where
     pub fn bind(&mut self, symbol: &str, value: V) {
         self.make_owned();
 
-        self.shared
-            .bindings
-            .write()
-            .insert(symbol.to_string(), value);
+        #[cfg(feature = "index-gc")]
+        super::core::with_env_satb_deletion_barrier(|satb_active| {
+            let old = self
+                .shared
+                .bindings
+                .write()
+                .insert(symbol.to_string(), value);
+            if satb_active {
+                if let Some(old) = old {
+                    super::core::shade_generic_values_for_satb(std::iter::once(old));
+                }
+            }
+        });
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.shared
+                .bindings
+                .write()
+                .insert(symbol.to_string(), value);
+        }
 
         // Also register in fuzzy matcher for suggestions
         self.shared.fuzzy_matcher.write().insert(symbol);

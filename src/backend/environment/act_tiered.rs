@@ -778,7 +778,25 @@ impl MettaEnvironment {
         //     (overlay ++ base would otherwise double the facts).
         *self.shared.atom_space.btm.write() = pathmap::PathMap::new();
         *self.shared.atom_space.wide_btm.write() = pathmap::PathMap::new();
-        self.shared.atom_space.variable_atoms.write().clear();
+        #[cfg(feature = "index-gc")]
+        super::core::with_env_satb_deletion_barrier(|satb_active| {
+            if satb_active {
+                let removed: Vec<_> = self
+                    .shared
+                    .atom_space
+                    .variable_atoms
+                    .read()
+                    .iter()
+                    .map(|(value, _)| value.clone())
+                    .collect();
+                super::core::shade_generic_values_for_satb(removed);
+            }
+            self.shared.atom_space.variable_atoms.write().clear();
+        });
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.shared.atom_space.variable_atoms.write().clear();
+        }
         self.shared
             .atom_space
             .total_atoms

@@ -21,6 +21,22 @@ use regex::Regex;
 
 use crate::backend::models::MettaValue;
 
+#[cfg(feature = "index-gc")]
+fn shade_token_values<V, I>(values: I)
+where
+    V: Clone + Send + Sync + 'static,
+    I: IntoIterator<Item = V>,
+{
+    let mut roots = Vec::new();
+    for value in values {
+        let any = &value as &dyn std::any::Any;
+        if let Some(root) = any.downcast_ref::<MettaValue>() {
+            roots.push(root.clone());
+        }
+    }
+    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+}
+
 /// A function that constructs a value from a matched token string.
 pub type GenericTokenConstructor<V> = Arc<dyn Fn(&str) -> V + Send + Sync>;
 
@@ -365,15 +381,51 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
 
     /// Clear all registered tokens.
     pub fn clear(&mut self) {
-        self.tokens.clear();
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                if satb_active {
+                    let roots = self.collect_gc_values();
+                    shade_token_values(roots);
+                }
+                self.tokens.clear();
+            },
+        );
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.tokens.clear();
+        }
     }
 
     /// Remove a token by pattern string.
     /// Returns true if a token was removed.
     pub fn remove_token(&mut self, pattern: &str) -> bool {
-        let before = self.tokens.len();
-        self.tokens.retain(|e| e.pattern() != pattern);
-        self.tokens.len() < before
+        #[cfg(feature = "index-gc")]
+        {
+            crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+                |satb_active| {
+                    let mut removed_values = Vec::new();
+                    let before = self.tokens.len();
+                    self.tokens.retain(|entry| {
+                        let keep = entry.pattern() != pattern;
+                        if !keep && satb_active {
+                            removed_values.push((entry.constructor)(entry.pattern.pattern_str()));
+                        }
+                        keep
+                    });
+                    if satb_active {
+                        shade_token_values(removed_values);
+                    }
+                    self.tokens.len() < before
+                },
+            )
+        }
+        #[cfg(not(feature = "index-gc"))]
+        {
+            let before = self.tokens.len();
+            self.tokens.retain(|e| e.pattern() != pattern);
+            self.tokens.len() < before
+        }
     }
 }
 

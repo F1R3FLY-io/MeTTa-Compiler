@@ -368,6 +368,34 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     pub body_contains_cut: bool,
 }
 
+#[cfg(feature = "index-gc")]
+fn shade_rule_entry_for_satb<V>(entry: &RuleEntry<V>)
+where
+    V: MettaValueTrait + Clone + 'static,
+{
+    let mut roots = Vec::new();
+    for value in [&entry.lhs, &entry.rhs] {
+        let any = value as &dyn std::any::Any;
+        if let Some(root) = any.downcast_ref::<MettaValue>() {
+            roots.push(root.clone());
+        }
+    }
+    if let Some(rhs_type) = &entry.rhs_type {
+        let any = rhs_type as &dyn std::any::Any;
+        if let Some(root) = any.downcast_ref::<MettaValue>() {
+            roots.push(root.clone());
+        }
+    }
+    if let Some(compiled) = &entry.compiled_rhs {
+        if let Some(chunk) =
+            compiled.downcast_ref::<crate::backend::bytecode::chunk::BytecodeChunk>()
+        {
+            crate::backend::bytecode::cache::collect_chunk_constants(chunk, &mut roots);
+        }
+    }
+    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+}
+
 /// Extract the head symbol of a value's first argument (for second-level rule indexing).
 ///
 /// For an S-expression `(f (Implication $A $B) ...)`, returns `Some("Implication")`.
@@ -431,7 +459,7 @@ pub(crate) enum RemovalOutcome<V> {
     Removed { rhs: V },
 }
 
-impl<V: MettaValueTrait + Clone> RuleGroup<V> {
+impl<V: MettaValueTrait + Clone + 'static> RuleGroup<V> {
     fn new() -> Self {
         RuleGroup {
             by_first_arg_head: HashMap::new(),
@@ -503,7 +531,10 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
     }
 
     /// Remove a rule by position. Returns true if entry was fully removed.
-    fn remove_rule(&mut self, lhs: &V, rhs: &V) -> Option<bool> {
+    fn remove_rule(&mut self, lhs: &V, rhs: &V, satb_active: bool) -> Option<bool> {
+        #[cfg(not(feature = "index-gc"))]
+        let _ = satb_active;
+
         // Search in first-arg-indexed buckets
         for entries in self.by_first_arg_head.values_mut() {
             if let Some(pos) = entries.iter().position(|e| &e.lhs == lhs && &e.rhs == rhs) {
@@ -511,7 +542,17 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
                     entries[pos].multiplicity -= 1;
                     return Some(false);
                 } else {
-                    entries.remove(pos);
+                    #[cfg(feature = "index-gc")]
+                    {
+                        let removed = entries.remove(pos);
+                        if satb_active {
+                            shade_rule_entry_for_satb(&removed);
+                        }
+                    }
+                    #[cfg(not(feature = "index-gc"))]
+                    {
+                        entries.remove(pos);
+                    }
                     // Disc tree indexes by rule_index_in_group; removing an
                     // entry invalidates those indices, so the tree must be
                     // rebuilt on the next query.
@@ -530,7 +571,17 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
                 self.variable_first_arg[pos].multiplicity -= 1;
                 return Some(false);
             } else {
-                self.variable_first_arg.remove(pos);
+                #[cfg(feature = "index-gc")]
+                {
+                    let removed = self.variable_first_arg.remove(pos);
+                    if satb_active {
+                        shade_rule_entry_for_satb(&removed);
+                    }
+                }
+                #[cfg(not(feature = "index-gc"))]
+                {
+                    self.variable_first_arg.remove(pos);
+                }
                 self.invalidate_disc_tree();
                 return Some(true);
             }
@@ -553,7 +604,14 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
     /// with `add_rule`. Returns `Some(RemovalOutcome::Decremented)` when
     /// only multiplicity was decremented (the rule's bloom entry must NOT
     /// be touched in that case). Returns `None` when no match was found.
-    fn remove_rule_by_debruijn(&mut self, full_bytes: &[u8]) -> Option<RemovalOutcome<V>> {
+    fn remove_rule_by_debruijn(
+        &mut self,
+        full_bytes: &[u8],
+        satb_active: bool,
+    ) -> Option<RemovalOutcome<V>> {
+        #[cfg(not(feature = "index-gc"))]
+        let _ = satb_active;
+
         // Search first-arg-indexed buckets
         for entries in self.by_first_arg_head.values_mut() {
             if let Some(pos) = entries.iter().position(|e| e.full_debruijn == full_bytes) {
@@ -562,8 +620,13 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
                     return Some(RemovalOutcome::Decremented);
                 } else {
                     let removed = entries.remove(pos);
+                    let rhs = removed.rhs.clone();
+                    #[cfg(feature = "index-gc")]
+                    if satb_active {
+                        shade_rule_entry_for_satb(&removed);
+                    }
                     self.invalidate_disc_tree();
-                    return Some(RemovalOutcome::Removed { rhs: removed.rhs });
+                    return Some(RemovalOutcome::Removed { rhs });
                 }
             }
         }
@@ -578,8 +641,13 @@ impl<V: MettaValueTrait + Clone> RuleGroup<V> {
                 return Some(RemovalOutcome::Decremented);
             } else {
                 let removed = self.variable_first_arg.remove(pos);
+                let rhs = removed.rhs.clone();
+                #[cfg(feature = "index-gc")]
+                if satb_active {
+                    shade_rule_entry_for_satb(&removed);
+                }
                 self.invalidate_disc_tree();
-                return Some(RemovalOutcome::Removed { rhs: removed.rhs });
+                return Some(RemovalOutcome::Removed { rhs });
             }
         }
         None // Not found in this group
@@ -1027,6 +1095,19 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
 
     /// Remove a rule by decrementing multiplicity. Returns true if the entry was removed entirely.
     pub fn remove_rule(&mut self, lhs: &V, rhs: &V) -> bool {
+        #[cfg(feature = "index-gc")]
+        {
+            return crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+                |satb_active| self.remove_rule_inner(lhs, rhs, satb_active),
+            );
+        }
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.remove_rule_inner(lhs, rhs, false)
+        }
+    }
+
+    fn remove_rule_inner(&mut self, lhs: &V, rhs: &V, satb_active: bool) -> bool {
         // Phase 11.A — capture the head BEFORE removal so we can
         // depopulate the per-head RHS-atom bloom symmetrically with
         // `add_rule`. Wildcards have no head and don't contribute to
@@ -1038,7 +1119,7 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
 
         // Search in all groups
         for group in self.by_head_arity.values_mut() {
-            if let Some(removed) = group.remove_rule(lhs, rhs) {
+            if let Some(removed) = group.remove_rule(lhs, rhs, satb_active) {
                 if removed {
                     if let Some(h) = removed_head {
                         self.rule_rhs_atoms.note_rule_removed(h, rhs);
@@ -1057,7 +1138,17 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 self.wildcard[pos].multiplicity -= 1;
                 return false;
             } else {
-                self.wildcard.remove(pos);
+                #[cfg(feature = "index-gc")]
+                {
+                    let removed = self.wildcard.remove(pos);
+                    if satb_active {
+                        shade_rule_entry_for_satb(&removed);
+                    }
+                }
+                #[cfg(not(feature = "index-gc"))]
+                {
+                    self.wildcard.remove(pos);
+                }
                 return true;
             }
         }
@@ -1090,6 +1181,23 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
     /// `.is_some()` to decide whether the index was authoritatively
     /// updated; only run a fallback path on `None`.
     pub fn remove_rule_by_debruijn(&mut self, full_bytes: &[u8]) -> Option<bool> {
+        #[cfg(feature = "index-gc")]
+        {
+            return crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+                |satb_active| self.remove_rule_by_debruijn_inner(full_bytes, satb_active),
+            );
+        }
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.remove_rule_by_debruijn_inner(full_bytes, false)
+        }
+    }
+
+    fn remove_rule_by_debruijn_inner(
+        &mut self,
+        full_bytes: &[u8],
+        satb_active: bool,
+    ) -> Option<bool> {
         // Phase 11.A follow-up (2026-05-18): symmetrically depopulate the
         // per-head RHS-atom bloom when an entry is fully removed (mirrors
         // the working path in `remove_rule` at the LHS-comparison route).
@@ -1100,7 +1208,7 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         // first matching group short-circuits, so cost is the same as the
         // previous `values_mut()` loop on the common path.
         for ((head, _arity), group) in self.by_head_arity.iter_mut() {
-            if let Some(outcome) = group.remove_rule_by_debruijn(full_bytes) {
+            if let Some(outcome) = group.remove_rule_by_debruijn(full_bytes, satb_active) {
                 return match outcome {
                     RemovalOutcome::Removed { rhs } => {
                         self.rule_rhs_atoms.note_rule_removed(*head, &rhs);
@@ -1122,7 +1230,17 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 self.wildcard[pos].multiplicity -= 1;
                 return Some(false);
             } else {
-                self.wildcard.remove(pos);
+                #[cfg(feature = "index-gc")]
+                {
+                    let removed = self.wildcard.remove(pos);
+                    if satb_active {
+                        shade_rule_entry_for_satb(&removed);
+                    }
+                }
+                #[cfg(not(feature = "index-gc"))]
+                {
+                    self.wildcard.remove(pos);
+                }
                 return Some(true);
             }
         }
@@ -1286,6 +1404,35 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
 
     /// Clear the index.
     pub fn clear(&mut self) {
+        #[cfg(feature = "index-gc")]
+        {
+            crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+                |satb_active| self.clear_inner(satb_active),
+            );
+        }
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.clear_inner(false);
+        }
+    }
+
+    fn clear_inner(&mut self, satb_active: bool) {
+        #[cfg(not(feature = "index-gc"))]
+        let _ = satb_active;
+
+        #[cfg(feature = "index-gc")]
+        if satb_active {
+            for entry in self
+                .by_head_arity
+                .values()
+                .flat_map(|group| group.all_entries())
+            {
+                shade_rule_entry_for_satb(entry);
+            }
+            for entry in self.wildcard.iter() {
+                shade_rule_entry_for_satb(entry);
+            }
+        }
         self.by_head_arity.clear();
         self.wildcard.clear();
         // Phase 11.A — reset the bloom alongside the index.

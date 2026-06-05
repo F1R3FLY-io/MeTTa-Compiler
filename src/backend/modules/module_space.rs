@@ -8,6 +8,14 @@ use std::sync::Arc;
 use crate::backend::models::MettaValue;
 use crate::backend::MettaEnvironment;
 
+#[cfg(feature = "index-gc")]
+fn shade_module_atoms<I>(atoms: I)
+where
+    I: IntoIterator<Item = MettaValue>,
+{
+    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(atoms);
+}
+
 /// A space wrapper that supports layered queries across dependencies.
 ///
 /// When querying a `ModuleSpace`:
@@ -82,11 +90,30 @@ impl ModuleSpace {
     /// Remove an atom from this space.
     /// Returns true if the atom was found and removed.
     pub fn remove_atom(&mut self, atom: &MettaValue) -> bool {
-        if let Some(pos) = self.atoms.iter().position(|a| a == atom) {
-            self.atoms.remove(pos);
-            true
-        } else {
-            false
+        #[cfg(feature = "index-gc")]
+        {
+            crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+                |satb_active| {
+                    if let Some(pos) = self.atoms.iter().position(|a| a == atom) {
+                        let removed = self.atoms.remove(pos);
+                        if satb_active {
+                            shade_module_atoms(std::iter::once(removed));
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                },
+            )
+        }
+        #[cfg(not(feature = "index-gc"))]
+        {
+            if let Some(pos) = self.atoms.iter().position(|a| a == atom) {
+                self.atoms.remove(pos);
+                true
+            } else {
+                false
+            }
         }
     }
 
@@ -155,7 +182,19 @@ impl ModuleSpace {
 
     /// Clear all atoms from the main space (not dependencies).
     pub fn clear(&mut self) {
-        self.atoms.clear();
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                if satb_active {
+                    shade_module_atoms(self.atoms.iter().cloned());
+                }
+                self.atoms.clear();
+            },
+        );
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.atoms.clear();
+        }
     }
 }
 

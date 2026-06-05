@@ -306,6 +306,50 @@ assert_after_before "src/backend/eval/cesk/thunk.rs" "fn clear_entries_with_satb
 assert_after_before "src/backend/eval/cesk/thunk.rs" "pub fn update" "with_satb_deletion_barrier" "thunk.results = results;"
 assert_after_before "src/backend/eval/cesk/thunk.rs" "pub fn update" "Self::shade_values(thunk.results.iter().cloned());" "thunk.results = results;"
 
+# E2 SATB E0 mutation-site coupling: every value-bearing substore reached by
+# `collect_roots_into` must shade the removed pre-image while holding the SATB
+# phase gate. Byte-key PathMaps are excluded here because they do not store
+# MettaValue handles; this block covers the nested containers that do.
+assert_after_before "src/backend/environment/core.rs" "pub(crate) fn shade_generic_values_for_satb" "downcast_ref::<MettaValue>()" "satb_shade_evicted_roots(roots);"
+assert_after_before "src/backend/environment/core.rs" "pub(crate) fn with_env_satb_deletion_barrier" "with_satb_deletion_barrier(f)" "}"
+
+assert_after_before "src/backend/environment/symbol_bindings.rs" "pub fn bind" "with_env_satb_deletion_barrier" ".insert(symbol.to_string(), value);"
+assert_after_before "src/backend/environment/symbol_bindings.rs" "pub fn bind" ".insert(symbol.to_string(), value);" "shade_generic_values_for_satb(std::iter::once(old));"
+assert_after_before "src/backend/environment/mutable_state.rs" "pub fn change_state" "with_env_satb_deletion_barrier" "std::mem::replace(entry, new_value.clone());"
+assert_after_before "src/backend/environment/mutable_state.rs" "pub fn change_state" "std::mem::replace(entry, new_value.clone());" "shade_generic_values_for_satb(std::iter::once(old));"
+assert_after_before "src/backend/environment/named_spaces.rs" "pub fn remove_from_named_space" "with_env_satb_deletion_barrier" "let removed = atoms.remove(pos);"
+assert_after_before "src/backend/environment/named_spaces.rs" "pub fn remove_from_named_space" "let removed = atoms.remove(pos);" "shade_generic_values_for_satb(std::iter::once(removed));"
+assert_after_before "src/backend/environment/core.rs" "let typ = &items[2];" "with_env_satb_deletion_barrier" "removed.push(vec.remove(idx));"
+assert_after_before "src/backend/environment/core.rs" "let typ = &items[2];" "removed.push(vec.remove(idx));" "shade_generic_values_for_satb(removed);"
+assert_after_before "src/backend/modules/tokenizer.rs" "fn shade_token_values" "downcast_ref::<MettaValue>()" "satb_shade_evicted_roots(roots);"
+assert_after_before "src/backend/modules/tokenizer.rs" "pub fn clear(&mut self)" "with_satb_deletion_barrier" "let roots = self.collect_gc_values();"
+assert_after_before "src/backend/modules/tokenizer.rs" "pub fn clear(&mut self)" "shade_token_values(roots);" "self.tokens.clear();"
+assert_after_before "src/backend/modules/tokenizer.rs" "pub fn remove_token" "with_satb_deletion_barrier" "self.tokens.retain(|entry|"
+assert_after_before "src/backend/modules/tokenizer.rs" "pub fn remove_token" "removed_values.push" "shade_token_values(removed_values);"
+assert_after_before "src/backend/environment/act_tiered.rs" "Clear the overlay" "with_env_satb_deletion_barrier" "variable_atoms.write().clear();"
+assert_after_before "src/backend/environment/act_tiered.rs" "Clear the overlay" "shade_generic_values_for_satb(removed);" "variable_atoms.write().clear();"
+
+assert_after_before "src/backend/models/space_handle.rs" "Variable atom → remove from Vec" "with_satb_deletion_barrier" "var_atoms.swap_remove(idx).0"
+assert_after_before "src/backend/models/space_handle.rs" "Variable atom → remove from Vec" "var_atoms.swap_remove(idx).0" "satb_shade_evicted_roots("
+assert_after_before "src/backend/modules/module_space.rs" "fn shade_module_atoms" "satb_shade_evicted_roots(atoms);" "}"
+assert_after_before "src/backend/modules/module_space.rs" "pub fn remove_atom" "with_satb_deletion_barrier" "let removed = self.atoms.remove(pos);"
+assert_after_before "src/backend/modules/module_space.rs" "pub fn remove_atom" "let removed = self.atoms.remove(pos);" "shade_module_atoms(std::iter::once(removed));"
+assert_after_before "src/backend/modules/module_space.rs" "pub fn clear(&mut self)" "with_satb_deletion_barrier" "self.atoms.clear();"
+assert_after_before "src/backend/modules/module_space.rs" "pub fn clear(&mut self)" "shade_module_atoms(self.atoms.iter().cloned());" "self.atoms.clear();"
+
+assert_after_before "src/backend/environment/rule_management.rs" "fn shade_rule_entry_for_satb" "for value in [&entry.lhs, &entry.rhs]" "if let Some(rhs_type)"
+assert_after_before "src/backend/environment/rule_management.rs" "fn shade_rule_entry_for_satb" "collect_chunk_constants(chunk, &mut roots);" "satb_shade_evicted_roots(roots);"
+assert_after_before "src/backend/environment/rule_management.rs" "fn remove_rule(&mut self, lhs: &V, rhs: &V, satb_active: bool)" "let removed = entries.remove(pos);" "shade_rule_entry_for_satb(&removed);"
+assert_after_before "src/backend/environment/rule_management.rs" "fn remove_rule_by_debruijn(" "let removed = entries.remove(pos);" "shade_rule_entry_for_satb(&removed);"
+assert_after_before "src/backend/environment/rule_management.rs" "pub fn remove_rule(&mut self, lhs: &V, rhs: &V) -> bool" "with_satb_deletion_barrier" "self.remove_rule_inner(lhs, rhs, satb_active)"
+assert_after_before "src/backend/environment/rule_management.rs" "fn remove_rule_inner" "group.remove_rule(lhs, rhs, satb_active)" "self.rule_rhs_atoms.note_rule_removed(h, rhs);"
+assert_after_before "src/backend/environment/rule_management.rs" "fn remove_rule_inner" "let removed = self.wildcard.remove(pos);" "shade_rule_entry_for_satb(&removed);"
+assert_after_before "src/backend/environment/rule_management.rs" "pub fn remove_rule_by_debruijn(&mut self, full_bytes: &[u8])" "with_satb_deletion_barrier" "self.remove_rule_by_debruijn_inner(full_bytes, satb_active)"
+assert_after_before "src/backend/environment/rule_management.rs" "fn remove_rule_by_debruijn_inner" "group.remove_rule_by_debruijn(full_bytes, satb_active)" "self.rule_rhs_atoms.note_rule_removed(*head, &rhs);"
+assert_after_before "src/backend/environment/rule_management.rs" "fn remove_rule_by_debruijn_inner" "let removed = self.wildcard.remove(pos);" "shade_rule_entry_for_satb(&removed);"
+assert_after_before "src/backend/environment/rule_management.rs" "pub fn clear(&mut self)" "with_satb_deletion_barrier" "self.clear_inner(satb_active)"
+assert_after_before "src/backend/environment/rule_management.rs" "fn clear_inner" "shade_rule_entry_for_satb(entry);" "self.by_head_arity.clear();"
+
 # Witness stamping: the stale-stamp reset and the genuine reified-park stamp are
 # the only writes to published_gen. That keeps the witness theorem's
 # "published implies buffered roots" premise source-grounded.

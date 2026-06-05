@@ -132,6 +132,14 @@ run_tlc "satb_deletion_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBar
   pass ""
 run_tlc "satb_no_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_none.cfg" \
   fail "Invariant NoSnapshotLiveFreed is violated"
+run_tlc "satb_e0_mutation_sites_all" "MC_SATBE0MutationSites.tla" "MC_SATBE0MutationSites_all.cfg" \
+  pass ""
+run_tlc "satb_e0_mutation_sites_no_space" "MC_SATBE0MutationSites.tla" "MC_SATBE0MutationSites_no_space.cfg" \
+  fail "Invariant NoE0SnapshotLiveFreed is violated"
+run_tlc "satb_e0_mutation_sites_no_rule" "MC_SATBE0MutationSites.tla" "MC_SATBE0MutationSites_no_rule.cfg" \
+  fail "Invariant NoE0SnapshotLiveFreed is violated"
+run_tlc "satb_e0_mutation_sites_no_env" "MC_SATBE0MutationSites.tla" "MC_SATBE0MutationSites_no_env.cfg" \
+  fail "Invariant NoE0SnapshotLiveFreed is violated"
 run_tlc "allocate_black_mark_first" "MC_AllocateBlackPublish.tla" "MC_AllocateBlackPublish_mark_first.cfg" \
   pass ""
 run_tlc "allocate_black_publish_first" "MC_AllocateBlackPublish.tla" "MC_AllocateBlackPublish_publish_first.cfg" \

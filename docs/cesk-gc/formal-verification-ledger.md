@@ -54,6 +54,9 @@ barriers cannot remain stale across a minor.
   reuse preserves bump order; any-young reuse admits an old-parent to young-child edge after promotion.
 - `tla/SATBDeletionBarrier.tla`: checks the E2 Yuasa deletion-barrier obligation. Shading the removed pre-image
   preserves snapshot-live safety; omitting the barrier frees a snapshot-live value.
+- `tla/SATBE0MutationSites.tla`: checks the E2 deletion-barrier obligation at the value-bearing E0 subcontainer
+  level. Space-local roots, rule-index entries, and environment/token/state roots must each shade the removed
+  pre-image; disabling any one category violates `NoE0SnapshotLiveFreed`.
 - `tla/AllocateBlackPublish.tla`: checks the E2 allocate-black publication order. Marking before publication
   preserves safety; publishing first allows a visible allocation to be swept.
 - `tla/SATBLRUEviction.tla`: checks the E2 LRU SATB barrier shape. Shading capacity-evicted victims preserves
@@ -93,6 +96,10 @@ facts the proofs rely on:
   primitive is gated by `satb_marking_in_progress` so ordinary cycles cannot leave stale mark bits for a later mark.
 - Value-bearing E0 deletion/eviction paths run under `with_satb_deletion_barrier`: marker start/end takes the write
   side while flipping `SATB_MARKING_DEPTH`, and cache deletion takes the read side around check, shade, and delete.
+- The non-cache value-bearing E0 mutation sites are source-pinned too: symbol binding overwrite, mutable-state
+  overwrite, named-space removal, type-vector removal, tokenizer remove/clear, ACT overlay variable clear,
+  `SpaceHandle` variable-atom removal, `ModuleSpace` atom remove/clear, and `RuleIndex` rule remove/clear all shade
+  the actual removed pre-image under the SATB phase gate.
 - Fresh bump allocation realizes allocate-black for E2 SATB: `IndexArena` writes the claimed slot, marks it if
   `satb_marking_in_progress`, and only then publishes the slot through `len`.
 - The E2 SATB marker path is source-coupled: `gc_driver_satb_rendezvous_cycle` arms `enter_satb_marking`, closes the

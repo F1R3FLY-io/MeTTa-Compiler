@@ -41,6 +41,8 @@ facts the proofs rely on:
 - The E1 driver waits on `requestor_wait_for_all_reified_parked`, then sets `current_witness_ok`, builds the root
   union, runs the rendezvous-union oracle, and only then calls `run_collection_if_triggered_rendezvous`.
 - `gate_open_rendezvous` is keyed by `current_witness_ok`, not the obsolete parked-count gate.
+- Live envs and parallel fan-outs are registered through RAII handles, and the live-env/live-dispatch registry walks
+  delegate to the structural `EnvRoots`/`DispatchRoots` readers used by the driver-root-union proof.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

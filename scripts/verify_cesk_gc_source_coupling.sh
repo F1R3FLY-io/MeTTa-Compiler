@@ -18,7 +18,8 @@ line_no() {
 
 line_no_after() {
   local file="$1" marker="$2" needle="$3" marker_line line
-  marker_line="$(line_no "$file" "$marker")"
+  marker_line="$(line_no "$file" "$marker")" || return 1
+  [[ -n "$marker_line" ]] || fail "missing marker '$marker' in $file"
   line="$(rg -n -F -- "$needle" "$REPO/$file" | awk -F: -v marker="$marker_line" '$1 > marker { print $1; exit }')"
   [[ -n "$line" ]] || fail "missing '$needle' after '$marker' in $file"
   printf '%s\n' "$line"
@@ -31,8 +32,10 @@ count_no() {
 
 count_between() {
   local file="$1" start="$2" end="$3" needle="$4" start_line end_line
-  start_line="$(line_no "$file" "$start")"
-  end_line="$(line_no_after "$file" "$start" "$end")"
+  start_line="$(line_no "$file" "$start")" || return 1
+  end_line="$(line_no_after "$file" "$start" "$end")" || return 1
+  [[ -n "$start_line" ]] || fail "missing start '$start' in $file"
+  [[ -n "$end_line" ]] || fail "missing end '$end' after '$start' in $file"
   awk -v start="$start_line" -v end="$end_line" -v needle="$needle" \
     'NR > start && NR < end && index($0, needle) { count++ } END { print count + 0 }' \
     "$REPO/$file"
@@ -40,8 +43,10 @@ count_between() {
 
 assert_before() {
   local file="$1" before="$2" after="$3" before_line after_line
-  before_line="$(line_no "$file" "$before")"
-  after_line="$(line_no "$file" "$after")"
+  before_line="$(line_no "$file" "$before")" || return 1
+  after_line="$(line_no "$file" "$after")" || return 1
+  [[ -n "$before_line" ]] || fail "missing '$before' in $file"
+  [[ -n "$after_line" ]] || fail "missing '$after' in $file"
   if (( before_line >= after_line )); then
     fail "expected '$before' before '$after' in $file (lines $before_line >= $after_line)"
   fi
@@ -49,8 +54,10 @@ assert_before() {
 
 assert_after_before() {
   local file="$1" marker="$2" before="$3" after="$4" before_line after_line
-  before_line="$(line_no_after "$file" "$marker" "$before")"
-  after_line="$(line_no_after "$file" "$marker" "$after")"
+  before_line="$(line_no_after "$file" "$marker" "$before")" || return 1
+  after_line="$(line_no_after "$file" "$marker" "$after")" || return 1
+  [[ -n "$before_line" ]] || fail "missing '$before' after '$marker' in $file"
+  [[ -n "$after_line" ]] || fail "missing '$after' after '$marker' in $file"
   if (( before_line >= after_line )); then
     fail "expected '$before' after '$marker' and before '$after' in $file (lines $before_line >= $after_line)"
   fi
@@ -142,6 +149,27 @@ assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn promote_young
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr(&mut self, items: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), items);" "self.arena.write_reused(addr, Node::SExpr(cr));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunction(&mut self, goals: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), goals);" "self.arena.write_reused(addr, Node::Conjunction(cr));"
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "#[cfg(test)]" "*arena.get_mut(a) = TestNode::One(b);" "mod loom_model"
+
+# B2'/D2 source-channel registration: the driver-root-union proof only applies
+# if live envs and parallel fan-outs are registered for their lifetimes and the
+# registry walkers delegate to the structural root readers.
+assert_count "src/backend/eval/mod.rs" "register_live_env(&dyn_env)" "1"
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "register_live_env(&dyn_env)" "2"
+assert_after_before "src/backend/eval/mod.rs" "let _live_env_handle = {" "register_live_env(&dyn_env)" "let r = eval_inner(value, env, state);"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Register THIS worker's branch env" "register_live_env(&dyn_env)" "eval_trampoline_with_carrying(branch_expr, env"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "THIS collapse worker's env" "register_live_env(&dyn_env)" "eval_trampoline_with_carrying("
+assert_after_before "src/backend/environment/core.rs" "impl crate::backend::models::gc_allocator::EnvRoots for GenericEnvironmentShared<MettaValue>" "self.collect_roots_into(out);" "#[cfg(not(feature = \"index-gc\"))]"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_env_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_env_roots(out);"
+
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "register_live_dispatch(" "2"
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "_live_dispatch: live_dispatch" "2"
+assert_count "src/backend/eval/trampoline/types.rs" "pub(crate) _live_dispatch: Option<crate::backend::models::gc_allocator::LiveDispatchHandle>" "2"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "let live_dispatch = if crate::backend::models::gc_allocator::dedicated_gc_enabled() {" "register_live_dispatch(" "_live_dispatch: live_dispatch,"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "register the collapse fan-out" "register_live_dispatch(" "_live_dispatch: live_dispatch,"
+assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::DispatchRoots for ParallelDispatchRootProvider" "for (value, bindings) in self.branches.iter()" "if let Ok(guard) = self.results.try_lock()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::DispatchRoots for ParallelCollapseRootProvider" "for (value, bindings) in self.items.iter()" "if let Ok(guard) = self.results.try_lock()"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_dispatch_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_dispatch_roots(out);"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub fn snapshot_live_dispatch_witness() -> (Vec<MettaValue>, usize)" "weak.upgrade()" "strong.collect_dispatch_roots(&mut out);"
 
 # Witness stamping: the stale-stamp reset and the genuine reified-park stamp are
 # the only writes to published_gen. That keeps the witness theorem's

@@ -8,7 +8,9 @@
       driver roots;
     - sweep frees only unmarked addresses;
     - young-only minor marking retains every reachable young address when there
-      is no old-to-young edge.
+      is no old-to-young edge;
+    - conservative minor marking retains every reachable young address when the
+      marker traverses the whole reachable graph but only marks young nodes;
     - E2 concurrent marking retains every snapshot-live address covered by
       initial roots, rendezvous driver roots, SATB deletion shades, or
       allocate-black publication.
@@ -107,6 +109,46 @@ Section CESKCollectorSafetyModel.
     intros Root Young Marked Freed Edge Hroot Hno_old_to_young Hclosed Hsweep a Hreach Hyoung Hfreed.
     apply (Hsweep a Hfreed).
     eapply young_reachable_marked; eauto.
+  Qed.
+
+  Theorem reachable_seen :
+    forall (Root Seen : Addr -> Prop) (Edge : Addr -> Addr -> Prop),
+      (forall a, Root a -> Seen a) ->
+      (forall parent child, Seen parent -> Edge parent child -> Seen child) ->
+      forall a, Reach Root Edge a -> Seen a.
+  Proof.
+    intros Root Seen Edge Hroot_seen Hseen_closed a Hreach.
+    induction Hreach as [a Hroot | parent child _ IH Hedge].
+    - apply Hroot_seen.
+      exact Hroot.
+    - eapply Hseen_closed; eauto.
+  Qed.
+
+  Theorem conservative_young_reachable_marked :
+    forall (Root Young Seen Marked : Addr -> Prop) (Edge : Addr -> Addr -> Prop),
+      (forall a, Root a -> Seen a) ->
+      (forall parent child, Seen parent -> Edge parent child -> Seen child) ->
+      (forall a, Seen a -> Young a -> Marked a) ->
+      forall a, Reach Root Edge a -> Young a -> Marked a.
+  Proof.
+    intros Root Young Seen Marked Edge Hroot_seen Hseen_closed Hseen_young_marked
+      a Hreach Hyoung.
+    apply Hseen_young_marked; [| exact Hyoung].
+    eapply reachable_seen; eauto.
+  Qed.
+
+  Theorem conservative_young_minor_reachable_survives_sweep :
+    forall (Root Young Seen Marked Freed : Addr -> Prop) (Edge : Addr -> Addr -> Prop),
+      (forall a, Root a -> Seen a) ->
+      (forall parent child, Seen parent -> Edge parent child -> Seen child) ->
+      (forall a, Seen a -> Young a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, Reach Root Edge a -> Young a -> ~ Freed a.
+  Proof.
+    intros Root Young Seen Marked Freed Edge Hroot_seen Hseen_closed Hseen_young_marked
+      Hsweep a Hreach Hyoung Hfreed.
+    apply (Hsweep a Hfreed).
+    eapply conservative_young_reachable_marked; eauto.
   Qed.
 
   Theorem e2_snapshot_live_survives_collection :

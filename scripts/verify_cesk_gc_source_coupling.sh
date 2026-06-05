@@ -132,13 +132,17 @@ assert_before "src/backend/eval/cesk/index_arena.rs" "seg.clear_free_bit(addr.of
 assert_before "src/backend/eval/cesk/index_arena.rs" "free_list.retain(|addr| {" "seg.clear_free_bit(off);"
 assert_before "src/backend/eval/cesk/index_arena.rs" "drain_free_list_entries_for_released_segment(seg, &mut self.free_list, si, check);" "stats.bytes_released += seg_mut.release();"
 
-# C1 young mark/reuse coupling: free-list reuse is current-segment-only, and the
-# minor marker marks/descends only young nodes.
+# C1 young mark/reuse coupling: free-list reuse is current-segment-only. The
+# minor marker sets mark bits only on young nodes, but traverses every reachable
+# node so an old first-class SpaceHandle can expose young contents.
 line_no "src/backend/eval/cesk/index_arena.rs" "pub fn pop_young_free_slot(&mut self) -> Option<Addr>" >/dev/null
 line_no "src/backend/eval/cesk/index_arena.rs" "if addr.segment() == cur {" >/dev/null
-line_no "src/backend/eval/cesk/index_arena.rs" "pub fn mark_young_from_roots_with" >/dev/null
-line_no "src/backend/eval/cesk/index_arena.rs" "if r.segment() >= young_floor && self.mark(r) {" >/dev/null
-line_no "src/backend/eval/cesk/index_arena.rs" "if k.segment() >= young_floor && self.mark(k) {" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>)" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "Node::Space(id) =>" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "self.space_handle(id).collect_gc_values(&mut values);" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "pub fn mark_young(&self, roots: &[Addr]) -> usize" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "let mut seen = std::collections::HashSet::with_capacity" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "if addr.segment() >= young_floor && arena.mark(addr) {" >/dev/null
 assert_count "src/backend/eval/cesk/index_arena.rs" "self.cur_seg.store(" "1"
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "fn open_segment(&self) -> usize {" "self.seg_count.store(idx + 1, Ordering::Release);" "self.cur_seg.store(idx, Ordering::Release);"
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn pop_young_free_slot(&mut self) -> Option<Addr>" "let cur = self.current_seg();" "if addr.segment() == cur {"
@@ -149,6 +153,10 @@ assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn bump_in(&self
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn promote_young(&self) {" "self.set_young_floor(self.current_seg());" "self.young_alloc_bytes.store(0, Ordering::Relaxed);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr(&mut self, items: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), items);" "self.arena.write_reused(addr, Node::SExpr(cr));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunction(&mut self, goals: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), goals);" "self.arena.write_reused(addr, Node::Conjunction(cr));"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>)" "Node::Space(id) =>" "self.space_handle(id).collect_gc_values(&mut values);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn mark_young(&self, roots: &[Addr]) -> usize" "for &root in roots" "while let Some(addr) = worklist.pop()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn mark_young(&self, roots: &[Addr]) -> usize" "self.child_addrs_for_mark(addr, &mut kids);" "for &child in &kids"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "self.child_addrs_for_mark(addr, &mut kids);" "for &child in &kids" "marked += enqueue("
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "#[cfg(test)]" "*arena.get_mut(a) = TestNode::One(b);" "mod loom_model"
 
 # B2'/D2 source-channel registration: the driver-root-union proof only applies
@@ -188,7 +196,8 @@ assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "Keep explic
 # victims. The source must use `push`, then shade the surfaced victim. Every
 # value-dropping E0 cache operation must run under the SATB phase gate so marker
 # start cannot straddle a deletion that observed "not marking".
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "static SATB_PHASE_LOCK" "RwLock::new(())" "static SATB_MARKING_DEPTH"
+line_no "src/backend/eval/cesk/index_heap.rs" "static SATB_PHASE_LOCK: RwLock<()> = RwLock::new(());" >/dev/null
+assert_before "src/backend/eval/cesk/index_heap.rs" "static SATB_PHASE_LOCK" "static SATB_MARKING_DEPTH"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn satb_marking_in_progress" "SATB_MARKING_DEPTH.load(Ordering::Acquire)" "depth > 0"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn with_satb_deletion_barrier" "SATB_PHASE_LOCK.read()" "f(satb_marking_in_progress())"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn enter_satb_marking" "SATB_PHASE_LOCK.write()" "SATB_MARKING_DEPTH.fetch_add(1, Ordering::AcqRel);"

@@ -1534,23 +1534,16 @@ impl<N: Copy> IndexArena<N> {
         marked
     }
 
-    /// C1.c: YOUNG-ONLY transitive mark — the MINOR's mark, and what makes a minor
-    /// cheap (O(young reachable), not O(total live)). Like [`mark_from_roots_with`]
-    /// but marks and descends ONLY young nodes (`addr.segment() >= young_floor`); old
-    /// nodes (whether a root or a child) are skipped entirely — neither marked nor
+    /// Generic young-only transitive mark. Like [`mark_from_roots_with`] but marks
+    /// and descends ONLY young nodes (`addr.segment() >= young_floor`); old nodes
+    /// (whether a root or a child) are skipped entirely — neither marked nor
     /// descended.
     ///
-    /// SOUND because there are NO old→young σ edges (Phase C1.c §A.2: `alloc` reuses
-    /// young slots only ⇒ all new allocation is young; bump order makes built edges
-    /// young→old; σ nodes are immutable post-publish; a `change-state!` young value
-    /// is an E₀ ROOT, not a σ edge). Theorem: for any live young node `y`, the edge
-    /// into `y` cannot originate at an old node (no old→young), so `y`'s parent is
-    /// young; inductively every ancestor up to a young ROOT is young ⇒ `y` is reached
-    /// via an all-young path from a young root. Hence skipping old misses no live
-    /// young node. (A subsequent `sweep_young` reclaims only unmarked YOUNG slots, so
-    /// an unmarked OLD node is never reclaimed by the minor regardless.) Mechanically
-    /// checked by `tla/StoreCentricGC_Generational` (`YoungOnlyMarkReachesLiveYoung`).
-    /// Stack-safe explicit worklist; idempotent.
+    /// This helper is sound only for edge sources with no old→young edges. The
+    /// live `IndexHeap` minor path uses a conservative traversal instead because
+    /// first-class `SpaceHandle` contents are mutable semantic edges that can point
+    /// from an old space to a young value. Stack-safe explicit worklist;
+    /// idempotent.
     pub fn mark_young_from_roots_with<F: FnMut(Addr, &mut Vec<Addr>)>(
         &self,
         roots: &[Addr],

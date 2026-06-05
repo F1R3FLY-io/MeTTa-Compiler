@@ -25,7 +25,10 @@ barriers cannot remain stale across a minor.
   `free_bit(addr) set <=> addr is on free_list` and free-list `NoDup` across push, pop, major drain, and
   released-segment drain.
 - `formal/rocq/gc/YoungMark.v` and `formal/lean/gc/YoungMark.lean`: no-old-to-young plus young-root marking and
-  young-edge closure implies every reachable young node is marked and retained by a minor sweep.
+  young-edge closure implies every reachable young node is marked and retained by a minor sweep. They also prove the
+  stronger conservative-minor theorem used by the implementation now: if the marker traverses the whole reachable
+  graph and marks every young node it sees, every reachable young node is retained without assuming old nodes have no
+  young descendants.
 - `formal/rocq/gc/StructuralRoots.v` and `formal/lean/gc/StructuralRoots.lean`: if future machine touches are
   inside the structural CESK-root closure and sweep frees only unmarked nodes, no future-touched node can be freed.
 - `formal/rocq/gc/RendezvousWitness.v` and `formal/lean/gc/RendezvousWitness.lean`: if every occupied witness slot
@@ -33,8 +36,8 @@ barriers cannot remain stale across a minor.
   participant root is in the driver root set and cannot be freed after mark/sweep.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
   sweep-only-unmarked, and young-minor obligations into explicit no-UAF theorems for participant roots, future CESK
-  touches, reachable young nodes, and E2 snapshot-live nodes covered by initial roots, driver roots, SATB shades, or
-  allocate-black publication.
+  touches, reachable young nodes under both the no-old-to-young and conservative-minor traversals, and E2
+  snapshot-live nodes covered by initial roots, driver roots, SATB shades, or allocate-black publication.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
@@ -52,6 +55,9 @@ barriers cannot remain stale across a minor.
   prevents the previous cycle's true flag from admitting a next-cycle sweep before the next witness wait.
 - `tla/CurSegReuseOrder.tla`: checks the C1 no-old-to-young premise for young-only minor marking. Cur-segment-only
   reuse preserves bump order; any-young reuse admits an old-parent to young-child edge after promotion.
+- `tla/ConservativeMinorMark.tla`: checks the C1 first-class-space correction. Traversing old reachable containers
+  during a minor preserves a young value reachable through an old `SpaceHandle`; the old skipped-old traversal violates
+  `YoungReachableMarked`.
 - `tla/SATBDeletionBarrier.tla`: checks the E2 Yuasa deletion-barrier obligation. Shading the removed pre-image
   preserves snapshot-live safety; omitting the barrier frees a snapshot-live value.
 - `tla/SATBE0MutationSites.tla`: checks the E2 deletion-barrier obligation at the value-bearing E0 subcontainer
@@ -125,7 +131,9 @@ facts the proofs rely on:
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment
-  retargeting monotone, promotion at `current_seg`, and young minor marking restricted to young roots/children.
+  retargeting monotone, and promotion at `current_seg`. `IndexHeap::mark_young` marks only young nodes but traverses
+  all reached nodes through `child_addrs_for_mark`, including `SpaceHandle::collect_gc_values`, so an old first-class
+  space cannot hide a live young value from `sweep_young`.
 - `published_gen` writes remain restricted to stale-stamp reset plus the genuine `note_reified_park` stamp, with
   worker root-buffer publication before the stamp.
 - The V4 witness slot is acquired before `N_THREADS++`, released only after the true outermost `EvalGuard::drop`

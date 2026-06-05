@@ -9,6 +9,10 @@ This is the theorem behind `StoreCentricGC_GenerationalYoungMark.tla` and the
   * That is sound when the store has no old-to-young edge.
   * Bump-order allocation/reuse is one sufficient reason no old-to-young edge
     exists after promotion.
+  * If the implementation traverses all reachable nodes and only restricts
+    which nodes receive a young mark bit, the minor is sound without the
+    no-old-to-young premise. This is the obligation used for first-class
+    mutable `SpaceHandle` contents.
 
 The proof is parametric in the address type and graph; it is not a finite TLC
 state-space check.
@@ -67,6 +71,58 @@ theorem minor_retains_reachable
       youngRootMarked
       noOldToYoung
       youngMarkClosed
+      hreach
+      ayoung
+
+theorem reachable_seen
+    {Root Seen : Addr -> Prop} {Edge : Addr -> Addr -> Prop}
+    (rootSeen : forall {a : Addr}, Root a -> Seen a)
+    (seenClosed :
+      forall {parent child : Addr}, Seen parent -> Edge parent child -> Seen child) :
+    forall {a : Addr}, Reach Root Edge a -> Seen a := by
+  intro a hreach
+  induction hreach with
+  | root hroot =>
+      exact rootSeen hroot
+  | step hparent hedge ih =>
+      exact seenClosed ih hedge
+
+theorem conservative_young_reachable_marked
+    {Root Young Seen Marked : Addr -> Prop} {Edge : Addr -> Addr -> Prop}
+    (rootSeen : forall {a : Addr}, Root a -> Seen a)
+    (seenClosed :
+      forall {parent child : Addr}, Seen parent -> Edge parent child -> Seen child)
+    (seenYoungMarked : forall {a : Addr}, Seen a -> Young a -> Marked a) :
+    forall {a : Addr}, Reach Root Edge a -> Young a -> Marked a := by
+  intro a hreach ayoung
+  have seen : Seen a :=
+    reachable_seen
+      (Root := Root)
+      (Seen := Seen)
+      (Edge := Edge)
+      rootSeen
+      seenClosed
+      hreach
+  exact seenYoungMarked seen ayoung
+
+theorem conservative_minor_retains_reachable
+    {Root Young Seen Marked : Addr -> Prop} {Edge : Addr -> Addr -> Prop}
+    (rootSeen : forall {a : Addr}, Root a -> Seen a)
+    (seenClosed :
+      forall {parent child : Addr}, Seen parent -> Edge parent child -> Seen child)
+    (seenYoungMarked : forall {a : Addr}, Seen a -> Young a -> Marked a) :
+    forall {a : Addr}, Reach Root Edge a -> MinorRetains Young Marked a := by
+  intro a hreach ayoung
+  exact
+    conservative_young_reachable_marked
+      (Root := Root)
+      (Young := Young)
+      (Seen := Seen)
+      (Marked := Marked)
+      (Edge := Edge)
+      rootSeen
+      seenClosed
+      seenYoungMarked
       hreach
       ayoung
 

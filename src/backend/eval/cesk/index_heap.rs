@@ -42,7 +42,9 @@
 
 use std::sync::{OnceLock, RwLock};
 
-use crate::backend::eval::cesk::index_arena::{Addr, ArenaNode, IndexArena, SweepStats, MAX_SEGMENTS};
+use crate::backend::eval::cesk::index_arena::{
+    Addr, ArenaNode, IndexArena, SweepStats, MAX_SEGMENTS,
+};
 use crate::backend::eval::cesk::index_node::{ByteRef, ChildRef, Node, SpanRef};
 use crate::backend::eval::cesk::store::Store;
 use crate::backend::models::gc_allocator::hash_cons_key;
@@ -674,8 +676,7 @@ impl IndexHeap {
                 // address was handed out, so `addr.segment() < sides_count`; `cr.idx
                 // < published_len()` and the slot is `Some` (live node) per above.
                 let side = unsafe { self.side(addr.segment()) };
-                unsafe { side.children.get(cr.idx) }
-                    .expect("live SExpr/Conjunction children slot")
+                unsafe { side.children.get(cr.idx) }.expect("live SExpr/Conjunction children slot")
             }
             _ => panic!("children() on a non-SExpr/Conjunction node"),
         }
@@ -690,8 +691,7 @@ impl IndexHeap {
                 // SAFETY (D-TLAB-1.2): cell `addr.segment()` published before this
                 // node's address was handed out (see `children`); `br.idx` in range.
                 let side = unsafe { self.side(addr.segment()) };
-                unsafe { side.strings.get(br.idx) }
-                    .expect("live Atom/String slot")
+                unsafe { side.strings.get(br.idx) }.expect("live Atom/String slot")
             }
             _ => panic!("str_slice() on a non-Atom/String node"),
         }
@@ -813,15 +813,19 @@ impl IndexHeap {
 
     // ── Collection ─────────────────────────────────────────────────────────
 
-    /// Transitively mark every node reachable from `roots`, resolving
-    /// `SExpr`/`Conjunction` children from the child side-arena. Returns the
-    /// count newly marked. Stack-safe (delegates to `mark_from_roots_with`).
-    pub fn mark(&self, roots: &[Addr]) -> usize {
-        let arena = &self.arena;
-        arena.mark_from_roots_with(roots, |addr, out| {
-            let node = arena.get(addr);
-            node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
-            if let Node::SExpr(cr) | Node::Conjunction(cr) = node {
+    /// Append every arena edge leaving `addr`.
+    ///
+    /// This is the index-mode counterpart of the slab tracer's
+    /// `MettaValueInner` walk. `Node::Space` is not a leaf: a first-class
+    /// `SpaceHandle` may contain value-bearing module atoms / variable atoms, so
+    /// the GC closure must include `SpaceHandle::collect_gc_values`. `State` is
+    /// just an id whose cell value is rooted by E0, and `Memo` stores serialized
+    /// bytes rather than live `MettaValue`s, matching the slab tracer.
+    fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>) {
+        let node = self.arena.get(addr);
+        node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
+        match *node {
+            Node::SExpr(cr) | Node::Conjunction(cr) => {
                 // SAFETY (D-TLAB-1.2): the worklist holds only live (reachable) nodes,
                 // whose segment cell was published before the address was handed out
                 // (`addr.segment() < sides_count`) and whose `cr.idx < published_len()`
@@ -837,7 +841,40 @@ impl IndexHeap {
                     }
                 }
             }
-        })
+            Node::Space(id) => {
+                let mut values = Vec::new();
+                self.space_handle(id).collect_gc_values(&mut values);
+                for value in values {
+                    if let Some(a) = value.as_arena_addr() {
+                        out.push(a);
+                    }
+                }
+            }
+            Node::Atom(_)
+            | Node::Bool(_)
+            | Node::Long(_)
+            | Node::Float(_)
+            | Node::String(_)
+            | Node::Error(..)
+            | Node::Type(_)
+            | Node::State(_)
+            | Node::Unit
+            | Node::Memo(_)
+            | Node::Quoted(_)
+            | Node::Lazy(_)
+            | Node::Empty
+            | Node::NotReducible
+            | Node::Spanned(..) => {}
+        }
+    }
+
+    /// Transitively mark every node reachable from `roots`, resolving
+    /// `SExpr`/`Conjunction` children from the child side-arena and
+    /// value-bearing `SpaceHandle` contents. Returns the count newly marked.
+    /// Stack-safe (delegates to `mark_from_roots_with`).
+    pub fn mark(&self, roots: &[Addr]) -> usize {
+        let arena = &self.arena;
+        arena.mark_from_roots_with(roots, |addr, out| self.child_addrs_for_mark(addr, out))
     }
 
     /// E2 SATB concurrent mark entry. This is intentionally a thin wrapper over
@@ -848,33 +885,47 @@ impl IndexHeap {
         self.mark(roots)
     }
 
-    /// C1.c: YOUNG-ONLY mark — the MINOR's mark (see
-    /// [`IndexArena::mark_young_from_roots_with`] for the soundness theorem). Same
-    /// child resolution as [`mark`] (inline handles + SExpr/Conjunction side-arena
-    /// children) but marks/descends only young nodes (`seg >= young_floor`), making
-    /// the minor O(young reachable) instead of O(total live). The child resolver is
-    /// invoked only on young nodes (the worklist holds only young addrs), so old
-    /// segments are never even read.
+    /// C1.c: conservative young mark — the MINOR's mark. It marks only young
+    /// nodes (`seg >= young_floor`), but traverses every reachable node so a
+    /// mutable first-class old `SpaceHandle` can reveal young contents. This
+    /// keeps `sweep_young` young-only without relying on the false premise that
+    /// all semantic edges are immutable σ-node edges.
     pub fn mark_young(&self, roots: &[Addr]) -> usize {
-        let arena = &self.arena;
-        arena.mark_young_from_roots_with(roots, |addr, out| {
-            let node = arena.get(addr);
-            node.child_addrs(out); // Error/Type/Quoted/Lazy/Spanned inline handles
-            if let Node::SExpr(cr) | Node::Conjunction(cr) = node {
-                // SAFETY (D-TLAB-1.2): the young worklist holds only live (reachable)
-                // young nodes — segment cell published before the address was handed
-                // out, `cr.idx < published_len()`, slot `Some`. `self.side` reads via
-                // raw pointer (no `&self.sides` borrow), so no conflict with `arena`.
-                let side = unsafe { self.side(addr.segment()) };
-                let kids = unsafe { side.children.get(cr.idx) }
-                    .expect("live SExpr/Conjunction children slot");
-                for c in kids.iter() {
-                    if let Some(a) = c.as_arena_addr() {
-                        out.push(a);
-                    }
-                }
+        fn enqueue(
+            arena: &IndexArena<Node>,
+            young_floor: usize,
+            seen: &mut std::collections::HashSet<Addr>,
+            worklist: &mut Vec<Addr>,
+            addr: Addr,
+        ) -> usize {
+            if !seen.insert(addr) {
+                return 0;
             }
-        })
+            worklist.push(addr);
+            if addr.segment() >= young_floor && arena.mark(addr) {
+                1
+            } else {
+                0
+            }
+        }
+
+        let young_floor = self.arena.young_floor();
+        let mut marked = 0usize;
+        let mut seen = std::collections::HashSet::with_capacity(roots.len().max(16));
+        let mut worklist = Vec::with_capacity(roots.len().max(16));
+        for &root in roots {
+            marked += enqueue(&self.arena, young_floor, &mut seen, &mut worklist, root);
+        }
+
+        let mut kids = Vec::new();
+        while let Some(addr) = worklist.pop() {
+            kids.clear();
+            self.child_addrs_for_mark(addr, &mut kids);
+            for &child in &kids {
+                marked += enqueue(&self.arena, young_floor, &mut seen, &mut worklist, child);
+            }
+        }
+        marked
     }
 
     /// Sweep, co-releasing the side-arenas of any fully-dead released segments.
@@ -924,8 +975,7 @@ impl IndexHeap {
                         // resetting the pointee (`**`) drops the old arena (freeing
                         // its columns) in place and reuses the cell's `Box`.
                         unsafe {
-                            **(*sides[seg].get()).assume_init_mut() =
-                                SegmentSideArenas::default();
+                            **(*sides[seg].get()).assume_init_mut() = SegmentSideArenas::default();
                         }
                     }
                 },
@@ -1054,8 +1104,7 @@ impl IndexHeap {
                         // is `&mut Box<SegmentSideArenas>`; resetting the pointee
                         // (`**`) drops the old arena (frees its columns) in place.
                         unsafe {
-                            **(*sides[seg].get()).assume_init_mut() =
-                                SegmentSideArenas::default();
+                            **(*sides[seg].get()).assume_init_mut() = SegmentSideArenas::default();
                         }
                     }
                 },
@@ -1116,8 +1165,9 @@ impl IndexHeap {
         for seg in 0..sides_count {
             // SAFETY: `seg < sides_count` ⇒ cell `seg` published.
             let s = unsafe { self.side(seg) };
-            side += (s.children.published_len() + s.strings.published_len() + s.spans.published_len())
-                * ptr;
+            side +=
+                (s.children.published_len() + s.strings.published_len() + s.spans.published_len())
+                    * ptr;
         }
         node_bytes + side
     }
@@ -1588,8 +1638,7 @@ pub mod index_gc {
     static RENDEZVOUS_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
     static RENDEZVOUS_MINOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
     static RENDEZVOUS_MAJOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
-    static SATB_PHASE_LOCK: RwLock<()> =
-        RwLock::new(());
+    static SATB_PHASE_LOCK: RwLock<()> = RwLock::new(());
     static SATB_MARKING_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
     /// True exactly while an E2 SATB mark is in progress.
@@ -2279,8 +2328,7 @@ pub mod index_gc {
         // (`cadence_major`), which must not be deferred. A deferred `live_major` still fires
         // within MAJOR_CADENCE (the cadence counts up regardless), so old dead stays bounded.
         let level = index_backpressure_level(young_alloc);
-        let do_major =
-            major_due && !(level == 3 && minor_due && !cap_major && !cadence_major);
+        let do_major = major_due && !(level == 3 && minor_due && !cap_major && !cadence_major);
 
         // Project the root values to arena addresses. filter_map drops inline
         // scalars (Bool / i48 Long / Unit / Empty) and any non-index handle.
@@ -2296,10 +2344,10 @@ pub mod index_gc {
         // marked set cannot be raced by a new alloc (true quiescence for the store).
         // The gate already guarantees no OTHER thread can be in eval.
         //   MAJOR: FULL `mark` + full `sweep` (reclaims old dead too) + promote.
-        //   MINOR: the cheap YOUNG-ONLY `mark_young` (O(young reachable)) + young
-        //          `sweep_young` + promote. SOUND because `alloc` reuses young slots
-        //          only ⇒ no old→young σ edge ⇒ no live young node is reachable only
-        //          through an old node (Phase C1.c §A; the young-only mark theorem).
+        //   MINOR: conservative `mark_young` marks only young nodes but traverses
+        //          every reachable node, then `sweep_young` + promote. This retains
+        //          young values reachable through old first-class Space handles
+        //          without marking or sweeping old nodes.
         // `promote_young` reclassifies the swept young segments as old (so only the
         // active + future segments stay young) AND resets the young-alloc odometer.
         // E1-a.2: hold the GC-in-progress handshake across the reclaim so a
@@ -2642,7 +2690,10 @@ impl<T: ?Sized> SideColumn<T> {
     /// yields at each level (NOT from a borrow of `&self.pages`), so it does not
     /// borrow `self` — mirroring `IndexArena::segment`.
     #[inline]
-    unsafe fn chunk(&self, c: usize) -> &[std::cell::UnsafeCell<std::mem::MaybeUninit<Option<Box<T>>>>] {
+    unsafe fn chunk(
+        &self,
+        c: usize,
+    ) -> &[std::cell::UnsafeCell<std::mem::MaybeUninit<Option<Box<T>>>>] {
         let (p, ck) = Self::locate_chunk(c);
         let page = (*self.pages[p].get()).assume_init_ref(); // &SidePage<T> -> &[..]
         let chunk_cell = page[ck].get(); // *mut MaybeUninit<SideChunk<T>>
@@ -2671,7 +2722,10 @@ impl<T: ?Sized> SideColumn<T> {
         use std::cell::UnsafeCell;
         use std::mem::MaybeUninit;
         use std::sync::atomic::Ordering;
-        let _guard = self.grow_lock.lock().expect("side-column grow_lock poisoned");
+        let _guard = self
+            .grow_lock
+            .lock()
+            .expect("side-column grow_lock poisoned");
         let mut next = self.chunk_count.load(Ordering::Acquire);
         if c < next {
             return; // another thread already grew past `c` while we waited
@@ -2867,12 +2921,12 @@ impl<T: ?Sized> Drop for SideColumn<T> {
             unsafe {
                 let page = (*self.pages[p].get()).assume_init_ref(); // &SidePage<T>
                 let chunk_cell = page[ck].get(); // *mut MaybeUninit<SideChunk<T>>
-                // Borrow the chunk to drop each cell's `Option<Box<T>>`. EVERY cell
-                // of a published chunk is initialized — `grow_to` fills all
-                // `SIDE_CHUNK_LEN` cells with `MaybeUninit::new(None)`, and `push`
-                // only overwrites a cell with `Some(..)` — so `assume_init_drop` is
-                // sound on each, dropping any live payload `Box<T>` (a freed cell is
-                // `None`, whose drop is a no-op).
+                                                 // Borrow the chunk to drop each cell's `Option<Box<T>>`. EVERY cell
+                                                 // of a published chunk is initialized — `grow_to` fills all
+                                                 // `SIDE_CHUNK_LEN` cells with `MaybeUninit::new(None)`, and `push`
+                                                 // only overwrites a cell with `Some(..)` — so `assume_init_drop` is
+                                                 // sound on each, dropping any live payload `Box<T>` (a freed cell is
+                                                 // `None`, whose drop is a no-op).
                 let chunk: &mut SideChunk<T> = (*chunk_cell).assume_init_mut();
                 for cell in chunk.iter() {
                     (*cell.get()).assume_init_drop(); // drops `Option<Box<T>>`
@@ -2959,8 +3013,7 @@ unsafe impl<T: ?Sized + Send + Sync> Sync for SideColumn<T> {}
 // `pub(super)` so both children pick them up via their `use super::*;`.
 #[cfg(test)]
 pub(super) use crate::backend::models::metta_value::{
-    reset_gc_mode_slab as real_reset_gc_mode_slab,
-    set_gc_mode_index as real_set_gc_mode_index,
+    reset_gc_mode_slab as real_reset_gc_mode_slab, set_gc_mode_index as real_set_gc_mode_index,
 };
 #[cfg(test)]
 static GC_MODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -3102,6 +3155,79 @@ mod tests {
         assert!(stats.reclaimed_to_free_list >= 1, "orphan reclaimed");
         // sx still resolves its children after sweep.
         assert_eq!(heap.children(sx).len(), 2);
+        let _ = orphan;
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn transitive_mark_traces_space_handle_contents() {
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(64);
+        let child = heap.alloc_atom("space-child");
+        let orphan = heap.alloc_atom("space-orphan");
+
+        let mut module_space = crate::backend::modules::ModuleSpace::new();
+        module_space.add_atom(MettaValue::from_addr(child, 0));
+        let handle = SpaceHandle::for_module(
+            crate::backend::modules::ModId::new(10_001),
+            "mark-space".to_string(),
+            std::sync::Arc::new(parking_lot::RwLock::new(module_space)),
+        );
+        let space = heap.alloc_space(handle);
+
+        let newly = heap.mark(&[space]);
+        assert_eq!(newly, 2, "space node + contained atom are marked");
+        let stats = heap.sweep();
+        assert!(
+            stats.reclaimed_to_free_list >= 1,
+            "unreachable atom outside the SpaceHandle is reclaimed"
+        );
+        assert_eq!(heap.str_slice(child), "space-child");
+        let _ = orphan;
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn minor_mark_traverses_old_space_to_mark_young_contents() {
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(2);
+        let module_space = std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::backend::modules::ModuleSpace::new(),
+        ));
+        let handle = SpaceHandle::for_module(
+            crate::backend::modules::ModId::new(10_002),
+            "minor-space".to_string(),
+            module_space.clone(),
+        );
+
+        let space = heap.alloc_space(handle);
+        let _fill_old_segment = heap.alloc_atom("fill-old-segment");
+        let child = heap.alloc_atom("young-space-child");
+        let orphan = heap.alloc_atom("young-orphan");
+        heap.promote_young();
+        assert!(
+            space.segment() < heap.arena.young_floor(),
+            "space handle is old after promotion"
+        );
+        assert!(
+            child.segment() >= heap.arena.young_floor(),
+            "contained atom remains young after promotion"
+        );
+
+        module_space
+            .write()
+            .add_atom(MettaValue::from_addr(child, 0));
+        let newly = heap.mark_young(&[space]);
+        assert_eq!(
+            newly, 1,
+            "old space traversal marks the young contained atom"
+        );
+        let stats = heap.sweep_young();
+        assert!(
+            stats.reclaimed_to_free_list >= 1,
+            "unreachable young atom is reclaimed by the minor"
+        );
+        assert_eq!(heap.str_slice(child), "young-space-child");
         let _ = orphan;
         reset_gc_mode_slab();
     }
@@ -3681,7 +3807,11 @@ mod tests {
             idxs.push(col.push(boxed));
         }
         // Indices are claimed monotonically from 0 (no recycling, no gaps here).
-        assert_eq!(idxs, (0u32..10).collect::<Vec<_>>(), "monotone indices 0..10");
+        assert_eq!(
+            idxs,
+            (0u32..10).collect::<Vec<_>>(),
+            "monotone indices 0..10"
+        );
         assert_eq!(col.published_len(), 10, "all 10 published");
         for (i, &idx) in idxs.iter().enumerate() {
             let i = i as i32;
@@ -3708,7 +3838,13 @@ mod tests {
             col.chunk_count()
         );
         // Read back a sample spanning both chunks (including the boundary).
-        for &i in &[0usize, 1, SIDE_CHUNK_LEN - 1, SIDE_CHUNK_LEN, SIDE_CHUNK_LEN + 4] {
+        for &i in &[
+            0usize,
+            1,
+            SIDE_CHUNK_LEN - 1,
+            SIDE_CHUNK_LEN,
+            SIDE_CHUNK_LEN + 4,
+        ] {
             // SAFETY: i < published_len() == n.
             let got = unsafe { col.get(i as u32) }.expect("entry present");
             assert_eq!(got, &[i as i32][..], "entry {i} survives the grow");
@@ -3728,7 +3864,11 @@ mod tests {
         assert_eq!(unsafe { col.get(b) }, None, "freed entry reads None");
         // Neighbors unaffected.
         assert_eq!(unsafe { col.get(a) }, Some("alpha"), "left neighbor intact");
-        assert_eq!(unsafe { col.get(c) }, Some("gamma"), "right neighbor intact");
+        assert_eq!(
+            unsafe { col.get(c) },
+            Some("gamma"),
+            "right neighbor intact"
+        );
         // Idempotent re-free is a no-op (still None, no double-drop).
         col.free(b);
         assert_eq!(unsafe { col.get(b) }, None, "re-free is idempotent");
@@ -3750,7 +3890,11 @@ mod tests {
         assert_eq!(unsafe { col.get(i0) }, None, "freed slot still None");
         assert_eq!(unsafe { col.get(i1) }, Some(&[1][..]), "i1 intact");
         assert_eq!(unsafe { col.get(i2) }, Some(&[2][..]), "new entry present");
-        assert_eq!(col.published_len(), 3, "len counts every push, freed or not");
+        assert_eq!(
+            col.published_len(),
+            3,
+            "len counts every push, freed or not"
+        );
     }
 
     #[test]
@@ -3767,15 +3911,19 @@ mod tests {
         // correct at 0, across the old 270_335/270_336 boundary, and at the end.
         const OLD_CEILING: usize = 270_336; // = 66 * SIDE_CHUNK_LEN (the panic point)
         const N: usize = 280_000; // > OLD_CEILING ⇒ would have panicked before
-        // Tiny payload (a 1-element `Box<[i32]>`) keeps the test cheap: ~280k
-        // 4-byte allocations, not 280k large slices.
+                                  // Tiny payload (a 1-element `Box<[i32]>`) keeps the test cheap: ~280k
+                                  // 4-byte allocations, not 280k large slices.
         let col: SideColumn<[i32]> = SideColumn::new();
         for i in 0..N {
             let boxed: Box<[i32]> = vec![i as i32].into_boxed_slice();
             let idx = col.push(boxed); // MUST NOT panic past the old 66-chunk cap
             assert_eq!(idx as usize, i, "index tracks push order at {i}");
         }
-        assert_eq!(col.published_len(), N, "all {N} entries published, no ceiling");
+        assert_eq!(
+            col.published_len(),
+            N,
+            "all {N} entries published, no ceiling"
+        );
         // The directory must span more than one PAGE (each page covers
         // `SIDE_PAGE_LEN * SIDE_CHUNK_LEN = 1024 * 4096 = 4_194_304` entries — so
         // 280k fits in page 0, but the chunk count must exceed one page's worth of
@@ -3784,7 +3932,10 @@ mod tests {
         // deref across the boundary the old single-level array could not address).
         let chunks = col.chunk_count();
         let expected_chunks = N.div_ceil(SIDE_CHUNK_LEN);
-        assert_eq!(chunks, expected_chunks, "chunk_count tracks N (got {chunks})");
+        assert_eq!(
+            chunks, expected_chunks,
+            "chunk_count tracks N (got {chunks})"
+        );
         assert!(
             chunks > 66,
             "directory grew past the OLD 66-chunk ceiling (got {chunks} chunks)"

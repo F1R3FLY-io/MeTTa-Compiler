@@ -128,6 +128,10 @@ run_tlc "cur_seg_reuse_order_cur" "MC_CurSegReuseOrder.tla" "MC_CurSegReuseOrder
   pass ""
 run_tlc "cur_seg_reuse_order_any" "MC_CurSegReuseOrder.tla" "MC_CurSegReuseOrder_any.cfg" \
   fail "Invariant NoOldToYoungAfterPromotion is violated"
+run_tlc "conservative_minor_mark" "MC_ConservativeMinorMark.tla" "MC_ConservativeMinorMark_conservative.cfg" \
+  pass ""
+run_tlc "conservative_minor_skip_old" "MC_ConservativeMinorMark.tla" "MC_ConservativeMinorMark_skip_old.cfg" \
+  fail "Invariant YoungReachableMarked is violated"
 run_tlc "satb_deletion_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_satb.cfg" \
   pass ""
 run_tlc "satb_no_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_none.cfg" \

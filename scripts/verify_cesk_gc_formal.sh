@@ -88,6 +88,7 @@ run_lean "formal/lean/gc/DriverCPublication.lean"
 run_lean "formal/lean/gc/SATB.lean"
 run_lean "formal/lean/gc/AllocateBlack.lean"
 run_lean "formal/lean/gc/E0MutationSites.lean"
+run_lean "formal/lean/gc/E0EvictionBarriers.lean"
 
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
@@ -98,6 +99,7 @@ run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/SATB.v"
 run_rocq "formal/rocq/gc/AllocateBlack.v"
 run_rocq "formal/rocq/gc/E0MutationSites.v"
+run_rocq "formal/rocq/gc/E0EvictionBarriers.v"
 run_rocq "formal/rocq/gc/CESKCollectorSafety.v"
 
 run_source_coupling

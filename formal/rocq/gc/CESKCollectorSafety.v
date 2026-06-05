@@ -18,6 +18,9 @@
       allocate-black publication;
     - E2 freshly published allocations survive when publication implies
       allocate-black marking;
+    - E2 value-bearing E0 cache capacity-eviction, overwrite, and bulk-clear
+      pre-images compose into SATB coverage when those removed values are
+      shaded;
     - E2 value-bearing E0 deletion categories compose into that SATB coverage
       when removed space-local, rule-index, and environment/token/state
       pre-images are shaded.
@@ -49,6 +52,11 @@ Section CESKCollectorSafetyModel.
       (SpacePreimage RulePreimage EnvPreimage : Addr -> Prop)
       (a : Addr) : Prop :=
     SpacePreimage a \/ RulePreimage a \/ EnvPreimage a.
+
+  Definition E0CacheRemovedPreimage
+      (CapacityVictim OverwriteVictim BulkClearedEntry : Addr -> Prop)
+      (a : Addr) : Prop :=
+    CapacityVictim a \/ OverwriteVictim a \/ BulkClearedEntry a.
 
   Theorem rendezvous_participant_root_survives_collection :
     forall (Occupied Published : Slot -> Prop)
@@ -223,6 +231,36 @@ Section CESKCollectorSafetyModel.
     right; right; right.
     apply Hpublished_black.
     exact Hpublished.
+  Qed.
+
+  Theorem e2_e0_cache_removed_snapshot_live_survives_collection :
+    forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack
+            CapacityVictim OverwriteVictim BulkClearedEntry : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed SnapshotLive : Addr -> Prop),
+      (forall a, CapacityVictim a -> ShadedDeletion a) ->
+      (forall a, OverwriteVictim a -> ShadedDeletion a) ->
+      (forall a, BulkClearedEntry a -> ShadedDeletion a) ->
+      (forall a,
+          SnapshotLive a ->
+          E0CacheRemovedPreimage CapacityVictim OverwriteVictim BulkClearedEntry a) ->
+      (forall a,
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a ->
+          Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, SnapshotLive a -> ~ Freed a.
+  Proof.
+    intros InitialRoot DriverRoot ShadedDeletion AllocateBlack
+           CapacityVictim OverwriteVictim BulkClearedEntry Edge Marked Freed SnapshotLive
+           Hcapacity Hoverwrite Hbulk Hremoved Hmark Hsweep a Hlive Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right; right; left.
+    destruct (Hremoved a Hlive) as [Hcapacity_a | [Hoverwrite_a | Hbulk_a]].
+    - apply Hcapacity; exact Hcapacity_a.
+    - apply Hoverwrite; exact Hoverwrite_a.
+    - apply Hbulk; exact Hbulk_a.
   Qed.
 
   Theorem e2_e0_removed_snapshot_live_survives_collection :

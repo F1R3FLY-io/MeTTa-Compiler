@@ -45,8 +45,9 @@ barriers cannot remain stale across a minor.
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
   roots, caller-held driver-C roots, future CESK touches, reachable young nodes under both the no-old-to-young and
   conservative-minor traversals, E2 snapshot-live nodes covered by initial roots, driver roots, SATB shades, or
-  allocate-black publication, E2 freshly published allocate-black allocations, and E2 snapshot-live values removed
-  from the pinned value-bearing E0 mutation categories.
+  allocate-black publication, E2 freshly published allocate-black allocations, E2 snapshot-live values removed by
+  value-bearing E0 cache capacity eviction, overwrite, and bulk clear, and E2 snapshot-live values removed from the
+  pinned value-bearing E0 mutation categories.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
@@ -58,6 +59,10 @@ barriers cannot remain stale across a minor.
   mutation-site enumeration into the SATB theorem. If every removed pre-image from the pinned space-local, rule-index,
   and environment/token/state categories is shaded, then any snapshot-live value removed through those E0 categories is
   a SATB root and cannot be freed by sweep.
+- `formal/rocq/gc/E0EvictionBarriers.v` and `formal/lean/gc/E0EvictionBarriers.lean`: bridge the E2 value-bearing E0
+  cache eviction and bulk-clear shapes into the SATB theorem. If capacity victims, same-key overwrite victims, and
+  bulk-cleared entries are shaded before removal becomes invisible, then those removed snapshot-live values are SATB
+  roots and cannot be freed by sweep.
 - `tla/RendezvousWitness.tla`: checks the E1 witness gate predicate. The strict `published>=cur_gen OR
   acquired>cur_gen` model preserves root completeness at sweep; the negative `acquired>=cur_gen` model violates it.
 - `tla/WitnessSlotLifecycle.tla`: checks the V4 slot lifecycle. Keeping the slot occupied across safepoint drop

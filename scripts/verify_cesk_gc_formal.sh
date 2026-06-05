@@ -83,11 +83,13 @@ run_lean "formal/lean/gc/FreeList.lean"
 run_lean "formal/lean/gc/YoungMark.lean"
 run_lean "formal/lean/gc/StructuralRoots.lean"
 run_lean "formal/lean/gc/RendezvousWitness.lean"
+run_lean "formal/lean/gc/SATB.lean"
 
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/RendezvousWitness.v"
+run_rocq "formal/rocq/gc/SATB.v"
 run_rocq "formal/rocq/gc/CESKCollectorSafety.v"
 
 run_source_coupling
@@ -126,5 +128,9 @@ run_tlc "cur_seg_reuse_order_cur" "MC_CurSegReuseOrder.tla" "MC_CurSegReuseOrder
   pass ""
 run_tlc "cur_seg_reuse_order_any" "MC_CurSegReuseOrder.tla" "MC_CurSegReuseOrder_any.cfg" \
   fail "Invariant NoOldToYoungAfterPromotion is violated"
+run_tlc "satb_deletion_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_satb.cfg" \
+  pass ""
+run_tlc "satb_no_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_none.cfg" \
+  fail "Invariant NoSnapshotLiveFreed is violated"
 
 echo "CESK GC formal checks passed"

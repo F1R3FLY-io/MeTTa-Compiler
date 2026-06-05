@@ -18,6 +18,9 @@ the legacy slab mark-sweep collector.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
   sweep-only-unmarked, and young-minor obligations into explicit no-UAF theorems for participant roots, future CESK
   touches, and reachable young nodes.
+- `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
+  snapshot-live values are covered by initial roots, shaded deletion pre-images, or allocate-black roots, sweep cannot
+  free them.
 - `tla/RendezvousWitness.tla`: checks the E1 witness gate predicate. The strict `published>=cur_gen OR
   acquired>cur_gen` model preserves root completeness at sweep; the negative `acquired>=cur_gen` model violates it.
 - `tla/WitnessSlotLifecycle.tla`: checks the V4 slot lifecycle. Keeping the slot occupied across safepoint drop
@@ -31,6 +34,8 @@ the legacy slab mark-sweep collector.
   prevents the previous cycle's true flag from admitting a next-cycle sweep before the next witness wait.
 - `tla/CurSegReuseOrder.tla`: checks the C1 no-old-to-young premise for young-only minor marking. Cur-segment-only
   reuse preserves bump order; any-young reuse admits an old-parent to young-child edge after promotion.
+- `tla/SATBDeletionBarrier.tla`: checks the E2 Yuasa deletion-barrier obligation. Shading the removed pre-image
+  preserves snapshot-live safety; omitting the barrier frees a snapshot-live value.
 
 ## Source coupling
 

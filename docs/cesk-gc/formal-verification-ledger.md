@@ -53,6 +53,8 @@ facts the proofs rely on:
 - `gate_open_rendezvous` is keyed by `current_witness_ok`, not the obsolete parked-count gate.
 - Live envs and parallel fan-outs are registered through RAII handles, and the live-env/live-dispatch registry walks
   delegate to the structural `EnvRoots`/`DispatchRoots` readers used by the driver-root-union proof.
+- OPERATOR_CACHE is guarded by `gc_sweep_epoch` in index mode before pointer-keyed lookup, so a parked worker
+  self-invalidates after another thread completes a sweep.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

@@ -991,6 +991,27 @@ thread_local! {
     /// 512 entries × ~40 bytes = ~20 KB per thread. LRU eviction bounds memory.
     static OPERATOR_CACHE: RefCell<LruCache<u64, OperatorCacheEntry, IdentityU64BuildHasher>> =
         RefCell::new(LruCache::with_hasher(NonZeroUsize::new(512).expect("non-zero"), IdentityU64BuildHasher));
+    /// The `gc_sweep_epoch` this thread's pointer-keyed OPERATOR_CACHE was last
+    /// known coherent for. The cache key includes `head.as_ptr()`, so index `Addr`
+    /// reuse after a sweep can stale-hit on a parked worker that did not run the
+    /// sweeping thread's eager `clear_operator_cache`. Lazy epoch validation makes
+    /// the next lookup on that worker self-heal.
+    #[cfg(feature = "index-gc")]
+    static OPERATOR_CACHE_GC_EPOCH: Cell<u64> = const { Cell::new(0) };
+}
+
+#[cfg(feature = "index-gc")]
+#[inline]
+fn ensure_operator_cache_gc_epoch_current() {
+    let current = crate::backend::models::gc_allocator::gc_sweep_epoch();
+    OPERATOR_CACHE_GC_EPOCH.with(|e| {
+        if e.get() != current {
+            OPERATOR_CACHE.with(|cache_cell| {
+                cache_cell.borrow_mut().clear();
+            });
+            e.set(current);
+        }
+    });
 }
 
 /// Combine head pointer and arity into a single u64 key.
@@ -1010,6 +1031,8 @@ fn op_cache_key(head: &str, arity: usize) -> u64 {
 /// at the current rule epoch. Returns `None` on cache miss or stale entry.
 #[inline]
 pub fn operator_cache_get(head: &str, arity: usize) -> Option<OperatorCacheEntry> {
+    #[cfg(feature = "index-gc")]
+    ensure_operator_cache_gc_epoch_current();
     let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
     let key = op_cache_key(head, arity);
     OPERATOR_CACHE.with(|cache_cell| {
@@ -1038,6 +1061,11 @@ pub fn operator_cache_put(head: &str, arity: usize, entry: OperatorCacheEntry) {
 pub fn clear_operator_cache() {
     OPERATOR_CACHE.with(|cache_cell| {
         cache_cell.borrow_mut().clear();
+    });
+    #[cfg(feature = "index-gc")]
+    // Keep explicit clears coherent with the lazy sweep-epoch guard.
+    OPERATOR_CACHE_GC_EPOCH.with(|e| {
+        e.set(crate::backend::models::gc_allocator::gc_sweep_epoch());
     });
 }
 

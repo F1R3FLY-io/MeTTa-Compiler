@@ -171,6 +171,17 @@ assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend:
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_dispatch_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_dispatch_roots(out);"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn snapshot_live_dispatch_witness() -> (Vec<MettaValue>, usize)" "weak.upgrade()" "strong.collect_dispatch_roots(&mut out);"
 
+# E2 cache-epoch source coupling: OPERATOR_CACHE is pointer-keyed
+# (`head.as_ptr()`), so index mode must lazily clear it when gc_sweep_epoch
+# advances on a different thread. Explicit cache clears also synchronize the
+# local epoch to avoid a redundant clear on the same epoch.
+assert_before "src/backend/eval/trampoline/dispatch_hints.rs" "static OPERATOR_CACHE_GC_EPOCH:" "fn ensure_operator_cache_gc_epoch_current()"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "fn ensure_operator_cache_gc_epoch_current()" "gc_sweep_epoch()" "OPERATOR_CACHE.with"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "fn ensure_operator_cache_gc_epoch_current()" "cache_cell.borrow_mut().clear();" "e.set(current);"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn operator_cache_get" "ensure_operator_cache_gc_epoch_current();" "let current_epoch = RULE_EPOCH.load(Ordering::Acquire);"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clear_operator_cache()" "cache_cell.borrow_mut().clear();" "OPERATOR_CACHE_GC_EPOCH.with"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "Keep explicit clears coherent with the lazy sweep-epoch guard." "gc_sweep_epoch()" "});"
+
 # Witness stamping: the stale-stamp reset and the genuine reified-park stamp are
 # the only writes to published_gen. That keeps the witness theorem's
 # "published implies buffered roots" premise source-grounded.

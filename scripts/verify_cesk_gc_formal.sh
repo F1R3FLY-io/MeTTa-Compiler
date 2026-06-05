@@ -98,5 +98,9 @@ run_tlc "collapse_fix" "CollapseCompletion.tla" "CollapseCompletion_fix.cfg" \
   pass ""
 run_tlc "collapse_bug" "CollapseCompletion.tla" "CollapseCompletion_bug.cfg" \
   fail "Temporal properties were violated"
+run_tlc "rendezvous_witness_strict" "MC_RendezvousWitness.tla" "MC_RendezvousWitness_strict.cfg" \
+  pass ""
+run_tlc "rendezvous_witness_weak" "MC_RendezvousWitness.tla" "MC_RendezvousWitness_weak.cfg" \
+  fail "Invariant RootCompleteOnSweep is violated"
 
 echo "CESK GC formal checks passed"

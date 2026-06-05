@@ -18,6 +18,8 @@ the legacy slab mark-sweep collector.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
   sweep-only-unmarked, and young-minor obligations into explicit no-UAF theorems for participant roots, future CESK
   touches, and reachable young nodes.
+- `tla/RendezvousWitness.tla`: checks the E1 witness gate predicate. The strict `published>=cur_gen OR
+  acquired>cur_gen` model preserves root completeness at sweep; the negative `acquired>=cur_gen` model violates it.
 
 ## Source coupling
 

@@ -16,6 +16,8 @@
     - E2 concurrent marking retains every snapshot-live address covered by
       initial roots, rendezvous driver roots, SATB deletion shades, or
       allocate-black publication;
+    - E2 freshly published allocations survive when publication implies
+      allocate-black marking;
     - E2 value-bearing E0 deletion categories compose into that SATB coverage
       when removed space-local, rule-index, and environment/token/state
       pre-images are shaded.
@@ -199,6 +201,28 @@ Section CESKCollectorSafetyModel.
     apply Hmark.
     apply Hcovered.
     exact Hlive.
+  Qed.
+
+  Theorem e2_published_allocate_black_survives_collection :
+    forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack
+            PublishedAlloc : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, PublishedAlloc a -> AllocateBlack a) ->
+      (forall a,
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a ->
+          Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, PublishedAlloc a -> ~ Freed a.
+  Proof.
+    intros InitialRoot DriverRoot ShadedDeletion AllocateBlack PublishedAlloc
+           Edge Marked Freed Hpublished_black Hmark Hsweep a Hpublished Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right; right; right.
+    apply Hpublished_black.
+    exact Hpublished.
   Qed.
 
   Theorem e2_e0_removed_snapshot_live_survives_collection :

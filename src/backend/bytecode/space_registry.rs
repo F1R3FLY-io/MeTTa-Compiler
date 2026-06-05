@@ -105,18 +105,90 @@ impl SpaceRegistry {
         self.create(name)
     }
 
+    #[cfg(feature = "index-gc")]
+    fn shade_space_handle(handle: &SpaceHandle) {
+        let mut roots = Vec::new();
+        handle.collect_gc_values(&mut roots);
+        crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn shade_all_spaces(&self) {
+        let mut roots = Vec::new();
+        self.collect_all_gc_values(&mut roots);
+        crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn register_with_satb(&self, name: &str, handle: SpaceHandle) {
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                let old = self.spaces.insert(name.to_string(), handle);
+                if satb_active {
+                    if let Some(old) = old {
+                        Self::shade_space_handle(&old);
+                    }
+                }
+            },
+        );
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    fn register_with_satb(&self, name: &str, handle: SpaceHandle) {
+        self.spaces.insert(name.to_string(), handle);
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn remove_with_satb(&self, name: &str) -> bool {
+        let mut removed = false;
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                let old = self.spaces.remove(name);
+                removed = old.is_some();
+                if satb_active {
+                    if let Some((_, old)) = old {
+                        Self::shade_space_handle(&old);
+                    }
+                }
+            },
+        );
+        removed
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    fn remove_with_satb(&self, name: &str) -> bool {
+        self.spaces.remove(name).is_some()
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn clear_with_satb(&self) {
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                if satb_active {
+                    self.shade_all_spaces();
+                }
+                self.spaces.clear();
+            },
+        );
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    fn clear_with_satb(&self) {
+        self.spaces.clear();
+    }
+
     /// Register an existing SpaceHandle by name
     ///
     /// If a space with this name already exists, it will be replaced.
     pub fn register(&self, name: &str, handle: SpaceHandle) {
-        self.spaces.insert(name.to_string(), handle);
+        self.register_with_satb(name, handle);
     }
 
     /// Remove a space by name
     ///
     /// Returns true if the space was present and removed.
     pub fn remove(&self, name: &str) -> bool {
-        self.spaces.remove(name).is_some()
+        self.remove_with_satb(name)
     }
 
     /// Check if a space with the given name exists
@@ -141,7 +213,7 @@ impl SpaceRegistry {
 
     /// Clear all spaces
     pub fn clear(&self) {
-        self.spaces.clear();
+        self.clear_with_satb();
     }
 
     /// Collect all GC-reachable MettaValues from every registered space.

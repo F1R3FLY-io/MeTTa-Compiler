@@ -67,6 +67,8 @@ facts the proofs rely on:
   side while flipping `SATB_MARKING_DEPTH`, and cache deletion takes the read side around check, shade, and delete.
 - The rooted global bytecode `MemoCache<MettaValue>` shades overwritten, LRU-evicted, and bulk-cleared cached results
   under the same SATB phase gate; non-`MettaValue` generic cache instantiations do not contribute index roots.
+- The rooted global space registry shades the `SpaceHandle::collect_gc_values` roots for overwritten, removed, and
+  bulk-cleared spaces under the same SATB phase gate.
 - The rooted tiered compilation cache shades pending bytecode source roots on overwrite, cancellation, task-drop, and
   guard drop, and shades pending roots plus compiled bytecode constants before full cache clear.
 - The rooted thread-local subgoal and thunk tables shade cached result values on stale eviction, overwrite, explicit

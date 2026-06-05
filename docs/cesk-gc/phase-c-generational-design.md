@@ -13,8 +13,8 @@ revision, NOT a separate CESK-inspired GC. Grounded:
   `collect_machine_roots`/`collect_k_spine`), with NO `ROOT_REGISTRY` discovery apparatus (A5 cfg-scoped it
   to slab; the machine-equivalence oracle is a permanent CI invariant). **C1's minor marks from these SAME
   structural roots** — it adds no new root source. The generic safety theorem is now checked in
-  `formal/lean/gc/StructuralRoots.lean`: if future machine touches stay inside the structural-root closure and
-  sweep frees only unmarked nodes, a future-touched node cannot be freed.
+  `formal/lean/gc/StructuralRoots.lean` and `formal/rocq/gc/StructuralRoots.v`: if future machine touches stay
+  inside the structural-root closure and sweep frees only unmarked nodes, a future-touched node cannot be freed.
 - **C operates on the CESK store σ** (`IndexArena`/`IndexHeap`), NOT the slab `gc_allocator` (which stays
   byte-identical — the gate's slab nextest 4331/0 proves it). So C improves the CESK collector, not the legacy GC.
 - **C2 is literally a CESK-machine GC technique** — Might–Shivers abstract garbage collection: the
@@ -206,9 +206,9 @@ reuses an old slot.
 + the no-old→young constraint (encode #1) + invariant `YoungOnlyMarkReachesLiveYoung` (phase=sweeping ⇒ every
 reachable young Addr marked) → TLC exhaustive 0-err; **+ a NEGATIVE model WITHOUT the constraint that MUST
 produce the stranding counterexample** (proves the constraint is load-bearing). The unbounded theorem
-`formal/lean/gc/YoungMark.lean` proves the core implication used here: bump-order/no-old-to-young edges plus
-young-root marking and young-edge closure imply every reachable young node is marked, so a minor sweep retains
-all reachable young nodes. ASAN @ FANOUT=0 with minors
+`formal/lean/gc/YoungMark.lean` and `formal/rocq/gc/YoungMark.v` prove the core implication used here:
+bump-order/no-old-to-young edges plus young-root marking and young-edge closure imply every reachable young node is
+marked, so a minor sweep retains all reachable young nodes. ASAN @ FANOUT=0 with minors
 firing NATURALLY: change-state!→young crux + a free-list-reuse case-2 exerciser (seed old free slots → major →
 alloc `Error/Type/Quoted/Lazy` with young children → minor) + M11-pt → 0 UAF. `assert_quiescence_superset`
 oracle green WITH young-only mark. Greenwall 483/0 (cycles>0, minors fire) + 20-run 1-hash + mmverify. Benchmark

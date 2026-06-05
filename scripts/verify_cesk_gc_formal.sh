@@ -14,6 +14,17 @@ run_lean() {
   lean "$REPO/$file"
 }
 
+run_rocq() {
+  local file="$1"
+  echo "### Rocq: $file"
+  (
+    cd "$REPO"
+    systemd-run --user --scope \
+      -p MemoryMax=4G -p MemorySwapMax=0 -p CPUQuota=200% --quiet \
+      rocq c -q "$file"
+  )
+}
+
 run_tlc() {
   local label="$1" module="$2" cfg="$3" expect="$4" pattern="$5"
   local log="$TLC_META/${label}.log"
@@ -65,6 +76,11 @@ run_lean "formal/lean/gc/FreeList.lean"
 run_lean "formal/lean/gc/YoungMark.lean"
 run_lean "formal/lean/gc/StructuralRoots.lean"
 run_lean "formal/lean/gc/RendezvousWitness.lean"
+
+run_rocq "formal/rocq/gc/FreeList.v"
+run_rocq "formal/rocq/gc/YoungMark.v"
+run_rocq "formal/rocq/gc/StructuralRoots.v"
+run_rocq "formal/rocq/gc/RendezvousWitness.v"
 
 run_tlc "rfl_freebit" "MC_StoreCentricGC_RFL.tla" "MC_RFL_freebit.cfg" \
   pass ""

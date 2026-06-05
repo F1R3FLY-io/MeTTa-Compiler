@@ -4,6 +4,8 @@
     generational index collector:
 
     - rendezvous witness publication puts participant roots in the driver roots;
+    - eval-entry driver-C publication puts caller-held source/output roots in
+      the driver roots;
     - the collector marks the reachability closure of structural CESK roots plus
       driver roots;
     - sweep frees only unmarked addresses;
@@ -78,6 +80,25 @@ Section CESKCollectorSafetyModel.
     apply Hmark.
     apply Hfuture.
     exact Htouch.
+  Qed.
+
+  Theorem published_driver_c_survives_collection :
+    forall (DriverC DriverRoot StructuralRoot : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, DriverC a -> DriverRoot a) ->
+      (forall a, Reach (CollectorRoot StructuralRoot DriverRoot) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, DriverC a -> ~ Freed a.
+  Proof.
+    intros DriverC DriverRoot StructuralRoot Edge Marked Freed
+           Hpublished Hmark Hsweep a Hdriver Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right.
+    apply Hpublished.
+    exact Hdriver.
   Qed.
 
   Theorem young_reachable_marked :

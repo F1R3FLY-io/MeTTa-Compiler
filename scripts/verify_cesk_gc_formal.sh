@@ -25,6 +25,11 @@ run_rocq() {
   )
 }
 
+run_source_coupling() {
+  echo "### Source coupling: CESK GC"
+  bash "$REPO/scripts/verify_cesk_gc_source_coupling.sh"
+}
+
 run_tlc() {
   local label="$1" module="$2" cfg="$3" expect="$4" pattern="$5"
   local log="$TLC_META/${label}.log"
@@ -81,6 +86,9 @@ run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/RendezvousWitness.v"
+run_rocq "formal/rocq/gc/CESKCollectorSafety.v"
+
+run_source_coupling
 
 run_tlc "rfl_freebit" "MC_StoreCentricGC_RFL.tla" "MC_RFL_freebit.cfg" \
   pass ""

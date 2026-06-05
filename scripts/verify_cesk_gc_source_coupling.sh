@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+
+fail() {
+  echo "CESK GC source-coupling check failed: $*" >&2
+  exit 1
+}
+
+line_no() {
+  local file="$1" needle="$2" line
+  line="$(rg -n -F -m 1 -- "$needle" "$REPO/$file" | cut -d: -f1 || true)"
+  [[ -n "$line" ]] || fail "missing '$needle' in $file"
+  printf '%s\n' "$line"
+}
+
+count_no() {
+  local file="$1" needle="$2"
+  (rg -n -F -- "$needle" "$REPO/$file" || true) | wc -l | tr -d ' '
+}
+
+assert_before() {
+  local file="$1" before="$2" after="$3" before_line after_line
+  before_line="$(line_no "$file" "$before")"
+  after_line="$(line_no "$file" "$after")"
+  if (( before_line >= after_line )); then
+    fail "expected '$before' before '$after' in $file (lines $before_line >= $after_line)"
+  fi
+}
+
+assert_count() {
+  local file="$1" needle="$2" expected="$3" actual
+  actual="$(count_no "$file" "$needle")"
+  if [[ "$actual" != "$expected" ]]; then
+    fail "expected $expected occurrence(s) of '$needle' in $file, found $actual"
+  fi
+}
+
+assert_zero() {
+  local file="$1" needle="$2" actual
+  actual="$(count_no "$file" "$needle")"
+  if [[ "$actual" != "0" ]]; then
+    fail "expected zero occurrence(s) of '$needle' in $file, found $actual"
+  fi
+}
+
+# A5 structural-root architecture: the dynamic root registry and raw frame-chain
+# discovery path must remain slab-only. The index collector reads roots from the
+# reified CESK machine plus narrow driver transport channels.
+assert_before \
+  "src/backend/models/mod.rs" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "pub use gc_allocator::{collect_all_roots, register_root_provider, trigger_gc_cycle, RootProvider};"
+assert_before \
+  "src/backend/eval/mod.rs" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "pub(crate) mod frame_chain;"
+assert_before \
+  "src/backend/models/gc_allocator.rs" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "pub trait RootProvider: Send + Sync {"
+
+# E1 rendezvous safety: the dedicated driver must wait on the V4 witness, publish
+# witness_ok, build the root union, run the oracle, and only then enter the
+# rendezvous collection gate.
+assert_zero "src/backend/eval/cesk/gc_driver.rs" "ga::requestor_wait_for_parked_count"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "let snap = ga::snapshot_witness(cur_gen);" "ga::requestor_wait_for_all_reified_parked(&snap, cur_gen);"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::requestor_wait_for_all_reified_parked(&snap, cur_gen);" "ga::set_current_witness_ok(true);"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::set_current_witness_ok(true);" "ga::drain_worker_root_buffer(&mut roots);"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::drain_worker_root_buffer(&mut roots);" "ga::collect_safepoint_roots(&mut roots);"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::collect_safepoint_roots(&mut roots);" "ga::collect_live_env_anchors(&mut roots);"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::collect_live_env_anchors(&mut roots);" "ga::collect_live_dispatch_anchors(&mut roots);"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::collect_live_dispatch_anchors(&mut roots);" "assert_rendezvous_union_complete(&roots, n);"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "assert_rendezvous_union_complete(&roots, n);" "run_collection_if_triggered_rendezvous(&roots)"
+
+# The rendezvous gate must be the witness flag, not the obsolete parked-count
+# equality. The old parked-count function can survive for unit tests, but not as
+# the live collection gate.
+line_no "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_rendezvous() -> bool" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "crate::backend::models::gc_allocator::current_witness_ok()" >/dev/null
+assert_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_rendezvous() -> bool" "crate::backend::models::gc_allocator::current_witness_ok()"
+
+# R-FL free-list lifecycle: push is guarded by the persistent free bit, pop clears
+# the bit before returning or discarding an entry, and released segments drain
+# their listed entries before the bitmap is dropped.
+assert_before "src/backend/eval/cesk/index_arena.rs" "if seg.set_free_bit(off) {" "free_list.push(addr);"
+assert_before "src/backend/eval/cesk/index_arena.rs" "seg.clear_free_bit(addr.offset());" "if addr.segment() == cur {"
+assert_before "src/backend/eval/cesk/index_arena.rs" "free_list.retain(|addr| {" "seg.clear_free_bit(off);"
+assert_before "src/backend/eval/cesk/index_arena.rs" "drain_free_list_entries_for_released_segment(seg, &mut self.free_list, si, check);" "stats.bytes_released += seg_mut.release();"
+
+# C1 young mark/reuse coupling: free-list reuse is current-segment-only, and the
+# minor marker marks/descends only young nodes.
+line_no "src/backend/eval/cesk/index_arena.rs" "pub fn pop_young_free_slot(&mut self) -> Option<Addr>" >/dev/null
+line_no "src/backend/eval/cesk/index_arena.rs" "if addr.segment() == cur {" >/dev/null
+line_no "src/backend/eval/cesk/index_arena.rs" "pub fn mark_young_from_roots_with" >/dev/null
+line_no "src/backend/eval/cesk/index_arena.rs" "if r.segment() >= young_floor && self.mark(r) {" >/dev/null
+line_no "src/backend/eval/cesk/index_arena.rs" "if k.segment() >= young_floor && self.mark(k) {" >/dev/null
+
+# Witness stamping: the stale-stamp reset and the genuine reified-park stamp are
+# the only writes to published_gen. That keeps the witness theorem's
+# "published implies buffered roots" premise source-grounded.
+assert_count "src/backend/models/gc_allocator.rs" "published_gen.store" "2"
+assert_before "src/backend/models/gc_allocator.rs" "pub(crate) fn note_reified_park(g: u64)" "slot.published_gen.store(g, Ordering::Release);"
+assert_before "src/backend/models/gc_allocator.rs" "WORKER_ROOT_BUFFER.lock().extend_from_slice(roots);" "note_reified_park(my_gen);"
+
+echo "CESK GC source-coupling checks passed"

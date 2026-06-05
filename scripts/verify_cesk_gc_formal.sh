@@ -118,5 +118,9 @@ run_tlc "started_cycle_gate_started" "MC_StartedCycleGate.tla" "MC_StartedCycleG
   pass ""
 run_tlc "started_cycle_gate_gen" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_gen.cfg" \
   fail "Invariant NoPhantomRepark is violated"
+run_tlc "witness_ok_reset_clear" "MC_WitnessOkReset.tla" "MC_WitnessOkReset_clear.cfg" \
+  pass ""
+run_tlc "witness_ok_reset_stale" "MC_WitnessOkReset.tla" "MC_WitnessOkReset_stale.cfg" \
+  fail "Invariant NoStaleWitnessCollect is violated"
 
 echo "CESK GC formal checks passed"

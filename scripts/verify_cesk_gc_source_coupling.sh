@@ -157,4 +157,12 @@ assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::set_current_cycle_starte
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "let started = current_cycle_started();" "if started > my_reparked_gen {"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "if current_cycle_started() > my_reparked_gen {" "continue 'straddle;"
 
+# E1/E5 witness-ok reset: CURRENT_WITNESS_OK is a non-generational bool, so
+# cycle teardown must clear it after the gen bump and before any resume/startup
+# notify can expose the next cycle. The driver must run teardown before dropping
+# GC_IN_PROGRESS.
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn end_rendezvous_cycle() {" "GC_CYCLE_GEN.fetch_add(1, Ordering::AcqRel);" "set_current_witness_ok(false);"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn end_rendezvous_cycle() {" "set_current_witness_ok(false);" "RENDEZVOUS_CONDVAR.notify_all();"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::end_rendezvous_cycle();" "drop(_gip);"
+
 echo "CESK GC source-coupling checks passed"

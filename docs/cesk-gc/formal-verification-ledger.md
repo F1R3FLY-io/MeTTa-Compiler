@@ -27,6 +27,8 @@ the legacy slab mark-sweep collector.
   violates it.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
+- `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end
+  prevents the previous cycle's true flag from admitting a next-cycle sweep before the next witness wait.
 
 ## Source coupling
 
@@ -46,6 +48,8 @@ facts the proofs rely on:
   count decrement, never released by safepoint drops, and re-stamped before straddle re-park publication.
 - The E5 straddle loop gates on `current_cycle_started()`, and the driver sets it after admission closes and before
   the witness wait.
+- `end_rendezvous_cycle` clears `CURRENT_WITNESS_OK` after the gen bump and before the rendezvous notify; the driver
+  runs that teardown before dropping `GC_IN_PROGRESS`.
 
 ## Harness
 

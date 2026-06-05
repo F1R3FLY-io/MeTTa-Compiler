@@ -1926,12 +1926,14 @@ pub mod index_gc {
     /// SOUNDNESS (sweep runs ⟺ root set complete): the sole caller is
     /// `gc_driver::gc_driver_rendezvous_cycle`, which calls this AFTER (2) try_enter
     /// GcInProgressGuard, (3) `n := n_threads()` post-admission + `set_n_threads_at_snapshot(n)`,
-    /// (4) `requestor_wait_for_parked_count(n)`, (5) drain `WORKER_ROOT_BUFFER ∪
-    /// collect_safepoint_roots`. So when this returns true the drained union is
-    /// `⋃ᵢ machineᵢ ∪ E₀ ∪ driver-C` — the complete live set (HB2 via the parked-count
+    /// (4) `snapshot_witness(cur_gen)` + `requestor_wait_for_all_reified_parked`,
+    /// then `set_current_witness_ok(true)`, (5) drain `WORKER_ROOT_BUFFER ∪
+    /// collect_safepoint_roots ∪ collect_live_env_anchors ∪ collect_live_dispatch_anchors`.
+    /// So when this returns true the drained union is
+    /// `⋃ᵢ machineᵢ ∪ E₀ ∪ driver-C ∪ dispatch-C` — the complete live set (HB2 via the witness
     /// AcqRel). `active_evaluator_count()==0` is NOT required (a finisher that
     /// bumped-then-kept-running may still hold a guard); completeness comes from the
-    /// buffer drain gated by the parked-count, not from active==0.
+    /// buffer drain gated by the per-slot reified witness, not from active==0.
     ///
     /// DORMANT until E1-FLIP's default-flip (only reachable on the GC thread, only
     /// spun under `dedicated_gc_enabled()`); the slab build const-folds `gc_mode_is_index()`.

@@ -11,9 +11,10 @@ heap write lock. There is also an opt-in E2 SATB major path (`METTATRON_INDEX_GC
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and
 allocate-black, releases workers while it marks under a shared heap read lock, then requests a second rendezvous,
 waits out in-flight deletion barriers by dropping the SATB guard, and performs a full-major final mark/sweep under the
-heap write lock. If that SATB rendezvous aborts, RAII closes any open rendezvous/request and the driver immediately
-runs a fresh normal STW rendezvous. E2 SATB currently sweeps as a full major only; young-only SATB needs a separate
-proof that old marks introduced by SATB barriers cannot remain stale across a minor.
+heap write lock. If that SATB rendezvous aborts, or if the final sweep reports that its rendezvous witness gate closed,
+RAII closes any open rendezvous/request and the driver immediately runs a fresh normal STW rendezvous. E2 SATB
+currently sweeps as a full major only; young-only SATB needs a separate proof that old marks introduced by SATB
+barriers cannot remain stale across a minor.
 
 ## Checked obligations
 
@@ -64,6 +65,9 @@ proof that old marks introduced by SATB barriers cannot remain stale across a mi
 - `tla/SATBFinalRemark.tla`: checks the E2 final-rendezvous remark. Roots captured after the concurrent mark window
   must be re-marked before the exclusive sweep; omitting that remark frees a final root that was not in the initial
   snapshot.
+- `tla/SATBFinalSweepResult.tla`: checks the E2 final-sweep result obligation. If the final sweep's rendezvous gate is
+  unexpectedly closed, the driver must treat the false result as a SATB abort and run the STW backstop; ignoring the
+  result lets the request finish without either sweeping or falling back.
 - `tla/SATBAbortFallback.tla`: checks the E2 abort-to-STW backstop. If the SATB path aborts after cleanup, the
   driver must re-request and run a fresh STW rendezvous before treating the request as handled.
 
@@ -90,7 +94,8 @@ facts the proofs rely on:
   `satb_marking_in_progress`, and only then publishes the slot through `len`.
 - The E2 SATB marker path is source-coupled: `gc_driver_satb_rendezvous_cycle` arms `enter_satb_marking`, closes the
   initial rendezvous before `mark_concurrent_roots`, requests a final rendezvous, drops the SATB guard before
-  `sweep_after_concurrent_mark`, and has RAII cleanup for an open rendezvous/request on panic.
+  `sweep_after_concurrent_mark`, asserts that the final sweep actually ran before dropping the final roots, and has
+  RAII cleanup for an open rendezvous/request on panic.
 - The E2 abort path is source-coupled: `gc_driver_rendezvous_cycle` checks the SATB `catch_unwind` result, and an
   abort calls `gc_driver_stw_rendezvous_cycle`, which re-issues `request_gc`, acquires a fresh rendezvous, prepares
   structural roots, runs the normal STW rendezvous collection, drops roots, and then closes the cycle.

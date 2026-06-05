@@ -156,6 +156,10 @@ run_tlc "satb_final_remark" "MC_SATBFinalRemark.tla" "MC_SATBFinalRemark_remark.
   pass ""
 run_tlc "satb_no_final_remark" "MC_SATBFinalRemark.tla" "MC_SATBFinalRemark_none.cfg" \
   fail "Invariant NoFinalRootFreed is violated"
+run_tlc "satb_final_sweep_result_checked" "MC_SATBFinalSweepResult.tla" "MC_SATBFinalSweepResult_checked.cfg" \
+  pass ""
+run_tlc "satb_final_sweep_result_unchecked" "MC_SATBFinalSweepResult.tla" "MC_SATBFinalSweepResult_unchecked.cfg" \
+  fail "Invariant FinalSweepHandled is violated"
 run_tlc "satb_abort_fallback" "MC_SATBAbortFallback.tla" "MC_SATBAbortFallback_stw.cfg" \
   pass ""
 run_tlc "satb_abort_no_fallback" "MC_SATBAbortFallback.tla" "MC_SATBAbortFallback_none.cfg" \

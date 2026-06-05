@@ -355,9 +355,13 @@ fn gc_driver_satb_rendezvous_cycle(
     // and prevents new ones before the sweep.
     drop(satb_guard);
 
-    crate::backend::eval::cesk::index_heap::index_gc::sweep_after_concurrent_mark(
+    let swept = crate::backend::eval::cesk::index_heap::index_gc::sweep_after_concurrent_mark(
         &final_roots,
         "rendezvous",
+    );
+    assert!(
+        swept,
+        "SATB final sweep gate closed after final rendezvous witness"
     );
     drop(final_roots);
     cleanup.close_cycle();
@@ -463,7 +467,7 @@ fn assert_rendezvous_union_complete(roots: &[MettaValue], n_snapshot: u32) {
 /// while other mutators are live (`n_threads() > 1`). It (a) sets `GC_REQUESTED` so
 /// every active mutator parks at its next safepoint, and (b) hands the cycle to the
 /// GC thread. The caller then parks at its OWN next safepoint as one of the `n`
-/// participants (so the GC thread's `requestor_wait_for_parked_count(n)` completes).
+/// participants (so the GC thread's per-slot reified-witness wait completes).
 ///
 /// DORMANT until E1-c step 3 wires the FANOUT>0 safepoint trigger + park path; until
 /// then nothing calls this, so the default build is byte-identical.

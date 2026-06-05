@@ -69,6 +69,8 @@ facts the proofs rely on:
   under the same SATB phase gate; non-`MettaValue` generic cache instantiations do not contribute index roots.
 - The rooted global space registry shades the `SpaceHandle::collect_gc_values` roots for overwritten, removed, and
   bulk-cleared spaces under the same SATB phase gate.
+- The rooted compiler atom statics are exactly three `OnceLock<MettaValue>` write-once anchors; the source-coupling
+  gate asserts structural reads and no reset/take/set deletion path.
 - The rooted tiered compilation cache shades pending bytecode source roots on overwrite, cancellation, task-drop, and
   guard drop, and shades pending roots plus compiled bytecode constants before full cache clear.
 - The rooted thread-local subgoal and thunk tables shade cached result values on stale eviction, overwrite, explicit

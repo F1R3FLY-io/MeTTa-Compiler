@@ -178,12 +178,29 @@ fn gc_driver_rendezvous_cycle() {
     let roots = prepare_rendezvous_roots();
 
     if crate::backend::eval::cesk::index_heap::index_gc::concurrent_satb_enabled() {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let satb_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             gc_driver_satb_rendezvous_cycle(roots, _gip);
         }));
+        if satb_result.is_err() {
+            gc_driver_stw_rendezvous_cycle();
+        }
         return;
     }
 
+    run_open_stw_rendezvous_cycle(roots, _gip);
+}
+
+fn gc_driver_stw_rendezvous_cycle() {
+    crate::backend::models::gc_allocator::request_gc();
+    let gip = acquire_gc_in_progress_for_rendezvous();
+    let roots = prepare_rendezvous_roots();
+    run_open_stw_rendezvous_cycle(roots, gip);
+}
+
+fn run_open_stw_rendezvous_cycle(
+    roots: Vec<MettaValue>,
+    gip: crate::backend::models::gc_allocator::GcInProgressGuard,
+) {
     // (6) collect (catch_unwind so the cleanup below ALWAYS releases parked workers).
     // E1-FLIP: the RENDEZVOUS entry — gates on gate_open_rendezvous (completeness
     // witness, NOT !worker_ever_spawned which is false here) + labels the cycle
@@ -195,7 +212,7 @@ fn gc_driver_rendezvous_cycle() {
     }));
     // `roots` drops HERE, after the cycle — never before the mark completes.
     drop(roots);
-    close_open_rendezvous_cycle(Some(_gip));
+    close_open_rendezvous_cycle(Some(gip));
 }
 
 fn acquire_gc_in_progress_for_rendezvous() -> crate::backend::models::gc_allocator::GcInProgressGuard {

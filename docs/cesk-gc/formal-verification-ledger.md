@@ -60,8 +60,9 @@ barriers cannot remain stale across a minor.
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 - `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end
   prevents the previous cycle's true flag from admitting a next-cycle sweep before the next witness wait.
-- `tla/CurSegReuseOrder.tla`: checks the C1 no-old-to-young premise for young-only minor marking. Cur-segment-only
-  reuse preserves bump order; any-young reuse admits an old-parent to young-child edge after promotion.
+- `tla/CurSegReuseOrder.tla`: checks the historical skipped-old young-marker allocator premise. Cur-segment-only
+  reuse preserves bump order; any-young reuse admits an old-parent to young-child edge after promotion. The live
+  minor safety proof is `ConservativeMinorMark`, not this narrower premise.
 - `tla/ConservativeMinorMark.tla`: checks the C1 first-class-space correction. Traversing old reachable containers
   during a minor preserves a young value reachable through an old `SpaceHandle`; the old skipped-old traversal violates
   `YoungReachableMarked`.

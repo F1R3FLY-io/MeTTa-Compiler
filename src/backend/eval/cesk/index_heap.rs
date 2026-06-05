@@ -2369,7 +2369,7 @@ pub mod index_gc {
             } else {
                 // Minor: a pure minor (only minor_due) OR a level-3-DEFERRED major (a minor
                 // ran instead this cycle; the live_major re-fires next cycle / within cadence).
-                heap.mark_young(&addrs); // YOUNG-ONLY mark (cheap — the minor's win)
+                heap.mark_young(&addrs); // conservative traversal; young mark bits only
                 (heap.sweep_young(), false)
             };
             // Increment A (the RSS half of CHANGE #1): free the swept-dead nodes' payload

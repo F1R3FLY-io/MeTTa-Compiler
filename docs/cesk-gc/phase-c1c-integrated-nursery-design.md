@@ -3,23 +3,23 @@
 **User directive:** ship minors ON, EXCLUSIVELY, NO on/off switch; integrate the allocator and GC
 "where sensible (akin to the allocation-backpressure changes from the current allocator/GC)."
 
-**Why this rework (measured obstacles, this session):** the young-only-mark generational minor is sound
-and implemented (C1.c substrate) but does NOT fire beneficially on the single-threaded quiescence
-collector, because (1) the major triggers on `committed` (CAPACITY ≫ live when dead transient
+**Why this rework (measured obstacles, this session):** the conservative-young-mark generational minor is
+sound and implemented (C1.c substrate) but does NOT fire beneficially on the single-threaded quiescence
+collector without allocator coupling, because (1) the major triggers on `committed` (CAPACITY ≫ live when dead transient
 accumulates) and (2) a minor cannot reduce `committed` — the variable-length path (`bump_in`, used by
 SExpr/Conjunction/Atom/String/Spanned) NEVER reuses the free-list (only bumps), and hash-cons scatters
 live content so young segments rarely fully die (`released_segs=0`). So a minor cannot displace the
 major (minor-then-major = strictly more work). PLN Robot FANOUT=0: 0 minors / 14 full-mark majors / 28s.
 
 **The fix = three coupled changes that integrate the allocator with the GC.** Designed by a Plan agent
-against source (HEAD with the C1.c substrate); reviewed. The young-only-mark + no-old→young soundness is
-already done (and TLA+/ASAN-validated for the full-mark variant) — this rework is about FIRING + MEMORY-
-BOUNDING while PRESERVING no-old→young.
+against source (HEAD with the C1.c substrate); reviewed. The live soundness argument is the conservative
+minor theorem: traverse every reachable node, mark only young nodes, and sweep only young. This rework is about
+FIRING + MEMORY-BOUNDING while preserving that no-remembered-set collector shape.
 
 ## Substrate already in place (build on; do not redo)
-`alloc(&mut)` reuses YOUNG free slots only (skips/discards old → no old→young); `mark_young` (young-only
-mark, sound: a live young node's parent can't be old, so it's reached via an all-young path from a young
-root); `young_alloc_bytes` odometer (reset at `promote_young`); minor-primary driver; the
+`alloc(&mut)` reuses YOUNG free slots only (skips/discards old); `mark_young` (conservative traversal,
+young mark bits only, so old `SpaceHandle` containers can still expose young contents); `young_alloc_bytes`
+odometer (reset at `promote_young`); minor-primary driver; the
 `YOUNG_MIN_BYTES` switch is DELETED. `MAJOR_CADENCE=16`, `YOUNG_BUDGET=2 MiB (≈¼ segment)`.
 
 ## CHANGE #1 — Variable-length free-list reuse (the core allocator↔GC coupling; hardest)
@@ -95,11 +95,11 @@ allocation SIGNALS and the next safepoint collects:
   that released 0 segments, raise the effective threshold to `committed` for one cadence.
 
 ## Gate
-- **TLA+ (new `StoreCentricGC_GenerationalYoungMark.tla` + negative model):** young-only `MarkStep`
-  (descend only from MARKED YOUNG nodes) + no-old→young constraint (encode #1) + invariant
-  `YoungOnlyMarkReachesLiveYoung` (`phase=sweeping ⇒ ∀ reachable young : marked`) → TLC exhaustive 0-err;
-  + a NEGATIVE model (drop the constraint) that MUST produce the stranding counterexample (proves the
-  constraint is load-bearing). Keep the C1.b full-mark `StoreCentricGC_Generational.tla` for the major path.
+- **TLA+/Rocq/Lean:** the live safety gate is `ConservativeMinorMark.tla` plus the conservative-minor theorems in
+  `formal/lean/gc/YoungMark.lean` and `formal/rocq/gc/YoungMark.v`: if the marker traverses every reachable node and
+  marks every young node it sees, `sweep_young` retains every reachable young address. The old skipped-old
+  `StoreCentricGC_GenerationalYoungMark.tla` model remains a historical/negative discriminator for why the
+  no-old→young premise was too narrow for the live collector.
 - **ASAN @ FANOUT=0, minors firing NATURALLY (no force-switch):** `change_state_young.metta` (sized so
   the churn > 2 MiB young) + a NEW free-list-reuse exerciser (seed young free-list, re-alloc SExprs forcing
   variable-length reuse, live State persists) → 0 UAF; `assert_quiescence_superset` oracle green.

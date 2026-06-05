@@ -869,7 +869,7 @@ impl<N: Copy> IndexArena<N> {
     /// LIFO reuse, then fresh bump.
     pub fn alloc(&mut self, node: N) -> Addr {
         // Reuse a CUR_SEG free slot if available (see `pop_young_free_slot` for the
-        // cur_seg-only soundness argument), else bump. Both paths are young.
+        // cur-segment reuse invariant), else bump. Both paths are young.
         if let Some(addr) = self.pop_young_free_slot() {
             self.write_reused(addr, node);
             addr
@@ -883,18 +883,14 @@ impl<N: Copy> IndexArena<N> {
     /// interning any side data into the SAME segment). Returns `None` if no `cur_seg`
     /// free slot is available (the caller bumps).
     ///
-    /// Reuse is restricted to `cur_seg` (NOT all young segments) for SOUNDNESS of the
-    /// young-only minor mark, which rests on NO old→young σ edge. A node reused into
-    /// a LOWER young segment can point at a child in a HIGHER (younger) segment;
-    /// after the next promotion (`young_floor := cur_seg`) that node becomes OLD
-    /// while its child stays YOUNG — a genuine old→young edge the young-only mark
-    /// (which skips old) would miss ⇒ use-after-free. `cur_seg`-only reuse keeps BUMP
-    /// ORDER (a reused node's children are all in segments <= `cur_seg` = its own,
-    /// since allocated no later), so a reused node and ALL its children share a
-    /// segment <= cur_seg and PROMOTE TOGETHER ⇒ never old-node-with-young-child ⇒ no
-    /// old→young, NO remembered set. (Mechanically checked:
-    /// tla/StoreCentricGC_GenerationalYoungMark.tla — the negative model, reuse any
-    /// young, produces the old→young counterexample.) Non-`cur_seg` free slots are
+    /// Reuse is restricted to `cur_seg` (NOT all young segments) to preserve bump
+    /// order for the allocator and the historical skipped-old young-marker model.
+    /// The live minor no longer relies on that narrower premise: `IndexHeap::mark_young`
+    /// conservatively traverses old reachable containers and sets mark bits only on
+    /// young nodes. Keeping cur-segment reuse still avoids avoidable old→young inline
+    /// edges, bounds side-arena co-location to the segment being reused, and keeps the
+    /// old TLA discriminator (`CurSegReuseOrder` /
+    /// `StoreCentricGC_GenerationalYoungMark`) green. Non-`cur_seg` free slots are
     /// skipped (left slot-free, re-added by the next major); LIFO + minors append
     /// `cur_seg` slots ⇒ `cur_seg` is on top ⇒ this skips rarely.
     pub fn pop_young_free_slot(&mut self) -> Option<Addr> {
@@ -1298,15 +1294,14 @@ impl<N: Copy> IndexArena<N> {
     /// C1 generational MINOR: sweep only the YOUNG segments `[young_floor,
     /// seg_count)` — release fully-dead non-current young segments and reclaim
     /// young unmarked slots — leaving OLD segments `[0, young_floor)` entirely
-    /// untouched (their marks AND slots retained). Sound because there is no
-    /// old→young σ edge (σ `Node` edges are immutable; the only mutable cell,
-    /// `State`, is an E₀ root, not a σ back-edge — see phase-c-generational-design.md),
-    /// so a live young node is always reached from the full structural root set and
-    /// an old node is never reclaimed by a minor. Appends to the free list (does
+    /// untouched (their marks AND slots retained). Soundness comes from the heap
+    /// wrapper's conservative young mark: it traverses the whole structural
+    /// reachable graph but sets mark bits only on young nodes, so every live young
+    /// slot is marked before this young-only sweep. Appends to the free list (does
     /// NOT clear it): a minor retains the prior major's old free entries. The
     /// current segment remains young and can be swept repeatedly; duplicate
-    /// current-segment pushes are prevented by the persistent per-slot
-    /// `free_bit`, not by a sweep-once property. Quiescence-only, like
+    /// current-segment pushes are prevented by the persistent per-slot `free_bit`,
+    /// not by a sweep-once property. Quiescence-only, like
     /// [`sweep`](Self::sweep).
     pub fn sweep_young_with<F: FnMut(usize)>(
         &mut self,

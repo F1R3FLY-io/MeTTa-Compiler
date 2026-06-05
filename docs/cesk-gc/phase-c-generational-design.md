@@ -203,7 +203,10 @@ reuses an old slot.
 **Gate (mechanical soundness, not argued):** extend `StoreCentricGC_Generational.tla` with a `YoungOnlyMarkStep`
 + the no-old→young constraint (encode #1) + invariant `YoungOnlyMarkReachesLiveYoung` (phase=sweeping ⇒ every
 reachable young Addr marked) → TLC exhaustive 0-err; **+ a NEGATIVE model WITHOUT the constraint that MUST
-produce the stranding counterexample** (proves the constraint is load-bearing). ASAN @ FANOUT=0 with minors
+produce the stranding counterexample** (proves the constraint is load-bearing). The unbounded theorem
+`formal/lean/gc/YoungMark.lean` proves the core implication used here: bump-order/no-old-to-young edges plus
+young-root marking and young-edge closure imply every reachable young node is marked, so a minor sweep retains
+all reachable young nodes. ASAN @ FANOUT=0 with minors
 firing NATURALLY: change-state!→young crux + a free-list-reuse case-2 exerciser (seed old free slots → major →
 alloc `Error/Type/Quoted/Lazy` with young children → minor) + M11-pt → 0 UAF. `assert_quiescence_superset`
 oracle green WITH young-only mark. Greenwall 483/0 (cycles>0, minors fire) + 20-run 1-hash + mmverify. Benchmark

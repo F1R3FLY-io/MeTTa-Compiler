@@ -6,6 +6,8 @@
     - rendezvous witness publication puts participant roots in the driver roots;
     - eval-entry driver-C publication puts caller-held source/output roots in
       the driver roots;
+    - async batch-result handoff roots worker results in driver-C until the
+      caller copies them into MettaState.output;
     - the collector marks the reachability closure of structural CESK roots plus
       driver roots;
     - sweep frees only unmarked addresses;
@@ -55,6 +57,11 @@ Section CESKCollectorSafetyModel.
 
   Definition RequestHandled (SatbSwept StwFallbackRan : Prop) : Prop :=
     SatbSwept \/ StwFallbackRan.
+
+  Definition BatchHandoffRoot
+      (HandleRoot OutputRoot : Addr -> Prop)
+      (a : Addr) : Prop :=
+    HandleRoot a \/ OutputRoot a.
 
   Definition E0RemovedPreimage
       (SpacePreimage RulePreimage EnvPreimage : Addr -> Prop)
@@ -125,6 +132,57 @@ Section CESKCollectorSafetyModel.
     right.
     apply Hpublished.
     exact Hdriver.
+  Qed.
+
+  Theorem batch_result_handoff_survives_collection :
+    forall (StructuralRoot DriverRoot BatchResult
+            HandleRoot OutputRoot : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, BatchResult a -> BatchHandoffRoot HandleRoot OutputRoot a) ->
+      (forall a, HandleRoot a -> DriverRoot a) ->
+      (forall a, OutputRoot a -> DriverRoot a) ->
+      (forall a, Reach (CollectorRoot StructuralRoot DriverRoot) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, BatchResult a -> ~ Freed a.
+  Proof.
+    intros StructuralRoot DriverRoot BatchResult HandleRoot OutputRoot
+           Edge Marked Freed Hcovered Hhandle_driver Houtput_driver Hmark Hsweep
+           a Hresult Hfreed.
+    destruct (Hcovered a Hresult) as [Hhandle | Houtput].
+    - apply (Hsweep a Hfreed).
+      apply Hmark.
+      apply reach_root.
+      right.
+      apply Hhandle_driver.
+      exact Hhandle.
+    - apply (Hsweep a Hfreed).
+      apply Hmark.
+      apply reach_root.
+      right.
+      apply Houtput_driver.
+      exact Houtput.
+  Qed.
+
+  Theorem batch_handle_drop_after_output_copy_survives_collection :
+    forall (StructuralRoot DriverRoot BatchResult OutputRoot : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, BatchResult a -> OutputRoot a) ->
+      (forall a, OutputRoot a -> DriverRoot a) ->
+      (forall a, Reach (CollectorRoot StructuralRoot DriverRoot) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, BatchResult a -> ~ Freed a.
+  Proof.
+    intros StructuralRoot DriverRoot BatchResult OutputRoot Edge Marked Freed
+           Hcopied Houtput_driver Hmark Hsweep a Hresult Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right.
+    apply Houtput_driver.
+    apply Hcopied.
+    exact Hresult.
   Qed.
 
   Theorem young_reachable_marked :

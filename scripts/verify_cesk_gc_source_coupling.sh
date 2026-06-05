@@ -71,6 +71,14 @@ assert_count() {
   fi
 }
 
+assert_count_between() {
+  local file="$1" start="$2" end="$3" needle="$4" expected="$5" actual
+  actual="$(count_between "$file" "$start" "$end" "$needle")"
+  if [[ "$actual" != "$expected" ]]; then
+    fail "expected $expected occurrence(s) of '$needle' between '$start' and '$end' in $file, found $actual"
+  fi
+}
+
 assert_zero_between() {
   local file="$1" start="$2" end="$3" needle="$4" actual
   actual="$(count_between "$file" "$start" "$end" "$needle")"
@@ -174,6 +182,24 @@ assert_after_before "src/backend/eval/mod.rs" "pub fn eval(" "state.collect_driv
 assert_after_before "src/backend/eval/mod.rs" "pub fn eval(" "crate::backend::models::register_temporary_roots(driver_roots)" "let _guard = EvalGuard::enter();"
 assert_after_before "src/backend/eval/tier_forced.rs" "pub fn eval_with_tier(" "state.collect_driver_program_roots(&mut driver_roots);" "let outcome = if let Err(reason) = tier_applicable"
 assert_after_before "src/backend/eval/tier_forced.rs" "pub fn eval_with_tier(" "crate::backend::models::register_temporary_roots(driver_roots)" "let outcome = if let Err(reason) = tier_applicable"
+
+# E2 batch-result handoff coupling: async rholang batch workers leave the
+# rendezvous participant set before the caller consumes their result vectors.
+# Each BatchOutcome must therefore carry a persistent safepoint root handle from
+# before publication into the gather slot until after the caller copies the
+# results into MettaState.output.
+assert_after_before "src/rholang_integration.rs" "struct BatchOutcome" "_root_handle: Option<crate::backend::models::SafepointRootHandle>" "}"
+assert_after_before "src/rholang_integration.rs" "let result_vec = eval_results.into_vec();" "register_temporary_roots(" "guard[slot] = Some(BatchOutcome"
+assert_after_before "src/rholang_integration.rs" "let result_vec = eval_results.into_vec();" "register_temporary_roots(" "_root_handle: root_handle,"
+assert_after_before "src/rholang_integration.rs" "guard[slot] = Some(BatchOutcome" "_root_handle: root_handle," "remaining.fetch_sub"
+assert_after_before "src/rholang_integration.rs" "let mut collected: Vec<BatchOutcome>" "drain(..)" "collected.sort_by_key"
+assert_zero "src/rholang_integration.rs" "drop(root_handle)"
+assert_count "src/rholang_integration.rs" "let batch_results = evaluate_batch_parallel_arena(current_batch, env.clone()).await;" "2"
+assert_count "src/rholang_integration.rs" "for outcome in batch_results {" "2"
+assert_count_between "src/rholang_integration.rs" "if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {" "current_batch = Vec::new();" "for outcome in batch_results {" "1"
+assert_after_before "src/rholang_integration.rs" "if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {" "output.push(result);" "(and its index-gc _root_handle) drops HERE"
+assert_count_between "src/rholang_integration.rs" "// Evaluate any remaining batch" "// Transfer final environment to result state" "for outcome in batch_results {" "1"
+assert_after_before "src/rholang_integration.rs" "// Evaluate any remaining batch" "output.push(result);" "(+ its index-gc _root_handle) drops HERE"
 
 assert_count "src/backend/eval/trampoline/eval_loop.rs" "register_live_dispatch(" "2"
 assert_count "src/backend/eval/trampoline/eval_loop.rs" "_live_dispatch: live_dispatch" "2"

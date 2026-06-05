@@ -79,6 +79,11 @@ set. Focused validation on 2026-06-04:
 - TLC fixed config (`CollapseCompletion_fix.cfg`) passed: 28 states generated, 9 distinct, no temporal error.
 - TLC bug config (`CollapseCompletion_bug.cfg`) still failed as expected: 55 states generated, 21 distinct;
   counterexample left `remaining = 2`, `parentDone = FALSE`.
+- Post-fix E1 discriminator passed under a 24 GiB cap:
+  `N=16 TIMEOUT=180 scripts/e1_flip_discriminator.sh` reported `0/16 FAIL` on all three Robot arms
+  (A: `DEDICATED=1 MIN=131072`, B: `DEDICATED=0`, C: `DEDICATED=1 MIN=4294967295`). Arm A was
+  non-vacuous: the report stream included rendezvous major/minor cycles with reclaimed slots and released
+  segments.
 
 ## Relationship to the corruption (the deeper root)
 The swept-`Addr` corruption (`e1-flip-collapse-worker-env-gap`) is the prime PANIC FEEDER for this hang.
@@ -89,7 +94,7 @@ via the swept-bitmap arena oracle → root the dominant holder) is the deeper ro
 entirely (no hang AND no missing result). Both fixes are complementary and both needed.
 
 ## Validation
-TLA+ verified (above). Robot ×150 (FANOUT=8 DEDICATED=1) on the index-gc binary: expect **HANG → 0** (the
-panic-induced strand is now structurally impossible); CORRUPT may persist (the swept-`Addr` residual, the
-corruption track). Conformance 483/0 both DEDICATED modes (no regression; the change is in shared
-parallel-eval code). Then commit (with `tla/CollapseCompletion.tla`).
+TLA+ verified (above). The focused Robot determinism gate passed 20/20, and the post-fix 3-arm E1
+discriminator passed 0/16 failures on all arms with non-vacuous arm-A reclaim. Remaining broader ship gates
+are tracked in the active E1 ledger; this note no longer claims the full conformance/ASAN/default-flip bar by
+itself.

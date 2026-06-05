@@ -557,4 +557,7 @@ Scoped verification completed: allocator tests with `METTATRON_INDEX_GC_FREELIST
 
 - R-FL production fix is committed (`add0585`, `ae61034`, `70ab067`) and the bounded post-fix FANOUT=0 evaluator churn gate is committed in `2c35247`/`d101e1b` (`tests/rfl_forced_gc.rs`). That gate is non-vacuous (`cycles_run()`, `minor_cycles_run()`, and `major_cycles_run()` increase), passed once with `METTATRON_INDEX_GC_FREELIST_CHECK=1`, and passed the committed repeated gate `scripts/rfl_forced_gc_x20.sh 20` with runs=20 failures=0.
 - The residual straddle deadlock source fix is present (`GC_CYCLE_STARTED`, the B-closure re-read, and the Mesa-correct W2 gen wait). The loom gate was repaired in `70ffacc` so the fixed model is a green command and the two deadlocking variants are kept as ignored/manual expected-fail models. `LOOM_MAX_PREEMPTIONS=3 cargo test --release --lib loom_straddle` passed under the capped lane.
-- Still pending before E1 default flip: the R-FL pre-fix-bite check, the dedicated/robot/ASAN/determinism gate, and explicit user approval for the default flip.
+- Still pending before E1 default flip: the dedicated ASAN/conformance/oracle portions of the full gate and
+  explicit user approval for the default flip. Completed on 2026-06-04: the R-FL pre-fix-bite check,
+  R-FL TLC rerun, focused Robot determinism 20/20, and the E1 3-arm discriminator (`N=16`) with non-vacuous
+  arm-A reclaim.

@@ -120,7 +120,7 @@ dispatch trips a debug panic, not a corruption bug.
 
 1. Build both backends; 49-warning baseline unchanged (cfg-walls keep slab providers from `dead_code`).
 2. FANOUT=0 conformance 483/0 byte-identical on both backends + DEDICATED∈{0,1} (anchor empty at FANOUT=0; `register_live_dispatch` never reached — dispatch needs ≥2 branches).
-3. **3-way discriminator, robot @ FANOUT=8, ×16/arm, ALL → 0/16**, reuse ON + `reclaimed_slots>0`: A (DEDICATED=1 MIN_BYTES=131072), B (DEDICATED=0), C (DEDICATED=1 MIN_BYTES=4294967295).
+3. **3-way discriminator, robot @ FANOUT=8, ×16/arm, ALL → 0/16**, reuse ON + `reclaimed_slots>0`: A (DEDICATED=1 MIN_BYTES=131072), B (DEDICATED=0), C (DEDICATED=1 MIN_BYTES=4294967295). Re-run on 2026-06-04 after the literal-closure-entry `CompletionGuard` fix: PASS, all three arms `0/16 FAIL`, arm A reclaimed and released segments.
 4. V4 ASAN (`scripts/e1_flip_v4_asan.sh`, robot+raven+stress_multidir @ FANOUT=8 DEDICATED=1): 0-UAF + rendezvous-cycles>0 non-vacuous + non-rendezvous==0. Heed the script's caps (24G/20G, MemorySwapMax=0, -j4; `free -h` first).
 5. ×20 determinism (robot @ FANOUT=8 DEDICATED=1, byte-identical canonical output).
 6. The new oracle (debug) over the discriminator + V4 fixtures: 0 oracle panics.

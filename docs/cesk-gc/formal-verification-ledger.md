@@ -41,6 +41,10 @@ the legacy slab mark-sweep collector.
   preserves safety; publishing first allows a visible allocation to be swept.
 - `tla/SATBLRUEviction.tla`: checks the E2 LRU SATB barrier shape. Shading capacity-evicted victims preserves
   snapshot-live safety; a same-key put-return-only barrier misses capacity victims.
+- `tla/SATBBulkClear.tla`: checks the E2 bulk-clear SATB barrier shape. Shading every removed pre-image before
+  clearing a value-bearing E0 cache preserves snapshot-live safety; clearing without shading frees one.
+- `tla/SATBPhaseGate.tla`: checks the E2 marker-start/deletion race. A read/write phase gate prevents marker
+  start from straddling a deletion that observed "not marking"; without the gate a snapshot-live entry can be freed.
 
 ## Source coupling
 
@@ -57,6 +61,10 @@ facts the proofs rely on:
   self-invalidates after another thread completes a sweep.
 - Value-bearing E0 LRU anchors (`EVAL_MEMO`, `MATCH_RESULT_CACHE`, and `BYTECODE_CACHE`) use `LruCache::push`
   rather than `put` on eviction-capable paths, and the surfaced victim is conservatively SATB-shaded in index mode.
+- Value-bearing E0 bulk clears shade all cached roots before clearing during an active SATB mark, and the shading
+  primitive is gated by `satb_marking_in_progress` so ordinary cycles cannot leave stale mark bits for a later mark.
+- Value-bearing E0 deletion/eviction paths run under `with_satb_deletion_barrier`: marker start/end takes the write
+  side while flipping `SATB_MARKING_DEPTH`, and cache deletion takes the read side around check, shade, and delete.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

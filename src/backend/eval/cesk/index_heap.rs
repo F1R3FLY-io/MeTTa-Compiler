@@ -1557,6 +1557,7 @@ pub mod index_gc {
     use crate::backend::models::metta_value::{clear_inner_shadow, gc_mode_is_index};
     use crate::backend::models::{active_evaluator_count, worker_ever_spawned, MettaValue};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::RwLock;
 
     /// Number of live single-threaded mark+sweep cycles run since process start
     /// (validation observability — a vacuous trigger leaves this at 0). Counts
@@ -1579,20 +1580,62 @@ pub mod index_gc {
     static RENDEZVOUS_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
     static RENDEZVOUS_MINOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
     static RENDEZVOUS_MAJOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
+    static SATB_PHASE_LOCK: RwLock<()> =
+        RwLock::new(());
+    static SATB_MARKING_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+    /// True exactly while an E2 SATB mark is in progress.
+    ///
+    /// SATB cache barriers must shade only during that window. Outside it there is
+    /// no snapshot-live set to protect, and setting mark bits would be stale state
+    /// for a later collection cycle.
+    pub(crate) fn satb_marking_in_progress() -> bool {
+        let depth = SATB_MARKING_DEPTH.load(Ordering::Acquire);
+        depth > 0
+    }
+
+    /// Runs one E0 deletion/eviction under the SATB phase gate.
+    ///
+    /// The marker flips `SATB_MARKING_DEPTH` while holding the write side. A
+    /// mutator that sees `false` here completes its deletion before the marker can
+    /// start the snapshot; a mutator that runs after the marker starts sees `true`
+    /// and must shade the removed pre-image before publishing the deletion.
+    pub(crate) fn with_satb_deletion_barrier<R>(f: impl FnOnce(bool) -> R) -> R {
+        let _phase = SATB_PHASE_LOCK.read().expect("SATB phase lock poisoned");
+        f(satb_marking_in_progress())
+    }
+
+    /// Nested-safe guard used by the E2 concurrent marker to arm cache barriers.
+    #[allow(dead_code)]
+    pub(crate) struct SatbMarkingGuard;
+
+    #[allow(dead_code)]
+    pub(crate) fn enter_satb_marking() -> SatbMarkingGuard {
+        let _phase = SATB_PHASE_LOCK.write().expect("SATB phase lock poisoned");
+        SATB_MARKING_DEPTH.fetch_add(1, Ordering::AcqRel);
+        SatbMarkingGuard
+    }
+
+    impl Drop for SatbMarkingGuard {
+        fn drop(&mut self) {
+            let _phase = SATB_PHASE_LOCK.write().expect("SATB phase lock poisoned");
+            let prev = SATB_MARKING_DEPTH.fetch_sub(1, Ordering::AcqRel);
+            debug_assert!(prev > 0, "SATB marking guard underflow");
+        }
+    }
 
     /// E2 SATB deletion-barrier primitive for E0 anchor caches.
     ///
     /// Anchor caches are part of `reach(E0)`. When a cache removes a value-bearing
     /// entry, the removed pre-image must remain black enough for any in-flight
-    /// snapshot-at-the-beginning mark. This conservative implementation is safe
-    /// even outside E2's concurrent-mark window: it projects the removed values to
-    /// index `Addr`s and transitively marks them in the index arena, making them
-    /// floating garbage at worst until the next sweep clears the mark bits.
+    /// snapshot-at-the-beginning mark. Outside the active SATB mark window this is
+    /// deliberately a no-op: stale mark bits from an idle barrier would corrupt a
+    /// later cycle's worklist traversal.
     pub(crate) fn satb_shade_evicted_roots<I>(roots: I)
     where
         I: IntoIterator<Item = MettaValue>,
     {
-        if !gc_mode_is_index() {
+        if !gc_mode_is_index() || !satb_marking_in_progress() {
             return;
         }
 

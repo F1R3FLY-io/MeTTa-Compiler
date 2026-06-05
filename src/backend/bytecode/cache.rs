@@ -206,15 +206,25 @@ pub fn get_cached_bytecode(hash: u64) -> Option<Arc<BytecodeChunk>> {
 #[inline]
 pub fn cache_bytecode(hash: u64, chunk: Arc<BytecodeChunk>) {
     ensure_bytecode_cache_roots_registered();
-    let mut cache = BYTECODE_CACHE.write();
-    // E2 SATB LRU barrier: `push` returns capacity victims; `put` does not.
-    let evicted = cache.push(hash, chunk);
     #[cfg(feature = "index-gc")]
-    if let Some((_key, evicted_chunk)) = evicted {
-        shade_evicted_bytecode_chunk(&evicted_chunk);
-    }
+    crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+        |satb_active| {
+            let mut cache = BYTECODE_CACHE.write();
+            // E2 SATB LRU barrier: `push` returns capacity victims; `put` does not.
+            let evicted = cache.push(hash, chunk);
+            if satb_active {
+                if let Some((_key, evicted_chunk)) = evicted {
+                    shade_evicted_bytecode_chunk(&evicted_chunk);
+                }
+            }
+        },
+    );
     #[cfg(not(feature = "index-gc"))]
-    let _ = evicted;
+    {
+        let mut cache = BYTECODE_CACHE.write();
+        let evicted = cache.push(hash, chunk);
+        let _ = evicted;
+    }
 }
 
 /// Get current cache statistics (lock-free snapshot)
@@ -226,7 +236,26 @@ pub fn get_stats() -> BytecodeCacheStatsSnapshot {
 /// Clear all caches (mainly for testing)
 pub fn clear_caches() {
     CAN_COMPILE_CACHE.write().clear();
-    BYTECODE_CACHE.write().clear();
+    #[cfg(feature = "index-gc")]
+    crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+        |satb_active| {
+            let mut bytecode_cache = BYTECODE_CACHE.write();
+            if satb_active {
+                let mut roots = Vec::new();
+                for (_hash, chunk) in bytecode_cache.iter() {
+                    collect_chunk_constants(chunk, &mut roots);
+                }
+                crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(
+                    roots,
+                );
+            }
+            bytecode_cache.clear();
+        },
+    );
+    #[cfg(not(feature = "index-gc"))]
+    {
+        BYTECODE_CACHE.write().clear();
+    }
     // Reset stats atomically (no lock needed)
     #[cfg(feature = "track-stats")]
     CACHE_STATS.reset();

@@ -720,8 +720,8 @@ fn ensure_eval_caches_gc_epoch_current() {
     let current = crate::backend::models::gc_allocator::gc_sweep_epoch();
     EVAL_CACHES_GC_EPOCH.with(|e| {
         if e.get() != current {
-            EVAL_MEMO.with(|c| c.borrow_mut().clear());
-            MATCH_RESULT_CACHE.with(|c| c.borrow_mut().clear());
+            clear_eval_memo();
+            clear_match_result_cache();
             e.set(current);
         }
     });
@@ -759,13 +759,21 @@ pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>
             stale = true;
         }
         if stale {
-            let evicted = memo.pop(&expr_hash);
             #[cfg(feature = "index-gc")]
-            if let Some(entry) = evicted {
-                shade_evicted_eval_memo_entry(entry);
-            }
+            crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+                |satb_active| {
+                    let evicted = memo.pop(&expr_hash);
+                    if satb_active {
+                        if let Some(entry) = evicted {
+                            shade_evicted_eval_memo_entry(entry);
+                        }
+                    }
+                },
+            );
             #[cfg(not(feature = "index-gc"))]
-            let _ = evicted;
+            {
+                let _ = memo.pop(&expr_hash);
+            }
         }
         None
     })
@@ -783,15 +791,24 @@ pub fn eval_memo_put(expr_hash: u64, tracked_key: u64, results: &[MettaValue]) {
     let entries: SmallVec<[MettaValue; 4]> = results.iter().copied().collect();
     EVAL_MEMO.with(|memo_cell| {
         let mut memo = memo_cell.borrow_mut();
-        // E2 SATB LRU barrier: `push` returns same-key overwrites and capacity
-        // victims, unlike `put`, whose capacity eviction is silent.
-        let evicted = memo.push(expr_hash, (query_gen, epoch, gen, entries));
         #[cfg(feature = "index-gc")]
-        if let Some((_key, entry)) = evicted {
-            shade_evicted_eval_memo_entry(entry);
-        }
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                // E2 SATB LRU barrier: `push` returns same-key overwrites and
+                // capacity victims, unlike `put`, whose capacity eviction is silent.
+                let evicted = memo.push(expr_hash, (query_gen, epoch, gen, entries));
+                if satb_active {
+                    if let Some((_key, entry)) = evicted {
+                        shade_evicted_eval_memo_entry(entry);
+                    }
+                }
+            },
+        );
         #[cfg(not(feature = "index-gc"))]
-        let _ = evicted;
+        {
+            let evicted = memo.push(expr_hash, (query_gen, epoch, gen, entries));
+            let _ = evicted;
+        }
     });
 }
 
@@ -814,7 +831,26 @@ pub fn collect_eval_memo_roots(out: &mut Vec<MettaValue>) {
 /// that may depend on the changed rules/facts.
 pub fn clear_eval_memo() {
     EVAL_MEMO.with(|memo_cell| {
-        memo_cell.borrow_mut().clear();
+        let mut memo = memo_cell.borrow_mut();
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                if satb_active {
+                    let mut roots = Vec::new();
+                    for (_hash, (_query_gen, _epoch, _gen, entries)) in memo.iter() {
+                        roots.extend_from_slice(entries);
+                    }
+                    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(
+                        roots,
+                    );
+                }
+                memo.clear();
+            },
+        );
+        #[cfg(not(feature = "index-gc"))]
+        {
+            memo.clear();
+        }
     });
 }
 
@@ -932,26 +968,46 @@ pub fn match_result_put(
     let entries: MatchResultEntry = results.iter().cloned().collect();
     MATCH_RESULT_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
-        // E2 SATB LRU barrier: `push` exposes both same-key overwrites and
-        // capacity victims for shading.
-        let evicted = cache.push(
-            expr_hash,
-            (
-                current_query_gen,
-                current_rule_epoch,
-                current_mutation_epoch,
-                expr_arity,
-                entries,
-            ),
-        );
         #[cfg(feature = "index-gc")]
-        if let Some((_key, (_query_gen, _rule_epoch, _mutation_epoch, _arity, evicted_entries))) =
-            evicted
-        {
-            shade_evicted_match_result_entry(evicted_entries);
-        }
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                // E2 SATB LRU barrier: `push` exposes both same-key overwrites
+                // and capacity victims for shading.
+                let evicted = cache.push(
+                    expr_hash,
+                    (
+                        current_query_gen,
+                        current_rule_epoch,
+                        current_mutation_epoch,
+                        expr_arity,
+                        entries,
+                    ),
+                );
+                if satb_active {
+                    if let Some((
+                        _key,
+                        (_query_gen, _rule_epoch, _mutation_epoch, _arity, evicted_entries),
+                    )) = evicted
+                    {
+                        shade_evicted_match_result_entry(evicted_entries);
+                    }
+                }
+            },
+        );
         #[cfg(not(feature = "index-gc"))]
-        let _ = evicted;
+        {
+            let evicted = cache.push(
+                expr_hash,
+                (
+                    current_query_gen,
+                    current_rule_epoch,
+                    current_mutation_epoch,
+                    expr_arity,
+                    entries,
+                ),
+            );
+            let _ = evicted;
+        }
     });
 }
 
@@ -981,7 +1037,36 @@ pub fn collect_match_result_roots(out: &mut Vec<MettaValue>) {
 /// Called on space mutation (add-atom/remove-atom) to invalidate cached results.
 pub fn clear_match_result_cache() {
     MATCH_RESULT_CACHE.with(|cache_cell| {
-        cache_cell.borrow_mut().clear();
+        let mut cache = cache_cell.borrow_mut();
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                if satb_active {
+                    let mut roots = Vec::new();
+                    for (_hash, (_query_gen, _rule_epoch, _mutation_epoch, _arity, entries)) in
+                        cache.iter()
+                    {
+                        for (rhs, bindings, rhs_type) in entries.iter() {
+                            roots.push(*rhs);
+                            for (_scope, _name, val) in bindings.iter_full() {
+                                roots.push(val.clone());
+                            }
+                            if let Some(t) = rhs_type {
+                                roots.push(*t);
+                            }
+                        }
+                    }
+                    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(
+                        roots,
+                    );
+                }
+                cache.clear();
+            },
+        );
+        #[cfg(not(feature = "index-gc"))]
+        {
+            cache.clear();
+        }
     });
 }
 

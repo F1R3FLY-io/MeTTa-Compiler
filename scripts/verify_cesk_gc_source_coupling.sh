@@ -184,16 +184,43 @@ assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "Keep explic
 
 # E2 SATB LRU source coupling: value-bearing E0 anchor caches must not use
 # `LruCache::put` for index-mode eviction paths, because `put` hides capacity
-# victims. The source must use `push`, then shade the surfaced victim.
+# victims. The source must use `push`, then shade the surfaced victim. Every
+# value-dropping E0 cache operation must run under the SATB phase gate so marker
+# start cannot straddle a deletion that observed "not marking".
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "static SATB_PHASE_LOCK" "RwLock::new(())" "static SATB_MARKING_DEPTH"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn satb_marking_in_progress" "SATB_MARKING_DEPTH.load(Ordering::Acquire)" "depth > 0"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn with_satb_deletion_barrier" "SATB_PHASE_LOCK.read()" "f(satb_marking_in_progress())"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn enter_satb_marking" "SATB_PHASE_LOCK.write()" "SATB_MARKING_DEPTH.fetch_add(1, Ordering::AcqRel);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "impl Drop for SatbMarkingGuard" "SATB_PHASE_LOCK.write()" "SATB_MARKING_DEPTH.fetch_sub(1, Ordering::AcqRel);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "impl Drop for SatbMarkingGuard" "SATB_MARKING_DEPTH.fetch_sub(1, Ordering::AcqRel);" "debug_assert!(prev > 0"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn satb_shade_evicted_roots" "gc_mode_is_index()" "let mut addrs"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn satb_shade_evicted_roots" "!satb_marking_in_progress()" "let mut addrs"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn satb_shade_evicted_roots" "global_index_heap().read().expect" "heap.mark(&addrs);"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "fn ensure_eval_caches_gc_epoch_current()" "clear_eval_memo();" "clear_match_result_cache();"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "if stale {" "let evicted = memo.pop(&expr_hash);" "shade_evicted_eval_memo_entry(entry);"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "if stale {" "with_satb_deletion_barrier" "let evicted = memo.pop(&expr_hash);"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "if stale {" "if satb_active" "shade_evicted_eval_memo_entry(entry);"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn eval_memo_put" "ensure_eval_caches_gc_epoch_current();" "let evicted = memo.push"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn eval_memo_put" "with_satb_deletion_barrier" "let evicted = memo.push"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn eval_memo_put" "if satb_active" "shade_evicted_eval_memo_entry(entry);"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn eval_memo_put" "let evicted = memo.push" "shade_evicted_eval_memo_entry(entry);"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn match_result_put" "ensure_eval_caches_gc_epoch_current();" "let evicted = cache.push"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn match_result_put" "with_satb_deletion_barrier" "let evicted = cache.push"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn match_result_put" "if satb_active" "shade_evicted_match_result_entry(evicted_entries);"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn match_result_put" "let evicted = cache.push" "shade_evicted_match_result_entry(evicted_entries);"
+assert_after_before "src/backend/bytecode/cache.rs" "pub fn cache_bytecode" "with_satb_deletion_barrier" "let mut cache = BYTECODE_CACHE.write();"
 assert_after_before "src/backend/bytecode/cache.rs" "pub fn cache_bytecode" "let evicted = cache.push" "shade_evicted_bytecode_chunk(&evicted_chunk);"
+assert_after_before "src/backend/bytecode/cache.rs" "pub fn cache_bytecode" "if satb_active" "shade_evicted_bytecode_chunk(&evicted_chunk);"
 assert_after_before "src/backend/bytecode/cache.rs" "fn shade_evicted_bytecode_chunk" "collect_chunk_constants(chunk, &mut roots);" "satb_shade_evicted_roots(roots);"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clear_eval_memo()" "with_satb_deletion_barrier" "memo.clear();"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clear_eval_memo()" "if satb_active" "satb_shade_evicted_roots("
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clear_eval_memo()" "satb_shade_evicted_roots(" "memo.clear();"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clear_match_result_cache()" "with_satb_deletion_barrier" "cache.clear();"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clear_match_result_cache()" "if satb_active" "satb_shade_evicted_roots("
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clear_match_result_cache()" "satb_shade_evicted_roots(" "cache.clear();"
+assert_after_before "src/backend/bytecode/cache.rs" "pub fn clear_caches()" "with_satb_deletion_barrier" "let mut bytecode_cache = BYTECODE_CACHE.write();"
+assert_after_before "src/backend/bytecode/cache.rs" "pub fn clear_caches()" "if satb_active" "satb_shade_evicted_roots("
+assert_after_before "src/backend/bytecode/cache.rs" "pub fn clear_caches()" "satb_shade_evicted_roots(" "bytecode_cache.clear();"
 
 # Witness stamping: the stale-stamp reset and the genuine reified-park stamp are
 # the only writes to published_gen. That keeps the witness theorem's

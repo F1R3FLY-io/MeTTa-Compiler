@@ -140,5 +140,13 @@ run_tlc "satb_lru_capacity" "MC_SATBLRUEviction.tla" "MC_SATBLRUEviction_capacit
   pass ""
 run_tlc "satb_lru_put_return" "MC_SATBLRUEviction.tla" "MC_SATBLRUEviction_put_return.cfg" \
   fail "Invariant NoSnapshotVictimFreed is violated"
+run_tlc "satb_bulk_clear_shade" "MC_SATBBulkClear.tla" "MC_SATBBulkClear_shade.cfg" \
+  pass ""
+run_tlc "satb_bulk_clear_none" "MC_SATBBulkClear.tla" "MC_SATBBulkClear_none.cfg" \
+  fail "Invariant NoSnapshotClearedEntryFreed is violated"
+run_tlc "satb_phase_gate" "MC_SATBPhaseGate.tla" "MC_SATBPhaseGate_gate.cfg" \
+  pass ""
+run_tlc "satb_phase_race" "MC_SATBPhaseGate.tla" "MC_SATBPhaseGate_race.cfg" \
+  fail "Invariant NoSnapshotLiveFreed is violated"
 
 echo "CESK GC formal checks passed"

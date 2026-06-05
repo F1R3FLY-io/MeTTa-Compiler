@@ -63,10 +63,10 @@ FANOUT=0 with the collector ON, not parallel.
 - **C1-a (recommended first cut): young-only SWEEP, full mark.** `mark` unchanged; `sweep_young_with(on_release)`
   iterates only `[young_floor, seg_count)`, does NOT clear old marks (old segments keep marks → never reclaimed
   by a minor). Saving = sweep is O(young) not O(all); prompt return of young transient memory.
-- **C1-b (refinement): young-only MARK + sweep.** Mark worklist skips descending into old segments
-  (`if addr.segment() >= young_floor` before pushing children), relying on the no-old→young theorem. Saving =
-  mark is O(young reachable), removing the per-cycle full-E₀ re-mark (the big FANOUT=0 cost — E₀ holds rules /
-  atom-space / caches, mostly old after warm-up). Gate hardest (the theorem is what's tested).
+- **C1-b/C1.c (live refinement): conservative young MARK + young sweep.** The minor traverses the full
+  structural reachability graph (including old containers and first-class `SpaceHandle` contents) but sets mark bits
+  only on young nodes. Soundness does not rely on the false premise that every semantic edge is an immutable σ-node
+  edge.
 - **Promotion = free** (non-moving): after a minor, advance `young_floor = seg_count` (or `cur_seg`) — segments
   that survived become old by reclassification. No copying.
 - **Trigger = young-allocation watermark.** New young watermark fires the minor; the existing `WATERMARK`
@@ -106,7 +106,7 @@ minor/major reclaim + wall — C's win is FANOUT=0, NOT parallel; debuginfo rebu
 - **C0** this doc. **C1.a** `young_floor` + accessors + `sweep_young_with` + arena unit tests (mechanism inert) →
   byte-identical wall. **C1.b** drive the minor from `index_gc` (split watermark; REPORT=2 minor/major) →
   full gate + change-state!→young ASAN + 20-run + mmverify + TLA+ + FANOUT=0 benchmark (first observable win).
-  **C1.c (optional)** young-only mark (gated hardest under ASAN — the no-old→young theorem). **C2** profile →
+  **C1.c** conservative young mark (gated hardest under ASAN — the full-reachable traversal theorem). **C2** profile →
   `collect_live_values` for 2-4 variants → differential oracle → flip. **C3 → D** (not in C).
 
 ## C1.a — IMPLEMENTED (commit `7009c0b`) — inert arena mechanism
@@ -122,10 +122,11 @@ Two-watermark generational driver in `index_heap.rs::index_gc`:
 - `YOUNG_WATERMARK` (minor) beside `WATERMARK` (major). `should_collect`/`should_collect_midloop` fire on
   EITHER `committed > WATERMARK` (major) OR `young_live > YOUNG_WATERMARK` (minor).
 - `mark_sweep_if_over_watermark`: `major_due` (checked first, subsumes minor) = full `mark` + full `sweep` +
-  `promote_young` + rearm BOTH; else `minor_due` = full `mark` + `sweep_young` + `promote_young` + rearm YOUNG.
-- **The mark is FULL in both paths** (conservative-complete): every live young node is marked regardless of
-  any old→young edge, so the minor is sound WITHOUT the no-old→young theorem (that theorem is only C1.c's
-  concern — see the prerequisite below). The minor's only saving over a major is the young-only SWEEP.
+  `promote_young` + rearm BOTH; else `minor_due` = conservative `mark_young` + `sweep_young` + `promote_young` +
+  rearm YOUNG.
+- **The minor mark traverses the full reachable graph but marks only young nodes.** Every live young node is marked
+  regardless of any old→young semantic edge, so the minor is sound WITHOUT the no-old→young theorem. The skipped-old
+  young-mark theorem remains documented as a rejected/narrow helper premise, not the live collector contract.
 - `IndexHeap::sweep_young`: young hash-cons retain (keep OLD entries unconditionally — a minor never releases
   an old segment so their `Addr`s stay valid; keep YOUNG iff marked) + `arena.sweep_young_with` + young sides
   co-release.
@@ -140,9 +141,9 @@ Two-watermark generational driver in `index_heap.rs::index_gc`:
   young high-water, never immediately re-fire. (`young_committed_bytes` was therefore dropped as unused.)
 - REPORT=2 labels each cycle `minor`/`major` + emits `young_live_bytes`.
 
-### C1.b — DATA-DRIVEN OUTCOME: minors ship OFF by default (the full-mark minor is not yet beneficial)
+### Historical C1.b — DATA-DRIVEN OUTCOME: full-mark minors stayed dormant
 The benchmark (`scripts/c1b_fanout0_bench.sh`, PLN Robot @ FANOUT=0, collector ON) and the green-wall together
-drove the shipped configuration:
+drove the intermediate configuration that C1.c later superseded:
 - **The minor's benefit is sweep-only** — C1.b marks the FULL reachable set in BOTH paths (the young-only mark
   is C1.c, gated on the free-list fix below). So a minor pays a full mark (the dominant cost on a real heap)
   and saves only `full_sweep − young_sweep`.
@@ -152,11 +153,9 @@ drove the shipped configuration:
 - **With the natural watermarks the major preempts the minor anyway** — `committed > WATERMARK` (capacity-based)
   trips before the live-based young watermark on any heap ≫ the floor, so minors fire 0× on both the conformance
   (byte-identical 840 majors) and PLN (benchmark: 0 minors in BOTH the minors-on and minors-off configs).
-- **Decision (data-driven, not a placeholder):** `young_min_threshold()` defaults to `usize::MAX` ⇒ **minors
-  are OFF by default** (`index_heap.rs`). The sound minor MECHANISM ships dormant; **C1.c (cheap young-only
-  mark) flips it on**. Forced via `METTATRON_INDEX_GC_YOUNG_MIN_BYTES` for validation. This makes C1.b
-  **guaranteed byte-identical / no-regression** by construction (no minor ever fires), while the mechanism is
-  validated under forced minors.
+- **Decision at that rung (data-driven, not a placeholder):** `young_min_threshold()` defaulted to `usize::MAX`
+  so full-mark minors stayed dormant while the mechanism was validated under forced minors. C1.c supersedes this
+  with the conservative young mark.
 - **Gate (ALL GREEN):** green-wall slab nextest 4333/0, index 4176/0, conformance **483/0** (840 majors,
   byte-identical), oracle **0**, lib 49 both · TLC `StoreCentricGC_Generational` **exhaustive 32.1M states / 0
   queue / 0 errors** (all safety invariants + `MinorSweepOnlyReclaimsYoung`/`MinorNeverFreesReachable`, with
@@ -168,15 +167,10 @@ drove the shipped configuration:
 **User directive: ship minors ON, EXCLUSIVELY, NO on/off switch.** The full-mark minor (C1.b) is only
 sweep-cheap → a net loss on a mark-dominated heap, so "ON" must be made a WIN by a YOUNG-ONLY MARK. Design:
 
-**The soundness crux — exactly ONE old→young σ edge source (enumerated against source):** a fixed node WITH
-child Addrs (`Error`/`Type`/`Quoted`/`Lazy`, `index_node.rs:97-101`) allocated via `alloc(&mut)` into a
-REUSED OLD free slot whose children were freshly bump-allocated young. ALL other cases are benign, verified:
-bump order is young→old (`cur_seg ≥ young_floor` always — `bump_in` asserts `seg==cur_seg`, `promote_young`
-sets `young_floor:=cur_seg`); `change-state!`→young is an **E₀ ROOT not a σ edge** (`core.rs:2206-2210`
-`states.values()` → `collect_persistent_roots`; `Node::State` is a leaf `index_node.rs:114`); σ nodes are
-immutable post-publish (`get_mut` is the arena's cycle test only); SExpr/Conjunction child slices are
-bump-only (never free-list-reused). ⇒ **the young-only mark needs NO remembered set** if `alloc` never
-reuses an old slot.
+**The soundness crux:** the old skipped-old mark was false in two ways: free-list reuse can create old→young
+inline σ edges, and first-class `SpaceHandle` contents are mutable semantic edges that can point from an old space
+node to young values. The shipped `mark_young` therefore traverses every reachable node and marks only young nodes.
+That preserves the no-remembered-set design without assuming old nodes cannot expose young children.
 
 **The fix (no barrier):**
 1. **`alloc(&mut)` reuses YOUNG free slots only** — pop, skip (discard) any `addr.segment() < young_floor`
@@ -185,8 +179,9 @@ reuses an old slot.
    allocation is young ⇒ no old→young edge.** (If ever rejected: the cheap correct fallback is a
    1-bit-per-old-segment "has-young-pointer" dirty bit + scan dirty old segs in `mark_young` — but the
    no-barrier rule is recommended + sound.)
-2. **`mark_young`** (new): mark every root but DESCEND only into `seg ≥ young_floor` (skip old children — none
-   are young by #1). Cheap: O(young reachable), not O(total live). The minor's real win.
+2. **`mark_young`**: traverse every reachable node but set mark bits only for `seg ≥ young_floor`. This is sound
+   for mutable semantic edges: an old first-class `SpaceHandle` can reveal young contents and the traversal still
+   reaches them.
 3. **Nursery trigger = a `young_alloc_bytes` byte counter** (incremented on every young alloc in
    `alloc`/`alloc_bump`/`bump_in`, reset to 0 in `promote_young`). Tracks real young allocation INCLUDING
    free-list reuse (which `young_live` high-water misses), resets per minor (no thrash), one Relaxed
@@ -202,39 +197,32 @@ reuses an old slot.
 6. **DELETE `young_min_threshold()`/`YOUNG_MIN_BYTES`.** Minors always on; fire naturally on multi-segment
    workloads ⇒ tested without any force-switch. `min_threshold`/`MIN_BYTES` stays (pre-existing major tuning).
 
-**Gate (mechanical soundness, not argued):** extend `StoreCentricGC_Generational.tla` with a `YoungOnlyMarkStep`
-+ the no-old→young constraint (encode #1) + invariant `YoungOnlyMarkReachesLiveYoung` (phase=sweeping ⇒ every
-reachable young Addr marked) → TLC exhaustive 0-err; **+ a NEGATIVE model WITHOUT the constraint that MUST
-produce the stranding counterexample** (proves the constraint is load-bearing). The unbounded theorem
-`formal/lean/gc/YoungMark.lean` and `formal/rocq/gc/YoungMark.v` prove the core implication used here:
-bump-order/no-old-to-young edges plus young-root marking and young-edge closure imply every reachable young node is
-marked, so a minor sweep retains all reachable young nodes. ASAN @ FANOUT=0 with minors
-firing NATURALLY: change-state!→young crux + a free-list-reuse case-2 exerciser (seed old free slots → major →
-alloc `Error/Type/Quoted/Lazy` with young children → minor) + M11-pt → 0 UAF. `assert_quiescence_superset`
-oracle green WITH young-only mark. Greenwall 483/0 (cycles>0, minors fire) + 20-run 1-hash + mmverify. Benchmark
+**Gate (mechanical soundness, not argued):** the live proof is
+`tla/ConservativeMinorMark.tla` plus `formal/lean/gc/YoungMark.lean` and
+`formal/rocq/gc/YoungMark.v`: if the marker traverses every reachable node and marks every young node it sees, a
+minor sweep retains every reachable young address. The negative TLC config models the old skipped-old traversal and
+must violate `YoungReachableMarked`. ASAN @ FANOUT=0 with minors firing NATURALLY: change-state!→young crux + a
+free-list-reuse case-2 exerciser (seed old free slots → major → alloc `Error/Type/Quoted/Lazy` with young children
+→ minor) + M11-pt → 0 UAF. `assert_quiescence_superset` oracle green WITH conservative young mark. Greenwall 483/0
+(cycles>0, minors fire) + 20-run 1-hash + mmverify. Benchmark
 = **GIT-VERSION A/B** (pre-generational all-majors binary vs this binary), NOT an env switch, on a multi-segment
 FANOUT=0 workload (large persistent OLD gen + young churn): minors-on faster and/or lower-RSS, else ≥ no-regression.
 
-**Commit (ONE increment — C1.b was never committed, so the switch never enters history):** fold C1.b's mechanism
-+ all of the above → one gated commit "generational collector: minors ON (young-only mark), no switch."
+**Commit (ONE increment — C1.b was never the final semantics):** fold C1.b's mechanism + all of the above → one
+gated commit "generational collector: minors ON (conservative young mark), no switch."
 Full design: this section + the Plan-agent transcript. C2 + C3→D unchanged downstream.
 
-## ⚠️ C1.c PREREQUISITE (derived while implementing C1.b) — the free-list breaks the no-old→young theorem
+## Historical C1.c prerequisite — the free-list and first-class spaces break skipped-old young marking
 The §C1 "no old→young σ edge" theorem rests on **bump-allocation order** (a node is allocated AFTER its
 children ⇒ out-edges point to equal-or-older Addrs). **The global free-list VIOLATES this premise.** After a
 major, `free_list` holds reclaimed slots from segments across the whole heap (old AND young). `alloc(&mut)`
 pops the free-list FIRST — so a PARENT node can be constructed at a reused OLD slot while its children were
 freshly bump-allocated YOUNG ⇒ a genuine **old→young edge** (`parent_old → child_young`).
-- **C1.b is UNAFFECTED** — it marks the FULL reachable set, so it traverses the old parent and reaches the
-  young children regardless. (This is exactly why C1.b uses the full mark.)
+- **The former full-mark minor was unaffected** — it marked the FULL reachable set, so it traversed the old parent
+  and reached the young children regardless.
 - **C1.c (young-only mark) would be UNSOUND as-is**: skipping old segments in the mark worklist would skip the
   old parent → never reach its young children → the live young children look unreachable → `sweep_young`
   reclaims them → UAF.
-- **Therefore C1.c MUST first make new allocation never land in old**, one of: (1) a GENERATIONAL free-list
-  (young free slots reused only for young allocs; old free slots refilled/reused only by a major — new allocs
-  always go young, bump or young-free) — **recommended, preserves "no remembered-set"**; or (2) new allocs
-  always BUMP young (never reuse old free slots until a major compacts) — simplest, wastes old free slots; or
-  (3) a remembered set / write barrier on old→young (rejected — defeats the design's no-barrier premise).
-  C1.c is gated on landing (1) or (2) first, then ASAN-proving the young-only mark with old→young edges
-  present (forced via free-list reuse). Until then C1.b's full-mark minor is the shipped generational
-  collector.
+- **The shipped correction is not skipped-old marking.** The live `IndexHeap::mark_young` traverses old reachable
+  nodes and first-class `SpaceHandle` contents, but only marks young nodes before `sweep_young`. This preserves the
+  young-only sweep without a remembered set and without assuming old nodes cannot expose young semantic children.

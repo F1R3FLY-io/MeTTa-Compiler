@@ -1580,6 +1580,36 @@ pub mod index_gc {
     static RENDEZVOUS_MINOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
     static RENDEZVOUS_MAJOR_CYCLES_RUN: AtomicU64 = AtomicU64::new(0);
 
+    /// E2 SATB deletion-barrier primitive for E0 anchor caches.
+    ///
+    /// Anchor caches are part of `reach(E0)`. When a cache removes a value-bearing
+    /// entry, the removed pre-image must remain black enough for any in-flight
+    /// snapshot-at-the-beginning mark. This conservative implementation is safe
+    /// even outside E2's concurrent-mark window: it projects the removed values to
+    /// index `Addr`s and transitively marks them in the index arena, making them
+    /// floating garbage at worst until the next sweep clears the mark bits.
+    pub(crate) fn satb_shade_evicted_roots<I>(roots: I)
+    where
+        I: IntoIterator<Item = MettaValue>,
+    {
+        if !gc_mode_is_index() {
+            return;
+        }
+
+        let mut addrs = Vec::new();
+        for root in roots {
+            if let Some(addr) = root.as_arena_addr() {
+                addrs.push(addr);
+            }
+        }
+        if addrs.is_empty() {
+            return;
+        }
+
+        let heap = global_index_heap().read().expect("index heap");
+        heap.mark(&addrs);
+    }
+
     /// Adaptive committed-bytes watermark. The collector fires when the index
     /// heap's committed bytes exceed this; recomputed after each cycle as
     /// `max(live_bytes_after_sweep * GROWTH, min_threshold())`. A plain

@@ -442,7 +442,7 @@ thread_local! {
     /// clearing the entire cache on every mutation or branch transition.
     /// The query_gen is bumped at each top-level `!` so entries from prior
     /// top-level queries are naturally invalidated (LRU reclaims them lazily).
-    static EVAL_MEMO: RefCell<LruCache<u64, (u64, u64, u64, SmallVec<[MettaValue; 4]>), IdentityU64BuildHasher>> =
+    static EVAL_MEMO: RefCell<LruCache<u64, EvalMemoEntry, IdentityU64BuildHasher>> =
         RefCell::new(LruCache::with_hasher(NonZeroUsize::new(16384).expect("non-zero"), IdentityU64BuildHasher));
 
     /// Mutation epoch counter for cache correctness.
@@ -479,6 +479,8 @@ thread_local! {
     /// lazily, preserving within-query cache utility.
     static QUERY_GENERATION: Cell<u64> = const { Cell::new(0) };
 }
+
+type EvalMemoEntry = (u64, u64, u64, SmallVec<[MettaValue; 4]>);
 
 /// Returns the current query generation for this thread.
 ///
@@ -725,6 +727,12 @@ fn ensure_eval_caches_gc_epoch_current() {
     });
 }
 
+#[cfg(feature = "index-gc")]
+#[inline]
+fn shade_evicted_eval_memo_entry((_query_gen, _epoch, _gen, entries): EvalMemoEntry) {
+    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(entries);
+}
+
 pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>> {
     if eval_caches_disabled() {
         return None;
@@ -751,7 +759,13 @@ pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>
             stale = true;
         }
         if stale {
-            memo.pop(&expr_hash);
+            let evicted = memo.pop(&expr_hash);
+            #[cfg(feature = "index-gc")]
+            if let Some(entry) = evicted {
+                shade_evicted_eval_memo_entry(entry);
+            }
+            #[cfg(not(feature = "index-gc"))]
+            let _ = evicted;
         }
         None
     })
@@ -760,15 +774,24 @@ pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>
 /// Store evaluation results in the memo cache.
 #[inline]
 pub fn eval_memo_put(expr_hash: u64, tracked_key: u64, results: &[MettaValue]) {
+    #[cfg(feature = "index-gc")]
+    ensure_eval_caches_gc_epoch_current();
     let expr_hash = eval_memo_key(expr_hash, tracked_key);
     let query_gen = query_generation();
     let epoch = mutation_epoch();
     let gen = cache_generation();
     let entries: SmallVec<[MettaValue; 4]> = results.iter().copied().collect();
     EVAL_MEMO.with(|memo_cell| {
-        memo_cell
-            .borrow_mut()
-            .put(expr_hash, (query_gen, epoch, gen, entries));
+        let mut memo = memo_cell.borrow_mut();
+        // E2 SATB LRU barrier: `push` returns same-key overwrites and capacity
+        // victims, unlike `put`, whose capacity eviction is silent.
+        let evicted = memo.push(expr_hash, (query_gen, epoch, gen, entries));
+        #[cfg(feature = "index-gc")]
+        if let Some((_key, entry)) = evicted {
+            shade_evicted_eval_memo_entry(entry);
+        }
+        #[cfg(not(feature = "index-gc"))]
+        let _ = evicted;
     });
 }
 
@@ -818,6 +841,21 @@ pub fn clear_eval_memo() {
 /// Cached match result: (rhs_template, bindings, rhs_type).
 type MatchResultEntry =
     SmallVec<[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>); 4]>;
+
+#[cfg(feature = "index-gc")]
+fn shade_evicted_match_result_entry(entries: MatchResultEntry) {
+    let mut roots = Vec::with_capacity(entries.len().saturating_mul(3));
+    for (rhs, bindings, rhs_type) in entries {
+        roots.push(rhs);
+        for (_scope, _name, val) in bindings.iter_full() {
+            roots.push(val.clone());
+        }
+        if let Some(t) = rhs_type {
+            roots.push(t);
+        }
+    }
+    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+}
 
 thread_local! {
     /// Thread-local rule-match result cache.
@@ -886,12 +924,17 @@ pub fn match_result_put(
     expr_arity: usize,
     results: &[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>)],
 ) {
+    #[cfg(feature = "index-gc")]
+    ensure_eval_caches_gc_epoch_current();
     let current_rule_epoch = RULE_EPOCH.load(Ordering::Acquire);
     let current_mutation_epoch = mutation_epoch();
     let current_query_gen = query_generation();
     let entries: MatchResultEntry = results.iter().cloned().collect();
     MATCH_RESULT_CACHE.with(|cache_cell| {
-        cache_cell.borrow_mut().put(
+        let mut cache = cache_cell.borrow_mut();
+        // E2 SATB LRU barrier: `push` exposes both same-key overwrites and
+        // capacity victims for shading.
+        let evicted = cache.push(
             expr_hash,
             (
                 current_query_gen,
@@ -901,6 +944,14 @@ pub fn match_result_put(
                 entries,
             ),
         );
+        #[cfg(feature = "index-gc")]
+        if let Some((_key, (_query_gen, _rule_epoch, _mutation_epoch, _arity, evicted_entries))) =
+            evicted
+        {
+            shade_evicted_match_result_entry(evicted_entries);
+        }
+        #[cfg(not(feature = "index-gc"))]
+        let _ = evicted;
     });
 }
 

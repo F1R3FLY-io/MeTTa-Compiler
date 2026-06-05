@@ -207,7 +207,14 @@ pub fn get_cached_bytecode(hash: u64) -> Option<Arc<BytecodeChunk>> {
 pub fn cache_bytecode(hash: u64, chunk: Arc<BytecodeChunk>) {
     ensure_bytecode_cache_roots_registered();
     let mut cache = BYTECODE_CACHE.write();
-    cache.put(hash, chunk);
+    // E2 SATB LRU barrier: `push` returns capacity victims; `put` does not.
+    let evicted = cache.push(hash, chunk);
+    #[cfg(feature = "index-gc")]
+    if let Some((_key, evicted_chunk)) = evicted {
+        shade_evicted_bytecode_chunk(&evicted_chunk);
+    }
+    #[cfg(not(feature = "index-gc"))]
+    let _ = evicted;
 }
 
 /// Get current cache statistics (lock-free snapshot)
@@ -263,6 +270,13 @@ pub(crate) fn collect_bytecode_cache_roots(roots: &mut Vec<MettaValue>) {
     for (_, chunk) in cache.iter() {
         collect_chunk_constants(chunk, roots);
     }
+}
+
+#[cfg(feature = "index-gc")]
+fn shade_evicted_bytecode_chunk(chunk: &BytecodeChunk) {
+    let mut roots = Vec::new();
+    collect_chunk_constants(chunk, &mut roots);
+    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
 }
 
 /// Iteratively collect all constants from a GenericBytecodeChunk and its

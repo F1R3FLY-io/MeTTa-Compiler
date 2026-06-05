@@ -55,6 +55,8 @@ facts the proofs rely on:
   delegate to the structural `EnvRoots`/`DispatchRoots` readers used by the driver-root-union proof.
 - OPERATOR_CACHE is guarded by `gc_sweep_epoch` in index mode before pointer-keyed lookup, so a parked worker
   self-invalidates after another thread completes a sweep.
+- Value-bearing E0 LRU anchors (`EVAL_MEMO`, `MATCH_RESULT_CACHE`, and `BYTECODE_CACHE`) use `LruCache::push`
+  rather than `put` on eviction-capable paths, and the surfaced victim is conservatively SATB-shaded in index mode.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

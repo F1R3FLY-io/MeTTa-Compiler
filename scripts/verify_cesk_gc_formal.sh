@@ -108,5 +108,11 @@ run_tlc "witness_slot_lifecycle_v4" "MC_WitnessSlotLifecycle.tla" "MC_WitnessSlo
   pass ""
 run_tlc "witness_slot_lifecycle_bug" "MC_WitnessSlotLifecycle.tla" "MC_WitnessSlotLifecycle_bug.cfg" \
   fail "Invariant LiveMachineVisibleOnSweep is violated"
+run_tlc "driver_root_union_all" "MC_DriverRootUnion.tla" "MC_DriverRootUnion_all.cfg" \
+  pass ""
+run_tlc "driver_root_union_missing_env" "MC_DriverRootUnion.tla" "MC_DriverRootUnion_missing_env.cfg" \
+  fail "Invariant RootUnionComplete is violated"
+run_tlc "driver_root_union_missing_dispatch" "MC_DriverRootUnion.tla" "MC_DriverRootUnion_missing_dispatch.cfg" \
+  fail "Invariant RootUnionComplete is violated"
 
 echo "CESK GC formal checks passed"

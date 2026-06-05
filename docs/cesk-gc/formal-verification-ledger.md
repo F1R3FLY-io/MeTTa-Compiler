@@ -22,6 +22,9 @@ the legacy slab mark-sweep collector.
   acquired>cur_gen` model preserves root completeness at sweep; the negative `acquired>=cur_gen` model violates it.
 - `tla/WitnessSlotLifecycle.tla`: checks the V4 slot lifecycle. Keeping the slot occupied across safepoint drop
   preserves live-machine visibility at sweep; the negative release-on-safepoint model violates it.
+- `tla/DriverRootUnion.tla`: checks the E1 driver root-union channels. Including worker-buffer, safepoint,
+  live-env/E0, and live-dispatch channels preserves root-union completeness; omitting live-env or live-dispatch
+  violates it.
 
 ## Source coupling
 

@@ -65,6 +65,8 @@ facts the proofs rely on:
   primitive is gated by `satb_marking_in_progress` so ordinary cycles cannot leave stale mark bits for a later mark.
 - Value-bearing E0 deletion/eviction paths run under `with_satb_deletion_barrier`: marker start/end takes the write
   side while flipping `SATB_MARKING_DEPTH`, and cache deletion takes the read side around check, shade, and delete.
+- Fresh bump allocation realizes allocate-black for E2 SATB: `IndexArena` writes the claimed slot, marks it if
+  `satb_marking_in_progress`, and only then publishes the slot through `len`.
 - The rooted global bytecode `MemoCache<MettaValue>` shades overwritten, LRU-evicted, and bulk-cleared cached results
   under the same SATB phase gate; non-`MettaValue` generic cache instantiations do not contribute index roots.
 - The rooted global space registry shades the `SpaceHandle::collect_gc_values` roots for overwritten, removed, and

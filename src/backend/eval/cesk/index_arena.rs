@@ -547,6 +547,21 @@ impl<N: Copy> Segment<N> {
         (*self.nodes[off].get()).write(node);
     }
 
+    /// Write a freshly claimed slot and, during an active E2 SATB mark, make the
+    /// new node black before it enters the published prefix.
+    ///
+    /// This is the allocate-black source order modeled by
+    /// `tla/AllocateBlackPublish.tla`: `write_claimed` initializes the bytes,
+    /// `set_mark` protects the allocation if a concurrent SATB mark is active,
+    /// and only then does `publish` make the slot visible to marker/sweeper reads.
+    #[inline]
+    unsafe fn write_claimed_allocate_black(&self, off: usize, node: N) {
+        self.write_claimed(off, node);
+        if crate::backend::eval::cesk::index_heap::index_gc::satb_marking_in_progress() {
+            self.set_mark(off);
+        }
+    }
+
     /// Publish slot `off` into the contiguous written prefix.
     ///
     /// Spins until `len == off`, then advances `len` to `off + 1` with `Release`
@@ -953,7 +968,7 @@ impl<N: Copy> IndexArena<N> {
                 if let Some(off) = seg.bump_one() {
                     // SAFETY: `off` uniquely claimed by this thread (no aliasing);
                     // not yet published, so it races no reader.
-                    unsafe { seg.write_claimed(off, node) };
+                    unsafe { seg.write_claimed_allocate_black(off, node) };
                     seg.publish(off);
                     self.alloc_count.fetch_add(1, Ordering::Relaxed);
                     // C1.c: bump always targets `cur_seg` (`si == current_seg() >=
@@ -1617,7 +1632,7 @@ impl<N: Copy> IndexArena<N> {
         let off = s.bump_one()?; // None ⇒ full; caller opens a fresh segment + retries
                                  // SAFETY: `off` uniquely claimed by this thread; not yet published ⇒ races
                                  // no reader.
-        unsafe { s.write_claimed(off, node) };
+        unsafe { s.write_claimed_allocate_black(off, node) };
         s.publish(off);
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
         // C1.c: `seg == current_seg() >= young_floor` (re-checked above) ⇒ a YOUNG

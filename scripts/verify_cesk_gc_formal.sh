@@ -33,6 +33,8 @@ run_source_coupling() {
 run_tlc() {
   local label="$1" module="$2" cfg="$3" expect="$4" pattern="$5"
   local log="$TLC_META/${label}.log"
+  local run_meta
+  run_meta="$(mktemp -d "$TLC_META/${label}.XXXXXX")"
 
   echo "### TLC: $label"
   set +e
@@ -40,7 +42,7 @@ run_tlc() {
     cd "$TLA_DIR"
     systemd-run --user --scope \
       -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400% --quiet \
-      tlc -metadir "$TLC_META" -workers auto "$module" -config "$cfg"
+      tlc -metadir "$run_meta" -workers auto "$module" -config "$cfg"
   ) >"$log" 2>&1
   local rc=$?
   set -e
@@ -102,5 +104,9 @@ run_tlc "rendezvous_witness_strict" "MC_RendezvousWitness.tla" "MC_RendezvousWit
   pass ""
 run_tlc "rendezvous_witness_weak" "MC_RendezvousWitness.tla" "MC_RendezvousWitness_weak.cfg" \
   fail "Invariant RootCompleteOnSweep is violated"
+run_tlc "witness_slot_lifecycle_v4" "MC_WitnessSlotLifecycle.tla" "MC_WitnessSlotLifecycle_v4.cfg" \
+  pass ""
+run_tlc "witness_slot_lifecycle_bug" "MC_WitnessSlotLifecycle.tla" "MC_WitnessSlotLifecycle_bug.cfg" \
+  fail "Invariant LiveMachineVisibleOnSweep is violated"
 
 echo "CESK GC formal checks passed"

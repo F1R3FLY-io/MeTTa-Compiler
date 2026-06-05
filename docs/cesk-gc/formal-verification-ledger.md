@@ -20,6 +20,8 @@ the legacy slab mark-sweep collector.
   touches, and reachable young nodes.
 - `tla/RendezvousWitness.tla`: checks the E1 witness gate predicate. The strict `published>=cur_gen OR
   acquired>cur_gen` model preserves root completeness at sweep; the negative `acquired>=cur_gen` model violates it.
+- `tla/WitnessSlotLifecycle.tla`: checks the V4 slot lifecycle. Keeping the slot occupied across safepoint drop
+  preserves live-machine visibility at sweep; the negative release-on-safepoint model violates it.
 
 ## Source coupling
 
@@ -35,6 +37,8 @@ facts the proofs rely on:
 - C1 source order keeps reuse current-segment-only and young minor marking restricted to young roots/children.
 - `published_gen` writes remain restricted to stale-stamp reset plus the genuine `note_reified_park` stamp, with
   worker root-buffer publication before the stamp.
+- The V4 witness slot is acquired before `N_THREADS++`, released only after the true outermost `EvalGuard::drop`
+  count decrement, never released by safepoint drops, and re-stamped before straddle re-park publication.
 
 ## Harness
 

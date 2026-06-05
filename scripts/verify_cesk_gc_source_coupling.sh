@@ -16,9 +16,26 @@ line_no() {
   printf '%s\n' "$line"
 }
 
+line_no_after() {
+  local file="$1" marker="$2" needle="$3" marker_line line
+  marker_line="$(line_no "$file" "$marker")"
+  line="$(rg -n -F -- "$needle" "$REPO/$file" | awk -F: -v marker="$marker_line" '$1 > marker { print $1; exit }')"
+  [[ -n "$line" ]] || fail "missing '$needle' after '$marker' in $file"
+  printf '%s\n' "$line"
+}
+
 count_no() {
   local file="$1" needle="$2"
   (rg -n -F -- "$needle" "$REPO/$file" || true) | wc -l | tr -d ' '
+}
+
+count_between() {
+  local file="$1" start="$2" end="$3" needle="$4" start_line end_line
+  start_line="$(line_no "$file" "$start")"
+  end_line="$(line_no_after "$file" "$start" "$end")"
+  awk -v start="$start_line" -v end="$end_line" -v needle="$needle" \
+    'NR > start && NR < end && index($0, needle) { count++ } END { print count + 0 }' \
+    "$REPO/$file"
 }
 
 assert_before() {
@@ -30,11 +47,28 @@ assert_before() {
   fi
 }
 
+assert_after_before() {
+  local file="$1" marker="$2" before="$3" after="$4" before_line after_line
+  before_line="$(line_no_after "$file" "$marker" "$before")"
+  after_line="$(line_no_after "$file" "$marker" "$after")"
+  if (( before_line >= after_line )); then
+    fail "expected '$before' after '$marker' and before '$after' in $file (lines $before_line >= $after_line)"
+  fi
+}
+
 assert_count() {
   local file="$1" needle="$2" expected="$3" actual
   actual="$(count_no "$file" "$needle")"
   if [[ "$actual" != "$expected" ]]; then
     fail "expected $expected occurrence(s) of '$needle' in $file, found $actual"
+  fi
+}
+
+assert_zero_between() {
+  local file="$1" start="$2" end="$3" needle="$4" actual
+  actual="$(count_between "$file" "$start" "$end" "$needle")"
+  if [[ "$actual" != "0" ]]; then
+    fail "expected zero occurrence(s) of '$needle' between '$start' and '$end' in $file, found $actual"
   fi
 }
 
@@ -104,5 +138,14 @@ line_no "src/backend/eval/cesk/index_arena.rs" "if k.segment() >= young_floor &&
 assert_count "src/backend/models/gc_allocator.rs" "published_gen.store" "2"
 assert_before "src/backend/models/gc_allocator.rs" "pub(crate) fn note_reified_park(g: u64)" "slot.published_gen.store(g, Ordering::Release);"
 assert_before "src/backend/models/gc_allocator.rs" "WORKER_ROOT_BUFFER.lock().extend_from_slice(roots);" "note_reified_park(my_gen);"
+
+# V4 witness slot lifecycle: acquire before a thread is counted, release only
+# after the true outermost drop count decrement, and never release at safepoint
+# drops while the frozen machine is still live.
+assert_after_before "src/backend/models/gc_allocator.rs" "pub fn enter() -> Self {" "witness_acquire_slot();" "N_THREADS.fetch_add(1, Ordering::AcqRel);"
+assert_after_before "src/backend/models/gc_allocator.rs" "impl Drop for EvalGuard {" "N_THREADS.fetch_sub(1, Ordering::AcqRel);" "witness_release_slot();"
+assert_zero_between "src/backend/models/gc_allocator.rs" "pub fn drop_eval_guard_for_safepoint() {" "pub fn eval_guard_depth() -> u32 {" "witness_release_slot();"
+assert_zero_between "src/backend/models/gc_allocator.rs" "pub fn drop_eval_guard_for_safepoint_full() -> u32 {" "pub fn reacquire_eval_guard_after_safepoint() {" "witness_release_slot();"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "witness_restamp_acquired(started);" "worker_park_and_root_in_cycle(reparked_roots, started);"
 
 echo "CESK GC source-coupling checks passed"

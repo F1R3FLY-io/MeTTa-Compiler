@@ -65,6 +65,8 @@ facts the proofs rely on:
   primitive is gated by `satb_marking_in_progress` so ordinary cycles cannot leave stale mark bits for a later mark.
 - Value-bearing E0 deletion/eviction paths run under `with_satb_deletion_barrier`: marker start/end takes the write
   side while flipping `SATB_MARKING_DEPTH`, and cache deletion takes the read side around check, shade, and delete.
+- The rooted global bytecode `MemoCache<MettaValue>` shades overwritten, LRU-evicted, and bulk-cleared cached results
+  under the same SATB phase gate; non-`MettaValue` generic cache instantiations do not contribute index roots.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

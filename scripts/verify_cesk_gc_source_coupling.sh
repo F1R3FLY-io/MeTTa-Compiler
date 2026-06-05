@@ -221,6 +221,13 @@ assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clea
 assert_after_before "src/backend/bytecode/cache.rs" "pub fn clear_caches()" "with_satb_deletion_barrier" "let mut bytecode_cache = BYTECODE_CACHE.write();"
 assert_after_before "src/backend/bytecode/cache.rs" "pub fn clear_caches()" "if satb_active" "satb_shade_evicted_roots("
 assert_after_before "src/backend/bytecode/cache.rs" "pub fn clear_caches()" "satb_shade_evicted_roots(" "bytecode_cache.clear();"
+assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_global_anchors" "global_memo_cache().collect_all_values(out);" "collect_bytecode_cache_roots(out);"
+assert_after_before "src/backend/bytecode/memo_cache.rs" "fn shade_evicted_values" "downcast_ref::<MettaValue>()" "satb_shade_evicted_roots(roots);"
+assert_after_before "src/backend/bytecode/memo_cache.rs" "pub fn insert" "with_satb_deletion_barrier" "let mut evicted = Vec::new();"
+assert_after_before "src/backend/bytecode/memo_cache.rs" "pub fn insert" "evicted.extend(self.evict_lru());" "shade_evicted_values(evicted);"
+assert_after_before "src/backend/bytecode/memo_cache.rs" "pub fn insert" "evicted.push(old.result);" "shade_evicted_values(evicted);"
+assert_after_before "src/backend/bytecode/memo_cache.rs" "pub fn clear" "with_satb_deletion_barrier" "self.cache.clear();"
+assert_after_before "src/backend/bytecode/memo_cache.rs" "pub fn clear" "shade_evicted_values(roots);" "self.cache.clear();"
 
 # Witness stamping: the stale-stamp reset and the genuine reified-park stamp are
 # the only writes to published_gen. That keeps the witness theorem's

@@ -24,7 +24,24 @@ use xxhash_rust::xxh3::Xxh3;
 
 use dashmap::DashMap;
 
+use crate::backend::models::MettaValue;
 use crate::backend::models::metta_value_trait::MettaValueTrait;
+
+#[cfg(feature = "index-gc")]
+fn shade_evicted_values<V, I>(values: I)
+where
+    V: MettaValueTrait + Clone + Send + Sync + 'static,
+    I: IntoIterator<Item = V>,
+{
+    let mut roots = Vec::new();
+    for value in values {
+        let any = &value as &dyn std::any::Any;
+        if let Some(root) = any.downcast_ref::<MettaValue>() {
+            roots.push(root.clone());
+        }
+    }
+    crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
+}
 
 /// Key for generic memo cache entries
 #[derive(Clone, Eq, PartialEq, Hash)]
@@ -132,23 +149,50 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> MemoCache<V> {
     pub fn insert(&self, head: &str, args: &[V], result: V) {
         let key = GenericMemoKey::new(head, args);
 
-        // Evict if at capacity
-        if self.cache.len() >= self.max_entries && !self.cache.contains_key(&key) {
-            self.evict_lru();
-        }
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                let mut evicted = Vec::new();
+                // Evict if at capacity
+                if self.cache.len() >= self.max_entries && !self.cache.contains_key(&key) {
+                    evicted.extend(self.evict_lru());
+                }
 
-        let new_count = self.access_counter.fetch_add(1, Ordering::Relaxed) + 1;
-        self.cache.insert(
-            key,
-            GenericMemoEntry {
-                result,
-                access_count: new_count,
+                let new_count = self.access_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                if let Some(old) = self.cache.insert(
+                    key,
+                    GenericMemoEntry {
+                        result,
+                        access_count: new_count,
+                    },
+                ) {
+                    evicted.push(old.result);
+                }
+                if satb_active {
+                    shade_evicted_values(evicted);
+                }
             },
         );
+        #[cfg(not(feature = "index-gc"))]
+        {
+            // Evict if at capacity
+            if self.cache.len() >= self.max_entries && !self.cache.contains_key(&key) {
+                let _ = self.evict_lru();
+            }
+
+            let new_count = self.access_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            let _ = self.cache.insert(
+                key,
+                GenericMemoEntry {
+                    result,
+                    access_count: new_count,
+                },
+            );
+        }
     }
 
     /// Evict least recently used entries (~25%).
-    fn evict_lru(&self) {
+    fn evict_lru(&self) -> Vec<V> {
         let to_evict = (self.max_entries / 4).max(1);
         let mut entries: Vec<_> = self
             .cache
@@ -156,14 +200,35 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> MemoCache<V> {
             .map(|entry| (entry.key().clone(), entry.value().access_count))
             .collect();
         entries.sort_by_key(|(_, count)| *count);
+        let mut evicted = Vec::new();
         for (key, _) in entries.into_iter().take(to_evict) {
-            self.cache.remove(&key);
+            if let Some((_key, entry)) = self.cache.remove(&key) {
+                evicted.push(entry.result);
+            }
         }
+        evicted
     }
 
     /// Clear the cache.
     pub fn clear(&self) {
-        self.cache.clear();
+        #[cfg(feature = "index-gc")]
+        crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
+            |satb_active| {
+                if satb_active {
+                    let roots: Vec<V> = self
+                        .cache
+                        .iter()
+                        .map(|entry| entry.value().result.clone())
+                        .collect();
+                    shade_evicted_values(roots);
+                }
+                self.cache.clear();
+            },
+        );
+        #[cfg(not(feature = "index-gc"))]
+        {
+            self.cache.clear();
+        }
     }
 
     /// Get cache statistics.
@@ -227,8 +292,6 @@ pub struct CacheStats {
 
 #[cfg(not(feature = "index-gc"))]
 use crate::backend::models::gc_allocator::{register_root_provider, RootProvider};
-use crate::backend::models::MettaValue;
-
 /// Global singleton `MemoCache<MettaValue>` shared across all VM instances.
 ///
 /// Uses `LazyLock` for zero-cost lazy initialization. Cache size is configurable

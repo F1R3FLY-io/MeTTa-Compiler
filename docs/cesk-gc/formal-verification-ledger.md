@@ -45,9 +45,9 @@ barriers cannot remain stale across a minor.
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
   roots, caller-held driver-C roots, future CESK touches, reachable young nodes under both the no-old-to-young and
   conservative-minor traversals, E2 snapshot-live nodes covered by initial roots, driver roots, SATB shades, or
-  allocate-black publication, E2 freshly published allocate-black allocations, E2 snapshot-live values removed by
-  value-bearing E0 cache capacity eviction, overwrite, and bulk clear, and E2 snapshot-live values removed from the
-  pinned value-bearing E0 mutation categories.
+  allocate-black publication, E2 freshly published allocate-black allocations, E2 final-rendezvous roots and
+  abort-to-STW finalization, E2 snapshot-live values removed by value-bearing E0 cache capacity eviction, overwrite,
+  and bulk clear, and E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
@@ -55,6 +55,10 @@ barriers cannot remain stale across a minor.
 - `formal/rocq/gc/AllocateBlack.v` and `formal/lean/gc/AllocateBlack.lean`: bridge the E2 allocate-black publication
   order into the SATB theorem. If a freshly published allocation is black before publication makes it visible, then it
   is a SATB root and cannot be freed by sweep; the direct mark-before-publish theorem mirrors the TLA discriminator.
+- `formal/rocq/gc/SATBFinalization.v` and `formal/lean/gc/SATBFinalization.lean`: bridge the E2 finalization
+  obligations into the SATB safety story. Final-rendezvous roots survive because they are re-marked before the
+  exclusive sweep; if the final sweep gate is closed, the checked result must run the STW backstop; and an aborted SATB
+  request is handled only after a freshly requested STW rendezvous runs.
 - `formal/rocq/gc/E0MutationSites.v` and `formal/lean/gc/E0MutationSites.lean`: bridge the E2 value-bearing E0
   mutation-site enumeration into the SATB theorem. If every removed pre-image from the pinned space-local, rule-index,
   and environment/token/state categories is shaded, then any snapshot-live value removed through those E0 categories is

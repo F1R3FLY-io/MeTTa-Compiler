@@ -18,6 +18,9 @@
       allocate-black publication;
     - E2 freshly published allocations survive when publication implies
       allocate-black marking;
+    - E2 final-rendezvous roots survive the exclusive sweep, and a completed
+      SATB request is backed by either the final SATB sweep or the abort-to-STW
+      backstop;
     - E2 value-bearing E0 cache capacity-eviction, overwrite, and bulk-clear
       pre-images compose into SATB coverage when those removed values are
       shaded;
@@ -47,6 +50,9 @@ Section CESKCollectorSafetyModel.
       (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
       (a : Addr) : Prop :=
     InitialRoot a \/ DriverRoot a \/ ShadedDeletion a \/ AllocateBlack a.
+
+  Definition RequestHandled (SatbSwept StwFallbackRan : Prop) : Prop :=
+    SatbSwept \/ StwFallbackRan.
 
   Definition E0RemovedPreimage
       (SpacePreimage RulePreimage EnvPreimage : Addr -> Prop)
@@ -231,6 +237,72 @@ Section CESKCollectorSafetyModel.
     right; right; right.
     apply Hpublished_black.
     exact Hpublished.
+  Qed.
+
+  Theorem e2_final_remark_root_survives_collection :
+    forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack
+            FinalRoot : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, FinalRoot a -> DriverRoot a) ->
+      (forall a,
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a ->
+          Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, FinalRoot a -> ~ Freed a.
+  Proof.
+    intros InitialRoot DriverRoot ShadedDeletion AllocateBlack FinalRoot
+           Edge Marked Freed Hremark Hmark Hsweep a Hfinal Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right; left.
+    apply Hremark.
+    exact Hfinal.
+  Qed.
+
+  Theorem e2_closed_final_sweep_uses_stw_backstop :
+    forall (FinalSweepReturned SatbSwept SatbAbort StwFallbackRan : Prop),
+      (FinalSweepReturned -> ~ SatbSwept -> SatbAbort) ->
+      (SatbAbort -> StwFallbackRan) ->
+      FinalSweepReturned ->
+      ~ SatbSwept ->
+      StwFallbackRan.
+  Proof.
+    intros FinalSweepReturned SatbSwept SatbAbort StwFallbackRan
+           Hclosed_abort Habort_stw Hreturned Hnot_swept.
+    apply Habort_stw.
+    apply Hclosed_abort; assumption.
+  Qed.
+
+  Theorem e2_aborted_satb_runs_requested_stw :
+    forall (SatbAbort StwRequested StwRan : Prop),
+      (SatbAbort -> StwRequested) ->
+      (StwRequested -> StwRan) ->
+      SatbAbort ->
+      StwRequested /\ StwRan.
+  Proof.
+    intros SatbAbort StwRequested StwRan Hrequest Hrun Habort.
+    split.
+    - apply Hrequest; exact Habort.
+    - apply Hrun.
+      apply Hrequest.
+      exact Habort.
+  Qed.
+
+  Theorem e2_completed_satb_request_has_collection :
+    forall (SatbSuccess SatbAbort SatbSwept StwFallbackRan RequestDone : Prop),
+      (SatbSuccess -> SatbSwept) ->
+      (SatbAbort -> StwFallbackRan) ->
+      (RequestDone -> SatbSuccess \/ SatbAbort) ->
+      RequestDone ->
+      RequestHandled SatbSwept StwFallbackRan.
+  Proof.
+    intros SatbSuccess SatbAbort SatbSwept StwFallbackRan RequestDone
+           Hsuccess_swept Habort_stw Hdone_case Hdone.
+    destruct (Hdone_case Hdone) as [Hsuccess | Habort].
+    - left. apply Hsuccess_swept. exact Hsuccess.
+    - right. apply Habort_stw. exact Habort.
   Qed.
 
   Theorem e2_e0_cache_removed_snapshot_live_survives_collection :

@@ -185,6 +185,23 @@ assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend:
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_dispatch_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_dispatch_roots(out);"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn snapshot_live_dispatch_witness() -> (Vec<MettaValue>, usize)" "weak.upgrade()" "strong.collect_dispatch_roots(&mut out);"
 
+# E1 self-root publication coupling: the ThreadContribution formal obligation
+# only applies if the single canonical reader contains every component it claims.
+# Trampoline participants publish extra hot values, S/C/K with live-K narrowing,
+# E0, global anchors, K-spine, and deferred env roots. Tier leaves publish extra
+# VM/JIT values plus the env-less persistent roots they can read locally.
+assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_machine_roots(" "rs.collect_all(operand_stack, current_work, work_stack, continuations);" "collect_persistent_roots(out, env0);"
+assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_machine_roots_live(" "rs.collect_all_live(operand_stack, current_work, work_stack, continuations);" "collect_persistent_roots(out, env0);"
+assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_persistent_roots_no_env0" "collect_global_anchors(out);" "super::k_spine::collect_k_spine(out);"
+assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_persistent_roots(" "env0.collect_roots_into(out);" "collect_global_anchors(out);"
+assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_persistent_roots(" "collect_global_anchors(out);" "super::k_spine::collect_k_spine(out);"
+assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::Trampoline {" "out.extend_from_slice(extra);" "collect_machine_roots_live("
+assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::Trampoline {" "collect_machine_roots_live(" "for e in deferred_envs {"
+assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::Trampoline {" "for e in deferred_envs {" "e.as_ref().collect_roots_into(out);"
+assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::TierLeaf { extra }" "out.extend_from_slice(extra);" "collect_persistent_roots_no_env0(out);"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "pub(crate) fn worker_cooperative_safepoint" "ThreadContribution::TierLeaf" "gc_allocator::worker_park_and_root_in_cycle"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "FULL park (mirror branch-B template" "ThreadContribution::Trampoline" "worker_park_and_root_in_cycle"
+
 # E2 cache-epoch source coupling: OPERATOR_CACHE is pointer-keyed
 # (`head.as_ptr()`), so index mode must lazily clear it when gc_sweep_epoch
 # advances on a different thread. Explicit cache clears also synchronize the

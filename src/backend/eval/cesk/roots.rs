@@ -32,9 +32,10 @@
 //!   via [`collect_global_anchors`].
 //!
 //! `collect_all` itself still computes only the control registers (S ∪ C ∪ K);
-//! E₀ is added by `collect_structural` + `collect_global_anchors`. The registry
-//! remains live in parallel until Phase A5 deletes it — the A4.3 machine-equivalence
-//! oracle first proves the structural multiset ⊇ the registry multiset.
+//! E₀ is added by `collect_structural` / `collect_persistent_roots` plus
+//! `collect_global_anchors`. In the `index-gc` build the registry/frame-chain
+//! discovery apparatus is cfg-walled out; the remaining narrow safepoint channel
+//! is driver transport, not root discovery.
 
 use crate::backend::models::MettaValueTrait;
 
@@ -60,11 +61,12 @@ use super::operand_stack::OperandStack;
 /// | **S** (Stack) | Operand stack values | `collect_from_operand_stack()` |
 /// | **C** (Control) | Current work item | `collect_from_work_items()` |
 /// | **K** (Kontinuation) | Continuation stack | `collect_from_continuations()` |
-/// | **E** (Environment) | Managed externally via `RootProvider` | N/A |
+/// | **E** (Environment) | Persistent E0 read structurally | `collect_structural()` / `collect_persistent_roots()` |
 /// | **Store** | Internal to allocator | N/A |
 ///
-/// Additional root sources (eval memo cache, match result cache, frame chain)
-/// are collected via `collect_auxiliary_roots()`.
+/// Additional persistent anchors (eval memo cache, match result cache, bytecode
+/// caches, K-spine leaves, and similar fixed E0 roots) are collected by name via
+/// `collect_global_anchors()` and `collect_k_spine()`.
 #[derive(Debug)]
 pub struct RootSet<V: MettaValueTrait> {
     /// Pre-allocated buffer for root values.
@@ -206,7 +208,9 @@ impl RootSet<crate::backend::models::MettaValue> {
     /// roots = addrs_in(S) ∪ addrs_in(C) ∪ addrs_in(K)
     /// ```
     ///
-    /// Environment roots (E) are managed separately via `RootProvider`.
+    /// Environment roots (E) are intentionally not collected here. Callers use
+    /// `collect_structural`, `collect_machine_roots`, or `collect_persistent_roots`
+    /// to fold in persistent E0 structurally.
     pub fn collect_all(
         &mut self,
         operand_stack: &OperandStack<crate::backend::models::MettaValue>,
@@ -251,11 +255,8 @@ impl RootSet<crate::backend::models::MettaValue> {
     /// the `RootProvider` registry). This is the Morrisett `σ|_Reachable(⟨C,E,K⟩)`
     /// formula read from the machine.
     ///
-    /// A4.2 will additionally fold in the native-stack K-spine (suspended trampoline
-    /// activations + live bytecode-VM leaves, via typed thread-locals) and the fixed
-    /// global-cache anchors (`collect_global_anchors`); A4.3's machine-equivalence
-    /// oracle proves this reader's multiset ⊇ the old apparatus's before A5 deletes
-    /// the apparatus. Until A4.4 this method is additive (used only by tests/oracle).
+    /// `collect_machine_roots` is the live full reader: it adds the fixed global
+    /// anchors and native-stack K-spine to this structural E0/control-register set.
     pub fn collect_structural(
         &mut self,
         operand_stack: &OperandStack<crate::backend::models::MettaValue>,
@@ -284,13 +285,10 @@ impl RootSet<crate::backend::models::MettaValue> {
 /// name** (a fixed call sequence) rather than discovering them through the
 /// `ROOT_REGISTRY` / `Weak<dyn RootProvider>` dynamic dispatch.
 ///
-/// Each call delegates to the holder's own inherent collector — the exact bodies
-/// the corresponding `RootProvider` impls now delegate to — so the result is
-/// **byte-identical** to what the registry would have produced for these five
-/// providers. It is **additive** until A4.4: the registry path still runs in
-/// parallel, and A4.3's machine-equivalence oracle proves
-/// `collect_structural ∪ collect_global_anchors ∪ (K-spine)` ⊇ the registry
-/// multiset before A5 deletes the apparatus.
+/// Each call delegates to the holder's own inherent collector — the same bodies
+/// the slab-only `RootProvider` shims delegate to — so the index build gets a
+/// named structural reader instead of dynamic discovery. The source-coupling
+/// checks keep this call sequence pinned.
 ///
 /// Appends to `out` (never clears it), matching the registry's append contract.
 ///
@@ -346,9 +344,10 @@ pub fn collect_global_anchors(out: &mut Vec<crate::backend::models::MettaValue>)
 /// reified machine plus the persistent global environment, with NO dependence on
 /// the `ROOT_REGISTRY` / `frame_chain` discovery apparatus. Appends to `out`.
 ///
-/// Additive / unused in the hot path until A4.4 (only tests + the A4.3 oracle
-/// call it). The registry/frame_chain paths still run in parallel until A5; the
-/// oracle proves this reader's multiset ⊇ theirs before they are deleted.
+/// Every index-GC safepoint and worker publication path reaches this reader
+/// directly or through `collect_machine_roots_live` /
+/// `collect_complete_thread_contribution`; slab-only registry/frame-chain paths
+/// are not index-root discovery channels.
 pub fn collect_machine_roots(
     out: &mut Vec<crate::backend::models::MettaValue>,
     operand_stack: &OperandStack<crate::backend::models::MettaValue>,

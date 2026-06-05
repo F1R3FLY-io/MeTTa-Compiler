@@ -34,6 +34,10 @@ barriers cannot remain stale across a minor.
 - `formal/rocq/gc/RendezvousWitness.v` and `formal/lean/gc/RendezvousWitness.lean`: if every occupied witness slot
   is published, publication buffers that slot's structural roots, and the driver drains the buffer, every occupied
   participant root is in the driver root set and cannot be freed after mark/sweep.
+- `formal/rocq/gc/ThreadContribution.v` and `formal/lean/gc/ThreadContribution.lean`: if the canonical
+  per-mutator contribution reader includes every component it claims (trampoline extra values, S/C/K, E0, global
+  anchors, K-spine, deferred env roots; tier-leaf extra values plus env-less persistent roots), and publication/drain
+  carries that contribution to the driver root set, mark/sweep cannot free any component root.
 - `formal/rocq/gc/DriverCPublication.v` and `formal/lean/gc/DriverCPublication.lean`: if eval-entry publication
   maps every caller-held driver-C root into the driver/safepoint root set, root-complete mark and sweep safety retain
   every such driver-C root.
@@ -102,6 +106,9 @@ facts the proofs rely on:
 - `gate_open_rendezvous` is keyed by `current_witness_ok`, not the obsolete parked-count gate.
 - Live envs and parallel fan-outs are registered through RAII handles, and the live-env/live-dispatch registry walks
   delegate to the structural `EnvRoots`/`DispatchRoots` readers used by the driver-root-union proof.
+- Every self-root publication site routes through the canonical `collect_complete_thread_contribution` reader, whose
+  source shape is pinned: trampoline participants publish extra hot values, live S/C/K, E0, global anchors, K-spine,
+  and deferred env roots; tier leaves publish extra VM/JIT values plus the env-less persistent roots they can read.
 - Both public eval boundaries (`eval` and `eval_with_tier`) publish `MettaState.source/output` into
   `SAFEPOINT_ROOTS` before the live transition begins, so midloop/rendezvous collection sees the caller's driver-C
   even when an outer CLI/REPL/conformance loop has not installed its own batch guard.

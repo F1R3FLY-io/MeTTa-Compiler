@@ -148,4 +148,13 @@ assert_zero_between "src/backend/models/gc_allocator.rs" "pub fn drop_eval_guard
 assert_zero_between "src/backend/models/gc_allocator.rs" "pub fn drop_eval_guard_for_safepoint_full() -> u32 {" "pub fn reacquire_eval_guard_after_safepoint() {" "witness_release_slot();"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "witness_restamp_acquired(started);" "worker_park_and_root_in_cycle(reparked_roots, started);"
 
+# E5 started-cycle straddle gate: the driver publishes GC_CYCLE_STARTED only
+# after admission is closed, before the witness wait, and the straddle loop gates
+# re-parks on current_cycle_started(), not current_cycle_gen(), so teardown
+# gen-bumps cannot trigger phantom re-parks.
+assert_before "src/backend/eval/cesk/gc_driver.rs" "debug_assert!(" "ga::set_current_cycle_started(cur_gen);"
+assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::set_current_cycle_started(cur_gen);" "let snap = ga::snapshot_witness(cur_gen);"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "let started = current_cycle_started();" "if started > my_reparked_gen {"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "if current_cycle_started() > my_reparked_gen {" "continue 'straddle;"
+
 echo "CESK GC source-coupling checks passed"

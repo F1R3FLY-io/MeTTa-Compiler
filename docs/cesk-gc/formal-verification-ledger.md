@@ -25,6 +25,8 @@ the legacy slab mark-sweep collector.
 - `tla/DriverRootUnion.tla`: checks the E1 driver root-union channels. Including worker-buffer, safepoint,
   live-env/E0, and live-dispatch channels preserves root-union completeness; omitting live-env or live-dispatch
   violates it.
+- `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
+  re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 
 ## Source coupling
 
@@ -42,6 +44,8 @@ facts the proofs rely on:
   worker root-buffer publication before the stamp.
 - The V4 witness slot is acquired before `N_THREADS++`, released only after the true outermost `EvalGuard::drop`
   count decrement, never released by safepoint drops, and re-stamped before straddle re-park publication.
+- The E5 straddle loop gates on `current_cycle_started()`, and the driver sets it after admission closes and before
+  the witness wait.
 
 ## Harness
 

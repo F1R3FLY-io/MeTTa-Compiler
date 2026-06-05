@@ -114,5 +114,9 @@ run_tlc "driver_root_union_missing_env" "MC_DriverRootUnion.tla" "MC_DriverRootU
   fail "Invariant RootUnionComplete is violated"
 run_tlc "driver_root_union_missing_dispatch" "MC_DriverRootUnion.tla" "MC_DriverRootUnion_missing_dispatch.cfg" \
   fail "Invariant RootUnionComplete is violated"
+run_tlc "started_cycle_gate_started" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_started.cfg" \
+  pass ""
+run_tlc "started_cycle_gate_gen" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_gen.cfg" \
+  fail "Invariant NoPhantomRepark is violated"
 
 echo "CESK GC formal checks passed"

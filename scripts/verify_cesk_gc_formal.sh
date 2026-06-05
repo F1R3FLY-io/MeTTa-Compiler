@@ -136,5 +136,9 @@ run_tlc "allocate_black_mark_first" "MC_AllocateBlackPublish.tla" "MC_AllocateBl
   pass ""
 run_tlc "allocate_black_publish_first" "MC_AllocateBlackPublish.tla" "MC_AllocateBlackPublish_publish_first.cfg" \
   fail "Invariant NoPublishedAllocSwept is violated"
+run_tlc "satb_lru_capacity" "MC_SATBLRUEviction.tla" "MC_SATBLRUEviction_capacity.cfg" \
+  pass ""
+run_tlc "satb_lru_put_return" "MC_SATBLRUEviction.tla" "MC_SATBLRUEviction_put_return.cfg" \
+  fail "Invariant NoSnapshotVictimFreed is violated"
 
 echo "CESK GC formal checks passed"

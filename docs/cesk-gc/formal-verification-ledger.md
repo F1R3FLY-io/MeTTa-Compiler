@@ -39,6 +39,8 @@ the legacy slab mark-sweep collector.
   preserves snapshot-live safety; omitting the barrier frees a snapshot-live value.
 - `tla/AllocateBlackPublish.tla`: checks the E2 allocate-black publication order. Marking before publication
   preserves safety; publishing first allows a visible allocation to be swept.
+- `tla/SATBLRUEviction.tla`: checks the E2 LRU SATB barrier shape. Shading capacity-evicted victims preserves
+  snapshot-live safety; a same-key put-return-only barrier misses capacity victims.
 
 ## Source coupling
 

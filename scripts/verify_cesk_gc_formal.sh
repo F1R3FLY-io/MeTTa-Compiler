@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+TLA_DIR="$REPO/tla"
+TLC_META="${TLC_META:-$REPO/target/tlc-formal-small}"
+
+mkdir -p "$TLC_META"
+
+run_lean() {
+  local file="$1"
+  echo "### Lean: $file"
+  lean "$REPO/$file"
+}
+
+run_tlc() {
+  local label="$1" module="$2" cfg="$3" expect="$4" pattern="$5"
+  local log="$TLC_META/${label}.log"
+
+  echo "### TLC: $label"
+  set +e
+  (
+    cd "$TLA_DIR"
+    systemd-run --user --scope \
+      -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400% --quiet \
+      tlc -metadir "$TLC_META" -workers auto "$module" -config "$cfg"
+  ) >"$log" 2>&1
+  local rc=$?
+  set -e
+
+  case "$expect" in
+    pass)
+      if [[ "$rc" -ne 0 ]]; then
+        tail -120 "$log"
+        echo "TLC $label expected pass, got rc=$rc" >&2
+        return 1
+      fi
+      if ! grep -q "No error has been found" "$log"; then
+        tail -120 "$log"
+        echo "TLC $label did not report success" >&2
+        return 1
+      fi
+      ;;
+    fail)
+      if [[ "$rc" -eq 0 ]]; then
+        tail -120 "$log"
+        echo "TLC $label expected failure, got success" >&2
+        return 1
+      fi
+      if ! grep -q "$pattern" "$log"; then
+        tail -120 "$log"
+        echo "TLC $label failed, but not with expected discriminator: $pattern" >&2
+        return 1
+      fi
+      ;;
+    *)
+      echo "invalid expectation: $expect" >&2
+      return 2
+      ;;
+  esac
+}
+
+run_lean "formal/lean/gc/FreeList.lean"
+run_lean "formal/lean/gc/YoungMark.lean"
+
+run_tlc "rfl_freebit" "MC_StoreCentricGC_RFL.tla" "MC_RFL_freebit.cfg" \
+  pass ""
+run_tlc "rfl_bug" "MC_StoreCentricGC_RFL.tla" "MC_RFL_bug.cfg" \
+  fail "Invariant NoDuplicateFreeListEntries is violated"
+run_tlc "collapse_fix" "CollapseCompletion.tla" "CollapseCompletion_fix.cfg" \
+  pass ""
+run_tlc "collapse_bug" "CollapseCompletion.tla" "CollapseCompletion_bug.cfg" \
+  fail "Temporal properties were violated"
+
+echo "CESK GC formal checks passed"

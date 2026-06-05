@@ -6,8 +6,11 @@ the legacy slab mark-sweep collector.
 ## Verified implementation boundary
 
 The default live collector verified here is the CESK-based generational `index-gc` collector's E1 path:
-single-threaded/midloop/rendezvous collection computes structural roots, then marks and sweeps while holding the index
-heap write lock. There is also an opt-in E2 SATB major path (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
+single-threaded quiescence and rendezvous collection compute structural roots, then mark and sweep while holding the
+index heap write lock. Mid-loop collection remains opt-in (`METTATRON_INDEX_GC_MIDLOOP=1`): the theorem covers it when
+the caller supplies a complete structural root set, but the default verified boundary does not claim that opt-in path is
+shipped-on until its separate ASAN/root-completeness gate is green. There is also an opt-in E2 SATB major path
+(`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and
 allocate-black, releases workers while it marks under a shared heap read lock, then requests a second rendezvous,
 waits out in-flight deletion barriers by dropping the SATB guard, and performs a full-major final mark/sweep under the

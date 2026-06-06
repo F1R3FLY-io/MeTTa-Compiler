@@ -228,6 +228,9 @@ facts the proofs rely on:
   into `MettaState.output` before the outcome drops.
 - OPERATOR_CACHE is guarded by `gc_sweep_epoch` in index mode before pointer-keyed lookup, so a parked worker
   self-invalidates after another thread completes a sweep.
+- `collect_global_anchors` is source-pinned to scan the thread-local value-bearing evaluation tables in order:
+  eval memo roots, match-result roots, subgoal roots, then thunk roots. That keeps the formal `Global` component tied
+  to the actual E0 root reader, not only to the SATB deletion-barrier paths for those tables.
 - Value-bearing E0 LRU anchors (`EVAL_MEMO`, `MATCH_RESULT_CACHE`, and `BYTECODE_CACHE`) use `LruCache::push`
   rather than `put` on eviction-capable paths, and the surfaced victim is conservatively SATB-shaded in index mode.
 - Value-bearing E0 bulk clears shade all cached roots before clearing during an active SATB mark, and the shading

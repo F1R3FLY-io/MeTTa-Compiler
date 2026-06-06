@@ -30,7 +30,9 @@
       shaded;
     - E2 value-bearing E0 deletion categories compose into that SATB coverage
       when removed space-local, rule-index, and environment/token/state
-      pre-images are shaded.
+      pre-images are shaded;
+    - pointer-keyed operator-cache lookup cannot return a stale post-sweep entry
+      when the local sweep-epoch guard runs before lookup.
 
     These are parametric theorems over the store graph and do not assume a finite
     TLC state space.
@@ -72,6 +74,13 @@ Section CESKCollectorSafetyModel.
       (CapacityVictim OverwriteVictim BulkClearedEntry : Addr -> Prop)
       (a : Addr) : Prop :=
     CapacityVictim a \/ OverwriteVictim a \/ BulkClearedEntry a.
+
+  Definition OperatorCacheEnsurePost
+      (Entry Epoch : Type)
+      (heap_epoch local_epoch : Epoch)
+      (CacheBefore CacheAfter : Entry -> Prop) : Prop :=
+    (local_epoch = heap_epoch /\ (forall e, CacheAfter e -> CacheBefore e)) \/
+    (local_epoch <> heap_epoch /\ (forall e, ~ CacheAfter e)).
 
   Theorem rendezvous_participant_root_survives_collection :
     forall (Occupied Published : Slot -> Prop)
@@ -450,6 +459,27 @@ Section CESKCollectorSafetyModel.
     - apply Hspace; exact Hspace_a.
     - apply Hrule; exact Hrule_a.
     - apply Henv; exact Henv_a.
+  Qed.
+
+  Theorem operator_cache_returned_entry_current_after_ensure :
+    forall (Entry Epoch : Type)
+           (entry_epoch : Entry -> Epoch)
+           (heap_epoch local_epoch : Epoch)
+           (CacheBefore CacheAfter Returned : Entry -> Prop),
+      (forall e, CacheBefore e -> entry_epoch e = local_epoch) ->
+      OperatorCacheEnsurePost Entry Epoch heap_epoch local_epoch CacheBefore CacheAfter ->
+      (forall e, Returned e -> CacheAfter e) ->
+      forall e, Returned e -> entry_epoch e = heap_epoch.
+  Proof.
+    intros Entry Epoch entry_epoch heap_epoch local_epoch
+           CacheBefore CacheAfter Returned Hstamped Hensure Hlookup e Hreturned.
+    destruct Hensure as [[Hcurrent Hpreserved] | [_ Hcleared]].
+    - rewrite (Hstamped e (Hpreserved e (Hlookup e Hreturned))).
+      exact Hcurrent.
+    - exfalso.
+      apply (Hcleared e).
+      apply Hlookup.
+      exact Hreturned.
   Qed.
 End CESKCollectorSafetyModel.
 

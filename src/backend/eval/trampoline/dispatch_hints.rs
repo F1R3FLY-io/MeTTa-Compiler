@@ -30,13 +30,14 @@ use crate::backend::models::{GenericBindings, MettaValue, MettaValueFactory, Met
 use super::context::EvalContext;
 
 // ============================================================================
-// GC Epoch Tracking — REMOVED (I-9: Deterministic GC)
+// Historical GC Epoch Tracking
 // ============================================================================
 //
-// The epoch-based cache invalidation system (GC_SWEEP_EPOCH, LOCAL_GC_EPOCH,
-// check_gc_epoch) has been removed. With deterministic GC always-on, the
-// nursery collector keeps the state space garbage-free at every safepoint.
-// Caches never hold stale pointers, so epoch checking is unnecessary.
+// The broad slab-era cache invalidation system (GC_SWEEP_EPOCH,
+// LOCAL_GC_EPOCH, check_gc_epoch) was removed with deterministic GC. The
+// index collector still needs narrow sweep-epoch guards for caches whose keys
+// contain recycled pointer identity. Those live guards are local to the
+// pointer-keyed caches below, such as OPERATOR_CACHE.
 
 // ============================================================================
 // Phase 9.5: Evaluated-expression normal-form memoization

@@ -45,14 +45,18 @@ requires a new stale-old-mark proof before it can be introduced.
 - `formal/rocq/gc/BatchHandoff.v` and `formal/lean/gc/BatchHandoff.lean`: prove the async rholang batch-result
   handoff obligation. A worker result survives while protected by its persistent safepoint handle, survives after the
   caller copies it into `MettaState.output`, and dropping the handle is safe only after that output copy.
+- `formal/rocq/gc/OperatorCacheEpoch.v` and `formal/lean/gc/OperatorCacheEpoch.lean`: prove the pointer-keyed
+  operator-cache sweep-epoch obligation. A returned cache entry is current if the local sweep-epoch guard runs before
+  lookup; if the local epoch is stale, the guarded lookup misses after clearing the cache.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
-  roots, caller-held driver-C roots, async batch-result handoff values, future CESK touches, reachable young nodes
-  under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live nodes covered by initial roots,
-  driver roots, SATB shades, or allocate-black publication, E2 freshly published allocate-black allocations, E2
-  final-rendezvous roots and abort-to-STW finalization, E2 full-major SATB mark lifecycle, E2 snapshot-live values
-  removed by value-bearing E0 cache capacity eviction, overwrite, and bulk clear, and E2 snapshot-live values removed
-  from the pinned value-bearing E0 mutation categories.
+  roots, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache sweep-epoch
+  coherence, future CESK touches, reachable young nodes under both the no-old-to-young and conservative-minor
+  traversals, E2 snapshot-live nodes covered by initial roots, driver roots, SATB shades, or allocate-black
+  publication, E2 freshly published allocate-black allocations, E2 final-rendezvous roots and abort-to-STW
+  finalization, E2 full-major SATB mark lifecycle, E2 snapshot-live values removed by value-bearing E0 cache capacity
+  eviction, overwrite, and bulk clear, and E2 snapshot-live values removed from the pinned value-bearing E0 mutation
+  categories.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
@@ -89,6 +93,9 @@ requires a new stale-old-mark proof before it can be introduced.
 - `tla/BatchHandoff.tla`: checks the async rholang batch-result handoff. Holding a persistent handle until the caller
   copies worker results into `MettaState.output` preserves safety; omitting the handle or dropping it before the copy
   violates `NoPublishedBatchResultFreed`.
+- `tla/OperatorCacheEpoch.tla`: checks the pointer-keyed operator-cache sweep-epoch guard. Checking the local
+  `gc_sweep_epoch` before lookup clears another worker's stale cache entry after sweep; skipping the check violates
+  `NoStaleOperatorCacheHit`.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 - `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end

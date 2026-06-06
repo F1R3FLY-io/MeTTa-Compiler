@@ -138,6 +138,12 @@ run_tlc "rfl_freebit" "MC_StoreCentricGC_RFL.tla" "MC_RFL_freebit.cfg" \
   pass ""
 run_tlc "rfl_bug" "MC_StoreCentricGC_RFL.tla" "MC_RFL_bug.cfg" \
   fail "Invariant NoDuplicateFreeListEntries is violated"
+run_tlc "generational_full_mark_small" "MC_StoreCentricGC_Generational.tla" "MC_StoreCentricGC_Generational_small.cfg" \
+  pass ""
+run_tlc "gen_young_mark_curseg_small" "MC_StoreCentricGC_GenerationalYoungMark.tla" "MC_GenYoungMark_positive_small.cfg" \
+  pass ""
+run_tlc "gen_young_mark_any_small" "MC_StoreCentricGC_GenerationalYoungMark.tla" "MC_GenYoungMark_negative_small.cfg" \
+  fail "Invariant YoungOnlyMarkReachesLiveYoung is violated"
 run_tlc "collapse_fix" "CollapseCompletion.tla" "CollapseCompletion_fix.cfg" \
   pass ""
 run_tlc "collapse_bug" "CollapseCompletion.tla" "CollapseCompletion_bug.cfg" \

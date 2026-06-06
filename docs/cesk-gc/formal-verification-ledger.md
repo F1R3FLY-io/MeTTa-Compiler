@@ -166,6 +166,14 @@ requires a new stale-old-mark proof before it can be introduced.
 - `tla/CurSegReuseOrder.tla`: checks the historical skipped-old young-marker allocator premise. Cur-segment-only
   reuse preserves bump order; any-young reuse admits an old-parent to young-child edge after promotion. The live
   minor safety proof is `ConservativeMinorMark`, not this narrower premise.
+- `tla/StoreCentricGC_Generational.tla`: checks the C1 generational full-mark minor/major collector. Full marking
+  before either sweep preserves reachable nodes even with old-to-young edges; minor sweep reclaims only young
+  unmarked nodes; major sweep reclaims globally; segment release is safe only when no reachable node remains in the
+  released segment. The default harness uses `MC_StoreCentricGC_Generational_small.cfg` as a disk-light gate.
+- `tla/StoreCentricGC_GenerationalYoungMark.tla`: checks the rejected skipped-old young-only marker premise. The
+  positive small config proves cur-segment-only reuse preserves the premise in the reduced state space; the negative
+  small config demonstrates that any-young reuse violates `YoungOnlyMarkReachesLiveYoung` with an old parent pointing
+  at a young child.
 - `tla/ConservativeMinorMark.tla`: checks the C1 first-class-space correction. Traversing old reachable containers
   during a minor preserves a young value reachable through an old `SpaceHandle`; the old skipped-old traversal violates
   `YoungReachableMarked`.

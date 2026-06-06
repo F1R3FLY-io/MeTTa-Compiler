@@ -45,6 +45,11 @@ requires a new stale-old-mark proof before it can be introduced.
 - `formal/rocq/gc/StartedCycleGate.v` and `formal/lean/gc/StartedCycleGate.lean`: prove the E5 started-cycle
   straddle-gate obligation. If re-park is gated by `GC_CYCLE_STARTED > my_reparked_gen`, a teardown-only generation
   bump cannot cause a phantom re-park before the next driver starts.
+- `formal/rocq/gc/CollapseCompletion.v` and `formal/lean/gc/CollapseCompletion.lean`: prove the E1 parallel
+  dispatch/collapse completion obligation. If every spawned worker exits and the RAII completion guard drops on both
+  normal and panic-unwind exits, then the parent wait cannot be stranded by a skipped worker decrement; the companion
+  theorem also captures the historical negative shape where a panic edge skips completion and parent observation is
+  impossible.
 - `formal/rocq/gc/ThreadContribution.v` and `formal/lean/gc/ThreadContribution.lean`: if the canonical
   per-mutator contribution reader includes every component it claims (trampoline extra values, S/C/K, E0, global
   anchors, K-spine, deferred env roots; tier-leaf extra values plus env-less persistent roots), and publication/drain
@@ -143,6 +148,9 @@ requires a new stale-old-mark proof before it can be introduced.
   or thunk replacement shade violates it.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
+- `tla/CollapseCompletion.tla`: checks the E1 parallel collapse completion liveness obligation. With the RAII
+  completion guard, normal and panic exits both decrement the worker counter and `<>(parentDone)` holds; without the
+  panic-edge decrement, a panic can leave `remaining > 0` forever and violates the temporal property.
 - `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end
   prevents the previous cycle's true flag from admitting a next-cycle sweep before the next witness wait.
 - `tla/CurSegReuseOrder.tla`: checks the historical skipped-old young-marker allocator premise. Cur-segment-only
@@ -246,6 +254,9 @@ facts the proofs rely on:
   the witness wait.
 - `end_rendezvous_cycle` clears `CURRENT_WITNESS_OK` after the gen bump and before the rendezvous notify; the driver
   runs that teardown before dropping `GC_IN_PROGRESS`.
+- Parallel dispatch/collapse worker completion is source-pinned: both worker closures construct exactly one
+  `CompletionGuard` before `EvalGuard::enter()`, the only executable `remaining.fetch_sub(1, ...)` is inside the
+  guard's `Drop`, and the wait arms observe completion from `remaining == 0`.
 
 ## Harness
 

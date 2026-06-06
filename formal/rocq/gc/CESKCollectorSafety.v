@@ -10,6 +10,8 @@
       true flag from allowing the next cycle's sweep before a fresh wait;
     - started-cycle straddle gating prevents a teardown generation bump from
       causing a phantom worker re-park before the next driver starts;
+    - parallel dispatch/collapse completion guards prevent a panic-unwind from
+      stranding the parent wait with a nonzero remaining count;
     - the driver root union includes worker-buffer, safepoint, live-env, and
       live-dispatch channel roots;
     - eval-entry driver-C publication puts caller-held source/output roots in
@@ -165,6 +167,21 @@ Section CESKCollectorSafetyModel.
     ThunkClearVictim a \/
     ThunkReplaceVictim a.
 
+  Inductive CompletionExit : Type :=
+  | CompletionNormal : CompletionExit
+  | CompletionPanic : CompletionExit.
+
+  Definition CompletionWorkerExited
+      (Worker : Type)
+      (Exit : Worker -> CompletionExit -> Prop)
+      (w : Worker) : Prop :=
+    Exit w CompletionNormal \/ Exit w CompletionPanic.
+
+  Definition CompletionParentWaitStranded
+      (Worker : Type)
+      (Spawned Dropped : Worker -> Prop) : Prop :=
+    exists w, Spawned w /\ ~ Dropped w.
+
   Theorem rendezvous_participant_root_survives_collection :
     forall (Occupied Published : Slot -> Prop)
            (SlotRoot : Slot -> Addr -> Prop)
@@ -247,6 +264,44 @@ Section CESKCollectorSafetyModel.
     apply Hgate.
     apply Hphantom_repark.
     exact Hphantom.
+  Qed.
+
+  Theorem completion_guard_prevents_panic_strand :
+    forall (Worker : Type)
+           (Spawned Dropped : Worker -> Prop)
+           (Exit : Worker -> CompletionExit -> Prop),
+      (forall w, Spawned w -> CompletionWorkerExited Worker Exit w) ->
+      (forall w, Exit w CompletionNormal -> Dropped w) ->
+      (forall w, Exit w CompletionPanic -> Dropped w) ->
+      ~ CompletionParentWaitStranded Worker Spawned Dropped.
+  Proof.
+    intros Worker Spawned Dropped Exit Hevery_exits Hnormal Hpanic Hstranded.
+    destruct Hstranded as [w [Hspawned Hnot_dropped]].
+    apply Hnot_dropped.
+    destruct (Hevery_exits w Hspawned) as [Hnormal_exit | Hpanic_exit].
+    - apply Hnormal. exact Hnormal_exit.
+    - apply Hpanic. exact Hpanic_exit.
+  Qed.
+
+  Theorem panic_skip_completion_can_strand_parent_observation :
+    forall (Worker : Type)
+           (Spawned Dropped : Worker -> Prop)
+           (Exit : Worker -> CompletionExit -> Prop)
+           (ParentObserved : Prop)
+           (w : Worker),
+      Spawned w ->
+      Exit w CompletionPanic ->
+      ~ Dropped w ->
+      (ParentObserved -> forall u, Spawned u -> Exit u CompletionPanic -> Dropped u) ->
+      ~ ParentObserved.
+  Proof.
+    intros Worker Spawned Dropped Exit ParentObserved w
+           Hspawned Hpanic Hnot_dropped Hparent_complete Hobserved.
+    apply Hnot_dropped.
+    apply Hparent_complete.
+    - exact Hobserved.
+    - exact Hspawned.
+    - exact Hpanic.
   Qed.
 
   Theorem driver_root_union_channel_survives_collection :

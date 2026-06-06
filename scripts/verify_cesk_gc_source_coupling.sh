@@ -211,6 +211,21 @@ assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend:
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_dispatch_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_dispatch_roots(out);"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn snapshot_live_dispatch_witness() -> (Vec<MettaValue>, usize)" "weak.upgrade()" "strong.collect_dispatch_roots(&mut out);"
 
+# E1 parallel completion coupling: the CollapseCompletion proof/TLA model only
+# applies if every spawned dispatch/collapse worker owns one RAII completion
+# guard, the sole executable decrement is in that guard's Drop, and the parent
+# waits observe completion by the remaining counter reaching zero.
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "let _completion = CompletionGuard {" "2"
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "if self.remaining.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {" "1"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "impl Drop for CompletionGuard" "self.remaining.fetch_sub(1, std::sync::atomic::Ordering::AcqRel)" "cvar.notify_one();"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_dispatch(" "let closure = move || {" "let _completion = CompletionGuard {"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_dispatch(" "let _completion = CompletionGuard {" "PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_dispatch(" "let _completion = CompletionGuard {" "let _guard = EvalGuard::enter();"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_collapse_dispatch(" "let closure = move || {" "let _completion = CompletionGuard {"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_collapse_dispatch(" "let _completion = CompletionGuard {" "PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_collapse_dispatch(" "let _completion = CompletionGuard {" "let _guard = EvalGuard::enter();"
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "handle.remaining.load(Ordering::Acquire) == 0 || handle.cancel_token.is_satisfied();" "2"
+
 # E1 self-root publication coupling: the ThreadContribution formal obligation
 # only applies if the single canonical reader contains every component it claims.
 # Trampoline participants publish extra hot values, S/C/K with live-K narrowing,

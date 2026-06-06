@@ -227,6 +227,12 @@ run_tlc "thread_local_tables_barriers_missing_thunk_clear" "MC_ThreadLocalTables
   fail "Invariant NoThreadLocalTableValueFreed is violated"
 run_tlc "thread_local_tables_barriers_missing_thunk_replace" "MC_ThreadLocalTablesBarriers.tla" "MC_ThreadLocalTablesBarriers_missing_thunk_replace.cfg" \
   fail "Invariant NoThreadLocalTableValueFreed is violated"
+run_tlc "eval_tables_registered_roots_all" "MC_EvalTablesRegisteredRoots.tla" "MC_EvalTablesRegisteredRoots_all.cfg" \
+  pass ""
+run_tlc "eval_tables_missing_eval_memo" "MC_EvalTablesRegisteredRoots.tla" "MC_EvalTablesRegisteredRoots_missing_eval_memo.cfg" \
+  fail "Invariant NoEvalTableValueFreed is violated"
+run_tlc "eval_tables_missing_match_result" "MC_EvalTablesRegisteredRoots.tla" "MC_EvalTablesRegisteredRoots_missing_match_result.cfg" \
+  fail "Invariant NoEvalTableValueFreed is violated"
 run_tlc "started_cycle_gate_started" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_started.cfg" \
   pass ""
 run_tlc "started_cycle_gate_gen" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_gen.cfg" \

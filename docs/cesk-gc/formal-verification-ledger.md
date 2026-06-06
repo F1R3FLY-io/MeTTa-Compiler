@@ -154,6 +154,9 @@ requires a new stale-old-mark proof before it can be introduced.
   and thunk results and shading stale-evicted, overwritten, removed, cleared/invalidated, and thunk-replaced cached
   results preserves `NoThreadLocalTableValueFreed`; omitting thunk scan, subgoal stale-eviction shade, thunk clear shade,
   or thunk replacement shade violates it.
+- `tla/EvalTablesRegisteredRoots.tla`: checks the thread-local eval memo and match-result table registered-root
+  obligation. Scanning both tables preserves `NoEvalTableValueFreed`; omitting either eval memo or match-result scan
+  violates it.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 - `tla/CollapseCompletion.tla`: checks the E1 parallel collapse completion liveness obligation. With the RAII

@@ -9,8 +9,10 @@ correction (oracle gated on `gc_mode_is_index()`) found by the parent.
 
 ## Source-verified corrections (the Plan agent caught two of my wrong assumptions)
 1. **`collect_eval_memo_roots` is NOT a no-op** — it walks `EVAL_MEMO` (dispatch_hints.rs).
-   The actual no-op is **`collect_binding_capture_roots`** (`pub fn ...(_roots){}` at
-   eval_loop.rs:2105). So EVAL_MEMO is a real gap source; binding_capture is excluded.
+   Binding-capture frames are still excluded, but not through a live no-op collector: the
+   empty shim was removed after source audit. Those frames store metadata only
+   (`tracked_vars` and fork depth); value-bearing bindings travel with `BoundValue` and are
+   walked by the work item / continuation root readers.
 2. **`SAFEPOINT_ROOTS` is NOT empty at quiescence** — `refresh_thread_local_cache_roots`
    (eval/mod.rs:133) snapshots the 4 caches into `CACHE_ROOT_HANDLE` before EvalGuard drops.
 
@@ -31,7 +33,7 @@ sense in index mode. ⇒ oracle body = `#[cfg(debug_assertions)]` + `if gc_mode_
 | `collect_match_result_roots` (dispatch_hints) | MATCH_RESULT_CACHE thread_local | global cache | ADD to collect_global_anchors |
 | `collect_subgoal_roots` (tabling.rs) | THREAD_TABLE thread_local | global cache | ADD to collect_global_anchors |
 | `collect_thunk_roots` (thunk.rs) | THREAD_THUNKS thread_local | global cache | ADD to collect_global_anchors |
-| `collect_binding_capture_roots` (eval_loop.rs:2105) | none (empty `{}`) | ∅ | EXCLUDE (no-op) |
+| binding-capture frames | metadata only (`tracked_vars`, fork depth) | ∅ | EXCLUDE (values live in `BoundValue` / WorkItem / Continuation readers) |
 | `deferred_shared_drops` (eval_loop.rs:3417) | transient `Vec<Arc<EnvShared>>` local | transient register | APPEND at oracle / A4.4 flip site (NOT a reader param) |
 | `MettaStateGcRoots` (metta_state.rs) | per-instance result vec | covered (index regime) | result appended explicitly by quiescence collectors; A5.3b re-homes |
 | `CurrentIterRootProvider` | per-thread current-iter mirror | covered | = the current `work` item in C (collect_all) |

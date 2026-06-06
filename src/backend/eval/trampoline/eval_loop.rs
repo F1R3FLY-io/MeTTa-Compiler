@@ -1698,9 +1698,6 @@ fn dispatch_rule_matches<C: EvalContext>(
         let _total_branches = (remaining_iter.len() + 1) as u32; // +1 matches existing trace convention
         let (rhs, bindings) = remaining_iter.next().expect("matches is non-empty");
 
-        // collapse-bind: capture tracked variable bindings from first match.
-        capture_bindings_if_active(&bindings);
-
         // Trace: NondeterministicFork + BranchStart for first branch
         #[cfg(feature = "trace")]
         let _branch_span_id = {
@@ -2180,16 +2177,6 @@ fn current_memo_tracked_key() -> u64 {
     }
 }
 
-/// Stage 1b no-op: capture logic was removed. Retained as a stub to
-/// minimize churn at dispatch sites during the migration. Per-branch
-/// bindings now flow via `ProcessRuleMatches.current_branch_match_bindings`
-/// (Stage 1c).
-#[inline]
-fn capture_bindings_if_active(
-    _match_bindings: &crate::backend::models::GenericBindings<MettaValue>,
-) {
-}
-
 /// Encode bindings as an S-expression: `(Bindings ($var val) ...)`.
 /// Used by collapse-bind to pair each result with its captured bindings.
 ///
@@ -2244,13 +2231,6 @@ where
     let _ = factory; // factory available for future use
     bindings
 }
-
-/// Stage 1b: the capture frame no longer stores MettaValues — bindings now
-/// travel with each `BoundValue` and are walked via the standard WorkItem/
-/// Continuation GC root collectors. This function is retained as a no-op
-/// to preserve the callable signature; existing call sites remain unchanged
-/// and contribute zero roots.
-pub fn collect_binding_capture_roots(_roots: &mut Vec<MettaValue>) {}
 
 /// Phase 1 cut-barrier: set the cut signal — called by `eval_cut_generic`
 /// when `(cut)` is evaluated. Latches the INNERMOST active cut-scope barrier
@@ -4317,9 +4297,6 @@ fn eval_trampoline_inner<C: EvalContext>(
                 collect_match_result_roots(concrete_roots);
                 crate::backend::eval::cesk::tabling::collect_subgoal_roots(concrete_roots);
                 crate::backend::eval::cesk::thunk::collect_thunk_roots(concrete_roots);
-
-                // Collect GC roots from collapse-bind capture frames.
-                collect_binding_capture_roots(concrete_roots);
 
                 // Collect GC roots from deferred environment drops.
                 // These environments' MettaValues must be visible to the GC

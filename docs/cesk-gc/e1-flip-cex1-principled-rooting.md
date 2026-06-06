@@ -22,7 +22,7 @@ in two non-principled ways, both of which this design removes:
 
 1. **Per-site source enumeration** — each park/finish/safepoint site manually listed
    `collect_eval_memo_roots`+`collect_match_result_roots`+`collect_subgoal_roots`+
-   `collect_thunk_roots`+`collect_binding_capture_roots`+`collect_k_spine`+
+   `collect_thunk_roots`+`collect_k_spine`+
    `collect_global_anchors`. Adding a thread-local source ⇒ remember it at EVERY site.
 2. **Park-timing-dependent coverage** — a worker blocked at `EvalGuard::enter`'s
    admission gate (decremented `ACTIVE_EVALUATORS`, parked on `GC_PROGRESS_CONDVAR`,
@@ -67,7 +67,7 @@ pub fn collect_complete_thread_contribution(out: &mut Vec<MettaValue>, ctx: Thre
 ```
 - `Trampoline` body = `out.extend(extra); collect_machine_roots_live(out, …); for e in deferred_envs { e.collect_roots_into(out); }`.
 - `TierLeaf` body = `out.extend(extra); collect_persistent_roots_via_global_env0(out);` (E₀ ∪ anchors ∪ K-spine; no in-scope S/C/K).
-- **KEY:** `collect_machine_roots_live` ALREADY transitively contains the WIP's 7 collectors (memo/match/subgoal/thunk are in `collect_global_anchors` :301; +k-spine in `collect_persistent_roots` :404; both in `collect_machine_roots_live` :386). So the WIP per-site lists were redundant — the fix is "all sites call the COMPLETE canonical collector," not "add sources per site." Fold the lone `binding_capture` into `collect_global_anchors` once.
+- **KEY:** `collect_machine_roots_live` ALREADY transitively contains the WIP's live collectors (memo/match/subgoal/thunk are in `collect_global_anchors` :301; +k-spine in `collect_persistent_roots` :404; both in `collect_machine_roots_live` :386). Binding-capture frames are metadata-only (`tracked_vars` + fork depth), while `MettaValue` bindings travel with `BoundValue` and are walked by WorkItem/Continuation readers. So the WIP per-site lists were redundant — the fix is "all sites call the COMPLETE canonical collector," not "add sources per site."
 - **Anti-fragility:** new thread-local source ⇒ one line in `collect_global_anchors` (the ST collector already requires it there); all sites inherit it. Two enum variants capture the only two register-provenance shapes (compile-checked; a missing field is a compile error).
 
 ## D2 — the global dispatch-fan-out anchor (`gc_allocator.rs`, modeled on `SAFEPOINT_ROOTS` :4636)
@@ -110,7 +110,7 @@ dispatch trips a debug panic, not a corruption bug.
 
 ## Edit list
 
-- **roots.rs:** `ThreadContribution` + `collect_complete_thread_contribution` (~:373); fold `binding_capture` into `collect_global_anchors` (:316); update `assert_quiescence_superset` (:432) NEW term to the canonical reader.
+- **roots.rs:** `ThreadContribution` + `collect_complete_thread_contribution` (~:373); `collect_global_anchors` scans the live value-bearing singleton/thread-local anchors; update `assert_quiescence_superset` (:432) NEW term to the canonical reader.
 - **gc_allocator.rs:** `LIVE_DISPATCHES` + `DispatchRoots` + `LiveDispatchHandle`/Drop + `register_live_dispatch` + `collect_live_dispatch_anchors` (~:4636, mirror SAFEPOINT_ROOTS).
 - **gc_driver.rs:** +`collect_live_dispatch_anchors(&mut roots)` at :186; +`assert_rendezvous_union_complete` (debug).
 - **types.rs:** `impl DispatchRoots` for both providers (~:317/:397, body = slab collect_roots); +`#[cfg(index-gc)] _live_dispatch: Option<LiveDispatchHandle>` on both handles (~:228/:363).

@@ -38,9 +38,13 @@ root_set.collect_from_continuations(&continuations);        // K: continuation s
 collect_frame_chain_roots(root_set.as_mut_vec());           // caller frame chain
 collect_eval_memo_roots / collect_match_result_roots(...)   // pointer-keyed caches
 tabling::collect_subgoal_roots / thunk::collect_thunk_roots(...)
-collect_binding_capture_roots(...)                          // collapse-bind frames
 for deferred_env in &deferred_shared_drops { ...collect_roots(...) }  // deferred env drops
 ```
+
+Collapse-bind capture frames are not a separate root source in the current
+collector: they carry metadata (`tracked_vars` and fork depth), while the
+value-bearing bindings travel with `BoundValue` and are already walked through
+the work item / continuation root readers.
 
 It then passes that root vec **directly** to the collector via
 `ctx.perform_safepoint(root_set.drain_into_vec())` (`eval_loop.rs:3462`).

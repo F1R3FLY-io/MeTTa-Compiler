@@ -316,18 +316,6 @@ pub fn collect_global_anchors(out: &mut Vec<crate::backend::models::MettaValue>)
     crate::backend::eval::trampoline::dispatch_hints::collect_match_result_roots(out);
     crate::backend::eval::cesk::tabling::collect_subgoal_roots(out);
     crate::backend::eval::cesk::thunk::collect_thunk_roots(out);
-    // E1-FLIP / CEX-1 (D1): the collapse-bind capture frames, folded in HERE — the
-    // ONE canonical place every thread-local cache source lives. Today
-    // `collect_binding_capture_roots` is an empty no-op (bindings travel with each
-    // `BoundValue` and are walked via WorkItem/Continuation; eval_loop.rs ~2176),
-    // so this adds zero roots and is byte-identical. It is folded in NOT for present
-    // correctness but for ANTI-FRAGILITY: should the capture frame ever again hold
-    // `Addr`s directly, this single line propagates them to EVERY safepoint /
-    // park / finisher site — none of which need to be touched — because they all go
-    // through this reader (via `collect_persistent_roots` → `collect_machine_roots*`
-    // → `collect_complete_thread_contribution`). The pre-CEX-1 WIP listed it at each
-    // of the 4 self-root sites instead; this fold makes those redundant.
-    crate::backend::eval::trampoline::eval_loop::collect_binding_capture_roots(out);
 }
 
 /// CESK Phase A4.2b — the single **structural machine-root** reader. The one

@@ -32,7 +32,9 @@
       when removed space-local, rule-index, and environment/token/state
       pre-images are shaded;
     - pointer-keyed operator-cache lookup cannot return a stale post-sweep entry
-      when the local sweep-epoch guard runs before lookup.
+      when the local sweep-epoch guard runs before lookup;
+    - write-once global anchors that are scanned structurally and cannot be
+      deleted survive ordinary structural-root collection.
 
     These are parametric theorems over the store graph and do not assume a finite
     TLC state space.
@@ -81,6 +83,12 @@ Section CESKCollectorSafetyModel.
       (CacheBefore CacheAfter : Entry -> Prop) : Prop :=
     (local_epoch = heap_epoch /\ (forall e, CacheAfter e -> CacheBefore e)) \/
     (local_epoch <> heap_epoch /\ (forall e, ~ CacheAfter e)).
+
+  Definition WriteOnceAnchorLive
+      (Anchor : Type)
+      (Initialized Deleted : Anchor -> Prop)
+      (slot : Anchor) : Prop :=
+    Initialized slot /\ ~ Deleted slot.
 
   Theorem rendezvous_participant_root_survives_collection :
     forall (Occupied Published : Slot -> Prop)
@@ -480,6 +488,36 @@ Section CESKCollectorSafetyModel.
       apply (Hcleared e).
       apply Hlookup.
       exact Hreturned.
+  Qed.
+
+  Theorem write_once_anchor_survives_collection :
+    forall (Anchor : Type)
+           (Initialized Deleted Scanned : Anchor -> Prop)
+           (AnchorValue : Anchor -> Addr -> Prop)
+           (StructuralRoot Marked Freed : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      (forall slot, Initialized slot -> ~ Deleted slot) ->
+      (forall slot, WriteOnceAnchorLive Anchor Initialized Deleted slot -> Scanned slot) ->
+      (forall slot a, Scanned slot -> AnchorValue slot a -> StructuralRoot a) ->
+      (forall a, Reach StructuralRoot Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall slot a,
+        Initialized slot ->
+        AnchorValue slot a ->
+        ~ Freed a.
+  Proof.
+    intros Anchor Initialized Deleted Scanned AnchorValue StructuralRoot Marked Freed Edge
+           Hnot_deleted Hscanned Hroot Hmark Hsweep slot a Hinitialized Hvalue Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    apply (Hroot slot a).
+    - apply Hscanned.
+      split.
+      + exact Hinitialized.
+      + apply Hnot_deleted.
+        exact Hinitialized.
+    - exact Hvalue.
   Qed.
 End CESKCollectorSafetyModel.
 

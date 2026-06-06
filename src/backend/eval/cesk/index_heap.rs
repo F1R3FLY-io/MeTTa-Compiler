@@ -33,10 +33,12 @@
 //! it replaced (see the [`SideColumn`] docs: a two-level lazy-growing directory
 //! addresses the entire `u32` index space, never the segment capacity).
 //!
-//! Inc 2 is in progress: this module is complete + unit-tested in isolation and
-//! not yet wired to the value model (`#![allow(dead_code)]`). A single global
-//! `RwLock<IndexHeap>` backs the future `IndexHeapStore` (Inc 2a-4); the
-//! lock-free per-thread TLAB refinement is Inc 5.
+//! This heap is the active `index-gc` value heap. A single global
+//! `RwLock<IndexHeap>` backs the current index factory and collector paths; the
+//! D-TLAB/concurrent-allocation work layers on top of this representation. The
+//! module keeps `#![allow(dead_code)]` because some verification helpers and
+//! cfg-gated collector variants are intentionally present across slab/index
+//! build modes.
 
 #![allow(dead_code)]
 

@@ -98,6 +98,12 @@ assert_zero() {
 # A5 structural-root architecture: the dynamic root registry and raw frame-chain
 # discovery path must remain slab-only. The index collector reads roots from the
 # reified CESK machine plus narrow driver transport channels.
+assert_zero "src/backend/eval/cesk/index_arena.rs" "not yet wired"
+assert_zero "src/backend/eval/cesk/index_heap.rs" "not yet wired"
+assert_zero "src/backend/eval/cesk/index_node.rs" "not yet wired"
+assert_zero "src/backend/eval/cesk/index_arena.rs" "Increment 2 is in progress"
+assert_zero "src/backend/eval/cesk/index_heap.rs" "Inc 2 is in progress"
+assert_zero "src/backend/eval/cesk/index_node.rs" "Inc 2 is in progress"
 assert_before \
   "src/backend/models/mod.rs" \
   "#[cfg(not(feature = \"index-gc\"))]" \

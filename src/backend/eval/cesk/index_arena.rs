@@ -25,11 +25,11 @@
 //!   is no concurrent free-vs-CAS, so reuse is ABA-free by construction.
 //!
 //! ## Status
-//! Increment 2 is in progress: this module is complete and unit-tested in
-//! isolation, but is not yet wired into [`crate::backend::models::MettaValue`]'s
-//! decode or the `Store` trait (those are the subsequent steps of Inc 2). It is
-//! therefore `#![allow(dead_code)]` for now, mirroring the inert-scaffolding
-//! convention used by `trampoline/binding_store.rs`.
+//! This arena is the active `index-gc` storage substrate. `MettaValue` handles
+//! project to [`Addr`] values through the index factory, and the CESK
+//! mark/sweep paths reclaim this arena directly. The module keeps
+//! `#![allow(dead_code)]` because some verification helpers and cfg-gated
+//! collector variants are intentionally present across slab/index build modes.
 
 #![allow(dead_code)]
 

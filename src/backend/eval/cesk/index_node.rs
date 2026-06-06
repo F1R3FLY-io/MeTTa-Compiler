@@ -21,8 +21,10 @@
 //!   `u64` id; the live `Arc`-backed handle is kept in an `IndexHeap` side table
 //!   keyed by that id (matching how `view`/eq/hash already use only the id).
 //!
-//! Inc 2 is in progress: this module is complete + unit-tested in isolation and
-//! not yet wired to the value model (`#![allow(dead_code)]`).
+//! This node representation is wired into the active `index-gc` value model via
+//! `IndexHeap` and the index factory. The module keeps `#![allow(dead_code)]`
+//! because some total-mirror variants and verification helpers are intentionally
+//! present across slab/index build modes.
 
 #![allow(dead_code)]
 

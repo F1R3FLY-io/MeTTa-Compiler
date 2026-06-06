@@ -111,6 +111,18 @@ assert_before \
   "#[cfg(not(feature = \"index-gc\"))]" \
   "pub trait RootProvider: Send + Sync {"
 
+# Collapse-bind binding-capture frames are metadata only. Values must keep
+# travelling through BoundValue / work-item / continuation readers, not through
+# a separate thread-local root source.
+assert_zero "src/backend/eval/trampoline/eval_loop.rs" "capture_bindings_if_active"
+assert_zero "src/backend/eval/trampoline/eval_loop.rs" "collect_binding_capture_roots"
+assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "tracked_vars: SmallVec<[&'static str; 4]>," "1"
+assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "collapse_fork_depth: u32," "1"
+assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "MettaValue"
+assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "BoundValue"
+assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "GenericBindings"
+assert_zero "src/backend/eval/cesk/roots.rs" "binding_capture"
+
 # E1 rendezvous safety: the dedicated driver must wait on the V4 witness, publish
 # witness_ok, build the root union, run the oracle, and only then enter the
 # rendezvous collection gate.

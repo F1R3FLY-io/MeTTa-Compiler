@@ -216,6 +216,9 @@ facts the proofs rely on:
 - Every self-root publication site routes through the canonical `collect_complete_thread_contribution` reader, whose
   source shape is pinned: trampoline participants publish extra hot values, live S/C/K, E0, global anchors, K-spine,
   and deferred env roots; tier leaves publish extra VM/JIT values plus the env-less persistent roots they can read.
+- Collapse-bind binding-capture frames are pinned as metadata-only: the old empty capture/root shims are absent, the
+  frame contains only `tracked_vars` and `collapse_fork_depth`, and it cannot hold `MettaValue`, `BoundValue`, or
+  `GenericBindings` roots outside the canonical work-item / continuation readers.
 - Both public eval boundaries (`eval` and `eval_with_tier`) publish `MettaState.source/output` into
   `SAFEPOINT_ROOTS` before the live transition begins, so midloop/rendezvous collection sees the caller's driver-C
   even when an outer CLI/REPL/conformance loop has not installed its own batch guard.

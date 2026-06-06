@@ -2024,17 +2024,17 @@ pub mod index_gc {
     /// **Root completeness (the UAF linchpin):** unlike the quiescence point,
     /// the live trampoline S/C/K AND every on-stack bytecode-VM frame's
     /// execution stacks ARE alive here — so the caller MUST pass the COMPLETE
-    /// mid-execution root set: the trampoline's own `RootSet` (work items +
-    /// continuations + frame chain + pointer-keyed caches + deferred envs)
-    /// UNIONED with `collect_all_roots()`. The frame chain now carries every
-    /// nested VM frame's `collect_roots_into` output (see
-    /// `bytecode/vm/mod.rs::with_vm_roots_frame`), which is what makes the
-    /// mid-loop set complete and the collection ASAN-clean. Marking from an
-    /// incomplete set is a use-after-free.
+    /// mid-execution root set: live machine roots from `collect_machine_roots_live`
+    /// (S/C/K plus reach(E₀), global anchors, and the typed K-spine/VM leaves),
+    /// the deferred-drop transient register, and driver-C safepoint roots. The
+    /// formal `MidloopRootUnion` obligation and source-coupling harness pin that
+    /// vector; the default-on flip still awaits the forced-ASAN validation gate.
+    /// Marking from an incomplete set is a use-after-free.
     #[inline]
     pub fn gate_open_midloop() -> bool {
         // Mid-loop (mid-directive) collection is OPT-IN (`midloop_enabled()`)
-        // until its ASAN root-completeness proof lands — see `midloop_enabled`.
+        // until its forced-ASAN root-completeness gate is green — see
+        // `midloop_enabled`.
         // Default-OFF means the shipped index-gc behavior is exactly the
         // ASAN-validated true-quiescence collector (Inc 6a); mid-loop fires only
         // when explicitly enabled for validation / once proven.
@@ -2115,13 +2115,14 @@ pub mod index_gc {
         *OFF.get_or_init(|| std::env::var("METTATRON_INDEX_GC_DISABLE").as_deref() == Ok("1"))
     }
 
-    /// Mid-loop (mid-directive) collection is OPT-IN until its ASAN
-    /// root-completeness proof lands: `METTATRON_INDEX_GC_MIDLOOP=1` enables it.
+    /// Mid-loop (mid-directive) collection is OPT-IN until its forced-ASAN
+    /// root-completeness gate is green: `METTATRON_INDEX_GC_MIDLOOP=1` enables it.
     /// Default OFF so the shipped behavior is the ASAN-validated true-quiescence
-    /// collector (Inc 6a). The mid-loop path roots the live trampoline S/C/K plus
-    /// every on-stack VM frame (`with_vm_roots_frame`); enabling it by default
-    /// awaits the ASAN run that forces a mid-execution sweep and proves no
-    /// freed-mid-execution use-after-free (parsed once).
+    /// collector (Inc 6a). The mid-loop path roots the live trampoline S/C/K,
+    /// reach(E₀), global anchors, typed K-spine/VM leaves, deferred envs, and
+    /// driver-C safepoint roots; enabling it by default awaits the ASAN run that
+    /// forces a mid-execution sweep and proves no freed-mid-execution
+    /// use-after-free (parsed once).
     fn midloop_enabled() -> bool {
         use std::sync::OnceLock;
         static ON: OnceLock<bool> = OnceLock::new();

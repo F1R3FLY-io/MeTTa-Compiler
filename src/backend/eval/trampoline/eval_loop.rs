@@ -4446,17 +4446,16 @@ fn eval_trampoline_inner<C: EvalContext>(
             // only inside the old-gen safepoint branch.
             clear_aba_sensitive_caches();
 
-            // ── Comprehensive mid-execution rooting: MID-LOOP store-centric GC ──
+            // ── Comprehensive mid-execution rooting: MID-LOOP index GC ──
             // (single-threaded regime only; 2026-05-28). At THIS mid-trampoline
-            // safepoint the live execution stacks ARE present — `root_set` above
-            // holds the complete trampoline S/C/K + frame chain (now including
-            // every nested bytecode-VM frame's execution stacks via
-            // `with_vm_roots_frame`) + pointer-keyed caches + deferred envs. We
-            // UNION that with `collect_all_roots()` (env / tiers / promoted) to
-            // form the COMPLETE mid-execution root set, then run an index
-            // mark+sweep — reclaiming intra-directive garbage WHILE a giant
-            // `!(...)` is still evaluating (the capability the quiescence-only
-            // collector lacked). The `gate_open_midloop()` gate (inside
+            // safepoint the live execution stacks ARE present. The index path
+            // below builds the formal mid-loop root union directly from
+            // `collect_machine_roots_live` (live S/C/K plus reach(E₀), global
+            // anchors, and the typed K-spine/VM leaves), deferred env drops, and
+            // driver-C safepoint roots, then runs the shared index mark/sweep —
+            // reclaiming intra-directive garbage WHILE a giant `!(...)` is still
+            // evaluating (the capability the quiescence-only collector lacked).
+            // The `gate_open_midloop()` gate (inside
             // `should_collect_midloop` / `run_collection_if_triggered_midloop`)
             // fires ONLY in index mode, ONLY when no eval worker has ever been
             // spawned, and ONLY when this is the SOLE evaluator

@@ -12,6 +12,8 @@
       causing a phantom worker re-park before the next driver starts;
     - parallel dispatch/collapse completion guards prevent a panic-unwind from
       stranding the parent wait with a nonzero remaining count;
+    - worker admission gating prevents a new evaluator from joining after the
+      driver has closed admission and snapshotted participants;
     - the driver root union includes worker-buffer, safepoint, live-env, and
       live-dispatch channel roots;
     - eval-entry driver-C publication puts caller-held source/output roots in
@@ -304,6 +306,45 @@ Section CESKCollectorSafetyModel.
     - exact Hobserved.
     - exact Hspawned.
     - exact Hpanic.
+  Qed.
+
+  Theorem worker_admission_snapshot_complete :
+    forall (Worker : Type)
+           (JoinedAtSweep InSnapshot JoinedDuringCollection : Worker -> Prop),
+      (forall w, JoinedAtSweep w -> InSnapshot w \/ JoinedDuringCollection w) ->
+      (forall w, ~ JoinedDuringCollection w) ->
+      forall w,
+        JoinedAtSweep w -> InSnapshot w.
+  Proof.
+    intros Worker JoinedAtSweep InSnapshot JoinedDuringCollection
+           Hjoined_shape Hadmission_closed w Hjoined.
+    destruct (Hjoined_shape w Hjoined) as [Hsnapshot | Hduring].
+    - exact Hsnapshot.
+    - exfalso.
+      apply (Hadmission_closed w).
+      exact Hduring.
+  Qed.
+
+  Theorem admitted_worker_survives_sweep :
+    forall (Worker : Type)
+           (JoinedAtSweep InSnapshot JoinedDuringCollection
+            Marked Freed : Worker -> Prop),
+      (forall w, JoinedAtSweep w -> InSnapshot w \/ JoinedDuringCollection w) ->
+      (forall w, ~ JoinedDuringCollection w) ->
+      (forall w, InSnapshot w -> Marked w) ->
+      (forall w, Freed w -> ~ Marked w) ->
+      forall w,
+        JoinedAtSweep w -> ~ Freed w.
+  Proof.
+    intros Worker JoinedAtSweep InSnapshot JoinedDuringCollection Marked Freed
+           Hjoined_shape Hadmission_closed Hsnapshot_marked Hsweep w Hjoined Hfreed.
+    apply (Hsweep w Hfreed).
+    apply Hsnapshot_marked.
+    apply (worker_admission_snapshot_complete
+             Worker JoinedAtSweep InSnapshot JoinedDuringCollection).
+    - exact Hjoined_shape.
+    - exact Hadmission_closed.
+    - exact Hjoined.
   Qed.
 
   Theorem driver_root_union_channel_survives_collection :

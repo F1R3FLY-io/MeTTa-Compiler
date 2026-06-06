@@ -87,6 +87,7 @@ run_lean "formal/lean/gc/WitnessSlotLifecycle.lean"
 run_lean "formal/lean/gc/WitnessOkReset.lean"
 run_lean "formal/lean/gc/StartedCycleGate.lean"
 run_lean "formal/lean/gc/CollapseCompletion.lean"
+run_lean "formal/lean/gc/WorkerAdmission.lean"
 run_lean "formal/lean/gc/ThreadContribution.lean"
 run_lean "formal/lean/gc/DriverRootUnion.lean"
 run_lean "formal/lean/gc/DriverCPublication.lean"
@@ -112,6 +113,7 @@ run_rocq "formal/rocq/gc/WitnessSlotLifecycle.v"
 run_rocq "formal/rocq/gc/WitnessOkReset.v"
 run_rocq "formal/rocq/gc/StartedCycleGate.v"
 run_rocq "formal/rocq/gc/CollapseCompletion.v"
+run_rocq "formal/rocq/gc/WorkerAdmission.v"
 run_rocq "formal/rocq/gc/ThreadContribution.v"
 run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
@@ -140,6 +142,10 @@ run_tlc "collapse_fix" "CollapseCompletion.tla" "CollapseCompletion_fix.cfg" \
   pass ""
 run_tlc "collapse_bug" "CollapseCompletion.tla" "CollapseCompletion_bug.cfg" \
   fail "Temporal properties were violated"
+run_tlc "worker_admission_gate" "MC_WorkerAdmission.tla" "MC_WorkerAdmission_gate.cfg" \
+  pass ""
+run_tlc "worker_admission_race" "MC_WorkerAdmission.tla" "MC_WorkerAdmission_race.cfg" \
+  fail "Invariant NoUnsnapshottedWorkerFreed is violated"
 run_tlc "rendezvous_witness_strict" "MC_RendezvousWitness.tla" "MC_RendezvousWitness_strict.cfg" \
   pass ""
 run_tlc "rendezvous_witness_weak" "MC_RendezvousWitness.tla" "MC_RendezvousWitness_weak.cfg" \

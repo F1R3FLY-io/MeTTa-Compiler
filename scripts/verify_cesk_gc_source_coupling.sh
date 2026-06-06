@@ -226,6 +226,23 @@ assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_coll
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_collapse_dispatch(" "let _completion = CompletionGuard {" "let _guard = EvalGuard::enter();"
 assert_count "src/backend/eval/trampoline/eval_loop.rs" "handle.remaining.load(Ordering::Acquire) == 0 || handle.cancel_token.is_satisfied();" "2"
 
+# E1 worker admission coupling: the WorkerAdmission proof/TLA model only applies
+# if the driver closes admission before its participant snapshot, ordinary
+# EvalGuard entry backs out while GC_IN_PROGRESS is set before joining the
+# counted thread set, and spawned dispatch/collapse workers take the early
+# dedicated-GC admission wait before EvalGuard::enter.
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_rendezvous_cycle" "let _gip = acquire_gc_in_progress_for_rendezvous();" "let roots = prepare_rendezvous_roots();"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_stw_rendezvous_cycle" "let gip = acquire_gc_in_progress_for_rendezvous();" "let roots = prepare_rendezvous_roots();"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn prepare_rendezvous_roots" "let n = ga::n_threads();" "ga::set_n_threads_at_snapshot(n);"
+assert_after_before "src/backend/models/gc_allocator.rs" "impl EvalGuard" "ACTIVE_EVALUATORS.fetch_add(1, Ordering::AcqRel);" "if !GC_IN_PROGRESS.load(Ordering::Acquire) {"
+assert_after_before "src/backend/models/gc_allocator.rs" "impl EvalGuard" "ACTIVE_EVALUATORS.fetch_sub(1, Ordering::AcqRel);" "let mut lock = GC_PROGRESS_MUTEX.lock();"
+assert_after_before "src/backend/models/gc_allocator.rs" "impl EvalGuard" "if !GC_IN_PROGRESS.load(Ordering::Acquire) {" "EVAL_GUARD_DEPTH.with"
+assert_after_before "src/backend/models/gc_allocator.rs" "impl EvalGuard" "EVAL_GUARD_DEPTH.with" "N_THREADS.fetch_add(1, Ordering::AcqRel);"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_dispatch(" "if crate::backend::models::gc_allocator::dedicated_gc_enabled() {" "crate::backend::models::gc_allocator::worker_wait_for_resume();"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_dispatch(" "crate::backend::models::gc_allocator::worker_wait_for_resume();" "let _guard = EvalGuard::enter();"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_collapse_dispatch(" "if crate::backend::models::gc_allocator::dedicated_gc_enabled() {" "crate::backend::models::gc_allocator::worker_wait_for_resume();"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_collapse_dispatch(" "crate::backend::models::gc_allocator::worker_wait_for_resume();" "let _guard = EvalGuard::enter();"
+
 # E1 self-root publication coupling: the ThreadContribution formal obligation
 # only applies if the single canonical reader contains every component it claims.
 # Trampoline participants publish extra hot values, S/C/K with live-K narrowing,

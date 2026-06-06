@@ -50,6 +50,9 @@ requires a new stale-old-mark proof before it can be introduced.
   normal and panic-unwind exits, then the parent wait cannot be stranded by a skipped worker decrement; the companion
   theorem also captures the historical negative shape where a panic edge skips completion and parent observation is
   impossible.
+- `formal/rocq/gc/WorkerAdmission.v` and `formal/lean/gc/WorkerAdmission.lean`: prove the E1 worker-admission
+  obligation. If collection admission is closed before the participant snapshot and no worker can join during the
+  collection window, then every worker live at sweep was in the snapshot and is retained by ordinary mark/sweep.
 - `formal/rocq/gc/ThreadContribution.v` and `formal/lean/gc/ThreadContribution.lean`: if the canonical
   per-mutator contribution reader includes every component it claims (trampoline extra values, S/C/K, E0, global
   anchors, K-spine, deferred env roots; tier-leaf extra values plus env-less persistent roots), and publication/drain
@@ -155,6 +158,9 @@ requires a new stale-old-mark proof before it can be introduced.
 - `tla/CollapseCompletion.tla`: checks the E1 parallel collapse completion liveness obligation. With the RAII
   completion guard, normal and panic exits both decrement the worker counter and `<>(parentDone)` holds; without the
   panic-edge decrement, a panic can leave `remaining > 0` forever and violates the temporal property.
+- `tla/WorkerAdmission.tla`: checks the E1 WorkerEnter admission race. Closing admission before the participant
+  snapshot prevents a new worker from joining during collection; disabling the admission gate frees a live worker that
+  entered after the snapshot.
 - `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end
   prevents the previous cycle's true flag from admitting a next-cycle sweep before the next witness wait.
 - `tla/CurSegReuseOrder.tla`: checks the historical skipped-old young-marker allocator premise. Cur-segment-only
@@ -261,6 +267,10 @@ facts the proofs rely on:
 - Parallel dispatch/collapse worker completion is source-pinned: both worker closures construct exactly one
   `CompletionGuard` before `EvalGuard::enter()`, the only executable `remaining.fetch_sub(1, ...)` is inside the
   guard's `Drop`, and the wait arms observe completion from `remaining == 0`.
+- Worker admission is source-pinned: the dedicated driver obtains `GcInProgressGuard` before preparing rendezvous
+  roots, `EvalGuard::enter()` backs out while `GC_IN_PROGRESS` is set before joining `N_THREADS`, and the
+  dispatch/collapse worker closures run the early dedicated-GC `worker_wait_for_resume()` admission wait before
+  `EvalGuard::enter()`.
 
 ## Harness
 

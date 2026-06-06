@@ -28,14 +28,19 @@ REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
 PLN="${PLN:-$REPO_PARENT/PLN-main}"
 cd "$REPO"
 BIN="$REPO/target/x86_64-unknown-linux-gnu/release/mettatron"
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "e1_flip_v4.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "e1_flip_v4.XXXXXXXX")}"
 P="$LOG_DIR/e1_flip_v4"
 MIN_BYTES=131072   # 128 KiB major floor — forces the rendezvous collector to fire
+ARM_TIMEOUT="${ARM_TIMEOUT:-240s}"
+ARM_KILL_AFTER="${ARM_KILL_AFTER:-20s}"
 
 echo "===== E1-FLIP V4 ASAN (FANOUT>0 + DEDICATED=1, env-forced) ====="; date; free -h | head -2
 echo "repo=$REPO"
 echo "pln=$PLN"
 echo "logs=$LOG_DIR"
+echo "arm_timeout=$ARM_TIMEOUT kill_after=$ARM_KILL_AFTER"
 
 echo "### build mettatron index-gc ASAN (release, -Zbuild-std, -j4, capped 24G)"
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000% -p TasksMax=512 --quiet \
@@ -51,22 +56,40 @@ fi
 
 run_arm() {  # $1=label $2=fixture $3=fanout
   local label="$1" fixture="$2" fanout="$3"
+  local rc asan_count rendezvous_count non_rendezvous_count error_count
   echo "### ASAN arm: $label (FANOUT=$fanout, DEDICATED=1, MIN_BYTES=$MIN_BYTES)"
   env METTATRON_PARALLEL_FANOUT_DEPTH="$fanout" METTATRON_INDEX_GC_DEDICATED=1 \
       METTATRON_INDEX_GC_MIN_BYTES="$MIN_BYTES" METTATRON_INDEX_GC_REPORT=2 \
       ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:halt_on_error=1 \
     systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 -p CPUQuota=1000% --quiet \
+    timeout --signal=USR1 --kill-after="$ARM_KILL_AFTER" "$ARM_TIMEOUT" \
     "$BIN" --gc index "$fixture" > "${P}_${label}.log" 2>&1
-  local rc=$?
+  rc=$?
   echo "  ${label}_rc=$rc"
-  echo "  (a) UAF/ASAN:            $(grep -cE 'AddressSanitizer|heap-use-after-free|use-after-poison|heap-buffer-overflow' "${P}_${label}.log")  (expect 0)"
-  echo "  (b) rendezvous cycles:   $(grep -cE '^\[index_gc\] rendezvous .* cycle' "${P}_${label}.log")  (expect >0)"
-  echo "      NON-rendezvous cyc:  $(grep -E '^\[index_gc\] .* cycle' "${P}_${label}.log" | grep -cvE 'rendezvous')  (expect 0)"
-  echo "  (c) Error/StackOverflow: $(grep -cE 'Error|StackOverflow' "${P}_${label}.log")  (expect 0)"
+  asan_count=$(grep -cE 'AddressSanitizer|heap-use-after-free|use-after-poison|heap-buffer-overflow' "${P}_${label}.log" || true)
+  rendezvous_count=$(grep -cE '^\[index_gc\] rendezvous .* cycle' "${P}_${label}.log" || true)
+  non_rendezvous_count=$(grep -E '^\[index_gc\] .* cycle' "${P}_${label}.log" | grep -cvE 'rendezvous' || true)
+  error_count=$(grep -cE 'Error|StackOverflow' "${P}_${label}.log" || true)
+  echo "  (a) UAF/ASAN:            $asan_count  (expect 0)"
+  echo "  (b) rendezvous cycles:   $rendezvous_count  (expect >0)"
+  echo "      NON-rendezvous cyc:  $non_rendezvous_count  (expect 0)"
+  echo "  (c) Error/StackOverflow: $error_count  (expect 0)"
+  if [ "$rc" -ne 0 ] || [ "$asan_count" -ne 0 ] || [ "$rendezvous_count" -eq 0 ] || \
+     [ "$non_rendezvous_count" -ne 0 ] || [ "$error_count" -ne 0 ]; then
+    echo "  ${label}: FAIL (log=${P}_${label}.log)"
+    tail -80 "${P}_${label}.log"
+    return 1
+  fi
+  echo "  ${label}: PASS"
 }
 
-run_arm robot_f8  "$PLN/examples/Robot.metta"                    8
-run_arm raven_f8  "$PLN/examples/FlyingRaven.metta"              8
-run_arm stress_f8 "$REPO/examples/cesk-gc/stress_multidir.metta" 8
+failures=0
+run_arm robot_f8  "$PLN/examples/Robot.metta"                    8 || failures=$((failures + 1))
+run_arm raven_f8  "$PLN/examples/FlyingRaven.metta"              8 || failures=$((failures + 1))
+run_arm stress_f8 "$REPO/examples/cesk-gc/stress_multidir.metta" 8 || failures=$((failures + 1))
 
 echo "===== E1-FLIP V4 ASAN DONE ====="; date
+if [ "$failures" -ne 0 ]; then
+  echo "V4 ASAN failures=$failures"
+  exit 1
+fi

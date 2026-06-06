@@ -8,6 +8,8 @@
       roots are buffered by a genuine park or the true outermost guard drops;
     - cross-cycle witness-ok reset prevents a previous cycle's non-generational
       true flag from allowing the next cycle's sweep before a fresh wait;
+    - started-cycle straddle gating prevents a teardown generation bump from
+      causing a phantom worker re-park before the next driver starts;
     - the driver root union includes worker-buffer, safepoint, live-env, and
       live-dispatch channel roots;
     - eval-entry driver-C publication puts caller-held source/output roots in
@@ -231,6 +233,20 @@ Section CESKCollectorSafetyModel.
     apply Hfresh.
     apply Hgate.
     exact Hcollect.
+  Qed.
+
+  Theorem started_gate_prevents_phantom_repark :
+    forall (StartedAfterMy Repark Phantom : Prop),
+      (Repark -> StartedAfterMy) ->
+      (Phantom -> Repark) ->
+      (Phantom -> ~ StartedAfterMy) ->
+      ~ Phantom.
+  Proof.
+    intros StartedAfterMy Repark Phantom Hgate Hphantom_repark Hphantom_stale Hphantom.
+    apply (Hphantom_stale Hphantom).
+    apply Hgate.
+    apply Hphantom_repark.
+    exact Hphantom.
   Qed.
 
   Theorem driver_root_union_channel_survives_collection :

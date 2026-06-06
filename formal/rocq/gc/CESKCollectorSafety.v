@@ -6,6 +6,8 @@
     - rendezvous witness publication puts participant roots in the driver roots;
     - witness-slot lifecycle keeps live frozen machines visible until their
       roots are buffered by a genuine park or the true outermost guard drops;
+    - cross-cycle witness-ok reset prevents a previous cycle's non-generational
+      true flag from allowing the next cycle's sweep before a fresh wait;
     - the driver root union includes worker-buffer, safepoint, live-env, and
       live-dispatch channel roots;
     - eval-entry driver-C publication puts caller-held source/output roots in
@@ -201,6 +203,34 @@ Section CESKCollectorSafetyModel.
       + exfalso. apply Hnot_occupied. exact Hoccupied.
       + exact Hbuffered.
     - exact Hbuffered.
+  Qed.
+
+  Theorem cleared_witness_ok_blocks_collection :
+    forall (WitnessOk Collect : Prop),
+      ~ WitnessOk ->
+      (Collect -> WitnessOk) ->
+      ~ Collect.
+  Proof.
+    intros WitnessOk Collect Hcleared Hgate Hcollect.
+    apply Hcleared.
+    apply Hgate.
+    exact Hcollect.
+  Qed.
+
+  Theorem fresh_witness_ok_prevents_stale_collect :
+    forall (WitnessOk FreshWitness Collect StaleCollect : Prop),
+      (Collect -> WitnessOk) ->
+      (WitnessOk -> FreshWitness) ->
+      (FreshWitness -> ~ StaleCollect) ->
+      Collect ->
+      ~ StaleCollect.
+  Proof.
+    intros WitnessOk FreshWitness Collect StaleCollect
+           Hgate Hfresh Hfresh_not_stale Hcollect.
+    apply Hfresh_not_stale.
+    apply Hfresh.
+    apply Hgate.
+    exact Hcollect.
   Qed.
 
   Theorem driver_root_union_channel_survives_collection :

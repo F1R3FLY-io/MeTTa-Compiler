@@ -28,6 +28,8 @@
     - E2 concurrent marking retains every snapshot-live address covered by
       initial roots, rendezvous driver roots, SATB deletion shades, or
       allocate-black publication;
+    - E2 SATB phase/sweep gates force snapshot-live removed pre-images to be
+      visible or shaded before sweep can free them;
     - E2 freshly published allocations survive when publication implies
       allocate-black marking;
     - E2 final-rendezvous roots survive the exclusive sweep, and a completed
@@ -509,6 +511,69 @@ Section CESKCollectorSafetyModel.
     apply Hmark.
     apply Hcovered.
     exact Hlive.
+  Qed.
+
+  Theorem e2_phase_gate_removed_snapshot_preimage_shaded :
+    forall (InCacheAtStart BeganBeforeStart CommittedBeforeStart OpenAtStart
+            AfterStartDeletion RemovedBySweep Shaded SnapshotLive : Addr -> Prop),
+      (forall a, SnapshotLive a -> InCacheAtStart a) ->
+      (forall a, BeganBeforeStart a -> CommittedBeforeStart a \/ OpenAtStart a) ->
+      (forall a, CommittedBeforeStart a -> ~ InCacheAtStart a) ->
+      (forall a, ~ OpenAtStart a) ->
+      (forall a, RemovedBySweep a -> BeganBeforeStart a \/ AfterStartDeletion a) ->
+      (forall a, AfterStartDeletion a -> Shaded a) ->
+      forall a,
+        SnapshotLive a -> RemovedBySweep a -> Shaded a.
+  Proof.
+    intros InCacheAtStart BeganBeforeStart CommittedBeforeStart OpenAtStart
+           AfterStartDeletion RemovedBySweep Shaded SnapshotLive
+           Hsnapshot_visible Hpre_start_state Hcommitted_invisible Hphase_gate
+           Hremoved_shape Hafter_start_shaded a Hsnapshot Hremoved.
+    destruct (Hremoved_shape a Hremoved) as [Hbefore | Hafter].
+    - destruct (Hpre_start_state a Hbefore) as [Hcommitted | Hopen].
+      + exfalso.
+        apply (Hcommitted_invisible a Hcommitted).
+        apply Hsnapshot_visible.
+        exact Hsnapshot.
+      + exfalso.
+        apply (Hphase_gate a).
+        exact Hopen.
+    - apply Hafter_start_shaded.
+      exact Hafter.
+  Qed.
+
+  Theorem e2_sweep_gate_snapshot_live_survives_collection :
+    forall (Sweep : Prop)
+           (DeleteOpenAtSweep RemovedBeforeSweep CommittedBeforeSweep
+            InCacheAtSweep Shaded SnapshotLive Marked Freed : Addr -> Prop),
+      (Sweep -> forall a, ~ DeleteOpenAtSweep a) ->
+      (forall a, RemovedBeforeSweep a ->
+        DeleteOpenAtSweep a \/ CommittedBeforeSweep a) ->
+      (forall a, CommittedBeforeSweep a -> Shaded a) ->
+      (forall a, SnapshotLive a -> RemovedBeforeSweep a \/ InCacheAtSweep a) ->
+      (forall a, InCacheAtSweep a -> Marked a) ->
+      (forall a, Shaded a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      Sweep ->
+      forall a,
+        SnapshotLive a -> ~ Freed a.
+  Proof.
+    intros Sweep DeleteOpenAtSweep RemovedBeforeSweep CommittedBeforeSweep
+           InCacheAtSweep Shaded SnapshotLive Marked Freed
+           Hsweep_gate Hremoved_state Hcommitted_shaded Hsnapshot_shape
+           Hvisible_marked Hshaded_marked Hsweep_only_unmarked Hsweep
+           a Hsnapshot Hfreed.
+    apply (Hsweep_only_unmarked a Hfreed).
+    destruct (Hsnapshot_shape a Hsnapshot) as [Hremoved | Hvisible].
+    - destruct (Hremoved_state a Hremoved) as [Hopen | Hcommitted].
+      + exfalso.
+        apply (Hsweep_gate Hsweep a).
+        exact Hopen.
+      + apply Hshaded_marked.
+        apply Hcommitted_shaded.
+        exact Hcommitted.
+    - apply Hvisible_marked.
+      exact Hvisible.
   Qed.
 
   Theorem e2_published_allocate_black_survives_collection :

@@ -97,6 +97,10 @@ requires a new stale-old-mark proof before it can be introduced.
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
   a root captured by the final remark cannot be freed by the exclusive sweep.
+- `formal/rocq/gc/SATBGates.v` and `formal/lean/gc/SATBGates.lean`: prove the E2 SATB phase/sweep gate
+  obligations. If marker start cannot pass an open deletion that saw "not marking", a removed snapshot-live pre-image
+  must have been removed after marker start and therefore shaded; if sweep cannot pass an open deletion barrier, a
+  snapshot-live value at sweep is either still visible or already shaded, so ordinary mark/sweep cannot free it.
 - `formal/rocq/gc/AllocateBlack.v` and `formal/lean/gc/AllocateBlack.lean`: bridge the E2 allocate-black publication
   order into the SATB theorem. If a freshly published allocation is black before publication makes it visible, then it
   is a SATB root and cannot be freed by sweep; the direct mark-before-publish theorem mirrors the TLA discriminator.

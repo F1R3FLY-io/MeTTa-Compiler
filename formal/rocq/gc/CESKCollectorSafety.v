@@ -34,7 +34,10 @@
     - pointer-keyed operator-cache lookup cannot return a stale post-sweep entry
       when the local sweep-epoch guard runs before lookup;
     - write-once global anchors that are scanned structurally and cannot be
-      deleted survive ordinary structural-root collection.
+      deleted survive ordinary structural-root collection;
+    - global space-registry values survive while registered as structural roots,
+      and replaced/removed/cleared space values survive SATB collection when the
+      old `SpaceHandle` roots are shaded.
 
     These are parametric theorems over the store graph and do not assume a finite
     TLC state space.
@@ -89,6 +92,11 @@ Section CESKCollectorSafetyModel.
       (Initialized Deleted : Anchor -> Prop)
       (slot : Anchor) : Prop :=
     Initialized slot /\ ~ Deleted slot.
+
+  Definition SpaceRegistryRemovedValue
+      (OverwriteVictim RemoveVictim ClearVictim : Addr -> Prop)
+      (a : Addr) : Prop :=
+    OverwriteVictim a \/ RemoveVictim a \/ ClearVictim a.
 
   Theorem rendezvous_participant_root_survives_collection :
     forall (Occupied Published : Slot -> Prop)
@@ -518,6 +526,64 @@ Section CESKCollectorSafetyModel.
       + apply Hnot_deleted.
         exact Hinitialized.
     - exact Hvalue.
+  Qed.
+
+  Theorem registered_space_value_survives_collection :
+    forall (Space : Type)
+           (Registered Scanned : Space -> Prop)
+           (SpaceValue : Space -> Addr -> Prop)
+           (StructuralRoot Marked Freed : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      (forall s, Registered s -> Scanned s) ->
+      (forall s a, Scanned s -> SpaceValue s a -> StructuralRoot a) ->
+      (forall a, Reach StructuralRoot Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall s a,
+        Registered s ->
+        SpaceValue s a ->
+        ~ Freed a.
+  Proof.
+    intros Space Registered Scanned SpaceValue StructuralRoot Marked Freed Edge
+           Hscan Hroot Hmark Hsweep s a Hregistered Hvalue Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    apply (Hroot s a).
+    - apply Hscan.
+      exact Hregistered.
+    - exact Hvalue.
+  Qed.
+
+  Theorem removed_space_registry_value_survives_satb_collection :
+    forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack
+            OverwriteVictim RemoveVictim ClearVictim SnapshotLive : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, OverwriteVictim a -> ShadedDeletion a) ->
+      (forall a, RemoveVictim a -> ShadedDeletion a) ->
+      (forall a, ClearVictim a -> ShadedDeletion a) ->
+      (forall a,
+          SnapshotLive a ->
+          SpaceRegistryRemovedValue OverwriteVictim RemoveVictim ClearVictim a) ->
+      (forall a,
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a ->
+          Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        SnapshotLive a ->
+        ~ Freed a.
+  Proof.
+    intros InitialRoot DriverRoot ShadedDeletion AllocateBlack
+           OverwriteVictim RemoveVictim ClearVictim SnapshotLive Edge Marked Freed
+           Hoverwrite Hremove Hclear Hremoved Hmark Hsweep a Hlive Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right; right; left.
+    destruct (Hremoved a Hlive) as [Hoverwrite_a | [Hremove_a | Hclear_a]].
+    - apply Hoverwrite. exact Hoverwrite_a.
+    - apply Hremove. exact Hremove_a.
+    - apply Hclear. exact Hclear_a.
   Qed.
 End CESKCollectorSafetyModel.
 

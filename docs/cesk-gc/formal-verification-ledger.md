@@ -51,15 +51,19 @@ requires a new stale-old-mark proof before it can be introduced.
 - `formal/rocq/gc/WriteOnceAnchors.v` and `formal/lean/gc/WriteOnceAnchors.lean`: prove the write-once global-anchor
   obligation used by the compiler atom statics. If initialized anchors cannot be deleted and the structural reader
   scans each initialized anchor, ordinary root-complete mark/sweep retains the anchored values.
+- `formal/rocq/gc/SpaceRegistryBarriers.v` and `formal/lean/gc/SpaceRegistryBarriers.lean`: prove the global
+  space-registry obligation. Registered `SpaceHandle` values survive as structural E0 global anchors, and values
+  reachable from overwritten, removed, or bulk-cleared old handles survive E2 SATB collection when those old handles
+  are shaded.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
   roots, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache sweep-epoch
-  coherence, write-once global anchors, future CESK touches, reachable young nodes under both the no-old-to-young and
-  conservative-minor traversals, E2 snapshot-live nodes covered by initial roots, driver roots, SATB shades, or
-  allocate-black publication, E2 freshly published allocate-black allocations, E2 final-rendezvous roots and
-  abort-to-STW finalization, E2 full-major SATB mark lifecycle, E2 snapshot-live values removed by value-bearing E0
-  cache capacity eviction, overwrite, and bulk clear, and E2 snapshot-live values removed from the pinned
-  value-bearing E0 mutation categories.
+  coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, future CESK
+  touches, reachable young nodes under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live
+  nodes covered by initial roots, driver roots, SATB shades, or allocate-black publication, E2 freshly published
+  allocate-black allocations, E2 final-rendezvous roots and abort-to-STW finalization, E2 full-major SATB mark
+  lifecycle, E2 snapshot-live values removed by value-bearing E0 cache capacity eviction, overwrite, and bulk clear,
+  and E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
@@ -102,6 +106,9 @@ requires a new stale-old-mark proof before it can be introduced.
 - `tla/WriteOnceAnchors.tla`: checks the write-once compiler atom anchors. Scanning all three initialized anchors and
   forbidding deletion preserves `LiveAnchorsScanned`; omitting `ATOM_IF` or allowing a reset/take-style deletion
   violates the corresponding invariant.
+- `tla/SpaceRegistryBarriers.tla`: checks the global space-registry obligation. Scanning registered spaces and shading
+  overwritten, removed, and bulk-cleared old `SpaceHandle` values preserves `NoSpaceRegistryValueFreed`; omitting the
+  scan, remove shade, or clear shade violates it.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 - `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end

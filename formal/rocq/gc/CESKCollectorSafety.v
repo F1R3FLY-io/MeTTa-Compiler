@@ -56,9 +56,10 @@
       constants survive while registered as structural roots, removed old cache
       values survive SATB collection when shaded, and pending-root guard drops
       are ownership-token checked;
-    - thread-local subgoal and thunk cached result values survive while scanned
-      as structural roots, and stale/overwritten/removed/cleared/replaced
-      cached results survive SATB collection when shaded.
+    - thread-local eval memo, match-result, subgoal, and thunk cached result
+      values survive while scanned as structural roots, and stale/overwritten/
+      removed/cleared/replaced subgoal/thunk cached results survive SATB
+      collection when shaded.
 
     These are parametric theorems over the store graph and do not assume a finite
     TLC state space.
@@ -152,9 +153,9 @@ Section CESKCollectorSafetyModel.
     EntryToken entry = guard.
 
   Definition ThreadLocalTableRegisteredValue
-      (SubgoalResult ThunkResult : Addr -> Prop)
+      (EvalMemoResult MatchResult SubgoalResult ThunkResult : Addr -> Prop)
       (a : Addr) : Prop :=
-    SubgoalResult a \/ ThunkResult a.
+    EvalMemoResult a \/ MatchResult a \/ SubgoalResult a \/ ThunkResult a.
 
   Definition ThreadLocalTableRemovedValue
       (SubgoalStaleVictim SubgoalOverwriteVictim SubgoalRemoveVictim
@@ -987,9 +988,14 @@ Section CESKCollectorSafetyModel.
   Qed.
 
   Theorem registered_thread_local_table_value_survives_collection :
-    forall (SubgoalResult ThunkResult SubgoalScanned ThunkScanned
+    forall (EvalMemoResult MatchResult SubgoalResult ThunkResult
+            EvalMemoScanned MatchResultScanned SubgoalScanned ThunkScanned
             StructuralRoot Marked Freed : Addr -> Prop)
            (Edge : Addr -> Addr -> Prop),
+      (forall a, EvalMemoResult a -> EvalMemoScanned a) ->
+      (forall a, EvalMemoScanned a -> StructuralRoot a) ->
+      (forall a, MatchResult a -> MatchResultScanned a) ->
+      (forall a, MatchResultScanned a -> StructuralRoot a) ->
       (forall a, SubgoalResult a -> SubgoalScanned a) ->
       (forall a, SubgoalScanned a -> StructuralRoot a) ->
       (forall a, ThunkResult a -> ThunkScanned a) ->
@@ -997,16 +1003,25 @@ Section CESKCollectorSafetyModel.
       (forall a, Reach StructuralRoot Edge a -> Marked a) ->
       (forall a, Freed a -> ~ Marked a) ->
       forall a,
-        ThreadLocalTableRegisteredValue SubgoalResult ThunkResult a ->
+        ThreadLocalTableRegisteredValue
+          EvalMemoResult MatchResult SubgoalResult ThunkResult a ->
         ~ Freed a.
   Proof.
-    intros SubgoalResult ThunkResult SubgoalScanned ThunkScanned
-           StructuralRoot Marked Freed Edge Hscan_subgoal Hroot_subgoal
+    intros EvalMemoResult MatchResult SubgoalResult ThunkResult
+           EvalMemoScanned MatchResultScanned SubgoalScanned ThunkScanned
+           StructuralRoot Marked Freed Edge Hscan_eval Hroot_eval
+           Hscan_match Hroot_match Hscan_subgoal Hroot_subgoal
            Hscan_thunk Hroot_thunk Hmark Hsweep a Hregistered Hfreed.
     apply (Hsweep a Hfreed).
     apply Hmark.
     apply reach_root.
-    destruct Hregistered as [Hsubgoal | Hthunk].
+    destruct Hregistered as [Heval | [Hmatch | [Hsubgoal | Hthunk]]].
+    - apply Hroot_eval.
+      apply Hscan_eval.
+      exact Heval.
+    - apply Hroot_match.
+      apply Hscan_match.
+      exact Hmatch.
     - apply Hroot_subgoal.
       apply Hscan_subgoal.
       exact Hsubgoal.

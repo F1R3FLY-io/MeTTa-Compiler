@@ -81,9 +81,10 @@ requires a new stale-old-mark proof before it can be introduced.
   global anchors, removed pending/compiled values survive E2 SATB collection when shaded, and ownership-token-checked
   pending-root guards cannot unregister newer same-hash pending roots.
 - `formal/rocq/gc/ThreadLocalTablesBarriers.v` and `formal/lean/gc/ThreadLocalTablesBarriers.lean`: prove the
-  thread-local subgoal/thunk table obligation. Cached subgoal and thunk results survive while scanned as structural
-  roots, and stale-evicted, overwritten, explicitly removed, cleared/invalidated, and thunk-replaced cached results
-  survive E2 SATB collection when shaded.
+  thread-local value-table obligation. Cached eval memo, match-result, subgoal, and thunk values survive while scanned
+  as structural roots, and stale-evicted, overwritten, explicitly removed, cleared/invalidated, and thunk-replaced
+  subgoal/thunk cached results survive E2 SATB collection when shaded. Eval/match eviction and clear removal shapes
+  are discharged by the E0 cache-eviction proof.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, witness-slot lifecycle, witness-ok reset,
   started-cycle straddle gate, four-channel driver-root union, collector-root closure, mark completeness,
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
@@ -263,8 +264,9 @@ facts the proofs rely on:
   guard drop, and shades pending roots plus compiled bytecode constants before full cache clear. Pending bytecode root
   entries carry non-wrapping ownership tokens; guard-drop and backpressure cancellation use token-checked removal so an
   old guard cannot unregister a newer same-hash pending root.
-- The rooted thread-local subgoal and thunk tables shade cached result values on stale eviction, overwrite, explicit
-  removal, invalidation, full clear, and thunk result replacement.
+- The rooted thread-local value tables scan eval memo entries, match-result RHS templates/bindings/RHS types, subgoal
+  results, and thunk results as structural roots. The subgoal and thunk tables additionally shade cached result values
+  on stale eviction, overwrite, explicit removal, invalidation, full clear, and thunk result replacement.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

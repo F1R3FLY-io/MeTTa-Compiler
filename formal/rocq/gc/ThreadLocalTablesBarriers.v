@@ -1,12 +1,14 @@
-(** Thread-local subgoal/thunk table rooting and SATB deletion obligations.
+(** Thread-local value-table rooting and SATB deletion obligations.
 
-    The CESK subgoal and thunk tables are thread-local persistent roots.  A
-    mutator publishes them through the canonical structural root reader, which
-    calls `collect_subgoal_roots` and `collect_thunk_roots` from
-    `collect_global_anchors`.  During E2 SATB marking, stale evictions,
-    overwrites, explicit removals, invalidation/full clears, and thunk result
-    replacement must shade the removed result values while the SATB phase gate is
-    held.
+    The CESK eval memo, match-result cache, subgoal table, and thunk table are
+    thread-local persistent roots.  A mutator publishes them through the
+    canonical structural root reader, which calls `collect_eval_memo_roots`,
+    `collect_match_result_roots`, `collect_subgoal_roots`, and
+    `collect_thunk_roots` from `collect_global_anchors`.  During E2 SATB
+    marking, stale evictions, overwrites, explicit removals, invalidation/full
+    clears, and thunk result replacement must shade the removed subgoal/thunk
+    result values while the SATB phase gate is held; eval/match removal shapes
+    are covered by the E0 cache-eviction proof.
 *)
 
 Module MeTTaTron_GC_ThreadLocalTablesBarriers.
@@ -24,9 +26,9 @@ Section ThreadLocalTablesBarrierModel.
     InitialRoot a \/ DriverRoot a \/ ShadedDeletion a \/ AllocateBlack a.
 
   Definition ThreadLocalTableRegisteredValue
-      (SubgoalResult ThunkResult : Addr -> Prop)
+      (EvalMemoResult MatchResult SubgoalResult ThunkResult : Addr -> Prop)
       (a : Addr) : Prop :=
-    SubgoalResult a \/ ThunkResult a.
+    EvalMemoResult a \/ MatchResult a \/ SubgoalResult a \/ ThunkResult a.
 
   Definition ThreadLocalTableRemovedValue
       (SubgoalStaleVictim SubgoalOverwriteVictim SubgoalRemoveVictim
@@ -44,19 +46,33 @@ Section ThreadLocalTablesBarrierModel.
     ThunkReplaceVictim a.
 
   Theorem thread_local_table_value_is_structural_root :
-    forall (SubgoalResult ThunkResult SubgoalScanned ThunkScanned
+    forall (EvalMemoResult MatchResult SubgoalResult ThunkResult
+            EvalMemoScanned MatchResultScanned SubgoalScanned ThunkScanned
             StructuralRoot : Addr -> Prop),
+      (forall a, EvalMemoResult a -> EvalMemoScanned a) ->
+      (forall a, EvalMemoScanned a -> StructuralRoot a) ->
+      (forall a, MatchResult a -> MatchResultScanned a) ->
+      (forall a, MatchResultScanned a -> StructuralRoot a) ->
       (forall a, SubgoalResult a -> SubgoalScanned a) ->
       (forall a, SubgoalScanned a -> StructuralRoot a) ->
       (forall a, ThunkResult a -> ThunkScanned a) ->
       (forall a, ThunkScanned a -> StructuralRoot a) ->
       forall a,
-        ThreadLocalTableRegisteredValue SubgoalResult ThunkResult a ->
+        ThreadLocalTableRegisteredValue
+          EvalMemoResult MatchResult SubgoalResult ThunkResult a ->
         StructuralRoot a.
   Proof.
-    intros SubgoalResult ThunkResult SubgoalScanned ThunkScanned StructuralRoot
+    intros EvalMemoResult MatchResult SubgoalResult ThunkResult
+           EvalMemoScanned MatchResultScanned SubgoalScanned ThunkScanned
+           StructuralRoot Hscan_eval Hroot_eval Hscan_match Hroot_match
            Hscan_subgoal Hroot_subgoal Hscan_thunk Hroot_thunk a Hregistered.
-    destruct Hregistered as [Hsubgoal | Hthunk].
+    destruct Hregistered as [Heval | [Hmatch | [Hsubgoal | Hthunk]]].
+    - apply Hroot_eval.
+      apply Hscan_eval.
+      exact Heval.
+    - apply Hroot_match.
+      apply Hscan_match.
+      exact Hmatch.
     - apply Hroot_subgoal.
       apply Hscan_subgoal.
       exact Hsubgoal.
@@ -66,9 +82,14 @@ Section ThreadLocalTablesBarrierModel.
   Qed.
 
   Theorem thread_local_table_value_survives_collection :
-    forall (SubgoalResult ThunkResult SubgoalScanned ThunkScanned
+    forall (EvalMemoResult MatchResult SubgoalResult ThunkResult
+            EvalMemoScanned MatchResultScanned SubgoalScanned ThunkScanned
             StructuralRoot Marked Freed : Addr -> Prop)
            (Edge : Addr -> Addr -> Prop),
+      (forall a, EvalMemoResult a -> EvalMemoScanned a) ->
+      (forall a, EvalMemoScanned a -> StructuralRoot a) ->
+      (forall a, MatchResult a -> MatchResultScanned a) ->
+      (forall a, MatchResultScanned a -> StructuralRoot a) ->
       (forall a, SubgoalResult a -> SubgoalScanned a) ->
       (forall a, SubgoalScanned a -> StructuralRoot a) ->
       (forall a, ThunkResult a -> ThunkScanned a) ->
@@ -76,16 +97,25 @@ Section ThreadLocalTablesBarrierModel.
       (forall a, Reach StructuralRoot Edge a -> Marked a) ->
       (forall a, Freed a -> ~ Marked a) ->
       forall a,
-        ThreadLocalTableRegisteredValue SubgoalResult ThunkResult a ->
+        ThreadLocalTableRegisteredValue
+          EvalMemoResult MatchResult SubgoalResult ThunkResult a ->
         ~ Freed a.
   Proof.
-    intros SubgoalResult ThunkResult SubgoalScanned ThunkScanned
-           StructuralRoot Marked Freed Edge Hscan_subgoal Hroot_subgoal
+    intros EvalMemoResult MatchResult SubgoalResult ThunkResult
+           EvalMemoScanned MatchResultScanned SubgoalScanned ThunkScanned
+           StructuralRoot Marked Freed Edge Hscan_eval Hroot_eval
+           Hscan_match Hroot_match Hscan_subgoal Hroot_subgoal
            Hscan_thunk Hroot_thunk Hmark Hsweep a Hregistered Hfreed.
     apply (Hsweep a Hfreed).
     apply Hmark.
     apply reach_root.
-    destruct Hregistered as [Hsubgoal | Hthunk].
+    destruct Hregistered as [Heval | [Hmatch | [Hsubgoal | Hthunk]]].
+    - apply Hroot_eval.
+      apply Hscan_eval.
+      exact Heval.
+    - apply Hroot_match.
+      apply Hscan_match.
+      exact Hmatch.
     - apply Hroot_subgoal.
       apply Hscan_subgoal.
       exact Hsubgoal.

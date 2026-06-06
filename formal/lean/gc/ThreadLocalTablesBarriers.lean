@@ -1,12 +1,15 @@
 /-!
-Thread-local subgoal/thunk table rooting and SATB deletion obligations.
+Thread-local value-table rooting and SATB deletion obligations.
 
-The CESK subgoal and thunk tables are thread-local persistent roots. A mutator
-publishes them through the canonical structural root reader, which calls
-`collect_subgoal_roots` and `collect_thunk_roots` from `collect_global_anchors`.
-During E2 SATB marking, stale evictions, overwrites, explicit removals,
-invalidation/full clears, and thunk result replacement must shade the removed
-result values while the SATB phase gate is held.
+The CESK eval memo, match-result cache, subgoal table, and thunk table are
+thread-local persistent roots. A mutator publishes them through the canonical
+structural root reader, which calls `collect_eval_memo_roots`,
+`collect_match_result_roots`, `collect_subgoal_roots`, and `collect_thunk_roots`
+from `collect_global_anchors`. During E2 SATB marking, stale evictions,
+overwrites, explicit removals, invalidation/full clears, and thunk result
+replacement must shade the removed subgoal/thunk result values while the SATB
+phase gate is held; eval/match removal shapes are covered by the E0
+cache-eviction proof.
 -/
 
 namespace MeTTaTron.GC.ThreadLocalTablesBarriers
@@ -23,9 +26,9 @@ def ConcurrentCollectorRoot
   InitialRoot a \/ DriverRoot a \/ ShadedDeletion a \/ AllocateBlack a
 
 def ThreadLocalTableRegisteredValue
-    (SubgoalResult ThunkResult : Addr -> Prop)
+    (EvalMemoResult MatchResult SubgoalResult ThunkResult : Addr -> Prop)
     (a : Addr) : Prop :=
-  SubgoalResult a \/ ThunkResult a
+  EvalMemoResult a \/ MatchResult a \/ SubgoalResult a \/ ThunkResult a
 
 def ThreadLocalTableRemovedValue
     (SubgoalStaleVictim SubgoalOverwriteVictim SubgoalRemoveVictim
@@ -43,24 +46,40 @@ def ThreadLocalTableRemovedValue
   ThunkReplaceVictim a
 
 theorem thread_local_table_value_is_structural_root
-    {SubgoalResult ThunkResult SubgoalScanned ThunkScanned
+    {EvalMemoResult MatchResult SubgoalResult ThunkResult
+      EvalMemoScanned MatchResultScanned SubgoalScanned ThunkScanned
       StructuralRoot : Addr -> Prop}
+    (scanEvalMemo : forall {a}, EvalMemoResult a -> EvalMemoScanned a)
+    (rootEvalMemo : forall {a}, EvalMemoScanned a -> StructuralRoot a)
+    (scanMatchResult : forall {a}, MatchResult a -> MatchResultScanned a)
+    (rootMatchResult : forall {a}, MatchResultScanned a -> StructuralRoot a)
     (scanSubgoal : forall {a}, SubgoalResult a -> SubgoalScanned a)
     (rootSubgoal : forall {a}, SubgoalScanned a -> StructuralRoot a)
     (scanThunk : forall {a}, ThunkResult a -> ThunkScanned a)
     (rootThunk : forall {a}, ThunkScanned a -> StructuralRoot a) :
     forall {a},
-      ThreadLocalTableRegisteredValue SubgoalResult ThunkResult a ->
+      ThreadLocalTableRegisteredValue EvalMemoResult MatchResult SubgoalResult ThunkResult a ->
       StructuralRoot a := by
   intro a registered
   cases registered with
-  | inl subgoal => exact rootSubgoal (scanSubgoal subgoal)
-  | inr thunk => exact rootThunk (scanThunk thunk)
+  | inl evalMemo => exact rootEvalMemo (scanEvalMemo evalMemo)
+  | inr rest =>
+      cases rest with
+      | inl matchResult => exact rootMatchResult (scanMatchResult matchResult)
+      | inr rest =>
+          cases rest with
+          | inl subgoal => exact rootSubgoal (scanSubgoal subgoal)
+          | inr thunk => exact rootThunk (scanThunk thunk)
 
 theorem thread_local_table_value_survives_collection
-    {SubgoalResult ThunkResult SubgoalScanned ThunkScanned
+    {EvalMemoResult MatchResult SubgoalResult ThunkResult
+      EvalMemoScanned MatchResultScanned SubgoalScanned ThunkScanned
       StructuralRoot Marked Freed : Addr -> Prop}
     {Edge : Addr -> Addr -> Prop}
+    (scanEvalMemo : forall {a}, EvalMemoResult a -> EvalMemoScanned a)
+    (rootEvalMemo : forall {a}, EvalMemoScanned a -> StructuralRoot a)
+    (scanMatchResult : forall {a}, MatchResult a -> MatchResultScanned a)
+    (rootMatchResult : forall {a}, MatchResultScanned a -> StructuralRoot a)
     (scanSubgoal : forall {a}, SubgoalResult a -> SubgoalScanned a)
     (rootSubgoal : forall {a}, SubgoalScanned a -> StructuralRoot a)
     (scanThunk : forall {a}, ThunkResult a -> ThunkScanned a)
@@ -68,13 +87,19 @@ theorem thread_local_table_value_survives_collection
     (markComplete : forall {a}, Reach StructuralRoot Edge a -> Marked a)
     (sweepOnlyUnmarked : forall {a}, Freed a -> Not (Marked a)) :
     forall {a},
-      ThreadLocalTableRegisteredValue SubgoalResult ThunkResult a ->
+      ThreadLocalTableRegisteredValue EvalMemoResult MatchResult SubgoalResult ThunkResult a ->
       Not (Freed a) := by
   intro a registered freed
   have hroot : StructuralRoot a := by
     cases registered with
-    | inl subgoal => exact rootSubgoal (scanSubgoal subgoal)
-    | inr thunk => exact rootThunk (scanThunk thunk)
+    | inl evalMemo => exact rootEvalMemo (scanEvalMemo evalMemo)
+    | inr rest =>
+        cases rest with
+        | inl matchResult => exact rootMatchResult (scanMatchResult matchResult)
+        | inr rest =>
+            cases rest with
+            | inl subgoal => exact rootSubgoal (scanSubgoal subgoal)
+            | inr thunk => exact rootThunk (scanThunk thunk)
   have marked := markComplete (Reach.root hroot)
   exact sweepOnlyUnmarked freed marked
 

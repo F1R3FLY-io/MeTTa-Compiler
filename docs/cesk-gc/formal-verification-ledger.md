@@ -306,7 +306,8 @@ Before compiling proofs, `scripts/verify_cesk_gc_proof_hygiene.sh` rejects Lean 
 
 The formal harness also runs `scripts/verify_cesk_gc_tlc_hygiene.sh` before compiling proofs. That check parses every
 `run_tlc` entry, verifies labels/configs are unique, requires every referenced TLA+ module and config to exist, requires
-negative TLC runs to carry a discriminator pattern, and rejects any tracked `tla/*.cfg` or `tla/MC_*.tla` wrapper that is
-neither run nor explicitly classified. The only classified exclusions are legacy slab mark-sweep models, the older
-non-generational store-centric mark-sweep wrapper/configs, and larger CESK generational discriminator configs whose
-disk-light small counterparts are the default gate.
+negative TLC runs to carry a discriminator pattern, rejects any tracked `tla/*.cfg` or `tla/MC_*.tla` wrapper that is
+neither run nor explicitly classified, and rejects any tracked `tla/*.tla` module that is not either run directly,
+imported by a run/classified wrapper, or explicitly classified. The only classified exclusions are legacy slab
+mark-sweep models, the older non-generational store-centric mark-sweep wrapper/configs, and larger CESK generational
+discriminator configs whose disk-light small counterparts are the default gate.

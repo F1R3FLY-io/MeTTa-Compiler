@@ -18,6 +18,7 @@ declare -A run_cfgs=()
 declare -A run_modules=()
 declare -A skipped_cfgs=()
 declare -A skipped_modules=()
+declare -A covered_modules=()
 
 skip_cfg() {
   local cfg="$1" reason="$2"
@@ -27,6 +28,28 @@ skip_cfg() {
 skip_module() {
   local module="$1" reason="$2"
   skipped_modules["$module"]="$reason"
+}
+
+mark_extended_modules() {
+  local module="$1" source="$2" line dep
+
+  [[ -f "$TLA_DIR/$module" ]] || return 0
+
+  while IFS= read -r line; do
+    line="${line#EXTENDS }"
+    line="${line//,/ }"
+    for dep in $line; do
+      case "$dep" in
+        Naturals|Integers|Sequences|FiniteSets|TLC|TLCExt|Toolbox|Bags|Reals)
+          ;;
+        *)
+          if [[ -f "$TLA_DIR/$dep.tla" ]]; then
+            covered_modules["$dep.tla"]="$source"
+          fi
+          ;;
+      esac
+    done
+  done < <(sed -n 's/^[[:space:]]*EXTENDS[[:space:]]\+/EXTENDS /p' "$TLA_DIR/$module")
 }
 
 skip_cfg "MC_GenYoungMark_positive.cfg" \
@@ -68,6 +91,9 @@ for module in \
   MC_SlabGC_Reactive.tla; do
   skip_module "$module" "legacy slab mark-sweep wrapper outside the CESK generational proof boundary"
 done
+
+skip_module "SlabGC_Pages.tla" \
+  "legacy slab page-shape support module outside the CESK generational proof boundary"
 
 mapfile -t tlc_runs < <(
   awk '
@@ -157,8 +183,25 @@ for module in "${wrapper_modules[@]}"; do
   fi
 done
 
+for module in "${!run_modules[@]}"; do
+  mark_extended_modules "$module" "run module $module"
+done
+
+for module in "${!skipped_modules[@]}"; do
+  mark_extended_modules "$module" "classified module $module"
+done
+
+mapfile -t tla_modules < <(git -C "$REPO" ls-files 'tla/*.tla' | sed 's#^tla/##' | sort)
+for module in "${tla_modules[@]}"; do
+  if [[ -z "${run_modules[$module]+seen}" \
+     && -z "${skipped_modules[$module]+seen}" \
+     && -z "${covered_modules[$module]+seen}" ]]; then
+    fail "TLA module $module is neither run, imported by a run/classified wrapper, nor explicitly classified"
+  fi
+done
+
 if [[ "$failures" -ne 0 ]]; then
   exit 1
 fi
 
-echo "CESK GC TLC-hygiene checks passed (${#run_cfgs[@]} TLC configs run, ${#skipped_cfgs[@]} configs classified)"
+echo "CESK GC TLC-hygiene checks passed (${#run_cfgs[@]} TLC configs run, ${#covered_modules[@]} modules imported, ${#skipped_cfgs[@]} configs classified)"

@@ -22,7 +22,9 @@ cd "$REPO"
 # CPU-pin to one CCD's physical cores for stable single-threaded timing.
 PIN=(taskset -c "${CPUSET:-0-3}")
 CAP=(systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400%)
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "c1b_bench.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "c1b_bench.XXXXXXXX")}"
 
 run_one() { # $1=label $2=young_min $3=logprefix
   local label="$1" ymin="$2" pfx="$3"

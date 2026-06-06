@@ -26,9 +26,11 @@ PLN="${PLN:-$REPO_PARENT/PLN-main}"
 ROBOT="${ROBOT:-$PLN/examples/Robot.metta}"
 cd "$REPO"
 GIB=$((1024*1024*1024))
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "cab_bench.XXXXXXXX")}"
-BIN_DIR="${BIN_DIR:-$(mktemp -d -t "cab_bins.XXXXXXXX")}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(mktemp -d -t "cab_target.XXXXXXXX")}"
+SCRATCH_ROOT="${SCRATCH_ROOT:-$REPO/target/c_ab_bench}"
+mkdir -p "$SCRATCH_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$SCRATCH_ROOT" "cab_bench.XXXXXXXX")}"
+BIN_DIR="${BIN_DIR:-$(mktemp -d -p "$SCRATCH_ROOT" "cab_bins.XXXXXXXX")}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(mktemp -d -p "$SCRATCH_ROOT" "cab_target.XXXXXXXX")}"
 BUILDCAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1600%)
 RUNCAP=(systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400%)
 

@@ -26,7 +26,9 @@ cd "$REPO"
 CAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1600%)
 RUNBIN=(systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=1600%)
 SAFE_LABEL="${LABEL//[^A-Za-z0-9_.-]/_}"
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "a5_${SAFE_LABEL}.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "a5_${SAFE_LABEL}.XXXXXXXX")}"
 P="$LOG_DIR/a5_${SAFE_LABEL}"
 echo "===== A5 GREEN-WALL [$LABEL] ====="; date
 echo "repo=$REPO"

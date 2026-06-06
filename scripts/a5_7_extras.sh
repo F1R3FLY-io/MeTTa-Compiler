@@ -14,7 +14,9 @@ CAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=
 PLNRUN=(systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400%)
 MTT="$REPO/target/release/mettatron"
 CONFBIN="$REPO/target/release/mtt-conformance"
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "a5_7_extras.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "a5_7_extras.XXXXXXXX")}"
 echo "===== A5.7 EXTRAS (mmverify + PLN budgets + 20-run determinism, INDEX build) ====="; date
 echo "repo=$REPO"
 echo "pln=$PLN"

@@ -14,7 +14,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 RUNS="${1:-${RUNS:-20}}"
 LABEL="${LABEL:-rfl_forced_gc_x${RUNS}}"
-P="${P:-$(mktemp -d -t "${LABEL}_XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+P="${P:-$(mktemp -d -p "$LOG_ROOT" "${LABEL}_XXXXXXXX")}"
 CAP=(
   systemd-run --user --scope
   -p MemoryMax="${MEMORY_MAX:-16G}"

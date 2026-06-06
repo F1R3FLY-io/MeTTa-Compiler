@@ -19,7 +19,9 @@ cd "$PROJECT_DIR"
 # Configuration
 NUM_THREADS="${METTATRON_NUM_THREADS:-18}"
 CPU_AFFINITY="${CPU_AFFINITY:-0-17}"
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "sigill_debug.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$PROJECT_DIR/target/debug-logs}"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "sigill_debug.XXXXXXXX")}"
 LOG_FILE="$LOG_DIR/sigill_debug.log"
 OUTPUT_FILE="$LOG_DIR/sigill_gdb_output.txt"
 BUILD_CAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000%)

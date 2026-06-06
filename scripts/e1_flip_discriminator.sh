@@ -22,7 +22,9 @@ PLN_DIR="${PLN_DIR:-$REPO_PARENT/PLN-main}"
 BIN="${BIN:-$REPO/target/release/mettatron}"
 ROBOT="${ROBOT:-$PLN_DIR/examples/Robot.metta}"
 N="${N:-16}"
-P="${P:-$(mktemp -d -t "e1_disc.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+P="${P:-$(mktemp -d -p "$LOG_ROOT" "e1_disc.XXXXXXXX")}"
 mkdir -p "$P"
 
 # CORRECT METRIC (the prior "count ❌" was an ARTIFACT — a run that drops a live

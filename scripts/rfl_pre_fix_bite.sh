@@ -28,7 +28,9 @@ REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
 PRE_FIX_REF="${PRE_FIX_REF:-add0585^}"
 SAFE_REF="$(printf '%s' "$PRE_FIX_REF" | tr -c 'A-Za-z0-9_.-' '_')"
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "rfl_pre_fix_bite.${SAFE_REF}.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "rfl_pre_fix_bite.${SAFE_REF}.XXXXXXXX")}"
 if [ -z "${WT:-}" ]; then
   WT="$(mktemp -d -p "$REPO_PARENT" "rfl-pre-fix-bite.${SAFE_REF}.XXXXXXXX")" \
     || fail "could not allocate temporary worktree path under: $REPO_PARENT"

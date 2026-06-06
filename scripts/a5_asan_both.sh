@@ -21,7 +21,9 @@ CONF="${CONFORMANCE_DIR:-$REPO_PARENT/mettatron-specification/conformance}"
 cd "$REPO"
 BIN="$REPO/target/x86_64-unknown-linux-gnu/debug/mtt-conformance"
 SAFE_LABEL="${LABEL//[^A-Za-z0-9_.-]/_}"
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "a5_${SAFE_LABEL}_asan.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "a5_${SAFE_LABEL}_asan.XXXXXXXX")}"
 P="$LOG_DIR/a5_${SAFE_LABEL}_asan"
 build_asan() {  # $1... = extra cargo args (e.g. --features index-gc)
   systemd-run --user --scope -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=800% -p TasksMax=256 \

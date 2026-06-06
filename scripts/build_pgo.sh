@@ -14,7 +14,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-PGO_DIR="$(mktemp -d -t "pgo-data.XXXXXXXX")"
+PGO_ROOT="${PGO_ROOT:-$PROJECT_DIR/target/pgo}"
+mkdir -p "$PGO_ROOT"
+PGO_DIR="${PGO_DIR:-$(mktemp -d -p "$PGO_ROOT" "pgo-data.XXXXXXXX")}"
 BUILD_CAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000%)
 RUN_CAP=(systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400%)
 cleanup() {

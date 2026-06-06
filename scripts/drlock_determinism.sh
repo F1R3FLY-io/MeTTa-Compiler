@@ -21,7 +21,9 @@ BIN="$REPO/target/release/mettatron"
 GIB=$((1024*1024*1024))
 CAP=(systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 -p CPUQuota=1000% --quiet)
 SAFE_LABEL="${LABEL//[^A-Za-z0-9_.-]/_}"
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "drlock_det_${SAFE_LABEL}.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "drlock_det_${SAFE_LABEL}.XXXXXXXX")}"
 OUT="$LOG_DIR/drlock_det_${SAFE_LABEL}"
 EXPECT_DISTINCT="${EXPECT_DISTINCT:-1}"
 NORMALIZE_FRESHVARS="${NORMALIZE_FRESHVARS:-0}"

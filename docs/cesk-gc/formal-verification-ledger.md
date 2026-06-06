@@ -293,4 +293,8 @@ bash scripts/verify_cesk_gc_formal.sh
 ```
 
 The harness derives paths from its own location, uses `target/tlc-formal-small` for small TLC logs/metadata by
-default, runs Rocq under `systemd-run`, and includes the small TLC positive/negative discriminators.
+default, runs Rocq under `systemd-run`, and includes the small TLC positive/negative discriminators. The adjacent GC
+gate scripts likewise default log/build scratch to repo-derived `target/...` directories (`target/gc-logs` or a
+script-specific subdirectory) while preserving caller overrides such as `LOG_DIR`, `LOG_ROOT`, `SCRATCH_ROOT`,
+`OUT`, `P`, `PGO_DIR`, and `CARGO_TARGET_DIR`; large gates must not spill into `/tmp` unless the caller explicitly
+chooses that.

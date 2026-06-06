@@ -23,7 +23,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="${REPO:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 cd "$REPO"
 BIN="$REPO/target/x86_64-unknown-linux-gnu/debug/mettatron"
-LOG_DIR="${LOG_DIR:-$(mktemp -d -t "c_A_asan.XXXXXXXX")}"
+LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$LOG_ROOT"
+LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "c_A_asan.XXXXXXXX")}"
 P="$LOG_DIR/c_A_asan"
 GIB=$((1024*1024*1024))
 echo "===== C #A SIDE-FREE ASAN ====="; date

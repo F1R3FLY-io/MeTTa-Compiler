@@ -27,7 +27,9 @@ CONF_DIR="${CONFORMANCE_DIR:-$REPO_PARENT/mettatron-specification/conformance}"
 RUN_NEXTEST=1
 BUILD_CAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000%)
 NEXTEST_CAP=(systemd-run --user --scope -p MemoryMax=96G -p MemorySwapMax=0 -p CPUQuota=1800%)
-OUT="$(mktemp -d -t "ab_gc_diff.XXXXXXXX")"
+OUT_ROOT="${OUT_ROOT:-$REPO/target/gc-logs}"
+mkdir -p "$OUT_ROOT"
+OUT="${OUT:-$(mktemp -d -p "$OUT_ROOT" "ab_gc_diff.XXXXXXXX")}"
 cd "$REPO"
 
 while [[ $# -gt 0 ]]; do

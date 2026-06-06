@@ -192,6 +192,21 @@ pub fn metta_value_to_par(value: &MettaValue) -> Par {
                 })),
             }])
         }
+        MettaValueInner::NotReducible => {
+            // HE NotReducible sentinel - represent as tagged list: ["not-reducible"]
+            let ps = vec![create_string_par("not-reducible".to_string())];
+
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::EListBody(EList {
+                    ps,
+                    locally_free: Vec::new(),
+                    connective_used: false,
+                    remainder: None,
+                })),
+            }])
+        }
+        // Lazy values are display/hash/equality-transparent; convert the inner value.
+        MettaValueInner::Lazy(inner) => metta_value_to_par(inner),
         // Spanned: strip span wrapper and convert the inner value transparently
         MettaValueInner::Spanned(v, _) => metta_value_to_par(v),
     };

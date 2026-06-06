@@ -84,10 +84,12 @@ harness = false
 [[bench]]
 name = "mmverify_benchmark"
 harness = false
+required-features = ["rholang"]
 
 [[bench]]
 name = "memoization_benchmark"
 harness = false
+required-features = ["rholang"]
 
 [[bench]]
 name = "bytecode_comparison"
@@ -116,6 +118,7 @@ harness = false
 [[bench]]
 name = "type_system"
 harness = false
+required-features = ["rholang"]
 
 [dependencies]
 # MORK - Byte-encoded trie storage with symbol interning
@@ -328,16 +331,19 @@ harness = false
 name = "e2e"
 path = "benches/e2e/e2e.rs"
 harness = false
+required-features = ["rholang", "async"]
 
 [[bench]]
 name = "e2e_throughput_configurable"
 path = "benches/e2e/e2e_throughput_configurable.rs"
 harness = false
+required-features = ["rholang"]
 
 [[bench]]
 name = "e2e_throughput"
 path = "benches/e2e/e2e_throughput.rs"
 harness = false
+required-features = ["rholang", "async"]
 
 [[bench]]
 name = "set_operations"

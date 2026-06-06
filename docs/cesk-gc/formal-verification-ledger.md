@@ -222,9 +222,10 @@ facts the proofs rely on:
 - Both public eval boundaries (`eval` and `eval_with_tier`) publish `MettaState.source/output` into
   `SAFEPOINT_ROOTS` before the live transition begins, so midloop/rendezvous collection sees the caller's driver-C
   even when an outer CLI/REPL/conformance loop has not installed its own batch guard.
-- Async rholang batch results carry a `SafepointRootHandle` inside `BatchOutcome`: the worker registers the result
-  vector before publishing the outcome into the gather slot, the handle rides through sorting and return to
-  `run_state_async`, and each caller loop pushes values into `MettaState.output` before the outcome drops.
+- Async rholang batch results carry a `SafepointRootHandle` inside `BatchOutcome`: the worker projects
+  `BoundValue` results to their `MettaValue` component, registers that value vector before publishing the outcome into
+  the gather slot, the handle rides through sorting and return to `run_state_async`, and each caller loop pushes values
+  into `MettaState.output` before the outcome drops.
 - OPERATOR_CACHE is guarded by `gc_sweep_epoch` in index mode before pointer-keyed lookup, so a parked worker
   self-invalidates after another thread completes a sweep.
 - Value-bearing E0 LRU anchors (`EVAL_MEMO`, `MATCH_RESULT_CACHE`, and `BYTECODE_CACHE`) use `LruCache::push`

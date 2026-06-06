@@ -126,10 +126,11 @@ pub use backend::{
     SessionContext,
 };
 
-// State evaluation API — temporarily disabled (models crate unavailable)
-// pub use rholang_integration::run_state;
-// #[cfg(feature = "async")]
-// pub use rholang_integration::run_state_async;
+// State evaluation API — enabled with the optional Rholang integration module.
+#[cfg(feature = "rholang")]
+pub use rholang_integration::run_state;
+#[cfg(all(feature = "rholang", feature = "async"))]
+pub use rholang_integration::run_state_async;
 
 // Session-based evaluation API
 // Temporarily disabled: models crate dependency unavailable

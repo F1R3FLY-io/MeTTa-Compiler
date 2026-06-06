@@ -179,6 +179,9 @@ fn improve_error_message(error: &SyntaxError) -> String {
         SyntaxErrorKind::Generic => {
             Some("Check syntax near the indicated position. Common issues: unclosed parentheses, missing quotes, invalid escape sequences.".into())
         }
+        SyntaxErrorKind::HashReserved => {
+            Some("`#` is reserved syntax; use a quoted string or atom text that does not start with `#`.".into())
+        }
     };
 
     match hint {
@@ -226,8 +229,8 @@ fn value_to_json_string(value: &MettaValue) -> String {
         }
         ValueView::Error(msg, details) => {
             format!(
-                r#"{{"type":"error","message":"{}","details":{}}}"#,
-                escape_json(msg),
+                r#"{{"type":"error","offending":{},"details":{}}}"#,
+                value_to_json_string(&msg),
                 value_to_json_string(&details)
             )
         }
@@ -267,6 +270,8 @@ fn value_to_json_string(value: &MettaValue) -> String {
                 value_to_json_string(&inner)
             )
         }
+        ValueView::Lazy(inner) => value_to_json_string(&inner),
+        ValueView::NotReducible => r#"{"type":"not_reducible"}"#.to_string(),
     }
 }
 
@@ -562,7 +567,8 @@ async fn evaluate_batch_parallel_arena(
                 let ctx = StaticEvalContext::get();
                 let (eval_results, _new_env) = eval_trampoline(expr, env, &ctx);
 
-                let result_vec = eval_results.into_vec();
+                let result_vec: Vec<MettaValue> =
+                    eval_results.into_iter().map(|(value, _bindings)| value).collect();
 
                 // ── E1-c finisher (design §1.1 / F1): the OUTER batch-result handoff ──
                 // This worker's result Vec is about to move into the gather Mutex and
@@ -580,9 +586,10 @@ async fn evaluate_batch_parallel_arena(
                 // is_gc_requested() (unlike the dispatch/collapse finishers): a batch
                 // result must stay rooted across ALL future cycles until consumed, and
                 // by the time a cycle is requested this worker is long gone. The flat
-                // result Vec IS the complete root set (eval_trampoline→into_vec is a
-                // flat Vec<MettaValue>; no nested (value,bindings) walk needed; clone is
-                // a cheap Copy of arena handles).
+                // result Vec IS the complete root set after projecting BoundValue pairs
+                // to their value component. The bindings are metadata for propagation and
+                // the caller only publishes final MettaValue outputs here; clone is a
+                // cheap Copy of arena handles.
                 //
                 // BYTE-IDENTICAL WHEN DORMANT: the `#[cfg(index-gc)]` wall + the
                 // `dedicated_gc_enabled()`-first short-circuit ⇒ slab does not compile

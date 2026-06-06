@@ -201,8 +201,9 @@ assert_after_before "src/backend/eval/tier_forced.rs" "pub fn eval_with_tier(" "
 # before publication into the gather slot until after the caller copies the
 # results into MettaState.output.
 assert_after_before "src/rholang_integration.rs" "struct BatchOutcome" "_root_handle: Option<crate::backend::models::SafepointRootHandle>" "}"
-assert_after_before "src/rholang_integration.rs" "let result_vec = eval_results.into_vec();" "register_temporary_roots(" "guard[slot] = Some(BatchOutcome"
-assert_after_before "src/rholang_integration.rs" "let result_vec = eval_results.into_vec();" "register_temporary_roots(" "_root_handle: root_handle,"
+assert_after_before "src/rholang_integration.rs" "let result_vec: Vec<MettaValue> =" "eval_results.into_iter().map(|(value, _bindings)| value).collect();" "register_temporary_roots("
+assert_after_before "src/rholang_integration.rs" "let result_vec: Vec<MettaValue> =" "register_temporary_roots(" "guard[slot] = Some(BatchOutcome"
+assert_after_before "src/rholang_integration.rs" "let result_vec: Vec<MettaValue> =" "register_temporary_roots(" "_root_handle: root_handle,"
 assert_after_before "src/rholang_integration.rs" "guard[slot] = Some(BatchOutcome" "_root_handle: root_handle," "remaining.fetch_sub"
 assert_after_before "src/rholang_integration.rs" "let mut collected: Vec<BatchOutcome>" "drain(..)" "collected.sort_by_key"
 assert_zero "src/rholang_integration.rs" "drop(root_handle)"

@@ -35,6 +35,11 @@ run_proof_hygiene() {
   bash "$REPO/scripts/verify_cesk_gc_proof_hygiene.sh"
 }
 
+run_tlc_hygiene() {
+  echo "### TLC hygiene: CESK GC"
+  bash "$REPO/scripts/verify_cesk_gc_tlc_hygiene.sh"
+}
+
 run_tlc() {
   local label="$1" module="$2" cfg="$3" expect="$4" pattern="$5"
   local log="$TLC_META/${label}.log"
@@ -85,6 +90,7 @@ run_tlc() {
 }
 
 run_proof_hygiene
+run_tlc_hygiene
 
 run_lean "formal/lean/gc/FreeList.lean"
 run_lean "formal/lean/gc/YoungMark.lean"

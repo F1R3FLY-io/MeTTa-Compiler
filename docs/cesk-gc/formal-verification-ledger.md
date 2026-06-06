@@ -303,3 +303,10 @@ Before compiling proofs, `scripts/verify_cesk_gc_proof_hygiene.sh` rejects Lean 
 `axiom`, `constant`, `opaque`, `unsafe`) and Rocq proof shortcuts (`Admitted`, `admit`, `Axiom`, `Parameter`,
 `Conjecture`, `Abort`) in the CESK GC proof directories, and verifies every `formal/lean/gc/*.lean` and
 `formal/rocq/gc/*.v` file is enumerated by the formal harness.
+
+The formal harness also runs `scripts/verify_cesk_gc_tlc_hygiene.sh` before compiling proofs. That check parses every
+`run_tlc` entry, verifies labels/configs are unique, requires every referenced TLA+ module and config to exist, requires
+negative TLC runs to carry a discriminator pattern, and rejects any tracked `tla/*.cfg` or `tla/MC_*.tla` wrapper that is
+neither run nor explicitly classified. The only classified exclusions are legacy slab mark-sweep models, the older
+non-generational store-centric mark-sweep wrapper/configs, and larger CESK generational discriminator configs whose
+disk-light small counterparts are the default gate.

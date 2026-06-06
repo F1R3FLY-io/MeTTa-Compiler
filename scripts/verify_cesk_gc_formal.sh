@@ -89,6 +89,7 @@ run_lean "formal/lean/gc/BatchHandoff.lean"
 run_lean "formal/lean/gc/OperatorCacheEpoch.lean"
 run_lean "formal/lean/gc/WriteOnceAnchors.lean"
 run_lean "formal/lean/gc/SpaceRegistryBarriers.lean"
+run_lean "formal/lean/gc/TieredCacheBarriers.lean"
 run_lean "formal/lean/gc/SATB.lean"
 run_lean "formal/lean/gc/AllocateBlack.lean"
 run_lean "formal/lean/gc/SATBFinalization.lean"
@@ -106,6 +107,7 @@ run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/OperatorCacheEpoch.v"
 run_rocq "formal/rocq/gc/WriteOnceAnchors.v"
 run_rocq "formal/rocq/gc/SpaceRegistryBarriers.v"
+run_rocq "formal/rocq/gc/TieredCacheBarriers.v"
 run_rocq "formal/rocq/gc/SATB.v"
 run_rocq "formal/rocq/gc/AllocateBlack.v"
 run_rocq "formal/rocq/gc/SATBFinalization.v"
@@ -166,6 +168,16 @@ run_tlc "space_registry_barriers_missing_remove" "MC_SpaceRegistryBarriers.tla" 
   fail "Invariant NoSpaceRegistryValueFreed is violated"
 run_tlc "space_registry_barriers_missing_clear" "MC_SpaceRegistryBarriers.tla" "MC_SpaceRegistryBarriers_missing_clear.cfg" \
   fail "Invariant NoSpaceRegistryValueFreed is violated"
+run_tlc "tiered_cache_barriers_all" "MC_TieredCacheBarriers.tla" "MC_TieredCacheBarriers_all.cfg" \
+  pass ""
+run_tlc "tiered_cache_barriers_missing_scan_compiled" "MC_TieredCacheBarriers.tla" "MC_TieredCacheBarriers_missing_scan_compiled.cfg" \
+  fail "Invariant NoTieredCacheValueFreed is violated"
+run_tlc "tiered_cache_barriers_missing_cancel" "MC_TieredCacheBarriers.tla" "MC_TieredCacheBarriers_missing_cancel.cfg" \
+  fail "Invariant NoTieredCacheValueFreed is violated"
+run_tlc "tiered_cache_barriers_missing_clear_compiled" "MC_TieredCacheBarriers.tla" "MC_TieredCacheBarriers_missing_clear_compiled.cfg" \
+  fail "Invariant NoTieredCacheValueFreed is violated"
+run_tlc "tiered_cache_barriers_unchecked_guard_drop" "MC_TieredCacheBarriers.tla" "MC_TieredCacheBarriers_unchecked_guard_drop.cfg" \
+  fail "Invariant NoTieredCacheValueFreed is violated"
 run_tlc "started_cycle_gate_started" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_started.cfg" \
   pass ""
 run_tlc "started_cycle_gate_gen" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_gen.cfg" \

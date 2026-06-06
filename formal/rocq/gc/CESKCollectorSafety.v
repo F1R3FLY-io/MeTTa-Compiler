@@ -37,7 +37,11 @@
       deleted survive ordinary structural-root collection;
     - global space-registry values survive while registered as structural roots,
       and replaced/removed/cleared space values survive SATB collection when the
-      old `SpaceHandle` roots are shaded.
+      old `SpaceHandle` roots are shaded;
+    - global tiered-cache pending bytecode source roots and compiled bytecode
+      constants survive while registered as structural roots, removed old cache
+      values survive SATB collection when shaded, and pending-root guard drops
+      are ownership-token checked.
 
     These are parametric theorems over the store graph and do not assume a finite
     TLC state space.
@@ -97,6 +101,27 @@ Section CESKCollectorSafetyModel.
       (OverwriteVictim RemoveVictim ClearVictim : Addr -> Prop)
       (a : Addr) : Prop :=
     OverwriteVictim a \/ RemoveVictim a \/ ClearVictim a.
+
+  Definition TieredCacheRegisteredValue
+      (PendingRoot CompiledConstant : Addr -> Prop)
+      (a : Addr) : Prop :=
+    PendingRoot a \/ CompiledConstant a.
+
+  Definition TieredCacheRemovedValue
+      (PendingOverwriteVictim PendingCancelVictim PendingGuardDropVictim
+       ClearPendingVictim ClearCompiledConstant : Addr -> Prop)
+      (a : Addr) : Prop :=
+    PendingOverwriteVictim a \/
+    PendingCancelVictim a \/
+    PendingGuardDropVictim a \/
+    ClearPendingVictim a \/
+    ClearCompiledConstant a.
+
+  Definition TokenCheckedRemove
+      (EntryToken : Slot -> Addr)
+      (guard : Addr)
+      (entry : Slot) : Prop :=
+    EntryToken entry = guard.
 
   Theorem rendezvous_participant_root_survives_collection :
     forall (Occupied Published : Slot -> Prop)
@@ -584,6 +609,91 @@ Section CESKCollectorSafetyModel.
     - apply Hoverwrite. exact Hoverwrite_a.
     - apply Hremove. exact Hremove_a.
     - apply Hclear. exact Hclear_a.
+  Qed.
+
+  Theorem old_pending_guard_cannot_remove_newer_tiered_root :
+    forall (EntryToken : Slot -> Addr)
+           (old_entry new_entry : Slot)
+           (old_guard : Addr),
+      EntryToken old_entry = old_guard ->
+      EntryToken new_entry <> old_guard ->
+      ~ TokenCheckedRemove EntryToken old_guard new_entry.
+  Proof.
+    intros EntryToken old_entry new_entry old_guard Hold Hnew Hremove.
+    unfold TokenCheckedRemove in Hremove.
+    apply Hnew.
+    exact Hremove.
+  Qed.
+
+  Theorem registered_tiered_cache_value_survives_collection :
+    forall (PendingRoot CompiledConstant PendingScanned CompiledScanned
+            StructuralRoot Marked Freed : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      (forall a, PendingRoot a -> PendingScanned a) ->
+      (forall a, PendingScanned a -> StructuralRoot a) ->
+      (forall a, CompiledConstant a -> CompiledScanned a) ->
+      (forall a, CompiledScanned a -> StructuralRoot a) ->
+      (forall a, Reach StructuralRoot Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        TieredCacheRegisteredValue PendingRoot CompiledConstant a ->
+        ~ Freed a.
+  Proof.
+    intros PendingRoot CompiledConstant PendingScanned CompiledScanned
+           StructuralRoot Marked Freed Edge Hscan_pending Hroot_pending
+           Hscan_compiled Hroot_compiled Hmark Hsweep a Hregistered Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    destruct Hregistered as [Hpending | Hcompiled].
+    - apply Hroot_pending.
+      apply Hscan_pending.
+      exact Hpending.
+    - apply Hroot_compiled.
+      apply Hscan_compiled.
+      exact Hcompiled.
+  Qed.
+
+  Theorem removed_tiered_cache_value_survives_satb_collection :
+    forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack
+            PendingOverwriteVictim PendingCancelVictim PendingGuardDropVictim
+            ClearPendingVictim ClearCompiledConstant SnapshotLive : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, PendingOverwriteVictim a -> ShadedDeletion a) ->
+      (forall a, PendingCancelVictim a -> ShadedDeletion a) ->
+      (forall a, PendingGuardDropVictim a -> ShadedDeletion a) ->
+      (forall a, ClearPendingVictim a -> ShadedDeletion a) ->
+      (forall a, ClearCompiledConstant a -> ShadedDeletion a) ->
+      (forall a,
+          SnapshotLive a ->
+          TieredCacheRemovedValue
+            PendingOverwriteVictim PendingCancelVictim PendingGuardDropVictim
+            ClearPendingVictim ClearCompiledConstant a) ->
+      (forall a,
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack) Edge a ->
+          Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        SnapshotLive a ->
+        ~ Freed a.
+  Proof.
+    intros InitialRoot DriverRoot ShadedDeletion AllocateBlack
+           PendingOverwriteVictim PendingCancelVictim PendingGuardDropVictim
+           ClearPendingVictim ClearCompiledConstant SnapshotLive Edge Marked Freed
+           Hoverwrite Hcancel Hguard Hclear_pending Hclear_compiled Hremoved Hmark Hsweep
+           a Hlive Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right; right; left.
+    destruct (Hremoved a Hlive) as
+        [Hoverwrite_a | [Hcancel_a | [Hguard_a | [Hclear_pending_a | Hclear_compiled_a]]]].
+    - apply Hoverwrite. exact Hoverwrite_a.
+    - apply Hcancel. exact Hcancel_a.
+    - apply Hguard. exact Hguard_a.
+    - apply Hclear_pending. exact Hclear_pending_a.
+    - apply Hclear_compiled. exact Hclear_compiled_a.
   Qed.
 End CESKCollectorSafetyModel.
 

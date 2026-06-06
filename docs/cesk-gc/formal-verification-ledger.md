@@ -55,6 +55,10 @@ requires a new stale-old-mark proof before it can be introduced.
   space-registry obligation. Registered `SpaceHandle` values survive as structural E0 global anchors, and values
   reachable from overwritten, removed, or bulk-cleared old handles survive E2 SATB collection when those old handles
   are shaded.
+- `formal/rocq/gc/TieredCacheBarriers.v` and `formal/lean/gc/TieredCacheBarriers.lean`: prove the global tiered
+  compilation cache obligation. Pending bytecode source roots and ready bytecode constants survive as structural E0
+  global anchors, removed pending/compiled values survive E2 SATB collection when shaded, and ownership-token-checked
+  pending-root guards cannot unregister newer same-hash pending roots.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
   roots, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache sweep-epoch
@@ -109,6 +113,10 @@ requires a new stale-old-mark proof before it can be introduced.
 - `tla/SpaceRegistryBarriers.tla`: checks the global space-registry obligation. Scanning registered spaces and shading
   overwritten, removed, and bulk-cleared old `SpaceHandle` values preserves `NoSpaceRegistryValueFreed`; omitting the
   scan, remove shade, or clear shade violates it.
+- `tla/TieredCacheBarriers.tla`: checks the global tiered-cache obligation. Scanning pending bytecode source roots and
+  compiled bytecode constants, shading overwritten/cancelled/guard-dropped/cleared old roots, and token-checking guard
+  drops preserves `NoTieredCacheValueFreed`; omitting compiled-constant scan, cancellation shade, compiled clear shade,
+  or token ownership violates it.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 - `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end
@@ -195,7 +203,9 @@ facts the proofs rely on:
 - The rooted compiler atom statics are exactly three `OnceLock<MettaValue>` write-once anchors; the source-coupling
   gate asserts structural reads and no reset/take/set deletion path.
 - The rooted tiered compilation cache shades pending bytecode source roots on overwrite, cancellation, task-drop, and
-  guard drop, and shades pending roots plus compiled bytecode constants before full cache clear.
+  guard drop, and shades pending roots plus compiled bytecode constants before full cache clear. Pending bytecode root
+  entries carry non-wrapping ownership tokens; guard-drop and backpressure cancellation use token-checked removal so an
+  old guard cannot unregister a newer same-hash pending root.
 - The rooted thread-local subgoal and thunk tables shade cached result values on stale eviction, overwrite, explicit
   removal, invalidation, full clear, and thunk result replacement.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released

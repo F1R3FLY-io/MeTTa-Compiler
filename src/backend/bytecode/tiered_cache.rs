@@ -803,7 +803,7 @@ pub struct TieredCache {
     /// compilation tasks. These are shallow `MettaValue` roots, not owned
     /// copies; `TieredCacheRoots` traces them while async compilation can
     /// still dereference the source expression.
-    pending_bytecode_roots: Arc<DashMap<u64, MettaValue, IdentityU64BuildHasher>>,
+    pending_bytecode_roots: Arc<DashMap<u64, PendingBytecodeRootEntry, IdentityU64BuildHasher>>,
 
     /// Threshold for bytecode compilation
     pub bytecode_threshold: u32,
@@ -871,9 +871,26 @@ pub struct TieredCache {
 /// The handle unregisters the root when the queued task is dropped or when the
 /// compile closure finishes. This keeps rooting tied to the actual async
 /// lifetime instead of to execution counts or tier status.
+#[derive(Clone, Copy)]
+struct PendingBytecodeRootEntry {
+    token: u64,
+    root: MettaValue,
+}
+
+static NEXT_PENDING_BYTECODE_ROOT_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+fn next_pending_bytecode_root_token() -> u64 {
+    NEXT_PENDING_BYTECODE_ROOT_TOKEN
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .expect("pending bytecode root token counter exhausted")
+}
+
 struct PendingBytecodeRootGuard {
     expr_hash: u64,
-    roots: Arc<DashMap<u64, MettaValue, IdentityU64BuildHasher>>,
+    token: u64,
+    roots: Arc<DashMap<u64, PendingBytecodeRootEntry, IdentityU64BuildHasher>>,
 }
 
 #[cfg(feature = "index-gc")]
@@ -886,7 +903,10 @@ impl Drop for PendingBytecodeRootGuard {
         #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
-                let removed = self.roots.remove(&self.expr_hash).map(|(_hash, root)| root);
+                let removed = self
+                    .roots
+                    .remove_if(&self.expr_hash, |_hash, entry| entry.token == self.token)
+                    .map(|(_hash, entry)| entry.root);
                 if satb_active {
                     if let Some(root) = removed {
                         shade_tiered_roots(vec![root]);
@@ -896,7 +916,8 @@ impl Drop for PendingBytecodeRootGuard {
         );
         #[cfg(not(feature = "index-gc"))]
         {
-            self.roots.remove(&self.expr_hash);
+            self.roots
+                .remove_if(&self.expr_hash, |_hash, entry| entry.token == self.token);
         }
     }
 }
@@ -1114,23 +1135,26 @@ impl TieredCache {
         expr_hash: u64,
         expr: MettaValue,
     ) -> PendingBytecodeRootGuard {
+        let token = next_pending_bytecode_root_token();
+        let entry = PendingBytecodeRootEntry { token, root: expr };
         #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
-                let old = self.pending_bytecode_roots.insert(expr_hash, expr);
+                let old = self.pending_bytecode_roots.insert(expr_hash, entry);
                 if satb_active {
                     if let Some(root) = old {
-                        shade_tiered_roots(vec![root]);
+                        shade_tiered_roots(vec![root.root]);
                     }
                 }
             },
         );
         #[cfg(not(feature = "index-gc"))]
         {
-            self.pending_bytecode_roots.insert(expr_hash, expr);
+            self.pending_bytecode_roots.insert(expr_hash, entry);
         }
         PendingBytecodeRootGuard {
             expr_hash,
+            token,
             roots: Arc::clone(&self.pending_bytecode_roots),
         }
     }
@@ -1139,7 +1163,7 @@ impl TieredCache {
         roots.extend(
             self.pending_bytecode_roots
                 .iter()
-                .map(|entry| *entry.value()),
+                .map(|entry| entry.value().root),
         );
         for entry in self.entries.iter() {
             if let Some(chunk) = entry.value().bytecode_chunk() {
@@ -1243,6 +1267,7 @@ impl TieredCache {
         // provider must see this source until compile_arc has consumed it.
         let expr_clone = expr.clone();
         let root_guard = self.register_pending_bytecode_root(state.expr_hash, expr_clone);
+        let root_token = root_guard.token;
         let state_clone = Arc::clone(state);
 
         // Compilation closure
@@ -1280,8 +1305,8 @@ impl TieredCache {
                 |satb_active| {
                     let removed = self
                         .pending_bytecode_roots
-                        .remove(&state.expr_hash)
-                        .map(|(_hash, root)| root);
+                        .remove_if(&state.expr_hash, |_hash, entry| entry.token == root_token)
+                        .map(|(_hash, entry)| entry.root);
                     if satb_active {
                         if let Some(root) = removed {
                             shade_tiered_roots(vec![root]);
@@ -1291,7 +1316,8 @@ impl TieredCache {
             );
             #[cfg(not(feature = "index-gc"))]
             {
-                self.pending_bytecode_roots.remove(&state.expr_hash);
+                self.pending_bytecode_roots
+                    .remove_if(&state.expr_hash, |_hash, entry| entry.token == root_token);
             }
             state.revert_bytecode_to_not_started();
             #[cfg(feature = "track-stats")]
@@ -1868,7 +1894,7 @@ impl TieredCache {
                     roots.extend(
                         self.pending_bytecode_roots
                             .iter()
-                            .map(|entry| *entry.value()),
+                            .map(|entry| entry.value().root),
                     );
                     for entry in self.entries.iter() {
                         if let Some(chunk) = entry.value().bytecode_chunk() {
@@ -2457,6 +2483,39 @@ mod tests {
         assert!(
             !roots.contains(&expr),
             "pending bytecode source root must be removed when the task lifetime ends"
+        );
+    }
+
+    #[test]
+    fn test_pending_bytecode_root_guard_cannot_remove_newer_root() {
+        let cache = TieredCache::new();
+        let factory = global_factory();
+        let expr_hash = 0xfeed_beef;
+        let old_expr = factory.sexpr(vec![factory.atom("+"), factory.long(1)]);
+        let new_expr = factory.sexpr(vec![factory.atom("+"), factory.long(2)]);
+
+        let old_guard = cache.register_pending_bytecode_root(expr_hash, old_expr);
+        let new_guard = cache.register_pending_bytecode_root(expr_hash, new_expr);
+
+        drop(old_guard);
+
+        let mut roots = Vec::new();
+        cache.collect_roots_into(&mut roots);
+        assert!(
+            roots.contains(&new_expr),
+            "dropping an old pending-root guard must not unregister a newer root with the same hash"
+        );
+        assert!(
+            !roots.contains(&old_expr),
+            "overwritten pending bytecode source root should no longer be structurally registered"
+        );
+
+        drop(new_guard);
+        roots.clear();
+        cache.collect_roots_into(&mut roots);
+        assert!(
+            !roots.contains(&new_expr),
+            "current pending bytecode source root must be removed by its owning guard"
         );
     }
 

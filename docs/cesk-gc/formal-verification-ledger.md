@@ -59,15 +59,20 @@ requires a new stale-old-mark proof before it can be introduced.
   compilation cache obligation. Pending bytecode source roots and ready bytecode constants survive as structural E0
   global anchors, removed pending/compiled values survive E2 SATB collection when shaded, and ownership-token-checked
   pending-root guards cannot unregister newer same-hash pending roots.
+- `formal/rocq/gc/ThreadLocalTablesBarriers.v` and `formal/lean/gc/ThreadLocalTablesBarriers.lean`: prove the
+  thread-local subgoal/thunk table obligation. Cached subgoal and thunk results survive while scanned as structural
+  roots, and stale-evicted, overwritten, explicitly removed, cleared/invalidated, and thunk-replaced cached results
+  survive E2 SATB collection when shaded.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
   roots, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache sweep-epoch
-  coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, future CESK
-  touches, reachable young nodes under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live
-  nodes covered by initial roots, driver roots, SATB shades, or allocate-black publication, E2 freshly published
+  coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, global tiered-cache
+  roots and removed-value SATB shades, thread-local table roots and removed-result SATB shades, future CESK touches,
+  reachable young nodes under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live nodes
+  covered by initial roots, driver roots, SATB shades, or allocate-black publication, E2 freshly published
   allocate-black allocations, E2 final-rendezvous roots and abort-to-STW finalization, E2 full-major SATB mark
-  lifecycle, E2 snapshot-live values removed by value-bearing E0 cache capacity eviction, overwrite, and bulk clear,
-  and E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories.
+  lifecycle, E2 snapshot-live values removed by value-bearing E0 cache capacity eviction, overwrite, and bulk clear, and
+  E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
@@ -117,6 +122,10 @@ requires a new stale-old-mark proof before it can be introduced.
   compiled bytecode constants, shading overwritten/cancelled/guard-dropped/cleared old roots, and token-checking guard
   drops preserves `NoTieredCacheValueFreed`; omitting compiled-constant scan, cancellation shade, compiled clear shade,
   or token ownership violates it.
+- `tla/ThreadLocalTablesBarriers.tla`: checks the thread-local subgoal/thunk table obligation. Scanning cached subgoal
+  and thunk results and shading stale-evicted, overwritten, removed, cleared/invalidated, and thunk-replaced cached
+  results preserves `NoThreadLocalTableValueFreed`; omitting thunk scan, subgoal stale-eviction shade, thunk clear shade,
+  or thunk replacement shade violates it.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 - `tla/WitnessOkReset.tla`: checks the cross-cycle witness flag reset. Clearing `CURRENT_WITNESS_OK` at cycle end

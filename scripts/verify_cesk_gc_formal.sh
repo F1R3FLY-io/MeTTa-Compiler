@@ -90,6 +90,7 @@ run_lean "formal/lean/gc/OperatorCacheEpoch.lean"
 run_lean "formal/lean/gc/WriteOnceAnchors.lean"
 run_lean "formal/lean/gc/SpaceRegistryBarriers.lean"
 run_lean "formal/lean/gc/TieredCacheBarriers.lean"
+run_lean "formal/lean/gc/ThreadLocalTablesBarriers.lean"
 run_lean "formal/lean/gc/SATB.lean"
 run_lean "formal/lean/gc/AllocateBlack.lean"
 run_lean "formal/lean/gc/SATBFinalization.lean"
@@ -108,6 +109,7 @@ run_rocq "formal/rocq/gc/OperatorCacheEpoch.v"
 run_rocq "formal/rocq/gc/WriteOnceAnchors.v"
 run_rocq "formal/rocq/gc/SpaceRegistryBarriers.v"
 run_rocq "formal/rocq/gc/TieredCacheBarriers.v"
+run_rocq "formal/rocq/gc/ThreadLocalTablesBarriers.v"
 run_rocq "formal/rocq/gc/SATB.v"
 run_rocq "formal/rocq/gc/AllocateBlack.v"
 run_rocq "formal/rocq/gc/SATBFinalization.v"
@@ -178,6 +180,16 @@ run_tlc "tiered_cache_barriers_missing_clear_compiled" "MC_TieredCacheBarriers.t
   fail "Invariant NoTieredCacheValueFreed is violated"
 run_tlc "tiered_cache_barriers_unchecked_guard_drop" "MC_TieredCacheBarriers.tla" "MC_TieredCacheBarriers_unchecked_guard_drop.cfg" \
   fail "Invariant NoTieredCacheValueFreed is violated"
+run_tlc "thread_local_tables_barriers_all" "MC_ThreadLocalTablesBarriers.tla" "MC_ThreadLocalTablesBarriers_all.cfg" \
+  pass ""
+run_tlc "thread_local_tables_barriers_missing_scan_thunk" "MC_ThreadLocalTablesBarriers.tla" "MC_ThreadLocalTablesBarriers_missing_scan_thunk.cfg" \
+  fail "Invariant NoThreadLocalTableValueFreed is violated"
+run_tlc "thread_local_tables_barriers_missing_subgoal_stale" "MC_ThreadLocalTablesBarriers.tla" "MC_ThreadLocalTablesBarriers_missing_subgoal_stale.cfg" \
+  fail "Invariant NoThreadLocalTableValueFreed is violated"
+run_tlc "thread_local_tables_barriers_missing_thunk_clear" "MC_ThreadLocalTablesBarriers.tla" "MC_ThreadLocalTablesBarriers_missing_thunk_clear.cfg" \
+  fail "Invariant NoThreadLocalTableValueFreed is violated"
+run_tlc "thread_local_tables_barriers_missing_thunk_replace" "MC_ThreadLocalTablesBarriers.tla" "MC_ThreadLocalTablesBarriers_missing_thunk_replace.cfg" \
+  fail "Invariant NoThreadLocalTableValueFreed is violated"
 run_tlc "started_cycle_gate_started" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_started.cfg" \
   pass ""
 run_tlc "started_cycle_gate_gen" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_gen.cfg" \

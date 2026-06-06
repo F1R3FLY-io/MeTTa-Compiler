@@ -298,3 +298,8 @@ gate scripts likewise default log/build scratch to repo-derived `target/...` dir
 script-specific subdirectory) while preserving caller overrides such as `LOG_DIR`, `LOG_ROOT`, `SCRATCH_ROOT`,
 `OUT`, `P`, `PGO_DIR`, and `CARGO_TARGET_DIR`; large gates must not spill into `/tmp` unless the caller explicitly
 chooses that.
+
+Before compiling proofs, `scripts/verify_cesk_gc_proof_hygiene.sh` rejects Lean proof shortcuts (`sorry`, `admit`,
+`axiom`, `constant`, `opaque`, `unsafe`) and Rocq proof shortcuts (`Admitted`, `admit`, `Axiom`, `Parameter`,
+`Conjecture`, `Abort`) in the CESK GC proof directories, and verifies every `formal/lean/gc/*.lean` and
+`formal/rocq/gc/*.v` file is enumerated by the formal harness.

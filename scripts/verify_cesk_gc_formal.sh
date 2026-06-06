@@ -30,6 +30,11 @@ run_source_coupling() {
   bash "$REPO/scripts/verify_cesk_gc_source_coupling.sh"
 }
 
+run_proof_hygiene() {
+  echo "### Proof hygiene: CESK GC"
+  bash "$REPO/scripts/verify_cesk_gc_proof_hygiene.sh"
+}
+
 run_tlc() {
   local label="$1" module="$2" cfg="$3" expect="$4" pattern="$5"
   local log="$TLC_META/${label}.log"
@@ -78,6 +83,8 @@ run_tlc() {
       ;;
   esac
 }
+
+run_proof_hygiene
 
 run_lean "formal/lean/gc/FreeList.lean"
 run_lean "formal/lean/gc/YoungMark.lean"

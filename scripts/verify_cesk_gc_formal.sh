@@ -95,6 +95,7 @@ run_tlc_hygiene
 run_lean "formal/lean/gc/FreeList.lean"
 run_lean "formal/lean/gc/YoungMark.lean"
 run_lean "formal/lean/gc/StructuralRoots.lean"
+run_lean "formal/lean/gc/MidloopRootUnion.lean"
 run_lean "formal/lean/gc/RendezvousWitness.lean"
 run_lean "formal/lean/gc/WitnessSlotLifecycle.lean"
 run_lean "formal/lean/gc/WitnessOkReset.lean"
@@ -121,6 +122,7 @@ run_lean "formal/lean/gc/E0EvictionBarriers.lean"
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
+run_rocq "formal/rocq/gc/MidloopRootUnion.v"
 run_rocq "formal/rocq/gc/RendezvousWitness.v"
 run_rocq "formal/rocq/gc/WitnessSlotLifecycle.v"
 run_rocq "formal/rocq/gc/WitnessOkReset.v"
@@ -179,6 +181,14 @@ run_tlc "driver_root_union_missing_env" "MC_DriverRootUnion.tla" "MC_DriverRootU
   fail "Invariant RootUnionComplete is violated"
 run_tlc "driver_root_union_missing_dispatch" "MC_DriverRootUnion.tla" "MC_DriverRootUnion_missing_dispatch.cfg" \
   fail "Invariant RootUnionComplete is violated"
+run_tlc "midloop_root_union_all" "MC_MidloopRootUnion.tla" "MC_MidloopRootUnion_all.cfg" \
+  pass ""
+run_tlc "midloop_root_union_missing_machine" "MC_MidloopRootUnion.tla" "MC_MidloopRootUnion_missing_machine.cfg" \
+  fail "Invariant MidloopRootUnionComplete is violated"
+run_tlc "midloop_root_union_missing_deferred" "MC_MidloopRootUnion.tla" "MC_MidloopRootUnion_missing_deferred.cfg" \
+  fail "Invariant MidloopRootUnionComplete is violated"
+run_tlc "midloop_root_union_missing_driver_c" "MC_MidloopRootUnion.tla" "MC_MidloopRootUnion_missing_driver_c.cfg" \
+  fail "Invariant MidloopRootUnionComplete is violated"
 run_tlc "driver_c_publication_published" "MC_DriverCPublication.tla" "MC_DriverCPublication_published.cfg" \
   pass ""
 run_tlc "driver_c_publication_missing" "MC_DriverCPublication.tla" "MC_DriverCPublication_missing.cfg" \

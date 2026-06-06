@@ -279,6 +279,34 @@ assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::TierLe
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "pub(crate) fn worker_cooperative_safepoint" "ThreadContribution::TierLeaf" "gc_allocator::worker_park_and_root_in_cycle"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "FULL park (mirror branch-B template" "ThreadContribution::Trampoline" "worker_park_and_root_in_cycle"
 
+# Single-threaded mid-loop collection coupling: the opt-in mid-loop branch must
+# build exactly the root union discharged by MidloopRootUnion before handing it
+# to the collector. This is the live trampoline S/C/K reader (which also appends
+# E0/global/K-spine), then deferred env drops, then driver-C safepoint roots.
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "gc_mode_is_index()" "&& midloop_enabled()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "&& midloop_enabled()" "&& !worker_ever_spawned()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "&& !worker_ever_spawned()" "&& active_evaluator_count() == 1"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "&& active_evaluator_count() == 1" "&& !disabled()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "let mut midloop_roots" "collect_machine_roots_live("
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "collect_machine_roots_live(" "for deferred_env in &deferred_shared_drops"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "deferred_env.as_ref().collect_roots_into(&mut midloop_roots);" "crate::backend::models::collect_safepoint_roots(&mut midloop_roots);"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "crate::backend::models::collect_safepoint_roots(&mut midloop_roots);" "run_collection_if_triggered_midloop("
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "run_collection_if_triggered_midloop(" "&midloop_roots,"
+assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "// Phase 2.2: Incremental nursery collection" "collect_machine_roots_live(" "1"
+assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "// Phase 2.2: Incremental nursery collection" "deferred_env.as_ref().collect_roots_into(&mut midloop_roots);" "1"
+assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "// Phase 2.2: Incremental nursery collection" "crate::backend::models::collect_safepoint_roots(&mut midloop_roots);" "1"
+assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "// Phase 2.2: Incremental nursery collection" "run_collection_if_triggered_midloop(" "1"
+assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "// Phase 2.2: Incremental nursery collection" "crate::backend::models::collect_all_roots()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "\`remaining_matches\` is dead once the cut fired for this barrier." "if !cut_fired_peek(*cut_barrier) {" "remaining_matches.as_slice()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "\`remaining_alts\` is dead once the cut fired for this barrier." "if !cut_fired_peek(*cut_barrier) {" "remaining_alts.as_slice()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "\`remaining_templates\` is dead once the cut fired for this barrier." "if !cut_fired_peek(*cut_barrier) {" "remaining_templates.as_slice()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Continuation::ProcessRuleMatches {" "if remaining_matches.len() == 0 || cut_fired {" "let (rhs, raw_bindings) = remaining_matches"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "D-2 (C2) soundness coupling: \`collect_live_values\` SKIPS \`remaining_matches\`" "debug_assert!(" "let (rhs, raw_bindings) = remaining_matches"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Phase 1 cut-barrier: if a \`(cut)\` fired this disjunction's" "if cut_fired_peek(cut_barrier) {" "remaining_alts.next()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "D-2 (C2) soundness coupling: \`collect_live_values\` skips \`remaining_alts\`" "debug_assert!(" "remaining_alts.next()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Phase 1 cut-barrier: if a \`(cut)\` fired this match fan-out's" "if cut_fired_peek(cut_barrier) {" "remaining_templates.next()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "D-2 (C2) soundness coupling: \`collect_live_values\` skips \`remaining_templates\`" "debug_assert!(" "remaining_templates.next()"
+
 # E2 cache-epoch source coupling: OPERATOR_CACHE is pointer-keyed
 # (`head.as_ptr()`), so index mode must lazily clear it when gc_sweep_epoch
 # advances on a different thread. Explicit cache clears also synchronize the

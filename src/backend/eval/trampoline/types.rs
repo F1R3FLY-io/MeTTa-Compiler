@@ -3128,6 +3128,7 @@ impl Continuation {
                 collect_fork_local_roots(env, out);
                 #[cfg(not(feature = "index-gc"))]
                 let _ = env;
+                // `remaining_alts` is dead once the cut fired for this barrier.
                 if !cut_fired_peek(*cut_barrier) {
                     for (v, bindings) in remaining_alts.as_slice().iter() {
                         out.push(*v);
@@ -3152,6 +3153,7 @@ impl Continuation {
                 collect_fork_local_roots(env, out);
                 #[cfg(not(feature = "index-gc"))]
                 let _ = env;
+                // `remaining_templates` is dead once the cut fired for this barrier.
                 if !cut_fired_peek(*cut_barrier) {
                     out.extend(remaining_templates.as_slice().iter().copied());
                 }

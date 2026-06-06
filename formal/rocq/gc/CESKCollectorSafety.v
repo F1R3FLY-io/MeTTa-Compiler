@@ -16,6 +16,8 @@
       driver has closed admission and snapshotted participants;
     - the driver root union includes worker-buffer, safepoint, live-env, and
       live-dispatch channel roots;
+    - the single-threaded mid-loop root union includes live S/C/K, E0,
+      globals, K-spine, deferred env roots, and driver-C safepoint roots;
     - eval-entry driver-C publication puts caller-held source/output roots in
       the driver roots;
     - async batch-result handoff roots worker results in driver-C until the
@@ -83,6 +85,11 @@ Section CESKCollectorSafetyModel.
       (WorkerRoot SafepointRoot EnvAnchor DispatchAnchor : Addr -> Prop)
       (a : Addr) : Prop :=
     WorkerRoot a \/ SafepointRoot a \/ EnvAnchor a \/ DispatchAnchor a.
+
+  Definition MidloopRootUnion
+      (LiveSCK Env0 Global KSpine Deferred DriverC : Addr -> Prop)
+      (a : Addr) : Prop :=
+    LiveSCK a \/ Env0 a \/ Global a \/ KSpine a \/ Deferred a \/ DriverC a.
 
   Definition LiveMachineVisible
       (Machine : Type)
@@ -375,6 +382,59 @@ Section CESKCollectorSafetyModel.
     - apply Hsafepoint. exact Hsafepoint_a.
     - apply Henv. exact Henv_a.
     - apply Hdispatch. exact Hdispatch_a.
+  Qed.
+
+  Theorem midloop_root_union_channel_survives_collection :
+    forall (LiveSCK Env0 Global KSpine Deferred DriverC
+            MidloopRoot : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, LiveSCK a -> MidloopRoot a) ->
+      (forall a, Env0 a -> MidloopRoot a) ->
+      (forall a, Global a -> MidloopRoot a) ->
+      (forall a, KSpine a -> MidloopRoot a) ->
+      (forall a, Deferred a -> MidloopRoot a) ->
+      (forall a, DriverC a -> MidloopRoot a) ->
+      (forall a, Reach MidloopRoot Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        MidloopRootUnion LiveSCK Env0 Global KSpine Deferred DriverC a ->
+        ~ Freed a.
+  Proof.
+    intros LiveSCK Env0 Global KSpine Deferred DriverC MidloopRoot
+           Edge Marked Freed HliveSCK Henv0 Hglobal HkSpine Hdeferred HdriverC
+           Hmark Hsweep a Hroot Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    destruct Hroot as [HliveSCK_a | [Henv0_a | [Hglobal_a | [HkSpine_a | [Hdeferred_a | HdriverC_a]]]]].
+    - apply HliveSCK. exact HliveSCK_a.
+    - apply Henv0. exact Henv0_a.
+    - apply Hglobal. exact Hglobal_a.
+    - apply HkSpine. exact HkSpine_a.
+    - apply Hdeferred. exact Hdeferred_a.
+    - apply HdriverC. exact HdriverC_a.
+  Qed.
+
+  Theorem midloop_future_touch_survives_collection :
+    forall (LiveSCK Env0 Global KSpine Deferred DriverC
+            Marked Freed FutureTouch : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      (forall a,
+          Reach (MidloopRootUnion LiveSCK Env0 Global KSpine Deferred DriverC) Edge a ->
+          Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      (forall a,
+          FutureTouch a ->
+          Reach (MidloopRootUnion LiveSCK Env0 Global KSpine Deferred DriverC) Edge a) ->
+      forall a, FutureTouch a -> ~ Freed a.
+  Proof.
+    intros LiveSCK Env0 Global KSpine Deferred DriverC
+           Marked Freed FutureTouch Edge Hmark Hsweep Hfuture a Htouch Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply Hfuture.
+    exact Htouch.
   Qed.
 
   Theorem structural_future_touch_survives_collection :

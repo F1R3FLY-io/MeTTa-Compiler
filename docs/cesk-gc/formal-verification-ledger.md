@@ -7,9 +7,10 @@ the legacy slab mark-sweep collector.
 
 The default live collector verified here is the CESK-based generational `index-gc` collector's E1 path:
 single-threaded quiescence and rendezvous collection compute structural roots, then mark and sweep while holding the
-index heap write lock. Mid-loop collection remains opt-in (`METTATRON_INDEX_GC_MIDLOOP=1`): the theorem covers it when
-the caller supplies a complete structural root set, but the default verified boundary does not claim that opt-in path is
-shipped-on until its separate ASAN/root-completeness gate is green. There is also an opt-in E2 SATB major path
+index heap write lock. Mid-loop collection remains opt-in (`METTATRON_INDEX_GC_MIDLOOP=1`): the mid-loop root-union
+theorem, TLC discriminator, and source-coupling checks pin its live S/C/K, E0/global/K-spine, deferred-env, and driver-C
+root vector, but the default verified boundary does not claim that opt-in path is shipped-on until its separate
+ASAN/root-completeness gate is green. There is also an opt-in E2 SATB major path
 (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and
 allocate-black, releases workers while it marks under a shared heap read lock, then requests a second rendezvous,
@@ -32,6 +33,10 @@ requires a new stale-old-mark proof before it can be introduced.
   young descendants.
 - `formal/rocq/gc/StructuralRoots.v` and `formal/lean/gc/StructuralRoots.lean`: if future machine touches are
   inside the structural CESK-root closure and sweep frees only unmarked nodes, no future-touched node can be freed.
+- `formal/rocq/gc/MidloopRootUnion.v` and `formal/lean/gc/MidloopRootUnion.lean`: prove the opt-in single-threaded
+  mid-loop root-union obligation. If live S/C/K, E0, global anchors, K-spine, deferred environment drops, and driver-C
+  safepoint roots are included in the mid-loop root vector, mark/sweep cannot free any channel root, and future touches
+  reachable from that union survive collection.
 - `formal/rocq/gc/RendezvousWitness.v` and `formal/lean/gc/RendezvousWitness.lean`: if every occupied witness slot
   is published, publication buffers that slot's structural roots, and the driver drains the buffer, every occupied
   participant root is in the driver root set and cannot be freed after mark/sweep.
@@ -89,7 +94,7 @@ requires a new stale-old-mark proof before it can be introduced.
   started-cycle straddle gate, four-channel driver-root union, collector-root closure, mark completeness,
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
   roots, live witness-slot visibility, cross-cycle witness-gate freshness, no-phantom straddle re-park, driver channel
-  roots, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache sweep-epoch
+  roots, opt-in mid-loop channel roots and future touches, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache sweep-epoch
   coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, global tiered-cache
   roots and removed-value SATB shades, thread-local table roots and removed-result SATB shades, future CESK touches,
   reachable young nodes under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live nodes
@@ -131,6 +136,9 @@ requires a new stale-old-mark proof before it can be introduced.
 - `tla/DriverRootUnion.tla`: checks the E1 driver root-union channels. Including worker-buffer, safepoint,
   live-env/E0, and live-dispatch channels preserves root-union completeness; omitting live-env or live-dispatch
   violates it.
+- `tla/MidloopRootUnion.tla`: checks the opt-in single-threaded mid-loop root vector. Including live S/C/K,
+  E0/global/K-spine, deferred env drops, and driver-C preserves `MidloopRootUnionComplete`; omitting the machine,
+  deferred-env, or driver-C channel violates it.
 - `tla/DriverCPublication.tla`: checks that public eval entry publishes driver-C (`MettaState.source/output`) to
   the safepoint channel before midloop/rendezvous roots can be built. Omitting that publication violates
   `DriverCVisibleOnSweep`, matching a caller-held source/output value that can be freed while eval is still live.
@@ -220,6 +228,10 @@ facts the proofs rely on:
 - Every self-root publication site routes through the canonical `collect_complete_thread_contribution` reader, whose
   source shape is pinned: trampoline participants publish extra hot values, live S/C/K, E0, global anchors, K-spine,
   and deferred env roots; tier leaves publish extra VM/JIT values plus the env-less persistent roots they can read.
+- The opt-in single-threaded mid-loop branch is pinned to build `midloop_roots` from `collect_machine_roots_live`
+  (live S/C/K plus persistent E0/global/K-spine), then deferred environment drops, then `collect_safepoint_roots`, and
+  `run_collection_if_triggered_midloop` must consume that same vector. Its gate remains index-only, explicit opt-in,
+  single-evaluator, and pre-worker-spawned.
 - Collapse-bind binding-capture frames are pinned as metadata-only: the old empty capture/root shims are absent, the
   frame contains only `tracked_vars` and `collapse_fork_depth`, and it cannot hold `MettaValue`, `BoundValue`, or
   `GenericBindings` roots outside the canonical work-item / continuation readers.

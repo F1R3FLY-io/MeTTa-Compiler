@@ -4,6 +4,8 @@
     generational index collector:
 
     - rendezvous witness publication puts participant roots in the driver roots;
+    - the driver root union includes worker-buffer, safepoint, live-env, and
+      live-dispatch channel roots;
     - eval-entry driver-C publication puts caller-held source/output roots in
       the driver roots;
     - async batch-result handoff roots worker results in driver-C until the
@@ -63,6 +65,11 @@ Section CESKCollectorSafetyModel.
       (StructuralRoot DriverRoot : Addr -> Prop)
       (a : Addr) : Prop :=
     StructuralRoot a \/ DriverRoot a.
+
+  Definition DriverRootUnion
+      (WorkerRoot SafepointRoot EnvAnchor DispatchAnchor : Addr -> Prop)
+      (a : Addr) : Prop :=
+    WorkerRoot a \/ SafepointRoot a \/ EnvAnchor a \/ DispatchAnchor a.
 
   Definition ConcurrentCollectorRoot
       (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
@@ -170,6 +177,35 @@ Section CESKCollectorSafetyModel.
     - apply Hwait.
       exact Hoccupied.
     - exact Hroot.
+  Qed.
+
+  Theorem driver_root_union_channel_survives_collection :
+    forall (WorkerRoot SafepointRoot EnvAnchor DispatchAnchor
+            DriverRoot StructuralRoot : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           (Marked Freed : Addr -> Prop),
+      (forall a, WorkerRoot a -> DriverRoot a) ->
+      (forall a, SafepointRoot a -> DriverRoot a) ->
+      (forall a, EnvAnchor a -> DriverRoot a) ->
+      (forall a, DispatchAnchor a -> DriverRoot a) ->
+      (forall a, Reach (CollectorRoot StructuralRoot DriverRoot) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        DriverRootUnion WorkerRoot SafepointRoot EnvAnchor DispatchAnchor a ->
+        ~ Freed a.
+  Proof.
+    intros WorkerRoot SafepointRoot EnvAnchor DispatchAnchor DriverRoot StructuralRoot
+           Edge Marked Freed Hworker Hsafepoint Henv Hdispatch Hmark Hsweep
+           a Hroot Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right.
+    destruct Hroot as [Hworker_a | [Hsafepoint_a | [Henv_a | Hdispatch_a]]].
+    - apply Hworker. exact Hworker_a.
+    - apply Hsafepoint. exact Hsafepoint_a.
+    - apply Henv. exact Henv_a.
+    - apply Hdispatch. exact Hdispatch_a.
   Qed.
 
   Theorem structural_future_touch_survives_collection :

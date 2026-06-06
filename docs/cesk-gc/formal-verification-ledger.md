@@ -39,6 +39,9 @@ requires a new stale-old-mark proof before it can be introduced.
   per-mutator contribution reader includes every component it claims (trampoline extra values, S/C/K, E0, global
   anchors, K-spine, deferred env roots; tier-leaf extra values plus env-less persistent roots), and publication/drain
   carries that contribution to the driver root set, mark/sweep cannot free any component root.
+- `formal/rocq/gc/DriverRootUnion.v` and `formal/lean/gc/DriverRootUnion.lean`: prove the driver root-union
+  obligation. If worker-buffer roots, safepoint roots, live environment anchors, and live dispatch anchors are all
+  included in the driver root set, mark/sweep cannot free any live channel root.
 - `formal/rocq/gc/DriverCPublication.v` and `formal/lean/gc/DriverCPublication.lean`: if eval-entry publication
   maps every caller-held driver-C root into the driver/safepoint root set, root-complete mark and sweep safety retain
   every such driver-C root.
@@ -63,9 +66,10 @@ requires a new stale-old-mark proof before it can be introduced.
   thread-local subgoal/thunk table obligation. Cached subgoal and thunk results survive while scanned as structural
   roots, and stale-evicted, overwritten, explicitly removed, cleared/invalidated, and thunk-replaced cached results
   survive E2 SATB collection when shaded.
-- `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, collector-root closure, mark completeness,
-  sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
-  roots, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache sweep-epoch
+- `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, four-channel driver-root union,
+  collector-root closure, mark completeness, sweep-only-unmarked, driver-C publication, and young-minor obligations
+  into explicit no-UAF theorems for participant roots, driver channel roots, caller-held driver-C roots, async
+  batch-result handoff values, pointer-keyed operator-cache sweep-epoch
   coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, global tiered-cache
   roots and removed-value SATB shades, thread-local table roots and removed-result SATB shades, future CESK touches,
   reachable young nodes under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live nodes

@@ -35,6 +35,10 @@ requires a new stale-old-mark proof before it can be introduced.
 - `formal/rocq/gc/RendezvousWitness.v` and `formal/lean/gc/RendezvousWitness.lean`: if every occupied witness slot
   is published, publication buffers that slot's structural roots, and the driver drains the buffer, every occupied
   participant root is in the driver root set and cannot be freed after mark/sweep.
+- `formal/rocq/gc/WitnessSlotLifecycle.v` and `formal/lean/gc/WitnessSlotLifecycle.lean`: prove the V4 witness-slot
+  lifecycle obligation. If live machines remain occupied or buffered, and sweep can proceed only for unoccupied or
+  buffered machines, then a swept live machine must have buffered roots. Safepoint drops preserve visibility only when
+  they do not release the occupied witness slot.
 - `formal/rocq/gc/ThreadContribution.v` and `formal/lean/gc/ThreadContribution.lean`: if the canonical
   per-mutator contribution reader includes every component it claims (trampoline extra values, S/C/K, E0, global
   anchors, K-spine, deferred env roots; tier-leaf extra values plus env-less persistent roots), and publication/drain
@@ -66,10 +70,10 @@ requires a new stale-old-mark proof before it can be introduced.
   thread-local subgoal/thunk table obligation. Cached subgoal and thunk results survive while scanned as structural
   roots, and stale-evicted, overwritten, explicitly removed, cleared/invalidated, and thunk-replaced cached results
   survive E2 SATB collection when shaded.
-- `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, four-channel driver-root union,
-  collector-root closure, mark completeness, sweep-only-unmarked, driver-C publication, and young-minor obligations
-  into explicit no-UAF theorems for participant roots, driver channel roots, caller-held driver-C roots, async
-  batch-result handoff values, pointer-keyed operator-cache sweep-epoch
+- `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, witness-slot lifecycle, four-channel
+  driver-root union, collector-root closure, mark completeness, sweep-only-unmarked, driver-C publication, and
+  young-minor obligations into explicit no-UAF theorems for participant roots, live witness-slot visibility, driver
+  channel roots, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache sweep-epoch
   coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, global tiered-cache
   roots and removed-value SATB shades, thread-local table roots and removed-result SATB shades, future CESK touches,
   reachable young nodes under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live nodes

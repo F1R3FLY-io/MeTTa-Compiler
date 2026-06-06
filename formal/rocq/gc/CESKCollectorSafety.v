@@ -4,6 +4,8 @@
     generational index collector:
 
     - rendezvous witness publication puts participant roots in the driver roots;
+    - witness-slot lifecycle keeps live frozen machines visible until their
+      roots are buffered by a genuine park or the true outermost guard drops;
     - the driver root union includes worker-buffer, safepoint, live-env, and
       live-dispatch channel roots;
     - eval-entry driver-C publication puts caller-held source/output roots in
@@ -70,6 +72,12 @@ Section CESKCollectorSafetyModel.
       (WorkerRoot SafepointRoot EnvAnchor DispatchAnchor : Addr -> Prop)
       (a : Addr) : Prop :=
     WorkerRoot a \/ SafepointRoot a \/ EnvAnchor a \/ DispatchAnchor a.
+
+  Definition LiveMachineVisible
+      (Machine : Type)
+      (Live Occupied Buffered : Machine -> Prop)
+      (m : Machine) : Prop :=
+    Live m -> Occupied m \/ Buffered m.
 
   Definition ConcurrentCollectorRoot
       (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
@@ -177,6 +185,22 @@ Section CESKCollectorSafetyModel.
     - apply Hwait.
       exact Hoccupied.
     - exact Hroot.
+  Qed.
+
+  Theorem witness_live_machine_visible_on_sweep :
+    forall (Machine : Type)
+           (Live Occupied Buffered Swept : Machine -> Prop),
+      (forall m, LiveMachineVisible Machine Live Occupied Buffered m) ->
+      (forall m, Swept m -> ~ Occupied m \/ Buffered m) ->
+      forall m,
+        Swept m -> Live m -> Buffered m.
+  Proof.
+    intros Machine Live Occupied Buffered Swept Hvisible Hgate m Hswept Hlive.
+    destruct (Hvisible m Hlive) as [Hoccupied | Hbuffered].
+    - destruct (Hgate m Hswept) as [Hnot_occupied | Hbuffered].
+      + exfalso. apply Hnot_occupied. exact Hoccupied.
+      + exact Hbuffered.
+    - exact Hbuffered.
   Qed.
 
   Theorem driver_root_union_channel_survives_collection :

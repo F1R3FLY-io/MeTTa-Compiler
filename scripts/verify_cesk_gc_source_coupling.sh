@@ -256,6 +256,10 @@ assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::collect_live_env_anchors
 assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::collect_live_dispatch_anchors(&mut roots);" "assert_rendezvous_union_complete(&roots, n);"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn prepare_rendezvous_roots" "ga::collect_live_dispatch_anchors(&mut roots);" "assert_rendezvous_union_complete(&roots, n);"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_rendezvous_cycle" "let roots = prepare_rendezvous_roots();" "run_collection_if_triggered_rendezvous(&roots)"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking" "Ok(()) => {}" "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking" "Err(mpsc::SendError(GcDriverRequest::Collect(roots, _))) => return Err(roots)," "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))"
+assert_zero_between "src/backend/eval/cesk/gc_driver.rs" "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))" "pub(crate) fn collect_quiescence" "return Err"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn collect_quiescence" "if let Err(returned) = try_drive_blocking(roots)" "run_collection_if_triggered(&returned);"
 
 # The rendezvous gate must be the witness flag, not the obsolete parked-count
 # equality. The old parked-count function can survive for unit tests, but not as

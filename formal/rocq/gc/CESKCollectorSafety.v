@@ -32,6 +32,8 @@
       the driver roots;
     - async batch-result handoff roots worker results in driver-C until the
       caller copies them into MettaState.output;
+    - dedicated-thread quiescence handoff never runs an inline fallback after
+      the root vector has been consumed by a successful send;
     - the collector marks the reachability closure of structural CESK roots plus
       driver roots;
     - the marker's concrete node-edge reader covers every semantic heap edge
@@ -273,6 +275,9 @@ Section CESKCollectorSafetyModel.
       (HandleRoot OutputRoot : Addr -> Prop)
       (a : Addr) : Prop :=
     HandleRoot a \/ OutputRoot a.
+
+  Definition InlineFallbackSafe (InlineFallback RootsAvailable : Prop) : Prop :=
+    InlineFallback -> RootsAvailable.
 
   Definition E0RemovedPreimage
       (SpacePreimage RulePreimage EnvPreimage : Addr -> Prop)
@@ -877,6 +882,38 @@ Section CESKCollectorSafetyModel.
     apply Houtput_driver.
     apply Hcopied.
     exact Hresult.
+  Qed.
+
+  Theorem dedicated_handoff_consumed_roots_forbid_inline_fallback :
+    forall Sent RootsAvailable InlineFallback,
+      (Sent -> ~ RootsAvailable) ->
+      InlineFallbackSafe InlineFallback RootsAvailable ->
+      Sent ->
+      ~ InlineFallback.
+  Proof.
+    intros Sent RootsAvailable InlineFallback Hsent_consumes Hinline_safe Hsent Hinline.
+    apply (Hsent_consumes Hsent).
+    apply Hinline_safe.
+    exact Hinline.
+  Qed.
+
+  Theorem dedicated_handoff_response_failure_after_send_is_skip_only :
+    forall Sent ResponseFailed ReturnedErr ReturnedOkFalse InlineFallback RootsAvailable,
+      (Sent -> ~ RootsAvailable) ->
+      (ResponseFailed -> ReturnedOkFalse) ->
+      (ReturnedOkFalse -> ~ ReturnedErr) ->
+      (InlineFallback -> ReturnedErr) ->
+      Sent ->
+      ResponseFailed ->
+      ~ InlineFallback.
+  Proof.
+    intros Sent ResponseFailed ReturnedErr ReturnedOkFalse InlineFallback RootsAvailable
+           _ Hfailed_ok Hok_not_err Hinline_err _ Hfailed Hinline.
+    apply Hok_not_err.
+    - apply Hfailed_ok.
+      exact Hfailed.
+    - apply Hinline_err.
+      exact Hinline.
   Qed.
 
   Theorem nursery_open_signal_requests_minor :

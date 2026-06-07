@@ -133,6 +133,9 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/BatchHandoff.v` and `formal/lean/gc/BatchHandoff.lean`: prove the async rholang batch-result
   handoff obligation. A worker result survives while protected by its persistent safepoint handle, survives after the
   caller copies it into `MettaState.output`, and dropping the handle is safe only after that output copy.
+- `formal/rocq/gc/DedicatedHandoff.v`: proves the E1 dedicated-thread handoff ownership rule. Once a root vector has
+  been successfully sent to the GC thread, response-channel failure cannot justify an inline fallback because the
+  mutator no longer owns those roots; failed sends still return the roots for inline fallback.
 - `formal/rocq/gc/OperatorCacheEpoch.v` and `formal/lean/gc/OperatorCacheEpoch.lean`: prove the pointer-keyed
   operator-cache sweep-epoch obligation. A returned cache entry is current if the local sweep-epoch guard runs before
   lookup; if the local epoch is stale, the guarded lookup misses after clearing the cache.
@@ -219,6 +222,9 @@ can replace the full-major final sweep.
 - `tla/BatchHandoff.tla`: checks the async rholang batch-result handoff. Holding a persistent handle until the caller
   copies worker results into `MettaState.output` preserves safety; omitting the handle or dropping it before the copy
   violates `NoPublishedBatchResultFreed`.
+- `tla/DedicatedHandoff.tla`: checks the E1 dedicated-thread root-vector handoff. Failed send before consumption may
+  run inline with the returned roots; response failure after successful send must skip. Falling back inline after a
+  consumed handoff violates `NoInlineWithoutRoots`.
 - `tla/OperatorCacheEpoch.tla`: checks the pointer-keyed operator-cache sweep-epoch guard. Checking the local
   `gc_sweep_epoch` before lookup clears another worker's stale cache entry after sweep; skipping the check violates
   `NoStaleOperatorCacheHit`.

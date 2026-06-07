@@ -299,6 +299,24 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn mark_young(&se
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "self.child_addrs_for_mark(addr, &mut kids);" "for &child in &kids" "marked += enqueue("
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "#[cfg(test)]" "*arena.get_mut(a) = TestNode::One(b);" "mod loom_model"
 
+# Node-edge completeness: the marker's concrete edge reader must cover every
+# semantic Addr-bearing edge class in `Node`: inline handle fields,
+# SExpr/Conjunction side-arena children, and first-class SpaceHandle contents.
+# State nodes are ids whose cell values are rooted by the structural env reader;
+# Memo nodes store serialized bytes, not live MettaValues.
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>)" "node.child_addrs(out);" "match *node"
+assert_after_before "src/backend/eval/cesk/index_node.rs" "fn child_addrs(&self, out: &mut Vec<Addr>)" "Node::Error(a, b)" "push(a, out);"
+assert_after_before "src/backend/eval/cesk/index_node.rs" "Node::Error(a, b)" "push(a, out);" "push(b, out);"
+assert_after_before "src/backend/eval/cesk/index_node.rs" "fn child_addrs(&self, out: &mut Vec<Addr>)" "Node::Type(a) | Node::Quoted(a) | Node::Lazy(a) => push(a, out)" "Node::Spanned(a, _) => push(a, out)"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>)" "Node::SExpr(cr) | Node::Conjunction(cr) =>" "side.children.get(cr.idx)"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>)" "for c in kids.iter()" "if let Some(a) = c.as_arena_addr()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>)" "Node::Space(id) =>" "self.space_handle(id).collect_gc_values(&mut values);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "Node::Space(id) =>" "self.space_handle(id).collect_gc_values(&mut values);" "if let Some(a) = value.as_arena_addr()"
+assert_after_before "src/backend/environment/core.rs" "pub(crate) fn collect_roots_into(&self, roots: &mut Vec<MettaValue>)" "let states = self.states.read();" "roots.extend(states.values().copied());"
+assert_after_before "src/backend/models/memo_handle.rs" "struct MemoEntry" "results_bytes: Vec<Vec<u8>>" "}"
+assert_zero_between "src/backend/models/memo_handle.rs" "struct MemoEntry" "impl MemoHandle" "MettaValue"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>)" "Node::State(_)" "Node::Memo(_)"
+
 # B2'/D2 source-channel registration: the driver-root-union proof only applies
 # if live envs and parallel fan-outs are registered for their lifetimes and the
 # registry walkers delegate to the structural root readers.

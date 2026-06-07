@@ -95,6 +95,7 @@ run_tlc_hygiene
 run_lean "formal/lean/gc/FreeList.lean"
 run_lean "formal/lean/gc/YoungMark.lean"
 run_lean "formal/lean/gc/StructuralRoots.lean"
+run_lean "formal/lean/gc/NodeEdgeCompleteness.lean"
 run_lean "formal/lean/gc/MidloopRootUnion.lean"
 run_lean "formal/lean/gc/RendezvousWitness.lean"
 run_lean "formal/lean/gc/WitnessSlotLifecycle.lean"
@@ -126,6 +127,7 @@ run_lean "formal/lean/gc/E0EvictionBarriers.lean"
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
+run_rocq "formal/rocq/gc/NodeEdgeCompleteness.v"
 run_rocq "formal/rocq/gc/MidloopRootUnion.v"
 run_rocq "formal/rocq/gc/RendezvousWitness.v"
 run_rocq "formal/rocq/gc/WitnessSlotLifecycle.v"
@@ -167,6 +169,14 @@ run_tlc "gen_young_mark_curseg_small" "MC_StoreCentricGC_GenerationalYoungMark.t
   pass ""
 run_tlc "gen_young_mark_any_small" "MC_StoreCentricGC_GenerationalYoungMark.tla" "MC_GenYoungMark_negative_small.cfg" \
   fail "Invariant YoungOnlyMarkReachesLiveYoung is violated"
+run_tlc "node_edge_completeness_all" "MC_NodeEdgeCompleteness.tla" "MC_NodeEdgeCompleteness_all.cfg" \
+  pass ""
+run_tlc "node_edge_completeness_missing_inline" "MC_NodeEdgeCompleteness.tla" "MC_NodeEdgeCompleteness_missing_inline.cfg" \
+  fail "Invariant NoReachableFreed is violated"
+run_tlc "node_edge_completeness_missing_side" "MC_NodeEdgeCompleteness.tla" "MC_NodeEdgeCompleteness_missing_side.cfg" \
+  fail "Invariant NoReachableFreed is violated"
+run_tlc "node_edge_completeness_missing_space" "MC_NodeEdgeCompleteness.tla" "MC_NodeEdgeCompleteness_missing_space.cfg" \
+  fail "Invariant NoReachableFreed is violated"
 run_tlc "collapse_fix" "CollapseCompletion.tla" "CollapseCompletion_fix.cfg" \
   pass ""
 run_tlc "collapse_bug" "CollapseCompletion.tla" "CollapseCompletion_bug.cfg" \

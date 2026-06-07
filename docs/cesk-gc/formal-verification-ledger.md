@@ -35,6 +35,10 @@ can replace the full-major final sweep.
   young descendants.
 - `formal/rocq/gc/StructuralRoots.v` and `formal/lean/gc/StructuralRoots.lean`: if future machine touches are
   inside the structural CESK-root closure and sweep frees only unmarked nodes, no future-touched node can be freed.
+- `formal/rocq/gc/NodeEdgeCompleteness.v` and `formal/lean/gc/NodeEdgeCompleteness.lean`: prove the node-edge
+  completeness obligation. If the marker's concrete reader covers every semantic index-node edge class
+  (inline handle fields, side-arena `SExpr`/`Conjunction` children, and first-class `SpaceHandle` contents), then
+  ordinary mark/sweep cannot free anything reachable through those semantic node edges.
 - `formal/rocq/gc/MidloopRootUnion.v` and `formal/lean/gc/MidloopRootUnion.lean`: prove the opt-in single-threaded
   mid-loop root-union obligation. If live S/C/K, E0, global anchors, K-spine, deferred environment drops, and driver-C
   safepoint roots are included in the mid-loop root vector, mark/sweep cannot free any channel root, and future touches
@@ -207,6 +211,9 @@ can replace the full-major final sweep.
 - `tla/ConservativeMinorMark.tla`: checks the C1 first-class-space correction. Traversing old reachable containers
   during a minor preserves a young value reachable through an old `SpaceHandle`; the old skipped-old traversal violates
   `YoungReachableMarked`.
+- `tla/NodeEdgeCompleteness.tla`: checks the marker edge-reader completeness obligation. Including inline handle
+  fields, side-arena child slices, and `SpaceHandle` contents preserves `NoReachableFreed`; omitting any one class
+  admits a reachable child that is swept unmarked.
 - `tla/SATBDeletionBarrier.tla`: checks the E2 Yuasa deletion-barrier obligation. Shading the removed pre-image
   preserves snapshot-live safety; omitting the barrier frees a snapshot-live value.
 - `tla/SATBE0MutationSites.tla`: checks the E2 deletion-barrier obligation at the value-bearing E0 subcontainer
@@ -258,6 +265,10 @@ facts the proofs rely on:
   every bridge-period root-provider registration function remain slab-only. The index variants of those registration
   functions are no-ops, and index roots are read through named structural readers or typed live-env/live-dispatch driver
   channels.
+- `IndexHeap::child_addrs_for_mark` first delegates to `Node::child_addrs` for inline handle fields, then explicitly
+  resolves side-arena `SExpr`/`Conjunction` children, then traverses first-class `SpaceHandle` contents. The harness
+  also pins the premises that `State` payloads are rooted by `GenericEnvironmentShared::collect_roots_into` and
+  `MemoHandle` entries store serialized bytes, not live `MettaValue` handles.
 - The E1 driver waits on `requestor_wait_for_all_reified_parked`, then sets `current_witness_ok`, builds the root
   union, runs the rendezvous-union oracle, and only then calls `run_collection_if_triggered_rendezvous`.
 - `gate_open_rendezvous` is keyed by `current_witness_ok`, not the obsolete parked-count gate.

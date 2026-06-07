@@ -30,6 +30,9 @@
       caller copies them into MettaState.output;
     - the collector marks the reachability closure of structural CESK roots plus
       driver roots;
+    - the marker's concrete node-edge reader covers every semantic heap edge
+      class used by index nodes: inline handle fields, side-arena children, and
+      first-class SpaceHandle contents;
     - sweep frees only unmarked addresses;
     - young-only minor marking retains every reachable young address when there
       is no old-to-young edge;
@@ -85,6 +88,11 @@ Section CESKCollectorSafetyModel.
   Inductive Reach (Root : Addr -> Prop) (Edge : Addr -> Addr -> Prop) : Addr -> Prop :=
   | reach_root : forall a, Root a -> Reach Root Edge a
   | reach_step : forall a b, Reach Root Edge a -> Edge a b -> Reach Root Edge b.
+
+  Definition SemanticNodeEdge
+      (InlineEdge SideEdge SpaceEdge : Addr -> Addr -> Prop)
+      (parent child : Addr) : Prop :=
+    InlineEdge parent child \/ SideEdge parent child \/ SpaceEdge parent child.
 
   Definition CollectorRoot
       (StructuralRoot DriverRoot : Addr -> Prop)
@@ -584,6 +592,38 @@ Section CESKCollectorSafetyModel.
     apply Hmark.
     apply Hfuture.
     exact Htouch.
+  Qed.
+
+  Theorem complete_node_edge_reader_retains_semantic_reachability :
+    forall (StructuralRoot DriverRoot Marked Freed : Addr -> Prop)
+           (InlineEdge SideEdge SpaceEdge ReaderEdge : Addr -> Addr -> Prop),
+      (forall a, CollectorRoot StructuralRoot DriverRoot a -> Marked a) ->
+      (forall parent child, Marked parent -> ReaderEdge parent child -> Marked child) ->
+      (forall parent child, InlineEdge parent child -> ReaderEdge parent child) ->
+      (forall parent child, SideEdge parent child -> ReaderEdge parent child) ->
+      (forall parent child, SpaceEdge parent child -> ReaderEdge parent child) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        Reach (CollectorRoot StructuralRoot DriverRoot)
+          (SemanticNodeEdge InlineEdge SideEdge SpaceEdge) a ->
+        ~ Freed a.
+  Proof.
+    intros StructuralRoot DriverRoot Marked Freed InlineEdge SideEdge SpaceEdge ReaderEdge
+           Hroot Hclosed Hinline Hside Hspace Hsweep a Hreach.
+    assert (Marked a) as Hmarked.
+    {
+      induction Hreach as [a Hroot_a | parent child _ IH Hedge].
+      - apply Hroot. exact Hroot_a.
+      - eapply Hclosed.
+        + exact IH.
+        + destruct Hedge as [Hinline_edge | [Hside_edge | Hspace_edge]].
+          * apply Hinline. exact Hinline_edge.
+          * apply Hside. exact Hside_edge.
+          * apply Hspace. exact Hspace_edge.
+    }
+    intro Hfreed.
+    apply (Hsweep a Hfreed).
+    exact Hmarked.
   Qed.
 
   Theorem published_driver_c_survives_collection :

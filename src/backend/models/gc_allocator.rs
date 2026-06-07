@@ -3497,7 +3497,8 @@ pub(crate) fn current_witness_ok() -> bool {
 /// `GenericEnvironmentShared<MettaValue>` (delegating to the verified-complete
 /// `collect_roots_into`, core.rs:2170).
 ///
-/// DEAD until E1-FLIP Path B V4 Step 0 wiring.
+/// Live on the index-gc dedicated-rendezvous path; cfg-gated out of the slab
+/// build.
 #[cfg(feature = "index-gc")]
 pub trait EnvRoots: Send + Sync {
     fn collect_env_roots(&self, out: &mut Vec<MettaValue>);
@@ -3520,7 +3521,8 @@ fn live_envs() -> &'static Mutex<Vec<Option<std::sync::Weak<dyn EnvRoots>>>> {
 /// Held for the lifetime of the registration scope (every `EvalGuard::enter` +
 /// every branch-worker spawn). Mirrors `LiveDispatchHandle`.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1 wiring.
+/// Live on the index-gc dedicated-rendezvous path; cfg-gated out of the slab
+/// build.
 #[cfg(feature = "index-gc")]
 pub struct LiveEnvHandle {
     idx: usize,
@@ -3541,7 +3543,8 @@ impl Drop for LiveEnvHandle {
 /// for the registration's lifetime. Stores `Arc::downgrade(e)` (a `Weak`); reuses a
 /// free slot or appends. Call (RAII) at `EvalGuard::enter` + branch-worker spawn.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1 wiring.
+/// Live on the index-gc dedicated-rendezvous path; cfg-gated out of the slab
+/// build.
 #[cfg(feature = "index-gc")]
 pub fn register_live_env(e: &Arc<dyn EnvRoots>) -> LiveEnvHandle {
     let registry = live_envs();
@@ -3564,7 +3567,8 @@ pub fn register_live_env(e: &Arc<dyn EnvRoots>) -> LiveEnvHandle {
 /// (via `collect_roots_into`); the B2′-deadlock-unreachable argument (no park site
 /// spans an env `.write()`, design §"Source-verified facts") makes this safe.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 2.
+/// Live on the index-gc dedicated-rendezvous path; cfg-gated out of the slab
+/// build.
 #[cfg(feature = "index-gc")]
 pub fn collect_live_env_anchors(out: &mut Vec<MettaValue>) {
     if let Some(registry) = LIVE_ENVS.get() {
@@ -3602,8 +3606,9 @@ pub(crate) static GC_REQUESTOR_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// before marking. Carries `MettaValue` root HANDLES — exactly what
 /// `collect_machine_roots` already produces — NOT a serialized machine.
 ///
-/// DEAD until D2.x. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D2.
-#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+/// Live on the dedicated-rendezvous path; the attribute is for build/test
+/// configurations that do not enter that path.
+#[allow(dead_code)]
 pub(crate) static WORKER_ROOT_BUFFER: Mutex<Vec<MettaValue>> = Mutex::new(Vec::new());
 
 /// Mutex + Condvar pair on which the REQUESTOR waits for all workers to park
@@ -3613,10 +3618,11 @@ pub(crate) static WORKER_ROOT_BUFFER: Mutex<Vec<MettaValue>> = Mutex::new(Vec::n
 /// lost-wakeup-safe handshake (HB2 + EvalGuard::enter :2920-2941 pattern). NEW
 /// and SEPARATE from `GC_PROGRESS_*` / `QUIESCENT_*` (Risk R4).
 ///
-/// DEAD until D2.x. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
-#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+/// Live on the dedicated-rendezvous path; the attribute is for build/test
+/// configurations that do not enter that path.
+#[allow(dead_code)]
 pub(crate) static RENDEZVOUS_MUTEX: Mutex<()> = Mutex::new(());
-#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+#[allow(dead_code)]
 pub(crate) static RENDEZVOUS_CONDVAR: Condvar = Condvar::new();
 
 /// Mutex + Condvar pair on which a parked WORKER waits to be resumed
@@ -3626,10 +3632,11 @@ pub(crate) static RENDEZVOUS_CONDVAR: Condvar = Condvar::new();
 /// `wait_for`} — the lost-wakeup-safe resume handshake (HB4). NEW and SEPARATE
 /// from `GC_PROGRESS_*` / `QUIESCENT_*` (Risk R4).
 ///
-/// DEAD until D2.x. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
-#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+/// Live on the dedicated-rendezvous path; the attribute is for build/test
+/// configurations that do not enter that path.
+#[allow(dead_code)]
 pub(crate) static RESUME_MUTEX: Mutex<()> = Mutex::new(());
-#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+#[allow(dead_code)]
 pub(crate) static RESUME_CONDVAR: Condvar = Condvar::new();
 
 /// Maximum time a rendezvous wait (`requestor_wait_for_parked` /
@@ -3638,7 +3645,7 @@ pub(crate) static RESUME_CONDVAR: Condvar = Condvar::new();
 /// the real predicate after every timeout and only exits when it actually holds,
 /// so a slow worker yields a warn-and-retry (bounding Risk R1) rather than a
 /// premature unblock. Mirrors `EvalGuard::enter`'s `GC_WAIT_TIMEOUT` (:2918).
-#[allow(dead_code)] // DEAD until D2.x (used by worker_park_and_root / requestor_wait_for_parked).
+#[allow(dead_code)]
 const RENDEZVOUS_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Whether the parallel rendezvous collector is enabled (env
@@ -3937,8 +3944,9 @@ pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
 /// backstop (Risk R1), NOT a hard budget: the loop only exits when the real
 /// predicate (`!is_gc_requested()`) holds.
 ///
-/// DEAD until D2.1. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
-#[allow(dead_code)] // DEAD until D2.1 (WorkerEnter gate + worker_park_and_root step 4).
+/// Live for dedicated WorkerEnter gating and the legacy D2 park helper; the
+/// attribute is for build/test configurations that do not enter those paths.
+#[allow(dead_code)]
 pub(crate) fn worker_wait_for_resume() {
     let mut lock = RESUME_MUTEX.lock();
     while is_gc_requested() {
@@ -3979,18 +3987,18 @@ pub(crate) fn requestor_wait_for_parked() {
     }
 }
 
-/// REQUESTOR side (E1-c): block until exactly `n` workers have parked
-/// (`WORKERS_PARKED_FOR_GC == n`). Unlike [`requestor_wait_for_parked`] (which
+/// REQUESTOR side (legacy count gate): block until at least `n` workers have parked
+/// (`WORKERS_PARKED_FOR_GC >= n`). Unlike [`requestor_wait_for_parked`] (which
 /// gates on `active_evaluator_count()==0`), this gates on the per-THREAD parked
 /// count — the count the dedicated-GC-thread driver snapshots as `n = n_threads()`
 /// AFTER closing admission (the §Part-2 admission-before-snapshot). Single-location
 /// Acquire/Release HB (the parker's `fetch_add(AcqRel)` in
 /// [`worker_park_and_root_in_cycle`] release-fences its buffer append, HB2), so a
-/// `== n` observation sees all `n` workers' roots — SC-faithful, no SeqCst. The
-/// 5 s `wait_for` is a warn-and-recheck liveness backstop.
+/// `>= n` observation sees at least `n` workers' roots — SC-faithful, no SeqCst.
+/// The live driver now uses the per-slot reified witness gate instead of this
+/// fungible count gate, but tests keep this helper to pin the older handshake.
 ///
-/// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §2.
-#[allow(dead_code)] // DEAD until E1-c B wires the FANOUT>0 driver.
+#[allow(dead_code)]
 pub(crate) fn requestor_wait_for_parked_count(n: u32) {
     let mut lock = RENDEZVOUS_MUTEX.lock();
     // Wait until AT LEAST `n` participants have bumped (`>= n`, i.e. loop while
@@ -4021,8 +4029,9 @@ pub(crate) fn requestor_wait_for_parked_count(n: u32) {
 /// marking). Drains under the lock so it composes with concurrent worker appends
 /// (none should be in flight once `active==0`, but the lock keeps it sound).
 ///
-/// DEAD until D2.3. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D2.
-#[allow(dead_code)] // DEAD until D2.3 (requestor wiring); exercised by the D1.1 test.
+/// Live for dedicated-rendezvous root preparation; the attribute is for
+/// build/test configurations that do not enter that path.
+#[allow(dead_code)]
 pub(crate) fn drain_worker_root_buffer(out: &mut Vec<MettaValue>) {
     out.extend(WORKER_ROOT_BUFFER.lock().drain(..));
 }
@@ -4033,8 +4042,9 @@ pub(crate) fn drain_worker_root_buffer(out: &mut Vec<MettaValue>) {
 /// next rendezvous starts clean. `Release` on the counter store pairs with the
 /// next cycle's Acquire reads.
 ///
-/// DEAD until D2.3. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
-#[allow(dead_code)] // DEAD until D2.3 (requestor wiring); exercised by the D1.1 test.
+/// Test/legacy helper. The live dedicated driver calls [`end_rendezvous_cycle`],
+/// which performs this reset under the rendezvous mutex and bumps the generation.
+#[allow(dead_code)]
 pub(crate) fn reset_rendezvous_counters() {
     WORKERS_PARKED_FOR_GC.store(0, Ordering::Release);
     WORKER_ROOT_BUFFER.lock().clear();

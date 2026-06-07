@@ -1986,8 +1986,9 @@ pub mod index_gc {
     /// bumped-then-kept-running may still hold a guard); completeness comes from the
     /// buffer drain gated by the per-slot reified witness, not from active==0.
     ///
-    /// DORMANT until E1-FLIP's default-flip (only reachable on the GC thread, only
-    /// spun under `dedicated_gc_enabled()`); the slab build const-folds `gc_mode_is_index()`.
+    /// Live for the opt-in dedicated-rendezvous path. The slab build const-folds
+    /// `gc_mode_is_index()`, and default builds only reach this when the caller has
+    /// already gated on `dedicated_gc_enabled()`.
     #[inline]
     #[allow(dead_code)]
     pub fn gate_open_rendezvous() -> bool {

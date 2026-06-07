@@ -384,6 +384,7 @@ assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Register THIS wo
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "THIS collapse worker's env" "register_live_env(&dyn_env)" "eval_trampoline_with_carrying("
 assert_after_before "src/backend/environment/core.rs" "impl crate::backend::models::gc_allocator::EnvRoots for GenericEnvironmentShared<MettaValue>" "self.collect_roots_into(out);" "#[cfg(not(feature = \"index-gc\"))]"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_env_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_env_roots(out);"
+assert_zero "src/backend/models/gc_allocator.rs" "DEAD until E1-FLIP Path B V4"
 
 assert_after_before "src/backend/eval/mod.rs" "pub fn eval(" "state.collect_driver_program_roots(&mut driver_roots);" "let _guard = EvalGuard::enter();"
 assert_after_before "src/backend/eval/mod.rs" "pub fn eval(" "crate::backend::models::register_temporary_roots(driver_roots)" "let _guard = EvalGuard::enter();"
@@ -910,8 +911,11 @@ assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_r
 assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {" "RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);"
 assert_zero_between "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "/// WORKER side: park on" "is_gc_requested()"
 assert_zero_between "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "/// Get the committed bytes" "worker_wait_for_resume()"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn requestor_wait_for_parked_count(n: u32) {" "while WORKERS_PARKED_FOR_GC.load(Ordering::Acquire) < n" "RENDEZVOUS_CONDVAR.wait_for"
+assert_zero "src/backend/models/gc_allocator.rs" 'block until exactly `n`'
 assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn end_rendezvous_cycle() {" "GC_CYCLE_GEN.fetch_add(1, Ordering::AcqRel);" "RENDEZVOUS_CONDVAR.notify_all();"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn close_open_rendezvous_cycle" "ga::end_rendezvous_cycle();" "ga::resume_workers();"
+assert_zero "src/backend/eval/cesk/index_heap.rs" "DORMANT until E1-FLIP"
 
 # E1/E5 witness-ok reset: CURRENT_WITNESS_OK is a non-generational bool, so
 # cycle teardown must clear it after the gen bump and before any resume/startup

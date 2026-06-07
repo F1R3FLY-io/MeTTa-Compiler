@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Phase C — git-version A/B benchmark (replaces the stale env-switch c1b_fanout0_bench.sh,
-# which set the now-DELETED METTATRON_INDEX_GC_YOUNG_MIN_BYTES). The C1.c reworks deleted
-# the on/off switch, so A/B must compare two BUILDS, not one binary under two envs.
+# Phase C — git-version A/B benchmark (replaces the stale env-switch c1b_fanout0_bench.sh).
+# The C1.c reworks deleted the young-minor on/off switch, so A/B must compare two
+# BUILDS, not one binary under two envs.
 #
 #   Usage: scripts/c_ab_bench.sh <A_REF> <B_REF> [reps]
 #     e.g. scripts/c_ab_bench.sh d7dbbac HEAD 3      # Increment A: side-free off vs on

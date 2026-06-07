@@ -139,7 +139,7 @@ increment must GENUINELY embody CESK + an integrated allocator↔GC, verified ag
 ## Greenwall additions (precursor, no Rust)
 - `grep -c "minor cycle"` assertion (≥0 at A/B, >0 at C/D); re-baseline slab/index/conf-cycle numbers
   EMPIRICALLY at A (hard invariants: slab MUST NOT move; conf 483 PASS byte-identical).
-- Replace STALE `c1b_fanout0_bench.sh` (sets DELETED `YOUNG_MIN_BYTES`) with `scripts/c_ab_bench.sh`:
+- Replace stale `c1b_fanout0_bench.sh` (old one-binary young-minor env-switch A/B) with `scripts/c_ab_bench.sh`:
   A=`b8d96f1`, B=HEAD, FANOUT=0, PLN Robot + synthetic large-old+young-churn, ×3, CPU-pinned, capped,
   wall + `/usr/bin/time -v` peak RSS + REPORT=2 minor/major split + `old_live`/`committed`.
 

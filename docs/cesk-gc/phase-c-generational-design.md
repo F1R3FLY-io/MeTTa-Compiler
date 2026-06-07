@@ -142,8 +142,8 @@ Two-watermark generational driver in `index_heap.rs::index_gc`:
 - REPORT=2 labels each cycle `minor`/`major` + emits `young_live_bytes`.
 
 ### Historical C1.b — DATA-DRIVEN OUTCOME: full-mark minors stayed dormant
-The benchmark (`scripts/c1b_fanout0_bench.sh`, PLN Robot @ FANOUT=0, collector ON) and the green-wall together
-drove the intermediate configuration that C1.c later superseded:
+The historical benchmark name (`scripts/c1b_fanout0_bench.sh`, now a compatibility wrapper to `scripts/c_ab_bench.sh`)
+and the green-wall together drove the intermediate configuration that C1.c later superseded:
 - **The minor's benefit is sweep-only** — C1.b marks the FULL reachable set in BOTH paths (the young-only mark
   is C1.c, gated on the free-list fix below). So a minor pays a full mark (the dominant cost on a real heap)
   and saves only `full_sweep − young_sweep`.

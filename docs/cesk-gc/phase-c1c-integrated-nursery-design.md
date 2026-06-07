@@ -119,7 +119,7 @@ allocation SIGNALS and the next safepoint collects:
 - **C1.c-3** live-based major + absolute cap (#3) → greenwall + benchmark (majors drop).
 - **C1.c-4** backpressure-triggered minor (#2) → FULL gate (ASAN natural minors, greenwall minors>0,
   20-run, mmverify, A/B benchmark).
-- **C1.c-5** docs + replace `c1b_fanout0_bench.sh`'s (now-inert) env-switch A/B with the git-version A/B.
+- **C1.c-5** docs + replace `c1b_fanout0_bench.sh`'s old env-switch A/B with the git-version A/B.
 
 ## File anchors
 `index_arena.rs`: struct (+`nursery_full_pending`), `alloc` (factor `pop_young_free_slot`/`write_reused`),

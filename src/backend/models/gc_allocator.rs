@@ -3648,51 +3648,31 @@ pub(crate) static RESUME_CONDVAR: Condvar = Condvar::new();
 #[allow(dead_code)]
 const RENDEZVOUS_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Whether the parallel rendezvous collector is enabled (env
-/// `METTATRON_INDEX_GC_PARALLEL=1`, default OFF). Parsed once and cached, exactly
-/// once. Until D5 the rendezvous call sites are ALSO gated on this, so the default
-/// build is byte-identical (the primitives are dead code regardless — this gate
-/// governs the D2.x wiring).
+/// TEST-ONLY: force the D2.1 rendezvous integration test into the parked-worker
+/// primitive path. Production rendezvous collection is governed by
+/// [`dedicated_gc_enabled`]; there is intentionally no second production env gate.
 ///
-/// See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §"Sub-increments".
-#[allow(dead_code)] // DEAD until D2.x gates the call sites on this.
-pub(crate) fn rendezvous_enabled() -> bool {
-    // TEST-ONLY override: the env gate is parsed once into a process-global
-    // `OnceLock<bool>`, so a test cannot flip it per-case (and several tests run
-    // in one process). `force_rendezvous_enabled_for_test` sets this AtomicBool,
-    // which `rendezvous_enabled()` consults FIRST under `#[cfg(test)]`, so the
-    // D2.1 integration test can engage the dormant rendezvous wiring
-    // deterministically without depending on env-var ordering. In non-test
-    // builds this branch does not exist, so the gate is purely the env OnceLock.
-    #[cfg(test)]
-    {
-        if RENDEZVOUS_FORCED_FOR_TEST.load(Ordering::Acquire) {
-            return true;
-        }
-    }
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("METTATRON_INDEX_GC_PARALLEL").as_deref() == Ok("1"))
-}
-
-/// TEST-ONLY: force [`rendezvous_enabled`] to return `true` regardless of the
-/// `METTATRON_INDEX_GC_PARALLEL` env OnceLock (which is parsed once per process
-/// and so cannot be flipped per test). Lets the D2.1 integration test engage the
-/// rendezvous wiring (WorkerEnter gate + midloop self-root branch) deterministically.
 /// Reset to `false` at the end of the test so it does not leak into other tests.
 #[cfg(test)]
 pub(crate) fn force_rendezvous_enabled_for_test(on: bool) {
     RENDEZVOUS_FORCED_FOR_TEST.store(on, Ordering::Release);
 }
 
+/// TEST-ONLY: read back the D2.1 rendezvous override.
+#[cfg(test)]
+pub(crate) fn rendezvous_forced_for_test() -> bool {
+    RENDEZVOUS_FORCED_FOR_TEST.load(Ordering::Acquire)
+}
+
 /// Backing flag for [`force_rendezvous_enabled_for_test`]. Default `false` ⇒ the
-/// real env gate governs. Test-only.
+/// integration test has not engaged the direct rendezvous primitive path.
 #[cfg(test)]
 static RENDEZVOUS_FORCED_FOR_TEST: AtomicBool = AtomicBool::new(false);
 
 /// Whether the quiescence index collection is driven by the DEDICATED GC THREAD
 /// (env `METTATRON_INDEX_GC_DEDICATED=1`, default OFF). Parsed once + cached,
-/// exactly like [`rendezvous_enabled`] above. Default OFF ⇒ the inline collection
-/// at the quiescence call site runs UNCHANGED (byte-identical). When ON, the
+/// so the inline collection at the quiescence call site runs unchanged by
+/// default (byte-identical). When ON, the
 /// mutator hands its already-built structural root set to the GC thread and BLOCKS
 /// for completion (output-equivalent — it would have blocked for the inline
 /// collection too). E1-a fires at quiescence only (`n_threads()==0`); under

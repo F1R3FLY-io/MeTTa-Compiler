@@ -277,6 +277,10 @@ assert_after_before "src/backend/eval/trampoline/context.rs" "impl EvalContext f
 assert_after_before "src/backend/eval/trampoline/context.rs" "impl EvalContext for ParallelBranchContext" "if parallel_gc_coop_enabled() {" "request_gc();"
 assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" "if should_gc && !super::gc_allocator::dedicated_gc_enabled()" "request_gc();"
 assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" "request_gc();" "let _ = maybe_async_gc();"
+assert_zero "src/backend/models/gc_allocator.rs" "METTATRON_INDEX_GC_PARALLEL"
+assert_zero "src/backend/models/gc_allocator.rs" "pub(crate) fn rendezvous_enabled"
+assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_PARALLEL"
+assert_before "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_DEDICATED=1" "METTATRON_INDEX_GC_MIN_BYTES"
 
 # The rendezvous gate must be the witness flag, not the obsolete parked-count
 # equality. The old parked-count function can survive for unit tests, but not as

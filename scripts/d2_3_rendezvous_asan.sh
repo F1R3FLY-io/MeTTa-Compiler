@@ -2,7 +2,8 @@
 # Phase D — D2.3 gate #5: the LOAD-BEARING UAF check for the parallel-collector
 # RENDEZVOUS. Builds the `mettatron` CLI under index-gc ASAN (-Zsanitizer=address
 # -Zbuild-std nightly) and runs PARALLEL PLN workloads at FANOUT=8 with the
-# rendezvous ENGAGED (`METTATRON_INDEX_GC_PARALLEL=1`) and `MIN_BYTES` lowered so
+# dedicated rendezvous collector engaged (`METTATRON_INDEX_GC_DEDICATED=1`) and
+# `MIN_BYTES` lowered so
 # the RENDEZVOUS collector FIRES WHILE WORKERS ARE ALIVE. Asserts, per arm:
 #
 #   (a) 0 ASAN UAF — validates Risk R3 (deferred side-`Box` free: a parked worker
@@ -40,7 +41,7 @@ P="$LOG_DIR/d2_3_rendezvous_asan"
 MIN_BYTES=131072
 ARM_TIMEOUT="${ARM_TIMEOUT:-240s}"
 ARM_KILL_AFTER="${ARM_KILL_AFTER:-20s}"
-echo "===== D2.3 RENDEZVOUS ASAN (FANOUT>0 + PARALLEL=1) ====="; date
+echo "===== D2.3 RENDEZVOUS ASAN (FANOUT>0 + DEDICATED=1) ====="; date
 echo "repo=$REPO"
 echo "pln=$PLN"
 echo "logs=$LOG_DIR"
@@ -61,9 +62,9 @@ fi
 run_arm() {  # $1=label  $2=fixture-abs  $3=fanout
   local label="$1" fixture="$2" fanout="$3"
   local rc asan_count rendezvous_count total_cycles non_rendezvous_count error_count result_tail
-  echo "### ASAN arm: $label  (FANOUT=$fanout, PARALLEL=1, MIN_BYTES=$MIN_BYTES)  $fixture"
+  echo "### ASAN arm: $label  (FANOUT=$fanout, DEDICATED=1, MIN_BYTES=$MIN_BYTES)  $fixture"
   env METTATRON_PARALLEL_FANOUT_DEPTH="$fanout" \
-      METTATRON_INDEX_GC_PARALLEL=1 \
+      METTATRON_INDEX_GC_DEDICATED=1 \
       METTATRON_INDEX_GC_MIN_BYTES="$MIN_BYTES" \
       METTATRON_INDEX_GC_REPORT=2 \
       ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \

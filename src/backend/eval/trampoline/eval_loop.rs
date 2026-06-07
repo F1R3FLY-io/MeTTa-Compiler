@@ -2639,8 +2639,8 @@ fn parallel_dispatch(
             // TOP of the closure, here. Parking here (a bare wait, since this
             // worker has not yet joined `active` and has no machine roots to
             // contribute) realizes the admission guard faithfully. E1-FLIP fix (②):
-            // gated on `dedicated_gc_enabled()` (NOT the dormant `rendezvous_enabled()`)
-            // — the dedicated rendezvous is the real regime, and a new worker must park
+            // gated on `dedicated_gc_enabled()` — the dedicated rendezvous is the real regime,
+            // and a new worker must park
             // at admission during a dedicated cycle (else it joins the active set after
             // the driver's `n` snapshot — the "new mutator mid-cycle" hole). Default OFF
             // ⇒ one short-circuited boolean read, byte-identical.
@@ -3493,8 +3493,7 @@ fn parallel_collapse_dispatch(
             //    pending (TLA+ `WorkerEnter` `~gcRequested`, Risk R2). Placed at
             //    the closure TOP (before `EvalGuard::enter()`) because that is
             //    the only genuine "before joining the active set" site in this
-            //    codebase. E1-FLIP fix (②): gate on `dedicated_gc_enabled()`, not
-            //    the legacy dormant `rendezvous_enabled()`, so collapse workers
+            //    codebase. E1-FLIP fix (②): gate on `dedicated_gc_enabled()`, so collapse workers
             //    cannot join after the dedicated driver's participant snapshot.
             //    OFF by default → one short-circuited boolean read.
             if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
@@ -18730,13 +18729,12 @@ mod d2_1_rendezvous_integration_tests {
     fn test_worker_self_root_union_covers_each_worker_index_gc() {
         const N_WORKERS: usize = 2;
 
-        // Engage the dormant rendezvous wiring deterministically (the env gate is
-        // a process-global OnceLock; this test-only override flips an AtomicBool
-        // that `rendezvous_enabled()` consults first). Reset on every exit path.
+        // Engage the direct rendezvous primitive path deterministically. The live
+        // collector is gated by `dedicated_gc_enabled()`; this override is test-only.
         gc_allocator::force_rendezvous_enabled_for_test(true);
         assert!(
-            gc_allocator::rendezvous_enabled(),
-            "force_rendezvous_enabled_for_test must engage rendezvous_enabled()"
+            gc_allocator::rendezvous_forced_for_test(),
+            "force_rendezvous_enabled_for_test must engage the test rendezvous override"
         );
 
         // Clean slate: other tests in this process may have left the rendezvous

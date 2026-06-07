@@ -60,37 +60,46 @@ folds E₀ — over-counted N× across workers but SOUND (dedup at the `as_arena
 machine parked-and-rooted or the requestor), no live-but-unrooted machine exists ⇒ mark from the union
 retains exactly the reachable set (NoUseAfterFree).
 
-## Sub-increments (each committable + green + DORMANT behind `rendezvous_enabled()` env
-`METTATRON_INDEX_GC_PARALLEL=1`, default OFF — byte-identical until D5, like D-TLAB-1.2)
+## Sub-increments
+
+Historical note: this D1/D2 plan originally proposed a separate
+`rendezvous_enabled()` production gate. That gate was superseded by the E1
+single-regime design: live FANOUT>0 rendezvous collection is now governed by the
+dedicated-GC gate (`METTATRON_INDEX_GC_DEDICATED=1`) and source-coupled by
+`DedicatedSingleRegime`/`WorkerAdmission`/`RendezvousWitness`. The old parallel
+env gate has been removed so the codebase has one production rendezvous switch,
+not two.
+
 - **D1.1 [FIRST]** — rendezvous state + primitives in `gc_allocator.rs` (`begin_gc_rendezvous`/
-  `worker_park_and_root`/`requestor_wait_for_parked`/`end_gc_rendezvous`/`rendezvous_enabled`), ~120 lines
-  `pub(crate)`, ZERO call sites (dead code → byte-identical). + a `#[cfg(test)]` 2-thread CAS/condvar test.
+  `worker_park_and_root`/`requestor_wait_for_parked`/`end_gc_rendezvous`), ~120 lines
+  `pub(crate)`, ZERO call sites at the time (dead code → byte-identical). + a `#[cfg(test)]` 2-thread
+  CAS/condvar test.
 - **D1.2 [FIRST, with D1.1]** — `#[cfg(loom)] mod loom_rendezvous` (mirror `index_arena.rs:1840`): 1 requestor
   + 2 workers; assert no-mark-before-all-parked, no-lost-wakeup, no-self-root-after-mark, requestor-exclusion.
 - **D2.1** — worker self-root + WorkerEnter gate in `WorkerEvalScope::enter` (`:134`) + the midloop poll point
-  (`:3798`), behind `rendezvous_enabled()`. + an index-gc integration test (2 real workers + manual
+  (`:3798`), now keyed to `dedicated_gc_enabled()`. + an index-gc integration test (2 real workers + manual
   requestor) asserting the union covers each worker's roots (CESK completeness; template
   `assert_quiescence_superset` `roots.rs:432`).
 - **D2.2** — JIT (`call_support.rs:163`) + VM (`vm/mod.rs:1331`) index poll points (Risk R1: long
   grounded-op/MORK regions). + the E₀-single-count optimization.
-- **D2.3** — requestor wiring at the index safepoint (the full §D1 requestor), behind `rendezvous_enabled()`.
-  Gate: ASAN-FANOUT>0 + 20-run with `METTATRON_INDEX_GC_PARALLEL=1` (live rendezvous while
+- **D2.3** — requestor wiring at the index safepoint (the full §D1 requestor), now keyed to
+  `dedicated_gc_enabled()`. Gate: ASAN-FANOUT>0 + 20-run with the dedicated collector enabled (live rendezvous while
   `worker_ever_spawned()`), `cycles_run()>0` + 0 ASAN.
 - **D5 (later, irreversible)** — drop `!worker_ever_spawned()` from `gate_open`/`gate_open_midloop`
-  (`index_heap.rs:1753/1790`) + default `rendezvous_enabled()` ON. The only non-byte-identical commit.
+  (`index_heap.rs:1753/1790`) + default the dedicated rendezvous collector ON. The only non-byte-identical commit.
 
 ## Verification
 - **loom** (D1.2): the rendezvous protocol (1 requestor + 2 workers, loom condvar/atomics, strong-CAS +
   yield_now, bounded steps).
-- **TSan**: the D2.1/D2.3 integration tests under `-Zsanitizer=thread` + `METTATRON_INDEX_GC_PARALLEL=1`.
+- **TSan**: the D2.1/D2.3 integration tests under `-Zsanitizer=thread` + the dedicated collector enabled.
 - **TLA+**: extend `tla/StoreCentricGC.tla` (NOT the deviated `SlabGC_Quiescent.tla`) — it ALREADY has
   `WorkerEnter`-gated-`~gcRequested` (`:288`), `WorkerPark` (`:303`), `BeginMark` requires `activeEvaluators={}`
   (`:416`), QuiescenceInvariant/NoUseAfterFree/NoConcurrentFree. ADD `workerRoots ∈ [Workers → SUBSET Addr]` +
   a `WorkerSelfRoot(w)` action + make `BeginMark` require all parked workers' `workerRoots` populated +
   redefine the mark root set as `psi ∪ ⋃_w workerRoots[w]`; re-prove the three invariants (esp. NoLostObjects
   under the per-worker union). `MC_StoreCentricGC_Rendezvous.cfg` (3 workers, ~6 Addrs).
-- **ASAN-FANOUT>0 + 20-run** (D2.3/D5): a worker-spawning PLN workload, `METTATRON_INDEX_GC_PARALLEL=1
-  MIN_BYTES=<low>` to fire the rendezvous collector WHILE workers alive; 0 ASAN + `cycles_run()>0` × 20. Cap
+- **ASAN-FANOUT>0 + 20-run** (D2.3/D5): a worker-spawning PLN workload with the dedicated collector enabled and
+  `MIN_BYTES=<low>` to fire the rendezvous collector WHILE workers alive; 0 ASAN + `cycles_run()>0` × 20. Cap
   `MemoryMax≤20G MemorySwapMax=0`; treat a spawn-under-load timeout as a flake-retry (once-flake lesson).
 
 ## Risk register → proof obligation

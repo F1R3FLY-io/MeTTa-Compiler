@@ -49,6 +49,9 @@
     - B.5 cap-floor anti-thrash prevents a futile cap-triggered major from
       immediately re-firing without committed growth and clears stale floors on
       segment-releasing majors;
+    - B.4 old-live major watermark rearm prevents an unchanged old generation
+      from immediately re-firing a live-growth major and requires doubled
+      old-live growth for the next live-growth major trigger;
     - E2 concurrent marking retains every snapshot-live address covered by
       initial roots, rendezvous driver roots, SATB deletion shades, or
       allocate-black publication;
@@ -203,6 +206,12 @@ Section CESKCollectorSafetyModel.
   Definition FutileCapMajor
       (Committed BaseCap CapFloor ReleasedSegments : nat) : Prop :=
     CapDue Committed BaseCap CapFloor /\ ReleasedSegments = 0.
+
+  Definition RearmedWatermark (OldLiveAfter MinThreshold : nat) : nat :=
+    Nat.max (OldLiveAfter + OldLiveAfter) MinThreshold.
+
+  Definition LiveMajorDue (OldLive Watermark MinThreshold : nat) : Prop :=
+    OldLive > Nat.max Watermark MinThreshold.
 
   Definition PromotionRelaxed
       (YoungOdometerReset NurseryPendingCleared : Prop) : Prop :=
@@ -969,6 +978,62 @@ Section CESKCollectorSafetyModel.
     unfold CapDue.
     rewrite Nat.max_0_r.
     exact Hover_base.
+  Qed.
+
+  Theorem rearmed_watermark_blocks_immediate_live_major_refire :
+    forall OldLiveAfter MinThreshold : nat,
+      ~ LiveMajorDue OldLiveAfter
+          (RearmedWatermark OldLiveAfter MinThreshold)
+          MinThreshold.
+  Proof.
+    intros OldLiveAfter MinThreshold Hdue.
+    unfold LiveMajorDue, RearmedWatermark in Hdue.
+    assert (OldLiveAfter <= Nat.max (OldLiveAfter + OldLiveAfter) MinThreshold).
+    {
+      apply Nat.le_trans with (m := OldLiveAfter + OldLiveAfter).
+      - lia.
+      - apply Nat.le_max_l.
+    }
+    assert (Nat.max (OldLiveAfter + OldLiveAfter) MinThreshold <=
+            Nat.max (Nat.max (OldLiveAfter + OldLiveAfter) MinThreshold)
+                    MinThreshold) by apply Nat.le_max_l.
+    lia.
+  Qed.
+
+  Theorem live_major_refire_requires_doubled_old_growth :
+    forall OldLiveAfter OldLiveNext MinThreshold : nat,
+      LiveMajorDue OldLiveNext
+        (RearmedWatermark OldLiveAfter MinThreshold)
+        MinThreshold ->
+      OldLiveNext > OldLiveAfter + OldLiveAfter.
+  Proof.
+    intros OldLiveAfter OldLiveNext MinThreshold Hdue.
+    unfold LiveMajorDue, RearmedWatermark in Hdue.
+    assert (OldLiveAfter + OldLiveAfter <=
+            Nat.max (Nat.max (OldLiveAfter + OldLiveAfter) MinThreshold)
+                    MinThreshold).
+    {
+      apply Nat.le_trans with
+        (m := Nat.max (OldLiveAfter + OldLiveAfter) MinThreshold).
+      - apply Nat.le_max_l.
+      - apply Nat.le_max_l.
+    }
+    lia.
+  Qed.
+
+  Theorem live_major_refire_requires_min_threshold_growth :
+    forall OldLiveAfter OldLiveNext MinThreshold : nat,
+      LiveMajorDue OldLiveNext
+        (RearmedWatermark OldLiveAfter MinThreshold)
+        MinThreshold ->
+      OldLiveNext > MinThreshold.
+  Proof.
+    intros OldLiveAfter OldLiveNext MinThreshold Hdue.
+    unfold LiveMajorDue, RearmedWatermark in Hdue.
+    assert (MinThreshold <=
+            Nat.max (Nat.max (OldLiveAfter + OldLiveAfter) MinThreshold)
+                    MinThreshold) by apply Nat.le_max_r.
+    lia.
   Qed.
 
   Theorem young_reachable_marked :

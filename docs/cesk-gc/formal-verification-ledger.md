@@ -43,6 +43,10 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/CapFloorAntiThrash.v`: proves the B.5 cap-floor anti-thrash obligation. Raising the cap floor to
   the current committed bytes after a futile cap-triggered major prevents an immediate cap re-fire unless committed
   grows, and clearing the floor after a segment-releasing major restores the ordinary base-cap predicate.
+- `formal/rocq/gc/MajorWatermarkRearm.v`: proves the B.4 old-live major watermark rearm obligation. Rearming the
+  major watermark from `max(old_live_after * 2, min_threshold)` prevents an unchanged old generation from immediately
+  re-firing the live-growth major clause and requires future old-live bytes to exceed the doubled post-major old-live
+  metric and the minimum threshold.
 - `formal/rocq/gc/StructuralRoots.v` and `formal/lean/gc/StructuralRoots.lean`: if future machine touches are
   inside the structural CESK-root closure and sweep frees only unmarked nodes, no future-touched node can be freed.
 - `formal/rocq/gc/NodeEdgeCompleteness.v` and `formal/lean/gc/NodeEdgeCompleteness.lean`: prove the node-edge
@@ -266,6 +270,9 @@ can replace the full-major final sweep.
 - `tla/CapFloorAntiThrash.tla`: checks the B.5 cap-floor update. Production rules prevent a futile cap major from
   immediately re-firing and clear stale floor state after release; omitting the raise or the clear violates the named
   discriminator invariant.
+- `tla/MajorWatermarkRearm.tla`: checks the B.4 major watermark rearm. Production rearm from post-promote old-live
+  with `GROWTH = 2` prevents immediate live-major re-fire and requires doubled old-live growth; omitting the rearm or
+  the growth factor violates the corresponding discriminator invariant.
 - `tla/NodeEdgeCompleteness.tla`: checks the marker edge-reader completeness obligation. Including inline handle
   fields, side-arena child slices, and `SpaceHandle` contents preserves `NoReachableFreed`; omitting any one class
   admits a reachable child that is swept unmarked.
@@ -434,6 +441,9 @@ facts the proofs rely on:
 - B.5 cap-floor source order is pinned in both full-major paths: the cap predicate uses
   `max_bytes().max(CAP_FLOOR)`, a cap-triggered major that releases no segment stores current `committed` into
   `CAP_FLOOR`, and a segment-releasing major clears `CAP_FLOOR` to zero.
+- B.4 major-watermark source order is pinned in both full-major paths: `GROWTH` is exactly 2, the live-major trigger
+  uses `old_live > WATERMARK.max(min_threshold())`, promotion runs before measuring `old_live_after`, and the rearm
+  stores `old_live_after.saturating_mul(GROWTH).max(min_threshold())`.
 - `published_gen` writes remain restricted to stale-stamp reset plus the genuine `note_reified_park` stamp, with
   worker root-buffer publication before the stamp.
 - The V4 witness slot is acquired before `N_THREADS++`, released only after the true outermost `EvalGuard::drop`

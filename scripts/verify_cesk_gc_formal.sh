@@ -134,6 +134,7 @@ run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/NurseryBackpressure.v"
 run_rocq "formal/rocq/gc/MajorMinorScheduler.v"
 run_rocq "formal/rocq/gc/CapFloorAntiThrash.v"
+run_rocq "formal/rocq/gc/MajorWatermarkRearm.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/NodeEdgeCompleteness.v"
 run_rocq "formal/rocq/gc/AbstractGCLiveNarrowing.v"
@@ -394,6 +395,12 @@ run_tlc "cap_floor_anti_thrash_no_raise" "MC_CapFloorAntiThrash.tla" "MC_CapFloo
   fail "Invariant FutileCapMajorDoesNotRefire is violated"
 run_tlc "cap_floor_anti_thrash_no_clear" "MC_CapFloorAntiThrash.tla" "MC_CapFloorAntiThrash_no_clear.cfg" \
   fail "Invariant ReleaseClearsFloor is violated"
+run_tlc "major_watermark_rearm_all" "MC_MajorWatermarkRearm.tla" "MC_MajorWatermarkRearm_all.cfg" \
+  pass ""
+run_tlc "major_watermark_rearm_no_rearm" "MC_MajorWatermarkRearm.tla" "MC_MajorWatermarkRearm_no_rearm.cfg" \
+  fail "Invariant ImmediateOldLiveDoesNotRefire is violated"
+run_tlc "major_watermark_rearm_no_growth" "MC_MajorWatermarkRearm.tla" "MC_MajorWatermarkRearm_no_growth.cfg" \
+  fail "Invariant FutureRefireRequiresDoubledGrowth is violated"
 run_tlc "satb_deletion_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_satb.cfg" \
   pass ""
 run_tlc "satb_no_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_none.cfg" \

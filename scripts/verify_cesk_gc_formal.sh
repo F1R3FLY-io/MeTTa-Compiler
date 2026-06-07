@@ -96,6 +96,7 @@ run_lean "formal/lean/gc/FreeList.lean"
 run_lean "formal/lean/gc/YoungMark.lean"
 run_lean "formal/lean/gc/StructuralRoots.lean"
 run_lean "formal/lean/gc/NodeEdgeCompleteness.lean"
+run_lean "formal/lean/gc/AbstractGCLiveNarrowing.lean"
 run_lean "formal/lean/gc/MidloopRootUnion.lean"
 run_lean "formal/lean/gc/RendezvousWitness.lean"
 run_lean "formal/lean/gc/WitnessSlotLifecycle.lean"
@@ -131,6 +132,7 @@ run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/NodeEdgeCompleteness.v"
+run_rocq "formal/rocq/gc/AbstractGCLiveNarrowing.v"
 run_rocq "formal/rocq/gc/MidloopRootUnion.v"
 run_rocq "formal/rocq/gc/RendezvousWitness.v"
 run_rocq "formal/rocq/gc/WitnessSlotLifecycle.v"
@@ -183,6 +185,14 @@ run_tlc "node_edge_completeness_missing_side" "MC_NodeEdgeCompleteness.tla" "MC_
   fail "Invariant NoReachableFreed is violated"
 run_tlc "node_edge_completeness_missing_space" "MC_NodeEdgeCompleteness.tla" "MC_NodeEdgeCompleteness_missing_space.cfg" \
   fail "Invariant NoReachableFreed is violated"
+run_tlc "abstract_gc_live_narrowing_all_dead" "MC_AbstractGCLiveNarrowing.tla" "MC_AbstractGCLiveNarrowing_all_dead.cfg" \
+  pass ""
+run_tlc "abstract_gc_live_narrowing_rule_matches_live" "MC_AbstractGCLiveNarrowing.tla" "MC_AbstractGCLiveNarrowing_rule_matches_live.cfg" \
+  fail "Invariant NoFutureTouchFreed is violated"
+run_tlc "abstract_gc_live_narrowing_alts_live" "MC_AbstractGCLiveNarrowing.tla" "MC_AbstractGCLiveNarrowing_alts_live.cfg" \
+  fail "Invariant NoFutureTouchFreed is violated"
+run_tlc "abstract_gc_live_narrowing_templates_live" "MC_AbstractGCLiveNarrowing.tla" "MC_AbstractGCLiveNarrowing_templates_live.cfg" \
+  fail "Invariant NoFutureTouchFreed is violated"
 run_tlc "collapse_fix" "CollapseCompletion.tla" "CollapseCompletion_fix.cfg" \
   pass ""
 run_tlc "collapse_bug" "CollapseCompletion.tla" "CollapseCompletion_bug.cfg" \

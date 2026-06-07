@@ -39,6 +39,11 @@ can replace the full-major final sweep.
   completeness obligation. If the marker's concrete reader covers every semantic index-node edge class
   (inline handle fields, side-arena `SExpr`/`Conjunction` children, and first-class `SpaceHandle` contents), then
   ordinary mark/sweep cannot free anything reachable through those semantic node edges.
+- `formal/rocq/gc/AbstractGCLiveNarrowing.v` and `formal/lean/gc/AbstractGCLiveNarrowing.lean`: prove the C2
+  abstract-GC K-frame narrowing obligation. If every future transition touch is a full K-frame root and is not in the
+  frame's dead-for-next-transition field set, then marking only the narrowed live root set cannot free a future-touched
+  value. The proof also states the no-dead-fields equality case and rejects the contradictory shape where a skipped
+  field is still future-live.
 - `formal/rocq/gc/MidloopRootUnion.v` and `formal/lean/gc/MidloopRootUnion.lean`: prove the opt-in single-threaded
   mid-loop root-union obligation. If live S/C/K, E0, global anchors, K-spine, deferred environment drops, and driver-C
   safepoint roots are included in the mid-loop root vector, mark/sweep cannot free any channel root, and future touches
@@ -131,8 +136,8 @@ can replace the full-major final sweep.
   started-cycle straddle gate, four-channel driver-root union, collector-root closure, mark completeness,
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
   roots, live witness-slot visibility, cross-cycle witness-gate freshness, no-phantom straddle re-park, driver channel
-  roots, opt-in mid-loop channel roots and future touches, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache and
-  shared worker-local Addr-cache sweep-epoch coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, global tiered-cache
+  roots, C2 abstract-GC live-K narrowing, opt-in mid-loop channel roots and future touches, caller-held driver-C
+  roots, async batch-result handoff values, pointer-keyed operator-cache and shared worker-local Addr-cache sweep-epoch coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, global tiered-cache
   roots and removed-value SATB shades, thread-local table roots and removed-result SATB shades, future CESK touches,
   reachable young nodes under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live nodes
   covered by initial roots, driver roots, SATB shades, or allocate-black publication, E2 freshly published
@@ -177,6 +182,9 @@ can replace the full-major final sweep.
 - `tla/MidloopRootUnion.tla`: checks the opt-in single-threaded mid-loop root vector. Including live S/C/K,
   E0/global/K-spine, deferred env drops, and driver-C preserves `MidloopRootUnionComplete`; omitting the machine,
   deferred-env, or driver-C channel violates it.
+- `tla/AbstractGCLiveNarrowing.tla`: checks the C2 abstract-GC live-field narrowing discriminator. When all three
+  fields omitted by `collect_live_values` are dead for the next transition, `NoFutureTouchFreed` holds; making any
+  one of `remaining_matches`, `remaining_alts`, or `remaining_templates` future-live while still omitted violates it.
 - `tla/DriverCPublication.tla`: checks that public eval entry publishes driver-C (`MettaState.source/output`) to
   the safepoint channel before midloop/rendezvous roots can be built. Omitting that publication violates
   `DriverCVisibleOnSweep`, matching a caller-held source/output value that can be freed while eval is still live.
@@ -312,6 +320,10 @@ facts the proofs rely on:
   pins `fork_for_nondeterminism`'s five CoW-local Addr-bearing maps and the corresponding `collect_fork_local_roots`
   reader, asserts the `frame_env` classifiers remain exhaustive, and checks the three narrowed live-K arms re-read the
   frame env before skipping post-cut-dead iterator fields.
+- C2 abstract-GC narrowing is source-pinned to exactly the three post-cut iterator fields:
+  `remaining_matches`, `remaining_alts`, and `remaining_templates`. Each narrowed field has a debug assertion at the
+  next transition read site proving it is not read on the cut-fired path, plus a differential unit test showing
+  `collect_live_values` equals `collect_values` when no cut fired and drops only the dead iterator field after cut.
 - The opt-in single-threaded mid-loop branch is pinned to build `midloop_roots` from `collect_machine_roots_live`
   (live S/C/K plus persistent E0/global/K-spine), then deferred environment drops, then `collect_safepoint_roots`, and
   `run_collection_if_triggered_midloop` must consume that same vector. Its gate remains index-only, explicit opt-in,

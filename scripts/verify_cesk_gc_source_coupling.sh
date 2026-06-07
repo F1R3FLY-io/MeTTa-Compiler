@@ -494,6 +494,10 @@ assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Phase 1 cut-barr
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "D-2 (C2) soundness coupling: \`collect_live_values\` skips \`remaining_alts\`" "debug_assert!(" "remaining_alts.next()"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Phase 1 cut-barrier: if a \`(cut)\` fired this match fan-out's" "if cut_fired_peek(cut_barrier) {" "remaining_templates.next()"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "D-2 (C2) soundness coupling: \`collect_live_values\` skips \`remaining_templates\`" "debug_assert!(" "remaining_templates.next()"
+line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_narrows_process_rule_matches_on_cut()" >/dev/null
+line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_narrows_process_amb_on_cut()" >/dev/null
+line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_narrows_process_match_templates_on_cut()" >/dev/null
+line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_barrier_zero_never_narrows()" >/dev/null
 
 # E2 cache-epoch source coupling: OPERATOR_CACHE is pointer-keyed
 # (`head.as_ptr()`), so index mode must lazily clear it when gc_sweep_epoch

@@ -20,6 +20,8 @@
       so registry roots cannot justify future touches in the CESK proof;
     - the single-threaded mid-loop root union includes live S/C/K, E0,
       globals, K-spine, deferred env roots, and driver-C safepoint roots;
+    - C2 abstract-GC K-frame narrowing keeps every future-touched value rooted
+      when omitted continuation fields are dead for the next transition;
     - fork-local environment roots carried by live work items and
       continuations are included in the published frame contribution;
     - VM/JIT tier-leaf register roots are included in the worker's extra
@@ -177,6 +179,11 @@ Section CESKCollectorSafetyModel.
       (CapacityVictim OverwriteVictim BulkClearedEntry : Addr -> Prop)
       (a : Addr) : Prop :=
     CapacityVictim a \/ OverwriteVictim a \/ BulkClearedEntry a.
+
+  Definition AbstractGCRoot
+      (FullRoot DeadForNext : Addr -> Prop)
+      (a : Addr) : Prop :=
+    FullRoot a /\ ~ DeadForNext a.
 
   Definition OperatorCacheEnsurePost
       (Entry Epoch : Type)
@@ -1158,6 +1165,25 @@ Section CESKCollectorSafetyModel.
     - apply Hspace; exact Hspace_a.
     - apply Hrule; exact Hrule_a.
     - apply Henv; exact Henv_a.
+  Qed.
+
+  Theorem abstract_gc_future_touch_survives_live_narrowing :
+    forall (FullRoot DeadForNext FutureTouch Marked Freed : Addr -> Prop),
+      (forall a, FutureTouch a -> FullRoot a) ->
+      (forall a, FutureTouch a -> ~ DeadForNext a) ->
+      (forall a, AbstractGCRoot FullRoot DeadForNext a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, FutureTouch a -> ~ Freed a.
+  Proof.
+    intros FullRoot DeadForNext FutureTouch Marked Freed
+           Hfuture_full Hfuture_not_dead Hmark Hsweep a Htouch Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    split.
+    - apply Hfuture_full.
+      exact Htouch.
+    - apply Hfuture_not_dead.
+      exact Htouch.
   Qed.
 
   Theorem operator_cache_returned_entry_current_after_ensure :

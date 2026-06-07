@@ -148,8 +148,8 @@ impl Drop for WorkerEvalScope {
 }
 
 /// H11: cooperative safepoint for parallel-branch workers in non-trampoline
-/// tiers. Called from JIT/bytecode/grounded tier-return edges when
-/// `is_gc_requested()` returns true.
+/// tiers. Called from bytecode VM/JIT tier edges and long grounded/MORK regions
+/// when `is_gc_requested()` returns true.
 ///
 /// Surrenders the worker's EvalGuard so `maybe_quiescent_gc` can fire,
 /// waits for the cycle to complete, then re-acquires the guard. Mirrors
@@ -167,8 +167,9 @@ impl Drop for WorkerEvalScope {
 /// stack + locals + choice_points; the JIT runtime has its register file;
 /// grounded ops have their pending result. Calling with `&[]` while
 /// holding live unrooted values causes use-after-free when the next read
-/// hits a freed slab slot. Tier-edge hooks are NOT yet wired pending each
-/// tier's root-collection helper — reserved for a follow-up commit.
+/// hits a reused index slot. The source-coupling harness pins the wired VM,
+/// JIT, and grounded/MORK callers to collect their complete live tier state
+/// before entering this helper.
 #[inline]
 #[allow(dead_code)]
 pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
@@ -186,10 +187,9 @@ pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
     // `dedicated_gc_enabled()` first → when OFF, control falls through to the
     // unchanged slab/async register-temporary-roots path below.
     //
-    // NOTE: this fn is dead-by-call-graph at E1-c step 3 (the index VM/JIT tiers do
-    // not call it until E1-d wires their poll edges with complete `extra_roots`); the
-    // edit makes the FUNCTION park correctly + is unit-testable, but only fires once
-    // those edges land. We do NOT wire the tier callers here (§Part-6 / E1-d).
+    // The VM/JIT and grounded/MORK callers are now source-coupled to pass complete
+    // `extra_roots`; this helper owns the common park/resume protocol for those tier
+    // leaves.
     if gc_allocator::dedicated_gc_enabled() {
         // §Part-8 depth==0 guard: N_THREADS counts the depth 0→1 EvalGuard transition
         // ONLY, and `drop_eval_guard_for_safepoint_full` asserts depth>0 + decrements

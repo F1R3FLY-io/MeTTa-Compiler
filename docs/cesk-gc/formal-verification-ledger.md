@@ -152,6 +152,9 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/DepthZeroSafepoint.v`: proves the E1 cooperative-safepoint depth-zero rule. A caller that is not
   inside an EvalGuard is not in the dedicated collector's participant snapshot and therefore must return without
   parking or dropping an EvalGuard; depth-positive callers may use the ordinary park path.
+- `formal/rocq/gc/PollEdgeContribution.v`: proves the E1 GC-pending poll-edge contribution rule. Once a
+  depth-positive worker reaches a GC-pending poll edge, it must collect structural roots, drop its guard, publish the
+  roots, and only then wait; a published poll-edge root then survives ordinary mark/sweep through the driver root set.
 - `formal/rocq/gc/ConcurrentTriggerBackstop.v`: proves the E1 FANOUT rendezvous-trigger backstop rule. If a worker
   trigger cannot hand `CollectRendezvous` to the dedicated GC thread, the resume backstop must clear the pending
   request and wake workers; otherwise the trigger must have posted a driver request.
@@ -258,6 +261,9 @@ can replace the full-major final sweep.
   cooperative producers preserves `NoDriverlessRequest`; leaving default, session, parallel, or cron ungated violates it.
 - `tla/DepthZeroSafepoint.tla`: checks the E1 cooperative-safepoint depth-zero rule. Guarding depth zero preserves
   `DepthZeroDoesNotPark` and `DepthZeroDoesNotDropGuard`; omitting the guard lets a non-participant park/drop path run.
+- `tla/PollEdgeContribution.tla`: checks the E1 GC-pending poll-edge contribution order. Collecting roots, dropping
+  the guard, publishing roots, and then waiting preserves `WaitAfterContribution`; waiting with publication omitted
+  violates it.
 - `tla/ConcurrentTriggerBackstop.tla`: checks the E1 FANOUT rendezvous-trigger handoff. A successful trigger leaves
   a posted driver request; spawn/send failure must run the resume backstop. Omitting either failure backstop leaves
   `GC_REQUESTED` pending without a driver.

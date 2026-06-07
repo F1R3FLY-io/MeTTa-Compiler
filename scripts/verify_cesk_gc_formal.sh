@@ -163,6 +163,7 @@ run_rocq "formal/rocq/gc/SchedulerGcBoundary.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
 run_rocq "formal/rocq/gc/DepthZeroSafepoint.v"
+run_rocq "formal/rocq/gc/PollEdgeContribution.v"
 run_rocq "formal/rocq/gc/ConcurrentTriggerBackstop.v"
 run_rocq "formal/rocq/gc/OperatorCacheEpoch.v"
 run_rocq "formal/rocq/gc/EpochProtectedCaches.v"
@@ -248,6 +249,10 @@ run_tlc "rendezvous_quiescence_independence_all" "MC_RendezvousQuiescenceIndepen
   pass ""
 run_tlc "rendezvous_quiescence_independence_global_gate" "MC_RendezvousQuiescenceIndependence.tla" "MC_RendezvousQuiescenceIndependence_global_gate.cfg" \
   fail "Invariant ReadyCanSweep is violated"
+run_tlc "poll_edge_contribution_all" "MC_PollEdgeContribution.tla" "MC_PollEdgeContribution_all.cfg" \
+  pass ""
+run_tlc "poll_edge_contribution_missing_publish" "MC_PollEdgeContribution.tla" "MC_PollEdgeContribution_missing_publish.cfg" \
+  fail "Invariant WaitAfterContribution is violated"
 run_tlc "frame_env_roots_all" "MC_FrameEnvRoots.tla" "MC_FrameEnvRoots_all.cfg" \
   pass ""
 run_tlc "frame_env_roots_missing_inferred" "MC_FrameEnvRoots.tla" "MC_FrameEnvRoots_missing_inferred.cfg" \

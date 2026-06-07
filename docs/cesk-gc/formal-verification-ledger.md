@@ -64,6 +64,10 @@ can replace the full-major final sweep.
   per-mutator contribution reader includes every component it claims (trampoline extra values, S/C/K, E0, global
   anchors, K-spine, deferred env roots; tier-leaf extra values plus env-less persistent roots), and publication/drain
   carries that contribution to the driver root set, mark/sweep cannot free any component root.
+- `formal/rocq/gc/FrameEnvRoots.v` and `formal/lean/gc/FrameEnvRoots.lean`: prove the forked-env frame-root
+  obligation. If the frame-local reader includes bindings, type assertions, state cells, named-space atoms, and
+  inferred function type roots from a live forked environment, and that frame root is published through the normal
+  thread contribution, mark/sweep cannot free those fork-local values.
 - `formal/rocq/gc/DriverRootUnion.v` and `formal/lean/gc/DriverRootUnion.lean`: prove the driver root-union
   obligation. If worker-buffer roots, safepoint roots, live environment anchors, and live dispatch anchors are all
   included in the driver root set, mark/sweep cannot free any live channel root.
@@ -222,6 +226,8 @@ can replace the full-major final sweep.
 - `tla/RegistryIsolation.tla`: checks the A5/E1 root-source boundary. Index mode may build roots from structural CESK
   readers and explicit driver transport roots only; enabling the legacy `RootProvider` registry as an index root source
   violates `NoRegistryInIndex`.
+- `tla/FrameEnvRoots.tla`: checks the forked-env frame-root channel. Including the five fork-local Addr-bearing maps
+  preserves `FrameEnvRootsComplete`; omitting inferred function type roots violates it.
 
 ## Source coupling
 
@@ -240,6 +246,10 @@ facts the proofs rely on:
 - Every self-root publication site routes through the canonical `collect_complete_thread_contribution` reader, whose
   source shape is pinned: trampoline participants publish extra hot values, live S/C/K, E0, global anchors, K-spine,
   and deferred env roots; tier leaves publish extra VM/JIT values plus the env-less persistent roots they can read.
+- Live work item and continuation frames include fork-local environment roots in index mode. The source-coupling gate
+  pins `fork_for_nondeterminism`'s five CoW-local Addr-bearing maps and the corresponding `collect_fork_local_roots`
+  reader, asserts the `frame_env` classifiers remain exhaustive, and checks the three narrowed live-K arms re-read the
+  frame env before skipping post-cut-dead iterator fields.
 - The opt-in single-threaded mid-loop branch is pinned to build `midloop_roots` from `collect_machine_roots_live`
   (live S/C/K plus persistent E0/global/K-spine), then deferred environment drops, then `collect_safepoint_roots`, and
   `run_collection_if_triggered_midloop` must consume that same vector. Its gate remains index-only, explicit opt-in,

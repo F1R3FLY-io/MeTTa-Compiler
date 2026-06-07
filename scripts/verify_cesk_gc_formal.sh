@@ -103,6 +103,7 @@ run_lean "formal/lean/gc/StartedCycleGate.lean"
 run_lean "formal/lean/gc/CollapseCompletion.lean"
 run_lean "formal/lean/gc/WorkerAdmission.lean"
 run_lean "formal/lean/gc/ThreadContribution.lean"
+run_lean "formal/lean/gc/FrameEnvRoots.lean"
 run_lean "formal/lean/gc/DriverRootUnion.lean"
 run_lean "formal/lean/gc/DriverCPublication.lean"
 run_lean "formal/lean/gc/BatchHandoff.lean"
@@ -130,6 +131,7 @@ run_rocq "formal/rocq/gc/StartedCycleGate.v"
 run_rocq "formal/rocq/gc/CollapseCompletion.v"
 run_rocq "formal/rocq/gc/WorkerAdmission.v"
 run_rocq "formal/rocq/gc/ThreadContribution.v"
+run_rocq "formal/rocq/gc/FrameEnvRoots.v"
 run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
@@ -193,6 +195,10 @@ run_tlc "registry_isolation_all" "MC_RegistryIsolation.tla" "MC_RegistryIsolatio
   pass ""
 run_tlc "registry_isolation_enabled" "MC_RegistryIsolation.tla" "MC_RegistryIsolation_registry.cfg" \
   fail "Invariant NoRegistryInIndex is violated"
+run_tlc "frame_env_roots_all" "MC_FrameEnvRoots.tla" "MC_FrameEnvRoots_all.cfg" \
+  pass ""
+run_tlc "frame_env_roots_missing_inferred" "MC_FrameEnvRoots.tla" "MC_FrameEnvRoots_missing_inferred.cfg" \
+  fail "Invariant FrameEnvRootsComplete is violated"
 run_tlc "driver_c_publication_published" "MC_DriverCPublication.tla" "MC_DriverCPublication_published.cfg" \
   pass ""
 run_tlc "driver_c_publication_missing" "MC_DriverCPublication.tla" "MC_DriverCPublication_missing.cfg" \

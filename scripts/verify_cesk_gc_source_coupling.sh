@@ -393,6 +393,28 @@ assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::TierLe
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "pub(crate) fn worker_cooperative_safepoint" "ThreadContribution::TierLeaf" "gc_allocator::worker_park_and_root_in_cycle"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "FULL park (mirror branch-B template" "ThreadContribution::Trampoline" "worker_park_and_root_in_cycle"
 
+# Forked-env frame roots: fork_for_nondeterminism deep-copies the five
+# Addr-bearing local maps, and every index-mode live work item / continuation
+# frame must include those maps in its structural K roots. The Arc-shared E0
+# registries stay at the persistent-root level and are not rewalked per frame.
+assert_after_before "src/backend/environment/core.rs" "pub fn fork_for_nondeterminism(&self) -> Self" "states: RwLock::new(self.shared.states.read().clone())," "bindings: RwLock::new(self.shared.bindings.read().clone()),"
+assert_after_before "src/backend/environment/core.rs" "pub fn fork_for_nondeterminism(&self) -> Self" "named_spaces: RwLock::new(self.shared.named_spaces.read().clone())," "bindings: RwLock::new(self.shared.bindings.read().clone()),"
+assert_after_before "src/backend/environment/core.rs" "pub fn fork_for_nondeterminism(&self) -> Self" "bindings: RwLock::new(self.shared.bindings.read().clone())," "types: RwLock::new(self.shared.types.read().clone()),"
+assert_after_before "src/backend/environment/core.rs" "pub fn fork_for_nondeterminism(&self) -> Self" "types: RwLock::new(self.shared.types.read().clone())," "inferred_fn_types: DashMap::from_iter("
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn collect_fork_local_roots" "out.extend(s.bindings.read().values().copied());" "for tv in s.types.read().values()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn collect_fork_local_roots" "for tv in s.types.read().values()" "out.extend(tv.iter().copied());"
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn collect_fork_local_roots" "out.extend(s.states.read().values().copied());" "for (_name, atoms) in s.named_spaces.read().values()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn collect_fork_local_roots" "for (_name, atoms) in s.named_spaces.read().values()" "out.extend(atoms.iter().copied());"
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn collect_fork_local_roots" "for entry in s.inferred_fn_types.iter()" "out.extend(entry.value().iter().copied());"
+assert_count_between "src/backend/eval/trampoline/types.rs" "fn collect_fork_local_roots" "impl WorkItem {" "collect_roots_into" "0"
+assert_count_between "src/backend/eval/trampoline/types.rs" "fn collect_fork_local_roots" "impl WorkItem {" "atom_space.collect_gc_roots" "0"
+assert_count_between "src/backend/eval/trampoline/types.rs" "impl WorkItem {" "pub fn collect_values(&self, out: &mut Vec<MettaValue>)" "_ =>" "0"
+assert_after_before "src/backend/eval/trampoline/types.rs" "impl WorkItem {" "if let Some(e) = self.frame_env()" "collect_fork_local_roots(e, out);"
+assert_count_between "src/backend/eval/trampoline/types.rs" "impl Continuation {" "pub fn collect_values(&self, out: &mut Vec<MettaValue>)" "_ =>" "0"
+assert_after_before "src/backend/eval/trampoline/types.rs" "impl Continuation {" "if let Some(e) = self.frame_env()" "collect_fork_local_roots(e, out);"
+assert_count_between "src/backend/eval/trampoline/types.rs" "pub fn collect_live_values(&self, out: &mut Vec<MettaValue>)" "pub fn depth_hint(&self) -> usize" "collect_fork_local_roots(env, out);" "3"
+assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn collect_live_values(&self, out: &mut Vec<MettaValue>)" "_ => self.collect_values(out)," "pub fn depth_hint(&self) -> usize"
+
 # Single-threaded mid-loop collection coupling: the opt-in mid-loop branch must
 # build exactly the root union discharged by MidloopRootUnion before handing it
 # to the collector. This is the live trampoline S/C/K reader (which also appends

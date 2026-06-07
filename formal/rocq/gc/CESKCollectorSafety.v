@@ -20,6 +20,8 @@
       so registry roots cannot justify future touches in the CESK proof;
     - the single-threaded mid-loop root union includes live S/C/K, E0,
       globals, K-spine, deferred env roots, and driver-C safepoint roots;
+    - fork-local environment roots carried by live work items and
+      continuations are included in the published frame contribution;
     - eval-entry driver-C publication puts caller-held source/output roots in
       the driver roots;
     - async batch-result handoff roots worker results in driver-C until the
@@ -104,6 +106,11 @@ Section CESKCollectorSafetyModel.
       (LiveSCK Env0 Global KSpine Deferred DriverC : Addr -> Prop)
       (a : Addr) : Prop :=
     LiveSCK a \/ Env0 a \/ Global a \/ KSpine a \/ Deferred a \/ DriverC a.
+
+  Definition ForkLocalRoot
+      (Binding TypeAssertion StateCell NamedSpace InferredType : Addr -> Prop)
+      (a : Addr) : Prop :=
+    Binding a \/ TypeAssertion a \/ StateCell a \/ NamedSpace a \/ InferredType a.
 
   Definition LiveMachineVisible
       (Machine : Type)
@@ -234,6 +241,40 @@ Section CESKCollectorSafetyModel.
     apply Hmark.
     apply Hfuture.
     exact Htouch.
+  Qed.
+
+  Theorem fork_local_env_root_survives_collection :
+    forall (Binding TypeAssertion StateCell NamedSpace InferredType
+            FrameRoot ThreadRoot BufferRoot DriverRoot Marked Freed : Addr -> Prop),
+      (forall a, Binding a -> FrameRoot a) ->
+      (forall a, TypeAssertion a -> FrameRoot a) ->
+      (forall a, StateCell a -> FrameRoot a) ->
+      (forall a, NamedSpace a -> FrameRoot a) ->
+      (forall a, InferredType a -> FrameRoot a) ->
+      (forall a, FrameRoot a -> ThreadRoot a) ->
+      (forall a, ThreadRoot a -> BufferRoot a) ->
+      (forall a, BufferRoot a -> DriverRoot a) ->
+      (forall a, DriverRoot a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        ForkLocalRoot Binding TypeAssertion StateCell NamedSpace InferredType a ->
+        ~ Freed a.
+  Proof.
+    intros Binding TypeAssertion StateCell NamedSpace InferredType
+           FrameRoot ThreadRoot BufferRoot DriverRoot Marked Freed
+           Hbinding Htype Hstate Hnamed Hinferred
+           Hframe Hpublish Hdrain Hmark Hsweep a Hfork Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply Hdrain.
+    apply Hpublish.
+    apply Hframe.
+    destruct Hfork as [Hbinding_a | [Htype_a | [Hstate_a | [Hnamed_a | Hinferred_a]]]].
+    - apply Hbinding. exact Hbinding_a.
+    - apply Htype. exact Htype_a.
+    - apply Hstate. exact Hstate_a.
+    - apply Hnamed. exact Hnamed_a.
+    - apply Hinferred. exact Hinferred_a.
   Qed.
 
   Theorem rendezvous_participant_root_survives_collection :

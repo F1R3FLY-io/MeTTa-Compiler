@@ -506,6 +506,42 @@ assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn oper
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clear_operator_cache()" "cache_cell.borrow_mut().clear();" "OPERATOR_CACHE_GC_EPOCH.with"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "Keep explicit clears coherent with the lazy sweep-epoch guard." "gc_sweep_epoch()" "});"
 
+# E2/index-cache epoch source coupling: a reclaiming index sweep must bump the
+# process-wide sweep epoch, and every worker-local cache that can stale-hit on a
+# recycled Addr must either clear or validate against that epoch before lookup.
+assert_count "src/backend/eval/cesk/index_heap.rs" "crate::backend::models::gc_allocator::bump_gc_sweep_epoch();" "2"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.promote_young();" "crate::backend::models::gc_allocator::bump_gc_sweep_epoch();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "crate::backend::models::gc_allocator::bump_gc_sweep_epoch();" "crate::backend::eval::trampoline::eval_loop::clear_aba_sensitive_caches();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.promote_young();" "crate::backend::models::gc_allocator::bump_gc_sweep_epoch();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "crate::backend::models::gc_allocator::bump_gc_sweep_epoch();" "crate::backend::eval::trampoline::eval_loop::clear_aba_sensitive_caches();"
+
+assert_after_before "src/backend/models/metta_value.rs" "fn ensure_value_hash_cache_epoch_current()" "gc_sweep_epoch()" "VALUE_HASH_CACHE.with"
+assert_after_before "src/backend/models/metta_value.rs" "fn ensure_value_hash_cache_epoch_current()" "VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());" "epoch.set(current_epoch);"
+assert_after_before "src/backend/models/metta_value.rs" "pub fn clear_value_hash_cache()" "VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());" "VALUE_HASH_CACHE_EPOCH.with"
+assert_after_before "src/backend/models/metta_value.rs" "fn hash_value(&self) -> u64" "ensure_value_hash_cache_epoch_current();" "VALUE_HASH_CACHE.with"
+
+assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "gc_sweep_epoch()" "HASH_CONS_EPOCH.with"
+assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "clear_hash_cons_table_local();" "epoch.set(current_epoch);"
+assert_after_before "src/backend/models/gc_allocator.rs" "fn hash_cons_lookup" "ensure_hash_cons_epoch_current();" "HASH_CONS_TABLE.with"
+assert_after_before "src/backend/models/gc_allocator.rs" "fn hash_cons_insert" "ensure_hash_cons_epoch_current();" "HASH_CONS_TABLE.with"
+
+assert_zero "src/backend/mork_convert.rs" "no Index sweep runs yet"
+assert_after_before "src/backend/mork_convert.rs" "fn validate_caches" "gc_sweep_epoch()" "if self.gc_sweep_epoch != current_gc_epoch"
+assert_after_before "src/backend/mork_convert.rs" "if self.gc_sweep_epoch != current_gc_epoch" "if crate::backend::models::metta_value::gc_mode_is_index()" "self.ground_cache.clear();"
+assert_after_before "src/backend/mork_convert.rs" "if self.gc_sweep_epoch != current_gc_epoch" "self.ground_cache.clear();" "self.needs_gc_validation = false;"
+assert_after_before "src/backend/mork_convert.rs" "if self.gc_sweep_epoch != current_gc_epoch" "} else {" "self.needs_gc_validation = true;"
+assert_after_before "src/backend/mork_convert.rs" "pub fn clear_ground_fragment_cache()" "if crate::backend::models::metta_value::gc_mode_is_index()" "state.ground_cache.clear();"
+assert_after_before "src/backend/mork_convert.rs" "pub fn clear_ground_fragment_cache()" "state.ground_cache.clear();" "state.gc_sweep_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();"
+assert_after_before "src/backend/mork_convert.rs" "pub fn with_mork_bytes" "state.validate_caches(cache_epoch);" "write_metta_value_inner("
+
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "fn ensure_eval_caches_gc_epoch_current()" "gc_sweep_epoch()" "clear_eval_memo();"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "fn ensure_eval_caches_gc_epoch_current()" "clear_eval_memo();" "clear_match_result_cache();"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "fn ensure_eval_caches_gc_epoch_current()" "clear_match_result_cache();" "e.set(current);"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn eval_memo_get" "ensure_eval_caches_gc_epoch_current();" "let expr_hash = eval_memo_key"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn eval_memo_put" "ensure_eval_caches_gc_epoch_current();" "let expr_hash = eval_memo_key"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn match_result_get" "ensure_eval_caches_gc_epoch_current();" "MATCH_RESULT_CACHE.with"
+assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn match_result_put" "ensure_eval_caches_gc_epoch_current();" "MATCH_RESULT_CACHE.with"
+
 # E2 SATB LRU source coupling: value-bearing E0 anchor caches must not use
 # `LruCache::put` for index-mode eviction paths, because `put` hides capacity
 # victims. The source must use `push`, then shade the surfaced victim. Every

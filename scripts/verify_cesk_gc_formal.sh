@@ -114,6 +114,7 @@ run_lean "formal/lean/gc/DriverRootUnion.lean"
 run_lean "formal/lean/gc/DriverCPublication.lean"
 run_lean "formal/lean/gc/BatchHandoff.lean"
 run_lean "formal/lean/gc/OperatorCacheEpoch.lean"
+run_lean "formal/lean/gc/EpochProtectedCaches.lean"
 run_lean "formal/lean/gc/WriteOnceAnchors.lean"
 run_lean "formal/lean/gc/SpaceRegistryBarriers.lean"
 run_lean "formal/lean/gc/TieredCacheBarriers.lean"
@@ -148,6 +149,7 @@ run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/OperatorCacheEpoch.v"
+run_rocq "formal/rocq/gc/EpochProtectedCaches.v"
 run_rocq "formal/rocq/gc/WriteOnceAnchors.v"
 run_rocq "formal/rocq/gc/SpaceRegistryBarriers.v"
 run_rocq "formal/rocq/gc/TieredCacheBarriers.v"
@@ -273,6 +275,20 @@ run_tlc "operator_cache_epoch_checked" "MC_OperatorCacheEpoch.tla" "MC_OperatorC
   pass ""
 run_tlc "operator_cache_epoch_unchecked" "MC_OperatorCacheEpoch.tla" "MC_OperatorCacheEpoch_unchecked.cfg" \
   fail "Invariant NoStaleOperatorCacheHit is violated"
+run_tlc "epoch_protected_caches_all" "MC_EpochProtectedCaches.tla" "MC_EpochProtectedCaches_all.cfg" \
+  pass ""
+run_tlc "epoch_protected_caches_missing_value_hash" "MC_EpochProtectedCaches.tla" "MC_EpochProtectedCaches_missing_value_hash.cfg" \
+  fail "Invariant NoStaleAddrCacheHit is violated"
+run_tlc "epoch_protected_caches_missing_mork" "MC_EpochProtectedCaches.tla" "MC_EpochProtectedCaches_missing_mork.cfg" \
+  fail "Invariant NoStaleAddrCacheHit is violated"
+run_tlc "epoch_protected_caches_missing_hash_cons" "MC_EpochProtectedCaches.tla" "MC_EpochProtectedCaches_missing_hash_cons.cfg" \
+  fail "Invariant NoStaleAddrCacheHit is violated"
+run_tlc "epoch_protected_caches_missing_eval" "MC_EpochProtectedCaches.tla" "MC_EpochProtectedCaches_missing_eval.cfg" \
+  fail "Invariant NoStaleAddrCacheHit is violated"
+run_tlc "epoch_protected_caches_missing_match" "MC_EpochProtectedCaches.tla" "MC_EpochProtectedCaches_missing_match.cfg" \
+  fail "Invariant NoStaleAddrCacheHit is violated"
+run_tlc "epoch_protected_caches_missing_operator" "MC_EpochProtectedCaches.tla" "MC_EpochProtectedCaches_missing_operator.cfg" \
+  fail "Invariant NoStaleAddrCacheHit is violated"
 run_tlc "write_once_anchors_all" "MC_WriteOnceAnchors.tla" "MC_WriteOnceAnchors_all.cfg" \
   pass ""
 run_tlc "write_once_anchors_missing_if" "MC_WriteOnceAnchors.tla" "MC_WriteOnceAnchors_missing_if.cfg" \

@@ -104,6 +104,13 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/OperatorCacheEpoch.v` and `formal/lean/gc/OperatorCacheEpoch.lean`: prove the pointer-keyed
   operator-cache sweep-epoch obligation. A returned cache entry is current if the local sweep-epoch guard runs before
   lookup; if the local epoch is stale, the guarded lookup misses after clearing the cache.
+- `formal/rocq/gc/EpochProtectedCaches.v` and `formal/lean/gc/EpochProtectedCaches.lean`: prove the shared
+  sweep-epoch obligation for worker-local caches that can key by, or return values containing, reusable index `Addr`s.
+  If a reclaiming index sweep advances `gc_sweep_epoch` and every such cache validates that epoch before lookup, then
+  no lookup can return an entry that is stale for the current sweep epoch. This proof found and fixed a source bug in
+  the MORK ground-fragment cache: its index-mode lookup path still assumed that no index sweep ran and skipped
+  validation. The live implementation now clears the MORK ground-fragment cache when `gc_sweep_epoch` advances under
+  index-gc, while slab mode keeps per-slot allocation-epoch validation.
 - `formal/rocq/gc/WriteOnceAnchors.v` and `formal/lean/gc/WriteOnceAnchors.lean`: prove the write-once global-anchor
   obligation used by the compiler atom statics. If initialized anchors cannot be deleted and the structural reader
   scans each initialized anchor, ordinary root-complete mark/sweep retains the anchored values.
@@ -124,8 +131,8 @@ can replace the full-major final sweep.
   started-cycle straddle gate, four-channel driver-root union, collector-root closure, mark completeness,
   sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
   roots, live witness-slot visibility, cross-cycle witness-gate freshness, no-phantom straddle re-park, driver channel
-  roots, opt-in mid-loop channel roots and future touches, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache sweep-epoch
-  coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, global tiered-cache
+  roots, opt-in mid-loop channel roots and future touches, caller-held driver-C roots, async batch-result handoff values, pointer-keyed operator-cache and
+  shared worker-local Addr-cache sweep-epoch coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, global tiered-cache
   roots and removed-value SATB shades, thread-local table roots and removed-result SATB shades, future CESK touches,
   reachable young nodes under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live nodes
   covered by initial roots, driver roots, SATB shades, or allocate-black publication, E2 freshly published
@@ -179,6 +186,9 @@ can replace the full-major final sweep.
 - `tla/OperatorCacheEpoch.tla`: checks the pointer-keyed operator-cache sweep-epoch guard. Checking the local
   `gc_sweep_epoch` before lookup clears another worker's stale cache entry after sweep; skipping the check violates
   `NoStaleOperatorCacheHit`.
+- `tla/EpochProtectedCaches.tla`: checks the shared worker-local cache sweep-epoch guard for value hash, MORK
+  ground-fragment, hash-cons, eval memo, match-result, and operator caches. Checking every modeled cache preserves
+  `NoStaleAddrCacheHit`; omitting any one cache admits a stale hit after a reclaiming sweep bumps the heap epoch.
 - `tla/WriteOnceAnchors.tla`: checks the write-once compiler atom anchors. Scanning all three initialized anchors and
   forbidding deletion preserves `LiveAnchorsScanned`; omitting `ATOM_IF` or allowing a reset/take-style deletion
   violates the corresponding invariant.
@@ -316,8 +326,10 @@ facts the proofs rely on:
   `BoundValue` results to their `MettaValue` component, registers that value vector before publishing the outcome into
   the gather slot, the handle rides through sorting and return to `run_state_async`, and each caller loop pushes values
   into `MettaState.output` before the outcome drops.
-- OPERATOR_CACHE is guarded by `gc_sweep_epoch` in index mode before pointer-keyed lookup, so a parked worker
-  self-invalidates after another thread completes a sweep.
+- Reclaiming index sweeps are source-pinned to bump `gc_sweep_epoch` before eager sweeping-thread cache clears.
+  VALUE_HASH_CACHE, hash-cons, EVAL_MEMO, MATCH_RESULT_CACHE, OPERATOR_CACHE, and the MORK ground-fragment cache
+  are pinned to validate that epoch before returning hits. MORK ground fragments clear under index-gc on epoch advance
+  because index `Addr` keys cannot be checked through slab slot allocation epochs.
 - `collect_global_anchors` is source-pinned to scan the thread-local value-bearing evaluation tables in order:
   eval memo roots, match-result roots, subgoal roots, then thunk roots. That keeps the formal `Global` component tied
   to the actual E0 root reader, not only to the SATB deletion-barrier paths for those tables.

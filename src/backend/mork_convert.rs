@@ -129,13 +129,15 @@ impl FloatFormatCache {
     }
 }
 
-/// Ground fragment cache entry with epoch for lazy ABA validation.
+/// Ground fragment cache entry with epoch for lazy slab ABA validation.
 ///
 /// After a GC sweep, slab slots may be freed and reused for different values.
 /// Instead of clearing the entire `ground_cache` on every GC epoch change,
 /// each entry records the slot's allocation epoch at insertion time. On lookup
-/// after a GC sweep, only entries whose epoch no longer matches the slot's
-/// current epoch are evicted — valid entries survive across GC cycles.
+/// after a slab GC sweep, only entries whose epoch no longer matches the slot's
+/// current epoch are evicted — valid entries survive across GC cycles. Index
+/// `Addr` keys do not have slab slot epochs, so index mode clears this cache
+/// when the sweep epoch advances instead of trying per-entry validation.
 struct GroundCacheEntry {
     /// Serialized MORK byte fragment.
     fragment: Vec<u8>,
@@ -179,19 +181,22 @@ struct ConvertState {
     /// serialization of repeated ground sub-trees (e.g., `(stv 0.5 0.9)` appearing
     /// in multiple PLN expressions).
     ///
-    /// Entries are lazily validated after GC sweeps: each entry's `alloc_epoch` is
-    /// checked against the slot's current epoch on lookup, so only stale entries
-    /// are evicted while valid entries survive across GC cycles.
+    /// Entries are lazily validated after slab GC sweeps: each entry's `alloc_epoch`
+    /// is checked against the slot's current epoch on lookup, so only stale entries
+    /// are evicted while valid entries survive across GC cycles. Under index-gc the
+    /// key is an index `Addr`, not a slab pointer, so a sweep-epoch change clears
+    /// the cache instead.
     ground_cache: HashMap<usize, GroundCacheEntry, FxBuildHasher>,
     /// Inline cache for float-to-string formatting (ryu bypass).
     float_cache: FloatFormatCache,
-    /// Last-seen GC sweep epoch. When the global GC sweep epoch advances
-    /// (slab slots freed and potentially reused), the `needs_gc_validation` flag
-    /// is set to trigger per-entry lazy validation on the next ground_cache lookup.
+    /// Last-seen GC sweep epoch. When the global GC sweep epoch advances, slab
+    /// mode sets `needs_gc_validation` for per-entry lazy validation; index mode
+    /// clears `ground_cache` because reused `Addr` keys cannot be validated through
+    /// the slab allocation-epoch metadata.
     gc_sweep_epoch: u64,
-    /// When `true`, ground_cache lookups must validate each entry's `alloc_epoch`
-    /// against the slot's current epoch before using it. Set on GC sweep epoch
-    /// change; cleared when the entire ground_cache is cleared (MORK epoch change).
+    /// When `true`, slab-mode ground_cache lookups must validate each entry's
+    /// `alloc_epoch` against the slot's current epoch before using it. Set on GC
+    /// sweep epoch change; cleared when the entire ground_cache is cleared.
     needs_gc_validation: bool,
 }
 
@@ -224,13 +229,19 @@ impl ConvertState {
             self.symbol_cache_epoch = epoch;
             self.needs_gc_validation = false;
         }
-        // Check if a GC sweep occurred since last validation.
-        // After GC, slab slots may be freed and reused (ABA). Pointer-keyed
-        // ground_cache entries must be lazily validated against the slot's
-        // current allocation epoch before use.
+        // Check if a GC sweep occurred since last validation. Slab mode can
+        // lazily validate pointer-keyed ground_cache entries against per-slot
+        // allocation epochs. Index mode cannot: its key is the reusable Addr
+        // identity, so a sweep-epoch change invalidates the whole cache before
+        // any lookup can return a stale fragment for a new occupant.
         let current_gc_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
         if self.gc_sweep_epoch != current_gc_epoch {
-            self.needs_gc_validation = true;
+            if crate::backend::models::metta_value::gc_mode_is_index() {
+                self.ground_cache.clear();
+                self.needs_gc_validation = false;
+            } else {
+                self.needs_gc_validation = true;
+            }
             self.gc_sweep_epoch = current_gc_epoch;
         }
     }
@@ -245,7 +256,14 @@ impl ConvertState {
 /// it is safe to call on freed slots.
 pub fn clear_ground_fragment_cache() {
     CONVERT_STATE.with(|state| {
-        state.borrow_mut().needs_gc_validation = true;
+        let mut state = state.borrow_mut();
+        if crate::backend::models::metta_value::gc_mode_is_index() {
+            state.ground_cache.clear();
+            state.needs_gc_validation = false;
+            state.gc_sweep_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
+        } else {
+            state.needs_gc_validation = true;
+        }
     });
 }
 
@@ -566,11 +584,10 @@ fn write_metta_value_inner(
                 if !key_ptr.is_null() && !child_value.has_variables_fast() {
                     let key = key_ptr as usize;
                     let cache_hit = if let Some(entry) = ground_cache.get(&key) {
-                        // Index mode (CRUX Step 6): `key_ptr` is the INDEX_KEY_TAG
-                        // Addr key, not a slab pointer, so `get_slot_epoch` is
-                        // meaningless — and no Index sweep runs yet (Inc 6), so the
-                        // cached fragment cannot be stale. Skip epoch validation;
-                        // a key hit (same stable Addr ⇒ same value) is a real hit.
+                        // Slab mode validates stale pointer-keyed entries through
+                        // slot allocation epochs. Index mode clears the whole
+                        // ground_cache when gc_sweep_epoch advances, because
+                        // `key_ptr` is an Addr key rather than a slab pointer.
                         if needs_gc_validation
                             && !crate::backend::models::metta_value::gc_mode_is_index()
                         {
@@ -850,11 +867,10 @@ fn write_metta_value_debruijn_inner(
                 if !key_ptr.is_null() && !child_value.has_variables_fast() {
                     let key = key_ptr as usize;
                     let cache_hit = if let Some(entry) = ground_cache.get(&key) {
-                        // Index mode (CRUX Step 6): `key_ptr` is the INDEX_KEY_TAG
-                        // Addr key, not a slab pointer, so `get_slot_epoch` is
-                        // meaningless — and no Index sweep runs yet (Inc 6), so the
-                        // cached fragment cannot be stale. Skip epoch validation;
-                        // a key hit (same stable Addr ⇒ same value) is a real hit.
+                        // Slab mode validates stale pointer-keyed entries through
+                        // slot allocation epochs. Index mode clears the whole
+                        // ground_cache when gc_sweep_epoch advances, because
+                        // `key_ptr` is an Addr key rather than a slab pointer.
                         if needs_gc_validation
                             && !crate::backend::models::metta_value::gc_mode_is_index()
                         {

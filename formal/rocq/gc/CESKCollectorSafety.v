@@ -65,8 +65,9 @@
     - E2 value-bearing E0 deletion categories compose into that SATB coverage
       when removed space-local, rule-index, and environment/token/state
       pre-images are shaded;
-    - pointer-keyed operator-cache lookup cannot return a stale post-sweep entry
-      when the local sweep-epoch guard runs before lookup;
+    - pointer-keyed operator-cache lookup and the other epoch-protected
+      worker-local Addr caches cannot return stale post-sweep entries when
+      their local sweep-epoch guard runs before lookup;
     - write-once global anchors that are scanned structurally and cannot be
       deleted survive ordinary structural-root collection;
     - global space-registry values survive while registered as structural roots,
@@ -183,6 +184,16 @@ Section CESKCollectorSafetyModel.
       (CacheBefore CacheAfter : Entry -> Prop) : Prop :=
     (local_epoch = heap_epoch /\ (forall e, CacheAfter e -> CacheBefore e)) \/
     (local_epoch <> heap_epoch /\ (forall e, ~ CacheAfter e)).
+
+  Definition EpochProtectedCacheValidatePost
+      (Entry Epoch : Type)
+      (heap_epoch local_epoch : Epoch)
+      (CacheBefore CacheAfter : Entry -> Prop)
+      (Stale : Epoch -> Entry -> Prop) : Prop :=
+    (local_epoch = heap_epoch /\ (forall e, CacheAfter e -> CacheBefore e)) \/
+    (local_epoch <> heap_epoch /\
+      (forall e, CacheAfter e -> CacheBefore e) /\
+      (forall e, CacheAfter e -> ~ Stale heap_epoch e)).
 
   Definition WriteOnceAnchorLive
       (Anchor : Type)
@@ -1166,6 +1177,32 @@ Section CESKCollectorSafetyModel.
       exact Hcurrent.
     - exfalso.
       apply (Hcleared e).
+      apply Hlookup.
+      exact Hreturned.
+  Qed.
+
+  Theorem epoch_protected_cache_lookup_not_stale_after_validate :
+    forall (Entry Epoch : Type)
+           (Stale : Epoch -> Entry -> Prop)
+           (heap_epoch local_epoch : Epoch)
+           (CacheBefore CacheAfter Returned : Entry -> Prop),
+      (local_epoch = heap_epoch ->
+        forall e, CacheBefore e -> ~ Stale heap_epoch e) ->
+      EpochProtectedCacheValidatePost Entry Epoch heap_epoch local_epoch
+        CacheBefore CacheAfter Stale ->
+      (forall e, Returned e -> CacheAfter e) ->
+      forall e, Returned e -> ~ Stale heap_epoch e.
+  Proof.
+    intros Entry Epoch Stale heap_epoch local_epoch
+           CacheBefore CacheAfter Returned
+           Hcurrent_safe Hvalidated Hlookup e Hreturned.
+    destruct Hvalidated as [[Hcurrent Hsubset] | [_ [_ Hnot_stale]]].
+    - apply Hcurrent_safe.
+      + exact Hcurrent.
+      + apply Hsubset.
+        apply Hlookup.
+        exact Hreturned.
+    - apply Hnot_stale.
       apply Hlookup.
       exact Hreturned.
   Qed.

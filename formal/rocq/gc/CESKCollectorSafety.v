@@ -42,6 +42,8 @@
       visible or shaded before sweep can free them;
     - E2 freshly published allocations survive when publication implies
       allocate-black marking;
+    - variable-length side-arena payloads are initialized before their
+      page/chunk/entry publication chain can be observed by a reader;
     - E2 final-rendezvous roots survive the exclusive sweep, and a completed
       SATB request is backed by either the final SATB sweep or the abort-to-STW
       backstop;
@@ -118,6 +120,11 @@ Section CESKCollectorSafetyModel.
       (VmRegisterRoot JitRegisterRoot : Addr -> Prop)
       (a : Addr) : Prop :=
     VmRegisterRoot a \/ JitRegisterRoot a.
+
+  Definition PublishedEntryReady
+      (PageReady ChunkReady EntryWritten EntryPublished : Slot -> Prop)
+      (slot : Slot) : Prop :=
+    PageReady slot /\ ChunkReady slot /\ EntryWritten slot /\ EntryPublished slot.
 
   Definition LiveMachineVisible
       (Machine : Type)
@@ -815,6 +822,33 @@ Section CESKCollectorSafetyModel.
     right; right; right.
     apply Hpublished_black.
     exact Hpublished.
+  Qed.
+
+  Theorem side_arena_read_published_entry_ready :
+    forall (PagePublished ChunkPublished PageReady ChunkReady EntryWritten
+            EntryPublished ReadObserved : Slot -> Prop),
+      (forall s, ReadObserved s -> EntryPublished s) ->
+      (forall s, EntryPublished s -> EntryWritten s) ->
+      (forall s, EntryPublished s -> ChunkPublished s) ->
+      (forall s, ChunkPublished s -> PagePublished s) ->
+      (forall s, PagePublished s -> PageReady s) ->
+      (forall s, ChunkPublished s -> ChunkReady s) ->
+      forall s,
+        ReadObserved s ->
+        PublishedEntryReady PageReady ChunkReady EntryWritten EntryPublished s.
+  Proof.
+    intros PagePublished ChunkPublished PageReady ChunkReady EntryWritten
+           EntryPublished ReadObserved Hread Hwrite Hchunk Hpage
+           Hpage_ready Hchunk_ready s Hread_observed.
+    split.
+    - apply Hpage_ready. apply Hpage. apply Hchunk. apply Hread.
+      exact Hread_observed.
+    - split.
+      + apply Hchunk_ready. apply Hchunk. apply Hread.
+        exact Hread_observed.
+      + split.
+        * apply Hwrite. apply Hread. exact Hread_observed.
+        * apply Hread. exact Hread_observed.
   Qed.
 
   Theorem e2_final_remark_root_survives_collection :

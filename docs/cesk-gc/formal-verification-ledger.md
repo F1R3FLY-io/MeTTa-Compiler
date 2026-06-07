@@ -72,6 +72,9 @@ can replace the full-major final sweep.
   register-root obligation. If VM/JIT register-file values are included in the `extra` part of the worker's tier-leaf
   contribution before the worker parks, and that contribution is published/drained/marked, mark/sweep cannot free
   those tier-local values.
+- `formal/rocq/gc/SideArenaPublication.v` and `formal/lean/gc/SideArenaPublication.lean`: prove the side-arena
+  publication obligation. If side pages are published before chunks, chunks before entries, and entry writes before
+  entry publication, a reader observing a published side entry sees initialized page/chunk/entry payloads.
 - `formal/rocq/gc/DriverRootUnion.v` and `formal/lean/gc/DriverRootUnion.lean`: prove the driver root-union
   obligation. If worker-buffer roots, safepoint roots, live environment anchors, and live dispatch anchors are all
   included in the driver root set, mark/sweep cannot free any live channel root.
@@ -235,6 +238,9 @@ can replace the full-major final sweep.
 - `tla/TierLeafExtraRoots.tla`: checks the VM/JIT tier-leaf extra-root channel. Including every VM/JIT tier-local
   value-bearing field preserves `TierLeafExtraRootsComplete`; omitting VM dispatch-memo roots or JIT state-cache roots
   violates it.
+- `tla/SideArenaPublication.tla`: checks the variable-length side-arena publication order. Page-before-chunk,
+  chunk-before-entry, and write-before-entry-publish preserve `PublishedEntryReady`; violating any one of those orders
+  produces a published read of an uninitialized component.
 
 ## Source coupling
 
@@ -288,6 +294,9 @@ facts the proofs rely on:
   the actual removed pre-image under the SATB phase gate.
 - Fresh bump allocation realizes allocate-black for E2 SATB: `IndexArena` writes the claimed slot, marks it if
   `satb_marking_in_progress`, and only then publishes the slot through `len`.
+- Side-arena publication is source-pinned: segment side cells are written before `sides_count` publication,
+  `SideColumn` pages are published before chunks, chunks before entries, entry payloads before entry publication, and
+  variable-length node allocation interns side payloads before publishing the owning node.
 - The E2 SATB marker path is source-coupled: `gc_driver_satb_rendezvous_cycle` arms `enter_satb_marking`, closes the
   initial rendezvous before `mark_concurrent_roots`, requests a final rendezvous, drops the SATB guard before
   `sweep_after_concurrent_mark`, asserts that the final sweep actually ran before dropping the final roots, and has

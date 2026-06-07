@@ -283,6 +283,8 @@ line_no "src/backend/eval/cesk/index_heap.rs" "self.space_handle(id).collect_gc_
 line_no "src/backend/eval/cesk/index_heap.rs" "pub fn mark_young(&self, roots: &[Addr]) -> usize" >/dev/null
 line_no "src/backend/eval/cesk/index_heap.rs" "let mut seen = std::collections::HashSet::with_capacity" >/dev/null
 line_no "src/backend/eval/cesk/index_heap.rs" "if addr.segment() >= young_floor && arena.mark(addr) {" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn index_backpressure_level(young_alloc: usize) -> u8" "if young_alloc >= 2 * b {" "3"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn index_backpressure_level(young_alloc: usize) -> u8" "} else if young_alloc >= b {" "1"
 assert_count "src/backend/eval/cesk/index_arena.rs" "self.cur_seg.store(" "1"
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "fn open_segment(&self) -> usize {" "self.seg_count.store(idx + 1, Ordering::Release);" "self.cur_seg.store(idx, Ordering::Release);"
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "fn open_segment(&self) -> usize {" "if idx > 0 {" "self.nursery_full_pending.store(true, Ordering::Relaxed);"
@@ -297,6 +299,13 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn should_collect
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn should_collect_midloop() -> bool" "young_alloc > YOUNG_BUDGET" "|| nursery_pending"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn watermark_due_for_concurrent() -> bool" "young_alloc > YOUNG_BUDGET" "|| nursery_pending"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let minor_due = young_alloc > YOUNG_BUDGET || nursery_pending;" "if !major_due && !minor_due {"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let cap_major = committed > cap;" "let cadence_major = MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let cadence_major = MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;" "let major_due = live_major || cap_major || cadence_major;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let major_due = live_major || cap_major || cadence_major;" "let minor_due = young_alloc > YOUNG_BUDGET || nursery_pending;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let level = index_backpressure_level(young_alloc);" "let do_major = major_due && !(level == 3 && minor_due && !cap_major && !cadence_major);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let do_major = major_due && !(level == 3 && minor_due && !cap_major && !cadence_major);" "if do_major {"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "if did_major {" "MINORS_SINCE_MAJOR.store(0, Ordering::Relaxed);" "MINOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "if did_major {" "MINOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);" "MINORS_SINCE_MAJOR.fetch_add(1, Ordering::Relaxed);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr(&mut self, items: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), items);" "self.arena.write_reused(addr, Node::SExpr(cr));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunction(&mut self, goals: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), goals);" "self.arena.write_reused(addr, Node::Conjunction(cr));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom(&mut self, s: &str) -> Addr" "let br = self.intern_bytes_in(addr.segment(), s);" "self.arena.write_reused(addr, Node::Atom(br));"

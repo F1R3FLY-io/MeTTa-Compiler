@@ -44,6 +44,8 @@
       marker traverses the whole reachable graph but only marks young nodes;
     - C1.c nursery-backpressure segment-open signals request a minor and
       promotion clears stale nursery triggers before the next scheduling check;
+    - C1.c scheduler choice never defers cap-forced or cadence-forced majors,
+      and any deferred major is a live-growth major under level-3 young pressure;
     - E2 concurrent marking retains every snapshot-live address covered by
       initial roots, rendezvous driver roots, SATB deletion shades, or
       allocate-black publication;
@@ -175,6 +177,19 @@ Section CESKCollectorSafetyModel.
 
   Definition MinorDue (YoungOverBudget NurseryPending : Prop) : Prop :=
     YoungOverBudget \/ NurseryPending.
+
+  Definition MajorDue (LiveMajor CapMajor CadenceMajor : Prop) : Prop :=
+    LiveMajor \/ CapMajor \/ CadenceMajor.
+
+  Definition DoMajor
+      (Level3 MinorDueNow LiveMajor CapMajor CadenceMajor : Prop) : Prop :=
+    MajorDue LiveMajor CapMajor CadenceMajor /\
+    ~ (Level3 /\ MinorDueNow /\ ~ CapMajor /\ ~ CadenceMajor).
+
+  Definition DeferredMajor
+      (Level3 MinorDueNow LiveMajor CapMajor CadenceMajor : Prop) : Prop :=
+    MajorDue LiveMajor CapMajor CadenceMajor /\
+    Level3 /\ MinorDueNow /\ ~ CapMajor /\ ~ CadenceMajor.
 
   Definition PromotionRelaxed
       (YoungOdometerReset NurseryPendingCleared : Prop) : Prop :=
@@ -815,6 +830,82 @@ Section CESKCollectorSafetyModel.
     destruct Hminor as [Hover | Hpending].
     - apply Hnot_over. exact Hover.
     - apply (Hcleared_not_pending Hcleared). exact Hpending.
+  Qed.
+
+  Theorem cap_major_not_deferred :
+    forall Level3 MinorDueNow LiveMajor CapMajor CadenceMajor : Prop,
+      CapMajor ->
+      DoMajor Level3 MinorDueNow LiveMajor CapMajor CadenceMajor.
+  Proof.
+    intros Level3 MinorDueNow LiveMajor CapMajor CadenceMajor Hcap.
+    split.
+    - right. left. exact Hcap.
+    - intros Hdefer.
+      destruct Hdefer as [_ [_ [Hnot_cap _]]].
+      apply Hnot_cap. exact Hcap.
+  Qed.
+
+  Theorem cadence_major_not_deferred :
+    forall Level3 MinorDueNow LiveMajor CapMajor CadenceMajor : Prop,
+      CadenceMajor ->
+      DoMajor Level3 MinorDueNow LiveMajor CapMajor CadenceMajor.
+  Proof.
+    intros Level3 MinorDueNow LiveMajor CapMajor CadenceMajor Hcadence.
+    split.
+    - right. right. exact Hcadence.
+    - intros Hdefer.
+      destruct Hdefer as [_ [_ [_ Hnot_cadence]]].
+      apply Hnot_cadence. exact Hcadence.
+  Qed.
+
+  Theorem non_level3_major_runs :
+    forall Level3 MinorDueNow LiveMajor CapMajor CadenceMajor : Prop,
+      MajorDue LiveMajor CapMajor CadenceMajor ->
+      ~ Level3 ->
+      DoMajor Level3 MinorDueNow LiveMajor CapMajor CadenceMajor.
+  Proof.
+    intros Level3 MinorDueNow LiveMajor CapMajor CadenceMajor Hmajor Hnot_level3.
+    split.
+    - exact Hmajor.
+    - intros Hdefer.
+      destruct Hdefer as [Hlevel3 _].
+      apply Hnot_level3. exact Hlevel3.
+  Qed.
+
+  Theorem live_major_level3_minor_can_be_deferred :
+    forall Level3 MinorDueNow LiveMajor CapMajor CadenceMajor : Prop,
+      LiveMajor ->
+      Level3 ->
+      MinorDueNow ->
+      ~ CapMajor ->
+      ~ CadenceMajor ->
+      DeferredMajor Level3 MinorDueNow LiveMajor CapMajor CadenceMajor.
+  Proof.
+    intros Level3 MinorDueNow LiveMajor CapMajor CadenceMajor
+           Hlive Hlevel3 Hminor Hnot_cap Hnot_cadence.
+    repeat split.
+    - left. exact Hlive.
+    - exact Hlevel3.
+    - exact Hminor.
+    - exact Hnot_cap.
+    - exact Hnot_cadence.
+  Qed.
+
+  Theorem deferred_major_is_live_growth_only :
+    forall Level3 MinorDueNow LiveMajor CapMajor CadenceMajor : Prop,
+      DeferredMajor Level3 MinorDueNow LiveMajor CapMajor CadenceMajor ->
+      LiveMajor /\ ~ CapMajor /\ ~ CadenceMajor.
+  Proof.
+    intros Level3 MinorDueNow LiveMajor CapMajor CadenceMajor Hdeferred.
+    destruct Hdeferred as [Hmajor [_ [_ [Hnot_cap Hnot_cadence]]]].
+    split.
+    - destruct Hmajor as [Hlive | [Hcap | Hcadence]].
+      + exact Hlive.
+      + exfalso. apply Hnot_cap. exact Hcap.
+      + exfalso. apply Hnot_cadence. exact Hcadence.
+    - split.
+      + exact Hnot_cap.
+      + exact Hnot_cadence.
   Qed.
 
   Theorem young_reachable_marked :

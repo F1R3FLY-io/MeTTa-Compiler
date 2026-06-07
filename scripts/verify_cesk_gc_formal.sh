@@ -132,6 +132,7 @@ run_lean "formal/lean/gc/E0EvictionBarriers.lean"
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/NurseryBackpressure.v"
+run_rocq "formal/rocq/gc/MajorMinorScheduler.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/NodeEdgeCompleteness.v"
 run_rocq "formal/rocq/gc/AbstractGCLiveNarrowing.v"
@@ -378,6 +379,14 @@ run_tlc "nursery_backpressure_no_fold" "MC_NurseryBackpressure.tla" "MC_NurseryB
   fail "Invariant OpenRequestsMinor is violated"
 run_tlc "nursery_backpressure_no_clear" "MC_NurseryBackpressure.tla" "MC_NurseryBackpressure_no_clear.cfg" \
   fail "Invariant PromoteRelaxesMinorTrigger is violated"
+run_tlc "major_minor_scheduler_all" "MC_MajorMinorScheduler.tla" "MC_MajorMinorScheduler_all.cfg" \
+  pass ""
+run_tlc "major_minor_scheduler_no_level" "MC_MajorMinorScheduler.tla" "MC_MajorMinorScheduler_no_level.cfg" \
+  fail "Invariant DeferredMajorRequiresLevel3 is violated"
+run_tlc "major_minor_scheduler_no_cap" "MC_MajorMinorScheduler.tla" "MC_MajorMinorScheduler_no_cap.cfg" \
+  fail "Invariant CapMajorNotDeferred is violated"
+run_tlc "major_minor_scheduler_no_cadence" "MC_MajorMinorScheduler.tla" "MC_MajorMinorScheduler_no_cadence.cfg" \
+  fail "Invariant CadenceMajorNotDeferred is violated"
 run_tlc "satb_deletion_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_satb.cfg" \
   pass ""
 run_tlc "satb_no_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_none.cfg" \

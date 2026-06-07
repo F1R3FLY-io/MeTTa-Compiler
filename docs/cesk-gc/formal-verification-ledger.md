@@ -37,6 +37,9 @@ can replace the full-major final sweep.
   segment-open pending signal, or a young-allocation budget overflow, is enough to request a minor collection; after
   promotion, resetting the young odometer and clearing the pending signal prevents the same stale event from
   immediately re-firing a minor when the young budget is not over.
+- `formal/rocq/gc/MajorMinorScheduler.v`: proves the C1.c major/minor scheduler obligation. Cap-forced and
+  cadence-forced majors cannot be deferred by acute young pressure; below level-3 young pressure a due major runs; and
+  any deferred major is therefore a live-growth major under a level-3 minor trigger.
 - `formal/rocq/gc/StructuralRoots.v` and `formal/lean/gc/StructuralRoots.lean`: if future machine touches are
   inside the structural CESK-root closure and sweep frees only unmarked nodes, no future-touched node can be freed.
 - `formal/rocq/gc/NodeEdgeCompleteness.v` and `formal/lean/gc/NodeEdgeCompleteness.lean`: prove the node-edge
@@ -254,6 +257,9 @@ can replace the full-major final sweep.
 - `tla/NurseryBackpressure.tla`: checks the C1.c nursery-backpressure trigger. Opening a subsequent segment sets
   `nursery_full_pending`, the driver folds that pending flag into `minor_due`, and promotion clears the stale trigger;
   disabling the signal, the fold, or the clear violates the named discriminator invariant.
+- `tla/MajorMinorScheduler.tla`: checks the C1.c scheduler choice. Production guards pass; allowing live-major
+  deferral below level 3, allowing cap-major deferral, or allowing cadence-major deferral violates the corresponding
+  scheduler invariant.
 - `tla/NodeEdgeCompleteness.tla`: checks the marker edge-reader completeness obligation. Including inline handle
   fields, side-arena child slices, and `SpaceHandle` contents preserves `NoReachableFreed`; omitting any one class
   admits a reachable child that is swept unmarked.
@@ -415,6 +421,10 @@ facts the proofs rely on:
 - C1 nursery-backpressure source order pins the allocator-to-GC trigger: opening any segment after the initial segment
   sets `nursery_full_pending`, every collection-scheduling probe folds `nursery_pending` into the minor trigger, and
   promotion resets the young-allocation odometer before clearing the pending signal.
+- C1 scheduler source order pins the bounded level-3 major/minor inversion: level 3 means at least `2 * YOUNG_BUDGET`
+  young pressure, `minor_due` is computed before the no-due return, `do_major` may suppress a due live-growth major
+  only when `level == 3 && minor_due && !cap_major && !cadence_major`, and the cadence counter resets on major but
+  increments on minor.
 - `published_gen` writes remain restricted to stale-stamp reset plus the genuine `note_reified_park` stamp, with
   worker root-buffer publication before the stamp.
 - The V4 witness slot is acquired before `N_THREADS++`, released only after the true outermost `EvalGuard::drop`

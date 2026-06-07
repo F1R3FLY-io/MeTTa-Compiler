@@ -201,6 +201,7 @@ can replace the full-major final sweep.
   roots and cannot be freed by sweep.
 - `tla/RendezvousWitness.tla`: checks the E1 witness gate predicate. The strict `published>=cur_gen OR
   acquired>cur_gen` model preserves root completeness at sweep; the negative `acquired>=cur_gen` model violates it.
+  A second negative config makes a non-reified finisher stamp `published_gen`, which also violates root completeness.
 - `tla/WitnessSlotLifecycle.tla`: checks the V4 slot lifecycle. Keeping the slot occupied across safepoint drop
   preserves live-machine visibility at sweep; the negative release-on-safepoint model violates it.
 - `tla/DriverRootUnion.tla`: checks the E1 driver root-union channels. Including worker-buffer, safepoint,
@@ -467,7 +468,8 @@ facts the proofs rely on:
   uses `old_live > WATERMARK.max(min_threshold())`, promotion runs before measuring `old_live_after`, and the rearm
   stores `old_live_after.saturating_mul(GROWTH).max(min_threshold())`.
 - `published_gen` writes remain restricted to stale-stamp reset plus the genuine `note_reified_park` stamp, with
-  worker root-buffer publication before the stamp.
+  worker root-buffer publication before the stamp. `worker_finish_into_buffer` is source-coupled to avoid
+  `note_reified_park`, so non-reified finishers cannot satisfy the rendezvous witness.
 - The V4 witness slot is acquired before `N_THREADS++`, released only after the true outermost `EvalGuard::drop`
   count decrement, never released by safepoint drops, and re-stamped before straddle re-park publication.
 - The E5 straddle loop gates on `current_cycle_started()`, and the driver sets it after admission closes and before

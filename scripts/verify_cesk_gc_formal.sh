@@ -214,6 +214,8 @@ run_tlc "rendezvous_witness_strict" "MC_RendezvousWitness.tla" "MC_RendezvousWit
   pass ""
 run_tlc "rendezvous_witness_weak" "MC_RendezvousWitness.tla" "MC_RendezvousWitness_weak.cfg" \
   fail "Invariant RootCompleteOnSweep is violated"
+run_tlc "rendezvous_witness_finisher_stamps" "MC_RendezvousWitness.tla" "MC_RendezvousWitness_finisher_stamps.cfg" \
+  fail "Invariant RootCompleteOnSweep is violated"
 run_tlc "witness_slot_lifecycle_v4" "MC_WitnessSlotLifecycle.tla" "MC_WitnessSlotLifecycle_v4.cfg" \
   pass ""
 run_tlc "witness_slot_lifecycle_bug" "MC_WitnessSlotLifecycle.tla" "MC_WitnessSlotLifecycle_bug.cfg" \

@@ -5,6 +5,11 @@ Module MeTTaTron_GC_RendezvousWitness.
 Section RendezvousWitnessModel.
   Variables Slot Addr : Type.
 
+  Definition WitnessSatisfied
+      (PublishedCurrent FutureAcquired : Slot -> Prop)
+      (s : Slot) : Prop :=
+    PublishedCurrent s \/ FutureAcquired s.
+
   Theorem witness_wait_union_complete :
     forall (Occupied Published : Slot -> Prop)
            (SlotRoot : Slot -> Addr -> Prop)
@@ -39,6 +44,41 @@ Section RendezvousWitnessModel.
     apply (Hsweep a Hfreed).
     apply Hmark.
     eapply witness_wait_union_complete; eauto.
+  Qed.
+
+  Theorem non_reified_finish_keeps_current_slot_unsatisfied :
+    forall (FinishedCurrent PublishedCurrent FutureAcquired : Slot -> Prop),
+      (forall s, FinishedCurrent s -> ~ PublishedCurrent s) ->
+      (forall s, FinishedCurrent s -> ~ FutureAcquired s) ->
+      forall s,
+        FinishedCurrent s ->
+        ~ WitnessSatisfied PublishedCurrent FutureAcquired s.
+  Proof.
+    intros FinishedCurrent PublishedCurrent FutureAcquired
+           Hno_publish Hnot_future s Hfinished Hsatisfied.
+    destruct Hsatisfied as [Hpublished | Hfuture].
+    - apply (Hno_publish s Hfinished).
+      exact Hpublished.
+    - apply (Hnot_future s Hfinished).
+      exact Hfuture.
+  Qed.
+
+  Theorem finisher_stamp_would_satisfy_without_buffer :
+    forall (FinishedCurrent PublishedCurrent FutureAcquired Buffered : Slot -> Prop),
+      (forall s, PublishedCurrent s -> WitnessSatisfied PublishedCurrent FutureAcquired s) ->
+      forall s,
+        FinishedCurrent s ->
+        PublishedCurrent s ->
+        ~ Buffered s ->
+        WitnessSatisfied PublishedCurrent FutureAcquired s /\ FinishedCurrent s /\ ~ Buffered s.
+  Proof.
+    intros FinishedCurrent PublishedCurrent FutureAcquired Buffered
+           Hpublished_satisfies s Hfinished Hpublished Hnot_buffered.
+    repeat split.
+    - apply Hpublished_satisfies.
+      exact Hpublished.
+    - exact Hfinished.
+    - exact Hnot_buffered.
   Qed.
 End RendezvousWitnessModel.
 

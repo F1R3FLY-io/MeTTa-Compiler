@@ -17,7 +17,8 @@ EXTENDS Naturals
 
 CONSTANTS
     Slots,
-    StrictPredicate
+    StrictPredicate,
+    FinisherStamps
 
 CurGen == 1
 
@@ -36,6 +37,7 @@ TypeOK ==
     /\ published \in [Slots -> 0..1]
     /\ buffered \in [Slots -> BOOLEAN]
     /\ swept \in BOOLEAN
+    /\ FinisherStamps \in BOOLEAN
 
 Init ==
     /\ occupied = [s \in Slots |-> FALSE]
@@ -74,6 +76,17 @@ PublishCurrent(s) ==
     /\ published' = [published EXCEPT ![s] = CurGen]
     /\ UNCHANGED <<occupied, acquired, swept>>
 
+(* Non-reified finisher bump: it may publish result roots elsewhere, but it is
+   not a reified park of this slot's complete machine. It must therefore NOT
+   stamp published for the witness. *)
+FinishBump(s) ==
+    /\ ~swept
+    /\ occupied[s]
+    /\ acquired[s] = CurGen
+    /\ published' = [published EXCEPT ![s] =
+        IF FinisherStamps THEN CurGen ELSE published[s]]
+    /\ UNCHANGED <<occupied, acquired, buffered, swept>>
+
 Release(s) ==
     /\ ~swept
     /\ occupied[s]
@@ -100,7 +113,8 @@ Done ==
     /\ UNCHANGED vars
 
 Next ==
-    \/ \E s \in Slots : AcquireCurrent(s) \/ AcquireFuture(s) \/ PublishCurrent(s) \/ Release(s)
+    \/ \E s \in Slots :
+        AcquireCurrent(s) \/ AcquireFuture(s) \/ PublishCurrent(s) \/ FinishBump(s) \/ Release(s)
     \/ Sweep
     \/ Done
 

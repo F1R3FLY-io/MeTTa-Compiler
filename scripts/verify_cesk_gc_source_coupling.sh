@@ -859,7 +859,8 @@ assert_after_before "src/backend/environment/rule_management.rs" "fn clear_inner
 # "published implies buffered roots" premise source-grounded.
 assert_count "src/backend/models/gc_allocator.rs" "published_gen.store" "2"
 assert_before "src/backend/models/gc_allocator.rs" "pub(crate) fn note_reified_park(g: u64)" "slot.published_gen.store(g, Ordering::Release);"
-assert_before "src/backend/models/gc_allocator.rs" "WORKER_ROOT_BUFFER.lock().extend_from_slice(roots);" "note_reified_park(my_gen);"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_park_and_root_in_cycle" "WORKER_ROOT_BUFFER.lock().extend_from_slice(roots);" "note_reified_park(my_gen);"
+assert_zero_between "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_finish_into_buffer" "pub(crate) fn worker_resume_wait_for_cycle" "note_reified_park"
 
 # V4 witness slot lifecycle: acquire before a thread is counted, release only
 # after the true outermost drop count decrement, and never release at safepoint

@@ -86,6 +86,8 @@
     - E2 value-bearing E0 deletion categories compose into that SATB coverage
       when removed space-local, rule-index, and environment/token/state
       pre-images are shaded;
+    - non-reified worker finishers cannot satisfy the rendezvous witness because
+      only a genuine reified park stamps `published_gen`;
     - pointer-keyed operator-cache lookup and the other epoch-protected
       worker-local Addr caches cannot return stale post-sweep entries when
       their local sweep-epoch guard runs before lookup;
@@ -201,6 +203,11 @@ Section CESKCollectorSafetyModel.
 
   Definition BooleanCanResume (gc_requested : Prop) : Prop :=
     ~ gc_requested.
+
+  Definition WitnessSatisfied
+      (PublishedCurrent FutureAcquired : Slot -> Prop)
+      (s : Slot) : Prop :=
+    PublishedCurrent s \/ FutureAcquired s.
 
   Definition MinorDue (YoungOverBudget NurseryPending : Prop) : Prop :=
     YoungOverBudget \/ NurseryPending.
@@ -495,6 +502,23 @@ Section CESKCollectorSafetyModel.
       + exfalso. apply Hnot_occupied. exact Hoccupied.
       + exact Hbuffered.
     - exact Hbuffered.
+  Qed.
+
+  Theorem non_reified_finish_keeps_current_slot_unsatisfied :
+    forall (FinishedCurrent PublishedCurrent FutureAcquired : Slot -> Prop),
+      (forall s, FinishedCurrent s -> ~ PublishedCurrent s) ->
+      (forall s, FinishedCurrent s -> ~ FutureAcquired s) ->
+      forall s,
+        FinishedCurrent s ->
+        ~ WitnessSatisfied PublishedCurrent FutureAcquired s.
+  Proof.
+    intros FinishedCurrent PublishedCurrent FutureAcquired
+           Hno_publish Hnot_future s Hfinished Hsatisfied.
+    destruct Hsatisfied as [Hpublished | Hfuture].
+    - apply (Hno_publish s Hfinished).
+      exact Hpublished.
+    - apply (Hnot_future s Hfinished).
+      exact Hfuture.
   Qed.
 
   Theorem cleared_witness_ok_blocks_collection :

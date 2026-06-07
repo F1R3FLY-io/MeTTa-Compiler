@@ -571,6 +571,20 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunct
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom(&mut self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::Atom(bs))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_string(&mut self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::String(bs))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_spanned(&mut self, inner: MettaValue, span: Span) -> Addr" "let sr = self.intern_span_in(seg, span);" "self.arena.try_bump_in(seg, Node::Spanned(inner, sr))"
+
+# Side-payload free quiescence coupling: dropping side-arena Boxes is separated
+# from reclaiming fixed node slots. It may happen only on the true-quiescence
+# phase, and the materialization shadow is cleared before the routine returns to
+# code that can dereference materialized inners again.
+line_no "src/backend/eval/cesk/index_heap.rs" "gc_mode_is_index() && !worker_ever_spawned() && active_evaluator_count() == 0 && !disabled()" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn run_collection_if_triggered(roots: &[MettaValue]) -> bool" "gate_open()" "mark_sweep_if_over_watermark(roots, \"quiescence\")"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn run_collection_if_triggered_rendezvous" "gate_open_rendezvous()" "mark_sweep_if_over_watermark(roots, \"rendezvous\")"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn run_collection_if_triggered_midloop" "gate_open_midloop()" "mark_sweep_if_over_watermark(roots, \"midloop\")"
+assert_count "src/backend/eval/cesk/index_heap.rs" "heap.free_reclaimed_side_slots(&reclaimed);" "2"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "if phase == \"quiescence\"" "heap.free_reclaimed_side_slots(&reclaimed);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "if phase == \"quiescence\"" "heap.free_reclaimed_side_slots(&reclaimed);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.free_reclaimed_side_slots(&reclaimed);" "clear_inner_shadow();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.free_reclaimed_side_slots(&reclaimed);" "clear_inner_shadow();"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "global_index_heap().write().expect(\"index heap\")" "heap.mark(&addrs);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.mark(&addrs);" "let stats = heap.sweep();"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.sweep();" "heap.promote_young();"

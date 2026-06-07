@@ -83,6 +83,11 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/SideArenaPublication.v` and `formal/lean/gc/SideArenaPublication.lean`: prove the side-arena
   publication obligation. If side pages are published before chunks, chunks before entries, and entry writes before
   entry publication, a reader observing a published side entry sees initialized page/chunk/entry payloads.
+- `formal/rocq/gc/SideFreeQuiescence.v` and `formal/lean/gc/SideFreeQuiescence.lean`: prove the side-payload
+  lifetime obligation. If side payload boxes are freed only on the true-quiescence arm, stack laundered references
+  imply a non-quiescent evaluator, and the materialization shadow is cleared before any future dereference, then
+  dropping reclaimed side boxes cannot create a dangling future dereference. Non-quiescent collections therefore defer
+  side-box freeing.
 - `formal/rocq/gc/DriverRootUnion.v` and `formal/lean/gc/DriverRootUnion.lean`: prove the driver root-union
   obligation. If worker-buffer roots, safepoint roots, live environment anchors, and live dispatch anchors are all
   included in the driver root set, mark/sweep cannot free any live channel root.
@@ -255,6 +260,9 @@ can replace the full-major final sweep.
 - `tla/SideArenaPublication.tla`: checks the variable-length side-arena publication order. Page-before-chunk,
   chunk-before-entry, and write-before-entry-publish preserve `PublishedEntryReady`; violating any one of those orders
   produces a published read of an uninitialized component.
+- `tla/SideFreeQuiescence.tla`: checks the side-payload free lifetime obligation. Quiescent side-free with shadow
+  clearing and non-quiescent deferral preserve `NoDanglingSideUse`; freeing on a non-quiescent arm or skipping the
+  shadow clear admits a dangling side-payload dereference.
 
 ## Source coupling
 
@@ -269,6 +277,9 @@ facts the proofs rely on:
   resolves side-arena `SExpr`/`Conjunction` children, then traverses first-class `SpaceHandle` contents. The harness
   also pins the premises that `State` payloads are rooted by `GenericEnvironmentShared::collect_roots_into` and
   `MemoHandle` entries store serialized bytes, not live `MettaValue` handles.
+- `IndexHeap` frees reclaimed side payload boxes only through the two `phase == "quiescence"` guarded calls to
+  `free_reclaimed_side_slots`; rendezvous and midloop collection pass non-quiescence phase strings, and both side-free
+  paths clear `INNER_SHADOW` before returning to code that can materialize/dereference values again.
 - The E1 driver waits on `requestor_wait_for_all_reified_parked`, then sets `current_witness_ok`, builds the root
   union, runs the rendezvous-union oracle, and only then calls `run_collection_if_triggered_rendezvous`.
 - `gate_open_rendezvous` is keyed by `current_witness_ok`, not the obsolete parked-count gate.

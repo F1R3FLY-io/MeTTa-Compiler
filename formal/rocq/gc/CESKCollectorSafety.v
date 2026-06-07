@@ -49,6 +49,9 @@
       addresses can be returned and read;
     - variable-length side-arena payloads are initialized before their
       page/chunk/entry publication chain can be observed by a reader;
+    - variable-length side-arena payload boxes are dropped only on the
+      true-quiescence arm, and the materialization shadow is cleared before a
+      future dereference can observe a freed side payload;
     - E2 final-rendezvous roots survive the exclusive sweep, and a completed
       SATB request is backed by either the final SATB sweep or the abort-to-STW
       backstop;
@@ -926,6 +929,24 @@ Section CESKCollectorSafetyModel.
       + split.
         * apply Hwrite. apply Hread. exact Hread_observed.
         * apply Hread. exact Hread_observed.
+  Qed.
+
+  Theorem side_free_shadow_clear_blocks_future_deref :
+    forall (Quiescent SideFreed StackLaunderLive ShadowCleared FutureDeref : Prop),
+      (SideFreed -> Quiescent) ->
+      (StackLaunderLive -> ~ Quiescent) ->
+      (SideFreed -> ShadowCleared) ->
+      (FutureDeref -> StackLaunderLive \/ ~ ShadowCleared) ->
+      SideFreed ->
+      ~ FutureDeref.
+  Proof.
+    intros Quiescent SideFreed StackLaunderLive ShadowCleared FutureDeref
+           Hfree_quiescent Hstack_nonquiescent Hclear Hderef_shape Hfreed Hderef.
+    destruct (Hderef_shape Hderef) as [Hstack | Hnot_cleared].
+    - apply (Hstack_nonquiescent Hstack).
+      exact (Hfree_quiescent Hfreed).
+    - apply Hnot_cleared.
+      exact (Hclear Hfreed).
   Qed.
 
   Theorem e2_final_remark_root_survives_collection :

@@ -180,11 +180,14 @@ can replace the full-major final sweep.
   subgoal/thunk cached results survive E2 SATB collection when shaded. Eval/match eviction and clear removal shapes
   are discharged by the E0 cache-eviction proof.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, witness-slot lifecycle, witness-ok reset,
-  started-cycle straddle gate, four-channel driver-root union, collector-root closure, mark completeness,
-  sweep-only-unmarked, driver-C publication, and young-minor obligations into explicit no-UAF theorems for participant
-  roots, live witness-slot visibility, cross-cycle witness-gate freshness, no-phantom straddle re-park, driver channel
-  roots, C2 abstract-GC live-K narrowing, opt-in mid-loop channel roots and future touches, caller-held driver-C
-  roots, async batch-result handoff values, pointer-keyed operator-cache and shared worker-local Addr-cache sweep-epoch coherence, write-once global anchors, global space-registry roots and removed-handle SATB shades, global tiered-cache
+  started-cycle straddle gate, rendezvous progress, scheduler/thread-pool root boundary, four-channel driver-root
+  union, collector-root closure, mark completeness, sweep-only-unmarked, driver-C publication, and young-minor
+  obligations into explicit no-UAF/progress theorems for participant roots, live witness-slot visibility,
+  cross-cycle witness-gate freshness, no-phantom straddle re-park, parked-participant release after a closed
+  rendezvous, scheduler-held live roots, driver channel roots, C2 abstract-GC live-K narrowing, opt-in mid-loop
+  channel roots and future touches, caller-held driver-C roots, async batch-result handoff values, pointer-keyed
+  operator-cache and shared worker-local Addr-cache sweep-epoch coherence, write-once global anchors, global
+  space-registry roots and removed-handle SATB shades, global tiered-cache
   roots and removed-value SATB shades, thread-local table roots and removed-result SATB shades, future CESK touches,
   reachable young nodes under both the no-old-to-young and conservative-minor traversals, E2 snapshot-live nodes
   covered by initial roots, driver roots, SATB shades, or allocate-black publication, E2 freshly published

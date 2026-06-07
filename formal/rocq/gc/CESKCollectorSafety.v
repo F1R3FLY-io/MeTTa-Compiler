@@ -40,6 +40,12 @@
       so every request in that regime has a dedicated driver;
     - FANOUT rendezvous trigger handoff failures run the resume backstop so a
       driverless `GC_REQUESTED` flag cannot strand workers;
+    - scheduler/thread-pool-held live roots are covered by active-worker,
+      live-dispatch, and batch-handoff driver channels, while closed admission
+      excludes newly joined workers during the sweep window;
+    - a dedicated rendezvous that has a posted driver request, contributing
+      participants, panic cleanup, generation bump, and resume notification
+      cannot strand a parked participant;
     - the collector marks the reachability closure of structural CESK roots plus
       driver roots;
     - the marker's concrete node-edge reader covers every semantic heap edge
@@ -415,6 +421,26 @@ Section CESKCollectorSafetyModel.
       (TriggerSent DriverPosted : Prop) : Prop :=
     TriggerSent -> DriverPosted.
 
+  Definition SchedulerLiveRoot
+      (ActiveWorkerRoot DispatchFanoutRoot BatchHandoffRoot NewlyAdmittedRoot
+         : Addr -> Prop)
+      (a : Addr) : Prop :=
+    ActiveWorkerRoot a \/
+    DispatchFanoutRoot a \/
+    BatchHandoffRoot a \/
+    NewlyAdmittedRoot a.
+
+  Definition AllParticipantsContributed
+      (Worker : Type)
+      (Active Contributed : Worker -> Prop) : Prop :=
+    forall w, Active w -> Contributed w.
+
+  Definition ParticipantAccounted
+      (Worker : Type)
+      (Parked Finished : Worker -> Prop)
+      (w : Worker) : Prop :=
+    Parked w \/ Finished w.
+
   Theorem index_collector_excludes_registry_source :
     forall source,
       IndexRootSource source ->
@@ -630,6 +656,56 @@ Section CESKCollectorSafetyModel.
     exact Hrequested.
   Qed.
 
+  Theorem rendezvous_panic_cleanup_closes_cycle :
+    forall CollectPanicked CleanupClosesCycle CycleClosed : Prop,
+      (CollectPanicked -> CleanupClosesCycle) ->
+      (CleanupClosesCycle -> CycleClosed) ->
+      CollectPanicked ->
+      CycleClosed.
+  Proof.
+    intros CollectPanicked CleanupClosesCycle CycleClosed Hcleanup Hclose Hpanic.
+    apply Hclose.
+    apply Hcleanup.
+    exact Hpanic.
+  Qed.
+
+  Theorem rendezvous_close_advances_generation_and_clears_request :
+    forall CycleClosed GenerationAdvanced RequestCleared : Prop,
+      (CycleClosed -> GenerationAdvanced) ->
+      (CycleClosed -> RequestCleared) ->
+      CycleClosed ->
+      GenerationAdvanced /\ RequestCleared.
+  Proof.
+    intros CycleClosed GenerationAdvanced RequestCleared Hgen Hclear Hclosed.
+    split.
+    - apply Hgen. exact Hclosed.
+    - apply Hclear. exact Hclosed.
+  Qed.
+
+  Theorem rendezvous_progress_releases_parked_participants :
+    forall (Worker : Type)
+           (Active Contributed Parked Finished Resumed : Worker -> Prop)
+           (CycleClosed GenerationAdvanced RequestCleared : Prop),
+      AllParticipantsContributed Worker Active Contributed ->
+      (forall w, Contributed w -> ParticipantAccounted Worker Parked Finished w) ->
+      (CycleClosed -> GenerationAdvanced) ->
+      (CycleClosed -> RequestCleared) ->
+      (forall w, Active w -> Parked w -> GenerationAdvanced -> Resumed w) ->
+      CycleClosed ->
+      forall w,
+        Active w ->
+        Parked w ->
+        Resumed w.
+  Proof.
+    intros Worker Active Contributed Parked Finished Resumed
+           CycleClosed GenerationAdvanced RequestCleared
+           _ _ Hgen _ Hresume Hclosed w Hactive Hparked.
+    apply Hresume.
+    - exact Hactive.
+    - exact Hparked.
+    - apply Hgen. exact Hclosed.
+  Qed.
+
   Theorem started_gate_prevents_phantom_repark :
     forall (StartedAfterMy Repark Phantom : Prop),
       (Repark -> StartedAfterMy) ->
@@ -748,6 +824,36 @@ Section CESKCollectorSafetyModel.
     - apply Hsafepoint. exact Hsafepoint_a.
     - apply Henv. exact Henv_a.
     - apply Hdispatch. exact Hdispatch_a.
+  Qed.
+
+  Theorem scheduler_live_root_survives_collection :
+    forall (ActiveWorkerRoot DispatchFanoutRoot BatchHandoffRoot NewlyAdmittedRoot
+            DriverRoot StructuralRoot Marked Freed : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      (forall a, ActiveWorkerRoot a -> DriverRoot a) ->
+      (forall a, DispatchFanoutRoot a -> DriverRoot a) ->
+      (forall a, BatchHandoffRoot a -> DriverRoot a) ->
+      (forall a, NewlyAdmittedRoot a -> False) ->
+      (forall a, Reach (CollectorRoot StructuralRoot DriverRoot) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        SchedulerLiveRoot ActiveWorkerRoot DispatchFanoutRoot BatchHandoffRoot
+                          NewlyAdmittedRoot a ->
+        ~ Freed a.
+  Proof.
+    intros ActiveWorkerRoot DispatchFanoutRoot BatchHandoffRoot NewlyAdmittedRoot
+           DriverRoot StructuralRoot Marked Freed Edge
+           Hworker Hdispatch Hbatch Hadmission_closed Hmark Hsweep a Hlive Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply reach_root.
+    right.
+    destruct Hlive as [Hworker_a | [Hdispatch_a | [Hbatch_a | Hnew_a]]].
+    - apply Hworker. exact Hworker_a.
+    - apply Hdispatch. exact Hdispatch_a.
+    - apply Hbatch. exact Hbatch_a.
+    - exfalso.
+      apply (Hadmission_closed a). exact Hnew_a.
   Qed.
 
   Theorem midloop_root_union_channel_survives_collection :

@@ -105,6 +105,7 @@ run_lean "formal/lean/gc/WorkerAdmission.lean"
 run_lean "formal/lean/gc/ThreadContribution.lean"
 run_lean "formal/lean/gc/FrameEnvRoots.lean"
 run_lean "formal/lean/gc/TierLeafExtraRoots.lean"
+run_lean "formal/lean/gc/IndexArenaPublication.lean"
 run_lean "formal/lean/gc/SideArenaPublication.lean"
 run_lean "formal/lean/gc/DriverRootUnion.lean"
 run_lean "formal/lean/gc/DriverCPublication.lean"
@@ -135,6 +136,7 @@ run_rocq "formal/rocq/gc/WorkerAdmission.v"
 run_rocq "formal/rocq/gc/ThreadContribution.v"
 run_rocq "formal/rocq/gc/FrameEnvRoots.v"
 run_rocq "formal/rocq/gc/TierLeafExtraRoots.v"
+run_rocq "formal/rocq/gc/IndexArenaPublication.v"
 run_rocq "formal/rocq/gc/SideArenaPublication.v"
 run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
@@ -209,6 +211,16 @@ run_tlc "tier_leaf_extra_roots_missing_vm_dispatch_memo" "MC_TierLeafExtraRoots.
   fail "Invariant TierLeafExtraRootsComplete is violated"
 run_tlc "tier_leaf_extra_roots_missing_jit_state_cache" "MC_TierLeafExtraRoots.tla" "MC_TierLeafExtraRoots_missing_jit_state_cache.cfg" \
   fail "Invariant TierLeafExtraRootsComplete is violated"
+run_tlc "index_arena_publication_all" "MC_IndexArenaPublication.tla" "MC_IndexArenaPublication_all.cfg" \
+  pass ""
+run_tlc "index_arena_publication_segment_publish_before_write" "MC_IndexArenaPublication.tla" "MC_IndexArenaPublication_segment_publish_before_write.cfg" \
+  fail "Invariant ReturnedAddrReady is violated"
+run_tlc "index_arena_publication_slot_before_segment" "MC_IndexArenaPublication.tla" "MC_IndexArenaPublication_slot_before_segment.cfg" \
+  fail "Invariant ReturnedAddrReady is violated"
+run_tlc "index_arena_publication_slot_publish_before_write" "MC_IndexArenaPublication.tla" "MC_IndexArenaPublication_slot_publish_before_write.cfg" \
+  fail "Invariant ReturnedAddrReady is violated"
+run_tlc "index_arena_publication_return_before_publish" "MC_IndexArenaPublication.tla" "MC_IndexArenaPublication_return_before_publish.cfg" \
+  fail "Invariant ReturnedAddrReady is violated"
 run_tlc "side_arena_publication_all" "MC_SideArenaPublication.tla" "MC_SideArenaPublication_all.cfg" \
   pass ""
 run_tlc "side_arena_publication_chunk_before_page" "MC_SideArenaPublication.tla" "MC_SideArenaPublication_chunk_before_page.cfg" \

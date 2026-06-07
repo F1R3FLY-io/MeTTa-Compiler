@@ -72,6 +72,10 @@ can replace the full-major final sweep.
   register-root obligation. If VM/JIT register-file values are included in the `extra` part of the worker's tier-leaf
   contribution before the worker parks, and that contribution is published/drained/marked, mark/sweep cannot free
   those tier-local values.
+- `formal/rocq/gc/IndexArenaPublication.v` and `formal/lean/gc/IndexArenaPublication.lean`: prove the fixed-size
+  index-arena publication obligation. If a segment is initialized before directory publication, a claimed slot is
+  written before `len` publication, and allocation returns an `Addr` only after that slot publication, a later read of
+  the returned `Addr` observes initialized segment and node bytes.
 - `formal/rocq/gc/SideArenaPublication.v` and `formal/lean/gc/SideArenaPublication.lean`: prove the side-arena
   publication obligation. If side pages are published before chunks, chunks before entries, and entry writes before
   entry publication, a reader observing a published side entry sees initialized page/chunk/entry payloads.
@@ -238,6 +242,9 @@ can replace the full-major final sweep.
 - `tla/TierLeafExtraRoots.tla`: checks the VM/JIT tier-leaf extra-root channel. Including every VM/JIT tier-local
   value-bearing field preserves `TierLeafExtraRootsComplete`; omitting VM dispatch-memo roots or JIT state-cache roots
   violates it.
+- `tla/IndexArenaPublication.tla`: checks the fixed-size arena publication order. Segment write-before-publish,
+  slot-after-segment, slot write-before-publish, and return-after-slot-publish preserve `ReturnedAddrReady`; violating
+  any one of those orders lets a reader observe an uninitialized segment/slot path.
 - `tla/SideArenaPublication.tla`: checks the variable-length side-arena publication order. Page-before-chunk,
   chunk-before-entry, and write-before-entry-publish preserve `PublishedEntryReady`; violating any one of those orders
   produces a published read of an uninitialized component.
@@ -294,6 +301,9 @@ facts the proofs rely on:
   the actual removed pre-image under the SATB phase gate.
 - Fresh bump allocation realizes allocate-black for E2 SATB: `IndexArena` writes the claimed slot, marks it if
   `satb_marking_in_progress`, and only then publishes the slot through `len`.
+- Fixed-size arena publication is source-pinned: `open_segment` writes the segment cell before `seg_count` publication,
+  `alloc_bump`/`try_bump_in` write and publish a claimed node slot before returning its `Addr`, and `get` checks the
+  published slot prefix before calling `node_at`.
 - Side-arena publication is source-pinned: segment side cells are written before `sides_count` publication,
   `SideColumn` pages are published before chunks, chunks before entries, entry payloads before entry publication, and
   variable-length node allocation interns side payloads before publishing the owning node.

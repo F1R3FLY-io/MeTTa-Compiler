@@ -42,6 +42,8 @@
       visible or shaded before sweep can free them;
     - E2 freshly published allocations survive when publication implies
       allocate-black marking;
+    - fixed-size arena slots are initialized and published before their
+      addresses can be returned and read;
     - variable-length side-arena payloads are initialized before their
       page/chunk/entry publication chain can be observed by a reader;
     - E2 final-rendezvous roots survive the exclusive sweep, and a completed
@@ -125,6 +127,13 @@ Section CESKCollectorSafetyModel.
       (PageReady ChunkReady EntryWritten EntryPublished : Slot -> Prop)
       (slot : Slot) : Prop :=
     PageReady slot /\ ChunkReady slot /\ EntryWritten slot /\ EntryPublished slot.
+
+  Definition PublishedSlotReady
+      (SegmentWritten SegmentPublished SlotWritten SlotPublished AddrReturned :
+          Addr -> Prop)
+      (a : Addr) : Prop :=
+    SegmentWritten a /\ SegmentPublished a /\ SlotWritten a /\ SlotPublished a /\
+      AddrReturned a.
 
   Definition LiveMachineVisible
       (Machine : Type)
@@ -822,6 +831,34 @@ Section CESKCollectorSafetyModel.
     right; right; right.
     apply Hpublished_black.
     exact Hpublished.
+  Qed.
+
+  Theorem index_arena_returned_addr_read_ready :
+    forall (SegmentWritten SegmentPublished SlotWritten SlotPublished AddrReturned
+            ReadObserved : Addr -> Prop),
+      (forall a, ReadObserved a -> AddrReturned a) ->
+      (forall a, AddrReturned a -> SlotPublished a) ->
+      (forall a, SlotPublished a -> SlotWritten a) ->
+      (forall a, SlotPublished a -> SegmentPublished a) ->
+      (forall a, SegmentPublished a -> SegmentWritten a) ->
+      forall a,
+        ReadObserved a ->
+        PublishedSlotReady
+          SegmentWritten SegmentPublished SlotWritten SlotPublished AddrReturned a.
+  Proof.
+    intros SegmentWritten SegmentPublished SlotWritten SlotPublished AddrReturned
+           ReadObserved Hread Hreturn Hslot_write Hslot_segment Hsegment_write
+           a Hread_observed.
+    split.
+    - apply Hsegment_write. apply Hslot_segment. apply Hreturn. apply Hread.
+      exact Hread_observed.
+    - split.
+      + apply Hslot_segment. apply Hreturn. apply Hread. exact Hread_observed.
+      + split.
+        * apply Hslot_write. apply Hreturn. apply Hread. exact Hread_observed.
+        * split.
+          -- apply Hreturn. apply Hread. exact Hread_observed.
+          -- apply Hread. exact Hread_observed.
   Qed.
 
   Theorem side_arena_read_published_entry_ready :

@@ -44,6 +44,8 @@
       marker traverses the whole reachable graph but only marks young nodes;
     - C1.c nursery-backpressure segment-open signals request a minor and
       promotion clears stale nursery triggers before the next scheduling check;
+    - C1.c young-allocation odometer accounting advances on reused young slots
+      and fresh bump allocation, and promotion clears stale accounting;
     - C1.c scheduler choice never defers cap-forced or cadence-forced majors,
       and any deferred major is a live-growth major under level-3 young pressure;
     - B.5 cap-floor anti-thrash prevents a futile cap-triggered major from
@@ -186,6 +188,16 @@ Section CESKCollectorSafetyModel.
 
   Definition MinorDue (YoungOverBudget NurseryPending : Prop) : Prop :=
     YoungOverBudget \/ NurseryPending.
+
+  Definition YoungBudgetDue (Budget Odometer : nat) : Prop :=
+    Odometer > Budget.
+
+  Definition AllocationCounted
+      (Before After NodeSize : nat) : Prop :=
+    NodeSize > 0 /\ After = Before + NodeSize.
+
+  Definition PromotionReset (After : nat) : Prop :=
+    After = 0.
 
   Definition MajorDue (LiveMajor CapMajor CadenceMajor : Prop) : Prop :=
     LiveMajor \/ CapMajor \/ CadenceMajor.
@@ -852,6 +864,49 @@ Section CESKCollectorSafetyModel.
     destruct Hminor as [Hover | Hpending].
     - apply Hnot_over. exact Hover.
     - apply (Hcleared_not_pending Hcleared). exact Hpending.
+  Qed.
+
+  Theorem reused_young_slot_advances_odometer :
+    forall Before After NodeSize : nat,
+      AllocationCounted Before After NodeSize ->
+      After > Before.
+  Proof.
+    intros Before After NodeSize Hcounted.
+    destruct Hcounted as [Hpositive Hafter].
+    subst After.
+    lia.
+  Qed.
+
+  Theorem fresh_bump_advances_odometer :
+    forall Before After NodeSize : nat,
+      AllocationCounted Before After NodeSize ->
+      After > Before.
+  Proof.
+    intros Before After NodeSize Hcounted.
+    apply reused_young_slot_advances_odometer with (NodeSize := NodeSize).
+    exact Hcounted.
+  Qed.
+
+  Theorem promotion_reset_clears_budget_due :
+    forall Budget After : nat,
+      PromotionReset After ->
+      ~ YoungBudgetDue Budget After.
+  Proof.
+    intros Budget After Hreset Hdue.
+    unfold PromotionReset in Hreset.
+    subst After.
+    unfold YoungBudgetDue in Hdue.
+    lia.
+  Qed.
+
+  Theorem budget_crossing_requests_minor :
+    forall Budget Odometer : nat,
+      Odometer > Budget ->
+      YoungBudgetDue Budget Odometer.
+  Proof.
+    intros Budget Odometer Hover.
+    unfold YoungBudgetDue.
+    exact Hover.
   Qed.
 
   Theorem cap_major_not_deferred :

@@ -132,6 +132,7 @@ run_lean "formal/lean/gc/E0EvictionBarriers.lean"
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/NurseryBackpressure.v"
+run_rocq "formal/rocq/gc/YoungAllocationOdometer.v"
 run_rocq "formal/rocq/gc/MajorMinorScheduler.v"
 run_rocq "formal/rocq/gc/CapFloorAntiThrash.v"
 run_rocq "formal/rocq/gc/MajorWatermarkRearm.v"
@@ -381,6 +382,14 @@ run_tlc "nursery_backpressure_no_fold" "MC_NurseryBackpressure.tla" "MC_NurseryB
   fail "Invariant OpenRequestsMinor is violated"
 run_tlc "nursery_backpressure_no_clear" "MC_NurseryBackpressure.tla" "MC_NurseryBackpressure_no_clear.cfg" \
   fail "Invariant PromoteRelaxesMinorTrigger is violated"
+run_tlc "young_allocation_odometer_all" "MC_YoungAllocationOdometer.tla" "MC_YoungAllocationOdometer_all.cfg" \
+  pass ""
+run_tlc "young_allocation_odometer_no_reuse" "MC_YoungAllocationOdometer.tla" "MC_YoungAllocationOdometer_no_reuse.cfg" \
+  fail "Invariant ReuseCountsYoungAllocation is violated"
+run_tlc "young_allocation_odometer_no_bump" "MC_YoungAllocationOdometer.tla" "MC_YoungAllocationOdometer_no_bump.cfg" \
+  fail "Invariant BumpCountsYoungAllocation is violated"
+run_tlc "young_allocation_odometer_no_reset" "MC_YoungAllocationOdometer.tla" "MC_YoungAllocationOdometer_no_reset.cfg" \
+  fail "Invariant PromotionResetsOdometer is violated"
 run_tlc "major_minor_scheduler_all" "MC_MajorMinorScheduler.tla" "MC_MajorMinorScheduler_all.cfg" \
   pass ""
 run_tlc "major_minor_scheduler_no_level" "MC_MajorMinorScheduler.tla" "MC_MajorMinorScheduler_no_level.cfg" \

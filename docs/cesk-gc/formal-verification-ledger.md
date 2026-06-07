@@ -37,6 +37,9 @@ can replace the full-major final sweep.
   segment-open pending signal, or a young-allocation budget overflow, is enough to request a minor collection; after
   promotion, resetting the young odometer and clearing the pending signal prevents the same stale event from
   immediately re-firing a minor when the young budget is not over.
+- `formal/rocq/gc/YoungAllocationOdometer.v`: proves the C1.c young-allocation odometer obligation. Reused young
+  slots and fresh bump allocations advance the odometer by a positive node-size quantum, promotion resets it, and
+  crossing the budget entails the minor trigger.
 - `formal/rocq/gc/MajorMinorScheduler.v`: proves the C1.c major/minor scheduler obligation. Cap-forced and
   cadence-forced majors cannot be deferred by acute young pressure; below level-3 young pressure a due major runs; and
   any deferred major is therefore a live-growth major under a level-3 minor trigger.
@@ -264,6 +267,9 @@ can replace the full-major final sweep.
 - `tla/NurseryBackpressure.tla`: checks the C1.c nursery-backpressure trigger. Opening a subsequent segment sets
   `nursery_full_pending`, the driver folds that pending flag into `minor_due`, and promotion clears the stale trigger;
   disabling the signal, the fold, or the clear violates the named discriminator invariant.
+- `tla/YoungAllocationOdometer.tla`: checks the C1.c young-allocation odometer. Production accounting counts reused
+  young slots and fresh bump allocation and resets on promotion; omitting reuse count, bump count, or reset violates
+  the corresponding invariant.
 - `tla/MajorMinorScheduler.tla`: checks the C1.c scheduler choice. Production guards pass; allowing live-major
   deferral below level 3, allowing cap-major deferral, or allowing cadence-major deferral violates the corresponding
   scheduler invariant.
@@ -434,6 +440,9 @@ facts the proofs rely on:
 - C1 nursery-backpressure source order pins the allocator-to-GC trigger: opening any segment after the initial segment
   sets `nursery_full_pending`, every collection-scheduling probe folds `nursery_pending` into the minor trigger, and
   promotion resets the young-allocation odometer before clearing the pending signal.
+- C1 young-allocation odometer source order is pinned: the only three `young_alloc_bytes` increments are
+  `write_reused`, `alloc_bump`, and `try_bump_in`, each by `size_of::<N>()`, and `promote_young` resets the odometer
+  before clearing `nursery_full_pending`.
 - C1 scheduler source order pins the bounded level-3 major/minor inversion: level 3 means at least `2 * YOUNG_BUDGET`
   young pressure, `minor_due` is computed before the no-due return, `do_major` may suppress a due live-growth major
   only when `level == 3 && minor_due && !cap_major && !cadence_major`, and the cadence counter resets on major but

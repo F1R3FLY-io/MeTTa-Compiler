@@ -46,4 +46,26 @@ theorem full_major_satb_marks_not_stale_after_promotion
   intro a hsatb hmarkedAfter
   exact sweptCleared (satbSwept hsatb) hmarkedAfter
 
+theorem young_only_sweep_safe_requires_no_surviving_old_satb_mark
+    {SATBMarked Old MarkedAfter : Addr -> Prop}
+    (oldSatbMarksSurvive :
+      forall {a : Addr}, SATBMarked a -> Old a -> MarkedAfter a)
+    (noStaleMarks : forall {a : Addr}, Not (MarkedAfter a)) :
+    forall {a : Addr}, SATBMarked a -> Old a -> False := by
+  intro a hsatb hold
+  exact noStaleMarks (oldSatbMarksSurvive hsatb hold)
+
+theorem young_only_sweep_with_old_satb_mark_leaves_stale_mark
+    {SATBMarked Old Cleared MarkedAfter : Addr -> Prop}
+    (oldSatbExists : exists a, SATBMarked a ∧ Old a)
+    (oldSatbMarksSurvive :
+      forall {a : Addr}, SATBMarked a -> Old a -> MarkedAfter a)
+    (clearedMarksNotAfter :
+      forall {a : Addr}, Cleared a -> Not (MarkedAfter a)) :
+    exists a, SATBMarked a ∧ Old a ∧ Not (Cleared a) := by
+  rcases oldSatbExists with ⟨a, hsatb, hold⟩
+  refine ⟨a, hsatb, hold, ?_⟩
+  intro hcleared
+  exact clearedMarksNotAfter hcleared (oldSatbMarksSurvive hsatb hold)
+
 end MeTTaTron.GC.FullMajorSweep

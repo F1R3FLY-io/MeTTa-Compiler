@@ -793,6 +793,17 @@ Section CESKCollectorSafetyModel.
       exact Hmarked_after_promotion.
   Qed.
 
+  Theorem e2_young_only_sweep_safe_requires_no_surviving_old_satb_mark :
+    forall (SATBMarked Old MarkedAfter : Addr -> Prop),
+      (forall a, SATBMarked a -> Old a -> MarkedAfter a) ->
+      (forall a, ~ MarkedAfter a) ->
+      forall a, SATBMarked a -> Old a -> False.
+  Proof.
+    intros SATBMarked Old MarkedAfter Hold_survives Hno_stale a Hsatb Hold.
+    apply (Hno_stale a).
+    apply Hold_survives; assumption.
+  Qed.
+
   Theorem e2_e0_cache_removed_snapshot_live_survives_collection :
     forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack
             CapacityVictim OverwriteVictim BulkClearedEntry : Addr -> Prop)

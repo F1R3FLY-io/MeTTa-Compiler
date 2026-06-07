@@ -65,6 +65,33 @@ Section FullMajorSweepModel.
       exact Hsatb.
     - exact Hmarked_after.
   Qed.
+
+  Theorem young_only_sweep_safe_requires_no_surviving_old_satb_mark :
+    forall (SATBMarked Old MarkedAfter : Addr -> Prop),
+      (forall a, SATBMarked a -> Old a -> MarkedAfter a) ->
+      (forall a, ~ MarkedAfter a) ->
+      forall a, SATBMarked a -> Old a -> False.
+  Proof.
+    intros SATBMarked Old MarkedAfter Hold_survives Hno_stale a Hsatb Hold.
+    apply (Hno_stale a).
+    apply Hold_survives; assumption.
+  Qed.
+
+  Theorem young_only_sweep_with_old_satb_mark_leaves_stale_mark :
+    forall (SATBMarked Old Cleared MarkedAfter : Addr -> Prop),
+      (exists a, SATBMarked a /\ Old a) ->
+      (forall a, SATBMarked a -> Old a -> MarkedAfter a) ->
+      (forall a, Cleared a -> ~ MarkedAfter a) ->
+      exists a, SATBMarked a /\ Old a /\ ~ Cleared a.
+  Proof.
+    intros SATBMarked Old Cleared MarkedAfter Hold_exists Hold_survives Hcleared_not_after.
+    destruct Hold_exists as [a [Hsatb Hold]].
+    exists a. split; [exact Hsatb |].
+    split; [exact Hold |].
+    intro Hcleared.
+    apply (Hcleared_not_after a Hcleared).
+    apply Hold_survives; assumption.
+  Qed.
 End FullMajorSweepModel.
 
 End MeTTaTron_GC_FullMajorSweep.

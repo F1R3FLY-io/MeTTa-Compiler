@@ -18,8 +18,10 @@ waits out in-flight deletion barriers by dropping the SATB guard, and performs a
 heap write lock. If that SATB rendezvous aborts, or if the final sweep reports that its rendezvous witness gate closed,
 RAII closes any open rendezvous/request and the driver immediately runs a fresh normal STW rendezvous. E2 SATB
 currently sweeps as a full major only. The formal/source-coupling gate pins that boundary: a final SATB sweep uses
-`heap.sweep()`, not `sweep_young`, and the full sweep clears every SATB mark before promotion. Young-only SATB still
-requires a new stale-old-mark proof before it can be introduced.
+`heap.sweep()`, not `sweep_young`, and the full sweep clears every SATB mark before promotion. The formal harness also
+contains a stale-old-mark discriminator: a young-only SATB final sweep violates `NoStaleOldMark` when an old SATB mark
+exists. A future young-only SATB path must therefore prove old SATB marks are absent or explicitly cleared before it
+can replace the full-major final sweep.
 
 ## Checked obligations
 
@@ -119,8 +121,9 @@ requires a new stale-old-mark proof before it can be introduced.
   request is handled only after a freshly requested STW rendezvous runs.
 - `formal/rocq/gc/FullMajorSweep.v` and `formal/lean/gc/FullMajorSweep.lean`: pin the E2 full-major-only mark
   lifecycle. If every SATB-marked address is in the full-major swept range and every swept address is cleared before
-  promotion, no SATB mark can remain stale for a later cycle; the source-coupling harness rejects `sweep_young` inside
-  the final SATB sweep path.
+  promotion, no SATB mark can remain stale for a later cycle. They also prove the negative young-only obligation:
+  if an old SATB mark survives a young-only final sweep, safety requires that no such old SATB mark exist. The
+  source-coupling harness rejects `sweep_young` inside the final SATB sweep path.
 - `formal/rocq/gc/E0MutationSites.v` and `formal/lean/gc/E0MutationSites.lean`: bridge the E2 value-bearing E0
   mutation-site enumeration into the SATB theorem. If every removed pre-image from the pinned space-local, rule-index,
   and environment/token/state categories is shaded, then any snapshot-live value removed through those E0 categories is
@@ -211,6 +214,9 @@ requires a new stale-old-mark proof before it can be introduced.
 - `tla/SATBFinalSweepResult.tla`: checks the E2 final-sweep result obligation. If the final sweep's rendezvous gate is
   unexpectedly closed, the driver must treat the false result as a SATB abort and run the STW backstop; ignoring the
   result lets the request finish without either sweeping or falling back.
+- `tla/SATBYoungSweepStaleOldMark.tla`: checks the stale-old-mark obligation behind the full-major E2 SATB final
+  sweep. Clearing old marks passes; a young-only final sweep leaves an old SATB mark stale and violates
+  `NoStaleOldMark`.
 - `tla/SATBAbortFallback.tla`: checks the E2 abort-to-STW backstop. If the SATB path aborts after cleanup, the
   driver must re-request and run a fresh STW rendezvous before treating the request as handled.
 

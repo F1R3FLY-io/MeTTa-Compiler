@@ -158,6 +158,7 @@ run_rocq "formal/rocq/gc/HashConsSweepRetain.v"
 run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
+run_rocq "formal/rocq/gc/SchedulerGcBoundary.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
 run_rocq "formal/rocq/gc/DepthZeroSafepoint.v"
@@ -308,6 +309,16 @@ run_tlc "batch_handoff_no_handle" "MC_BatchHandoff.tla" "MC_BatchHandoff_no_hand
   fail "Invariant NoPublishedBatchResultFreed is violated"
 run_tlc "batch_handoff_drop_before_copy" "MC_BatchHandoff.tla" "MC_BatchHandoff_drop_before_copy.cfg" \
   fail "Invariant NoPublishedBatchResultFreed is violated"
+run_tlc "scheduler_gc_boundary_all" "MC_SchedulerGcBoundary.tla" "MC_SchedulerGcBoundary_all.cfg" \
+  pass ""
+run_tlc "scheduler_gc_boundary_missing_worker" "MC_SchedulerGcBoundary.tla" "MC_SchedulerGcBoundary_missing_worker.cfg" \
+  fail "Invariant SchedulerBoundaryComplete is violated"
+run_tlc "scheduler_gc_boundary_missing_dispatch" "MC_SchedulerGcBoundary.tla" "MC_SchedulerGcBoundary_missing_dispatch.cfg" \
+  fail "Invariant SchedulerBoundaryComplete is violated"
+run_tlc "scheduler_gc_boundary_missing_batch" "MC_SchedulerGcBoundary.tla" "MC_SchedulerGcBoundary_missing_batch.cfg" \
+  fail "Invariant SchedulerBoundaryComplete is violated"
+run_tlc "scheduler_gc_boundary_admission_open" "MC_SchedulerGcBoundary.tla" "MC_SchedulerGcBoundary_admission_open.cfg" \
+  fail "Invariant SchedulerBoundaryComplete is violated"
 run_tlc "dedicated_handoff_skip" "MC_DedicatedHandoff.tla" "MC_DedicatedHandoff_skip.cfg" \
   pass ""
 run_tlc "dedicated_handoff_empty_inline" "MC_DedicatedHandoff.tla" "MC_DedicatedHandoff_empty_inline.cfg" \

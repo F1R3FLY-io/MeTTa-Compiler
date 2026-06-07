@@ -133,6 +133,10 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/BatchHandoff.v` and `formal/lean/gc/BatchHandoff.lean`: prove the async rholang batch-result
   handoff obligation. A worker result survives while protected by its persistent safepoint handle, survives after the
   caller copies it into `MettaState.output`, and dropping the handle is safe only after that output copy.
+- `formal/rocq/gc/SchedulerGcBoundary.v`: proves the GC-facing scheduler/thread-pool boundary. If active workers,
+  live dispatch/collapse fan-outs, and async batch handoff values are all mapped into driver root channels, and
+  collection admission prevents newly joined workers during the sweep window, mark/sweep cannot free a scheduler-held
+  live address. This intentionally does not claim general scheduler fairness or work-stealing correctness.
 - `formal/rocq/gc/DedicatedHandoff.v`: proves the E1 dedicated-thread handoff ownership rule. Once a root vector has
   been successfully sent to the GC thread, response-channel failure cannot justify an inline fallback because the
   mutator no longer owns those roots; failed sends still return the roots for inline fallback.
@@ -231,6 +235,10 @@ can replace the full-major final sweep.
 - `tla/BatchHandoff.tla`: checks the async rholang batch-result handoff. Holding a persistent handle until the caller
   copies worker results into `MettaState.output` preserves safety; omitting the handle or dropping it before the copy
   violates `NoPublishedBatchResultFreed`.
+- `tla/SchedulerGcBoundary.tla`: checks the GC-facing scheduler/thread-pool boundary. Including active worker roots,
+  live dispatch/collapse fan-out anchors, and async batch handoff roots while closing admission preserves
+  `SchedulerBoundaryComplete`; omitting any modeled channel, or admitting a new worker after the root snapshot,
+  violates it.
 - `tla/DedicatedHandoff.tla`: checks the E1 dedicated-thread root-vector handoff. Failed send before consumption may
   run inline with the returned roots; response failure after successful send must skip. Falling back inline after a
   consumed handoff violates `NoInlineWithoutRoots`.
@@ -451,6 +459,11 @@ facts the proofs rely on:
 - `mark_concurrent_roots` marks under `global_index_heap().read()` through `IndexHeap::mark_concurrent`; the final E2
   sweep takes `global_index_heap().write()`, re-marks the final rendezvous roots, runs a full `heap.sweep()`, then
   promotes and clears all mark bits. The FANOUT trigger is suppressed while `satb_marking_in_progress()`.
+- The scheduler/thread-pool boundary is source-coupled at the GC-facing edges: dispatch/collapse workers wait for an
+  in-progress dedicated rendezvous before `EvalGuard::enter`, live fan-outs are registered through
+  `register_live_dispatch`, async batch results carry a persistent safepoint handle until the caller copies them into
+  `MettaState.output`, active workers publish `ThreadContribution` roots into `WORKER_ROOT_BUFFER`, and the driver
+  root union drains worker, safepoint, live-env, and live-dispatch channels before sweep.
 - `SATBTriggerSuppression.v` and `SATBTriggerSuppression.tla` pin that FANOUT trigger guard: a worker watermark
   trigger requires the dedicated collector gate, another live mutator, no pending request, `!satb_marking_in_progress`,
   and `watermark_due_for_concurrent`; the TLC negative config removes the SATB guard and reaches an overlapping trigger.

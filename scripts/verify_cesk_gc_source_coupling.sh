@@ -422,6 +422,10 @@ assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend:
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_dispatch_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_dispatch_roots(out);"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn snapshot_live_dispatch_witness() -> (Vec<MettaValue>, usize)" "weak.upgrade()" "strong.collect_dispatch_roots(&mut out);"
 
+# Scheduler/GC boundary coupling: SchedulerGcBoundary.v/TLA is the summary
+# obligation over the source-coupled batch-handoff, live-dispatch, worker
+# admission, and worker self-root channels in this script.
+
 # E1 parallel completion coupling: the CollapseCompletion proof/TLA model only
 # applies if every spawned dispatch/collapse worker owns one RAII completion
 # guard, the sole executable decrement is in that guard's Drop, and the parent

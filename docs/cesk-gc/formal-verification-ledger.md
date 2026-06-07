@@ -196,7 +196,9 @@ can replace the full-major final sweep.
   allocate-black allocations, E2 final-rendezvous roots and abort-to-STW finalization, E2 full-major SATB mark
   lifecycle, E2 snapshot-live values removed by value-bearing E0 cache capacity eviction, overwrite, and bulk clear, and
   E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories. It also composes the explicit
-  "machine completeness displaces manual registration" theorem into the top-level no-UAF story.
+  "machine completeness displaces manual registration" theorem into the top-level no-UAF story, and states that
+  rendezvous live roots survive from the witness/root-coverage premise even when the old global-quiescence gate is
+  false.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
@@ -361,6 +363,9 @@ can replace the full-major final sweep.
 - `tla/RegistryIsolation.tla`: checks the A5/E1 root-source boundary. Index mode may build roots from structural CESK
   readers and explicit driver transport roots only; enabling the legacy `RootProvider` registry as an index root source
   violates `NoRegistryInIndex`.
+- `tla/RendezvousQuiescenceIndependence.tla`: checks that a FANOUT rendezvous sweep is enabled by participant
+  contribution and witness publication while active workers remain nonzero. Reintroducing the old `active == 0`
+  global-quiescence gate violates `ReadyCanSweep`.
 - `tla/FrameEnvRoots.tla`: checks the forked-env frame-root channel. Including the five fork-local Addr-bearing maps
   preserves `FrameEnvRootsComplete`; omitting inferred function type roots violates it.
 - `tla/TierLeafExtraRoots.tla`: checks the VM/JIT tier-leaf extra-root channel. Including every VM/JIT tier-local

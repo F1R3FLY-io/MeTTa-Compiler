@@ -278,6 +278,8 @@ assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" 
 line_no "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_rendezvous() -> bool" >/dev/null
 line_no "src/backend/eval/cesk/index_heap.rs" "crate::backend::models::gc_allocator::current_witness_ok()" >/dev/null
 assert_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_rendezvous() -> bool" "crate::backend::models::gc_allocator::current_witness_ok()"
+assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_rendezvous() -> bool" "/// The provable single-threaded gate for the MID-LOOP" "active_evaluator_count()"
+assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_rendezvous() -> bool" "/// The provable single-threaded gate for the MID-LOOP" "worker_ever_spawned()"
 
 # R-FL free-list lifecycle: push is guarded by the persistent free bit, pop clears
 # the bit before returning or discarding an entry, and released segments drain

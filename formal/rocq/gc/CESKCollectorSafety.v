@@ -46,6 +46,9 @@
     - scheduler/thread-pool-held live roots are covered by active-worker,
       live-dispatch, and batch-handoff driver channels, while closed admission
       excludes newly joined workers during the sweep window;
+    - the FANOUT rendezvous collection gate is the witness/completeness gate,
+      not the old global-quiescence gate, so live roots can survive collection
+      even when active evaluators are still present;
     - a dedicated rendezvous that has a posted driver request, contributing
       participants, panic cleanup, generation bump, and resume notification
       cannot strand a parked participant;
@@ -413,6 +416,14 @@ Section CESKCollectorSafetyModel.
       (DedicatedRequest DriverPosted : Prop) : Prop :=
     DedicatedRequest -> DriverPosted.
 
+  Definition QuiescenceGate
+      (IndexMode Disabled ActiveZero NeverSpawned : Prop) : Prop :=
+    IndexMode /\ ~ Disabled /\ ActiveZero /\ NeverSpawned.
+
+  Definition RendezvousWitnessGate
+      (IndexMode Disabled GcInProgress WitnessOk : Prop) : Prop :=
+    IndexMode /\ ~ Disabled /\ GcInProgress /\ WitnessOk.
+
   Definition DepthZeroGuard
       (DepthPositive Park DropGuard : Prop) : Prop :=
     ~ DepthPositive -> ~ Park /\ ~ DropGuard.
@@ -504,6 +515,41 @@ Section CESKCollectorSafetyModel.
     apply Hmark.
     apply Hfuture.
     exact Htouch.
+  Qed.
+
+  Theorem rendezvous_gate_can_hold_without_global_quiescence :
+    exists (IndexMode Disabled GcInProgress WitnessOk ActiveZero NeverSpawned : Prop),
+      RendezvousWitnessGate IndexMode Disabled GcInProgress WitnessOk /\
+      ~ QuiescenceGate IndexMode Disabled ActiveZero NeverSpawned.
+  Proof.
+    exists True, False, True, True, False, False.
+    split.
+    - unfold RendezvousWitnessGate.
+      repeat split; try exact I.
+      intro Hdisabled. exact Hdisabled.
+    - unfold QuiescenceGate.
+      intros [_ [_ [Hactive _]]].
+      exact Hactive.
+  Qed.
+
+  Theorem nonquiescent_rendezvous_live_root_survives_collection :
+    forall (IndexMode Disabled GcInProgress WitnessOk ActiveZero NeverSpawned : Prop)
+           (StructuralRoot DriverRoot Marked Freed LiveRoot : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      RendezvousWitnessGate IndexMode Disabled GcInProgress WitnessOk ->
+      ~ QuiescenceGate IndexMode Disabled ActiveZero NeverSpawned ->
+      (forall a, LiveRoot a -> Reach (CollectorRoot StructuralRoot DriverRoot) Edge a) ->
+      (forall a, Reach (CollectorRoot StructuralRoot DriverRoot) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, LiveRoot a -> ~ Freed a.
+  Proof.
+    intros IndexMode Disabled GcInProgress WitnessOk ActiveZero NeverSpawned
+           StructuralRoot DriverRoot Marked Freed LiveRoot Edge
+           _ _ Hlive_reach Hmark Hsweep a Hlive Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply Hlive_reach.
+    exact Hlive.
   Qed.
 
   Theorem fork_local_env_root_survives_collection :

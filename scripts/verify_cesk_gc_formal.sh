@@ -244,6 +244,10 @@ run_tlc "registry_isolation_all" "MC_RegistryIsolation.tla" "MC_RegistryIsolatio
   pass ""
 run_tlc "registry_isolation_enabled" "MC_RegistryIsolation.tla" "MC_RegistryIsolation_registry.cfg" \
   fail "Invariant NoRegistryInIndex is violated"
+run_tlc "rendezvous_quiescence_independence_all" "MC_RendezvousQuiescenceIndependence.tla" "MC_RendezvousQuiescenceIndependence_all.cfg" \
+  pass ""
+run_tlc "rendezvous_quiescence_independence_global_gate" "MC_RendezvousQuiescenceIndependence.tla" "MC_RendezvousQuiescenceIndependence_global_gate.cfg" \
+  fail "Invariant ReadyCanSweep is violated"
 run_tlc "frame_env_roots_all" "MC_FrameEnvRoots.tla" "MC_FrameEnvRoots_all.cfg" \
   pass ""
 run_tlc "frame_env_roots_missing_inferred" "MC_FrameEnvRoots.tla" "MC_FrameEnvRoots_missing_inferred.cfg" \

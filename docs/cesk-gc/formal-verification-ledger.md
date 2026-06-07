@@ -151,7 +151,9 @@ can replace the full-major final sweep.
   live address. This intentionally does not claim general scheduler fairness or work-stealing correctness.
 - `formal/rocq/gc/DedicatedHandoff.v`: proves the E1 dedicated-thread handoff ownership rule. Once a root vector has
   been successfully sent to the GC thread, response-channel failure cannot justify an inline fallback because the
-  mutator no longer owns those roots; failed sends still return the roots for inline fallback.
+  mutator no longer owns those roots; failed sends still return the roots for inline fallback. It also proves the
+  channel-liveness obligation from the static channel audit: a successful `Collect` handoff carries a per-request
+  response sender and the driver attempts a reply after catching the collection result.
 - `formal/rocq/gc/DedicatedSingleRegime.v`: proves the E1 dedicated-thread single-regime rule. With the dedicated
   collector enabled, default/session/parallel/cron legacy producers are suppressed, so any request in that regime must
   be paired with a dedicated driver request.
@@ -261,8 +263,9 @@ can replace the full-major final sweep.
   `SchedulerBoundaryComplete`; omitting any modeled channel, or admitting a new worker after the root snapshot,
   violates it.
 - `tla/DedicatedHandoff.tla`: checks the E1 dedicated-thread root-vector handoff. Failed send before consumption may
-  run inline with the returned roots; response failure after successful send must skip. Falling back inline after a
-  consumed handoff violates `NoInlineWithoutRoots`.
+  run inline with the returned roots; response failure after successful send must skip, and a consumed request must
+  have a reply attempt. Falling back inline after a consumed handoff violates `NoInlineWithoutRoots`; omitting the
+  reply attempt violates `ConsumedRequestGetsReplyAttempt`.
 - `tla/DedicatedSingleRegime.tla`: checks the E1 dedicated-thread single-regime rule. Suppressing all legacy
   cooperative producers preserves `NoDriverlessRequest`; leaving default, session, parallel, or cron ungated violates it.
 - `tla/DepthZeroSafepoint.tla`: checks the E1 cooperative-safepoint depth-zero rule. Guarding depth zero preserves

@@ -311,6 +311,8 @@ run_tlc "dedicated_handoff_skip" "MC_DedicatedHandoff.tla" "MC_DedicatedHandoff_
   pass ""
 run_tlc "dedicated_handoff_empty_inline" "MC_DedicatedHandoff.tla" "MC_DedicatedHandoff_empty_inline.cfg" \
   fail "Invariant NoInlineWithoutRoots is violated"
+run_tlc "dedicated_handoff_no_reply" "MC_DedicatedHandoff.tla" "MC_DedicatedHandoff_no_reply.cfg" \
+  fail "Invariant ConsumedRequestGetsReplyAttempt is violated"
 run_tlc "dedicated_single_regime_all_gated" "MC_DedicatedSingleRegime.tla" "MC_DedicatedSingleRegime_all_gated.cfg" \
   pass ""
 run_tlc "dedicated_single_regime_default_ungated" "MC_DedicatedSingleRegime.tla" "MC_DedicatedSingleRegime_default_ungated.cfg" \

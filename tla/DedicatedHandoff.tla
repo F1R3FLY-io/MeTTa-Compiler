@@ -8,23 +8,30 @@
 (* empty/missing root set.                                                *)
 (***************************************************************************)
 
-CONSTANT FallbackAfterConsumed
+CONSTANTS FallbackAfterConsumed,
+          OmitResponseAttempt
 
 VARIABLES
     phase,
     rootsAvailable,
     handoffConsumed,
+    responseSenderCarried,
+    responseSendAttempted,
     recvFailed,
     inlineRan,
     skipped
 
-vars == <<phase, rootsAvailable, handoffConsumed, recvFailed, inlineRan, skipped>>
+vars == <<phase, rootsAvailable, handoffConsumed, responseSenderCarried,
+          responseSendAttempted, recvFailed, inlineRan, skipped>>
 
 TypeOK ==
     /\ FallbackAfterConsumed \in BOOLEAN
+    /\ OmitResponseAttempt \in BOOLEAN
     /\ phase \in {"start", "sent", "done"}
     /\ rootsAvailable \in BOOLEAN
     /\ handoffConsumed \in BOOLEAN
+    /\ responseSenderCarried \in BOOLEAN
+    /\ responseSendAttempted \in BOOLEAN
     /\ recvFailed \in BOOLEAN
     /\ inlineRan \in BOOLEAN
     /\ skipped \in BOOLEAN
@@ -33,6 +40,8 @@ Init ==
     /\ phase = "start"
     /\ rootsAvailable = TRUE
     /\ handoffConsumed = FALSE
+    /\ responseSenderCarried = FALSE
+    /\ responseSendAttempted = FALSE
     /\ recvFailed = FALSE
     /\ inlineRan = FALSE
     /\ skipped = FALSE
@@ -42,6 +51,8 @@ SendFailsBeforeConsume ==
     /\ rootsAvailable
     /\ handoffConsumed' = FALSE
     /\ rootsAvailable' = TRUE
+    /\ responseSenderCarried' = FALSE
+    /\ responseSendAttempted' = FALSE
     /\ recvFailed' = FALSE
     /\ inlineRan' = TRUE
     /\ skipped' = FALSE
@@ -52,28 +63,34 @@ SendSucceeds ==
     /\ rootsAvailable
     /\ rootsAvailable' = FALSE
     /\ handoffConsumed' = TRUE
+    /\ responseSenderCarried' = TRUE
+    /\ responseSendAttempted' = FALSE
     /\ phase' = "sent"
     /\ UNCHANGED <<recvFailed, inlineRan, skipped>>
 
 ResponseArrives ==
     /\ phase = "sent"
+    /\ responseSenderCarried
     /\ phase' = "done"
     /\ recvFailed' = FALSE
+    /\ responseSendAttempted' = ~OmitResponseAttempt
     /\ inlineRan' = FALSE
     /\ skipped' = FALSE
-    /\ UNCHANGED <<rootsAvailable, handoffConsumed>>
+    /\ UNCHANGED <<rootsAvailable, handoffConsumed, responseSenderCarried>>
 
 ResponseFails ==
     /\ phase = "sent"
+    /\ responseSenderCarried
     /\ phase' = "done"
     /\ recvFailed' = TRUE
+    /\ responseSendAttempted' = ~OmitResponseAttempt
     /\ IF FallbackAfterConsumed THEN
           /\ inlineRan' = TRUE
           /\ skipped' = FALSE
        ELSE
           /\ inlineRan' = FALSE
           /\ skipped' = TRUE
-    /\ UNCHANGED <<rootsAvailable, handoffConsumed>>
+    /\ UNCHANGED <<rootsAvailable, handoffConsumed, responseSenderCarried>>
 
 Done ==
     /\ phase = "done"
@@ -93,5 +110,8 @@ NoInlineWithoutRoots ==
 
 ConsumedResponseFailureSkips ==
     phase = "done" /\ handoffConsumed /\ recvFailed => skipped /\ ~inlineRan
+
+ConsumedRequestGetsReplyAttempt ==
+    phase = "done" /\ handoffConsumed => responseSenderCarried /\ responseSendAttempted
 
 =============================================================================

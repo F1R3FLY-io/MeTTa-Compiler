@@ -5,6 +5,12 @@
     vector to the GC thread.  After a successful send, a response-channel failure
     must be treated as "cycle skipped" rather than as an inline fallback: the
     mutator no longer owns the roots.
+
+    Channel-liveness audit obligation: a successful `Collect` handoff carries a
+    per-request response sender, and the driver must attempt a reply after it has
+    caught the collection result.  The reply send may itself fail if the mutator is
+    gone; the safety property is that the mutator is never left waiting on a
+    request shape that had no response producer.
 *)
 
 Module MeTTaTron_GC_DedicatedHandoff.
@@ -58,6 +64,45 @@ Section DedicatedHandoffModel.
            Hfailed_roots _ _ Hfailed _.
     apply Hfailed_roots.
     exact Hfailed.
+  Qed.
+
+  Definition CollectReplyProducerSafe
+      (Sent ResponseSenderCarried HandlerRuns ReplyAttempted : Prop) : Prop :=
+    Sent -> ResponseSenderCarried /\ HandlerRuns /\ ReplyAttempted.
+
+  Theorem successful_collect_handoff_has_reply_producer :
+    forall Sent ResponseSenderCarried HandlerRuns ReplyAttempted,
+      (Sent -> ResponseSenderCarried) ->
+      (Sent -> HandlerRuns) ->
+      (HandlerRuns -> ReplyAttempted) ->
+      CollectReplyProducerSafe Sent ResponseSenderCarried HandlerRuns ReplyAttempted.
+  Proof.
+    intros Sent ResponseSenderCarried HandlerRuns ReplyAttempted
+           Hsent_sender Hsent_handler Hhandler_reply Hsent.
+    split.
+    - apply Hsent_sender.
+      exact Hsent.
+    - split.
+      + apply Hsent_handler.
+        exact Hsent.
+      + apply Hhandler_reply.
+        apply Hsent_handler.
+        exact Hsent.
+  Qed.
+
+  Theorem caught_collection_result_still_replies :
+    forall Sent HandlerRuns ReplyAttempted CollectionPanicked CollectionReturned,
+      (Sent -> HandlerRuns) ->
+      (HandlerRuns -> CollectionPanicked \/ CollectionReturned) ->
+      (HandlerRuns -> ReplyAttempted) ->
+      Sent ->
+      ReplyAttempted.
+  Proof.
+    intros Sent HandlerRuns ReplyAttempted CollectionPanicked CollectionReturned
+           Hsent_handler _ Hhandler_reply Hsent.
+    apply Hhandler_reply.
+    apply Hsent_handler.
+    exact Hsent.
   Qed.
 End DedicatedHandoffModel.
 

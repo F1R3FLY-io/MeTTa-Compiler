@@ -52,6 +52,8 @@ can replace the full-major final sweep.
   metric and the minimum threshold.
 - `formal/rocq/gc/StructuralRoots.v` and `formal/lean/gc/StructuralRoots.lean`: if future machine touches are
   inside the structural CESK-root closure and sweep frees only unmarked nodes, no future-touched node can be freed.
+  Rocq also states the manual-registration boundary explicitly: a registry-only value is not an index collector root,
+  and no-UAF follows from machine completeness rather than from auxiliary root registration.
 - `formal/rocq/gc/NodeEdgeCompleteness.v` and `formal/lean/gc/NodeEdgeCompleteness.lean`: prove the node-edge
   completeness obligation. If the marker's concrete reader covers every semantic index-node edge class
   (inline handle fields, side-arena `SExpr`/`Conjunction` children, and first-class `SpaceHandle` contents), then
@@ -193,7 +195,8 @@ can replace the full-major final sweep.
   covered by initial roots, driver roots, SATB shades, or allocate-black publication, E2 freshly published
   allocate-black allocations, E2 final-rendezvous roots and abort-to-STW finalization, E2 full-major SATB mark
   lifecycle, E2 snapshot-live values removed by value-bearing E0 cache capacity eviction, overwrite, and bulk clear, and
-  E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories.
+  E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories. It also composes the explicit
+  "machine completeness displaces manual registration" theorem into the top-level no-UAF story.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:

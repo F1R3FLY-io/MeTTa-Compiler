@@ -57,9 +57,27 @@ Section StructuralRootsModel.
     - exact Hsource.
   Qed.
 
+  Theorem registry_only_root_not_index_collector_root :
+    forall (Structural Driver Registry : Addr -> Prop) a,
+      Registry a ->
+      ~ Structural a ->
+      ~ Driver a ->
+      ~ IndexCollectorRoot Structural Driver a.
+  Proof.
+    intros Structural Driver Registry a _ Hnot_structural Hnot_driver Hroot.
+    destruct Hroot as [Hstructural | Hdriver].
+    - apply Hnot_structural. exact Hstructural.
+    - apply Hnot_driver. exact Hdriver.
+  Qed.
+
   Inductive Reach (Root : Addr -> Prop) (Edge : Addr -> Addr -> Prop) : Addr -> Prop :=
   | reach_root : forall a, Root a -> Reach Root Edge a
   | reach_step : forall a b, Reach Root Edge a -> Edge a b -> Reach Root Edge b.
+
+  Definition FutureTouchCoveredByIndexRoots
+      (Structural Driver FutureTouch : Addr -> Prop)
+      (Edge : Addr -> Addr -> Prop) : Prop :=
+    forall a, FutureTouch a -> Reach (IndexCollectorRoot Structural Driver) Edge a.
 
   Theorem structural_root_is_reachable :
     forall (regs : Registers) (Edge : Addr -> Addr -> Prop) (a : Addr),
@@ -83,6 +101,22 @@ Section StructuralRootsModel.
     apply (Hsweep a Hfreed).
     apply Hmark.
     apply Hfuture.
+    exact Htouch.
+  Qed.
+
+  Theorem machine_completeness_displaces_manual_registration :
+    forall (Structural Driver Registry Marked Freed FutureTouch : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      FutureTouchCoveredByIndexRoots Structural Driver FutureTouch Edge ->
+      (forall a, Reach (IndexCollectorRoot Structural Driver) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, FutureTouch a -> ~ Freed a.
+  Proof.
+    intros Structural Driver Registry Marked Freed FutureTouch Edge
+           Hcomplete Hmark Hsweep a Htouch Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply Hcomplete.
     exact Htouch.
   Qed.
 

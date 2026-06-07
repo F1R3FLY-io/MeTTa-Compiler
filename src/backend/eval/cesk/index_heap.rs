@@ -1607,10 +1607,10 @@ impl Store<MettaValue> for IndexHeapStore {
 // Safety rests on the TLA+-proven `QuiescenceInvariant` (tla/StoreCentricGC.tla):
 // mark+sweep AT QUIESCENCE is safe. The gate below makes "quiescence" trivially
 // hold — see `gate_open`. The root-completeness invariant (the UAF linchpin) is
-// satisfied by the CALLER, which passes the live trampoline S/C/K + frame chain
-// + caches (the trampoline's own `RootSet`) UNIONED with `collect_all_roots()`
-// (env/tiers/output/dispatch RootProviders). See
-// docs/cesk-gc/single-threaded-collector.md STEP 0.
+// satisfied by the CALLER, which passes the structural CESK/E0 roots relevant
+// to the entry point plus the narrow driver transport roots that are live at
+// that entry point. The legacy `collect_all_roots()`/`RootProvider` registry is
+// slab-only and is not an index-collector root source.
 // ============================================================================
 pub mod index_gc {
     use super::global_index_heap;
@@ -2184,14 +2184,13 @@ pub mod index_gc {
     /// gate ([`gate_open_midloop`]) is open AND the committed-bytes watermark is
     /// exceeded.
     ///
-    /// `roots` MUST be the COMPLETE mid-execution root set — the live trampoline
-    /// S/C/K (work items + continuations + frame chain, including every nested
-    /// bytecode-VM frame's execution stacks via `with_vm_roots_frame`) and
-    /// pointer-keyed caches and deferred envs, UNIONED with `collect_all_roots()`
-    /// (env / tiers / promoted). Unlike the quiescence variant, live execution
-    /// stacks ARE present here, so an incomplete set is a use-after-free; this is
-    /// validated directly under ASAN (a missed root → freed-mid-execution →
-    /// heap-use-after-free). Returns `true` iff a cycle ran.
+    /// `roots` MUST be the COMPLETE mid-execution root set: live structural
+    /// machine roots from S/C/E/K plus reach(E0), typed K-spine/VM/JIT leaves,
+    /// deferred env roots, pointer-keyed cache roots, and driver-C safepoint
+    /// roots. Unlike the quiescence variant, live execution stacks ARE present
+    /// here, so an incomplete set is a use-after-free; this is validated directly
+    /// under ASAN (a missed root -> freed-mid-execution -> heap-use-after-free).
+    /// Returns `true` iff a cycle ran.
     ///
     /// The mark+sweep body, watermark rearm, and shadow-cache clear are
     /// IDENTICAL to the quiescence path (shared `mark_sweep_if_over_watermark`),

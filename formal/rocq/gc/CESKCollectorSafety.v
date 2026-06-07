@@ -20,6 +20,9 @@
       live-dispatch channel roots;
     - the index collector source set excludes the old `RootProvider` registry,
       so registry roots cannot justify future touches in the CESK proof;
+    - the no-UAF theorem is discharged from machine completeness
+      (future touches are reachable from structural CESK or driver roots),
+      not from manual registration in any auxiliary root registry;
     - the single-threaded mid-loop root union includes live S/C/K, E0,
       globals, K-spine, deferred env roots, and driver-C safepoint roots;
     - C2 abstract-GC K-frame narrowing keeps every future-touched value rooted
@@ -144,6 +147,11 @@ Section CESKCollectorSafetyModel.
       (StructuralRoot DriverRoot : Addr -> Prop)
       (a : Addr) : Prop :=
     StructuralRoot a \/ DriverRoot a.
+
+  Definition FutureTouchCoveredByIndexRoots
+      (StructuralRoot DriverRoot FutureTouch : Addr -> Prop)
+      (Edge : Addr -> Addr -> Prop) : Prop :=
+    forall a, FutureTouch a -> Reach (CollectorRoot StructuralRoot DriverRoot) Edge a.
 
   Inductive RootSource : Type :=
   | StructuralSource : RootSource
@@ -451,6 +459,35 @@ Section CESKCollectorSafetyModel.
     - discriminate Hregistry.
     - discriminate Hregistry.
     - exact Hsource.
+  Qed.
+
+  Theorem registry_only_root_not_collector_root :
+    forall (StructuralRoot DriverRoot RegistryRoot : Addr -> Prop) a,
+      RegistryRoot a ->
+      ~ StructuralRoot a ->
+      ~ DriverRoot a ->
+      ~ CollectorRoot StructuralRoot DriverRoot a.
+  Proof.
+    intros StructuralRoot DriverRoot RegistryRoot a _ Hnot_structural Hnot_driver Hroot.
+    destruct Hroot as [Hstructural | Hdriver].
+    - apply Hnot_structural. exact Hstructural.
+    - apply Hnot_driver. exact Hdriver.
+  Qed.
+
+  Theorem machine_completeness_displaces_manual_registration :
+    forall (StructuralRoot DriverRoot RegistryRoot Marked Freed FutureTouch : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      FutureTouchCoveredByIndexRoots StructuralRoot DriverRoot FutureTouch Edge ->
+      (forall a, Reach (CollectorRoot StructuralRoot DriverRoot) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, FutureTouch a -> ~ Freed a.
+  Proof.
+    intros StructuralRoot DriverRoot RegistryRoot Marked Freed FutureTouch Edge
+           Hcomplete Hmark Hsweep a Htouch Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply Hcomplete.
+    exact Htouch.
   Qed.
 
   Theorem registry_independent_no_future_touch_uaf :

@@ -4259,9 +4259,11 @@ fn eval_trampoline_inner<C: EvalContext>(
             // Uses reusable RootSet buffer (allocated once before the loop)
             // instead of a fresh Vec on every safepoint.
             //
-            // Root formula: roots = addrs_in(C) ∪ addrs_in(K)
-            // where C = current work item + work stack, K = continuations.
-            // Environment roots (E) are managed separately via RootProvider.
+            // Local RootSet formula: roots = addrs_in(S) ∪ addrs_in(C) ∪
+            // addrs_in(K), with the tree-walker S empty here and E_local carried
+            // inside C/K frame bindings. In index-gc the collector vector is
+            // built later by collect_machine_roots*(), which adds reach(E0),
+            // global anchors, and typed K-spine leaves. RootProvider is slab-only.
             // SECK Phase A1: route through the canonical structural reader
             // (`RootSet::collect_all` = S∪C∪K; clears the buffer internally) — the
             // identical reader `SeckState::collect_gc_roots` uses. S is the empty

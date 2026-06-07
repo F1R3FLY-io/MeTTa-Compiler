@@ -926,6 +926,21 @@ assert_zero "src/backend/eval/cesk/index_heap.rs" "DORMANT until E1-FLIP"
 assert_zero "src/backend/eval/cesk/index_heap.rs" 'all `n` parked/finished'
 assert_zero "src/backend/eval/cesk/index_heap.rs" 'WORKER_ROOT_BUFFER ∪ collect_safepoint_roots` ='
 
+# E1/E5 rendezvous progress coupling: the RendezvousProgress liveness model
+# applies only if a posted FANOUT request has a driver or backstop, every active
+# participant can contribute by park or finish, panic cleanup still closes the
+# cycle, cycle close advances the generation and notifies gen-waiters, and
+# resume_workers clears GC_REQUESTED under the resume mutex.
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn request_concurrent_collection" "crate::backend::models::gc_allocator::request_gc();" "tx.send(GcDriverRequest::CollectRendezvous)"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "if !sent {" "crate::backend::models::gc_allocator::resume_workers();" "}"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn run_open_stw_rendezvous_cycle" "std::panic::catch_unwind" "close_open_rendezvous_cycle(Some(gip));"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "impl Drop for SatbRendezvousCleanup" "if self.cycle_open" "close_open_rendezvous_cycle(self.gip.take());"
+assert_after_before "src/backend/models/gc_allocator.rs" "impl Drop for EvalGuard" "if dedicated_gc_enabled() && is_gc_requested()" "worker_finish_into_buffer(&[], my_gen);"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_park_and_root_in_cycle" "WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);" "RENDEZVOUS_CONDVAR.notify_all();"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_finish_into_buffer" "WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);" "RENDEZVOUS_CONDVAR.notify_all();"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn end_rendezvous_cycle() {" "GC_CYCLE_GEN.fetch_add(1, Ordering::AcqRel);" "RENDEZVOUS_CONDVAR.notify_all();"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn resume_workers() {" "GC_REQUESTED.store(false, Ordering::Release);" "RESUME_CONDVAR.notify_all();"
+
 # E1/E5 witness-ok reset: CURRENT_WITNESS_OK is a non-generational bool, so
 # cycle teardown must clear it after the gen bump and before any resume/startup
 # notify can expose the next cycle. The driver must run teardown before dropping

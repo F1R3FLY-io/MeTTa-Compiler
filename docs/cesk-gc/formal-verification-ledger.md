@@ -79,6 +79,10 @@ can replace the full-major final sweep.
   generation-gated resume obligation. A parked worker can resume once `GC_CYCLE_GEN != my_gen`, even if a back-to-back
   request reasserts `GC_REQUESTED`; if the generation never advances, the worker remains parked, and boolean
   `GC_REQUESTED` resume can be re-blocked by the next request.
+- `formal/rocq/gc/RendezvousProgress.v`: proves the compositional premises for the dedicated rendezvous progress
+  obligation. If every active participant contributes by park or finish, collection panic cleanup closes the cycle,
+  close advances the generation and clears the request, and parked workers resume from the advanced generation, then
+  a posted rendezvous cannot strand a parked participant. The temporal scheduler obligation is checked in TLA+.
 - `formal/rocq/gc/StartedCycleGate.v` and `formal/lean/gc/StartedCycleGate.lean`: prove the E5 started-cycle
   straddle-gate obligation. If re-park is gated by `GC_CYCLE_STARTED > my_reparked_gen`, a teardown-only generation
   bump cannot cause a phantom re-park before the next driver starts.
@@ -277,6 +281,10 @@ can replace the full-major final sweep.
 - `tla/GenerationResume.tla`: checks the E1/E5 worker-resume rule. Generation-gated resume with an end-of-cycle
   bump preserves `EndedCycleCanResume` even after a back-to-back request; boolean `GC_REQUESTED` resume and
   generation resume without the end bump both violate it.
+- `tla/RendezvousProgress.tla`: checks the combined dedicated rendezvous liveness obligation. With participant
+  contribution, panic cleanup, generation bump, generation resume, and resume notification, every posted rendezvous
+  reaches `EventuallyRendezvousResumed`; omitting participant contribution, cleanup-on-panic, the generation bump,
+  generation resume under a back-to-back request, or the resume notification violates the temporal property.
 - `tla/CollapseCompletion.tla`: checks the E1 parallel collapse completion liveness obligation. With the RAII
   completion guard, normal and panic exits both decrement the worker counter and `<>(parentDone)` holds; without the
   panic-edge decrement, a panic can leave `remaining > 0` forever and violates the temporal property.
@@ -464,6 +472,12 @@ facts the proofs rely on:
   `register_live_dispatch`, async batch results carry a persistent safepoint handle until the caller copies them into
   `MettaState.output`, active workers publish `ThreadContribution` roots into `WORKER_ROOT_BUFFER`, and the driver
   root union drains worker, safepoint, live-env, and live-dispatch channels before sweep.
+- The dedicated rendezvous progress proof is source-coupled: `request_concurrent_collection` sets `GC_REQUESTED`
+  before posting `CollectRendezvous` and runs `resume_workers` on handoff failure; worker park and finish paths both
+  publish/bump/notify; `EvalGuard::drop` finish-bumps on panic/non-finisher exit while a request is pending;
+  `run_open_stw_rendezvous_cycle` closes the cycle after `catch_unwind`; `SatbRendezvousCleanup::drop` closes any
+  open SATB cycle; `end_rendezvous_cycle` bumps `GC_CYCLE_GEN` and notifies gen-waiters; `resume_workers` clears
+  `GC_REQUESTED` under the resume mutex before notifying.
 - `SATBTriggerSuppression.v` and `SATBTriggerSuppression.tla` pin that FANOUT trigger guard: a worker watermark
   trigger requires the dedicated collector gate, another live mutator, no pending request, `!satb_marking_in_progress`,
   and `watermark_due_for_concurrent`; the TLC negative config removes the SATB guard and reaches an overlapping trigger.

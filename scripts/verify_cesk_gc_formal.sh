@@ -144,6 +144,7 @@ run_rocq "formal/rocq/gc/RendezvousWitness.v"
 run_rocq "formal/rocq/gc/WitnessSlotLifecycle.v"
 run_rocq "formal/rocq/gc/WitnessOkReset.v"
 run_rocq "formal/rocq/gc/GenerationResume.v"
+run_rocq "formal/rocq/gc/RendezvousProgress.v"
 run_rocq "formal/rocq/gc/StartedCycleGate.v"
 run_rocq "formal/rocq/gc/CollapseCompletion.v"
 run_rocq "formal/rocq/gc/WorkerAdmission.v"
@@ -415,6 +416,18 @@ run_tlc "generation_resume_boolean" "MC_GenerationResume.tla" "MC_GenerationResu
   fail "Invariant EndedCycleCanResume is violated"
 run_tlc "generation_resume_no_bump" "MC_GenerationResume.tla" "MC_GenerationResume_no_bump.cfg" \
   fail "Invariant EndedCycleCanResume is violated"
+run_tlc "rendezvous_progress_all" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_all.cfg" \
+  pass ""
+run_tlc "rendezvous_progress_missing_contribution" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_missing_contribution.cfg" \
+  fail "Temporal properties were violated"
+run_tlc "rendezvous_progress_panic_no_cleanup" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_panic_no_cleanup.cfg" \
+  fail "Temporal properties were violated"
+run_tlc "rendezvous_progress_no_gen_bump" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_no_gen_bump.cfg" \
+  fail "Temporal properties were violated"
+run_tlc "rendezvous_progress_boolean_resume" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_boolean_resume.cfg" \
+  fail "Temporal properties were violated"
+run_tlc "rendezvous_progress_no_resume_notify" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_no_resume_notify.cfg" \
+  fail "Temporal properties were violated"
 run_tlc "witness_ok_reset_clear" "MC_WitnessOkReset.tla" "MC_WitnessOkReset_clear.cfg" \
   pass ""
 run_tlc "witness_ok_reset_stale" "MC_WitnessOkReset.tla" "MC_WitnessOkReset_stale.cfg" \

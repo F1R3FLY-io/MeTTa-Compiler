@@ -131,6 +131,7 @@ run_lean "formal/lean/gc/E0EvictionBarriers.lean"
 
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
+run_rocq "formal/rocq/gc/NurseryBackpressure.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/NodeEdgeCompleteness.v"
 run_rocq "formal/rocq/gc/AbstractGCLiveNarrowing.v"
@@ -369,6 +370,14 @@ run_tlc "conservative_minor_mark" "MC_ConservativeMinorMark.tla" "MC_Conservativ
   pass ""
 run_tlc "conservative_minor_skip_old" "MC_ConservativeMinorMark.tla" "MC_ConservativeMinorMark_skip_old.cfg" \
   fail "Invariant YoungReachableMarked is violated"
+run_tlc "nursery_backpressure_all" "MC_NurseryBackpressure.tla" "MC_NurseryBackpressure_all.cfg" \
+  pass ""
+run_tlc "nursery_backpressure_no_signal" "MC_NurseryBackpressure.tla" "MC_NurseryBackpressure_no_signal.cfg" \
+  fail "Invariant NurseryOpenSignalsPending is violated"
+run_tlc "nursery_backpressure_no_fold" "MC_NurseryBackpressure.tla" "MC_NurseryBackpressure_no_fold.cfg" \
+  fail "Invariant OpenRequestsMinor is violated"
+run_tlc "nursery_backpressure_no_clear" "MC_NurseryBackpressure.tla" "MC_NurseryBackpressure_no_clear.cfg" \
+  fail "Invariant PromoteRelaxesMinorTrigger is violated"
 run_tlc "satb_deletion_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_satb.cfg" \
   pass ""
 run_tlc "satb_no_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_none.cfg" \

@@ -42,6 +42,8 @@
       is no old-to-young edge;
     - conservative minor marking retains every reachable young address when the
       marker traverses the whole reachable graph but only marks young nodes;
+    - C1.c nursery-backpressure segment-open signals request a minor and
+      promotion clears stale nursery triggers before the next scheduling check;
     - E2 concurrent marking retains every snapshot-live address covered by
       initial roots, rendezvous driver roots, SATB deletion shades, or
       allocate-black publication;
@@ -170,6 +172,13 @@ Section CESKCollectorSafetyModel.
 
   Definition BooleanCanResume (gc_requested : Prop) : Prop :=
     ~ gc_requested.
+
+  Definition MinorDue (YoungOverBudget NurseryPending : Prop) : Prop :=
+    YoungOverBudget \/ NurseryPending.
+
+  Definition PromotionRelaxed
+      (YoungOdometerReset NurseryPendingCleared : Prop) : Prop :=
+    YoungOdometerReset /\ NurseryPendingCleared.
 
   Definition ConcurrentCollectorRoot
       (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
@@ -770,6 +779,42 @@ Section CESKCollectorSafetyModel.
     apply Houtput_driver.
     apply Hcopied.
     exact Hresult.
+  Qed.
+
+  Theorem nursery_open_signal_requests_minor :
+    forall YoungOverBudget NurseryPending : Prop,
+      NurseryPending ->
+      MinorDue YoungOverBudget NurseryPending.
+  Proof.
+    intros YoungOverBudget NurseryPending Hpending.
+    right.
+    exact Hpending.
+  Qed.
+
+  Theorem young_budget_requests_minor :
+    forall YoungOverBudget NurseryPending : Prop,
+      YoungOverBudget ->
+      MinorDue YoungOverBudget NurseryPending.
+  Proof.
+    intros YoungOverBudget NurseryPending Hover_budget.
+    left.
+    exact Hover_budget.
+  Qed.
+
+  Theorem promotion_clears_stale_nursery_trigger :
+    forall YoungOverBudget NurseryPending
+           YoungOdometerReset NurseryPendingCleared : Prop,
+      ~ YoungOverBudget ->
+      (NurseryPendingCleared -> ~ NurseryPending) ->
+      PromotionRelaxed YoungOdometerReset NurseryPendingCleared ->
+      ~ MinorDue YoungOverBudget NurseryPending.
+  Proof.
+    intros YoungOverBudget NurseryPending YoungOdometerReset NurseryPendingCleared
+           Hnot_over Hcleared_not_pending Hrelaxed Hminor.
+    destruct Hrelaxed as [_ Hcleared].
+    destruct Hminor as [Hover | Hpending].
+    - apply Hnot_over. exact Hover.
+    - apply (Hcleared_not_pending Hcleared). exact Hpending.
   Qed.
 
   Theorem young_reachable_marked :

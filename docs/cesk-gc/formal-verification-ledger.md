@@ -33,6 +33,10 @@ can replace the full-major final sweep.
   stronger conservative-minor theorem used by the implementation now: if the marker traverses the whole reachable
   graph and marks every young node it sees, every reachable young node is retained without assuming old nodes have no
   young descendants.
+- `formal/rocq/gc/NurseryBackpressure.v`: proves the C1.c allocator-to-GC nursery trigger obligation. A subsequent
+  segment-open pending signal, or a young-allocation budget overflow, is enough to request a minor collection; after
+  promotion, resetting the young odometer and clearing the pending signal prevents the same stale event from
+  immediately re-firing a minor when the young budget is not over.
 - `formal/rocq/gc/StructuralRoots.v` and `formal/lean/gc/StructuralRoots.lean`: if future machine touches are
   inside the structural CESK-root closure and sweep frees only unmarked nodes, no future-touched node can be freed.
 - `formal/rocq/gc/NodeEdgeCompleteness.v` and `formal/lean/gc/NodeEdgeCompleteness.lean`: prove the node-edge
@@ -247,6 +251,9 @@ can replace the full-major final sweep.
 - `tla/ConservativeMinorMark.tla`: checks the C1 first-class-space correction. Traversing old reachable containers
   during a minor preserves a young value reachable through an old `SpaceHandle`; the old skipped-old traversal violates
   `YoungReachableMarked`.
+- `tla/NurseryBackpressure.tla`: checks the C1.c nursery-backpressure trigger. Opening a subsequent segment sets
+  `nursery_full_pending`, the driver folds that pending flag into `minor_due`, and promotion clears the stale trigger;
+  disabling the signal, the fold, or the clear violates the named discriminator invariant.
 - `tla/NodeEdgeCompleteness.tla`: checks the marker edge-reader completeness obligation. Including inline handle
   fields, side-arena child slices, and `SpaceHandle` contents preserves `NoReachableFreed`; omitting any one class
   admits a reachable child that is swept unmarked.
@@ -405,6 +412,9 @@ facts the proofs rely on:
   retargeting monotone, and promotion at `current_seg`. `IndexHeap::mark_young` marks only young nodes but traverses
   all reached nodes through `child_addrs_for_mark`, including `SpaceHandle::collect_gc_values`, so an old first-class
   space cannot hide a live young value from `sweep_young`.
+- C1 nursery-backpressure source order pins the allocator-to-GC trigger: opening any segment after the initial segment
+  sets `nursery_full_pending`, every collection-scheduling probe folds `nursery_pending` into the minor trigger, and
+  promotion resets the young-allocation odometer before clearing the pending signal.
 - `published_gen` writes remain restricted to stale-stamp reset plus the genuine `note_reified_park` stamp, with
   worker root-buffer publication before the stamp.
 - The V4 witness slot is acquired before `N_THREADS++`, released only after the true outermost `EvalGuard::drop`

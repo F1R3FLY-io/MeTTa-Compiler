@@ -90,8 +90,10 @@ can replace the full-major final sweep.
   written before `len` publication, and allocation returns an `Addr` only after that slot publication, a later read of
   the returned `Addr` observes initialized segment and node bytes.
 - `formal/rocq/gc/SideArenaPublication.v` and `formal/lean/gc/SideArenaPublication.lean`: prove the side-arena
-  publication obligation. If side pages are published before chunks, chunks before entries, and entry writes before
-  entry publication, a reader observing a published side entry sees initialized page/chunk/entry payloads.
+  publication and co-location obligation. If side pages are published before chunks, chunks before entries, entry
+  writes before entry publication, and the owning node is published only after a same-segment side payload exists, a
+  reader observing a published side-bearing node sees initialized side payloads in the segment selected by the node
+  address.
 - `formal/rocq/gc/SideFreeQuiescence.v` and `formal/lean/gc/SideFreeQuiescence.lean`: prove the side-payload
   lifetime obligation. If side payload boxes are freed only on the true-quiescence arm, stack laundered references
   imply a non-quiescent evaluator, and the materialization shadow is cleared before any future dereference, then
@@ -289,6 +291,9 @@ can replace the full-major final sweep.
 - `tla/SideArenaPublication.tla`: checks the variable-length side-arena publication order. Page-before-chunk,
   chunk-before-entry, and write-before-entry-publish preserve `PublishedEntryReady`; violating any one of those orders
   produces a published read of an uninitialized component.
+- `tla/SideArenaCoLocation.tla`: checks the variable-length node co-location obligation. Interning a side payload in
+  the same segment before publishing the owning node preserves `NoBadSideRead`; publishing with a wrong-segment side
+  payload or publishing the node before the side payload is ready violates it.
 - `tla/SideFreeQuiescence.tla`: checks the side-payload free lifetime obligation. Quiescent side-free with shadow
   clearing and non-quiescent deferral preserve `NoDanglingSideUse`; freeing on a non-quiescent arm or skipping the
   shadow clear admits a dangling side-payload dereference.
@@ -369,7 +374,8 @@ facts the proofs rely on:
   published slot prefix before calling `node_at`.
 - Side-arena publication is source-pinned: segment side cells are written before `sides_count` publication,
   `SideColumn` pages are published before chunks, chunks before entries, entry payloads before entry publication, and
-  variable-length node allocation interns side payloads before publishing the owning node.
+  every side-bearing reuse, bump, and concurrent bump allocation interns side payloads into the owning node's segment
+  before publishing that node.
 - The E2 SATB marker path is source-coupled: `gc_driver_satb_rendezvous_cycle` arms `enter_satb_marking`, closes the
   initial rendezvous before `mark_concurrent_roots`, requests a final rendezvous, drops the SATB guard before
   `sweep_after_concurrent_mark`, asserts that the final sweep actually ran before dropping the final roots, and has

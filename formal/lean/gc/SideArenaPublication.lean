@@ -16,6 +16,11 @@ def PublishedEntryReady
     (r : Ref) : Prop :=
   PageReady r ∧ ChunkReady r ∧ EntryWritten r ∧ EntryPublished r
 
+def PublishedNodeSideReady
+    (nodeSeg sideSeg : Nat)
+    (SideReady NodePublished : Prop) : Prop :=
+  NodePublished ∧ SideReady ∧ sideSeg = nodeSeg
+
 theorem published_entry_has_ready_payload
     {PagePublished ChunkPublished PageReady ChunkReady EntryWritten EntryPublished :
       Ref -> Prop}
@@ -74,5 +79,20 @@ theorem read_published_entry_has_ready_payload
       pagePublishReady
       chunkPublishReady
       (readOnlyAfterPublish hread)
+
+theorem published_side_bearing_node_reads_ready_payload
+    {nodeSeg sideSeg : Nat} {SideReady NodePublished : Prop}
+    (publishAfterSide : NodePublished -> SideReady)
+    (publishSameSegment : NodePublished -> sideSeg = nodeSeg) :
+    NodePublished -> PublishedNodeSideReady nodeSeg sideSeg SideReady NodePublished := by
+  intro published
+  exact And.intro published (And.intro (publishAfterSide published) (publishSameSegment published))
+
+theorem wrong_segment_cannot_satisfy_published_node_side_ready
+    {nodeSeg sideSeg : Nat} {SideReady NodePublished : Prop}
+    (wrongSegment : sideSeg ≠ nodeSeg) :
+    Not (PublishedNodeSideReady nodeSeg sideSeg SideReady NodePublished) := by
+  intro ready
+  exact wrongSegment ready.right.right
 
 end MeTTaTron.GC.SideArenaPublication

@@ -52,7 +52,8 @@
     - fixed-size arena slots are initialized and published before their
       addresses can be returned and read;
     - variable-length side-arena payloads are initialized before their
-      page/chunk/entry publication chain can be observed by a reader;
+      page/chunk/entry publication chain can be observed by a reader, and
+      side-bearing nodes publish only after same-segment side payloads exist;
     - variable-length side-arena payload boxes are dropped only on the
       true-quiescence arm, and the materialization shadow is cleared before a
       future dereference can observe a freed side payload;
@@ -145,6 +146,11 @@ Section CESKCollectorSafetyModel.
       (PageReady ChunkReady EntryWritten EntryPublished : Slot -> Prop)
       (slot : Slot) : Prop :=
     PageReady slot /\ ChunkReady slot /\ EntryWritten slot /\ EntryPublished slot.
+
+  Definition PublishedNodeSideReady
+      (node_seg side_seg : nat)
+      (SideReady NodePublished : Prop) : Prop :=
+    NodePublished /\ SideReady /\ side_seg = node_seg.
 
   Definition PublishedSlotReady
       (SegmentWritten SegmentPublished SlotWritten SlotPublished AddrReturned :
@@ -996,6 +1002,32 @@ Section CESKCollectorSafetyModel.
       + split.
         * apply Hwrite. apply Hread. exact Hread_observed.
         * apply Hread. exact Hread_observed.
+  Qed.
+
+  Theorem published_side_bearing_node_reads_ready_payload :
+    forall (node_seg side_seg : nat) (SideReady NodePublished : Prop),
+      (NodePublished -> SideReady) ->
+      (NodePublished -> side_seg = node_seg) ->
+      NodePublished ->
+      PublishedNodeSideReady node_seg side_seg SideReady NodePublished.
+  Proof.
+    intros node_seg side_seg SideReady NodePublished Hside Hsame Hpublished.
+    split.
+    - exact Hpublished.
+    - split.
+      + apply Hside. exact Hpublished.
+      + apply Hsame. exact Hpublished.
+  Qed.
+
+  Theorem wrong_segment_cannot_satisfy_published_node_side_ready :
+    forall (node_seg side_seg : nat) (SideReady NodePublished : Prop),
+      side_seg <> node_seg ->
+      ~ PublishedNodeSideReady node_seg side_seg SideReady NodePublished.
+  Proof.
+    intros node_seg side_seg SideReady NodePublished Hwrong Hready.
+    destruct Hready as [_ [_ Hsame]].
+    apply Hwrong.
+    exact Hsame.
   Qed.
 
   Theorem side_free_shadow_clear_blocks_future_deref :

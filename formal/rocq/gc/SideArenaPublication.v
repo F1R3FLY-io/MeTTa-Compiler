@@ -17,6 +17,11 @@ Section SideArenaPublicationModel.
       (r : Ref) : Prop :=
     PageReady r /\ ChunkReady r /\ EntryWritten r /\ EntryPublished r.
 
+  Definition PublishedNodeSideReady
+      (node_seg side_seg : nat)
+      (SideReady NodePublished : Prop) : Prop :=
+    NodePublished /\ SideReady /\ side_seg = node_seg.
+
   Theorem published_entry_has_ready_payload :
     forall (PagePublished ChunkPublished PageReady ChunkReady EntryWritten
             EntryPublished : Ref -> Prop),
@@ -61,6 +66,32 @@ Section SideArenaPublicationModel.
              EntryPublished Hwrite Hchunk Hpage Hpage_ready Hchunk_ready r).
     apply Hread.
     exact Hread_observed.
+  Qed.
+
+  Theorem published_side_bearing_node_reads_ready_payload :
+    forall (node_seg side_seg : nat) (SideReady NodePublished : Prop),
+      (NodePublished -> SideReady) ->
+      (NodePublished -> side_seg = node_seg) ->
+      NodePublished ->
+      PublishedNodeSideReady node_seg side_seg SideReady NodePublished.
+  Proof.
+    intros node_seg side_seg SideReady NodePublished Hside Hsame Hpublished.
+    split.
+    - exact Hpublished.
+    - split.
+      + apply Hside. exact Hpublished.
+      + apply Hsame. exact Hpublished.
+  Qed.
+
+  Theorem wrong_segment_cannot_satisfy_published_node_side_ready :
+    forall (node_seg side_seg : nat) (SideReady NodePublished : Prop),
+      side_seg <> node_seg ->
+      ~ PublishedNodeSideReady node_seg side_seg SideReady NodePublished.
+  Proof.
+    intros node_seg side_seg SideReady NodePublished Hwrong Hready.
+    destruct Hready as [_ [_ Hsame]].
+    apply Hwrong.
+    exact Hsame.
   Qed.
 End SideArenaPublicationModel.
 

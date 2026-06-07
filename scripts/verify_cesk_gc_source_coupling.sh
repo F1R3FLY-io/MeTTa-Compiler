@@ -293,6 +293,9 @@ assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn bump_in(&self
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn promote_young(&self) {" "self.set_young_floor(self.current_seg());" "self.young_alloc_bytes.store(0, Ordering::Relaxed);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr(&mut self, items: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), items);" "self.arena.write_reused(addr, Node::SExpr(cr));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunction(&mut self, goals: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), goals);" "self.arena.write_reused(addr, Node::Conjunction(cr));"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom(&mut self, s: &str) -> Addr" "let br = self.intern_bytes_in(addr.segment(), s);" "self.arena.write_reused(addr, Node::Atom(br));"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_string(&mut self, s: &str) -> Addr" "let br = self.intern_bytes_in(addr.segment(), s);" "self.arena.write_reused(addr, Node::String(br));"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_spanned(&mut self, inner: MettaValue, span: Span) -> Addr" "let sr = self.intern_span_in(addr.segment(), span);" "self.arena.write_reused(addr, Node::Spanned(inner, sr));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>)" "Node::Space(id) =>" "self.space_handle(id).collect_gc_values(&mut values);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn mark_young(&self, roots: &[Addr]) -> usize" "for &root in roots" "while let Some(addr) = worklist.pop()"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn mark_young(&self, roots: &[Addr]) -> usize" "self.child_addrs_for_mark(addr, &mut kids);" "for &child in &kids"
@@ -611,6 +614,11 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunct
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom(&mut self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::Atom(bs))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_string(&mut self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::String(bs))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_spanned(&mut self, inner: MettaValue, span: Span) -> Addr" "let sr = self.intern_span_in(seg, span);" "self.arena.try_bump_in(seg, Node::Spanned(inner, sr))"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr_concurrent(&self, items: &[MettaValue]) -> Addr" "let cs = self.intern_children_in(seg, items);" "self.arena.try_bump_in(seg, Node::SExpr(cs))"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunction_concurrent(&self, goals: &[MettaValue]) -> Addr" "let cs = self.intern_children_in(seg, goals);" "self.arena.try_bump_in(seg, Node::Conjunction(cs))"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom_concurrent(&self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::Atom(bs))"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_string_concurrent(&self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::String(bs))"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_spanned_concurrent(&self, inner: MettaValue, span: Span) -> Addr" "let sr = self.intern_span_in(seg, span);" "self.arena.try_bump_in(seg, Node::Spanned(inner, sr))"
 
 # Side-payload free quiescence coupling: dropping side-arena Boxes is separated
 # from reclaiming fixed node slots. It may happen only on the true-quiescence

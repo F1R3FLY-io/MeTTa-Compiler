@@ -257,6 +257,12 @@ run_tlc "side_arena_publication_entry_before_chunk" "MC_SideArenaPublication.tla
   fail "Invariant PublishedEntryReady is violated"
 run_tlc "side_arena_publication_publish_before_write" "MC_SideArenaPublication.tla" "MC_SideArenaPublication_publish_before_write.cfg" \
   fail "Invariant PublishedEntryReady is violated"
+run_tlc "side_arena_colocation_colocated" "MC_SideArenaCoLocation.tla" "MC_SideArenaCoLocation_colocated.cfg" \
+  pass ""
+run_tlc "side_arena_colocation_wrong_segment" "MC_SideArenaCoLocation.tla" "MC_SideArenaCoLocation_wrong_segment.cfg" \
+  fail "Invariant NoBadSideRead is violated"
+run_tlc "side_arena_colocation_publish_before_side" "MC_SideArenaCoLocation.tla" "MC_SideArenaCoLocation_publish_before_side.cfg" \
+  fail "Invariant NoBadSideRead is violated"
 run_tlc "side_free_quiescence" "MC_SideFreeQuiescence.tla" "MC_SideFreeQuiescence_quiescent.cfg" \
   pass ""
 run_tlc "side_free_midloop_deferred" "MC_SideFreeQuiescence.tla" "MC_SideFreeQuiescence_midloop_deferred.cfg" \

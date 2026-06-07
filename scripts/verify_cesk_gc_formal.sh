@@ -101,6 +101,7 @@ run_lean "formal/lean/gc/MidloopRootUnion.lean"
 run_lean "formal/lean/gc/RendezvousWitness.lean"
 run_lean "formal/lean/gc/WitnessSlotLifecycle.lean"
 run_lean "formal/lean/gc/WitnessOkReset.lean"
+run_lean "formal/lean/gc/GenerationResume.lean"
 run_lean "formal/lean/gc/StartedCycleGate.lean"
 run_lean "formal/lean/gc/CollapseCompletion.lean"
 run_lean "formal/lean/gc/WorkerAdmission.lean"
@@ -137,6 +138,7 @@ run_rocq "formal/rocq/gc/MidloopRootUnion.v"
 run_rocq "formal/rocq/gc/RendezvousWitness.v"
 run_rocq "formal/rocq/gc/WitnessSlotLifecycle.v"
 run_rocq "formal/rocq/gc/WitnessOkReset.v"
+run_rocq "formal/rocq/gc/GenerationResume.v"
 run_rocq "formal/rocq/gc/StartedCycleGate.v"
 run_rocq "formal/rocq/gc/CollapseCompletion.v"
 run_rocq "formal/rocq/gc/WorkerAdmission.v"
@@ -343,6 +345,12 @@ run_tlc "started_cycle_gate_started" "MC_StartedCycleGate.tla" "MC_StartedCycleG
   pass ""
 run_tlc "started_cycle_gate_gen" "MC_StartedCycleGate.tla" "MC_StartedCycleGate_gen.cfg" \
   fail "Invariant NoPhantomRepark is violated"
+run_tlc "generation_resume_gen" "MC_GenerationResume.tla" "MC_GenerationResume_gen.cfg" \
+  pass ""
+run_tlc "generation_resume_boolean" "MC_GenerationResume.tla" "MC_GenerationResume_boolean.cfg" \
+  fail "Invariant EndedCycleCanResume is violated"
+run_tlc "generation_resume_no_bump" "MC_GenerationResume.tla" "MC_GenerationResume_no_bump.cfg" \
+  fail "Invariant EndedCycleCanResume is violated"
 run_tlc "witness_ok_reset_clear" "MC_WitnessOkReset.tla" "MC_WitnessOkReset_clear.cfg" \
   pass ""
 run_tlc "witness_ok_reset_stale" "MC_WitnessOkReset.tla" "MC_WitnessOkReset_stale.cfg" \

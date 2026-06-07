@@ -809,6 +809,17 @@ assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::set_current_cycle_starte
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "let started = current_cycle_started();" "if started > my_reparked_gen {"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "if current_cycle_started() > my_reparked_gen {" "continue 'straddle;"
 
+# E1/E5 generation-gated resume: workers resume when their parked
+# GC_CYCLE_GEN has advanced, not when the shared GC_REQUESTED boolean happens
+# to be false. This prevents a back-to-back request from re-blocking a worker
+# whose own rendezvous cycle ended.
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "let mut lock = RENDEZVOUS_MUTEX.lock();" "while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {" "RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);"
+assert_zero_between "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "/// WORKER side: park on" "is_gc_requested()"
+assert_zero_between "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "/// Get the committed bytes" "worker_wait_for_resume()"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn end_rendezvous_cycle() {" "GC_CYCLE_GEN.fetch_add(1, Ordering::AcqRel);" "RENDEZVOUS_CONDVAR.notify_all();"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn close_open_rendezvous_cycle" "ga::end_rendezvous_cycle();" "ga::resume_workers();"
+
 # E1/E5 witness-ok reset: CURRENT_WITNESS_OK is a non-generational bool, so
 # cycle teardown must clear it after the gen bump and before any resume/startup
 # notify can expose the next cycle. The driver must run teardown before dropping

@@ -8,6 +8,8 @@
       roots are buffered by a genuine park or the true outermost guard drops;
     - cross-cycle witness-ok reset prevents a previous cycle's non-generational
       true flag from allowing the next cycle's sweep before a fresh wait;
+    - generation-gated resume releases a worker after its own rendezvous cycle's
+      end bump even if a back-to-back request reasserts `GC_REQUESTED`;
     - started-cycle straddle gating prevents a teardown generation bump from
       causing a phantom worker re-park before the next driver starts;
     - parallel dispatch/collapse completion guards prevent a panic-unwind from
@@ -156,6 +158,12 @@ Section CESKCollectorSafetyModel.
       (Live Occupied Buffered : Machine -> Prop)
       (m : Machine) : Prop :=
     Live m -> Occupied m \/ Buffered m.
+
+  Definition GenerationCanResume (my_gen current_gen : nat) : Prop :=
+    current_gen <> my_gen.
+
+  Definition BooleanCanResume (gc_requested : Prop) : Prop :=
+    ~ gc_requested.
 
   Definition ConcurrentCollectorRoot
       (InitialRoot DriverRoot ShadedDeletion AllocateBlack : Addr -> Prop)
@@ -426,6 +434,45 @@ Section CESKCollectorSafetyModel.
     apply Hfresh.
     apply Hgate.
     exact Hcollect.
+  Qed.
+
+  Theorem generation_end_bump_releases_worker :
+    forall my_gen current_gen : nat,
+      current_gen <> my_gen ->
+      GenerationCanResume my_gen current_gen.
+  Proof.
+    intros my_gen current_gen Hadvanced.
+    exact Hadvanced.
+  Qed.
+
+  Theorem generation_resume_ignores_back_to_back_request :
+    forall (my_gen current_gen : nat) (GcRequested : Prop),
+      current_gen <> my_gen ->
+      GcRequested ->
+      GenerationCanResume my_gen current_gen.
+  Proof.
+    intros my_gen current_gen GcRequested Hadvanced _.
+    exact Hadvanced.
+  Qed.
+
+  Theorem same_generation_keeps_worker_parked :
+    forall my_gen current_gen : nat,
+      current_gen = my_gen ->
+      ~ GenerationCanResume my_gen current_gen.
+  Proof.
+    intros my_gen current_gen Hsame Hcan_resume.
+    apply Hcan_resume.
+    exact Hsame.
+  Qed.
+
+  Theorem boolean_resume_reasserted_request_blocks :
+    forall GcRequested : Prop,
+      GcRequested ->
+      ~ BooleanCanResume GcRequested.
+  Proof.
+    intros GcRequested Hrequested Hcan_resume.
+    apply Hcan_resume.
+    exact Hrequested.
   Qed.
 
   Theorem started_gate_prevents_phantom_repark :

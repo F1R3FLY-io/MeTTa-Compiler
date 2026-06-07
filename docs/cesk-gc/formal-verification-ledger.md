@@ -58,6 +58,10 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/WitnessOkReset.v` and `formal/lean/gc/WitnessOkReset.lean`: prove the cross-cycle witness-ok reset
   obligation. Clearing the non-generational witness gate blocks collection before the next fresh witness proof, and a
   collection allowed by a fresh same-cycle witness cannot be a stale-witness collection.
+- `formal/rocq/gc/GenerationResume.v` and `formal/lean/gc/GenerationResume.lean`: prove the E1/E5
+  generation-gated resume obligation. A parked worker can resume once `GC_CYCLE_GEN != my_gen`, even if a back-to-back
+  request reasserts `GC_REQUESTED`; if the generation never advances, the worker remains parked, and boolean
+  `GC_REQUESTED` resume can be re-blocked by the next request.
 - `formal/rocq/gc/StartedCycleGate.v` and `formal/lean/gc/StartedCycleGate.lean`: prove the E5 started-cycle
   straddle-gate obligation. If re-park is gated by `GC_CYCLE_STARTED > my_reparked_gen`, a teardown-only generation
   bump cannot cause a phantom re-park before the next driver starts.
@@ -216,6 +220,9 @@ can replace the full-major final sweep.
   violates it.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
+- `tla/GenerationResume.tla`: checks the E1/E5 worker-resume rule. Generation-gated resume with an end-of-cycle
+  bump preserves `EndedCycleCanResume` even after a back-to-back request; boolean `GC_REQUESTED` resume and
+  generation resume without the end bump both violate it.
 - `tla/CollapseCompletion.tla`: checks the E1 parallel collapse completion liveness obligation. With the RAII
   completion guard, normal and panic exits both decrement the worker counter and `<>(parentDone)` holds; without the
   panic-edge decrement, a panic can leave `remaining > 0` forever and violates the temporal property.

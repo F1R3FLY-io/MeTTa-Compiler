@@ -256,6 +256,8 @@ assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::collect_live_env_anchors
 assert_before "src/backend/eval/cesk/gc_driver.rs" "ga::collect_live_dispatch_anchors(&mut roots);" "assert_rendezvous_union_complete(&roots, n);"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn prepare_rendezvous_roots" "ga::collect_live_dispatch_anchors(&mut roots);" "assert_rendezvous_union_complete(&roots, n);"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_rendezvous_cycle" "let roots = prepare_rendezvous_roots();" "run_collection_if_triggered_rendezvous(&roots)"
+assert_zero "src/backend/eval/cesk/gc_driver.rs" "collect_live_env_anchors()  // ∪ driver-C"
+assert_zero "src/backend/eval/cesk/gc_driver.rs" "the trigger itself parks"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking" "Ok(()) => {}" "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking" "Err(mpsc::SendError(GcDriverRequest::Collect(roots, _))) => return Err(roots)," "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))"
 assert_zero_between "src/backend/eval/cesk/gc_driver.rs" "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))" "pub(crate) fn collect_quiescence" "return Err"
@@ -916,6 +918,8 @@ assert_zero "src/backend/models/gc_allocator.rs" 'block until exactly `n`'
 assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn end_rendezvous_cycle() {" "GC_CYCLE_GEN.fetch_add(1, Ordering::AcqRel);" "RENDEZVOUS_CONDVAR.notify_all();"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn close_open_rendezvous_cycle" "ga::end_rendezvous_cycle();" "ga::resume_workers();"
 assert_zero "src/backend/eval/cesk/index_heap.rs" "DORMANT until E1-FLIP"
+assert_zero "src/backend/eval/cesk/index_heap.rs" 'all `n` parked/finished'
+assert_zero "src/backend/eval/cesk/index_heap.rs" 'WORKER_ROOT_BUFFER ∪ collect_safepoint_roots` ='
 
 # E1/E5 witness-ok reset: CURRENT_WITNESS_OK is a non-generational bool, so
 # cycle teardown must clear it after the gen bump and before any resume/startup

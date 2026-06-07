@@ -2157,11 +2157,13 @@ pub mod index_gc {
     /// [`gate_open_rendezvous`] (the completeness witness — NO `!worker_ever_spawned()`,
     /// which is false under FANOUT>0) and labels the cycle `"rendezvous"`.
     ///
-    /// `roots` MUST be the COMPLETE union the driver drained
-    /// (`WORKER_ROOT_BUFFER ∪ collect_safepoint_roots` = `⋃ᵢ machineᵢ ∪ E₀ ∪ driver-C`);
-    /// [`gate_open_rendezvous`] is the completeness witness (all `n` parked/finished +
-    /// GcInProgressGuard held). The shared `mark_sweep_if_over_watermark` body is the
-    /// same proven mark/sweep.
+    /// `roots` MUST be the COMPLETE union the driver drained:
+    /// `WORKER_ROOT_BUFFER ∪ collect_safepoint_roots ∪ collect_live_env_anchors ∪
+    /// collect_live_dispatch_anchors`, i.e.
+    /// `⋃ᵢ machineᵢ ∪ E₀ ∪ driver-C ∪ dispatch-C`. [`gate_open_rendezvous`] is the
+    /// completeness witness: the driver holds `GcInProgressGuard` and proved every
+    /// occupied witness slot was either reified for this cycle or acquired after it.
+    /// The shared `mark_sweep_if_over_watermark` body is the same proven mark/sweep.
     ///
     /// ⚠️ The `"rendezvous"` phase string (≠ `"quiescence"`) is LOAD-BEARING: it makes
     /// `mark_sweep_if_over_watermark` reclaim node slots ONLY and NOT free side-`Box`es

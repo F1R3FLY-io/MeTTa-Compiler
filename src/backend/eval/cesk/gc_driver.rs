@@ -156,7 +156,10 @@ fn gc_driver_main(request_rx: mpsc::Receiver<GcDriverRequest>) {
 ///   (4) snap := snapshot_witness(cur_gen)
 ///       requestor_wait_for_all_reified_parked(&snap, cur_gen)   // WITNESS gate: ∀ occupied slot
 ///       set_current_witness_ok(true)           //   published>=cur_gen OR acquired>cur_gen (live-re-walk)
-///   (5) roots := drain(WORKER_ROOT_BUFFER) ∪ collect_safepoint_roots() ∪ collect_live_env_anchors()  // ∪ driver-C
+///   (5) roots := drain(WORKER_ROOT_BUFFER)
+///              ∪ collect_safepoint_roots()
+///              ∪ collect_live_env_anchors()
+///              ∪ collect_live_dispatch_anchors()
 ///   (6) run_collection_if_triggered(roots)     // GATED: gate_open_rendezvous() reads current_witness_ok()
 ///   (7) end_rendezvous_cycle()                 // bump GC_CYCLE_GEN + reset + clear witness_ok (releases resume)
 ///   (8) drop _gip                              // GC_IN_PROGRESS=false (wakes enter-parkers)
@@ -169,10 +172,10 @@ fn gc_driver_main(request_rx: mpsc::Receiver<GcDriverRequest>) {
 /// (7)-(9) runs even if (6) panics (catch_unwind), so parked workers are ALWAYS
 /// released — a panicked cycle never wedges the mutators.
 ///
-/// E₀ is covered without the GC thread holding an env handle: every parked worker
-/// self-roots its machine via `collect_machine_roots_live` (⊇ `collect_persistent_roots`,
-/// i.e. E₀), and `n ≥ 1` always (the trigger itself parks), so E₀ is in the drained
-/// buffer. driver-C (`SAFEPOINT_ROOTS`, the batch-finisher F1 roots) is read directly.
+/// E₀ is covered through the live-env anchor registry, plus each participant's
+/// structural self-root includes its machine-local persistent roots. driver-C
+/// (`SAFEPOINT_ROOTS`, including batch-finisher F1 roots) is read directly, and
+/// parallel fan-out C is covered by `collect_live_dispatch_anchors`.
 fn gc_driver_rendezvous_cycle() {
     let _gip = acquire_gc_in_progress_for_rendezvous();
     let roots = prepare_rendezvous_roots();

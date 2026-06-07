@@ -46,6 +46,9 @@
       promotion clears stale nursery triggers before the next scheduling check;
     - C1.c scheduler choice never defers cap-forced or cadence-forced majors,
       and any deferred major is a live-growth major under level-3 young pressure;
+    - B.5 cap-floor anti-thrash prevents a futile cap-triggered major from
+      immediately re-firing without committed growth and clears stale floors on
+      segment-releasing majors;
     - E2 concurrent marking retains every snapshot-live address covered by
       initial roots, rendezvous driver roots, SATB deletion shades, or
       allocate-black publication;
@@ -94,6 +97,9 @@
     These are parametric theorems over the store graph and do not assume a finite
     TLC state space.
 *)
+
+From Stdlib Require Import Arith.
+From Stdlib Require Import Lia.
 
 Module MeTTaTron_GC_CESKCollectorSafety.
 
@@ -190,6 +196,13 @@ Section CESKCollectorSafetyModel.
       (Level3 MinorDueNow LiveMajor CapMajor CadenceMajor : Prop) : Prop :=
     MajorDue LiveMajor CapMajor CadenceMajor /\
     Level3 /\ MinorDueNow /\ ~ CapMajor /\ ~ CadenceMajor.
+
+  Definition CapDue (Committed BaseCap CapFloor : nat) : Prop :=
+    Committed > Nat.max BaseCap CapFloor.
+
+  Definition FutileCapMajor
+      (Committed BaseCap CapFloor ReleasedSegments : nat) : Prop :=
+    CapDue Committed BaseCap CapFloor /\ ReleasedSegments = 0.
 
   Definition PromotionRelaxed
       (YoungOdometerReset NurseryPendingCleared : Prop) : Prop :=
@@ -906,6 +919,56 @@ Section CESKCollectorSafetyModel.
     - split.
       + exact Hnot_cap.
       + exact Hnot_cadence.
+  Qed.
+
+  Theorem raised_floor_blocks_immediate_cap_refire :
+    forall Committed BaseCap NextFloor : nat,
+      NextFloor = Committed ->
+      ~ CapDue Committed BaseCap NextFloor.
+  Proof.
+    intros Committed BaseCap NextFloor Hfloor Hcap_due.
+    subst NextFloor.
+    unfold CapDue in Hcap_due.
+    assert (Committed <= Nat.max BaseCap Committed) by apply Nat.le_max_r.
+    lia.
+  Qed.
+
+  Theorem cap_refire_after_raised_floor_requires_growth :
+    forall CommittedAfterSweep CommittedNext BaseCap NextFloor : nat,
+      NextFloor = CommittedAfterSweep ->
+      CapDue CommittedNext BaseCap NextFloor ->
+      CommittedNext > CommittedAfterSweep.
+  Proof.
+    intros CommittedAfterSweep CommittedNext BaseCap NextFloor Hfloor Hcap_due.
+    subst NextFloor.
+    unfold CapDue in Hcap_due.
+    assert (CommittedAfterSweep <= Nat.max BaseCap CommittedAfterSweep)
+      by apply Nat.le_max_r.
+    lia.
+  Qed.
+
+  Theorem futile_cap_major_raise_prevents_same_committed_refire :
+    forall Committed BaseCap OldFloor ReleasedSegments NextFloor : nat,
+      FutileCapMajor Committed BaseCap OldFloor ReleasedSegments ->
+      NextFloor = Committed ->
+      ~ CapDue Committed BaseCap NextFloor.
+  Proof.
+    intros Committed BaseCap OldFloor ReleasedSegments NextFloor _ Hfloor.
+    apply raised_floor_blocks_immediate_cap_refire.
+    exact Hfloor.
+  Qed.
+
+  Theorem cleared_floor_restores_base_cap_trigger :
+    forall Committed BaseCap NextFloor : nat,
+      NextFloor = 0 ->
+      Committed > BaseCap ->
+      CapDue Committed BaseCap NextFloor.
+  Proof.
+    intros Committed BaseCap NextFloor Hfloor Hover_base.
+    subst NextFloor.
+    unfold CapDue.
+    rewrite Nat.max_0_r.
+    exact Hover_base.
   Qed.
 
   Theorem young_reachable_marked :

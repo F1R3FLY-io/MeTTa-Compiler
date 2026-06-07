@@ -133,6 +133,7 @@ run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/NurseryBackpressure.v"
 run_rocq "formal/rocq/gc/MajorMinorScheduler.v"
+run_rocq "formal/rocq/gc/CapFloorAntiThrash.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/NodeEdgeCompleteness.v"
 run_rocq "formal/rocq/gc/AbstractGCLiveNarrowing.v"
@@ -387,6 +388,12 @@ run_tlc "major_minor_scheduler_no_cap" "MC_MajorMinorScheduler.tla" "MC_MajorMin
   fail "Invariant CapMajorNotDeferred is violated"
 run_tlc "major_minor_scheduler_no_cadence" "MC_MajorMinorScheduler.tla" "MC_MajorMinorScheduler_no_cadence.cfg" \
   fail "Invariant CadenceMajorNotDeferred is violated"
+run_tlc "cap_floor_anti_thrash_all" "MC_CapFloorAntiThrash.tla" "MC_CapFloorAntiThrash_all.cfg" \
+  pass ""
+run_tlc "cap_floor_anti_thrash_no_raise" "MC_CapFloorAntiThrash.tla" "MC_CapFloorAntiThrash_no_raise.cfg" \
+  fail "Invariant FutileCapMajorDoesNotRefire is violated"
+run_tlc "cap_floor_anti_thrash_no_clear" "MC_CapFloorAntiThrash.tla" "MC_CapFloorAntiThrash_no_clear.cfg" \
+  fail "Invariant ReleaseClearsFloor is violated"
 run_tlc "satb_deletion_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_satb.cfg" \
   pass ""
 run_tlc "satb_no_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_none.cfg" \

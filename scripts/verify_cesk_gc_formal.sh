@@ -160,6 +160,7 @@ run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
+run_rocq "formal/rocq/gc/DepthZeroSafepoint.v"
 run_rocq "formal/rocq/gc/OperatorCacheEpoch.v"
 run_rocq "formal/rocq/gc/EpochProtectedCaches.v"
 run_rocq "formal/rocq/gc/WriteOnceAnchors.v"
@@ -320,6 +321,10 @@ run_tlc "dedicated_single_regime_parallel_ungated" "MC_DedicatedSingleRegime.tla
   fail "Invariant NoDriverlessRequest is violated"
 run_tlc "dedicated_single_regime_cron_ungated" "MC_DedicatedSingleRegime.tla" "MC_DedicatedSingleRegime_cron_ungated.cfg" \
   fail "Invariant NoDriverlessRequest is violated"
+run_tlc "depth_zero_safepoint_guarded" "MC_DepthZeroSafepoint.tla" "MC_DepthZeroSafepoint_guarded.cfg" \
+  pass ""
+run_tlc "depth_zero_safepoint_no_guard" "MC_DepthZeroSafepoint.tla" "MC_DepthZeroSafepoint_no_guard.cfg" \
+  fail "Invariant DepthZeroDoesNotPark is violated"
 run_tlc "operator_cache_epoch_checked" "MC_OperatorCacheEpoch.tla" "MC_OperatorCacheEpoch_checked.cfg" \
   pass ""
 run_tlc "operator_cache_epoch_unchecked" "MC_OperatorCacheEpoch.tla" "MC_OperatorCacheEpoch_unchecked.cfg" \

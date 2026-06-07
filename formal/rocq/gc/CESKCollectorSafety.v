@@ -28,6 +28,8 @@
       continuations are included in the published frame contribution;
     - VM/JIT tier-leaf register roots are included in the worker's extra
       publication before the worker parks;
+    - cooperative tier-leaf safepoints at EvalGuard depth zero return without
+      parking or dropping a guard, because they are not counted participants;
     - eval-entry driver-C publication puts caller-held source/output roots in
       the driver roots;
     - async batch-result handoff roots worker results in driver-C until the
@@ -394,6 +396,14 @@ Section CESKCollectorSafetyModel.
   Definition DedicatedRequestSafe
       (DedicatedRequest DriverPosted : Prop) : Prop :=
     DedicatedRequest -> DriverPosted.
+
+  Definition DepthZeroGuard
+      (DepthPositive Park DropGuard : Prop) : Prop :=
+    ~ DepthPositive -> ~ Park /\ ~ DropGuard.
+
+  Definition DepthPositiveParkPath
+      (DepthPositive Park DropGuard : Prop) : Prop :=
+    DepthPositive -> Park /\ DropGuard.
 
   Theorem index_collector_excludes_registry_source :
     forall source,
@@ -962,6 +972,54 @@ Section CESKCollectorSafetyModel.
     - pose proof (Hlegacy_suppressed Hdedicated p) as Hno_legacy.
       apply Hno_legacy.
       exact Hlegacy_request.
+  Qed.
+
+  Theorem depth_zero_does_not_park :
+    forall DepthPositive Park DropGuard,
+      DepthZeroGuard DepthPositive Park DropGuard ->
+      ~ DepthPositive ->
+      ~ Park.
+  Proof.
+    intros DepthPositive Park DropGuard Hguard Hzero.
+    destruct (Hguard Hzero) as [Hno_park _].
+    exact Hno_park.
+  Qed.
+
+  Theorem depth_zero_does_not_drop_guard :
+    forall DepthPositive Park DropGuard,
+      DepthZeroGuard DepthPositive Park DropGuard ->
+      ~ DepthPositive ->
+      ~ DropGuard.
+  Proof.
+    intros DepthPositive Park DropGuard Hguard Hzero.
+    destruct (Hguard Hzero) as [_ Hno_drop].
+    exact Hno_drop.
+  Qed.
+
+  Theorem depth_zero_safepoint_has_no_invalid_participation :
+    forall DepthPositive Park DropGuard,
+      DepthZeroGuard DepthPositive Park DropGuard ->
+      ~ DepthPositive ->
+      (Park \/ DropGuard) ->
+      False.
+  Proof.
+    intros DepthPositive Park DropGuard Hguard Hzero Hinvalid.
+    destruct Hinvalid as [Hpark | Hdrop].
+    - apply (depth_zero_does_not_park DepthPositive Park DropGuard Hguard Hzero).
+      exact Hpark.
+    - apply (depth_zero_does_not_drop_guard DepthPositive Park DropGuard Hguard Hzero).
+      exact Hdrop.
+  Qed.
+
+  Theorem depth_positive_safepoint_uses_park_path :
+    forall DepthPositive Park DropGuard,
+      DepthPositiveParkPath DepthPositive Park DropGuard ->
+      DepthPositive ->
+      Park /\ DropGuard.
+  Proof.
+    intros DepthPositive Park DropGuard Hpath Hpositive.
+    apply Hpath.
+    exact Hpositive.
   Qed.
 
   Theorem nursery_open_signal_requests_minor :

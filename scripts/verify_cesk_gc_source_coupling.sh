@@ -466,6 +466,9 @@ assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::Trampo
 assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::Trampoline {" "for e in deferred_envs {" "e.as_ref().collect_roots_into(out);"
 assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::TierLeaf { extra }" "out.extend_from_slice(extra);" "collect_persistent_roots_no_env0(out);"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "pub(crate) fn worker_cooperative_safepoint" "ThreadContribution::TierLeaf" "gc_allocator::worker_park_and_root_in_cycle"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "pub(crate) fn worker_cooperative_safepoint" "if gc_allocator::eval_guard_depth() == 0 {" "let mut park_roots: Vec<MettaValue>"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "if gc_allocator::eval_guard_depth() == 0 {" "return;" "let mut park_roots: Vec<MettaValue>"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "if gc_allocator::eval_guard_depth() == 0 {" "return;" "gc_allocator::drop_eval_guard_for_safepoint_full();"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "FULL park (mirror branch-B template" "ThreadContribution::Trampoline" "worker_park_and_root_in_cycle"
 
 # Tier-leaf VM/JIT extra roots: the TierLeafExtraRoots proof/TLA model applies

@@ -63,6 +63,8 @@
       allocate-black marking;
     - fixed-size arena slots are initialized and published before their
       addresses can be returned and read;
+    - D-RLOCK/B2 shared concurrent allocation returns only fresh bump slots and
+      cannot consume free-list reuse slots reserved for the exclusive path;
     - variable-length side-arena payloads are initialized before their
       page/chunk/entry publication chain can be observed by a reader, and
       side-bearing nodes publish only after same-segment side payloads exist;
@@ -173,6 +175,18 @@ Section CESKCollectorSafetyModel.
       (a : Addr) : Prop :=
     SegmentWritten a /\ SegmentPublished a /\ SlotWritten a /\ SlotPublished a /\
       AddrReturned a.
+
+  Definition ConcurrentFreshOnly
+      (ConcurrentReturned Fresh : Addr -> Prop) : Prop :=
+    forall a, ConcurrentReturned a -> Fresh a.
+
+  Definition FreeListSeparated
+      (Fresh OnFreeList : Addr -> Prop) : Prop :=
+    forall a, Fresh a -> ~ OnFreeList a.
+
+  Definition ReuseExclusiveOnly
+      (ReuseReturned Exclusive : Addr -> Prop) : Prop :=
+    forall a, ReuseReturned a -> Exclusive a.
 
   Definition LiveMachineVisible
       (Machine : Type)
@@ -1294,6 +1308,45 @@ Section CESKCollectorSafetyModel.
         * split.
           -- apply Hreturn. apply Hread. exact Hread_observed.
           -- apply Hread. exact Hread_observed.
+  Qed.
+
+  Theorem concurrent_allocation_never_returns_free_list_slot :
+    forall (ConcurrentReturned Fresh OnFreeList : Addr -> Prop),
+      ConcurrentFreshOnly ConcurrentReturned Fresh ->
+      FreeListSeparated Fresh OnFreeList ->
+      forall a, ConcurrentReturned a -> ~ OnFreeList a.
+  Proof.
+    intros ConcurrentReturned Fresh OnFreeList Hfresh Hseparated a Hreturned.
+    apply Hseparated.
+    apply Hfresh.
+    exact Hreturned.
+  Qed.
+
+  Theorem reuse_return_requires_exclusive_path :
+    forall (ReuseReturned Exclusive : Addr -> Prop),
+      ReuseExclusiveOnly ReuseReturned Exclusive ->
+      forall a, ReuseReturned a -> Exclusive a.
+  Proof.
+    intros ReuseReturned Exclusive Hexclusive a Hreuse.
+    apply Hexclusive.
+    exact Hreuse.
+  Qed.
+
+  Theorem concurrent_return_and_reuse_are_disjoint :
+    forall (ConcurrentReturned ReuseReturned Fresh OnFreeList : Addr -> Prop),
+      ConcurrentFreshOnly ConcurrentReturned Fresh ->
+      FreeListSeparated Fresh OnFreeList ->
+      (forall a, ReuseReturned a -> OnFreeList a) ->
+      forall a, ConcurrentReturned a -> ~ ReuseReturned a.
+  Proof.
+    intros ConcurrentReturned ReuseReturned Fresh OnFreeList
+           Hfresh Hseparated Hreuse_on_free a Hconcurrent Hreuse.
+    pose proof (concurrent_allocation_never_returns_free_list_slot
+                  ConcurrentReturned Fresh OnFreeList Hfresh Hseparated
+                  a Hconcurrent) as Hnot_free.
+    apply Hnot_free.
+    apply Hreuse_on_free.
+    exact Hreuse.
   Qed.
 
   Theorem side_arena_read_published_entry_ready :

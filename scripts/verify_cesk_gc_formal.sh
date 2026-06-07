@@ -152,6 +152,7 @@ run_rocq "formal/rocq/gc/FrameEnvRoots.v"
 run_rocq "formal/rocq/gc/TierLeafExtraRoots.v"
 run_rocq "formal/rocq/gc/IndexArenaPublication.v"
 run_rocq "formal/rocq/gc/SideArenaPublication.v"
+run_rocq "formal/rocq/gc/ConcurrentBumpFreshOnly.v"
 run_rocq "formal/rocq/gc/SideFreeQuiescence.v"
 run_rocq "formal/rocq/gc/HashConsSweepRetain.v"
 run_rocq "formal/rocq/gc/DriverRootUnion.v"
@@ -268,6 +269,12 @@ run_tlc "side_arena_colocation_wrong_segment" "MC_SideArenaCoLocation.tla" "MC_S
   fail "Invariant NoBadSideRead is violated"
 run_tlc "side_arena_colocation_publish_before_side" "MC_SideArenaCoLocation.tla" "MC_SideArenaCoLocation_publish_before_side.cfg" \
   fail "Invariant NoBadSideRead is violated"
+run_tlc "concurrent_bump_fresh_only_all" "MC_ConcurrentBumpFreshOnly.tla" "MC_ConcurrentBumpFreshOnly_all.cfg" \
+  pass ""
+run_tlc "concurrent_bump_fresh_only_concurrent_reuse" "MC_ConcurrentBumpFreshOnly.tla" "MC_ConcurrentBumpFreshOnly_concurrent_reuse.cfg" \
+  fail "Invariant ConcurrentNeverReturnsFreeList is violated"
+run_tlc "concurrent_bump_fresh_only_nonexclusive_reuse" "MC_ConcurrentBumpFreshOnly.tla" "MC_ConcurrentBumpFreshOnly_nonexclusive_reuse.cfg" \
+  fail "Invariant ReuseOnlyExclusive is violated"
 run_tlc "side_free_quiescence" "MC_SideFreeQuiescence.tla" "MC_SideFreeQuiescence_quiescent.cfg" \
   pass ""
 run_tlc "side_free_midloop_deferred" "MC_SideFreeQuiescence.tla" "MC_SideFreeQuiescence_midloop_deferred.cfg" \

@@ -68,6 +68,10 @@ can replace the full-major final sweep.
   obligation. If the frame-local reader includes bindings, type assertions, state cells, named-space atoms, and
   inferred function type roots from a live forked environment, and that frame root is published through the normal
   thread contribution, mark/sweep cannot free those fork-local values.
+- `formal/rocq/gc/TierLeafExtraRoots.v` and `formal/lean/gc/TierLeafExtraRoots.lean`: prove the tier-leaf
+  register-root obligation. If VM/JIT register-file values are included in the `extra` part of the worker's tier-leaf
+  contribution before the worker parks, and that contribution is published/drained/marked, mark/sweep cannot free
+  those tier-local values.
 - `formal/rocq/gc/DriverRootUnion.v` and `formal/lean/gc/DriverRootUnion.lean`: prove the driver root-union
   obligation. If worker-buffer roots, safepoint roots, live environment anchors, and live dispatch anchors are all
   included in the driver root set, mark/sweep cannot free any live channel root.
@@ -228,6 +232,9 @@ can replace the full-major final sweep.
   violates `NoRegistryInIndex`.
 - `tla/FrameEnvRoots.tla`: checks the forked-env frame-root channel. Including the five fork-local Addr-bearing maps
   preserves `FrameEnvRootsComplete`; omitting inferred function type roots violates it.
+- `tla/TierLeafExtraRoots.tla`: checks the VM/JIT tier-leaf extra-root channel. Including every VM/JIT tier-local
+  value-bearing field preserves `TierLeafExtraRootsComplete`; omitting VM dispatch-memo roots or JIT state-cache roots
+  violates it.
 
 ## Source coupling
 

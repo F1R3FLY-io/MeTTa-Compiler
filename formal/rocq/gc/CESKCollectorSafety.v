@@ -22,6 +22,8 @@
       globals, K-spine, deferred env roots, and driver-C safepoint roots;
     - fork-local environment roots carried by live work items and
       continuations are included in the published frame contribution;
+    - VM/JIT tier-leaf register roots are included in the worker's extra
+      publication before the worker parks;
     - eval-entry driver-C publication puts caller-held source/output roots in
       the driver roots;
     - async batch-result handoff roots worker results in driver-C until the
@@ -111,6 +113,11 @@ Section CESKCollectorSafetyModel.
       (Binding TypeAssertion StateCell NamedSpace InferredType : Addr -> Prop)
       (a : Addr) : Prop :=
     Binding a \/ TypeAssertion a \/ StateCell a \/ NamedSpace a \/ InferredType a.
+
+  Definition TierLeafExtraRoot
+      (VmRegisterRoot JitRegisterRoot : Addr -> Prop)
+      (a : Addr) : Prop :=
+    VmRegisterRoot a \/ JitRegisterRoot a.
 
   Definition LiveMachineVisible
       (Machine : Type)
@@ -275,6 +282,33 @@ Section CESKCollectorSafetyModel.
     - apply Hstate. exact Hstate_a.
     - apply Hnamed. exact Hnamed_a.
     - apply Hinferred. exact Hinferred_a.
+  Qed.
+
+  Theorem tier_leaf_extra_root_survives_collection :
+    forall (VmRegisterRoot JitRegisterRoot Extra ThreadRoot BufferRoot DriverRoot
+            Marked Freed : Addr -> Prop),
+      (forall a, VmRegisterRoot a -> Extra a) ->
+      (forall a, JitRegisterRoot a -> Extra a) ->
+      (forall a, Extra a -> ThreadRoot a) ->
+      (forall a, ThreadRoot a -> BufferRoot a) ->
+      (forall a, BufferRoot a -> DriverRoot a) ->
+      (forall a, DriverRoot a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        TierLeafExtraRoot VmRegisterRoot JitRegisterRoot a ->
+        ~ Freed a.
+  Proof.
+    intros VmRegisterRoot JitRegisterRoot Extra ThreadRoot BufferRoot DriverRoot
+           Marked Freed Hvm Hjit Hextra Hpublish Hdrain Hmark Hsweep
+           a Hroot Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply Hdrain.
+    apply Hpublish.
+    apply Hextra.
+    destruct Hroot as [Hvm_root | Hjit_root].
+    - apply Hvm. exact Hvm_root.
+    - apply Hjit. exact Hjit_root.
   Qed.
 
   Theorem rendezvous_participant_root_survives_collection :

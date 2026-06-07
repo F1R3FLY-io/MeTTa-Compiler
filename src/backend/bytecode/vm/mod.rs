@@ -1045,9 +1045,11 @@ where
     /// - `trail` `Rebinding.old_value` (skip `NewBinding`)
     ///
     /// Deliberately does NOT walk:
-    /// - `env`: registered as `RootProvider` separately via `try_register_env_roots`
+    /// - `env`: slab registers it through `try_register_env_roots`; index-gc
+    ///   obtains E0 from the enclosing trampoline participant and fork-local
+    ///   frame roots from live work items / continuations
     /// - `native_registry`/`external_registry`: hold function pointers, no V values
-    /// - `memo_cache`: registered as `MemoCacheRoots` separately
+    /// - `memo_cache`: rooted through the slab provider or the index global anchors
     pub(crate) fn collect_roots_into(&self, out: &mut Vec<V>) {
         // Chunks are immutable, but their constant pools can contain slab
         // values. Transient VM-owned chunks are not necessarily present in the

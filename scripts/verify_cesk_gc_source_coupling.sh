@@ -393,6 +393,40 @@ assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::TierLe
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "pub(crate) fn worker_cooperative_safepoint" "ThreadContribution::TierLeaf" "gc_allocator::worker_park_and_root_in_cycle"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "FULL park (mirror branch-B template" "ThreadContribution::Trampoline" "worker_park_and_root_in_cycle"
 
+# Tier-leaf VM/JIT extra roots: the TierLeafExtraRoots proof/TLA model applies
+# only if the concrete VM and JIT readers enumerate every tier-local
+# value-bearing field before the worker publishes a TierLeaf contribution.
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "super::cache::collect_generic_chunk_constants(&self.chunk, out);" "out.extend(self.value_stack.iter().cloned());"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "out.extend(self.value_stack.iter().cloned());" "out.extend(self.locals.iter().cloned());"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "out.extend(self.locals.iter().cloned());" "out.extend(self.results.iter().cloned());"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "out.extend(self.results.iter().cloned());" "if let Some(ref et) = self.expected_type"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for (_scope, _name, val) in self.current_bindings.iter_full()" "for frame in self.bindings_stack.iter()"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for frame in self.call_stack.iter()" "for cp in self.choice_points.iter()"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for cp in self.choice_points.iter()" "for frame in self.collapse_frames.iter()"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for frame in self.collapse_frames.iter()" "for frame in self.collapse_bind_frames.iter()"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for frame in self.collapse_bind_frames.iter()" "for bindings in self.per_result_bindings.iter()"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for (_, vs) in self.dispatch_memo.values()" "for entry in self.trail.iter()"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "fn run_cooperative_safepoint" "self.collect_roots_into(&mut buf);" "worker_cooperative_safepoint(&buf_mv);"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "periodic cooperative GC safepoint for parallel-" "cfg!(feature = \"index-gc\")" "self.run_cooperative_safepoint();"
+assert_after_before "src/backend/eval/cesk/k_spine.rs" "VmLeaf::Vm { vm }" "(*vm).collect_roots_into(out);" "VmLeaf::SavedBindings"
+assert_after_before "src/backend/eval/cesk/k_spine.rs" "VmLeaf::Jit { ctx }" "collect_jit_roots_into(" "&*ctx, out,"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "collect_constant_array_roots(ctx.constants" "ctx.arena_constants as *const MettaValue"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.arena_constants as *const MettaValue" "collect_chunk_ptr_constants(ctx.current_chunk, out);"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.value_stack.add(i)" "ctx.results.add(i)"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.results.add(i)" "ctx.saved_stack.add(i)"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.saved_stack.add(i)" "ctx.choice_points.add(i)"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.choice_points.add(i)" "ctx.binding_frames.add(i)"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "entry.value.0" "ctx.template_results.add(i)"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.template_results.add(i)" "ctx.state_cache_valid"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_value_into" "gc_mode_is_index()" "Addr::from_raw"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_value_into" "Addr::from_raw" "MettaValue::from_addr"
+assert_count "src/backend/bytecode/jit/runtime/call_support.rs" "roots.push(arg.clone());" "2"
+assert_after_before "src/backend/bytecode/jit/runtime/call_support.rs" "roots.push(arg.clone());" "collect_jit_roots_into" "worker_cooperative_safepoint(&roots);"
+assert_after_before "src/backend/bytecode/jit/runtime/sexpr_ops.rs" "unsafe fn jit_maybe_pre_eval_structural" "roots.push(v.clone());" "collect_jit_roots_into"
+assert_after_before "src/backend/bytecode/jit/runtime/sexpr_ops.rs" "unsafe fn jit_maybe_pre_eval_structural" "collect_jit_roots_into" "worker_cooperative_safepoint(&roots);"
+assert_after_before "src/backend/bytecode/jit/hybrid/arena.rs" "pub fn execute_jit_arena_direct" "VmLeaf::Jit" "native_fn(&mut ctx);"
+assert_after_before "src/backend/bytecode/jit/hybrid/arena.rs" "pub fn execute_jit_arena_with_env" "VmLeaf::Jit" "native_fn(&mut ctx);"
+
 # Forked-env frame roots: fork_for_nondeterminism deep-copies the five
 # Addr-bearing local maps, and every index-mode live work item / continuation
 # frame must include those maps in its structural K roots. The Arc-shared E0

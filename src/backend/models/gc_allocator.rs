@@ -4103,8 +4103,10 @@ pub(crate) fn end_rendezvous_cycle() {
 /// is honored — both steps simply happen here, together, under RESUME_MUTEX. The
 /// loom model `loom_rendezvous` verifies this is lost-wakeup-free.
 ///
-/// DEAD until D2.3. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
-#[allow(dead_code)] // DEAD until D2.3 (requestor wiring); exercised by the D1.1 test.
+/// Live for dedicated rendezvous teardown and for trigger-handoff failure
+/// backstops. The attribute is only for build configurations whose current path
+/// does not enter the dedicated collector.
+#[allow(dead_code)]
 pub(crate) fn resume_workers() {
     let _lock = RESUME_MUTEX.lock();
     GC_REQUESTED.store(false, Ordering::Release);

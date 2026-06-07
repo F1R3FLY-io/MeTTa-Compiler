@@ -161,6 +161,7 @@ run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
 run_rocq "formal/rocq/gc/DepthZeroSafepoint.v"
+run_rocq "formal/rocq/gc/ConcurrentTriggerBackstop.v"
 run_rocq "formal/rocq/gc/OperatorCacheEpoch.v"
 run_rocq "formal/rocq/gc/EpochProtectedCaches.v"
 run_rocq "formal/rocq/gc/WriteOnceAnchors.v"
@@ -325,6 +326,16 @@ run_tlc "depth_zero_safepoint_guarded" "MC_DepthZeroSafepoint.tla" "MC_DepthZero
   pass ""
 run_tlc "depth_zero_safepoint_no_guard" "MC_DepthZeroSafepoint.tla" "MC_DepthZeroSafepoint_no_guard.cfg" \
   fail "Invariant DepthZeroDoesNotPark is violated"
+run_tlc "concurrent_trigger_backstop_sent" "MC_ConcurrentTriggerBackstop.tla" "MC_ConcurrentTriggerBackstop_sent.cfg" \
+  pass ""
+run_tlc "concurrent_trigger_backstop_spawn_none" "MC_ConcurrentTriggerBackstop.tla" "MC_ConcurrentTriggerBackstop_spawn_none.cfg" \
+  pass ""
+run_tlc "concurrent_trigger_backstop_send_fail" "MC_ConcurrentTriggerBackstop.tla" "MC_ConcurrentTriggerBackstop_send_fail.cfg" \
+  pass ""
+run_tlc "concurrent_trigger_backstop_no_spawn" "MC_ConcurrentTriggerBackstop.tla" "MC_ConcurrentTriggerBackstop_no_spawn_backstop.cfg" \
+  fail "Invariant FailedTriggerClearsRequest is violated"
+run_tlc "concurrent_trigger_backstop_no_send" "MC_ConcurrentTriggerBackstop.tla" "MC_ConcurrentTriggerBackstop_no_send_backstop.cfg" \
+  fail "Invariant FailedTriggerClearsRequest is violated"
 run_tlc "operator_cache_epoch_checked" "MC_OperatorCacheEpoch.tla" "MC_OperatorCacheEpoch_checked.cfg" \
   pass ""
 run_tlc "operator_cache_epoch_unchecked" "MC_OperatorCacheEpoch.tla" "MC_OperatorCacheEpoch_unchecked.cfg" \

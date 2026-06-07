@@ -2088,7 +2088,7 @@ pub mod index_gc {
     /// default/slab build never reaches it (byte-identical). Keeps the watermark
     /// constants module-private (the alternative — inlining at the call site —
     /// would have to expose them).
-    #[allow(dead_code)] // DEAD until E1-c step 3 wires the FANOUT>0 safepoint trigger.
+    #[allow(dead_code)]
     pub fn watermark_due_for_concurrent() -> bool {
         let (committed, young_alloc, old_live, nursery_pending) = {
             let heap = global_index_heap().read().expect("index heap");

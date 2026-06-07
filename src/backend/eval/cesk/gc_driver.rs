@@ -469,9 +469,9 @@ fn assert_rendezvous_union_complete(roots: &[MettaValue], n_snapshot: u32) {
 /// GC thread. The caller then parks at its OWN next safepoint as one of the `n`
 /// participants (so the GC thread's per-slot reified-witness wait completes).
 ///
-/// DORMANT until E1-c step 3 wires the FANOUT>0 safepoint trigger + park path; until
-/// then nothing calls this, so the default build is byte-identical.
-#[allow(dead_code)] // DEAD until E1-c step 3 wires the FANOUT>0 safepoint trigger.
+/// Source-coupled from the FANOUT watermark safepoint trigger. The default build
+/// remains byte-identical because the caller gates on `dedicated_gc_enabled()`.
+#[allow(dead_code)]
 pub(crate) fn request_concurrent_collection() {
     if !dedicated_gc_enabled() {
         return;

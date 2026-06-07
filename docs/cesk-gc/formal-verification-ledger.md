@@ -142,6 +142,9 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/DepthZeroSafepoint.v`: proves the E1 cooperative-safepoint depth-zero rule. A caller that is not
   inside an EvalGuard is not in the dedicated collector's participant snapshot and therefore must return without
   parking or dropping an EvalGuard; depth-positive callers may use the ordinary park path.
+- `formal/rocq/gc/ConcurrentTriggerBackstop.v`: proves the E1 FANOUT rendezvous-trigger backstop rule. If a worker
+  trigger cannot hand `CollectRendezvous` to the dedicated GC thread, the resume backstop must clear the pending
+  request and wake workers; otherwise the trigger must have posted a driver request.
 - `formal/rocq/gc/OperatorCacheEpoch.v` and `formal/lean/gc/OperatorCacheEpoch.lean`: prove the pointer-keyed
   operator-cache sweep-epoch obligation. A returned cache entry is current if the local sweep-epoch guard runs before
   lookup; if the local epoch is stale, the guarded lookup misses after clearing the cache.
@@ -235,6 +238,9 @@ can replace the full-major final sweep.
   cooperative producers preserves `NoDriverlessRequest`; leaving default, session, parallel, or cron ungated violates it.
 - `tla/DepthZeroSafepoint.tla`: checks the E1 cooperative-safepoint depth-zero rule. Guarding depth zero preserves
   `DepthZeroDoesNotPark` and `DepthZeroDoesNotDropGuard`; omitting the guard lets a non-participant park/drop path run.
+- `tla/ConcurrentTriggerBackstop.tla`: checks the E1 FANOUT rendezvous-trigger handoff. A successful trigger leaves
+  a posted driver request; spawn/send failure must run the resume backstop. Omitting either failure backstop leaves
+  `GC_REQUESTED` pending without a driver.
 - `tla/OperatorCacheEpoch.tla`: checks the pointer-keyed operator-cache sweep-epoch guard. Checking the local
   `gc_sweep_epoch` before lookup clears another worker's stale cache entry after sweep; skipping the check violates
   `NoStaleOperatorCacheHit`.
@@ -491,6 +497,9 @@ facts the proofs rely on:
 - `worker_cooperative_safepoint` returns at EvalGuard depth zero before building park roots or calling
   `drop_eval_guard_for_safepoint_full`, so depth-zero MORK/type-fixpoint callers cannot become uncounted rendezvous
   participants or trip the depth assertion.
+- `request_concurrent_collection` sets `GC_REQUESTED` before attempting the `CollectRendezvous` handoff, but both
+  driver-spawn failure and send failure call `resume_workers`; `resume_workers` clears `GC_REQUESTED` under
+  `RESUME_MUTEX` before notifying workers.
 - The E5 straddle loop gates on `current_cycle_started()`, and the driver sets it after admission closes and before
   the witness wait.
 - `end_rendezvous_cycle` clears `CURRENT_WITNESS_OK` after the gen bump and before the rendezvous notify; the driver

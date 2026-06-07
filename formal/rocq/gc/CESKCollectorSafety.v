@@ -38,6 +38,8 @@
       the root vector has been consumed by a successful send;
     - dedicated-thread mode suppresses legacy cooperative GC request producers
       so every request in that regime has a dedicated driver;
+    - FANOUT rendezvous trigger handoff failures run the resume backstop so a
+      driverless `GC_REQUESTED` flag cannot strand workers;
     - the collector marks the reachability closure of structural CESK roots plus
       driver roots;
     - the marker's concrete node-edge reader covers every semantic heap edge
@@ -404,6 +406,14 @@ Section CESKCollectorSafetyModel.
   Definition DepthPositiveParkPath
       (DepthPositive Park DropGuard : Prop) : Prop :=
     DepthPositive -> Park /\ DropGuard.
+
+  Definition TriggerFailureBackstopped
+      (TriggerFailed RequestCleared WorkersResumed : Prop) : Prop :=
+    TriggerFailed -> RequestCleared /\ WorkersResumed.
+
+  Definition SuccessfulTriggerHasDriver
+      (TriggerSent DriverPosted : Prop) : Prop :=
+    TriggerSent -> DriverPosted.
 
   Theorem index_collector_excludes_registry_source :
     forall source,
@@ -1020,6 +1030,49 @@ Section CESKCollectorSafetyModel.
     intros DepthPositive Park DropGuard Hpath Hpositive.
     apply Hpath.
     exact Hpositive.
+  Qed.
+
+  Theorem failed_trigger_clears_request :
+    forall TriggerFailed RequestCleared WorkersResumed,
+      TriggerFailureBackstopped TriggerFailed RequestCleared WorkersResumed ->
+      TriggerFailed ->
+      RequestCleared.
+  Proof.
+    intros TriggerFailed RequestCleared WorkersResumed Hbackstop Hfailed.
+    destruct (Hbackstop Hfailed) as [Hcleared _].
+    exact Hcleared.
+  Qed.
+
+  Theorem failed_trigger_resumes_workers :
+    forall TriggerFailed RequestCleared WorkersResumed,
+      TriggerFailureBackstopped TriggerFailed RequestCleared WorkersResumed ->
+      TriggerFailed ->
+      WorkersResumed.
+  Proof.
+    intros TriggerFailed RequestCleared WorkersResumed Hbackstop Hfailed.
+    destruct (Hbackstop Hfailed) as [_ Hresumed].
+    exact Hresumed.
+  Qed.
+
+  Theorem no_driverless_pending_request_after_trigger :
+    forall TriggerSent TriggerFailed DriverPosted RequestCleared WorkersResumed,
+      SuccessfulTriggerHasDriver TriggerSent DriverPosted ->
+      TriggerFailureBackstopped TriggerFailed RequestCleared WorkersResumed ->
+      (TriggerSent \/ TriggerFailed) ->
+      ~ DriverPosted ->
+      ~ RequestCleared ->
+      False.
+  Proof.
+    intros TriggerSent TriggerFailed DriverPosted RequestCleared WorkersResumed
+           Hsent_driver Hfailed_backstop Htrigger Hno_driver Hnot_cleared.
+    destruct Htrigger as [Hsent | Hfailed].
+    - apply Hno_driver.
+      apply Hsent_driver.
+      exact Hsent.
+    - apply Hnot_cleared.
+      apply (failed_trigger_clears_request
+               TriggerFailed RequestCleared WorkersResumed Hfailed_backstop).
+      exact Hfailed.
   Qed.
 
   Theorem nursery_open_signal_requests_minor :

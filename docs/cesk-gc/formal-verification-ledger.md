@@ -8,9 +8,10 @@ the legacy slab mark-sweep collector.
 The default live collector verified here is the CESK-based generational `index-gc` collector's E1 path:
 single-threaded quiescence and rendezvous collection compute structural roots, then mark and sweep while holding the
 index heap write lock. Mid-loop collection remains opt-in (`METTATRON_INDEX_GC_MIDLOOP=1`): the mid-loop root-union
-theorem, TLC discriminator, and source-coupling checks pin its live S/C/K, E0/global/K-spine, deferred-env, and driver-C
-root vector, but the default verified boundary does not claim that opt-in path is shipped-on until its separate
-ASAN/root-completeness gate is green. There is also an opt-in E2 SATB major path
+theorem, TLC discriminator, source-coupling checks, and focused forced-ASAN gate pin its live S/C/K,
+E0/global/K-spine, deferred-env, and driver-C root vector. The focused ASAN run on 2026-06-07 forced one mid-loop
+minor with 0 UAF and result `[done]`; the default-on flip still requires the broader conformance/default-flip gate.
+There is also an opt-in E2 SATB major path
 (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and
 allocate-black, releases workers while it marks under a shared heap read lock, then requests a second rendezvous,

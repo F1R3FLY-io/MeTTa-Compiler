@@ -1,10 +1,12 @@
 # Mid-Execution Rooting & Mid-Loop Collection (Inc 6b-1)
 
-Status (updated 2026-06-06): **structural mid-loop root-union proof committed
-(`b81eeff`), still OPT-IN / default-OFF pending forced-ASAN validation.** Enable
-with `METTATRON_INDEX_GC_MIDLOOP=1`. Until the ASAN root-completeness gate is
-green, shipped `--features index-gc` behavior remains the already-validated Inc
-6a true-quiescence collector (see `single-threaded-collector.md`).
+Status (updated 2026-06-07): **structural mid-loop root-union proof committed
+and the focused forced-ASAN root-completeness gate is green.** The path remains
+OPT-IN / default-OFF behind `METTATRON_INDEX_GC_MIDLOOP=1` until the broader
+default-on conformance/performance gate is run and accepted. Shipped
+`--features index-gc` behavior therefore remains the already-validated Inc 6a
+true-quiescence collector (see `single-threaded-collector.md`) unless the env
+gate is explicitly enabled.
 
 ## 1. Motivation — the mid-loop use-after-free
 
@@ -76,9 +78,9 @@ if index_gc::should_collect_midloop() {
 The formal `MidloopRootUnion` proof and TLA discriminator pin this union. The
 source-coupling harness also checks that the implementation builds the vector in
 that order and passes the same vector to `run_collection_if_triggered_midloop`.
-ASAN must still validate the operational default-on gate by forcing real
-mid-execution sweeps (a missed root → a value freed mid-execution →
-heap-use-after-free).
+The focused ASAN gate now forces a real mid-execution minor while this structural
+root vector is live; a missed root would turn into a value freed mid-execution
+and then a heap-use-after-free.
 
 The collection body (`mark_sweep_if_over_watermark`) is IDENTICAL to the
 quiescence path (shared core); only the gate and the root set differ.
@@ -117,10 +119,10 @@ directives.
 
 ## 6. Why default-OFF — the OOM incident (2026-05-28)
 
-The agent implementing this increment ran its validation — a nightly ASAN
+The agent implementing this increment originally ran its validation — a nightly ASAN
 `-Zbuild-std` build plus stress workloads — **in the background, uncapped**, and
 OOM-crashed the 125 GiB machine before the ASAN proof completed. No results doc
-was produced; mid-loop is therefore **unvalidated**.
+was produced at that time, so mid-loop was kept opt-in.
 
 Decision (done-right): rather than ship default-on unvalidated potentially-UAF
 behavior, mid-loop was made **opt-in** (`midloop_enabled()`, default OFF) — a
@@ -132,22 +134,24 @@ Standing lesson (memory: `resource-limits-heavy-ops`): every heavy op
 never background an uncapped build. ASAN `-Zbuild-std` is the single most
 memory-hungry op here.
 
-## 7. Validation plan (to complete Inc 6b-1)
+## 7. Validation result
 
-1. Build nightly ASAN **capped**:
-   `systemd-run --user --scope -p MemoryMax=48G -p CPUQuota=… RUSTFLAGS="-Zsanitizer=address -C target-cpu=native" cargo +nightly build --features index-gc -Zbuild-std --target x86_64-unknown-linux-gnu`
-   (serial / low `-j`; size the cap against the *full* machine when no other build
-   is running).
-2. Force mid-loop to fire: `METTATRON_INDEX_GC_MIDLOOP=1
-   METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=<small>` on
-   (a) the full conformance suite and (b) a **single giant `!(…)` directive** that
-   builds + discards heavy transient garbage mid-evaluation (so mid-loop sweeps
-   fire while VM frames are live). `INDEX_GC_MIDLOOP_CYCLES` must be > 0.
-3. **Pass = 0 ASAN errors** (root completeness dynamically validated) AND conformance still
-   483 / 221 / 40. Then flip `midloop_enabled()` default to on (or drop the env
-   gate) + re-confirm + commit.
-4. If an ASAN UAF appears: a live value class is unrooted — extend
-   `collect_roots_into` / K-spine coverage; do not flip on.
+Focused root-completeness gate, capped and foregrounded:
+
+```
+scripts/d_midloop_asan.sh
+```
+
+Result on 2026-06-07:
+
+- ASAN build: rc 0.
+- `midloop` arm (`METTATRON_INDEX_GC_MIDLOOP=1`, FANOUT depth 0): rc 0, 0 ASAN/UAF lines, 1 minor cycle, 0 major cycles, 0 read-site assertion panics, result `[done]`.
+- `control` arm (MIDLOOP unset): rc 0, 0 ASAN/UAF lines, result `[done]`.
+- Verdict: arms with UAF 0; midloop minors 1, so the gate was non-vacuous.
+
+The script now hard-fails if the ASAN build fails, if an arm fails, if UAF/panic/error lines appear, if the result is
+not `[done]`, or if the midloop arm does not run at least one minor cycle. Default-on still requires the broader
+conformance/default-flip gate; this result discharges the focused mid-execution root-completeness ASAN check.
 
 ## 8. Relation to the parallel collector (Inc 6b-2)
 

@@ -166,6 +166,7 @@ run_rocq "formal/rocq/gc/TieredCacheBarriers.v"
 run_rocq "formal/rocq/gc/ThreadLocalTablesBarriers.v"
 run_rocq "formal/rocq/gc/SATB.v"
 run_rocq "formal/rocq/gc/SATBGates.v"
+run_rocq "formal/rocq/gc/SATBTriggerSuppression.v"
 run_rocq "formal/rocq/gc/AllocateBlack.v"
 run_rocq "formal/rocq/gc/SATBFinalization.v"
 run_rocq "formal/rocq/gc/FullMajorSweep.v"
@@ -417,6 +418,10 @@ run_tlc "major_watermark_rearm_no_rearm" "MC_MajorWatermarkRearm.tla" "MC_MajorW
   fail "Invariant ImmediateOldLiveDoesNotRefire is violated"
 run_tlc "major_watermark_rearm_no_growth" "MC_MajorWatermarkRearm.tla" "MC_MajorWatermarkRearm_no_growth.cfg" \
   fail "Invariant FutureRefireRequiresDoubledGrowth is violated"
+run_tlc "satb_trigger_suppression_gate" "MC_SATBTriggerSuppression.tla" "MC_SATBTriggerSuppression_gate.cfg" \
+  pass ""
+run_tlc "satb_trigger_suppression_no_gate" "MC_SATBTriggerSuppression.tla" "MC_SATBTriggerSuppression_no_gate.cfg" \
+  fail "Invariant ActiveSATBSuppressesWatermarkTrigger is violated"
 run_tlc "satb_deletion_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_satb.cfg" \
   pass ""
 run_tlc "satb_no_barrier" "MC_SATBDeletionBarrier.tla" "MC_SATBDeletionBarrier_none.cfg" \

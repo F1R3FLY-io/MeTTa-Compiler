@@ -78,6 +78,8 @@
       backstop;
     - E2 SATB mark bits cannot leak into later cycles when the final sweep is a
       full major that clears every swept address before promotion;
+    - E2 FANOUT watermark triggers are suppressed while a SATB mark is active,
+      so overlapping SATB requests cannot start from an ordinary worker trigger;
     - E2 value-bearing E0 cache capacity-eviction, overwrite, and bulk-clear
       pre-images compose into SATB coverage when those removed values are
       shaded;
@@ -250,6 +252,15 @@ Section CESKCollectorSafetyModel.
 
   Definition RequestHandled (SatbSwept StwFallbackRan : Prop) : Prop :=
     SatbSwept \/ StwFallbackRan.
+
+  Definition FanoutWatermarkTrigger
+      (DedicatedCollector OtherMutatorLive NoRequestPending
+       SatbMarking WatermarkDue : Prop) : Prop :=
+    DedicatedCollector /\
+    OtherMutatorLive /\
+    NoRequestPending /\
+    ~ SatbMarking /\
+    WatermarkDue.
 
   Definition BatchHandoffRoot
       (HandleRoot OutputRoot : Addr -> Prop)
@@ -1518,6 +1529,35 @@ Section CESKCollectorSafetyModel.
     destruct (Hdone_case Hdone) as [Hsuccess | Habort].
     - left. apply Hsuccess_swept. exact Hsuccess.
     - right. apply Habort_stw. exact Habort.
+  Qed.
+
+  Theorem active_satb_suppresses_fanout_trigger :
+    forall DedicatedCollector OtherMutatorLive NoRequestPending
+           SatbMarking WatermarkDue,
+      SatbMarking ->
+      ~ FanoutWatermarkTrigger
+          DedicatedCollector OtherMutatorLive NoRequestPending
+          SatbMarking WatermarkDue.
+  Proof.
+    intros DedicatedCollector OtherMutatorLive NoRequestPending
+           SatbMarking WatermarkDue Hsatb Htrigger.
+    destruct Htrigger as [_ [_ [_ [Hnot_satb _]]]].
+    apply Hnot_satb.
+    exact Hsatb.
+  Qed.
+
+  Theorem fanout_trigger_implies_satb_idle :
+    forall DedicatedCollector OtherMutatorLive NoRequestPending
+           SatbMarking WatermarkDue,
+      FanoutWatermarkTrigger
+        DedicatedCollector OtherMutatorLive NoRequestPending
+        SatbMarking WatermarkDue ->
+      ~ SatbMarking.
+  Proof.
+    intros DedicatedCollector OtherMutatorLive NoRequestPending
+           SatbMarking WatermarkDue Htrigger.
+    destruct Htrigger as [_ [_ [_ [Hnot_satb _]]]].
+    exact Hnot_satb.
   Qed.
 
   Theorem e2_full_major_clears_all_satb_marks :

@@ -428,6 +428,9 @@ facts the proofs rely on:
 - `mark_concurrent_roots` marks under `global_index_heap().read()` through `IndexHeap::mark_concurrent`; the final E2
   sweep takes `global_index_heap().write()`, re-marks the final rendezvous roots, runs a full `heap.sweep()`, then
   promotes and clears all mark bits. The FANOUT trigger is suppressed while `satb_marking_in_progress()`.
+- `SATBTriggerSuppression.v` and `SATBTriggerSuppression.tla` pin that FANOUT trigger guard: a worker watermark
+  trigger requires the dedicated collector gate, another live mutator, no pending request, `!satb_marking_in_progress`,
+  and `watermark_due_for_concurrent`; the TLC negative config removes the SATB guard and reaches an overlapping trigger.
 - The rooted global bytecode `MemoCache<MettaValue>` shades overwritten, LRU-evicted, and bulk-cleared cached results
   under the same SATB phase gate; non-`MettaValue` generic cache instantiations do not contribute index roots.
 - The rooted global space registry shades the `SpaceHandle::collect_gc_values` roots for overwritten, removed, and

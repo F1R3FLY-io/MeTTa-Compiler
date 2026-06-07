@@ -159,6 +159,7 @@ run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
+run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
 run_rocq "formal/rocq/gc/OperatorCacheEpoch.v"
 run_rocq "formal/rocq/gc/EpochProtectedCaches.v"
 run_rocq "formal/rocq/gc/WriteOnceAnchors.v"
@@ -309,6 +310,16 @@ run_tlc "dedicated_handoff_skip" "MC_DedicatedHandoff.tla" "MC_DedicatedHandoff_
   pass ""
 run_tlc "dedicated_handoff_empty_inline" "MC_DedicatedHandoff.tla" "MC_DedicatedHandoff_empty_inline.cfg" \
   fail "Invariant NoInlineWithoutRoots is violated"
+run_tlc "dedicated_single_regime_all_gated" "MC_DedicatedSingleRegime.tla" "MC_DedicatedSingleRegime_all_gated.cfg" \
+  pass ""
+run_tlc "dedicated_single_regime_default_ungated" "MC_DedicatedSingleRegime.tla" "MC_DedicatedSingleRegime_default_ungated.cfg" \
+  fail "Invariant NoDriverlessRequest is violated"
+run_tlc "dedicated_single_regime_session_ungated" "MC_DedicatedSingleRegime.tla" "MC_DedicatedSingleRegime_session_ungated.cfg" \
+  fail "Invariant NoDriverlessRequest is violated"
+run_tlc "dedicated_single_regime_parallel_ungated" "MC_DedicatedSingleRegime.tla" "MC_DedicatedSingleRegime_parallel_ungated.cfg" \
+  fail "Invariant NoDriverlessRequest is violated"
+run_tlc "dedicated_single_regime_cron_ungated" "MC_DedicatedSingleRegime.tla" "MC_DedicatedSingleRegime_cron_ungated.cfg" \
+  fail "Invariant NoDriverlessRequest is violated"
 run_tlc "operator_cache_epoch_checked" "MC_OperatorCacheEpoch.tla" "MC_OperatorCacheEpoch_checked.cfg" \
   pass ""
 run_tlc "operator_cache_epoch_unchecked" "MC_OperatorCacheEpoch.tla" "MC_OperatorCacheEpoch_unchecked.cfg" \

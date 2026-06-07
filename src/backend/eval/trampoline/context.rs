@@ -84,7 +84,13 @@ pub trait EvalContext {
     /// snapshot a complete root view without requiring quiescence.
     fn perform_safepoint(&self, roots: Vec<MettaValue>) {
         let _root_handle = crate::backend::models::register_temporary_roots(roots);
-        crate::backend::models::request_gc();
+        // Under the dedicated index-GC thread, request production belongs to
+        // gc_driver::request_concurrent_collection. The default legacy safepoint
+        // may still publish temporary roots, but must not create a driverless
+        // GC_REQUESTED cycle.
+        if !crate::backend::models::gc_allocator::dedicated_gc_enabled() {
+            crate::backend::models::request_gc();
+        }
     }
 
     // A5.4: the per-context `collect_driver_roots` seam is RETIRED. The driver

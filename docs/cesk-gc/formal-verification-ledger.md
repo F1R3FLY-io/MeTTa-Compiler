@@ -136,6 +136,9 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/DedicatedHandoff.v`: proves the E1 dedicated-thread handoff ownership rule. Once a root vector has
   been successfully sent to the GC thread, response-channel failure cannot justify an inline fallback because the
   mutator no longer owns those roots; failed sends still return the roots for inline fallback.
+- `formal/rocq/gc/DedicatedSingleRegime.v`: proves the E1 dedicated-thread single-regime rule. With the dedicated
+  collector enabled, default/session/parallel/cron legacy producers are suppressed, so any request in that regime must
+  be paired with a dedicated driver request.
 - `formal/rocq/gc/OperatorCacheEpoch.v` and `formal/lean/gc/OperatorCacheEpoch.lean`: prove the pointer-keyed
   operator-cache sweep-epoch obligation. A returned cache entry is current if the local sweep-epoch guard runs before
   lookup; if the local epoch is stale, the guarded lookup misses after clearing the cache.
@@ -225,6 +228,8 @@ can replace the full-major final sweep.
 - `tla/DedicatedHandoff.tla`: checks the E1 dedicated-thread root-vector handoff. Failed send before consumption may
   run inline with the returned roots; response failure after successful send must skip. Falling back inline after a
   consumed handoff violates `NoInlineWithoutRoots`.
+- `tla/DedicatedSingleRegime.tla`: checks the E1 dedicated-thread single-regime rule. Suppressing all legacy
+  cooperative producers preserves `NoDriverlessRequest`; leaving default, session, parallel, or cron ungated violates it.
 - `tla/OperatorCacheEpoch.tla`: checks the pointer-keyed operator-cache sweep-epoch guard. Checking the local
   `gc_sweep_epoch` before lookup clears another worker's stale cache entry after sweep; skipping the check violates
   `NoStaleOperatorCacheHit`.

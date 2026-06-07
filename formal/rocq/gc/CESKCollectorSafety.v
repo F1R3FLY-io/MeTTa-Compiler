@@ -34,6 +34,8 @@
       caller copies them into MettaState.output;
     - dedicated-thread quiescence handoff never runs an inline fallback after
       the root vector has been consumed by a successful send;
+    - dedicated-thread mode suppresses legacy cooperative GC request producers
+      so every request in that regime has a dedicated driver;
     - the collector marks the reachability closure of structural CESK roots plus
       driver roots;
     - the marker's concrete node-edge reader covers every semantic heap edge
@@ -367,6 +369,12 @@ Section CESKCollectorSafetyModel.
   | CompletionNormal : CompletionExit
   | CompletionPanic : CompletionExit.
 
+  Inductive LegacyProducer : Type :=
+  | DefaultSafepoint : LegacyProducer
+  | SessionSafepoint : LegacyProducer
+  | ParallelSafepoint : LegacyProducer
+  | CronAsync : LegacyProducer.
+
   Definition CompletionWorkerExited
       (Worker : Type)
       (Exit : Worker -> CompletionExit -> Prop)
@@ -377,6 +385,15 @@ Section CESKCollectorSafetyModel.
       (Worker : Type)
       (Spawned Dropped : Worker -> Prop) : Prop :=
     exists w, Spawned w /\ ~ Dropped w.
+
+  Definition LegacyProducerSuppressed
+      (Dedicated : Prop)
+      (LegacyRequests : LegacyProducer -> Prop) : Prop :=
+    Dedicated -> forall p, ~ LegacyRequests p.
+
+  Definition DedicatedRequestSafe
+      (DedicatedRequest DriverPosted : Prop) : Prop :=
+    DedicatedRequest -> DriverPosted.
 
   Theorem index_collector_excludes_registry_source :
     forall source,
@@ -914,6 +931,37 @@ Section CESKCollectorSafetyModel.
       exact Hfailed.
     - apply Hinline_err.
       exact Hinline.
+  Qed.
+
+  Theorem dedicated_enabled_blocks_legacy_requests :
+    forall Dedicated LegacyRequests,
+      LegacyProducerSuppressed Dedicated LegacyRequests ->
+      Dedicated ->
+      forall p, ~ LegacyRequests p.
+  Proof.
+    intros Dedicated LegacyRequests Hsuppressed Hdedicated p.
+    apply Hsuppressed.
+    exact Hdedicated.
+  Qed.
+
+  Theorem no_driverless_request_under_dedicated :
+    forall Dedicated LegacyRequests DedicatedRequest DriverPosted,
+      LegacyProducerSuppressed Dedicated LegacyRequests ->
+      DedicatedRequestSafe DedicatedRequest DriverPosted ->
+      Dedicated ->
+      (DedicatedRequest \/ exists p, LegacyRequests p) ->
+      ~ DriverPosted ->
+      False.
+  Proof.
+    intros Dedicated LegacyRequests DedicatedRequest DriverPosted
+           Hlegacy_suppressed Hdedicated_safe Hdedicated Hrequest Hno_driver.
+    destruct Hrequest as [Hdedicated_request | [p Hlegacy_request]].
+    - apply Hno_driver.
+      apply Hdedicated_safe.
+      exact Hdedicated_request.
+    - pose proof (Hlegacy_suppressed Hdedicated p) as Hno_legacy.
+      apply Hno_legacy.
+      exact Hlegacy_request.
   Qed.
 
   Theorem nursery_open_signal_requests_minor :

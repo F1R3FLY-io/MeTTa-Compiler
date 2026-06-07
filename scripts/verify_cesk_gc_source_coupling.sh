@@ -260,6 +260,15 @@ assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking" "Err(mpsc::SendError(GcDriverRequest::Collect(roots, _))) => return Err(roots)," "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))"
 assert_zero_between "src/backend/eval/cesk/gc_driver.rs" "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))" "pub(crate) fn collect_quiescence" "return Err"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn collect_quiescence" "if let Err(returned) = try_drive_blocking(roots)" "run_collection_if_triggered(&returned);"
+assert_after_before "src/backend/eval/trampoline/context.rs" "fn should_safepoint(&self) -> bool" "is_gc_requested()" "&& !crate::backend::models::gc_allocator::dedicated_gc_enabled()"
+assert_after_before "src/backend/eval/trampoline/context.rs" "fn perform_safepoint(&self, roots: Vec<MettaValue>)" "register_temporary_roots(roots)" "if !crate::backend::models::gc_allocator::dedicated_gc_enabled()"
+assert_after_before "src/backend/eval/trampoline/context.rs" "fn perform_safepoint(&self, roots: Vec<MettaValue>)" "if !crate::backend::models::gc_allocator::dedicated_gc_enabled()" "request_gc();"
+assert_after_before "src/backend/eval/trampoline/session_context.rs" "fn perform_safepoint(&self, roots: Vec<MettaValue>)" "if !crate::backend::models::gc_allocator::dedicated_gc_enabled()" "request_gc();"
+assert_after_before "src/backend/eval/trampoline/context.rs" "pub(super) fn parallel_gc_coop_enabled() -> bool" "!crate::backend::models::gc_allocator::dedicated_gc_enabled()" "}"
+assert_after_before "src/backend/eval/trampoline/context.rs" "impl EvalContext for ParallelBranchContext" "if !parallel_gc_coop_enabled() {" "crate::backend::models::gc_allocator::is_gc_requested()"
+assert_after_before "src/backend/eval/trampoline/context.rs" "impl EvalContext for ParallelBranchContext" "if parallel_gc_coop_enabled() {" "request_gc();"
+assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" "if should_gc && !super::gc_allocator::dedicated_gc_enabled()" "request_gc();"
+assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" "request_gc();" "let _ = maybe_async_gc();"
 
 # The rendezvous gate must be the witness flag, not the obsolete parked-count
 # equality. The old parked-count function can survive for unit tests, but not as

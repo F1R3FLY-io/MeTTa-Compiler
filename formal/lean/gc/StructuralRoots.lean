@@ -18,8 +18,38 @@ structure Registers (Addr : Type u) where
   kont : Addr -> Prop
   global : Addr -> Prop
 
+inductive RootSource where
+  | structural
+  | driver
+  | registry
+
 def StructuralRoot (regs : Registers Addr) (a : Addr) : Prop :=
   regs.control a ∨ regs.env a ∨ regs.kont a ∨ regs.global a
+
+def IndexRootSource : RootSource -> Prop
+  | RootSource.structural => True
+  | RootSource.driver => True
+  | RootSource.registry => False
+
+def IndexCollectorRoot
+    (Structural Driver : Addr -> Prop)
+    (a : Addr) : Prop :=
+  Structural a ∨ Driver a
+
+theorem registry_is_not_index_root_source :
+    Not (IndexRootSource RootSource.registry) := by
+  intro h
+  exact h
+
+theorem index_root_source_not_registry
+    {source : RootSource}
+    (hsource : IndexRootSource source) :
+    source ≠ RootSource.registry := by
+  intro hregistry
+  cases source with
+  | structural => cases hregistry
+  | driver => cases hregistry
+  | registry => exact hsource
 
 inductive Reach (Root : Addr -> Prop) (Edge : Addr -> Addr -> Prop) : Addr -> Prop where
   | root {a : Addr} : Root a -> Reach Root Edge a
@@ -43,6 +73,21 @@ theorem no_future_touch_uaf
     forall {a : Addr}, FutureTouch a -> Not (Freed a) := by
   intro a htouch hfreed
   have hreach := futureTouchesOnlyReachable htouch
+  have hmarked := markComplete hreach
+  exact sweepOnlyUnmarked hfreed hmarked
+
+theorem registry_independent_no_future_touch_uaf
+    {Structural Driver _Registry : Addr -> Prop}
+    {Edge : Addr -> Addr -> Prop}
+    {Marked Freed FutureTouch : Addr -> Prop}
+    (markComplete :
+      forall {a : Addr}, Reach (IndexCollectorRoot Structural Driver) Edge a -> Marked a)
+    (sweepOnlyUnmarked : forall {a : Addr}, Freed a -> Not (Marked a))
+    (futureTouchesOnlyIndexReachable :
+      forall {a : Addr}, FutureTouch a -> Reach (IndexCollectorRoot Structural Driver) Edge a) :
+    forall {a : Addr}, FutureTouch a -> Not (Freed a) := by
+  intro a htouch hfreed
+  have hreach := futureTouchesOnlyIndexReachable htouch
   have hmarked := markComplete hreach
   exact sweepOnlyUnmarked hfreed hmarked
 

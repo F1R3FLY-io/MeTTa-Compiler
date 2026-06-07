@@ -219,13 +219,19 @@ can replace the full-major final sweep.
   `NoStaleOldMark`.
 - `tla/SATBAbortFallback.tla`: checks the E2 abort-to-STW backstop. If the SATB path aborts after cleanup, the
   driver must re-request and run a fresh STW rendezvous before treating the request as handled.
+- `tla/RegistryIsolation.tla`: checks the A5/E1 root-source boundary. Index mode may build roots from structural CESK
+  readers and explicit driver transport roots only; enabling the legacy `RootProvider` registry as an index root source
+  violates `NoRegistryInIndex`.
 
 ## Source coupling
 
 `scripts/verify_cesk_gc_source_coupling.sh` is run by `scripts/verify_cesk_gc_formal.sh`. It pins the source-side
 facts the proofs rely on:
 
-- `ROOT_REGISTRY`, `RootProvider`, and `frame_chain` remain slab-only and are not index-root discovery channels.
+- `ROOT_REGISTRY`, `RootProvider`, `frame_chain`, `current_iter_root`, every bridge-period `RootProvider` impl, and
+  every bridge-period root-provider registration function remain slab-only. The index variants of those registration
+  functions are no-ops, and index roots are read through named structural readers or typed live-env/live-dispatch driver
+  channels.
 - The E1 driver waits on `requestor_wait_for_all_reified_parked`, then sets `current_witness_ok`, builds the root
   union, runs the rendezvous-union oracle, and only then calls `run_collection_if_triggered_rendezvous`.
 - `gate_open_rendezvous` is keyed by `current_witness_ok`, not the obsolete parked-count gate.

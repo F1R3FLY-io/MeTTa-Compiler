@@ -189,6 +189,10 @@ run_tlc "midloop_root_union_missing_deferred" "MC_MidloopRootUnion.tla" "MC_Midl
   fail "Invariant MidloopRootUnionComplete is violated"
 run_tlc "midloop_root_union_missing_driver_c" "MC_MidloopRootUnion.tla" "MC_MidloopRootUnion_missing_driver_c.cfg" \
   fail "Invariant MidloopRootUnionComplete is violated"
+run_tlc "registry_isolation_all" "MC_RegistryIsolation.tla" "MC_RegistryIsolation_all.cfg" \
+  pass ""
+run_tlc "registry_isolation_enabled" "MC_RegistryIsolation.tla" "MC_RegistryIsolation_registry.cfg" \
+  fail "Invariant NoRegistryInIndex is violated"
 run_tlc "driver_c_publication_published" "MC_DriverCPublication.tla" "MC_DriverCPublication_published.cfg" \
   pass ""
 run_tlc "driver_c_publication_missing" "MC_DriverCPublication.tla" "MC_DriverCPublication_missing.cfg" \

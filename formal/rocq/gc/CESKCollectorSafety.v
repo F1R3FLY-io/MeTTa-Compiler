@@ -16,6 +16,8 @@
       driver has closed admission and snapshotted participants;
     - the driver root union includes worker-buffer, safepoint, live-env, and
       live-dispatch channel roots;
+    - the index collector source set excludes the old `RootProvider` registry,
+      so registry roots cannot justify future touches in the CESK proof;
     - the single-threaded mid-loop root union includes live S/C/K, E0,
       globals, K-spine, deferred env roots, and driver-C safepoint roots;
     - eval-entry driver-C publication puts caller-held source/output roots in
@@ -80,6 +82,18 @@ Section CESKCollectorSafetyModel.
       (StructuralRoot DriverRoot : Addr -> Prop)
       (a : Addr) : Prop :=
     StructuralRoot a \/ DriverRoot a.
+
+  Inductive RootSource : Type :=
+  | StructuralSource : RootSource
+  | DriverSource : RootSource
+  | RegistrySource : RootSource.
+
+  Definition IndexRootSource (source : RootSource) : Prop :=
+    match source with
+    | StructuralSource => True
+    | DriverSource => True
+    | RegistrySource => False
+    end.
 
   Definition DriverRootUnion
       (WorkerRoot SafepointRoot EnvAnchor DispatchAnchor : Addr -> Prop)
@@ -193,6 +207,34 @@ Section CESKCollectorSafetyModel.
       (Worker : Type)
       (Spawned Dropped : Worker -> Prop) : Prop :=
     exists w, Spawned w /\ ~ Dropped w.
+
+  Theorem index_collector_excludes_registry_source :
+    forall source,
+      IndexRootSource source ->
+      source <> RegistrySource.
+  Proof.
+    intros source Hsource Hregistry.
+    destruct source.
+    - discriminate Hregistry.
+    - discriminate Hregistry.
+    - exact Hsource.
+  Qed.
+
+  Theorem registry_independent_no_future_touch_uaf :
+    forall (StructuralRoot DriverRoot RegistryRoot Marked Freed FutureTouch : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      (forall a, Reach (CollectorRoot StructuralRoot DriverRoot) Edge a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      (forall a, FutureTouch a -> Reach (CollectorRoot StructuralRoot DriverRoot) Edge a) ->
+      forall a, FutureTouch a -> ~ Freed a.
+  Proof.
+    intros StructuralRoot DriverRoot RegistryRoot Marked Freed FutureTouch Edge
+           Hmark Hsweep Hfuture a Htouch Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply Hfuture.
+    exact Htouch.
+  Qed.
 
   Theorem rendezvous_participant_root_survives_collection :
     forall (Occupied Published : Slot -> Prop)

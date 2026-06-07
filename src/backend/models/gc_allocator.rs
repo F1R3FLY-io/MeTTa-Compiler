@@ -2893,8 +2893,9 @@ pub(super) static QUIESCENT_CONDVAR: Condvar = Condvar::new();
 /// `BeginMark` predicate), not this counter; this counter exists so the protocol
 /// can be reasoned about / asserted directly. `pub(crate)` for test/loom parity.
 ///
-/// DEAD until D2.x. See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §D1.
-#[allow(dead_code)] // DEAD until D2.x wires the rendezvous call sites.
+/// Source-coupled by the dedicated rendezvous paths and retained for focused
+/// rendezvous tests.
+#[allow(dead_code)]
 pub(crate) static WORKERS_PARKED_FOR_GC: AtomicU32 = AtomicU32::new(0);
 
 /// Monotonic GC cycle generation, bumped at the END of each rendezvous cycle (by
@@ -2908,9 +2909,6 @@ pub(crate) static WORKERS_PARKED_FOR_GC: AtomicU32 = AtomicU32::new(0);
 /// a parker whose `gen != my_gen` drops its stale roots and does NOT bump the
 /// parked-count, so a late finisher from cycle K cannot corrupt cycle K+1's gate.
 ///
-/// DEAD until E1-c wires the FANOUT>0 driver. See
-/// `docs/cesk-gc/phase-de-concurrent-collector-design.md` §1.3 + Round-4 F2.
-///
 /// **Starts at 1, NOT 0 (E1-FLIP Path B V4 requirement).** The V4 witness uses
 /// `published_gen = acquired_gen - 1` as the "not-yet-published-this-cycle" sentinel
 /// (`witness_acquire_slot`). With unsigned wraparound, `acquired_gen == 0` would set
@@ -2923,11 +2921,11 @@ pub(crate) static WORKERS_PARKED_FOR_GC: AtomicU32 = AtomicU32::new(0);
 /// strict-`>` algebra is exactly correct for ALL cycles. The existing gen-gated
 /// primitives compare a CAPTURED `my_gen` for equality and only ever `fetch_add`, so
 /// they are agnostic to the initial value (no code depends on it being 0).
-#[allow(dead_code)] // DEAD until E1-c B/C wires the FANOUT>0 park-and-collect.
+#[allow(dead_code)]
 pub(crate) static GC_CYCLE_GEN: AtomicU64 = AtomicU64::new(1);
 
 /// Current GC cycle generation (Acquire). See [`GC_CYCLE_GEN`].
-#[allow(dead_code)] // DEAD until E1-c.
+#[allow(dead_code)]
 pub(crate) fn current_cycle_gen() -> u64 {
     GC_CYCLE_GEN.load(Ordering::Acquire)
 }
@@ -2957,13 +2955,13 @@ pub(crate) fn current_cycle_gen() -> u64 {
 /// init value must be `< GC_CYCLE_GEN`'s init (1) so a worker that somehow reaches the
 /// straddle before the first rendezvous never re-parks for a phantom "started" cycle.
 ///
-/// DEAD until E5 wires the FANOUT>0 dedicated driver + straddle re-park.
-#[allow(dead_code)] // DEAD until E5 wires the dedicated driver straddle path.
+/// Source-coupled by the E5 straddle gate and dedicated driver prologue.
+#[allow(dead_code)]
 pub(crate) static GC_CYCLE_STARTED: AtomicU64 = AtomicU64::new(0);
 
 /// E5: generation of the cycle a live driver has ACTUALLY STARTED (Acquire). See
 /// [`GC_CYCLE_STARTED`]. Read in the straddle re-park loop's `started`-gate (lock-free).
-#[allow(dead_code)] // DEAD until E5.
+#[allow(dead_code)]
 #[inline]
 pub(crate) fn current_cycle_started() -> u64 {
     GC_CYCLE_STARTED.load(Ordering::Acquire)
@@ -2979,7 +2977,7 @@ pub(crate) fn current_cycle_started() -> u64 {
 /// `started` value itself; the GC_PROGRESS_MUTEX is taken ONLY to make the notify
 /// lost-wakeup-safe (Mesa discipline — the else-arm re-checks `started`/`gip` under the
 /// same mutex). MUST NOT be called under [`RENDEZVOUS_MUTEX`] (see [`GC_CYCLE_STARTED`]).
-#[allow(dead_code)] // DEAD until E5.
+#[allow(dead_code)]
 #[inline]
 pub(crate) fn set_current_cycle_started(g: u64) {
     GC_CYCLE_STARTED.store(g, Ordering::Release);
@@ -2999,7 +2997,8 @@ pub(crate) fn set_current_cycle_started(g: u64) {
 /// waited against — the witness that every snapshot participant has self-rooted into
 /// `WORKER_ROOT_BUFFER` (HB2) before the sweep runs.
 ///
-/// DEAD until E1-FLIP routes the rendezvous collect through the gate.
+/// Source-coupled to the dedicated driver root-preparation path and
+/// rendezvous gate diagnostics.
 #[allow(dead_code)]
 pub(crate) static N_THREADS_AT_SNAPSHOT: AtomicU32 = AtomicU32::new(0);
 
@@ -3081,8 +3080,8 @@ pub(crate) fn already_bumped_this_cycle(gen: u64) -> bool {
 // never-realloc chunk list (A-straddle-2: a value-snapshot would miss a slot re-occupied
 // AFTER the snapshot instant → sweep-without-waiting → UAF).
 //
-// DORMANT until Step 2's atomic flip; `#[cfg(index-gc)] && dedicated_gc_enabled()` walls at
-// the wiring sites keep DEDICATED=0 byte-identical (this directory is dead code regardless).
+// `#[cfg(index-gc)] && dedicated_gc_enabled()` walls at the wiring sites keep
+// DEDICATED=0 byte-identical.
 
 /// One witness slot — owned by exactly one mutator thread for its lifetime (the
 /// thread-local [`MY_WITNESS_SLOT`] points at it; slots are grow-only and never
@@ -3090,8 +3089,8 @@ pub(crate) fn already_bumped_this_cycle(gen: u64) -> bool {
 /// are the two un-packed `AtomicU64` (rt2 RT-3); `occupied` is the `AtomicBool`
 /// that gates whether this slot participates in a snapshot.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1 wires the slot lifecycle.
-#[allow(dead_code)] // DEAD until Step 1 (the 6-site slot lifecycle).
+/// Source-coupled by the V4 witness-slot lifecycle.
+#[allow(dead_code)]
 pub(crate) struct WitnessSlot {
     /// The `GC_CYCLE_GEN` this slot's owner most-recently ACQUIRED/RESTAMPED for.
     /// `acquired > cur_gen` ⇒ a post-snapshot entrant (excluded from the wait).
@@ -3111,8 +3110,8 @@ pub(crate) struct WitnessSlot {
 /// (the live-re-walk + [`MY_WITNESS_SLOT`] rely on this). 256 slots/chunk amortizes
 /// allocation; a chunk is `Box::leak`ed (lives for the process).
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1.
-#[allow(dead_code)] // DEAD until Step 1.
+/// Grow-only backing storage for the V4 witness directory.
+#[allow(dead_code)]
 struct WitnessChunk {
     slots: [WitnessSlot; 256],
     /// Next chunk in the grow-only list (null = end). Published Release on growth,
@@ -3120,7 +3119,7 @@ struct WitnessChunk {
     next: AtomicPtr<WitnessChunk>,
 }
 
-#[allow(dead_code)] // DEAD until Step 1.
+#[allow(dead_code)]
 impl WitnessChunk {
     /// Allocate a fresh all-zero chunk and leak it (process-lifetime). `acquired`/
     /// `published` start 0, `occupied` false — a free slot.
@@ -3143,8 +3142,8 @@ impl WitnessChunk {
 /// from HEAD; growth is a Release CAS on a chunk's `next` (or on HEAD for the very
 /// first chunk).
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1.
-#[allow(dead_code)] // DEAD until Step 1.
+/// Source-coupled by witness slot acquire/snapshot paths.
+#[allow(dead_code)]
 static WITNESS_HEAD: AtomicPtr<WitnessChunk> = AtomicPtr::new(ptr::null_mut());
 
 /// Global cursor of the next free slot INDEX across the whole chunk list (a flat
@@ -3152,8 +3151,8 @@ static WITNESS_HEAD: AtomicPtr<WitnessChunk> = AtomicPtr::new(ptr::null_mut());
 /// when it crosses a 256 boundary the acquiring thread grows a new chunk. Only
 /// EVER increases (slots are never freed back — grow-only), so no ABA.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1.
-#[allow(dead_code)] // DEAD until Step 1.
+/// Source-coupled by witness slot acquisition.
+#[allow(dead_code)]
 static WITNESS_NEXT_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
@@ -3162,7 +3161,6 @@ thread_local! {
     /// pointer stays valid for the thread's life. Used by restamp/release to reach
     /// THIS thread's slot in O(1) without re-walking.
     ///
-    /// DEAD until E1-FLIP Path B V4 Step 1.
     static MY_WITNESS_SLOT: Cell<*const WitnessSlot> = const { Cell::new(ptr::null()) };
 }
 
@@ -3172,8 +3170,8 @@ thread_local! {
 /// (`gate_open_rendezvous` reads [`current_witness_ok`]). rt1 #4: one predicate,
 /// two readers.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 2.
-#[allow(dead_code)] // DEAD until Step 2 (the atomic flip).
+/// Source-coupled by the dedicated driver witness wait and cycle teardown.
+#[allow(dead_code)]
 static CURRENT_WITNESS_OK: AtomicBool = AtomicBool::new(false);
 
 /// Resolve (lazily allocating/growing) the chunk + slot for a flat slot `index`.
@@ -3181,8 +3179,8 @@ static CURRENT_WITNESS_OK: AtomicBool = AtomicBool::new(false);
 /// Release CAS (HEAD for the first chunk, else the predecessor's `next`); a lost
 /// CAS means a peer grew it — re-read and continue. Returns a stable `*const`.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1.
-#[allow(dead_code)] // DEAD until Step 1.
+/// Source-coupled by witness slot acquisition.
+#[allow(dead_code)]
 fn witness_slot_at(index: usize) -> *const WitnessSlot {
     let chunk_idx = index / 256;
     let slot_idx = index % 256;
@@ -3243,8 +3241,8 @@ fn witness_slot_at(index: usize) -> *const WitnessSlot {
 /// `acquired=current_cycle_gen()`, `published=acquired-1` (so a stale stamp can
 /// never satisfy `published>=cur_gen`), `occupied=true` LAST (Release).
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1.
-#[allow(dead_code)] // DEAD until Step 1.
+/// Source-coupled by `EvalGuard::enter`.
+#[allow(dead_code)]
 pub(crate) fn witness_acquire_slot() {
     let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
     let slot_ptr = if slot_ptr.is_null() {
@@ -3275,8 +3273,8 @@ pub(crate) fn witness_acquire_slot() {
 /// site that un-occupies a slot; the frozen machine of a PARKED thread keeps its
 /// slot occupied (do NOT release at any safepoint drop — Pin 3).
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1.
-#[allow(dead_code)] // DEAD until Step 1.
+/// Source-coupled by the true outermost `EvalGuard::drop`.
+#[allow(dead_code)]
 pub(crate) fn witness_release_slot() {
     let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
     if slot_ptr.is_null() {
@@ -3313,8 +3311,8 @@ pub(crate) fn witness_release_slot() {
 /// toggling `occupied` (the slot stays occupied across the whole resume). Does NOT
 /// touch `published` — only a genuine [`note_reified_park`] re-publishes.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1.
-#[allow(dead_code)] // DEAD until Step 1.
+/// Source-coupled by safepoint rejoin and straddle re-park.
+#[allow(dead_code)]
 pub(crate) fn witness_restamp_acquired(g: u64) {
     let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
     if slot_ptr.is_null() {
@@ -3333,8 +3331,8 @@ pub(crate) fn witness_restamp_acquired(g: u64) {
 /// ([`worker_finish_into_buffer`]) + the zero-root drop bump get NO stamp ⇒ they
 /// can NEVER satisfy the witness BY CONSTRUCTION.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 1.
-#[allow(dead_code)] // DEAD until Step 1.
+/// Source-coupled to genuine reified parks only.
+#[allow(dead_code)]
 pub(crate) fn note_reified_park(g: u64) {
     let slot_ptr = MY_WITNESS_SLOT.with(|c| c.get());
     if slot_ptr.is_null() {
@@ -3356,8 +3354,8 @@ pub(crate) fn note_reified_park(g: u64) {
 /// with the predicate; the snapshot itself is gen-agnostic (it is just "who is
 /// occupied now").
 ///
-/// DEAD until E1-FLIP Path B V4 Step 2.
-#[allow(dead_code)] // DEAD until Step 2.
+/// Source-coupled by dedicated driver root preparation.
+#[allow(dead_code)]
 pub(crate) fn snapshot_witness(_cur_gen: u64) -> Vec<*const WitnessSlot> {
     let mut out: Vec<*const WitnessSlot> = Vec::new();
     let mut cur = WITNESS_HEAD.load(Ordering::Acquire);
@@ -3380,8 +3378,8 @@ pub(crate) fn snapshot_witness(_cur_gen: u64) -> Vec<*const WitnessSlot> {
 /// order: occupied is NOT re-checked here (the caller decides scope); `published`
 /// (Acq) then `acquired` (Acq).
 ///
-/// DEAD until E1-FLIP Path B V4 Step 2.
-#[allow(dead_code)] // DEAD until Step 2.
+/// Source-coupled by the witness wait and oracle.
+#[allow(dead_code)]
 #[inline]
 fn witness_slot_satisfied(slot: &WitnessSlot, cur_gen: u64) -> bool {
     slot.published_gen.load(Ordering::Acquire) >= cur_gen
@@ -3399,8 +3397,8 @@ fn witness_slot_satisfied(slot: &WitnessSlot, cur_gen: u64) -> bool {
 /// parker's stamp+notify is under the same mutex). 5 s warn-recheck — NEVER
 /// proceed-on-timeout (witness-sole-gate ⇒ a proceed-on-timeout = silent UAF).
 ///
-/// DEAD until E1-FLIP Path B V4 Step 2.
-#[allow(dead_code)] // DEAD until Step 2.
+/// Source-coupled by the dedicated driver before root-buffer drain.
+#[allow(dead_code)]
 pub(crate) fn requestor_wait_for_all_reified_parked(snap: &[*const WitnessSlot], cur_gen: u64) {
     // `snap` is retained for the caller's diagnostics / future use; the wait scans
     // the LIVE directory each wake (A-straddle-2). Touch it so the param is not
@@ -3444,8 +3442,8 @@ pub(crate) fn requestor_wait_for_all_reified_parked(snap: &[*const WitnessSlot],
 /// for the D5 oracle (`assert_rendezvous_union_complete`). Returns `(all_ok,
 /// first_violator_ptr)`. Debug-only callers.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 2.
-#[allow(dead_code)] // DEAD until Step 2.
+/// Source-coupled by the rendezvous oracle.
+#[allow(dead_code)]
 pub(crate) fn all_occupied_slots_satisfied(cur_gen: u64) -> (bool, *const WitnessSlot) {
     let mut cur = WITNESS_HEAD.load(Ordering::Acquire);
     while !cur.is_null() {
@@ -3464,10 +3462,10 @@ pub(crate) fn all_occupied_slots_satisfied(cur_gen: u64) -> (bool, *const Witnes
 /// Driver: publish that the witness gate is SATISFIED for the in-flight cycle (the
 /// SOLE thing `gate_open_rendezvous` reads). Set true only AFTER
 /// [`requestor_wait_for_all_reified_parked`] returns; cleared at
-/// `end_rendezvous_cycle` via [`clear_current_witness_ok`].
+/// [`end_rendezvous_cycle`] via `set_current_witness_ok(false)`.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 2.
-#[allow(dead_code)] // DEAD until Step 2.
+/// Source-coupled by the dedicated driver witness gate.
+#[allow(dead_code)]
 #[inline]
 pub(crate) fn set_current_witness_ok(ok: bool) {
     CURRENT_WITNESS_OK.store(ok, Ordering::Release);
@@ -3476,8 +3474,8 @@ pub(crate) fn set_current_witness_ok(ok: bool) {
 /// Reader for `gate_open_rendezvous` (Acquire). True ⟺ the driver proved every
 /// occupied slot stamped this cycle.
 ///
-/// DEAD until E1-FLIP Path B V4 Step 2.
-#[allow(dead_code)] // DEAD until Step 2.
+/// Source-coupled by `IndexHeap::gate_open_rendezvous`.
+#[allow(dead_code)]
 #[inline]
 pub(crate) fn current_witness_ok() -> bool {
     CURRENT_WITNESS_OK.load(Ordering::Acquire)
@@ -3710,7 +3708,7 @@ pub(crate) fn dedicated_gc_enabled() -> bool {
 /// env OnceLock (parsed once per process). Lets an E1-a.3 / E1-c test engage the
 /// dedicated-thread path deterministically. Reset to `false` at the end.
 #[cfg(test)]
-#[allow(dead_code)] // engaged by E1-a.3 ON-path / E1-c tests (not yet wired)
+#[allow(dead_code)]
 pub(crate) fn force_dedicated_gc_enabled_for_test(on: bool) {
     DEDICATED_GC_FORCED_FOR_TEST.store(on, Ordering::Release);
 }
@@ -3794,9 +3792,8 @@ pub(crate) fn worker_park_and_root(roots: &[MettaValue]) {
 /// n` gate (§1.3 straggler exclusion). Then parks via
 /// [`worker_resume_wait_for_cycle`] until the cycle ends.
 ///
-/// DEAD until E1-c wires the FANOUT>0 park sites. See
-/// `docs/cesk-gc/phase-de-concurrent-collector-design.md` §1.3 + Round-4 F2.
-#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+/// Source-coupled by VM/JIT tier leaves and trampoline parent parks.
+#[allow(dead_code)]
 pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
     {
         let _lock = RENDEZVOUS_MUTEX.lock();
@@ -3852,8 +3849,8 @@ pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
 /// keeps running (its later allocations during a concurrent mark are covered by
 /// allocate-black).
 ///
-/// DEAD until E1-c wires the FANOUT>0 finish sites. See design §1.1 + §1.3.
-#[allow(dead_code)] // DEAD until E1-c wires the eval_loop finish sites.
+/// Source-coupled by dispatch/collapse finisher paths.
+#[allow(dead_code)]
 pub(crate) fn worker_finish_into_buffer(roots: &[MettaValue], my_gen: u64) {
     let _lock = RENDEZVOUS_MUTEX.lock();
     if GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
@@ -3905,8 +3902,8 @@ pub(crate) fn worker_finish_into_buffer(roots: &[MettaValue], my_gen: u64) {
 /// [`RENDEZVOUS_MUTEX`] (the cross-mutex W2 RENDEZVOUS→RESUME notify that the old design
 /// needed is thereby ELIMINATED).
 ///
-/// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §1.3.
-#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+/// Source-coupled by generation-gated worker park/resume.
+#[allow(dead_code)]
 pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
     let mut lock = RENDEZVOUS_MUTEX.lock();
     while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
@@ -4053,8 +4050,8 @@ pub(crate) fn reset_rendezvous_counters() {
 /// existing D2.x tests call without expecting the mutex/gen) to avoid a
 /// reentrant-lock deadlock.
 ///
-/// DEAD until E1-c step 2 wires the gc_driver rendezvous. See design §1.3 + Round-4 F2.
-#[allow(dead_code)] // DEAD until E1-c step 2 wires the gc_driver rendezvous.
+/// Source-coupled by dedicated driver cycle teardown.
+#[allow(dead_code)]
 pub(crate) fn end_rendezvous_cycle() {
     let _lock = RENDEZVOUS_MUTEX.lock();
     GC_CYCLE_GEN.fetch_add(1, Ordering::AcqRel);
@@ -6016,7 +6013,7 @@ pub fn drop_eval_guard_for_safepoint() {
 /// [`drop_eval_guard_for_safepoint_full`] (a depth==0 caller — e.g. the
 /// post-EvalGuard type-fixpoint / MORK path — is not in the active set and must
 /// not park; design Part 8).
-#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+#[allow(dead_code)]
 pub fn eval_guard_depth() -> u32 {
     EVAL_GUARD_DEPTH.with(|d| d.get())
 }
@@ -6030,8 +6027,8 @@ pub fn eval_guard_depth() -> u32 {
 /// parking worker that may be nested MUST use this. Callers MUST guard `depth>0`
 /// (depth==0 ⇒ not in the active set ⇒ must not park, Part 8).
 ///
-/// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §Part 9.
-#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+/// Source-coupled by depth-positive cooperative safepoint parks.
+#[allow(dead_code)]
 pub fn drop_eval_guard_for_safepoint_full() -> u32 {
     let depth = EVAL_GUARD_DEPTH.with(|d| {
         let v = d.get();
@@ -6137,8 +6134,8 @@ pub fn reacquire_eval_guard_after_safepoint() {
 /// in-scope `park_roots`/`my_roots` at the call site; the borrow spans the loop —
 /// T runs nothing during the straddle so the snapshot stays complete).
 ///
-/// DEAD until E1-c. See `docs/cesk-gc/phase-de-concurrent-collector-design.md` §Part 9.
-#[allow(dead_code)] // DEAD until E1-c C wires the safepoint park sites.
+/// Source-coupled by cooperative safepoint rejoin and straddle re-park.
+#[allow(dead_code)]
 pub fn reacquire_eval_guard_after_safepoint_full(
     reparked_roots: &[MettaValue],
     saved_depth: u32,

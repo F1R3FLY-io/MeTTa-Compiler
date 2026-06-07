@@ -39,22 +39,20 @@ require_harness_entry() {
 mapfile -t lean_files < <(find "$REPO/formal/lean/gc" -maxdepth 1 -type f -name '*.lean' | sort)
 mapfile -t rocq_files < <(find "$REPO/formal/rocq/gc" -maxdepth 1 -type f -name '*.v' | sort)
 
-if [[ "${#lean_files[@]}" -eq 0 || "${#rocq_files[@]}" -eq 0 ]]; then
-  echo "proof hygiene: expected Lean and Rocq CESK GC proof files" >&2
+if [[ "${#rocq_files[@]}" -eq 0 ]]; then
+  echo "proof hygiene: expected Rocq CESK GC proof files" >&2
   exit 1
 fi
 
-check_forbidden "Lean proof shortcut" \
-  "$(word_pattern 'sorry|admit|axiom|constant|opaque|unsafe')" \
-  "${lean_files[@]}"
+if [[ "${#lean_files[@]}" -ne 0 ]]; then
+  check_forbidden "supplemental Lean proof shortcut" \
+    "$(word_pattern 'sorry|admit|axiom|constant|opaque|unsafe')" \
+    "${lean_files[@]}"
+fi
 
 check_forbidden "Rocq proof shortcut" \
   "$(word_pattern 'Admitted|admit|Axiom|Axioms|Parameter|Parameters|Conjecture|Conjectures|Abort')" \
   "${rocq_files[@]}"
-
-for file in "${lean_files[@]}"; do
-  require_harness_entry "run_lean" "$file"
-done
 
 for file in "${rocq_files[@]}"; do
   require_harness_entry "run_rocq" "$file"
@@ -64,4 +62,4 @@ if [[ "$failures" -ne 0 ]]; then
   exit 1
 fi
 
-echo "CESK GC proof-hygiene checks passed (${#lean_files[@]} Lean, ${#rocq_files[@]} Rocq)"
+echo "CESK GC proof-hygiene checks passed (${#rocq_files[@]} Rocq mandatory, ${#lean_files[@]} supplemental Lean scanned)"

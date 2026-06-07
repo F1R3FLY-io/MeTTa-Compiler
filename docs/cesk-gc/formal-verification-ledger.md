@@ -3,6 +3,10 @@
 This ledger tracks the mechanically checked proof artifacts for the CESK-based `index-gc` collector. It is not about
 the legacy slab mark-sweep collector.
 
+Rocq is the load-bearing proof assistant for this gate, paired with TLA+ model checking and source-coupling checks.
+Existing Lean files are supplemental mirrors only; the default formal harness does not require or maintain a second
+mandatory proof track.
+
 ## Verified implementation boundary
 
 The default live collector verified here is the CESK-based generational `index-gc` collector's E1 path:
@@ -566,16 +570,18 @@ bash scripts/verify_cesk_gc_formal.sh
 ```
 
 The harness derives paths from its own location, uses `target/tlc-formal-small` for small TLC logs/metadata by
-default, runs Rocq under `systemd-run`, and includes the small TLC positive/negative discriminators. The adjacent GC
+default, runs Rocq under `systemd-run`, skips supplemental Lean mirrors unless `RUN_LEAN_MIRRORS=1` is set, and
+includes the small TLC positive/negative discriminators. The adjacent GC
 gate scripts likewise default log/build scratch to repo-derived `target/...` directories (`target/gc-logs` or a
 script-specific subdirectory) while preserving caller overrides such as `LOG_DIR`, `LOG_ROOT`, `SCRATCH_ROOT`,
 `OUT`, `P`, `PGO_DIR`, and `CARGO_TARGET_DIR`; large gates must not spill into `/tmp` unless the caller explicitly
 chooses that.
 
-Before compiling proofs, `scripts/verify_cesk_gc_proof_hygiene.sh` rejects Lean proof shortcuts (`sorry`, `admit`,
-`axiom`, `constant`, `opaque`, `unsafe`) and Rocq proof shortcuts (`Admitted`, `admit`, `Axiom`, `Parameter`,
-`Conjecture`, `Abort`) in the CESK GC proof directories, and verifies every `formal/lean/gc/*.lean` and
-`formal/rocq/gc/*.v` file is enumerated by the formal harness.
+Before compiling proofs, `scripts/verify_cesk_gc_proof_hygiene.sh` rejects Rocq proof shortcuts (`Admitted`, `admit`,
+`Axiom`, `Parameter`, `Conjecture`, `Abort`) in the mandatory CESK GC proof directory and verifies every
+`formal/rocq/gc/*.v` file is enumerated by the formal harness. If supplemental Lean mirrors exist, the same hygiene
+pass scans them for Lean proof shortcuts (`sorry`, `admit`, `axiom`, `constant`, `opaque`, `unsafe`) without making
+them part of the mandatory gate.
 
 The formal harness also runs `scripts/verify_cesk_gc_tlc_hygiene.sh` before compiling proofs. That check parses every
 `run_tlc` entry, verifies labels/configs are unique, requires every referenced TLA+ module and config to exist, requires

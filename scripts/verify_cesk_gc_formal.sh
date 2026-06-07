@@ -14,6 +14,19 @@ run_lean() {
   lean "$REPO/$file"
 }
 
+run_lean_mirrors() {
+  if [[ "${RUN_LEAN_MIRRORS:-0}" != "1" ]]; then
+    echo "### Lean mirrors: skipped (set RUN_LEAN_MIRRORS=1 to run supplemental mirrors)"
+    return 0
+  fi
+
+  local file rel
+  while IFS= read -r file; do
+    rel="${file#$REPO/}"
+    run_lean "$rel"
+  done < <(find "$REPO/formal/lean/gc" -maxdepth 1 -type f -name '*.lean' | sort)
+}
+
 run_rocq() {
   local file="$1"
   echo "### Rocq: $file"
@@ -92,42 +105,7 @@ run_tlc() {
 run_proof_hygiene
 run_tlc_hygiene
 
-run_lean "formal/lean/gc/FreeList.lean"
-run_lean "formal/lean/gc/YoungMark.lean"
-run_lean "formal/lean/gc/StructuralRoots.lean"
-run_lean "formal/lean/gc/NodeEdgeCompleteness.lean"
-run_lean "formal/lean/gc/AbstractGCLiveNarrowing.lean"
-run_lean "formal/lean/gc/MidloopRootUnion.lean"
-run_lean "formal/lean/gc/RendezvousWitness.lean"
-run_lean "formal/lean/gc/WitnessSlotLifecycle.lean"
-run_lean "formal/lean/gc/WitnessOkReset.lean"
-run_lean "formal/lean/gc/GenerationResume.lean"
-run_lean "formal/lean/gc/StartedCycleGate.lean"
-run_lean "formal/lean/gc/CollapseCompletion.lean"
-run_lean "formal/lean/gc/WorkerAdmission.lean"
-run_lean "formal/lean/gc/ThreadContribution.lean"
-run_lean "formal/lean/gc/FrameEnvRoots.lean"
-run_lean "formal/lean/gc/TierLeafExtraRoots.lean"
-run_lean "formal/lean/gc/IndexArenaPublication.lean"
-run_lean "formal/lean/gc/SideArenaPublication.lean"
-run_lean "formal/lean/gc/SideFreeQuiescence.lean"
-run_lean "formal/lean/gc/HashConsSweepRetain.lean"
-run_lean "formal/lean/gc/DriverRootUnion.lean"
-run_lean "formal/lean/gc/DriverCPublication.lean"
-run_lean "formal/lean/gc/BatchHandoff.lean"
-run_lean "formal/lean/gc/OperatorCacheEpoch.lean"
-run_lean "formal/lean/gc/EpochProtectedCaches.lean"
-run_lean "formal/lean/gc/WriteOnceAnchors.lean"
-run_lean "formal/lean/gc/SpaceRegistryBarriers.lean"
-run_lean "formal/lean/gc/TieredCacheBarriers.lean"
-run_lean "formal/lean/gc/ThreadLocalTablesBarriers.lean"
-run_lean "formal/lean/gc/SATB.lean"
-run_lean "formal/lean/gc/SATBGates.lean"
-run_lean "formal/lean/gc/AllocateBlack.lean"
-run_lean "formal/lean/gc/SATBFinalization.lean"
-run_lean "formal/lean/gc/FullMajorSweep.lean"
-run_lean "formal/lean/gc/E0MutationSites.lean"
-run_lean "formal/lean/gc/E0EvictionBarriers.lean"
+run_lean_mirrors
 
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"

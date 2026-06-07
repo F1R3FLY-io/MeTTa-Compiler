@@ -33,7 +33,7 @@ collector reads driver-C only via `collect_driver_program_roots` at quiescence +
 NO structural change to collect_all_roots / RootProvider registry / models/mod.rs re-exports (= A5.5).
 
 ## VERIFY
-- **LOAD-BEARING (the gap fix)**: `cargo build --features index-gc` (debug) + `METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_MIDLOOP=1 METTATRON_INDEX_GC_REPORT=1 ./target/debug/mettatron examples/cesk-gc/stress_multidir.metta` → **0 oracle panics** (was |KEPT|=0). THE A5.4 acceptance gate.
+- **LOAD-BEARING (the gap fix)**: `cargo build --features index-gc` (debug) + `METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 ./target/debug/mettatron examples/cesk-gc/stress_multidir.metta` → **0 oracle panics** (was |KEPT|=0). THE A5.4 acceptance gate.
 - Green-wall `scripts/a5_greenwall.sh A54 --with-oracle`: slab 4324 / index 4176 / conf 483 / 0 panics.
 - ASAN: slab (seam removal touches both builds) + index — and **index ASAN can now ADD stress_multidir-CLI+MIDLOOP** (gap fixed) alongside M11-pt.
 

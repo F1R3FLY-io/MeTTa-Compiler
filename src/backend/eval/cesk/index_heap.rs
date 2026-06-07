@@ -2029,18 +2029,12 @@ pub mod index_gc {
     /// (S/C/K plus reach(E₀), global anchors, and the typed K-spine/VM leaves),
     /// the deferred-drop transient register, and driver-C safepoint roots. The
     /// formal `MidloopRootUnion` obligation and source-coupling harness pin that
-    /// vector; the default-on flip still awaits the forced-ASAN validation gate.
+    /// vector; the forced-ASAN validation gate is green, so the path is on by
+    /// default inside this already-proven single-evaluator gate.
     /// Marking from an incomplete set is a use-after-free.
     #[inline]
     pub fn gate_open_midloop() -> bool {
-        // Mid-loop (mid-directive) collection is OPT-IN (`midloop_enabled()`)
-        // until its forced-ASAN root-completeness gate is green — see
-        // `midloop_enabled`.
-        // Default-OFF means the shipped index-gc behavior is exactly the
-        // ASAN-validated true-quiescence collector (Inc 6a); mid-loop fires only
-        // when explicitly enabled for validation / once proven.
         gc_mode_is_index()
-            && midloop_enabled()
             && !worker_ever_spawned()
             && active_evaluator_count() == 1
             && !disabled()
@@ -2114,20 +2108,6 @@ pub mod index_gc {
         use std::sync::OnceLock;
         static OFF: OnceLock<bool> = OnceLock::new();
         *OFF.get_or_init(|| std::env::var("METTATRON_INDEX_GC_DISABLE").as_deref() == Ok("1"))
-    }
-
-    /// Mid-loop (mid-directive) collection is OPT-IN until its forced-ASAN
-    /// root-completeness gate is green: `METTATRON_INDEX_GC_MIDLOOP=1` enables it.
-    /// Default OFF so the shipped behavior is the ASAN-validated true-quiescence
-    /// collector (Inc 6a). The mid-loop path roots the live trampoline S/C/K,
-    /// reach(E₀), global anchors, typed K-spine/VM leaves, deferred envs, and
-    /// driver-C safepoint roots; enabling it by default awaits the ASAN run that
-    /// forces a mid-execution sweep and proves no freed-mid-execution
-    /// use-after-free (parsed once).
-    fn midloop_enabled() -> bool {
-        use std::sync::OnceLock;
-        static ON: OnceLock<bool> = OnceLock::new();
-        *ON.get_or_init(|| std::env::var("METTATRON_INDEX_GC_MIDLOOP").as_deref() == Ok("1"))
     }
 
     /// Run a single-threaded mark+sweep cycle IF the safety gate is open AND the

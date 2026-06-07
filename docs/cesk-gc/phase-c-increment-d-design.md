@@ -18,9 +18,9 @@ over-rooting direction. Section C below is rewritten accordingly.
    k_spine) — NO `collect_from_continuations`; `assert_quiescence_superset` (roots.rs:379) builds from
    persistent only (roots.rs:410, comment :407-408 "C∪K are empty at quiescence"). The K-walk
    (`collect_from_continuations`, roots.rs:183) is reached ONLY via `collect_machine_roots` (roots.rs:328)
-   at the ONE midloop root-build (eval_loop.rs:3799-3806). So D narrows ONLY the midloop collector
-   (`gate_open_midloop`, `METTATRON_INDEX_GC_MIDLOOP=1`, default-OFF). The shipped quiescence path is
-   untouched ⇒ byte-identical green-wall. The discharge MUST be a MIDLOOP oracle + MIDLOOP ASAN.
+   at the ONE midloop root-build (eval_loop.rs:3799-3806). So D narrows ONLY the default midloop collector
+   (`gate_open_midloop`). The quiescence path is untouched. The discharge MUST be a MIDLOOP oracle +
+   MIDLOOP ASAN.
 2. **Deadness predicate = `cut_fired_peek(cut_barrier)`** (eval_loop.rs:2165 = `b != 0 && CUT_SIGNAL==b`;
    thread-local `CUT_SIGNAL` :1801, accessible+consistent on the sole eval thread at the midloop safepoint).
    It ALREADY encodes `b != 0` (drop the baseline's redundant extra check).
@@ -90,7 +90,7 @@ obligation: skip ⟹ cut-fired ⟹ not-read. (3) is the empirical dynamic confir
   check — a legitimate dead-drop and a buggy live-drop reduce the closure *identically*, so it false-fails
   on every legitimate narrowing (D deliberately makes `narrowed ⊊ full`). The read-site coupling catches the
   precursor to the actual UAF (skip-but-read); the closure oracle could only catch the harmless
-  over-rooting direction. Standing CI: a DEBUG `--features index-gc` corpus run (`MIDLOOP=1 MIN_BYTES=1`)
+  over-rooting direction. Standing CI: a DEBUG `--features index-gc` corpus run with forced low `MIN_BYTES`
   exercises all corpus cut paths against these asserts → 0 panics.
 - **(3) MIDLOOP ASAN** (`scripts/d_midloop_asan.sh`, `cut_young.metta`): the dynamic confirmation that the
   REAL (correct) narrowing has no UAF under cuts + a midloop MINOR. The side-free is quiescence-gated (off at
@@ -98,9 +98,8 @@ obligation: skip ⟹ cut-fired ⟹ not-read. (3) is the empirical dynamic confir
   (a real backing-Box free) — `cut_young.metta` commits all three narrowed K-frames (multi-clause `pick` =
   ProcessRuleMatches, the `let*` value fan-out = ProcessAmb, the `match` template fan-out =
   ProcessMatchTemplates) then drives POST-CUT young churn so a wrongly-reclaimed slot is reused/overwritten
-  and a live ref dereferenced. `MIDLOOP=1 MIN_BYTES` high → 0 UAF + `midloop minor cycle`>0 (non-vacuous) +
-  result `[done]`; + a MIDLOOP-off control arm (same `[done]` ⇒ the result is independent of midloop
-  collection). RESULT (2026-06-01): both arms 0 UAF, 1 minor (non-vacuous), 0 read-site-assert panics.
+  and a live ref dereferenced. High `MIN_BYTES` → 0 UAF + `midloop minor cycle`>0 (non-vacuous) +
+  result `[done]`. RESULT (2026-06-01): 0 UAF, 1 minor (non-vacuous), 0 read-site-assert panics.
   **Midloop MAJOR coverage (no separate ASAN needed, and structurally precluded here).** The narrowed root
   vec feeds BOTH the midloop minor and major mark. `cut_young`'s heap is young-only and ~7 MiB committed, so
   `CAP_FLOOR` (8 MiB) structurally precludes a midloop major on it (verified: MIN_BYTES=131072 still fires a
@@ -116,10 +115,9 @@ obligation: skip ⟹ cut-fired ⟹ not-read. (3) is the empirical dynamic confir
   differential tests + read-site coupling asserts + midloop ASAN fully discharge it.
 
 ## Gate (D-2): green-wall byte-identical (483/0, slab/index nextest with the 4 new differential tests, conf
-cycles unchanged, quiescence oracle 0) + the 4 differential tests green + DEBUG corpus run (`MIDLOOP=1
-MIN_BYTES=1`) 0 read-site-assert panics + midloop ASAN 0-UAF (non-vacuous, `cut_young.metta`) + 20-run +
-mmverify. **Throughput: ~zero (D inert on shipped path; opt-in midloop-only; value = the genuine-CESK form
-+ midloop marking precision, NOT perf — state plainly).**
+cycles unchanged, quiescence oracle 0) + the 4 differential tests green + DEBUG corpus run with forced low
+`MIN_BYTES` 0 read-site-assert panics + midloop ASAN 0-UAF (non-vacuous, `cut_young.metta`) + 20-run +
+mmverify. **Throughput: value = the genuine-CESK form + midloop marking precision, NOT perf — state plainly.**
 
 ## Commit plan
 - **D-1** (committed `49e09fd`): `cut_fired_peek`→pub(crate) + `force_cut_signal_for_test` +

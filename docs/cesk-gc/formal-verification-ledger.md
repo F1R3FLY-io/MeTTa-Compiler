@@ -10,11 +10,12 @@ mandatory proof track.
 ## Verified implementation boundary
 
 The default live collector verified here is the CESK-based generational `index-gc` collector's E1 path:
-single-threaded quiescence and rendezvous collection compute structural roots, then mark and sweep while holding the
-index heap write lock. Mid-loop collection remains opt-in (`METTATRON_INDEX_GC_MIDLOOP=1`): the mid-loop root-union
-theorem, TLC discriminator, source-coupling checks, and focused forced-ASAN gate pin its live S/C/K,
-E0/global/K-spine, deferred-env, and driver-C root vector. The focused ASAN run on 2026-06-07 forced one mid-loop
-minor with 0 UAF and result `[done]`; the default-on flip still requires the broader conformance/default-flip gate.
+single-threaded quiescence, default-on single-evaluator mid-loop collection, and rendezvous collection compute
+structural roots, then mark and sweep while holding the index heap write lock. The mid-loop root-union theorem, TLC
+discriminator, source-coupling checks, and focused forced-ASAN gate pin its live S/C/K, E0/global/K-spine,
+deferred-env, and driver-C root vector. The focused ASAN run on 2026-06-07 forced one default mid-loop minor with 0 UAF
+and result `[done]`. The default-on release conformance gate on 2026-06-07 passed 483/0/0/0 with
+`INDEX_GC_CYCLES_RUN=798` under the existing committed-cap trigger, so the semantic oracle was non-vacuous.
 There is also an opt-in E2 SATB major path
 (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and
@@ -68,7 +69,7 @@ can replace the full-major final sweep.
   frame's dead-for-next-transition field set, then marking only the narrowed live root set cannot free a future-touched
   value. The proof also states the no-dead-fields equality case and rejects the contradictory shape where a skipped
   field is still future-live.
-- `formal/rocq/gc/MidloopRootUnion.v` and `formal/lean/gc/MidloopRootUnion.lean`: prove the opt-in single-threaded
+- `formal/rocq/gc/MidloopRootUnion.v` and `formal/lean/gc/MidloopRootUnion.lean`: prove the default single-threaded
   mid-loop root-union obligation. If live S/C/K, E0, global anchors, K-spine, deferred environment drops, and driver-C
   safepoint roots are included in the mid-loop root vector, mark/sweep cannot free any channel root, and future touches
   reachable from that union survive collection.
@@ -194,7 +195,7 @@ can replace the full-major final sweep.
   union, collector-root closure, mark completeness, sweep-only-unmarked, driver-C publication, and young-minor
   obligations into explicit no-UAF/progress theorems for participant roots, live witness-slot visibility,
   cross-cycle witness-gate freshness, no-phantom straddle re-park, parked-participant release after a closed
-  rendezvous, scheduler-held live roots, driver channel roots, C2 abstract-GC live-K narrowing, opt-in mid-loop
+  rendezvous, scheduler-held live roots, driver channel roots, C2 abstract-GC live-K narrowing, default mid-loop
   channel roots and future touches, caller-held driver-C roots, async batch-result handoff values, pointer-keyed
   operator-cache and shared worker-local Addr-cache sweep-epoch coherence, write-once global anchors, global
   space-registry roots and removed-handle SATB shades, global tiered-cache
@@ -243,7 +244,7 @@ can replace the full-major final sweep.
 - `tla/DriverRootUnion.tla`: checks the E1 driver root-union channels. Including worker-buffer, safepoint,
   live-env/E0, and live-dispatch channels preserves root-union completeness; omitting live-env or live-dispatch
   violates it.
-- `tla/MidloopRootUnion.tla`: checks the opt-in single-threaded mid-loop root vector. Including live S/C/K,
+- `tla/MidloopRootUnion.tla`: checks the default single-threaded mid-loop root vector. Including live S/C/K,
   E0/global/K-spine, deferred env drops, and driver-C preserves `MidloopRootUnionComplete`; omitting the machine,
   deferred-env, or driver-C channel violates it.
 - `tla/AbstractGCLiveNarrowing.tla`: checks the C2 abstract-GC live-field narrowing discriminator. When all three
@@ -436,10 +437,10 @@ facts the proofs rely on:
   `remaining_matches`, `remaining_alts`, and `remaining_templates`. Each narrowed field has a debug assertion at the
   next transition read site proving it is not read on the cut-fired path, plus a differential unit test showing
   `collect_live_values` equals `collect_values` when no cut fired and drops only the dead iterator field after cut.
-- The opt-in single-threaded mid-loop branch is pinned to build `midloop_roots` from `collect_machine_roots_live`
+- The default single-threaded mid-loop branch is pinned to build `midloop_roots` from `collect_machine_roots_live`
   (live S/C/K plus persistent E0/global/K-spine), then deferred environment drops, then `collect_safepoint_roots`, and
-  `run_collection_if_triggered_midloop` must consume that same vector. Its gate remains index-only, explicit opt-in,
-  single-evaluator, and pre-worker-spawned.
+  `run_collection_if_triggered_midloop` must consume that same vector. Its gate remains index-only,
+  single-evaluator, and pre-worker-spawned, with no separate mid-loop feature switch.
 - Collapse-bind binding-capture frames are pinned as metadata-only: the old empty capture/root shims are absent, the
   frame contains only `tracked_vars` and `collapse_fork_depth`, and it cannot hold `MettaValue`, `BoundValue`, or
   `GenericBindings` roots outside the canonical work-item / continuation readers.

@@ -54,9 +54,9 @@ increment must GENUINELY embody CESK + an integrated allocator↔GC, verified ag
   + `Some→None`/already-`None` idempotence + non-released segment.
 - **A.4 ASAN (the discharge; TLA+ N/A — side `Box` lifetime ≡ node-slot, no model-state change)**: two
   arms over an extended `examples/cesk-gc/change_state_young.metta` (live young `change-state!` cell +
-  >2 MiB young churn ⇒ natural minors + a materialized launder'd ref): **quiescence arm** (shipped path,
-  MUST be 0-UAF) + **midloop arm** (`MIDLOOP=1`; the gate keeps the side `Box` un-freed ⇒ MUST be 0-UAF,
-  proving the gate is what makes it sound). High `MIN_BYTES` so no major preempts; assert minors>0 +
+  >2 MiB young churn ⇒ natural minors + a materialized launder'd ref): **quiescence arm** (directive-boundary path,
+  MUST be 0-UAF) + **midloop arm** (default mid-loop path; the gate keeps the side `Box` un-freed ⇒ MUST be
+  0-UAF, proving the gate is what makes it sound). High `MIN_BYTES` so no major preempts; assert minors>0 +
   reclaimed_slots>0.
 - **A.5 Gate**: `a5_greenwall.sh side_free --with-oracle` (slab MUST NOT move; index/conf byte-identical
   PASS, cycles>0); ASAN both arms; 20-run; mmverify; A/B (git A=`b8d96f1`, B=HEAD) **peak RSS↓**, no wall

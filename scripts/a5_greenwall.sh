@@ -9,9 +9,9 @@
 #   2. INDEX nextest (release, index-gc)    → expect 4167 pass / 0 fail
 #   3. INDEX conformance bin build (release)
 #   4. INDEX conformance (release, all 483) → expect 483 pass (base 222 +
-#      M11-pt 221 + M11-he 40, the latter two SUBSETS of 483), cycles>0 (~840).
+#      M11-pt 221 + M11-he 40, the latter two SUBSETS of 483), cycles>0.
 #   --with-oracle (for steps touching the collection path):
-#   5. INDEX conformance DEBUG, MIN_BYTES=1 → machine-equivalence oracle fires
+#   5. INDEX conformance DEBUG, MAX_BYTES=1MiB → machine-equivalence oracle fires
 #      every collection; expect 0 oracle panics, 483 pass.
 #
 # Baselines (dbc6fa8 / A5.7, Phase A complete): slab 4324, index 4167, conf 483.
@@ -47,14 +47,19 @@ echo "### 3 INDEX conformance bin build (release)"
 "${CAP[@]}" cargo build --release --features index-gc --bin mtt-conformance > "${P}_confbuild.log" 2>&1; echo "confbuild_rc=$?"
 tail -2 "${P}_confbuild.log"
 
-echo "### 4 INDEX conformance (release, all 483; cycles>0 ~840). FANOUT_DEPTH=0 forces"
-echo "    single-threaded so worker_ever_spawned never latches; MIN_BYTES=128KiB so the"
-echo "    quiescence collector fires often (non-vacuous)."
-METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 "${RUNBIN[@]}" \
+echo "### 4 INDEX conformance (release, all 483; cycles>0). FANOUT_DEPTH=0 forces"
+echo "    single-threaded so worker_ever_spawned never latches; MAX_BYTES=1MiB"
+echo "    trips the committed-cap trigger on this corpus (non-vacuous)."
+METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MAX_BYTES=1048576 METTATRON_INDEX_GC_REPORT=1 "${RUNBIN[@]}" \
   "$REPO/target/release/mtt-conformance" --conformance-dir "$CONF_DIR" --strict > "${P}_conf.log" 2>&1
 echo "conf_rc=$?"
 grep -E "^Found |^Summary:" "${P}_conf.log"
 grep INDEX_GC_CYCLES "${P}_conf.log"
+CYCLES=$(grep -oE 'INDEX_GC_CYCLES_RUN=[0-9]+' "${P}_conf.log" | tail -1 | cut -d= -f2)
+if [[ -z "$CYCLES" || "$CYCLES" -le 0 ]]; then
+  echo "ERROR: index conformance was GC-vacuous (INDEX_GC_CYCLES_RUN=${CYCLES:-missing})"
+  exit 1
+fi
 echo "fails+errors: $(grep -cE ': (FAIL|ERROR)' "${P}_conf.log")"
 echo "per-module PASS counts:"
 grep ': PASS' "${P}_conf.log" | sed -E 's#/.*##' | sort | uniq -c
@@ -67,10 +72,10 @@ echo "slab lib:  $(grep -oE 'mettatron. \(lib\) generated [0-9]+ warning' "${P}_
 echo "index lib: $(grep -oE 'mettatron. \(lib\) generated [0-9]+ warning' "${P}_wcheck_index.log" | grep -oE '[0-9]+' | head -1) (expect 49)"
 
 if [[ "$WITH_ORACLE" == "1" ]]; then
-  echo "### 5 INDEX conformance DEBUG (machine-equivalence oracle, MIN_BYTES=1; expect 0 panics, 483 pass)"
+  echo "### 5 INDEX conformance DEBUG (machine-equivalence oracle, MAX_BYTES=1MiB; expect 0 panics, 483 pass)"
   "${CAP[@]}" cargo build --features index-gc --bin mtt-conformance > "${P}_confbuild_debug.log" 2>&1; echo "confbuild_debug_rc=$?"
   tail -2 "${P}_confbuild_debug.log"
-  METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 "${RUNBIN[@]}" \
+  METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MAX_BYTES=1048576 METTATRON_INDEX_GC_REPORT=1 "${RUNBIN[@]}" \
     "$REPO/target/debug/mtt-conformance" --conformance-dir "$CONF_DIR" --strict > "${P}_conf_debug.log" 2>&1
   echo "conf_debug_rc=$?"
   echo "debug Summary: $(grep -E '^Summary:' "${P}_conf_debug.log")"

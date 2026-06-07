@@ -536,12 +536,12 @@ assert_after_before "src/backend/eval/trampoline/types.rs" "impl Continuation {"
 assert_count_between "src/backend/eval/trampoline/types.rs" "pub fn collect_live_values(&self, out: &mut Vec<MettaValue>)" "pub fn depth_hint(&self) -> usize" "collect_fork_local_roots(env, out);" "3"
 assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn collect_live_values(&self, out: &mut Vec<MettaValue>)" "_ => self.collect_values(out)," "pub fn depth_hint(&self) -> usize"
 
-# Single-threaded mid-loop collection coupling: the opt-in mid-loop branch must
+# Single-threaded mid-loop collection coupling: the default-on mid-loop branch must
 # build exactly the root union discharged by MidloopRootUnion before handing it
 # to the collector. This is the live trampoline S/C/K reader (which also appends
 # E0/global/K-spine), then deferred env drops, then driver-C safepoint roots.
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "gc_mode_is_index()" "&& midloop_enabled()"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "&& midloop_enabled()" "&& !worker_ever_spawned()"
+assert_zero "src/backend/eval/cesk/index_heap.rs" "midloop_enabled"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "gc_mode_is_index()" "&& !worker_ever_spawned()"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "&& !worker_ever_spawned()" "&& active_evaluator_count() == 1"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "&& active_evaluator_count() == 1" "&& !disabled()"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "let mut midloop_roots" "collect_machine_roots_live("

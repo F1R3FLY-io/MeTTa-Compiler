@@ -3650,9 +3650,9 @@ const RENDEZVOUS_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 
 /// Whether the parallel rendezvous collector is enabled (env
 /// `METTATRON_INDEX_GC_PARALLEL=1`, default OFF). Parsed once and cached, exactly
-/// like `index_heap::midloop_enabled()` (:1844). Until D5 the rendezvous call
-/// sites are ALSO gated on this, so the default build is byte-identical (the
-/// primitives are dead code regardless — this gate governs the D2.x wiring).
+/// once. Until D5 the rendezvous call sites are ALSO gated on this, so the default
+/// build is byte-identical (the primitives are dead code regardless — this gate
+/// governs the D2.x wiring).
 ///
 /// See `docs/cesk-gc/phase-d-d1-d2-rendezvous-design.md` §"Sub-increments".
 #[allow(dead_code)] // DEAD until D2.x gates the call sites on this.

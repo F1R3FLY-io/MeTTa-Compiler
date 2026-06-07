@@ -1,6 +1,6 @@
 (** Rocq model of the single-threaded mid-loop CESK root-union obligation.
 
-    The opt-in mid-loop collector runs while the trampoline machine is live, so
+    The mid-loop collector runs while the trampoline machine is live, so
     its root vector must contain the live S/C/K registers, persistent E0 roots,
     global anchors, the reified K-spine, deferred environment drops, and the
     caller-held driver-C safepoint channel.  This module proves the parametric

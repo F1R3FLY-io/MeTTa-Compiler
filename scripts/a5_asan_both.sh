@@ -45,7 +45,7 @@ echo "slab_conf_rc=$?"; grep -E "^Summary:" "${P}_slab_conf.log"
 
 echo "### build INDEX ASAN bin (--features index-gc; overwrites the bin)"
 build_asan --features index-gc > "${P}_index_build.log" 2>&1; echo "index_build_rc=$?"; tail -2 "${P}_index_build.log"
-echo "### INDEX M11-bisimilarity-pt ASAN (no MIDLOOP, oracle live)"
+echo "### INDEX M11-bisimilarity-pt ASAN (default mid-loop gate, oracle live)"
 METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 \
   ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
   systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% \

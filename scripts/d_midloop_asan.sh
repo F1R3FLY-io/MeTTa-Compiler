@@ -12,17 +12,15 @@
 #
 # Builds the `mettatron` CLI under index-gc ASAN (-Zbuild-std nightly, capped, FOREGROUND)
 # and runs `cut_young.metta` (3 narrowed K-frames committed by a cut, then post-cut young
-# churn) on two arms, each asserting 0 ASAN UAF:
+# churn) on the default mid-loop path, asserting 0 ASAN UAF:
 #
-#   1. midloop : MIDLOOP=1 + MIN_BYTES high ⇒ a mid-loop MINOR fires (young_alloc > 2 MiB)
-#                WHILE a post-cut `cut-pick` frame is on the K-spine; `collect_machine_roots_
-#                live` narrows that frame, so the minor's `sweep_young` reclaims the pruned
-#                {answer-2, answer-3} nodes and the post-cut churn reuses their slots /
-#                triggers young-segment release (side-free is quiescence-gated, OFF here).
-#                A wrong-narrow (dropping a LIVE field) ⇒ heap-use-after-free. Expect: 0 UAF,
-#                (minor cycle)>0 (non-vacuous), result == [done].
-#   2. control : MIDLOOP unset ⇒ collection only at the directive boundary → 0 UAF AND the
-#                SAME [done] result (proves the answer is independent of mid-loop collection).
+#   default : MIN_BYTES high ⇒ a default-on mid-loop MINOR fires (young_alloc > 2 MiB)
+#             WHILE a post-cut `cut-pick` frame is on the K-spine; `collect_machine_roots_
+#             live` narrows that frame, so the minor's `sweep_young` reclaims the pruned
+#             {answer-2, answer-3} nodes and the post-cut churn reuses their slots /
+#             triggers young-segment release (side-free is quiescence-gated, OFF here).
+#             A wrong-narrow (dropping a LIVE field) ⇒ heap-use-after-free. Expect: 0 UAF,
+#             (minor cycle)>0 (non-vacuous), result == [done].
 #
 # FANOUT_DEPTH=0 (single-threaded). REPORT=2 prints the minor/major split for non-vacuity.
 set -euo pipefail
@@ -92,12 +90,11 @@ run_arm() {  # $1=label  $2...=env assignments
   fi
 }
 
-run_arm midloop METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIDLOOP=1 METTATRON_INDEX_GC_MIN_BYTES=$GIB METTATRON_INDEX_GC_REPORT=2
-run_arm control METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=$GIB METTATRON_INDEX_GC_REPORT=2
+run_arm default METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=$GIB METTATRON_INDEX_GC_REPORT=2
 
 echo "===== C #D-2 MIDLOOP NARROWING ASAN VERDICT ====="
-ARMS_WITH_UAF=$( (grep -lE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free' "${P}_midloop.log" "${P}_control.log" 2>/dev/null || true) | wc -l | tr -d ' ' )
-MIDLOOP_MINORS=$(count_matches 'minor cycle' "${P}_midloop.log")
+ARMS_WITH_UAF=$( (grep -lE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free' "${P}_default.log" 2>/dev/null || true) | wc -l | tr -d ' ' )
+MIDLOOP_MINORS=$(count_matches 'minor cycle' "${P}_default.log")
 echo "arms with UAF: ${ARMS_WITH_UAF} (expect 0)"
 echo "midloop minors (expect >0, non-vacuous): ${MIDLOOP_MINORS}"
 if [[ "$ARMS_WITH_UAF" -ne 0 || "$MIDLOOP_MINORS" -le 0 ]]; then

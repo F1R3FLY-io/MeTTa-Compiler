@@ -12,9 +12,10 @@
 #   2. quiescence-MINOR : side_free_minor.metta @ MIN_BYTES=1 GiB (no major) + heavy
 #                         young churn ⇒ a MINOR fires (young_alloc > 2 MiB) → side-free
 #                         on `sweep_young` (the young-only path).
-#   3. midloop-GATE     : side_free_minor.metta @ MIDLOOP=1 ⇒ mid-loop minors fire while
-#                         the State value is live, but the side-free is GATED OFF
-#                         (deferred) → 0 UAF, proving the gate prevents the launder UAF.
+#   3. midloop-GATE     : side_free_minor.metta ⇒ default-on mid-loop minors fire
+#                         while the State value is live, but the side-free is GATED
+#                         OFF (deferred) → 0 UAF, proving the gate prevents the
+#                         launder UAF.
 #
 # All FANOUT_DEPTH=0 (single-threaded quiescence collector). REPORT=2 prints the
 # minor/major split so we can confirm the intended collection type fired (non-vacuous).
@@ -57,7 +58,7 @@ run_arm quiescence_major change_state_young.metta \
 run_arm quiescence_minor side_free_minor.metta \
   METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=$GIB METTATRON_INDEX_GC_REPORT=2
 run_arm midloop_gate side_free_minor.metta \
-  METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=$GIB METTATRON_INDEX_GC_MIDLOOP=1 METTATRON_INDEX_GC_REPORT=2
+  METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=$GIB METTATRON_INDEX_GC_REPORT=2
 
 echo "===== C #A SIDE-FREE ASAN VERDICT ====="
 TOTAL_UAF=$(grep -lcE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free' "${P}_quiescence_major.log" "${P}_quiescence_minor.log" "${P}_midloop_gate.log" 2>/dev/null | grep -v ':0' | wc -l)

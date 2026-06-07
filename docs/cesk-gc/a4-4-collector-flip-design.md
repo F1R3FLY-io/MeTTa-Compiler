@@ -177,7 +177,7 @@ commit is acceptable because the oracle (debug) + flip (release) are independent
 
 ## The three flip sites (exact before/after)
 
-### Flip 1 — MIDLOOP safepoint (`eval_loop.rs:3670-3677`, opt-in `should_collect_midloop()`)
+### Flip 1 — MIDLOOP safepoint (`eval_loop.rs:3670-3677`, default-gated `should_collect_midloop()`)
 
 In scope at this site (verified): `machine_operand_stack` (S), `work` (current `WorkItem`,
 C), `work_stack` (C), `continuations` (K), `deferred_shared_drops`
@@ -581,17 +581,14 @@ echo "rc=$? ; grep INDEX_GC_CYCLES_RUN $LOG_DIR/a4_4_asan_quiescence.log"
 Step 1, swapping `--bin mtt-conformance` → `--bin mettatron`, OR add `--bin mettatron` to
 Step 1's single build. The CLI exercises Flip 2 via `eval()`.)
 
-**(b) Midloop flip (Flip 1) — the single giant directive `stress_alloc.metta` + opt-in.**
+**(b) Midloop flip (Flip 1) — the single giant directive `stress_alloc.metta`.**
 `!(loop 8000 200)` is ONE directive (no inter-directive quiescence), so it exercises the
-**midloop** collector — but ONLY when the opt-in is enabled (`should_collect_midloop` gates
-on `midloop_enabled()`, env `METTATRON_INDEX_GC_MIDLOOP=1`, default OFF). This is the path
-the A4.3 oracle validates and Flip 1 changes; run it under ASAN with the opt-in ON to
-exercise the flipped midloop feed:
+**midloop** collector. This is the path the A4.3 oracle validates and Flip 1 changes; run it under ASAN to exercise
+the flipped midloop feed:
 ```bash
 systemd-run --user --scope \
     -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=400% -p TasksMax=128 \
     env METTATRON_PARALLEL_FANOUT_DEPTH=0 \
-        METTATRON_INDEX_GC_MIDLOOP=1 \
         METTATRON_INDEX_GC_MIN_BYTES=131072 \
         METTATRON_INDEX_GC_REPORT=1 \
         ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \

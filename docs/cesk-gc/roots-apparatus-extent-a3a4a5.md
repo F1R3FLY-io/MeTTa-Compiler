@@ -220,7 +220,7 @@ Walks chunk's immutable constant pool (contains literal MettaValue atoms/strings
 3. **Line 184** — `worker_cooperative_safepoint()`: collect parent-class roots from frame chain
 4. **Line 2651** — ProcessReturn fan-out: collect parent roots for resumption
 5. **Line 2752** — ProcessFunction fan-out: collect parent roots
-6. **Line 3504** — `eval_trampoline_inner` mid-loop safepoint (under `METTATRON_INDEX_GC_MIDLOOP`)
+6. **Line 3504** — `eval_trampoline_inner` default mid-loop safepoint
 
 #### In frame_chain.rs tests:
 7. Line 316, 328, 338, 370, 392, 396, 417–421, 450, 451, 469, 477 (12 test calls)

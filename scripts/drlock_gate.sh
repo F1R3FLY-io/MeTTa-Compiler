@@ -38,19 +38,24 @@ case "$STEP" in
     tail -3 "${P}_confbuild.log"
     ;;
   conf_f0)
-    echo "### INDEX conformance FANOUT=0 (expect 483/0, cycles>0 ~840)"; date
-    METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 "${CAP[@]}" \
+    echo "### INDEX conformance FANOUT=0 (expect 483/0, cycles>0 via MAX_BYTES=1MiB)"; date
+    METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MAX_BYTES=1048576 METTATRON_INDEX_GC_REPORT=1 "${CAP[@]}" \
       "$REPO/target/release/mtt-conformance" --conformance-dir "$CONF_DIR" --strict > "${P}_conf_f0.log" 2>&1
     echo "conf_rc=$?"
     grep -E "^Found |^Summary:" "${P}_conf_f0.log"
     grep INDEX_GC_CYCLES "${P}_conf_f0.log" | tail -1
+    CYCLES=$(grep -oE 'INDEX_GC_CYCLES_RUN=[0-9]+' "${P}_conf_f0.log" | tail -1 | cut -d= -f2)
+    if [[ -z "$CYCLES" || "$CYCLES" -le 0 ]]; then
+      echo "ERROR: index conformance was GC-vacuous (INDEX_GC_CYCLES_RUN=${CYCLES:-missing})"
+      exit 1
+    fi
     echo "fails+errors: $(grep -cE ': (FAIL|ERROR)' "${P}_conf_f0.log")"
     ;;
   conf_oracle)
-    echo "### INDEX conformance DEBUG oracle (MIN_BYTES=131072; expect 0 panics, 483 pass)"; date
+    echo "### INDEX conformance DEBUG oracle (MAX_BYTES=1MiB; expect 0 panics, 483 pass)"; date
     "${CAP[@]}" cargo build --features index-gc --bin mtt-conformance > "${P}_confbuild_debug.log" 2>&1; echo "confbuild_debug_rc=$?"
     tail -2 "${P}_confbuild_debug.log"
-    METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 "${CAP[@]}" \
+    METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MAX_BYTES=1048576 METTATRON_INDEX_GC_REPORT=1 "${CAP[@]}" \
       "$REPO/target/debug/mtt-conformance" --conformance-dir "$CONF_DIR" --strict > "${P}_conf_oracle.log" 2>&1
     echo "conf_debug_rc=$?"
     echo "debug Summary: $(grep -E '^Summary:' "${P}_conf_oracle.log")"

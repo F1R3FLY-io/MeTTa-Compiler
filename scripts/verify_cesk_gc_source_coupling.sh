@@ -642,6 +642,7 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn satb_sh
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn satb_shade_evicted_roots" "!satb_marking_in_progress()" "let mut addrs"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn satb_shade_evicted_roots" "global_index_heap().read().expect" "heap.mark(&addrs);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn mark_concurrent_roots" "global_index_heap().read().expect" "heap.mark_concurrent(&addrs)"
+assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn mark_concurrent_roots" "/// Adaptive committed-bytes watermark." "global_index_heap().write()"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn mark_concurrent" "self.mark(roots)" "}"
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "fn open_segment(&self) -> usize" "(*self.segments[idx].get()).write(seg);" "self.seg_count.store(idx + 1, Ordering::Release);"
 assert_after_before "src/backend/eval/cesk/index_arena.rs" "fn open_segment(&self) -> usize" "self.seg_count.store(idx + 1, Ordering::Release);" "self.cur_seg.store(idx, Ordering::Release);"

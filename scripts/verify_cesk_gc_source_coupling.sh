@@ -585,6 +585,18 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_a
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "if phase == \"quiescence\"" "heap.free_reclaimed_side_slots(&reclaimed);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.free_reclaimed_side_slots(&reclaimed);" "clear_inner_shadow();"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.free_reclaimed_side_slots(&reclaimed);" "clear_inner_shadow();"
+
+# Addr-valued hash-cons entries must not survive a sweep when their slot is
+# about to be reclaimed. Lookup also revalidates the existing node's child
+# handles before returning a table hit.
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn intern_ground_sexpr(&mut self, items: &[MettaValue]) -> MettaValue" "self.hash_cons.get(&key)" "existing.as_arena_addr()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn intern_ground_sexpr(&mut self, items: &[MettaValue]) -> MettaValue" "let kids = self.children(addr);" "kids.len() == items.len()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn intern_ground_sexpr(&mut self, items: &[MettaValue]) -> MettaValue" "kids.iter().zip(items).all(|(a, b)| a.tagged == b.tagged)" "return existing;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep(&mut self) -> SweepStats" ".retain(|_, v| v.as_arena_addr().is_some_and(|a| arena.is_marked(a)));" "self.arena.sweep_with("
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep_young(&mut self) -> SweepStats" "let young_floor = self.arena.young_floor();" "self.hash_cons.retain"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep_young(&mut self) -> SweepStats" "Some(a) if a.segment() >= young_floor => arena.is_marked(a)," "Some(_) => true,"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep_young(&mut self) -> SweepStats" "Some(_) => true," "None => false,"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep_young(&mut self) -> SweepStats" "self.hash_cons.retain" "self.arena.sweep_young_with("
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "global_index_heap().write().expect(\"index heap\")" "heap.mark(&addrs);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.mark(&addrs);" "let stats = heap.sweep();"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.sweep();" "heap.promote_young();"

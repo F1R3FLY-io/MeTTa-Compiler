@@ -109,6 +109,7 @@ run_lean "formal/lean/gc/TierLeafExtraRoots.lean"
 run_lean "formal/lean/gc/IndexArenaPublication.lean"
 run_lean "formal/lean/gc/SideArenaPublication.lean"
 run_lean "formal/lean/gc/SideFreeQuiescence.lean"
+run_lean "formal/lean/gc/HashConsSweepRetain.lean"
 run_lean "formal/lean/gc/DriverRootUnion.lean"
 run_lean "formal/lean/gc/DriverCPublication.lean"
 run_lean "formal/lean/gc/BatchHandoff.lean"
@@ -142,6 +143,7 @@ run_rocq "formal/rocq/gc/TierLeafExtraRoots.v"
 run_rocq "formal/rocq/gc/IndexArenaPublication.v"
 run_rocq "formal/rocq/gc/SideArenaPublication.v"
 run_rocq "formal/rocq/gc/SideFreeQuiescence.v"
+run_rocq "formal/rocq/gc/HashConsSweepRetain.v"
 run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
@@ -249,6 +251,14 @@ run_tlc "side_free_missing_gate" "MC_SideFreeQuiescence.tla" "MC_SideFreeQuiesce
   fail "Invariant NoDanglingSideUse is violated"
 run_tlc "side_free_missing_shadow_clear" "MC_SideFreeQuiescence.tla" "MC_SideFreeQuiescence_missing_shadow_clear.cfg" \
   fail "Invariant NoDanglingSideUse is violated"
+run_tlc "hash_cons_major_safe" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_safe.cfg" \
+  pass ""
+run_tlc "hash_cons_major_dead_retained" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_dead_retained.cfg" \
+  fail "Invariant NoReturnedFreed is violated"
+run_tlc "hash_cons_minor_old_retained" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_minor_old_retained.cfg" \
+  pass ""
+run_tlc "hash_cons_minor_dead_young_retained" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_minor_dead_young_retained.cfg" \
+  fail "Invariant NoReturnedFreed is violated"
 run_tlc "driver_c_publication_published" "MC_DriverCPublication.tla" "MC_DriverCPublication_published.cfg" \
   pass ""
 run_tlc "driver_c_publication_missing" "MC_DriverCPublication.tla" "MC_DriverCPublication_missing.cfg" \

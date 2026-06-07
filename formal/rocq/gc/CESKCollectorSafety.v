@@ -52,6 +52,8 @@
     - variable-length side-arena payload boxes are dropped only on the
       true-quiescence arm, and the materialization shadow is cleared before a
       future dereference can observe a freed side payload;
+    - Addr-valued ground-SExpr hash-cons entries retained across sweep cannot
+      return a reclaimed slot on a later lookup;
     - E2 final-rendezvous roots survive the exclusive sweep, and a completed
       SATB request is backed by either the final SATB sweep or the abort-to-STW
       backstop;
@@ -947,6 +949,40 @@ Section CESKCollectorSafetyModel.
       exact (Hfree_quiescent Hfreed).
     - apply Hnot_cleared.
       exact (Hclear Hfreed).
+  Qed.
+
+  Theorem major_hash_cons_hit_not_freed :
+    forall (Retained Marked Freed Returned : Addr -> Prop),
+      (forall a, Returned a -> Retained a) ->
+      (forall a, Retained a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, Returned a -> ~ Freed a.
+  Proof.
+    intros Retained Marked Freed Returned Hreturned_retained Hretained_marked
+           Hsweep a Hreturned Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hretained_marked.
+    apply Hreturned_retained.
+    exact Hreturned.
+  Qed.
+
+  Theorem minor_hash_cons_hit_not_freed :
+    forall (Retained Young Marked Freed Returned : Addr -> Prop),
+      (forall a, Returned a -> Retained a) ->
+      (forall a, Retained a -> ~ Young a \/ Marked a) ->
+      (forall a, Freed a -> Young a /\ ~ Marked a) ->
+      forall a, Returned a -> ~ Freed a.
+  Proof.
+    intros Retained Young Marked Freed Returned Hreturned_retained
+           Hretained_old_or_marked Hminor_frees a Hreturned Hfreed.
+    destruct (Hretained_old_or_marked a (Hreturned_retained a Hreturned))
+      as [Hold | Hmarked].
+    - destruct (Hminor_frees a Hfreed) as [Hyoung _].
+      apply Hold.
+      exact Hyoung.
+    - destruct (Hminor_frees a Hfreed) as [_ Hunmarked].
+      apply Hunmarked.
+      exact Hmarked.
   Qed.
 
   Theorem e2_final_remark_root_survives_collection :

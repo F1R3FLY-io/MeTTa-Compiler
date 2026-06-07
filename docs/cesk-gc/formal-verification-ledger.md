@@ -88,6 +88,10 @@ can replace the full-major final sweep.
   imply a non-quiescent evaluator, and the materialization shadow is cleared before any future dereference, then
   dropping reclaimed side boxes cannot create a dangling future dereference. Non-quiescent collections therefore defer
   side-box freeing.
+- `formal/rocq/gc/HashConsSweepRetain.v` and `formal/lean/gc/HashConsSweepRetain.lean`: prove the Addr-valued
+  hash-cons retain obligation. A major hash-cons hit cannot return a freed address when retained entries imply marked
+  entries and sweep frees only unmarked entries; a minor hash-cons hit cannot return a freed address when retained
+  entries are either old or marked and minor sweep frees only young unmarked entries.
 - `formal/rocq/gc/DriverRootUnion.v` and `formal/lean/gc/DriverRootUnion.lean`: prove the driver root-union
   obligation. If worker-buffer roots, safepoint roots, live environment anchors, and live dispatch anchors are all
   included in the driver root set, mark/sweep cannot free any live channel root.
@@ -263,6 +267,9 @@ can replace the full-major final sweep.
 - `tla/SideFreeQuiescence.tla`: checks the side-payload free lifetime obligation. Quiescent side-free with shadow
   clearing and non-quiescent deferral preserve `NoDanglingSideUse`; freeing on a non-quiescent arm or skipping the
   shadow clear admits a dangling side-payload dereference.
+- `tla/HashConsSweepRetain.tla`: checks the Addr-valued hash-cons retain obligation. Major sweep dropping unmarked
+  entries and minor sweep retaining only old or marked-young entries preserve `NoReturnedFreed`; retaining a dead major
+  entry or a dead young minor entry admits a later hash-cons hit returning a freed address.
 
 ## Source coupling
 
@@ -280,6 +287,9 @@ facts the proofs rely on:
 - `IndexHeap` frees reclaimed side payload boxes only through the two `phase == "quiescence"` guarded calls to
   `free_reclaimed_side_slots`; rendezvous and midloop collection pass non-quiescence phase strings, and both side-free
   paths clear `INNER_SHADOW` before returning to code that can materialize/dereference values again.
+- `IndexHeap::intern_ground_sexpr` revalidates a hash-cons hit against the current node children before returning it;
+  `IndexHeap::sweep` retains only marked hash-cons entries before full sweep, and `IndexHeap::sweep_young` retains old
+  entries unconditionally while retaining young entries only when marked before young sweep.
 - The E1 driver waits on `requestor_wait_for_all_reified_parked`, then sets `current_witness_ok`, builds the root
   union, runs the rendezvous-union oracle, and only then calls `run_collection_if_triggered_rendezvous`.
 - `gate_open_rendezvous` is keyed by `current_witness_ok`, not the obsolete parked-count gate.

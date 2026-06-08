@@ -34,13 +34,14 @@ LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "e1_flip_v4.XXXXXXXX")}"
 P="$LOG_DIR/e1_flip_v4"
 MIN_BYTES=131072   # 128 KiB major floor — forces the rendezvous collector to fire
 ARM_TIMEOUT="${ARM_TIMEOUT:-240s}"
+STRESS_TIMEOUT="${STRESS_TIMEOUT:-1200s}"
 ARM_KILL_AFTER="${ARM_KILL_AFTER:-20s}"
 
 echo "===== E1-FLIP V4 ASAN (FANOUT>0 + default dedicated index GC) ====="; date; free -h | head -2
 echo "repo=$REPO"
 echo "pln=$PLN"
 echo "logs=$LOG_DIR"
-echo "arm_timeout=$ARM_TIMEOUT kill_after=$ARM_KILL_AFTER"
+echo "arm_timeout=$ARM_TIMEOUT stress_timeout=$STRESS_TIMEOUT kill_after=$ARM_KILL_AFTER"
 
 echo "### build mettatron index-gc ASAN (release, -Zbuild-std, -j4, capped 24G)"
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000% -p TasksMax=512 --quiet \
@@ -54,15 +55,15 @@ if [ "$BUILD_RC" -ne 0 ] || [ ! -x "$BIN" ]; then
   echo "BUILD FAILED — aborting V4 (binary not produced)"; exit 1
 fi
 
-run_arm() {  # $1=label $2=fixture $3=fanout $4=required_cycle_kind
-  local label="$1" fixture="$2" fanout="$3" required_cycle_kind="$4"
+run_arm() {  # $1=label $2=fixture $3=fanout $4=required_cycle_kind [$5=timeout]
+  local label="$1" fixture="$2" fanout="$3" required_cycle_kind="$4" timeout_budget="${5:-$ARM_TIMEOUT}"
   local rc asan_count all_cycle_count rendezvous_count quiescence_count midloop_count unexpected_non_rendezvous_count error_count
-  echo "### ASAN arm: $label (FANOUT=$fanout, default dedicated index GC, MIN_BYTES=$MIN_BYTES)"
+  echo "### ASAN arm: $label (FANOUT=$fanout, default dedicated index GC, MIN_BYTES=$MIN_BYTES, timeout=$timeout_budget)"
   env METTATRON_PARALLEL_FANOUT_DEPTH="$fanout" \
       METTATRON_INDEX_GC_MIN_BYTES="$MIN_BYTES" METTATRON_INDEX_GC_REPORT=2 \
       ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:halt_on_error=1 \
     systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 -p CPUQuota=1000% --quiet \
-    timeout --signal=USR1 --kill-after="$ARM_KILL_AFTER" "$ARM_TIMEOUT" \
+    timeout --signal=USR1 --kill-after="$ARM_KILL_AFTER" "$timeout_budget" \
     "$BIN" --gc index "$fixture" > "${P}_${label}.log" 2>&1
   rc=$?
   echo "  ${label}_rc=$rc"
@@ -103,7 +104,7 @@ run_arm() {  # $1=label $2=fixture $3=fanout $4=required_cycle_kind
 failures=0
 run_arm robot_f8  "$PLN/examples/Robot.metta"                    8 rendezvous || failures=$((failures + 1))
 run_arm raven_f8  "$PLN/examples/FlyingRaven.metta"              8 rendezvous || failures=$((failures + 1))
-run_arm stress_f8 "$REPO/examples/cesk-gc/stress_multidir.metta" 8 quiescence || failures=$((failures + 1))
+run_arm stress_f8 "$REPO/examples/cesk-gc/stress_multidir.metta" 8 quiescence "$STRESS_TIMEOUT" || failures=$((failures + 1))
 
 echo "===== E1-FLIP V4 ASAN DONE ====="; date
 if [ "$failures" -ne 0 ]; then

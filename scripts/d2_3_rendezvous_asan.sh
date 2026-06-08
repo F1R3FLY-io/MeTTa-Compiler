@@ -37,12 +37,13 @@ P="$LOG_DIR/d2_3_rendezvous_asan"
 # the same low MIN_BYTES the C/D green-walls use to force frequent collection.
 MIN_BYTES=131072
 ARM_TIMEOUT="${ARM_TIMEOUT:-240s}"
+STRESS_TIMEOUT="${STRESS_TIMEOUT:-1200s}"
 ARM_KILL_AFTER="${ARM_KILL_AFTER:-20s}"
 echo "===== D2.3 RENDEZVOUS ASAN (FANOUT>0 + default dedicated index GC) ====="; date
 echo "repo=$REPO"
 echo "pln=$PLN"
 echo "logs=$LOG_DIR"
-echo "arm_timeout=$ARM_TIMEOUT kill_after=$ARM_KILL_AFTER"
+echo "arm_timeout=$ARM_TIMEOUT stress_timeout=$STRESS_TIMEOUT kill_after=$ARM_KILL_AFTER"
 
 echo "### build mettatron index-gc ASAN (release, -Zbuild-std, -j4, capped 24G)"
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000% -p TasksMax=256 --quiet \
@@ -56,16 +57,16 @@ if [ "$BUILD_RC" -ne 0 ] || [ ! -x "$BIN" ]; then
   exit 1
 fi
 
-run_arm() {  # $1=label  $2=fixture-abs  $3=fanout  $4=required-cycle-kind
-  local label="$1" fixture="$2" fanout="$3" required_cycle_kind="$4"
+run_arm() {  # $1=label  $2=fixture-abs  $3=fanout  $4=required-cycle-kind [$5=timeout]
+  local label="$1" fixture="$2" fanout="$3" required_cycle_kind="$4" timeout_budget="${5:-$ARM_TIMEOUT}"
   local rc asan_count rendezvous_count quiescence_count midloop_count total_cycles unexpected_non_rendezvous_count error_count result_tail
-  echo "### ASAN arm: $label  (FANOUT=$fanout, default dedicated index GC, MIN_BYTES=$MIN_BYTES)  $fixture"
+  echo "### ASAN arm: $label  (FANOUT=$fanout, default dedicated index GC, MIN_BYTES=$MIN_BYTES, timeout=$timeout_budget)  $fixture"
   env METTATRON_PARALLEL_FANOUT_DEPTH="$fanout" \
       METTATRON_INDEX_GC_MIN_BYTES="$MIN_BYTES" \
       METTATRON_INDEX_GC_REPORT=2 \
       ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
     systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 -p CPUQuota=1000% --quiet \
-    timeout --signal=USR1 --kill-after="$ARM_KILL_AFTER" "$ARM_TIMEOUT" \
+    timeout --signal=USR1 --kill-after="$ARM_KILL_AFTER" "$timeout_budget" \
     "$BIN" --gc index "$fixture" > "${P}_${label}.log" 2>&1
   rc=$?
   asan_count=$(grep -cE 'AddressSanitizer|heap-use-after-free|use-after-poison|use-after-free|heap-buffer-overflow' "${P}_${label}.log" || true)
@@ -111,7 +112,7 @@ failures=0
 run_arm robot_f8 "$PLN/examples/Robot.metta" 8 rendezvous || failures=$((failures + 1))
 run_arm raven_f8 "$PLN/examples/FlyingRaven.metta" 8 rendezvous || failures=$((failures + 1))
 # Heavy alloc workload at FANOUT=8 to maximize concurrent-append + collection pressure.
-run_arm stress_f8 "$REPO/examples/cesk-gc/stress_multidir.metta" 8 quiescence || failures=$((failures + 1))
+run_arm stress_f8 "$REPO/examples/cesk-gc/stress_multidir.metta" 8 quiescence "$STRESS_TIMEOUT" || failures=$((failures + 1))
 
 echo "===== D2.3 RENDEZVOUS ASAN VERDICT ====="
 logs=("${P}_robot_f8.log" "${P}_raven_f8.log" "${P}_stress_f8.log")

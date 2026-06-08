@@ -32,6 +32,8 @@ The E1-FLIP V4 ASAN gate on 2026-06-08 passed the default dedicated `index-gc` c
 (78 rendezvous, 2 quiescence), and `examples/cesk-gc/stress_multidir.metta` reported 1142 index cycles
 (15 rendezvous, 1127 quiescence). All three arms reported 0 ASAN/UAF hits, 0 mid-loop cycles under FANOUT, 0
 unexpected non-rendezvous cycles, and no `Error`/`StackOverflow`.
+At commit `2d9b737f`, the full `scripts/verify_cesk_gc_formal.sh` harness passed: proof hygiene, TLC hygiene, 54
+mandatory Rocq files, source coupling, and the full positive/negative TLC discriminator suite.
 There is also an opt-in E2 SATB major path
 (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and

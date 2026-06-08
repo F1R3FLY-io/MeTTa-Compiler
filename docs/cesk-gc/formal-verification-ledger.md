@@ -24,6 +24,9 @@ reclaimed slots and segment releases.
 The focused loom gate on 2026-06-08 passed the live rendezvous, straddle, arena bump/publish, and side-node ordering
 models under `RUSTFLAGS="--cfg loom -C target-cpu=native"` and `LOOM_MAX_PREEMPTIONS=3`; the two expected-fail
 straddle discriminator variants remained ignored.
+The focused TSan gate on 2026-06-08 passed
+`backend::eval::cesk::index_heap::tsan_concurrent_factory::concurrent_read_path_allocations_are_race_free`
+under `RUSTFLAGS="-Zsanitizer=thread -C target-cpu=native"` and `-Zbuild-std`, with no ThreadSanitizer warning.
 There is also an opt-in E2 SATB major path
 (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and

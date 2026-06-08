@@ -243,6 +243,13 @@ can replace the full-major final sweep.
   as structural roots, and stale-evicted, overwritten, explicitly removed, cleared/invalidated, and thunk-replaced
   subgoal/thunk cached results survive E2 SATB collection when shaded. Eval/match eviction and clear removal shapes
   are discharged by the E0 cache-eviction proof.
+- `formal/rocq/gc/E0CacheBarrierCompleteness.v`: closes the end-to-end Rocq audit for value-bearing E0/cache
+  mutation coverage. The proof enumerates the source-coupled value-dropping categories (symbol/state/named-space/type
+  vector/token/ACT/module/rule mutations, space-registry replacement/removal/clear, bytecode and tiered cache
+  evictions/clears, eval/match cache evictions/clears, and subgoal/thunk stale/overwrite/remove/clear/replace paths)
+  and proves that once the corresponding source assertion shades the removed pre-image, the value cannot be freed by
+  SATB sweep. It also records the persistent-root and epoch-protected-cache cases used for write-once anchors,
+  operator/value-hash/MORK/inner-shadow caches, and hash-cons hits.
 - `formal/rocq/gc/CESKCollectorSafety.v`: composes the rendezvous witness, witness-slot lifecycle, witness-ok reset,
   started-cycle straddle gate, rendezvous progress, scheduler/thread-pool root boundary, four-channel driver-root
   union, collector-root closure, mark completeness, sweep-only-unmarked, driver-C publication, and young-minor

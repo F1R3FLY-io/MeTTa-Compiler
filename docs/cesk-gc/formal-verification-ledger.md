@@ -61,6 +61,11 @@ can replace the full-major final sweep.
   segment-open pending signal, or a young-allocation budget overflow, is enough to request a minor collection; after
   promotion, resetting the young odometer and clearing the pending signal prevents the same stale event from
   immediately re-firing a minor when the young budget is not over.
+- `formal/rocq/gc/DeepBranchingCollectionProgress.v`: proves the high-branching FANOUT progress composition. Under
+  fanout-active/nonquiescent workers, rendezvous witness readiness, nursery/young pressure, or cap/cadence major
+  pressure enables a collection path without requiring global evaluator quiescence, while structural/SATB root coverage
+  still prevents any future touch from being freed. The TLA discriminator rejects reintroducing the old `active == 0`
+  rendezvous gate.
 - `formal/rocq/gc/YoungAllocationOdometer.v`: proves the C1.c young-allocation odometer obligation. Reused young
   slots and fresh bump allocations advance the odometer by a positive node-size quantum, promotion resets it, and
   crossing the budget entails the minor trigger.

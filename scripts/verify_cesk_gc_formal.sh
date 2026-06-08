@@ -110,6 +110,7 @@ run_lean_mirrors
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"
 run_rocq "formal/rocq/gc/NurseryBackpressure.v"
+run_rocq "formal/rocq/gc/DeepBranchingCollectionProgress.v"
 run_rocq "formal/rocq/gc/YoungAllocationOdometer.v"
 run_rocq "formal/rocq/gc/MajorMinorScheduler.v"
 run_rocq "formal/rocq/gc/CapFloorAntiThrash.v"

@@ -187,6 +187,10 @@ can replace the full-major final sweep.
   live dispatch/collapse fan-outs, and async batch handoff values are all mapped into driver root channels, and
   collection admission prevents newly joined workers during the sweep window, mark/sweep cannot free a scheduler-held
   live address. This intentionally does not claim general scheduler fairness or work-stealing correctness.
+- `formal/rocq/gc/SchedulerFanoutProgress.v`: composes the FANOUT scheduler progress obligations. Given the existing
+  trigger backstop, posted-driver or SATB-abort-to-STW fallback, generation-based resume, participant contribution,
+  and completion-guard premises, every active parked worker is resumed and the parent wait cannot be stranded by a
+  missing worker completion drop. The temporal eventuality/discriminator layer remains the paired TLC suite.
 - `formal/rocq/gc/DedicatedHandoff.v`: proves the E1 dedicated-thread handoff ownership rule. Once a root vector has
   been successfully sent to the GC thread, response-channel failure cannot justify an inline fallback because the
   mutator no longer owns those roots; failed sends still return the roots for inline fallback. It also proves the

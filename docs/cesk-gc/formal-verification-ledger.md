@@ -21,6 +21,9 @@ with 0 UAF and result `[done]`. The default-on release conformance gate on 2026-
 The default dedicated FANOUT=8 discriminator on 2026-06-08 passed `Robot.metta` Arm A (`MIN=131072`) 0/16 failures
 and Arm C (`MIN=4294967295`) 0/16 failures; the Arm A non-vacuity witness reported rendezvous minor cycles with
 reclaimed slots and segment releases.
+The focused loom gate on 2026-06-08 passed the live rendezvous, straddle, arena bump/publish, and side-node ordering
+models under `RUSTFLAGS="--cfg loom -C target-cpu=native"` and `LOOM_MAX_PREEMPTIONS=3`; the two expected-fail
+straddle discriminator variants remained ignored.
 There is also an opt-in E2 SATB major path
 (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and

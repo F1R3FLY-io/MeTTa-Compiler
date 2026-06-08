@@ -99,13 +99,14 @@ directive's quiescence) and returning `0`. Tier 0.
 
 ```
 ON  : METTATRON_INDEX_GC_MIN_BYTES=2097152  → peak RSS 1,397,508 KB (1.40 GB), 170 cycles, 8000/8000 = [0]
-OFF : METTATRON_INDEX_GC_DISABLE=1          → peak RSS 9,975,700 KB (9.98 GB),            8000/8000 = [0]
+OFF : historical no-collection branch       → peak RSS 9,975,700 KB (9.98 GB),            8000/8000 = [0]
 OFF/ON ratio = 7.14×  (collector reclaimed 8.38 GB)
 ```
 
-With the collector disabled the index arena grows monotonically to ~10 GB; with
-it enabled, peak RSS stays bounded at ~1.4 GB — same correct output in both arms.
-This proves the collector reclaims.
+With collection suppressed in the historical comparison branch, the index arena
+grew monotonically to ~10 GB; with collection enabled, peak RSS stayed bounded at
+~1.4 GB with the same correct output. This proved the collector reclaimed. The
+production index collector no longer carries an environment-variable off switch.
 
 (Note: a small residual growth remains under ON because the eval-memo / tiered
 cache RootProviders legitimately pin a growing set of cached values — those are

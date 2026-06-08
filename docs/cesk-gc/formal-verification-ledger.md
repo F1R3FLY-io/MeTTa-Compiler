@@ -581,6 +581,8 @@ facts the proofs rely on:
 - The obsolete D1/D2 `METTATRON_INDEX_GC_PARALLEL` / `rendezvous_enabled` production gate is retired. The live
   FANOUT>0 rendezvous path is governed by `dedicated_gc_enabled()`, which now follows index mode directly; source
   coupling rejects reintroducing either retired rendezvous env switch in `gc_allocator.rs` or the active GC scripts.
+- The index collector has no production environment-variable off switch. The quiescence, mid-loop, and rendezvous
+  gates are safety predicates only; source coupling rejects reintroducing the retired index-GC disable hook.
 - The R-FL no-recycle/swept-slot diagnostic is retired from production source. Source coupling now rejects the
   behavior-changing oracle and collector-read bypass; the live R-FL obligation is the persistent free-bit invariant
   plus its Rocq/TLA/source-coupled checks.

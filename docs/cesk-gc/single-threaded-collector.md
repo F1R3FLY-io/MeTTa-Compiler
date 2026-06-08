@@ -128,29 +128,22 @@ A process-global `WORKER_EVER_SPAWNED: AtomicBool` (`gc_allocator.rs`) is set
 `true` (Release) at the two eval-worker spawn wrappers (`parallel_dispatch` and
 `parallel_collapse_dispatch`, just before `pool.spawn_eval_classified(...)`).
 
-The collector fires ONLY when (note: `== 0` because the call site is AFTER the
-`EvalGuard` drops — true quiescence):
+The quiescence collector fires ONLY when (note: `== 0` because the call site is
+AFTER the `EvalGuard` drops — true quiescence):
 
 ```
-gc_mode_is_index() && !worker_ever_spawned() && active_evaluator_count() == 0 && !disabled()
+gc_mode_is_index() && active_evaluator_count() == 0 && n_threads() == 0
 ```
 
-Rationale: if no eval worker has EVER been spawned, no parked-resumable worker
-can exist, so the single calling thread at a between-steps safepoint is provably
-the SOLE thread that can touch σ — true quiescence (the proven
-`QuiescenceInvariant`), with no admission-gate/rendezvous needed. If any worker
-has ever spawned, the collector backs off ENTIRELY (the parallel-rendezvous
-collector is the documented follow-on — NOT attempted here).
-
-`active_evaluator_count() == 1` confirms the calling thread holds exactly one
-`EvalGuard` and no other evaluator is mid-flight. Combined with
-`!worker_ever_spawned()`, this is the trivially-true instance of the proven
-`QuiescenceInvariant`.
+Rationale: when both counters are zero, no evaluator or worker native stack can
+touch σ. Fanout configuration does not poison this true-quiescence point; it only
+blocks the mid-loop non-rendezvous collector, where live control may still exist
+on an evaluator stack. At this between-steps safepoint, true quiescence is the
+proven `QuiescenceInvariant`, with no admission-gate/rendezvous needed.
 
 This makes the collector safe regardless of `METTATRON_PARALLEL_FANOUT_DEPTH`;
-setting `METTATRON_PARALLEL_FANOUT_DEPTH=0` is simply the way to GUARANTEE the
-gate stays open for a given run (no worker is ever spawned), so the collector
-actually fires.
+setting `METTATRON_PARALLEL_FANOUT_DEPTH=0` is still useful in validation because
+it keeps the mid-loop non-rendezvous collector eligible too.
 
 ## STEP 2 — Trigger (committed-bytes watermark)
 

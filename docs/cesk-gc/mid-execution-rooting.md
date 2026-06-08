@@ -88,7 +88,7 @@ quiescence path (shared core); only the gate and the root set differ.
 
 ```
 gc_mode_is_index() && !worker_ever_spawned()
-                   && active_evaluator_count() == 1 && !disabled()
+                   && active_evaluator_count() == 1
 ```
 
 - `gc_mode_is_index()` — const-false in the slab build ⇒ the whole mid-loop block

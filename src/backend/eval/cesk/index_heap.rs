@@ -2086,7 +2086,6 @@ pub mod index_gc {
         gc_mode_is_index()
             && active_evaluator_count() == 0
             && crate::backend::models::gc_allocator::n_threads() == 0
-            && !disabled()
     }
 
     /// E1-FLIP — the gate for the DEDICATED-GC-THREAD rendezvous collect (the ONLY
@@ -2127,7 +2126,6 @@ pub mod index_gc {
         // driver proceed while a COUNTED participant had not yet published its machine —
         // the publish-timing UAF; see docs/cesk-gc/e1-flip-VALIDATION-FAILED-2026-06-02.md).
         gc_mode_is_index()
-            && !disabled()
             && crate::backend::models::gc_allocator::gc_in_progress()
             && crate::backend::models::gc_allocator::current_witness_ok()
     }
@@ -2164,7 +2162,6 @@ pub mod index_gc {
             && !crate::backend::eval::trampoline::eval_loop::parallel_fanout_enabled()
             && !worker_ever_spawned()
             && active_evaluator_count() == 1
-            && !disabled()
     }
 
     /// Cheap mid-loop pre-check (mirrors [`should_collect`] with the mid-loop
@@ -2226,15 +2223,6 @@ pub mod index_gc {
             || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
             || committed > max_bytes()
             || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
-    }
-
-    /// `METTATRON_INDEX_GC_DISABLE=1` forces the collector off (parsed once).
-    /// Used by the RSS-reclamation validation to measure the no-collection
-    /// baseline; default is enabled.
-    fn disabled() -> bool {
-        use std::sync::OnceLock;
-        static OFF: OnceLock<bool> = OnceLock::new();
-        *OFF.get_or_init(|| std::env::var("METTATRON_INDEX_GC_DISABLE").as_deref() == Ok("1"))
     }
 
     /// Run a single-threaded mark+sweep cycle IF the safety gate is open AND the

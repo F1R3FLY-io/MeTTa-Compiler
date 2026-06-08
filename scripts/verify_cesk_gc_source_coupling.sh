@@ -282,6 +282,22 @@ assert_zero "src/backend/models/gc_allocator.rs" "pub(crate) fn rendezvous_enabl
 assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_PARALLEL"
 assert_before "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_DEDICATED=1" "METTATRON_INDEX_GC_MIN_BYTES"
 
+# The R-FL no-recycle/swept-slot diagnostic was a one-off discriminator. The
+# live proof obligation is the persistent free-bit invariant below, so the
+# behavior-changing oracle and its collector-read bypass must not return.
+assert_zero "src/backend/eval/cesk/index_arena.rs" "METTATRON_INDEX_GC_SWEPT_ORACLE"
+assert_zero "src/backend/eval/cesk/index_arena.rs" "swept_oracle_enabled"
+assert_zero "src/backend/eval/cesk/index_arena.rs" "enter_collector_read_scope"
+assert_zero "src/backend/eval/cesk/index_arena.rs" "CollectorReadScope"
+assert_zero "src/backend/eval/cesk/index_arena.rs" "mark_swept"
+assert_zero "src/backend/eval/cesk/index_arena.rs" "is_swept("
+assert_zero "src/backend/eval/cesk/index_heap.rs" "is_addr_swept"
+assert_zero "src/backend/eval/cesk/gc_driver.rs" "enter_collector_read_scope"
+assert_zero "src/backend/models/metta_value.rs" "swept_oracle_enabled"
+assert_zero "src/backend/models/metta_value.rs" "in_collector_read_scope"
+assert_zero "src/backend/models/metta_value.rs" "is_addr_swept"
+assert_zero "src/backend/models/metta_value.rs" "INNER_SHADOW HIT"
+
 # The rendezvous gate must be the witness flag, not the obsolete parked-count
 # equality. The old parked-count function can survive for unit tests, but not as
 # the live collection gate.

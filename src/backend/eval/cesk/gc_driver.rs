@@ -107,15 +107,6 @@ static GLOBAL_GC_DRIVER: OnceLock<Option<GcDriver>> = OnceLock::new();
 /// The dedicated GC thread main loop. Owns each request's root Vec for the whole
 /// collection, so the roots stay alive exactly while the in-place mark reads them.
 fn gc_driver_main(request_rx: mpsc::Receiver<GcDriverRequest>) {
-    // DEBUG-ONLY swept-slot oracle: the dedicated GC thread is, by construction,
-    // the ONLY thread that ever marks/sweeps/frees-side-slots, so every `get()`
-    // it issues (root collection, mark, side-free, the rendezvous-union oracle's
-    // re-walks) is a legitimate collector-internal read and must be exempt from
-    // the panic-on-swept-read. Hold a collector-read scope for the whole thread
-    // lifetime — a mutator thread is never in this scope, so its swept read still
-    // panics. No-op unless the oracle is on.
-    let _collector_scope =
-        crate::backend::eval::cesk::index_arena::enter_collector_read_scope();
     while let Ok(req) = request_rx.recv() {
         match req {
             GcDriverRequest::Shutdown => break,

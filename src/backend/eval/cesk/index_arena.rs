@@ -40,52 +40,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
-// ───────────────────────── DEBUG-ONLY SWEPT-SLOT ORACLE ─────────────────────
-//
-// A deterministic detector for the DOMINANT missed-root behind the ~3-5% robot
-// wrong-subset corruption under FANOUT>0 + the dedicated index collector. When
-// the env flag `METTATRON_INDEX_GC_SWEPT_ORACLE=1` is set, the arena:
-//
-//   1. maintains a per-slot `swept` bitmap (one AtomicBool/slot in each Segment);
-//   2. SETs the bit (Release) on every slot the sweep reclaims;
-//   3. NO-RECYCLEs — a swept slot is NEVER pushed onto the free list, so its
-//      bytes are never overwritten (the OLD occupant stays put forever) and the
-//      collector bump-allocates fresh slots only (heap grows; fine for a short
-//      debug run);
-//   4. PANICs (Acquire) on the FIRST `get()` of a swept slot by a NON-collector
-//      thread — that read is, by construction, a stale handle held by an
-//      UNROOTED holder (the marker never reached the slot ⇒ the collector swept
-//      it ⇒ it is not in the root set). The panic backtrace names WHO reads a
-//      swept Addr = the dominant missed-root holder.
-//
-// ASAN cannot see this: the slot is valid memory, merely repurposed (or, under
-// no-recycle, merely stale). The oracle turns the silent stale read into a loud,
-// deterministic panic at the exact missed-root read site.
-//
-// Reads from the COLLECTOR THREAD are EXEMPT: the mark phase only touches rooted
-// (hence not-yet-swept) slots, and `free_reclaimed_side_slots` deliberately reads
-// swept slots to drop their side `Box`es. Both run on the dedicated GC thread (or
-// inline at quiescence), bracketed by [`enter_collector_read_scope`]. A mutator
-// (worker/main) thread is never in that scope, so its swept read panics.
-
-/// `true` iff the swept-slot oracle is enabled (env `METTATRON_INDEX_GC_SWEPT_ORACLE=1`).
-/// Cached in a `OnceLock` so the env read happens once.
-#[inline]
-pub fn swept_oracle_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("METTATRON_INDEX_GC_SWEPT_ORACLE")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
-
 // ─────────────────────── DEBUG-ONLY FREE-LIST INTEGRITY CHECK ───────────────
 //
 // A deterministic detector for the R-FL hypothesis behind the ~3-5% robot
 // wrong-subset corruption under FANOUT>0 + the dedicated index collector,
-// triangulated by elimination (NOT a missed-root [swept-oracle clean], NOT a
-// memory race [TSan clean], REUSE-dependent [no-recycle clean]). The surviving
+// triangulated by elimination (NOT a missed-root, NOT a memory race
+// [TSan clean], REUSE-dependent [no-recycle clean]). The surviving
 // hypothesis is a free-list INTEGRITY bug: a slot's `Addr` is on the free list
 // while the slot is still LIVE, so two `write_reused` pops of the SAME `Addr`
 // hand the same slot out for two different values ⟹ the first is clobbered.
@@ -110,7 +70,7 @@ pub fn swept_oracle_enabled() -> bool {
 
 /// `true` iff the free-list integrity check is enabled (env
 /// `METTATRON_INDEX_GC_FREELIST_CHECK=1`). Cached in a `OnceLock` so the env read
-/// happens once (mirrors [`swept_oracle_enabled`]).
+/// happens once.
 #[inline]
 pub fn freelist_check_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -119,52 +79,6 @@ pub fn freelist_check_enabled() -> bool {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
     })
-}
-
-thread_local! {
-    /// Depth-counted "this thread is currently inside a collector read scope"
-    /// flag. A `get()` of a swept slot from a thread with depth > 0 is a
-    /// legitimate collector internal read (mark / side-free) and is exempt from
-    /// the panic; depth == 0 ⇒ a mutator read ⇒ the missed-root we are hunting.
-    static COLLECTOR_READ_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-
-/// Enter a collector-read scope (swept reads exempt) for the duration of the
-/// returned guard. Re-entrant (depth-counted). No-op unless the oracle is on.
-#[inline]
-pub fn enter_collector_read_scope() -> CollectorReadScope {
-    if swept_oracle_enabled() {
-        COLLECTOR_READ_DEPTH.with(|d| d.set(d.get() + 1));
-    }
-    CollectorReadScope { _priv: () }
-}
-
-/// RAII guard decrementing the collector-read depth on drop.
-pub struct CollectorReadScope {
-    _priv: (),
-}
-
-impl Drop for CollectorReadScope {
-    #[inline]
-    fn drop(&mut self) {
-        if swept_oracle_enabled() {
-            COLLECTOR_READ_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
-        }
-    }
-}
-
-#[inline]
-fn in_collector_read_scope() -> bool {
-    COLLECTOR_READ_DEPTH.with(|d| d.get() > 0)
-}
-
-/// Public wrapper over the private [`in_collector_read_scope`] so other modules
-/// (e.g. the `INNER_SHADOW`-cache-hit oracle extension in `metta_value.rs`) can
-/// distinguish a collector-internal read from a mutator read. `true` iff the
-/// CALLING thread currently holds a [`CollectorReadScope`] (depth > 0).
-#[inline]
-pub fn in_collector_read_scope_pub() -> bool {
-    in_collector_read_scope()
 }
 
 /// Number of low bits of an [`Addr`] used for the intra-segment slot offset.
@@ -286,12 +200,6 @@ struct Segment<N: Copy> {
     /// `AtomicBool` (read `Relaxed`) future-proofs the D-phase concurrent reader;
     /// in B2 it is only flipped at quiescence under `&mut self`.
     released: AtomicBool,
-    /// DEBUG-ONLY swept-slot oracle bitmap (one bit/slot). EMPTY (`Box::new([])`)
-    /// unless [`swept_oracle_enabled`]. Bit `off` is set (Release) by the sweep
-    /// when it reclaims slot `off`, and read (Acquire) by `get` to panic on a
-    /// stale read. Under the oracle, slots are NEVER recycled, so a set bit stays
-    /// set and the old occupant is never overwritten.
-    swept: Box<[AtomicBool]>,
     /// DEBUG-ONLY free-list integrity shadow (one bit/slot). EMPTY (`Box::new([])`)
     /// unless [`freelist_check_enabled`]. Bit `off` is SET when slot `off` is pushed
     /// onto the arena free list and CLEARED when it is popped (or when the major's
@@ -313,13 +221,6 @@ impl<N: Copy> Segment<N> {
         let words = capacity.div_ceil(64);
         let marks: Box<[AtomicU64]> = (0..words).map(|_| AtomicU64::new(0)).collect();
         let free_bits: Box<[AtomicU64]> = (0..words).map(|_| AtomicU64::new(0)).collect();
-        // DEBUG-ONLY oracle: one AtomicBool per slot, allocated parallel to `nodes`
-        // ONLY when the oracle is enabled (else an empty box — zero overhead).
-        let swept: Box<[AtomicBool]> = if swept_oracle_enabled() {
-            (0..capacity).map(|_| AtomicBool::new(false)).collect()
-        } else {
-            Box::new([])
-        };
         // DEBUG-ONLY free-list integrity shadow: one AtomicBool per slot, allocated
         // parallel to `nodes` ONLY when the check is enabled (else an empty box —
         // zero overhead). All slots start NOT on the free list (false).
@@ -336,27 +237,8 @@ impl<N: Copy> Segment<N> {
             free_bits,
             capacity,
             released: AtomicBool::new(false),
-            swept,
             on_free_list,
         }
-    }
-
-    /// DEBUG-ONLY oracle: mark slot `off` SWEPT (Release). No-op if the oracle is
-    /// off (the `swept` box is empty then).
-    #[inline]
-    fn mark_swept(&self, off: usize) {
-        if let Some(b) = self.swept.get(off) {
-            b.store(true, Ordering::Release);
-        }
-    }
-
-    /// DEBUG-ONLY oracle: `true` if slot `off` was swept (Acquire). Always false
-    /// if the oracle is off (empty box).
-    #[inline]
-    fn is_swept(&self, off: usize) -> bool {
-        self.swept
-            .get(off)
-            .is_some_and(|b| b.load(Ordering::Acquire))
     }
 
     /// DEBUG-ONLY free-list integrity: mark slot `off` as ON the free list
@@ -594,9 +476,6 @@ impl<N: Copy> Segment<N> {
         self.bump.store(0, Ordering::Relaxed);
         self.released.store(true, Ordering::Relaxed);
         self.free_bits = Box::new([]);
-        // DEBUG-ONLY oracle: a released segment can never be read (`get`
-        // debug-asserts `!released`), so its swept bitmap can be dropped too.
-        self.swept = Box::new([]);
         // DEBUG-ONLY free-list integrity: `sweep_range` drains this segment's
         // existing free-list entries before calling `release`, and the release
         // `continue`s before the reclaim loop can push new ones. The bitmap can
@@ -894,12 +773,6 @@ impl<N: Copy> IndexArena<N> {
     /// skipped (left slot-free, re-added by the next major); LIFO + minors append
     /// `cur_seg` slots ⇒ `cur_seg` is on top ⇒ this skips rarely.
     pub fn pop_young_free_slot(&mut self) -> Option<Addr> {
-        // DEBUG-ONLY swept-slot oracle: NO-RECYCLE — never hand out a reused slot,
-        // so a swept slot stays swept and its old occupant is never overwritten.
-        // The collector then bump-allocates fresh slots only.
-        if swept_oracle_enabled() {
-            return None;
-        }
         let cur = self.current_seg();
         let check = freelist_check_enabled();
         while let Some(addr) = self.free_list.pop() {
@@ -1004,57 +877,8 @@ impl<N: Copy> IndexArena<N> {
                 "get on an unpublished offset {}",
                 addr.offset()
             );
-            // DEBUG-ONLY swept-slot oracle: a NON-collector read of a swept slot
-            // is a stale read by an UNROOTED holder (the marker never reached it
-            // ⇒ the sweep reclaimed it ⇒ it is not in the root set). Panic with the
-            // Addr so the backtrace names the missed-root holder. Collector-internal
-            // reads (mark / side-free) run inside `enter_collector_read_scope` and
-            // are exempt. The `swept_oracle_enabled()` short-circuit makes this a
-            // single predictable branch when the oracle is off.
-            if swept_oracle_enabled() && seg.is_swept(addr.offset()) && !in_collector_read_scope() {
-                panic!(
-                    "SWEPT-SLOT READ (dominant missed-root): addr={:?} seg={} off={}",
-                    addr,
-                    addr.segment(),
-                    addr.offset()
-                );
-            }
             seg.node_at(addr.offset())
         }
-    }
-
-    /// DEBUG-ONLY swept-slot oracle query: `true` iff `addr`'s slot has been swept
-    /// (reclaimed) under the no-recycle oracle. Unlike [`get`](Self::get), this
-    /// NEVER panics and NEVER itself trips the swept-read panic — it reads the
-    /// swept bit directly through the segment, NOT via `self.get`. Returns `false`
-    /// when the oracle is off (the per-slot bitmap is empty), when `addr` names an
-    /// out-of-bounds segment, or when the segment has been released (its storage —
-    /// and thus its swept bitmap — has been dropped, so the old occupant is gone
-    /// and there is no stale-read to flag). Used by the `INNER_SHADOW`-cache-hit
-    /// extension to flag a stale ABA cache hit on a swept+reused `Addr`.
-    #[inline]
-    pub fn is_addr_swept(&self, addr: Addr) -> bool {
-        // Oracle off ⇒ no bitmap, nothing to report.
-        if !swept_oracle_enabled() {
-            return false;
-        }
-        let si = addr.segment();
-        // Bound-check against the published segment count BEFORE touching the
-        // directory (an out-of-range index would be UB through `segment()`).
-        if si >= self.seg_count.load(Ordering::Acquire) {
-            return false;
-        }
-        // SAFETY: `si < seg_count` ⇒ the directory cell was published (initialized)
-        // by `open_segment` before `seg_count` was advanced, so `assume_init_ref`
-        // (inside `segment`) is sound. We only read atomics off the resulting
-        // `&Segment` — no node-content read, so no `get()` swept-panic path.
-        let seg = unsafe { self.segment(si) };
-        // A released segment dropped its `nodes` (and `swept`) storage — the old
-        // occupant is gone, so there is nothing to stale-read; report `false`.
-        if seg.released.load(Ordering::Relaxed) {
-            return false;
-        }
-        seg.is_swept(addr.offset())
     }
 
     /// Mutably borrow the node at `addr`. **Stays `&mut self`** — its only caller
@@ -1334,12 +1158,9 @@ impl<N: Copy> IndexArena<N> {
         // included (the release path `continue`s before the reclaim loop; the whole
         // `sides[seg]` is reset wholesale by `on_release`).
         let mut stats = SweepStats::default();
-        // DEBUG-ONLY swept-slot oracle: under no-recycle the reclaim arms mark each
-        // dead slot swept and SKIP the free-list push. Bound once.
-        let oracle = swept_oracle_enabled();
         // DEBUG-ONLY free-list integrity: bound once.
         let check = freelist_check_enabled();
-        if clear_free_list && !oracle {
+        if clear_free_list {
             // A MAJOR drains the entire free list and rebuilds it from scratch, so
             // BEFORE draining we must reset the production free bit for EVERY entry
             // currently on the list. Otherwise the rebuild would see stale set bits,
@@ -1366,9 +1187,6 @@ impl<N: Copy> IndexArena<N> {
             }
             // Full sweep: rebuild from scratch (never persist across a full cycle).
             // A minor appends instead (retains the prior major's old free entries).
-            // Under the oracle the free list stays empty anyway (no-recycle), and
-            // clearing it would discard nothing — skip to keep the no-recycle
-            // invariant maximally explicit.
             self.free_list.clear();
         }
 
@@ -1429,14 +1247,7 @@ impl<N: Copy> IndexArena<N> {
                 } else if word == 0 {
                     for off in base..base + 64 {
                         let a = Addr::new(si as u32, off as u32);
-                        // DEBUG-ONLY oracle: NO-RECYCLE — mark the slot swept and do
-                        // NOT push it to the free list (so its bytes are never
-                        // overwritten and a stale read panics). Else: normal reuse.
-                        if oracle {
-                            seg.mark_swept(off);
-                        } else {
-                            push_free_list_entry(seg, &mut self.free_list, a, off, check);
-                        }
+                        push_free_list_entry(seg, &mut self.free_list, a, off, check);
                         reclaimed_out.push(a);
                     }
                     stats.reclaimed_to_free_list += 64;
@@ -1446,11 +1257,7 @@ impl<N: Copy> IndexArena<N> {
                             stats.live += 1;
                         } else {
                             let a = Addr::new(si as u32, (base + b) as u32);
-                            if oracle {
-                                seg.mark_swept(base + b);
-                            } else {
-                                push_free_list_entry(seg, &mut self.free_list, a, base + b, check);
-                            }
+                            push_free_list_entry(seg, &mut self.free_list, a, base + b, check);
                             reclaimed_out.push(a);
                             stats.reclaimed_to_free_list += 1;
                         }
@@ -1471,12 +1278,7 @@ impl<N: Copy> IndexArena<N> {
                         // published prefix (an orphaned-payload leak). Byte-identical
                         // while the side-free is inert (the extra entries are unused).
                         let a = Addr::new(si as u32, (base + b) as u32);
-                        // DEBUG-ONLY oracle: NO-RECYCLE (see the full-word arms).
-                        if oracle {
-                            seg.mark_swept(base + b);
-                        } else {
-                            push_free_list_entry(seg, &mut self.free_list, a, base + b, check);
-                        }
+                        push_free_list_entry(seg, &mut self.free_list, a, base + b, check);
                         reclaimed_out.push(a);
                         stats.reclaimed_to_free_list += 1;
                     }

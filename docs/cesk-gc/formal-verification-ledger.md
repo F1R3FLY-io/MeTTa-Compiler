@@ -567,6 +567,9 @@ facts the proofs rely on:
 - The obsolete D1/D2 `METTATRON_INDEX_GC_PARALLEL` / `rendezvous_enabled` production gate is retired. The live
   FANOUT>0 rendezvous path has a single production gate, `dedicated_gc_enabled()`, and source coupling now rejects
   reintroducing the old switch in `gc_allocator.rs` or the rendezvous ASAN harness.
+- The R-FL no-recycle/swept-slot diagnostic is retired from production source. Source coupling now rejects the
+  behavior-changing oracle and collector-read bypass; the live R-FL obligation is the persistent free-bit invariant
+  plus its Rocq/TLA/source-coupled checks.
 
 ## Harness
 

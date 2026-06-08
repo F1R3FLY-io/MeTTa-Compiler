@@ -1131,16 +1131,6 @@ impl IndexHeap {
         self.arena.segment_count()
     }
 
-    /// DEBUG-ONLY swept-slot oracle query: `true` iff `addr`'s arena slot has been
-    /// swept (reclaimed) under the no-recycle oracle. Delegates to
-    /// [`IndexArena::is_addr_swept`] — never panics, never trips the swept-read
-    /// panic. Returns `false` when the oracle is off. Used by the `INNER_SHADOW`
-    /// cache-hit extension to flag a stale ABA hit on a swept+reused `Addr`.
-    #[inline]
-    pub fn is_addr_swept(&self, addr: Addr) -> bool {
-        self.arena.is_addr_swept(addr)
-    }
-
     /// Committed node-slab bytes (see [`IndexArena::committed_node_bytes`]) plus
     /// a coarse estimate of the per-segment side-arena footprint (one machine
     /// word per interned child slice/str/span box pointer, i.e. the [`SideColumn`]
@@ -2196,8 +2186,6 @@ pub mod index_gc {
         if !gate_open_rendezvous() {
             return false;
         }
-        let _collector_scope =
-            crate::backend::eval::cesk::index_arena::enter_collector_read_scope();
         let addrs = project_roots_to_addrs(roots);
         let (committed, young_alloc, cap_major) = {
             let heap = global_index_heap().read().expect("index heap");
@@ -2266,14 +2254,6 @@ pub mod index_gc {
     /// clears this thread's `MettaValueInner` shadow, and rearms the watermark.
     /// `phase` only labels the optional ops trace. Returns `true` iff a cycle ran.
     fn mark_sweep_if_over_watermark(roots: &[MettaValue], phase: &str) -> bool {
-        // DEBUG-ONLY swept-slot oracle: enter a collector-read scope for the whole
-        // mark+sweep+side-free. The mark phase reads (rooted, not-yet-swept) slots,
-        // and `free_reclaimed_side_slots` deliberately reads SWEPT slots to drop
-        // their side `Box`es — both are legitimate collector-internal reads and
-        // must be exempt from the panic-on-swept-read (which targets MUTATOR reads
-        // of swept slots = the missed-root holders). No-op unless the oracle is on.
-        let _collector_scope =
-            crate::backend::eval::cesk::index_arena::enter_collector_read_scope();
         // C1.c generational trigger under a read lock (released before we re-acquire
         // write). The MINOR is PRIMARY: it fires when young allocation since the last
         // promotion (`young_alloc_bytes`, the nursery odometer) exceeds `YOUNG_BUDGET`.

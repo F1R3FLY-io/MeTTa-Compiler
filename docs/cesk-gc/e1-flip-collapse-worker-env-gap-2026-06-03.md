@@ -401,13 +401,16 @@ target robot-irrelevant secondary/tertiary holes).
 
 ## ⭐ NO-RECYCLE SWEPT-BITMAP ORACLE (2026-06-03, on the post-Fix#1 `58598e7` + `cb94de8` + `762c4db` tree) — the RESIDUAL corruption is REUSE-DEPENDENT and BYPASSES `get()`
 
-A deterministic swept-bitmap oracle (env `METTATRON_INDEX_GC_SWEPT_ORACLE=1`; committed in the arena and
-completed for collector scopes / `INNER_SHADOW` hits in `c14d5ff`): per-slot `swept: Box<[AtomicBool]>` allocated only when
-on, marked Release on **every** sweep-reclaim arm (both the all-dead-word fast path AND the per-bit arm),
-**NO-RECYCLE** (`pop_young_free_slot` returns `None` + the sweep SKIPS the free-list push ⇒ no slot is
-ever reused ⇒ a swept slot's bytes are never overwritten), and `IndexArena::get()` panics on a NON-collector
-read of a swept slot (collector reads exempt via a thread-local `COLLECTOR_READ_DEPTH` scope held by
-`gc_driver_main` for the GC thread's whole lifetime; `gc_driver.rs` + `index_arena.rs`).
+Retirement note (2026-06-07): this was a short-lived diagnostic hook used to isolate R-FL. It is no longer
+in production source; the standing guard is the free-list bit invariant plus Rocq/TLA+/source-coupling.
+
+A deterministic swept-bitmap oracle was temporarily committed in the arena and completed for collector scopes /
+`INNER_SHADOW` hits in `c14d5ff`: a per-slot swept bitmap was allocated only when the diagnostic was enabled,
+marked Release on **every** sweep-reclaim arm (both the all-dead-word fast path AND the per-bit arm),
+**NO-RECYCLE** (`pop_young_free_slot` returned `None` + the sweep skipped the free-list push ⇒ no slot was
+ever reused ⇒ a swept slot's bytes were never overwritten), and `IndexArena::get()` panicked on a NON-collector
+read of a swept slot (collector reads were exempt via a thread-local collector-read scope held by
+`gc_driver_main` for the GC thread's whole lifetime).
 
 **Result** (robot @ FANOUT=8 DEDICATED=1 MIN=131072, debug-symbols release build): **38/38 completed runs
 byte-identical CORRECT** (run 38 ends with the expected `✅` detection result; run 39 was killed mid-stream
@@ -469,22 +472,21 @@ residual (those rooted get()-path holders + cleared caches on worker teardown/re
 INNER_SHADOW-hit window — likely on the PARENT pump path, or a clear-timing gap — would still ABA).
 
 **CONFIRMATION EXPERIMENT IN FLIGHT (agent `ab95e87b`):** extend the oracle to panic on an `INNER_SHADOW`
-HIT of a swept Addr (`was_hit && swept_oracle_enabled() && !in_collector_read_scope() &&
-heap.is_addr_swept(addr)` → panic), rebuild (debug-symbols, no -Zbuild-std → fast), re-run robot under
+HIT of a swept Addr, rebuild (debug-symbols, no -Zbuild-std → fast), re-run robot under
 no-recycle. If it TRIPS → the backtrace names the ABA holder (CONFIRMED; fix = clear/validate
 INNER_SHADOW on that thread/path after every dedicated sweep, OR make the cache key ABA-safe — e.g.
 distrust on a per-Addr sweep-generation). If it does NOT trip in 40 runs → REFUTES INNER_SHADOW-ABA and a
 different get()-bypass remains (next: a per-read sweep-generation tag, since TSan is ruled out for a
 thread-local staleness).
 
-### VERDICT (2026-06-03) — INNER_SHADOW-ABA **REFUTED** (61/61 clean); the swept-oracle CANNOT pinpoint by construction; pivot to TSan
+### VERDICT (2026-06-03) — INNER_SHADOW-ABA **REFUTED** (61/61 clean); the no-recycle diagnostic CANNOT pinpoint by construction; pivot to TSan
 
 The INNER_SHADOW-hit-of-swept oracle ran **61 robot runs total (11 + 50), ALL clean, NO trip** (one 42577-
 vs-42574-byte run = benign 3-byte ordering variance, still carries the correct result — not the
 wrong-subset signature). At ~4.7%, P(no trip in 61) is about 0.05, so **the holder does NOT do an
 `inner_ref` cache-hit on a swept Addr** — INNER_SHADOW-ABA is refuted.
 
-**The deeper methodological finding:** the swept-oracle family (NO-RECYCLE) can only *confirm reuse-
+**The deeper methodological finding:** the no-recycle diagnostic family can only *confirm reuse-
 dependence* — it **cannot pinpoint the holder BY CONSTRUCTION**, because no-recycle disables the very
 thing under study (slot reuse). It also REFUTES the two simplest hypotheses: (a) a genuinely-missed-root
 slot would stay swept under no-recycle and the holder's `get()` would have PANICKED — it never did across

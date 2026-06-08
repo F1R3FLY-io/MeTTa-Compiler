@@ -18,6 +18,9 @@ current-work component of C, so a nested evaluator cannot collect while an outer
 item that is absent from the pending work stack. The focused ASAN run on 2026-06-07 forced one default mid-loop minor
 with 0 UAF and result `[done]`. The default-on release conformance gate on 2026-06-07 passed 483/0/0/0 with
 `INDEX_GC_CYCLES_RUN=798` under the existing committed-cap trigger, so the semantic oracle was non-vacuous.
+The default dedicated FANOUT=8 discriminator on 2026-06-08 passed `Robot.metta` Arm A (`MIN=131072`) 0/16 failures
+and Arm C (`MIN=4294967295`) 0/16 failures; the Arm A non-vacuity witness reported rendezvous minor cycles with
+reclaimed slots and segment releases.
 There is also an opt-in E2 SATB major path
 (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and

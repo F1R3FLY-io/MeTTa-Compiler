@@ -73,6 +73,7 @@ pub(crate) enum VmLeaf {
     /// nested trampoline call but not stored in the VM struct itself. Used for
     /// type-driven pre-eval locals such as `expr`, `item_to_eval`, and
     /// `per_arg_results`.
+    #[allow(dead_code)] // Constructed by index-gc VM rooting; slab check has no producer.
     ValueVec { values: *const Vec<MettaValue> },
     /// B4: a live JIT execution's `JitContext` — the JIT analogue of `Vm`. Its
     /// operand stack / results / choice-points / binding-frames / saved-stack /

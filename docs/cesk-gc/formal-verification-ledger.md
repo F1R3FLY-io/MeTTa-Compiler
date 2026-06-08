@@ -170,6 +170,10 @@ can replace the full-major final sweep.
   imply a non-quiescent evaluator, and the materialization shadow is cleared before any future dereference, then
   dropping reclaimed side boxes cannot create a dangling future dereference. Non-quiescent collections therefore defer
   side-box freeing.
+- `formal/rocq/gc/SideReclaimRefinement.v`: composes the source-coupled side-reclaim ownership protocol. Side reads
+  observe published same-segment payloads, future side reads cannot target freed pending snapshots, freed side boxes
+  have an owner snapshot plus quiescent full-mark drain and shadow clear, marked owners that still own the side are
+  retained, released segment resets drop pending snapshots, and duplicate reports require fresh free-owner acquisition.
 - `formal/rocq/gc/HashConsSweepRetain.v` and `formal/lean/gc/HashConsSweepRetain.lean`: prove the Addr-valued
   hash-cons retain obligation. A major hash-cons hit cannot return a freed address when retained entries imply marked
   entries and sweep frees only unmarked entries; a minor hash-cons hit cannot return a freed address when retained

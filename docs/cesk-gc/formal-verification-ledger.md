@@ -136,6 +136,14 @@ can replace the full-major final sweep.
   register-root obligation. If VM/JIT register-file values are included in the `extra` part of the worker's tier-leaf
   contribution before the worker parks, and that contribution is published/drained/marked, mark/sweep cannot free
   those tier-local values.
+- `formal/rocq/gc/SelectiveChoicePointRoots.v`: proves the E3 selective-CESK re-enterable continuation obligation.
+  If trampoline coroutine/choice state, VM choice points, JIT choice points, and captured/suspended spines are all
+  included in the structural K root contribution, mark/sweep cannot free a re-enterable continuation address that a
+  future resume can touch. The companion TLC discriminator rejects omitting the VM, JIT, or trampoline choice family.
+- `formal/rocq/gc/SerializableContinuationSlice.v`: proves the E4 serialized-continuation slice obligation. If a
+  serialized suspended state includes its control, environment, and continuation roots and is closed under store
+  edges, every address a restored transition can touch is in the serialized slice and cannot be reclaimed as outside
+  that slice. The companion TLC discriminator rejects omitting either the K root or a reachable store child.
 - `formal/rocq/gc/IndexArenaPublication.v` and `formal/lean/gc/IndexArenaPublication.lean`: prove the fixed-size
   index-arena publication obligation. If a segment is initialized before directory publication, a claimed slot is
   written before `len` publication, and allocation returns an `Addr` only after that slot publication, a later read of
@@ -322,6 +330,12 @@ can replace the full-major final sweep.
 - `tla/EvalTablesRegisteredRoots.tla`: checks the thread-local eval memo and match-result table registered-root
   obligation. Scanning both tables preserves `NoEvalTableValueFreed`; omitting either eval memo or match-result scan
   violates it.
+- `tla/SelectiveChoicePointRoots.tla`: checks the E3 selective-CESK choice-point root obligation. Including all
+  re-enterable choice families preserves `NoReenterableChoiceFreed`; omitting VM, JIT, or trampoline choice roots
+  violates the invariant.
+- `tla/SerializableContinuationSlice.tla`: checks the E4 serializable-continuation slice obligation. Including S/E/K
+  and the reachable store child preserves `NoRestoredFutureTouchFreed`; omitting the continuation root or a reachable
+  child violates the invariant.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
 - `tla/GenerationResume.tla`: checks the E1/E5 worker-resume rule. Generation-gated resume with an end-of-cycle
@@ -555,6 +569,11 @@ facts the proofs rely on:
 - The rooted thread-local value tables scan eval memo entries, match-result RHS templates/bindings/RHS types, subgoal
   results, and thunk results as structural roots. The subgoal and thunk tables additionally shade cached result values
   on stale eviction, overwrite, explicit removal, invalidation, full clear, and thunk result replacement.
+- E3 selective-CESK choice-point source order is pinned for the current pre-unification implementation: VM
+  `collect_roots_into` walks each choice point's chunk constants, alternatives, rule-match bindings, bound values, and
+  saved current bindings; JIT `collect_jit_roots_into` walks `choice_points[..]` and each choice point's saved chunk
+  plus value, space-match, chunk, and rule-match alternatives; `BranchCoroutine::collect_values` walks remaining
+  branches, branch bindings, and yielded values.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

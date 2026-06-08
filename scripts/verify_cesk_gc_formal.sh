@@ -132,6 +132,8 @@ run_rocq "formal/rocq/gc/WorkerAdmission.v"
 run_rocq "formal/rocq/gc/ThreadContribution.v"
 run_rocq "formal/rocq/gc/FrameEnvRoots.v"
 run_rocq "formal/rocq/gc/TierLeafExtraRoots.v"
+run_rocq "formal/rocq/gc/SelectiveChoicePointRoots.v"
+run_rocq "formal/rocq/gc/SerializableContinuationSlice.v"
 run_rocq "formal/rocq/gc/IndexArenaPublication.v"
 run_rocq "formal/rocq/gc/SideArenaPublication.v"
 run_rocq "formal/rocq/gc/ConcurrentBumpFreshOnly.v"
@@ -260,6 +262,20 @@ run_tlc "tier_leaf_extra_roots_missing_vm_dispatch_memo" "MC_TierLeafExtraRoots.
   fail "Invariant TierLeafExtraRootsComplete is violated"
 run_tlc "tier_leaf_extra_roots_missing_jit_state_cache" "MC_TierLeafExtraRoots.tla" "MC_TierLeafExtraRoots_missing_jit_state_cache.cfg" \
   fail "Invariant TierLeafExtraRootsComplete is violated"
+run_tlc "selective_choice_point_roots_all" "MC_SelectiveChoicePointRoots.tla" "MC_SelectiveChoicePointRoots_all.cfg" \
+  pass ""
+run_tlc "selective_choice_point_roots_missing_vm" "MC_SelectiveChoicePointRoots.tla" "MC_SelectiveChoicePointRoots_missing_vm.cfg" \
+  fail "Invariant NoReenterableChoiceFreed is violated"
+run_tlc "selective_choice_point_roots_missing_jit" "MC_SelectiveChoicePointRoots.tla" "MC_SelectiveChoicePointRoots_missing_jit.cfg" \
+  fail "Invariant NoReenterableChoiceFreed is violated"
+run_tlc "selective_choice_point_roots_missing_trampoline" "MC_SelectiveChoicePointRoots.tla" "MC_SelectiveChoicePointRoots_missing_trampoline.cfg" \
+  fail "Invariant NoReenterableChoiceFreed is violated"
+run_tlc "serializable_continuation_slice_all" "MC_SerializableContinuationSlice.tla" "MC_SerializableContinuationSlice_all.cfg" \
+  pass ""
+run_tlc "serializable_continuation_slice_missing_child" "MC_SerializableContinuationSlice.tla" "MC_SerializableContinuationSlice_missing_child.cfg" \
+  fail "Invariant NoRestoredFutureTouchFreed is violated"
+run_tlc "serializable_continuation_slice_missing_kont" "MC_SerializableContinuationSlice.tla" "MC_SerializableContinuationSlice_missing_kont.cfg" \
+  fail "Invariant NoRestoredFutureTouchFreed is violated"
 run_tlc "index_arena_publication_all" "MC_IndexArenaPublication.tla" "MC_IndexArenaPublication_all.cfg" \
   pass ""
 run_tlc "index_arena_publication_segment_publish_before_write" "MC_IndexArenaPublication.tla" "MC_IndexArenaPublication_segment_publish_before_write.cfg" \

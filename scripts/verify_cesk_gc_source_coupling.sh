@@ -552,6 +552,10 @@ assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_root
 assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for (_scope, _name, val) in self.current_bindings.iter_full()" "for frame in self.bindings_stack.iter()"
 assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for frame in self.call_stack.iter()" "for cp in self.choice_points.iter()"
 assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for cp in self.choice_points.iter()" "for frame in self.collapse_frames.iter()"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "for cp in self.choice_points.iter()" "super::cache::collect_generic_chunk_constants(&cp.chunk, out);" "for alt in cp.alternatives.iter()"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "for cp in self.choice_points.iter()" "GenericAlternative::Value(v) => out.push(v.clone())," "GenericAlternative::RuleMatch { chunk, bindings }"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "for cp in self.choice_points.iter()" "GenericAlternative::RuleMatch { chunk, bindings }" "GenericAlternative::BoundValue { value, bindings }"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "for cp in self.choice_points.iter()" "GenericAlternative::BoundValue { value, bindings }" "for (_scope, _name, val) in cp.saved_current_bindings.iter_full()"
 assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for frame in self.collapse_frames.iter()" "for frame in self.collapse_bind_frames.iter()"
 assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for frame in self.collapse_bind_frames.iter()" "for bindings in self.per_result_bindings.iter()"
 assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for (_, vs) in self.dispatch_memo.values()" "for entry in self.trail.iter()"
@@ -576,6 +580,11 @@ assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) u
 assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.results.add(i)" "ctx.saved_stack.add(i)"
 assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.saved_stack.add(i)" "ctx.choice_points.add(i)"
 assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.choice_points.add(i)" "ctx.binding_frames.add(i)"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "unsafe fn collect_choice_point_roots_into" "collect_chunk_ptr_constants(cp.saved_chunk, out);" "for i in 0..(cp.alt_count as usize)"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "unsafe fn collect_choice_point_roots_into" "JitAlternativeTag::Value" "collect_jit_value_into(JitValue::from_raw(alt.payload), out);"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "JitAlternativeTag::SpaceMatch" "collect_jit_value_into(JitValue::from_raw(alt.payload), out);" "JitAlternativeTag::Chunk"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "JitAlternativeTag::Chunk" "collect_chunk_ptr_constants(alt.payload as *const (), out);" "JitAlternativeTag::RuleMatch"
+assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "JitAlternativeTag::RuleMatch" "collect_chunk_ptr_constants(alt.payload as *const (), out);" "payload2 is *const Bindings"
 assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "entry.value.0" "ctx.template_results.add(i)"
 assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.template_results.add(i)" "ctx.state_cache_valid"
 assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_value_into" "gc_mode_is_index()" "Addr::from_raw"
@@ -586,6 +595,15 @@ assert_after_before "src/backend/bytecode/jit/runtime/sexpr_ops.rs" "unsafe fn j
 assert_after_before "src/backend/bytecode/jit/runtime/sexpr_ops.rs" "unsafe fn jit_maybe_pre_eval_structural" "collect_jit_roots_into" "worker_cooperative_safepoint(&roots);"
 assert_after_before "src/backend/bytecode/jit/hybrid/arena.rs" "pub fn execute_jit_arena_direct" "VmLeaf::Jit" "native_fn(&mut ctx);"
 assert_after_before "src/backend/bytecode/jit/hybrid/arena.rs" "pub fn execute_jit_arena_with_env" "VmLeaf::Jit" "native_fn(&mut ctx);"
+
+# E3 selective-CESK re-enterable continuation roots: until the choice-point
+# families are unified into one store-addressed spine, every concrete
+# re-enterable state family remains a structural K contribution. VM/JIT
+# choice points are pinned above; coroutine-based lazy nondeterminism roots
+# its remaining branches, branch bindings, and yielded values.
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "pub fn collect_values(&self, out: &mut Vec<V>)" "for (rhs, bindings) in &self.remaining[self.cursor..]" "out.extend(self.yielded.iter().cloned());"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "pub fn collect_values(&self, out: &mut Vec<V>)" "out.push(rhs.clone());" "for (_name, val) in bindings.iter()"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "pub fn collect_values(&self, out: &mut Vec<V>)" "for (_name, val) in bindings.iter()" "out.push(val.clone());"
 
 # Forked-env frame roots: fork_for_nondeterminism deep-copies the five
 # Addr-bearing local maps, and every index-mode live work item / continuation

@@ -168,6 +168,7 @@ run_rocq "formal/rocq/gc/SATBAbortFallback.v"
 run_rocq "formal/rocq/gc/FullMajorSweep.v"
 run_rocq "formal/rocq/gc/E0MutationSites.v"
 run_rocq "formal/rocq/gc/E0EvictionBarriers.v"
+run_rocq "formal/rocq/gc/SATBSubmodelClosure.v"
 run_rocq "formal/rocq/gc/CESKCollectorSafety.v"
 
 run_source_coupling

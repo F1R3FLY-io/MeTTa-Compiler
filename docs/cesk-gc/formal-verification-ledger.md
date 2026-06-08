@@ -293,6 +293,12 @@ can replace the full-major final sweep.
   cache eviction and bulk-clear shapes into the SATB theorem. If capacity victims, same-key overwrite victims, and
   bulk-cleared entries are shaded before removal becomes invisible, then those removed snapshot-live values are SATB
   roots and cannot be freed by sweep.
+- `formal/rocq/gc/SATBSubmodelClosure.v`: closes the Rocq audit over the SATB submodel split. It gives one mandatory
+  Rocq theorem whose fields cover the named TLA submodels that carry source-level safety premises: deletion barrier,
+  E0 mutation-site shading, LRU eviction, bulk clear, phase gate, sweep gate, allocate-black publication, final
+  remark, premarked final-root revisit, final-sweep backstop, abort-to-STW handling, full-major mark clearing, and the
+  young-only stale-old-mark negative. Lean mirrors remain supplemental only; this closure is Rocq because Rocq is the
+  preferred mandatory proof lane for this workstream.
 - `tla/RendezvousWitness.tla`: checks the E1 witness gate predicate. The strict `published>=cur_gen OR
   acquired>cur_gen` model preserves root completeness at sweep; the negative `acquired>=cur_gen` model violates it.
   A second negative config makes a non-reified finisher stamp `published_gen`, which also violates root completeness.

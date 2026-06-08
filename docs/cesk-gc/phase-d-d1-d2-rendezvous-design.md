@@ -65,10 +65,10 @@ retains exactly the reachable set (NoUseAfterFree).
 Historical note: this D1/D2 plan originally proposed a separate
 `rendezvous_enabled()` production gate. That gate was superseded by the E1
 single-regime design: live FANOUT>0 rendezvous collection is now governed by the
-dedicated-GC gate (`METTATRON_INDEX_GC_DEDICATED=1`) and source-coupled by
+index-mode `dedicated_gc_enabled()` predicate and source-coupled by
 `DedicatedSingleRegime`/`WorkerAdmission`/`RendezvousWitness`. The old parallel
-env gate has been removed so the codebase has one production rendezvous switch,
-not two.
+env gate and the later dedicated env gate have both been removed, so the
+codebase no longer has a production rendezvous switch.
 
 - **D1.1 [FIRST]** — rendezvous state + primitives in `gc_allocator.rs` (`begin_gc_rendezvous`/
   `worker_park_and_root`/`requestor_wait_for_parked`/`end_gc_rendezvous`), ~120 lines

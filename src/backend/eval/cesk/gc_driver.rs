@@ -2,18 +2,14 @@
 //!
 //! Phase D+E (`docs/cesk-gc/phase-de-concurrent-collector-design.md`) re-founds
 //! the index collector as a DEDICATED GC THREAD that drives collection while
-//! mutators only poll/self-root/park. E1-a stands up that thread + driver in the
-//! OUTPUT-EQUIVALENT regime (true quiescence, `n_threads()==0`), so the
-//! infrastructure is validated in the safe regime before E1-c (worker park) and
-//! E1-FLIP (gate relax) extend it to collect under FANOUT>0.
+//! mutators only poll/self-root/park. E1 stands up that driver for true
+//! quiescence, mid-loop, and FANOUT>0 rendezvous collection.
 //!
-//! Behind `gc_allocator::dedicated_gc_enabled()` (env `METTATRON_INDEX_GC_DEDICATED`,
-//! default OFF). Default OFF ⇒ the quiescence collection runs INLINE on the
-//! calling thread exactly as before (BYTE-IDENTICAL). When ON, the mutator (which
-//! has already dropped its `EvalGuard`, so `n_threads()==0` and
-//! `active_evaluator_count()==0` at the collection point) hands its already-built
-//! structural root set to the GC thread and BLOCKS for completion — output-
-//! equivalent, since it would have blocked for the inline collection too.
+//! `gc_allocator::dedicated_gc_enabled()` follows index-GC mode. At quiescence
+//! the mutator has already dropped its `EvalGuard`, so `n_threads()==0` and
+//! `active_evaluator_count()==0`; it hands its already-built structural root set
+//! to the GC thread and BLOCKS for completion, output-equivalent to inline
+//! collection.
 //!
 //! Genuine CESK: the roots are the mutator's structurally-read machine roots ∪
 //! reach(E₀) ∪ driver-C, built at the call site (eval/mod.rs:296-307) and HANDED
@@ -199,8 +195,7 @@ fn run_open_stw_rendezvous_cycle(
     // E1-FLIP: the RENDEZVOUS entry — gates on gate_open_rendezvous (completeness
     // witness, NOT !worker_ever_spawned which is false here) + labels the cycle
     // "rendezvous" (side-Box frees deferred; parked workers may hold laundered refs).
-    // Pre-FLIP (dedicated default OFF) this driver is unreachable; post-FLIP it is the
-    // FANOUT>0 collect that actually sweeps.
+    // This is the FANOUT>0 collect that actually sweeps.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered_rendezvous(&roots)
     }));
@@ -458,10 +453,12 @@ fn assert_rendezvous_union_complete(roots: &[MettaValue], n_snapshot: u32) {
 
 /// E1-c (FANOUT>0): trigger a rendezvous collection on the dedicated GC thread
 /// (fire-and-forget). Called from a mutator safepoint that observes the watermark
-/// while other mutators are live (`n_threads() > 1`). It (a) sets `GC_REQUESTED` so
-/// every active mutator parks at its next safepoint, and (b) hands the cycle to the
-/// GC thread. The caller then parks at its OWN next safepoint as one of the `n`
-/// participants (so the GC thread's per-slot reified-witness wait completes).
+/// while fanout is enabled and at least one mutator is live (`n_threads() >= 1`).
+/// It (a) sets `GC_REQUESTED` so every active mutator parks at its next safepoint,
+/// and (b) hands the cycle to the GC thread. The caller then parks at its OWN next
+/// safepoint as one of the `n` participants (so the GC thread's per-slot
+/// reified-witness wait completes). `n == 1` is valid: the sole mutator
+/// self-roots and parks before the driver sweeps.
 ///
 /// Source-coupled from the FANOUT watermark safepoint trigger. The default build
 /// remains byte-identical because the caller gates on `dedicated_gc_enabled()`.
@@ -542,11 +539,10 @@ fn try_drive_blocking(roots: Vec<MettaValue>) -> Result<bool, Vec<MettaValue>> {
 /// E1-a.3 entry from the quiescence collection point (eval/mod.rs, tier_forced.rs).
 ///
 /// Routes the SAME `roots` to the dedicated GC thread iff `dedicated_gc_enabled()
-/// && n_threads()==0`; otherwise (default-OFF, or any handoff failure) runs the
-/// identical `run_collection_if_triggered(&roots)` INLINE — byte-identical when
-/// the flag is off. The `n_threads()==0` guard makes the quiescence-only contract
-/// explicit at the call site (redundant with `gate_open()`'s `active==0`, but
-/// self-documenting and the precise boundary E1-c later lifts).
+/// && n_threads()==0`; otherwise, or on handoff failure before the roots are
+/// consumed, runs the identical `run_collection_if_triggered(&roots)` inline.
+/// The `n_threads()==0` guard makes the quiescence-only contract explicit at the
+/// call site (redundant with `gate_open()`'s `active==0`, but self-documenting).
 pub(crate) fn collect_quiescence(roots: Vec<MettaValue>) {
     if dedicated_gc_enabled() && n_threads() == 0 {
         if let Err(returned) = try_drive_blocking(roots) {
@@ -574,16 +570,20 @@ mod tests {
     }
 
     #[test]
-    fn collect_quiescence_default_off_routes_inline() {
-        // Default-OFF (env unset, not forced) ⇒ collect_quiescence takes the inline
-        // branch (no dedicated thread). Assert the routing PREDICATE only — do NOT
-        // call collect_quiescence with a synthetic root set: in the index-gc build
-        // that runs a real collection, and an EMPTY root set would mark nothing and
-        // sweep every live value in the shared global heap. The inline route is
-        // exercised for real by the conformance gate (complete root set, FANOUT=0).
+    fn dedicated_gc_default_matches_compiled_store() {
+        // Assert the routing predicate only — do NOT call collect_quiescence with
+        // a synthetic root set: in the index-gc build that runs a real collection,
+        // and an empty root set would mark nothing and sweep every live value in
+        // the shared global heap.
+        #[cfg(feature = "index-gc")]
+        assert!(
+            dedicated_gc_enabled(),
+            "index-gc build must default to the dedicated CESK GC driver"
+        );
+        #[cfg(not(feature = "index-gc"))]
         assert!(
             !dedicated_gc_enabled(),
-            "test must run with METTATRON_INDEX_GC_DEDICATED unset/off"
+            "slab build must not enable the index dedicated driver"
         );
     }
 }

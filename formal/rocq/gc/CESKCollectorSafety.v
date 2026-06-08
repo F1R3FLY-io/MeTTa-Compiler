@@ -25,12 +25,17 @@
       not from manual registration in any auxiliary root registry;
     - the single-threaded mid-loop root union includes live S/C/K, E0,
       globals, K-spine, deferred env roots, and driver-C safepoint roots;
+    - the typed native K-spine includes the suspended activation's in-flight
+      current work item as well as its pending work stack and continuation
+      stack;
     - C2 abstract-GC K-frame narrowing keeps every future-touched value rooted
       when omitted continuation fields are dead for the next transition;
     - fork-local environment roots carried by live work items and
       continuations are included in the published frame contribution;
     - VM/JIT tier-leaf register roots are included in the worker's extra
       publication before the worker parks;
+    - bytecode-VM native locals that survive a nested CESK eval are published
+      as typed K-spine VM leaf roots before the nested machine can collect;
     - cooperative tier-leaf safepoints at EvalGuard depth zero return without
       parking or dropping a guard, because they are not counted participants;
     - eval-entry driver-C publication puts caller-held source/output roots in
@@ -52,6 +57,10 @@
     - the FANOUT rendezvous collection gate is the witness/completeness gate,
       not the old global-quiescence gate, so live roots can survive collection
       even when active evaluators are still present;
+    - non-rendezvous midloop collection is excluded when branch fanout is
+      enabled, so the first pre-spawn watermark cannot bypass the dedicated
+      rendezvous protocol; true-quiescence collection remains allowed because
+      no evaluator/native stack is live;
     - a dedicated rendezvous that has a posted driver request, contributing
       participants, panic cleanup, generation bump, and resume notification
       cannot strand a parked participant;
@@ -94,8 +103,13 @@
     - variable-length side-arena payload boxes are dropped only on the
       true-quiescence arm, and the materialization shadow is cleared before a
       future dereference can observe a freed side payload;
+    - side-payload frees drain reclaim-time owner snapshots, not mutable node
+      bytes after possible node-slot reuse, and segment resets drop pending
+      per-slot snapshots before side indices can be reused;
     - Addr-valued ground-SExpr hash-cons entries retained across sweep cannot
-      return a reclaimed slot on a later lookup;
+      return a reclaimed slot on a later lookup, and a stale entry is returned
+      only after lookup validates that the node slot is allocated and its side
+      payload is present;
     - E2 final-rendezvous roots survive the exclusive sweep, and a completed
       SATB request is backed by either the final SATB sweep or the abort-to-STW
       backstop;
@@ -181,6 +195,11 @@ Section CESKCollectorSafetyModel.
       (a : Addr) : Prop :=
     LiveSCK a \/ Env0 a \/ Global a \/ KSpine a \/ Deferred a \/ DriverC a.
 
+  Definition SuspendedControl
+      (CurrentWork WorkStack Kont : Addr -> Prop)
+      (a : Addr) : Prop :=
+    CurrentWork a \/ WorkStack a \/ Kont a.
+
   Definition ForkLocalRoot
       (Binding TypeAssertion StateCell NamedSpace InferredType : Addr -> Prop)
       (a : Addr) : Prop :=
@@ -190,6 +209,24 @@ Section CESKCollectorSafetyModel.
       (VmRegisterRoot JitRegisterRoot : Addr -> Prop)
       (a : Addr) : Prop :=
     VmRegisterRoot a \/ JitRegisterRoot a.
+
+  Inductive VmLocalClass : Type :=
+  | PreEvalExpr : VmLocalClass
+  | PreEvalItem : VmLocalClass
+  | PreEvalResult : VmLocalClass
+  | DispatchRhs : VmLocalClass
+  | RuleMatchRhs : VmLocalClass
+  | RuleMatchTemplate : VmLocalClass
+  | RuleMatchBinding : VmLocalClass
+  | SavedBinding : VmLocalClass
+  | ComboExpr : VmLocalClass
+  | ComboBinding : VmLocalClass
+  | AccumulatedOutcome : VmLocalClass.
+
+  Definition VmNestedLocal
+      (ClassRoot : VmLocalClass -> Addr -> Prop)
+      (a : Addr) : Prop :=
+    exists c, ClassRoot c a.
 
   Definition PublishedEntryReady
       (PageReady ChunkReady EntryWritten EntryPublished : Slot -> Prop)
@@ -289,10 +326,10 @@ Section CESKCollectorSafetyModel.
     SatbSwept \/ StwFallbackRan.
 
   Definition FanoutWatermarkTrigger
-      (DedicatedCollector OtherMutatorLive NoRequestPending
+      (DedicatedCollector FanoutParticipantLive NoRequestPending
        SatbMarking WatermarkDue : Prop) : Prop :=
     DedicatedCollector /\
-    OtherMutatorLive /\
+    FanoutParticipantLive /\
     NoRequestPending /\
     ~ SatbMarking /\
     WatermarkDue.
@@ -420,8 +457,12 @@ Section CESKCollectorSafetyModel.
     DedicatedRequest -> DriverPosted.
 
   Definition QuiescenceGate
-      (IndexMode Disabled ActiveZero NeverSpawned : Prop) : Prop :=
-    IndexMode /\ ~ Disabled /\ ActiveZero /\ NeverSpawned.
+      (IndexMode Disabled ActiveZero NThreadsZero : Prop) : Prop :=
+    IndexMode /\ ~ Disabled /\ ActiveZero /\ NThreadsZero.
+
+  Definition MidloopNonRendezvousGate
+      (IndexMode Disabled FanoutEnabled NeverSpawned ActiveOne : Prop) : Prop :=
+    IndexMode /\ ~ Disabled /\ ~ FanoutEnabled /\ NeverSpawned /\ ActiveOne.
 
   Definition RendezvousWitnessGate
       (IndexMode Disabled GcInProgress WitnessOk : Prop) : Prop :=
@@ -527,9 +568,9 @@ Section CESKCollectorSafetyModel.
   Qed.
 
   Theorem rendezvous_gate_can_hold_without_global_quiescence :
-    exists (IndexMode Disabled GcInProgress WitnessOk ActiveZero NeverSpawned : Prop),
+    exists (IndexMode Disabled GcInProgress WitnessOk ActiveZero NThreadsZero : Prop),
       RendezvousWitnessGate IndexMode Disabled GcInProgress WitnessOk /\
-      ~ QuiescenceGate IndexMode Disabled ActiveZero NeverSpawned.
+      ~ QuiescenceGate IndexMode Disabled ActiveZero NThreadsZero.
   Proof.
     exists True, False, True, True, False, False.
     split.
@@ -541,12 +582,33 @@ Section CESKCollectorSafetyModel.
       exact Hactive.
   Qed.
 
+  Theorem fanout_enabled_blocks_midloop_non_rendezvous_gate :
+    forall (IndexMode Disabled FanoutEnabled NeverSpawned ActiveOne : Prop),
+      FanoutEnabled ->
+      ~ MidloopNonRendezvousGate IndexMode Disabled FanoutEnabled NeverSpawned ActiveOne.
+  Proof.
+    intros IndexMode Disabled FanoutEnabled NeverSpawned ActiveOne Hfanout Hgate.
+    destruct Hgate as [_ [_ [Hnot_fanout _]]].
+    apply Hnot_fanout.
+    exact Hfanout.
+  Qed.
+
+  Theorem fanout_enabled_does_not_block_true_quiescence_gate :
+    forall (IndexMode Disabled ActiveZero NThreadsZero FanoutEnabled : Prop),
+      QuiescenceGate IndexMode Disabled ActiveZero NThreadsZero ->
+      FanoutEnabled ->
+      QuiescenceGate IndexMode Disabled ActiveZero NThreadsZero.
+  Proof.
+    intros IndexMode Disabled ActiveZero NThreadsZero FanoutEnabled Hgate _.
+    exact Hgate.
+  Qed.
+
   Theorem nonquiescent_rendezvous_live_root_survives_collection :
-    forall (IndexMode Disabled GcInProgress WitnessOk ActiveZero NeverSpawned : Prop)
+    forall (IndexMode Disabled GcInProgress WitnessOk ActiveZero NThreadsZero : Prop)
            (StructuralRoot DriverRoot Marked Freed LiveRoot : Addr -> Prop)
            (Edge : Addr -> Addr -> Prop),
       RendezvousWitnessGate IndexMode Disabled GcInProgress WitnessOk ->
-      ~ QuiescenceGate IndexMode Disabled ActiveZero NeverSpawned ->
+      ~ QuiescenceGate IndexMode Disabled ActiveZero NThreadsZero ->
       (forall a, LiveRoot a -> Reach (CollectorRoot StructuralRoot DriverRoot) Edge a) ->
       (forall a, Reach (CollectorRoot StructuralRoot DriverRoot) Edge a -> Marked a) ->
       (forall a, Freed a -> ~ Marked a) ->
@@ -654,6 +716,31 @@ Section CESKCollectorSafetyModel.
     destruct Hroot as [Hvm_root | Hjit_root].
     - apply Hvm. exact Hvm_root.
     - apply Hjit. exact Hjit_root.
+  Qed.
+
+  Theorem vm_nested_local_survives_collection :
+    forall (ClassRoot : VmLocalClass -> Addr -> Prop)
+           (KSpineRoot ThreadRoot BufferRoot DriverRoot Marked Freed : Addr -> Prop),
+      (forall c a, ClassRoot c a -> KSpineRoot a) ->
+      (forall a, KSpineRoot a -> ThreadRoot a) ->
+      (forall a, ThreadRoot a -> BufferRoot a) ->
+      (forall a, BufferRoot a -> DriverRoot a) ->
+      (forall a, DriverRoot a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        VmNestedLocal ClassRoot a ->
+        ~ Freed a.
+  Proof.
+    intros ClassRoot KSpineRoot ThreadRoot BufferRoot DriverRoot Marked Freed
+           Hclass Hthread Hpublish Hdrain Hmark Hsweep a Hlocal Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    apply Hdrain.
+    apply Hpublish.
+    apply Hthread.
+    destruct Hlocal as [c Hclass_a].
+    apply (Hclass c a).
+    exact Hclass_a.
   Qed.
 
   Theorem rendezvous_participant_root_survives_collection :
@@ -1012,6 +1099,44 @@ Section CESKCollectorSafetyModel.
     - apply HkSpine. exact HkSpine_a.
     - apply Hdeferred. exact Hdeferred_a.
     - apply HdriverC. exact HdriverC_a.
+  Qed.
+
+  Theorem k_spine_suspended_control_survives_collection :
+    forall (CurrentWork WorkStack Kont KSpineRoot Marked Freed : Addr -> Prop),
+      (forall a, CurrentWork a -> KSpineRoot a) ->
+      (forall a, WorkStack a -> KSpineRoot a) ->
+      (forall a, Kont a -> KSpineRoot a) ->
+      (forall a, KSpineRoot a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        SuspendedControl CurrentWork WorkStack Kont a ->
+        ~ Freed a.
+  Proof.
+    intros CurrentWork WorkStack Kont KSpineRoot Marked Freed
+           Hcurrent Hwork Hkont Hmark Hsweep a Hcontrol Hfreed.
+    apply (Hsweep a Hfreed).
+    apply Hmark.
+    destruct Hcontrol as [Hcurrent_a | [Hwork_a | Hkont_a]].
+    - apply Hcurrent. exact Hcurrent_a.
+    - apply Hwork. exact Hwork_a.
+    - apply Hkont. exact Hkont_a.
+  Qed.
+
+  Theorem k_spine_current_work_survives_collection :
+    forall (CurrentWork WorkStack Kont KSpineRoot Marked Freed : Addr -> Prop),
+      (forall a, CurrentWork a -> KSpineRoot a) ->
+      (forall a, WorkStack a -> KSpineRoot a) ->
+      (forall a, Kont a -> KSpineRoot a) ->
+      (forall a, KSpineRoot a -> Marked a) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a, CurrentWork a -> ~ Freed a.
+  Proof.
+    intros CurrentWork WorkStack Kont KSpineRoot Marked Freed
+           Hcurrent Hwork Hkont Hmark Hsweep a Hcur.
+    apply (k_spine_suspended_control_survives_collection
+             CurrentWork WorkStack Kont KSpineRoot Marked Freed
+             Hcurrent Hwork Hkont Hmark Hsweep a).
+    left. exact Hcur.
   Qed.
 
   Theorem midloop_future_touch_survives_collection :
@@ -1917,6 +2042,30 @@ Section CESKCollectorSafetyModel.
       exact Hmarked.
   Qed.
 
+  Theorem validated_hash_cons_hit_not_freed :
+    forall (Retained Allocated SidePresent Freed Returned : Addr -> Prop),
+      (forall a, Returned a -> Retained a /\ Allocated a /\ SidePresent a) ->
+      (forall a, Freed a -> ~ Allocated a) ->
+      forall a, Returned a -> ~ Freed a.
+  Proof.
+    intros Retained Allocated SidePresent Freed Returned Hreturned_valid
+           Hfreed_unallocated a Hreturned Hfreed.
+    destruct (Hreturned_valid a Hreturned) as [_ [Hallocated _]].
+    apply (Hfreed_unallocated a Hfreed).
+    exact Hallocated.
+  Qed.
+
+  Theorem missing_side_hash_cons_entry_is_not_returned :
+    forall (SidePresent Returned : Addr -> Prop),
+      (forall a, Returned a -> SidePresent a) ->
+      forall a, ~ SidePresent a -> ~ Returned a.
+  Proof.
+    intros SidePresent Returned Hreturned_side a Hmissing Hreturned.
+    apply Hmissing.
+    apply Hreturned_side.
+    exact Hreturned.
+  Qed.
+
   Theorem e2_final_remark_root_survives_collection :
     forall (InitialRoot DriverRoot ShadedDeletion AllocateBlack
             FinalRoot : Addr -> Prop)
@@ -1984,14 +2133,14 @@ Section CESKCollectorSafetyModel.
   Qed.
 
   Theorem active_satb_suppresses_fanout_trigger :
-    forall DedicatedCollector OtherMutatorLive NoRequestPending
+    forall DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue,
       SatbMarking ->
       ~ FanoutWatermarkTrigger
-          DedicatedCollector OtherMutatorLive NoRequestPending
+          DedicatedCollector FanoutParticipantLive NoRequestPending
           SatbMarking WatermarkDue.
   Proof.
-    intros DedicatedCollector OtherMutatorLive NoRequestPending
+    intros DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue Hsatb Htrigger.
     destruct Htrigger as [_ [_ [_ [Hnot_satb _]]]].
     apply Hnot_satb.
@@ -1999,14 +2148,14 @@ Section CESKCollectorSafetyModel.
   Qed.
 
   Theorem fanout_trigger_implies_satb_idle :
-    forall DedicatedCollector OtherMutatorLive NoRequestPending
+    forall DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue,
       FanoutWatermarkTrigger
-        DedicatedCollector OtherMutatorLive NoRequestPending
+        DedicatedCollector FanoutParticipantLive NoRequestPending
         SatbMarking WatermarkDue ->
       ~ SatbMarking.
   Proof.
-    intros DedicatedCollector OtherMutatorLive NoRequestPending
+    intros DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue Htrigger.
     destruct Htrigger as [_ [_ [_ [Hnot_satb _]]]].
     exact Hnot_satb.

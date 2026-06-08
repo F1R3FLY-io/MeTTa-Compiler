@@ -246,7 +246,7 @@ pub struct ParallelDispatchHandle {
     /// `dedicated_gc_enabled()`: registration happens at dispatch construction,
     /// before worker threads have necessarily entered, so `n_threads()>1` is a
     /// racy runtime-collection predicate and must not gate the anchor. `None`
-    /// otherwise (default OFF, FANOUT=0) — so dormant behaviour is byte-identical.
+    /// outside index mode or when no dispatch site exists (for example FANOUT=0).
     /// Stored last so it drops AFTER the provider Arc it downgraded (Rust drops
     /// fields in declaration order; the Weak in the anchor is harmless once
     /// upgraded-to-None).
@@ -500,7 +500,7 @@ impl crate::backend::models::gc_allocator::DispatchRoots for ParallelCollapseRoo
 /// Each variant represents a different kind of evaluation task that the
 /// trampoline loop can process. MettaValue is Copy (8-byte tagged pointer),
 /// so all value passing is zero-cost.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum WorkItem {
     /// Evaluate a value and send result to continuation at stack top
     Eval {

@@ -651,6 +651,7 @@ fn eval_metta(
     // (NOT `let _ =`): `SafepointRootHandle::Drop` unregisters the slot.
     let _driver_c_handle = {
         let mut dc: Vec<MettaValue> = Vec::new();
+        dc.extend(source_exprs.iter().copied());
         state.collect_driver_program_roots(&mut dc);
         register_temporary_roots(dc)
     };
@@ -1063,6 +1064,7 @@ fn run_repl(options: &Options) {
                         // NOT `let _ =` (the handle's Drop unregisters the slot).
                         let _driver_c_handle = {
                             let mut dc: Vec<MettaValue> = Vec::new();
+                            dc.extend(source_exprs.iter().copied());
                             state.collect_driver_program_roots(&mut dc);
                             register_temporary_roots(dc)
                         };

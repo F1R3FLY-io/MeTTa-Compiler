@@ -1,6 +1,7 @@
 ---- MODULE HashConsSweepRetain ----
 
-CONSTANTS Mode, MarkedEntry, YoungEntry, RetainDeadMajor, RetainDeadYoung
+CONSTANTS Mode, MarkedEntry, YoungEntry, RetainDeadMajor, RetainDeadYoung,
+          ValidateLookup, AllocatedAfterSweep, SidePresentAfterSweep
 
 VARIABLES retained, freed, returned, phase
 
@@ -18,6 +19,9 @@ FreedBySweep ==
     ~MarkedEntry
   ELSE
     YoungEntry /\ ~MarkedEntry
+
+LookupValid ==
+  ~ValidateLookup \/ (AllocatedAfterSweep /\ SidePresentAfterSweep)
 
 Init ==
   /\ retained = FALSE
@@ -41,7 +45,7 @@ Sweep ==
 
 Lookup ==
   /\ phase = "swept"
-  /\ returned' = retained
+  /\ returned' = (retained /\ LookupValid)
   /\ retained' = retained
   /\ freed' = freed
   /\ phase' = "done"

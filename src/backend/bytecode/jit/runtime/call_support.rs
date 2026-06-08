@@ -185,10 +185,9 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     // structural; this is the §Part-8 self-root-then-park). The gate omits `is_worker`
     // (the dedicated driver counts every EvalGuard-holding thread). `collect_jit_
     // roots_into` is index-aware (reconstructs the arena `Addr` handle, never derefs).
-    // BYTE-IDENTICAL WHEN DORMANT: with the dedicated GC OFF (default) nothing sets
-    // GC_REQUESTED under FANOUT>0 (`request_concurrent_collection` early-returns on
-    // `!dedicated_gc_enabled()`), so `is_gc_requested()` is false and the body never
-    // runs; `worker_cooperative_safepoint` also fast-returns on the same flag.
+    // Slab stays inert because dedicated_gc_enabled() is false there; in index
+    // mode, a pending FANOUT rendezvous makes this tier-return edge publish JIT
+    // roots before parking.
     #[cfg(feature = "index-gc")]
     {
         if crate::backend::models::gc_allocator::is_gc_requested() {

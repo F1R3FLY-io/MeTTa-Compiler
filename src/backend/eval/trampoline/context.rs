@@ -63,8 +63,8 @@ pub trait EvalContext {
         // async safepoint (`perform_safepoint` = register_temporary_roots + request_gc)
         // is a driver-less GC_REQUESTED producer that would strand parked rendezvous
         // workers — so the SessionContext does not safepoint under dedicated (the
-        // dedicated rendezvous + the quiescence collector own GC there). Byte-identical
-        // OFF (dedicated default OFF).
+        // dedicated rendezvous + the quiescence collector own GC there). Slab stays
+        // on the legacy path because dedicated_gc_enabled() follows index mode.
         crate::backend::models::gc_allocator::is_gc_requested()
             && !crate::backend::models::gc_allocator::dedicated_gc_enabled()
     }

@@ -280,7 +280,13 @@ assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" 
 assert_zero "src/backend/models/gc_allocator.rs" "METTATRON_INDEX_GC_PARALLEL"
 assert_zero "src/backend/models/gc_allocator.rs" "pub(crate) fn rendezvous_enabled"
 assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_PARALLEL"
-assert_before "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_DEDICATED=1" "METTATRON_INDEX_GC_MIN_BYTES"
+assert_zero "src/backend/models/gc_allocator.rs" "METTATRON_INDEX_GC_DEDICATED"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn dedicated_gc_enabled() -> bool" "gc_mode_is_index()" "}"
+assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_DEDICATED"
+assert_zero "scripts/e1_flip_v4_asan.sh" "METTATRON_INDEX_GC_DEDICATED"
+assert_zero "scripts/e1_flip_discriminator.sh" "METTATRON_INDEX_GC_DEDICATED"
+assert_zero "scripts/e1_flip_h2_head_compare.sh" "METTATRON_INDEX_GC_DEDICATED"
+assert_before "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_MIN_BYTES" "METTATRON_INDEX_GC_REPORT"
 
 # The R-FL no-recycle/swept-slot diagnostic was a one-off discriminator. The
 # live proof obligation is the persistent free-bit invariant below, so the
@@ -311,6 +317,9 @@ assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_rend
 # the bit before returning or discarding an entry, and released segments drain
 # their listed entries before the bitmap is dropped.
 assert_before "src/backend/eval/cesk/index_arena.rs" "if seg.set_free_bit(off) {" "free_list.push(addr);"
+assert_after_before "src/backend/eval/cesk/index_arena.rs" "fn push_free_list_entry" ") -> bool {" "if seg.set_free_bit(off) {"
+assert_count_between "src/backend/eval/cesk/index_arena.rs" "fn sweep_range" "seg.clear_marks();" "if push_free_list_entry(seg, &mut self.free_list" "3"
+assert_count_between "src/backend/eval/cesk/index_arena.rs" "fn sweep_range" "seg.clear_marks();" "reclaimed_out.push(a);" "3"
 assert_before "src/backend/eval/cesk/index_arena.rs" "seg.clear_free_bit(addr.offset());" "if addr.segment() == cur {"
 assert_before "src/backend/eval/cesk/index_arena.rs" "free_list.retain(|addr| {" "seg.clear_free_bit(off);"
 assert_before "src/backend/eval/cesk/index_arena.rs" "drain_free_list_entries_for_released_segment(seg, &mut self.free_list, si, check);" "stats.bytes_released += seg_mut.release();"
@@ -350,10 +359,11 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn should_collect
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn watermark_due_for_concurrent() -> bool" "young_alloc > YOUNG_BUDGET" "|| nursery_pending"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let minor_due = young_alloc > YOUNG_BUDGET || nursery_pending;" "if !major_due && !minor_due {"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let cap_major = committed > cap;" "let cadence_major = MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let cadence_major = MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;" "let major_due = live_major || cap_major || cadence_major;"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let major_due = live_major || cap_major || cadence_major;" "let minor_due = young_alloc > YOUNG_BUDGET || nursery_pending;"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let level = index_backpressure_level(young_alloc);" "let do_major = major_due && !(level == 3 && minor_due && !cap_major && !cadence_major);"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let do_major = major_due && !(level == 3 && minor_due && !cap_major && !cadence_major);" "if do_major {"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let cadence_major = MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;" "let pending_side_major = phase == \"quiescence\" && pending_side_reclaims > 0;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let pending_side_major = phase == \"quiescence\" && pending_side_reclaims > 0;" "let major_due = live_major || cap_major || cadence_major || pending_side_major;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let major_due = live_major || cap_major || cadence_major || pending_side_major;" "let minor_due = young_alloc > YOUNG_BUDGET || nursery_pending;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let level = index_backpressure_level(young_alloc);" "let do_major = pending_side_major"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let do_major = pending_side_major" "if do_major {"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "if did_major {" "MINORS_SINCE_MAJOR.store(0, Ordering::Relaxed);" "MINOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "if did_major {" "MINOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);" "MINORS_SINCE_MAJOR.fetch_add(1, Ordering::Relaxed);"
 assert_count "src/backend/eval/cesk/index_heap.rs" "const GROWTH: usize = 2;" "1"
@@ -496,6 +506,21 @@ assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_machine_roo
 assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_persistent_roots_no_env0" "collect_global_anchors(out);" "super::k_spine::collect_k_spine(out);"
 assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_persistent_roots(" "env0.collect_roots_into(out);" "collect_global_anchors(out);"
 assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_persistent_roots(" "collect_global_anchors(out);" "super::k_spine::collect_k_spine(out);"
+
+# Typed K-spine root completeness: a suspended trampoline activation's native
+# C register includes the in-flight current work item as well as the pending
+# work stack. A nested evaluator can collect while the outer activation has
+# popped work but not yet pushed successor work, so the current-work slot is
+# load-bearing.
+assert_after_before "src/backend/eval/cesk/k_spine.rs" "Spine {" "current_work: *const Option<WorkItem>," "work_stack: *const Vec<WorkItem>,"
+assert_after_before "src/backend/eval/cesk/k_spine.rs" "Spine {" "work_stack: *const Vec<WorkItem>," "continuations: *const Vec<Continuation>,"
+assert_after_before "src/backend/eval/cesk/k_spine.rs" "pub fn collect_k_spine" "if let Some(w) = (*current_work).as_ref()" "for w in (*work_stack).iter()"
+assert_after_before "src/backend/eval/cesk/k_spine.rs" "pub fn collect_k_spine" "for w in (*work_stack).iter()" "for c in (*continuations).iter()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "#[derive(Debug, Clone)]" "pub enum WorkItem" "impl WorkItem"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "let mut current_work_for_spine: Option<WorkItem> = None;" "current_work: &current_work_for_spine as *const Option<WorkItem>," "while let Some(work) = work_stack.pop()"
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "current_work: &current_work_for_spine as *const Option<WorkItem>," "2"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "while let Some(work) = work_stack.pop()" "current_work_for_spine = Some(work.clone());" "if crate::backend::interrupt::is_interrupted()"
+
 assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::Trampoline {" "out.extend_from_slice(extra);" "collect_machine_roots_live("
 assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::Trampoline {" "collect_machine_roots_live(" "for e in deferred_envs {"
 assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::Trampoline {" "for e in deferred_envs {" "e.as_ref().collect_roots_into(out);"
@@ -522,7 +547,18 @@ assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_root
 assert_after_before "src/backend/bytecode/vm/mod.rs" "fn run_cooperative_safepoint" "self.collect_roots_into(&mut buf);" "worker_cooperative_safepoint(&buf_mv);"
 assert_after_before "src/backend/bytecode/vm/mod.rs" "periodic cooperative GC safepoint for parallel-" "cfg!(feature = \"index-gc\")" "self.run_cooperative_safepoint();"
 assert_after_before "src/backend/eval/cesk/k_spine.rs" "VmLeaf::Vm { vm }" "(*vm).collect_roots_into(out);" "VmLeaf::SavedBindings"
+assert_after_before "src/backend/eval/cesk/k_spine.rs" "ValueVec { values: *const Vec<MettaValue> }" "VmLeaf::ValueVec { values }" "out.extend_from_slice(&*values);"
 assert_after_before "src/backend/eval/cesk/k_spine.rs" "VmLeaf::Jit { ctx }" "collect_jit_roots_into(" "&*ctx, out,"
+line_no "src/backend/bytecode/vm/mod.rs" "fn collect_outcome_roots_as_metta(" >/dev/null
+line_no "src/backend/bytecode/vm/mod.rs" "fn collect_rule_match_roots_as_metta(" >/dev/null
+line_no "src/backend/bytecode/vm/mod.rs" "fn collect_pre_eval_local_roots_as_metta(" >/dev/null
+assert_after_before "src/backend/bytecode/vm/mod.rs" "Multi-result pre-eval" "self.collect_pre_eval_local_roots_as_metta(" "self.eval_sub_expr_vm_all_with_bindings(item_to_eval.clone(), sub_env)"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "bindings-preserving variant so nondeterministic alternatives" "Self::push_metta_root_from_v(&mut roots, &rhs);" "self.eval_sub_expr_vm_all_with_bindings(rhs.clone(), env)"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "Eagerly evaluate all matched RHS bodies" "for result in matches.iter()" "self.eval_sub_expr_vm_all_with_bindings(rhs, env.clone())"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "Eagerly evaluate all matched RHS bodies" "Self::collect_rule_match_roots_as_metta(&mut roots, &matches);" "self.eval_sub_expr_vm_all_with_bindings(rhs, env.clone())"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "fn op_dispatch_rules_multi_combo" "for (combo_expr, combo_b) in combinations.iter()" "for m in matches.iter()"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "fn op_dispatch_rules_multi_combo" "Self::collect_outcome_roots_as_metta(&mut roots, &combinations);" "self.eval_sub_expr_vm_all_with_bindings(rhs, env.clone())"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "fn eval_sub_expr_vm(" "roots.push(metta_sub_expr);" "eval_trampoline(metta_sub_expr.clone()"
 assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "collect_constant_array_roots(ctx.constants" "ctx.arena_constants as *const MettaValue"
 assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.arena_constants as *const MettaValue" "collect_chunk_ptr_constants(ctx.current_chunk, out);"
 assert_after_before "src/backend/bytecode/jit/runtime/gc_roots.rs" "pub(crate) unsafe fn collect_jit_roots_into" "ctx.value_stack.add(i)" "ctx.results.add(i)"
@@ -567,7 +603,14 @@ assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn collect_live_
 # to the collector. This is the live trampoline S/C/K reader (which also appends
 # E0/global/K-spine), then deferred env drops, then driver-C safepoint roots.
 assert_zero "src/backend/eval/cesk/index_heap.rs" "midloop_enabled"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "gc_mode_is_index()" "&& !worker_ever_spawned()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn max_parallel_depth() -> u32" "pub(crate) fn parallel_fanout_enabled() -> bool" "/// Minimum number of nondeterministic branches"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open() -> bool" "gc_mode_is_index()" "&& active_evaluator_count() == 0"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open() -> bool" "&& active_evaluator_count() == 0" "&& crate::backend::models::gc_allocator::n_threads() == 0"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open() -> bool" "&& crate::backend::models::gc_allocator::n_threads() == 0" "&& !disabled()"
+assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open() -> bool" "/// E1-FLIP" "parallel_fanout_enabled()"
+assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open() -> bool" "/// E1-FLIP" "worker_ever_spawned()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "gc_mode_is_index()" "&& !crate::backend::eval::trampoline::eval_loop::parallel_fanout_enabled()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "&& !crate::backend::eval::trampoline::eval_loop::parallel_fanout_enabled()" "&& !worker_ever_spawned()"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "&& !worker_ever_spawned()" "&& active_evaluator_count() == 1"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "&& active_evaluator_count() == 1" "&& !disabled()"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "let mut midloop_roots" "collect_machine_roots_live("
@@ -618,6 +661,11 @@ assert_after_before "src/backend/models/metta_value.rs" "fn ensure_value_hash_ca
 assert_after_before "src/backend/models/metta_value.rs" "fn ensure_value_hash_cache_epoch_current()" "VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());" "epoch.set(current_epoch);"
 assert_after_before "src/backend/models/metta_value.rs" "pub fn clear_value_hash_cache()" "VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());" "VALUE_HASH_CACHE_EPOCH.with"
 assert_after_before "src/backend/models/metta_value.rs" "fn hash_value(&self) -> u64" "ensure_value_hash_cache_epoch_current();" "VALUE_HASH_CACHE.with"
+assert_before "src/backend/models/metta_value.rs" "static INNER_SHADOW_EPOCH:" "fn ensure_inner_shadow_epoch_current()"
+assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "gc_sweep_epoch()" "INNER_SHADOW.with"
+assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "INNER_SHADOW.with(|c| c.borrow_mut().clear());" "epoch.set(current_epoch);"
+assert_after_before "src/backend/models/metta_value.rs" "pub(crate) fn clear_inner_shadow()" "INNER_SHADOW.with(|c| c.borrow_mut().clear());" "INNER_SHADOW_EPOCH.with"
+assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "ensure_inner_shadow_epoch_current();" "INNER_SHADOW.with"
 
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "gc_sweep_epoch()" "HASH_CONS_EPOCH.with"
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "clear_hash_cons_table_local();" "epoch.set(current_epoch);"
@@ -732,25 +780,52 @@ assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_spanned_
 assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_fixed_concurrent(&self, node: Node) -> Addr" "fn intern_children_in" "write_reused"
 
 # Side-payload free quiescence coupling: dropping side-arena Boxes is separated
-# from reclaiming fixed node slots. It may happen only on the true-quiescence
-# phase, and the materialization shadow is cleared before the routine returns to
-# code that can dereference materialized inners again.
-line_no "src/backend/eval/cesk/index_heap.rs" "gc_mode_is_index() && !worker_ever_spawned() && active_evaluator_count() == 0 && !disabled()" >/dev/null
+# from reclaiming fixed node slots. Reclaim-time side-owner snapshots are
+# accumulated before node-slot reuse can overwrite the dead occupant's side
+# index; the drain may happen only on the true-quiescence phase, and the
+# materialization shadow is cleared before the routine returns to code that can
+# dereference materialized inners again.
+line_no "src/backend/eval/cesk/index_heap.rs" "&& !crate::backend::eval::trampoline::eval_loop::parallel_fanout_enabled()" >/dev/null
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn run_collection_if_triggered(roots: &[MettaValue]) -> bool" "gate_open()" "mark_sweep_if_over_watermark(roots, \"quiescence\")"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn run_collection_if_triggered_rendezvous" "gate_open_rendezvous()" "mark_sweep_if_over_watermark(roots, \"rendezvous\")"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn run_collection_if_triggered_midloop" "gate_open_midloop()" "mark_sweep_if_over_watermark(roots, \"midloop\")"
-assert_count "src/backend/eval/cesk/index_heap.rs" "heap.free_reclaimed_side_slots(&reclaimed);" "2"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "if phase == \"quiescence\"" "heap.free_reclaimed_side_slots(&reclaimed);"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "if phase == \"quiescence\"" "heap.free_reclaimed_side_slots(&reclaimed);"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.free_reclaimed_side_slots(&reclaimed);" "clear_inner_shadow();"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.free_reclaimed_side_slots(&reclaimed);" "clear_inner_shadow();"
+assert_zero "src/backend/eval/cesk/index_heap.rs" "free_reclaimed_side_slots"
+assert_zero "src/backend/eval/cesk/index_heap.rs" "last_reclaimed"
+line_no "src/backend/eval/cesk/index_heap.rs" "fn should_drain_side_reclaims(phase: &str, did_major: bool) -> bool" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn should_drain_side_reclaims" "phase == \"quiescence\" && did_major" "}"
+line_no "src/backend/eval/cesk/index_heap.rs" "fn pending_side_reclaim_count(&self) -> usize" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "fn marked_owner_still_owns_side_reclaim(&self, side: SideReclaim) -> bool" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "fn drop_or_free_pending_side_reclaims_after_full_mark(&mut self)" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn side_reclaim_for_addr(&self, addr: Addr)" "owner: addr" "idx: cr.idx"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn side_reclaim_for_addr(&self, addr: Addr)" "Node::Atom(br) | Node::String(br) => Some(SideReclaim::Strings" "Node::Spanned(_, sr) => Some(SideReclaim::Spans"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn drop_or_free_pending_side_reclaims_after_full_mark" "let owner_marked = self.arena.is_marked(side.owner());" "let owner_still_owns = self.owner_still_owns_side_reclaim(side);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn drop_or_free_pending_side_reclaims_after_full_mark" "if owner_marked && owner_still_owns" "self.free_side_reclaim(side, sides_count);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep(&mut self) -> SweepStats" "self.drop_pending_side_reclaims_for_released_segments(&released_segments);" "self.append_pending_side_reclaims(&reclaimed);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep_young(&mut self) -> SweepStats" "self.drop_pending_side_reclaims_for_released_segments(&released_segments);" "self.append_pending_side_reclaims(&reclaimed);"
+assert_count_between "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "fn mark_sweep_if_over_watermark" "heap.free_pending_side_reclaims();" "1"
+assert_count_between "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "#[cfg(test)]" "heap.free_pending_side_reclaims();" "1"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.mark(&addrs);" "heap.drop_or_free_pending_side_reclaims_after_full_mark();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.drop_or_free_pending_side_reclaims_after_full_mark();" "let stats = heap.sweep();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.mark(&addrs); // FULL mark" "heap.drop_or_free_pending_side_reclaims_after_full_mark();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.drop_or_free_pending_side_reclaims_after_full_mark();" "(heap.sweep(), true)"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "should_drain_side_reclaims(phase, true)" "heap.free_pending_side_reclaims();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "should_drain_side_reclaims(phase, did_major)" "heap.free_pending_side_reclaims();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.free_pending_side_reclaims();" "clear_inner_shadow();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.free_pending_side_reclaims();" "clear_inner_shadow();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn should_collect() -> bool" "heap.pending_side_reclaim_count()" "pending_side_reclaims > 0"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.pending_side_reclaim_count()" "let pending_side_major = phase == \"quiescence\" && pending_side_reclaims > 0;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let pending_side_major = phase == \"quiescence\" && pending_side_reclaims > 0;" "let major_due = live_major || cap_major || cadence_major || pending_side_major;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let do_major = pending_side_major" "if do_major {"
 
 # Addr-valued hash-cons entries must not survive a sweep when their slot is
 # about to be reclaimed. Lookup also revalidates the existing node's child
 # handles before returning a table hit.
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn intern_ground_sexpr(&mut self, items: &[MettaValue]) -> MettaValue" "self.hash_cons.get(&key)" "existing.as_arena_addr()"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn intern_ground_sexpr(&mut self, items: &[MettaValue]) -> MettaValue" "let kids = self.children(addr);" "kids.len() == items.len()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn intern_ground_sexpr(&mut self, items: &[MettaValue]) -> MettaValue" "self.children_if_present(addr)" "kids.len() == items.len()"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn intern_ground_sexpr(&mut self, items: &[MettaValue]) -> MettaValue" "kids.iter().zip(items).all(|(a, b)| a.tagged == b.tagged)" "return existing;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn intern_ground_sexpr(&mut self, items: &[MettaValue]) -> MettaValue" "drop_stale_entry = true;" "self.hash_cons.remove(&key);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn children_if_present(&self, addr: Addr)" "self.arena.get_if_allocated(addr)" "side.children.get_if_published(cr.idx)"
+assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn get_if_allocated(&self, addr: Addr)" "seg.is_free_bit(off)" "seg.node_at(off)"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep(&mut self) -> SweepStats" ".retain(|_, v| v.as_arena_addr().is_some_and(|a| arena.is_marked(a)));" "self.arena.sweep_with("
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep_young(&mut self) -> SweepStats" "let young_floor = self.arena.young_floor();" "self.hash_cons.retain"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep_young(&mut self) -> SweepStats" "Some(a) if a.segment() >= young_floor => arena.is_marked(a)," "Some(_) => true,"
@@ -761,10 +836,12 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_a
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.sweep();" "heap.promote_young();"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.promote_young();" "MAJOR_CYCLES_RUN.fetch_add"
 assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "MAJOR_CYCLES_RUN.fetch_add" "sweep_young"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT>0 WATERMARK TRIGGER" "if crate::backend::models::gc_allocator::dedicated_gc_enabled()" "!crate::backend::eval::cesk::index_heap::index_gc::satb_marking_in_progress()"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT>0 WATERMARK TRIGGER" "!crate::backend::models::gc_allocator::is_gc_requested()" "!crate::backend::eval::cesk::index_heap::index_gc::satb_marking_in_progress()"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT>0 WATERMARK TRIGGER" "!crate::backend::eval::cesk::index_heap::index_gc::satb_marking_in_progress()" "watermark_due_for_concurrent()"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT>0 WATERMARK TRIGGER" "watermark_due_for_concurrent()" "request_concurrent_collection();"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT WATERMARK TRIGGER" "if crate::backend::models::gc_allocator::dedicated_gc_enabled()" "parallel_fanout_enabled()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT WATERMARK TRIGGER" "parallel_fanout_enabled()" "crate::backend::models::gc_allocator::n_threads() >= 1"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT WATERMARK TRIGGER" "crate::backend::models::gc_allocator::n_threads() >= 1" "!crate::backend::models::gc_allocator::is_gc_requested()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT WATERMARK TRIGGER" "!crate::backend::models::gc_allocator::is_gc_requested()" "!crate::backend::eval::cesk::index_heap::index_gc::satb_marking_in_progress()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT WATERMARK TRIGGER" "!crate::backend::eval::cesk::index_heap::index_gc::satb_marking_in_progress()" "watermark_due_for_concurrent()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "(A) FANOUT WATERMARK TRIGGER" "watermark_due_for_concurrent()" "request_concurrent_collection();"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "else if crate::backend::models::gc_allocator::dedicated_gc_enabled()" "collect_complete_thread_contribution(" "let my_gen = crate::backend::models::gc_allocator::current_cycle_gen();"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "else if crate::backend::models::gc_allocator::dedicated_gc_enabled()" "let my_gen = crate::backend::models::gc_allocator::current_cycle_gen();" "drop_eval_guard_for_safepoint_full();"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "else if crate::backend::models::gc_allocator::dedicated_gc_enabled()" "drop_eval_guard_for_safepoint_full();" "worker_park_and_root_in_cycle("

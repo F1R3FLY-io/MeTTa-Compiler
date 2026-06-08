@@ -388,11 +388,11 @@ pub fn eval(
     // `active_evaluator_count() == 0`: no trampoline loop and no bytecode VM is
     // live on the Rust stack — exactly the slab GC's session-release reclaim
     // point and exactly the proven `QuiescenceInvariant` (activeEvaluators
-    // empty). The collector fires ONLY in index mode and ONLY when no eval
-    // worker has ever been spawned (`index_gc::gate_open`), making it safe by
-    // construction. The complete root set is `collect_all_roots()` (env / tiers
-    // / promoted RootProviders) UNIONED with the about-to-be-returned result
-    // values (held here in a Rust local, not yet in any RootProvider).
+    // empty). The collector fires ONLY in index mode and ONLY when no evaluator
+    // thread is active (`index_gc::gate_open`), making it safe even when fanout
+    // is configured. The complete root set is the structural persistent reader
+    // UNIONED with the about-to-be-returned result values (held here in a Rust
+    // local, not yet in any RootProvider).
     //
     // Dead in the default (slab) build: `gc_mode_is_index()` const-folds to
     // `false` when `index-gc` is off, so the slab path is byte-identical.
@@ -430,10 +430,10 @@ pub fn eval(
         // thread-local cache snapshot). NOT replaced by the structural reader —
         // dropping it would free the driver's accumulated results → UAF. (A5.4 narrows.)
         crate::backend::models::collect_safepoint_roots(&mut roots);
-        // E1-a.3: route the SAME roots to the dedicated GC thread when
-        // METTATRON_INDEX_GC_DEDICATED=1 (default OFF ⇒ inline, byte-identical).
-        // The EvalGuard dropped above ⇒ n_threads()==0 here ⇒ the dedicated cycle
-        // is reachable + cannot hang (FANOUT>0 backs off via gate_open()).
+        // E1-a.3: route the SAME roots through the dedicated index-GC driver.
+        // The EvalGuard dropped above ⇒ n_threads()==0 here ⇒ true-quiescence
+        // collection is reachable even when FANOUT>0 is configured; midloop
+        // non-rendezvous collection is the path that backs off under FANOUT>0.
         crate::backend::eval::cesk::gc_driver::collect_quiescence(roots);
     }
 

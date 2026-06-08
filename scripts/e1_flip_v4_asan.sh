@@ -6,16 +6,16 @@
 # is the FIRST time the sweep runs while eval workers are live, so it is where the whole
 # E1-c root-completeness machinery is finally exercised end-to-end.
 #
-# This gate forces the dedicated collector ON via the ENV OVERRIDE
-# (METTATRON_INDEX_GC_DEDICATED=1) against the committed Commit-A code — so it validates
-# the activation WITHOUT needing the default-flip edit (Commit B's one line). Only flip
-# the default + commit B once this is green.
+# This gate validates the default dedicated index-GC activation directly. The
+# old override split is retired.
 #
 # Per arm asserts:
 #   (a) 0 ASAN UAF/poison (root-set completeness under live parallelism);
-#   (b) NON-VACUOUS: '[index_gc] rendezvous ... cycle' > 0 (the rendezvous collector
-#       actually fired + swept while workers were alive) AND non-rendezvous index_gc
-#       cycles == 0 (the ST collectors are gated off by worker_ever_spawned);
+#   (b) NON-VACUOUS: robot/raven require '[index_gc] rendezvous ... cycle' > 0
+#       (the rendezvous collector actually fired + swept while workers were live);
+#       stress_multidir requires '[index_gc] quiescence ... cycle' > 0 (the
+#       fanout-configured true-quiescence path actually fired). In all arms,
+#       FANOUT midloop non-rendezvous cycles must be 0.
 #   (c) correct result (no Error / StackOverflow).
 #
 # CAPPED build 24G / run 20G, MemorySwapMax=0, -j4. Check `free -h` first (a
@@ -36,7 +36,7 @@ MIN_BYTES=131072   # 128 KiB major floor — forces the rendezvous collector to 
 ARM_TIMEOUT="${ARM_TIMEOUT:-240s}"
 ARM_KILL_AFTER="${ARM_KILL_AFTER:-20s}"
 
-echo "===== E1-FLIP V4 ASAN (FANOUT>0 + DEDICATED=1, env-forced) ====="; date; free -h | head -2
+echo "===== E1-FLIP V4 ASAN (FANOUT>0 + default dedicated index GC) ====="; date; free -h | head -2
 echo "repo=$REPO"
 echo "pln=$PLN"
 echo "logs=$LOG_DIR"
@@ -54,11 +54,11 @@ if [ "$BUILD_RC" -ne 0 ] || [ ! -x "$BIN" ]; then
   echo "BUILD FAILED — aborting V4 (binary not produced)"; exit 1
 fi
 
-run_arm() {  # $1=label $2=fixture $3=fanout
-  local label="$1" fixture="$2" fanout="$3"
-  local rc asan_count rendezvous_count non_rendezvous_count error_count
-  echo "### ASAN arm: $label (FANOUT=$fanout, DEDICATED=1, MIN_BYTES=$MIN_BYTES)"
-  env METTATRON_PARALLEL_FANOUT_DEPTH="$fanout" METTATRON_INDEX_GC_DEDICATED=1 \
+run_arm() {  # $1=label $2=fixture $3=fanout $4=required_cycle_kind
+  local label="$1" fixture="$2" fanout="$3" required_cycle_kind="$4"
+  local rc asan_count all_cycle_count rendezvous_count quiescence_count midloop_count unexpected_non_rendezvous_count error_count
+  echo "### ASAN arm: $label (FANOUT=$fanout, default dedicated index GC, MIN_BYTES=$MIN_BYTES)"
+  env METTATRON_PARALLEL_FANOUT_DEPTH="$fanout" \
       METTATRON_INDEX_GC_MIN_BYTES="$MIN_BYTES" METTATRON_INDEX_GC_REPORT=2 \
       ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:halt_on_error=1 \
     systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 -p CPUQuota=1000% --quiet \
@@ -67,15 +67,32 @@ run_arm() {  # $1=label $2=fixture $3=fanout
   rc=$?
   echo "  ${label}_rc=$rc"
   asan_count=$(grep -cE 'AddressSanitizer|heap-use-after-free|use-after-poison|heap-buffer-overflow' "${P}_${label}.log" || true)
+  all_cycle_count=$(grep -cE '^\[index_gc\] .* cycle' "${P}_${label}.log" || true)
   rendezvous_count=$(grep -cE '^\[index_gc\] rendezvous .* cycle' "${P}_${label}.log" || true)
-  non_rendezvous_count=$(grep -E '^\[index_gc\] .* cycle' "${P}_${label}.log" | grep -cvE 'rendezvous' || true)
+  quiescence_count=$(grep -cE '^\[index_gc\] quiescence .* cycle' "${P}_${label}.log" || true)
+  midloop_count=$(grep -cE '^\[index_gc\] midloop .* cycle' "${P}_${label}.log" || true)
+  unexpected_non_rendezvous_count=$(grep -E '^\[index_gc\] .* cycle' "${P}_${label}.log" | grep -cvE '^\[index_gc\] (rendezvous|quiescence) ' || true)
   error_count=$(grep -cE 'Error|StackOverflow' "${P}_${label}.log" || true)
   echo "  (a) UAF/ASAN:            $asan_count  (expect 0)"
-  echo "  (b) rendezvous cycles:   $rendezvous_count  (expect >0)"
-  echo "      NON-rendezvous cyc:  $non_rendezvous_count  (expect 0)"
+  echo "  (b) all index cycles:    $all_cycle_count  (expect >0)"
+  echo "      rendezvous cycles:   $rendezvous_count"
+  echo "      quiescence cycles:   $quiescence_count"
+  echo "      midloop cycles:      $midloop_count  (expect 0 under FANOUT)"
+  echo "      unexpected non-rdv:  $unexpected_non_rendezvous_count  (expect 0)"
   echo "  (c) Error/StackOverflow: $error_count  (expect 0)"
-  if [ "$rc" -ne 0 ] || [ "$asan_count" -ne 0 ] || [ "$rendezvous_count" -eq 0 ] || \
-     [ "$non_rendezvous_count" -ne 0 ] || [ "$error_count" -ne 0 ]; then
+  if [ "$required_cycle_kind" = "rendezvous" ] && [ "$rendezvous_count" -eq 0 ]; then
+    echo "  ${label}: FAIL (required rendezvous witness missing; log=${P}_${label}.log)"
+    tail -80 "${P}_${label}.log"
+    return 1
+  fi
+  if [ "$required_cycle_kind" = "quiescence" ] && [ "$quiescence_count" -eq 0 ]; then
+    echo "  ${label}: FAIL (required quiescence witness missing; log=${P}_${label}.log)"
+    tail -80 "${P}_${label}.log"
+    return 1
+  fi
+  if [ "$rc" -ne 0 ] || [ "$asan_count" -ne 0 ] || [ "$all_cycle_count" -eq 0 ] || \
+     [ "$midloop_count" -ne 0 ] || [ "$unexpected_non_rendezvous_count" -ne 0 ] || \
+     [ "$error_count" -ne 0 ]; then
     echo "  ${label}: FAIL (log=${P}_${label}.log)"
     tail -80 "${P}_${label}.log"
     return 1
@@ -84,9 +101,9 @@ run_arm() {  # $1=label $2=fixture $3=fanout
 }
 
 failures=0
-run_arm robot_f8  "$PLN/examples/Robot.metta"                    8 || failures=$((failures + 1))
-run_arm raven_f8  "$PLN/examples/FlyingRaven.metta"              8 || failures=$((failures + 1))
-run_arm stress_f8 "$REPO/examples/cesk-gc/stress_multidir.metta" 8 || failures=$((failures + 1))
+run_arm robot_f8  "$PLN/examples/Robot.metta"                    8 rendezvous || failures=$((failures + 1))
+run_arm raven_f8  "$PLN/examples/FlyingRaven.metta"              8 rendezvous || failures=$((failures + 1))
+run_arm stress_f8 "$REPO/examples/cesk-gc/stress_multidir.metta" 8 quiescence || failures=$((failures + 1))
 
 echo "===== E1-FLIP V4 ASAN DONE ====="; date
 if [ "$failures" -ne 0 ]; then

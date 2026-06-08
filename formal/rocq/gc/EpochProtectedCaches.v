@@ -5,7 +5,7 @@
     lookup first observes the global sweep epoch and either keeps a current
     cache or removes old entries.  This file proves the shared shape used by
     VALUE_HASH_CACHE, MORK ground fragments, hash-cons, eval/match memo tables,
-    and OPERATOR_CACHE.
+    OPERATOR_CACHE, and the index-mode INNER_SHADOW materialization cache.
 *)
 
 Module MeTTaTron_GC_EpochProtectedCaches.
@@ -16,7 +16,8 @@ Inductive CacheKind : Type :=
 | HashCons
 | EvalMemo
 | MatchResult
-| Operator.
+| Operator
+| InnerShadow.
 
 Section EpochProtectedCacheModel.
   Variables Entry Epoch : Type.

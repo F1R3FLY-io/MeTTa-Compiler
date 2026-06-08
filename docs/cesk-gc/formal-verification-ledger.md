@@ -13,8 +13,10 @@ The default live collector verified here is the CESK-based generational `index-g
 single-threaded quiescence, default-on single-evaluator mid-loop collection, and rendezvous collection compute
 structural roots, then mark and sweep while holding the index heap write lock. The mid-loop root-union theorem, TLC
 discriminator, source-coupling checks, and focused forced-ASAN gate pin its live S/C/K, E0/global/K-spine,
-deferred-env, and driver-C root vector. The focused ASAN run on 2026-06-07 forced one default mid-loop minor with 0 UAF
-and result `[done]`. The default-on release conformance gate on 2026-06-07 passed 483/0/0/0 with
+deferred-env, and driver-C root vector. The K-spine proof and source-coupling gate also pin the native-stack
+current-work component of C, so a nested evaluator cannot collect while an outer trampoline has popped a live work
+item that is absent from the pending work stack. The focused ASAN run on 2026-06-07 forced one default mid-loop minor
+with 0 UAF and result `[done]`. The default-on release conformance gate on 2026-06-07 passed 483/0/0/0 with
 `INDEX_GC_CYCLES_RUN=798` under the existing committed-cap trigger, so the semantic oracle was non-vacuous.
 There is also an opt-in E2 SATB major path
 (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
@@ -73,6 +75,10 @@ can replace the full-major final sweep.
   mid-loop root-union obligation. If live S/C/K, E0, global anchors, K-spine, deferred environment drops, and driver-C
   safepoint roots are included in the mid-loop root vector, mark/sweep cannot free any channel root, and future touches
   reachable from that union survive collection.
+- `formal/rocq/gc/KSpineCurrentWork.v`: proves the typed K-spine current-work obligation. If a suspended trampoline
+  activation contributes the in-flight current work item, pending work stack, and continuation stack to its K-spine
+  root reader, ordinary mark/sweep cannot free any live suspended control component. The companion TLA+ discriminator
+  (`KSpineCurrentWork.tla`) rejects the historical shape where the current-work component is omitted.
 - `formal/rocq/gc/RendezvousWitness.v` and `formal/lean/gc/RendezvousWitness.lean`: if every occupied witness slot
   is published, publication buffers that slot's structural roots, and the driver drains the buffer, every occupied
   participant root is in the driver root set and cannot be freed after mark/sweep.
@@ -401,6 +407,10 @@ can replace the full-major final sweep.
 - `tla/SideFreeQuiescence.tla`: checks the side-payload free lifetime obligation. Quiescent side-free with shadow
   clearing and non-quiescent deferral preserve `NoDanglingSideUse`; freeing on a non-quiescent arm or skipping the
   shadow clear admits a dangling side-payload dereference.
+- `tla/SideReclaimSnapshot.tla`: checks the side-payload ownership obligation exposed by the E1 ASAN stress arm.
+  Reclaim-time `(segment, side-column, index)` snapshots plus dropping pending snapshots on whole-segment reset
+  preserve `NoLiveSideFreed`; rereading a reused node slot at drain time or keeping reset-segment snapshots admits a
+  live side-payload free.
 - `tla/HashConsSweepRetain.tla`: checks the Addr-valued hash-cons retain obligation. Major sweep dropping unmarked
   entries and minor sweep retaining only old or marked-young entries preserve `NoReturnedFreed`; retaining a dead major
   entry or a dead young minor entry admits a later hash-cons hit returning a freed address.
@@ -418,9 +428,10 @@ facts the proofs rely on:
   resolves side-arena `SExpr`/`Conjunction` children, then traverses first-class `SpaceHandle` contents. The harness
   also pins the premises that `State` payloads are rooted by `GenericEnvironmentShared::collect_roots_into` and
   `MemoHandle` entries store serialized bytes, not live `MettaValue` handles.
-- `IndexHeap` frees reclaimed side payload boxes only through the two `phase == "quiescence"` guarded calls to
-  `free_reclaimed_side_slots`; rendezvous and midloop collection pass non-quiescence phase strings, and both side-free
-  paths clear `INNER_SHADOW` before returning to code that can materialize/dereference values again.
+- `IndexHeap` snapshots reclaimed side payload owners at sweep time, drops pending snapshots for whole-released
+  segments, and frees pending side payload boxes only through the two `phase == "quiescence"` guarded calls to
+  `free_pending_side_reclaims`; rendezvous and midloop collection pass non-quiescence phase strings, and both
+  side-free paths clear `INNER_SHADOW` before returning to code that can materialize/dereference values again.
 - `IndexHeap::intern_ground_sexpr` revalidates a hash-cons hit against the current node children before returning it;
   `IndexHeap::sweep` retains only marked hash-cons entries before full sweep, and `IndexHeap::sweep_young` retains old
   entries unconditionally while retaining young entries only when marked before young sweep.
@@ -432,6 +443,9 @@ facts the proofs rely on:
 - Every self-root publication site routes through the canonical `collect_complete_thread_contribution` reader, whose
   source shape is pinned: trampoline participants publish extra hot values, live S/C/K, E0, global anchors, K-spine,
   and deferred env roots; tier leaves publish extra VM/JIT values plus the env-less persistent roots they can read.
+- The typed native K-spine source shape is pinned to `current_work`, `work_stack`, and `continuations`. The
+  trampoline publishes the popped `WorkItem` into `current_work` before running it, and `collect_k_spine` reads that
+  in-flight work item before the pending work stack and continuation stack.
 - Live work item and continuation frames include fork-local environment roots in index mode. The source-coupling gate
   pins `fork_for_nondeterminism`'s five CoW-local Addr-bearing maps and the corresponding `collect_fork_local_roots`
   reader, asserts the `frame_env` classifiers remain exhaustive, and checks the three narrowed live-K arms re-read the
@@ -565,11 +579,29 @@ facts the proofs rely on:
   dispatch/collapse worker closures run the early dedicated-GC `worker_wait_for_resume()` admission wait before
   `EvalGuard::enter()`.
 - The obsolete D1/D2 `METTATRON_INDEX_GC_PARALLEL` / `rendezvous_enabled` production gate is retired. The live
-  FANOUT>0 rendezvous path has a single production gate, `dedicated_gc_enabled()`, and source coupling now rejects
-  reintroducing the old switch in `gc_allocator.rs` or the rendezvous ASAN harness.
+  FANOUT>0 rendezvous path is governed by `dedicated_gc_enabled()`, which now follows index mode directly; source
+  coupling rejects reintroducing either retired rendezvous env switch in `gc_allocator.rs` or the active GC scripts.
 - The R-FL no-recycle/swept-slot diagnostic is retired from production source. Source coupling now rejects the
   behavior-changing oracle and collector-read bypass; the live R-FL obligation is the persistent free-bit invariant
   plus its Rocq/TLA/source-coupled checks.
+- The reclaim-time side-owner bug is modeled as a side-reclaim snapshot obligation: side payload frees drain the
+  saved owner snapshot captured before node-slot reuse, and segment reset drops any pending snapshot before side
+  indices can be reused. `SideFreeQuiescence.v` and `SideReclaimSnapshot.tla` cover the positive and negative cases.
+- The K-spine current-work gap is modeled separately from the pending work-stack: a suspended trampoline activation
+  roots its in-flight work item before a nested evaluator can collect. `KSpineCurrentWork.v` and its TLC discriminator
+  fail if `current_work` is omitted.
+- VM native locals live across nested CESK evaluation are now a formal K-spine leaf obligation. `VmNestedLocals.v`
+  proves that pre-eval locals, dispatch RHS locals, rule-match vectors, saved bindings, combo vectors, and accumulated
+  outcomes survive collection when published through `VmLeaf::ValueVec`; `VmNestedLocals.tla` fails if either the
+  pre-eval locals or rule-match vector class is omitted.
+- The E1 stress ASAN counterexample showed a pre-spawn FANOUT watermark could still run the non-rendezvous midloop
+  collector (`worker_ever_spawned()==false`) before the first worker existed. The corrected obligation is split:
+  FANOUT closes midloop non-rendezvous collection, but true quiescence (`active_evaluator_count()==0 && n_threads()==0`)
+  remains fanout-independent because no evaluator/native stack is live. `NonRendezvousFanoutGate.v` and
+  `NonRendezvousFanoutGate.tla` pin that split while preserving the `FANOUT=0` single-threaded midloop gate.
+- The follow-on liveness case is a one-participant rendezvous: with fanout enabled and exactly one active mutator,
+  the watermark trigger posts `CollectRendezvous`, the mutator self-roots at the next safepoint, and the driver waits
+  on the same reified-witness protocol. `MC_RendezvousProgress_one_participant.cfg` covers this `N=1` progress path.
 
 ## Harness
 

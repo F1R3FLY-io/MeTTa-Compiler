@@ -331,11 +331,10 @@ pub(crate) fn clear_all_worker_thread_local_caches() {
     crate::backend::eval::cesk::thunk::clear_thunk_table();
 }
 
-/// Worker park-RESUME cache clear. On the DEDICATED path a sweep may have run while
+/// Worker park-RESUME cache clear. On the dedicated index-GC path a sweep may have run while
 /// this worker was parked, so it must drop the FULL σ-cache set (the GC thread could
-/// not reach this thread's caches). Off the dedicated path (slab build, or index
-/// DEDICATED=0) this is BYTE-IDENTICAL to the prior `clear_aba_sensitive_caches()`
-/// the call site made.
+/// not reach this thread's caches). The slab build stays on the prior
+/// `clear_aba_sensitive_caches()` call-site behavior.
 #[inline]
 fn clear_worker_caches_on_resume() {
     #[cfg(feature = "index-gc")]
@@ -579,6 +578,17 @@ fn max_parallel_depth() -> u32 {
             // restore the Phase 10.C cap.
             .unwrap_or(u32::MAX)
     })
+}
+
+/// Whether branch fanout is allowed to spawn eval workers in this process.
+///
+/// The index collector's non-rendezvous gates use this as the prospective
+/// parallelism witness: once fanout is enabled, a midloop/quiescence sweep must
+/// not run merely because the first worker has not spawned yet. Setting
+/// `METTATRON_PARALLEL_FANOUT_DEPTH=0` keeps the single-threaded collector path
+/// available for FANOUT=0 validation.
+pub(crate) fn parallel_fanout_enabled() -> bool {
+    max_parallel_depth() > 0
 }
 
 /// Minimum number of nondeterministic branches to trigger parallel dispatch.
@@ -2624,8 +2634,7 @@ fn parallel_dispatch(
                 done_pair: Arc::clone(&done_pair),
             };
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
-            // ── D2.1 WorkerEnter gate (DORMANT behind `dedicated_gc_enabled()`,
-            //    default OFF → byte-identical) ──
+            // ── D2.1 WorkerEnter gate under the dedicated index-GC driver ──
             // The TLA+ `WorkerEnter` admission guard (`~gcRequested`): a NEW
             // worker must NOT join the active eval set while a rendezvous GC is
             // pending — otherwise `active_evaluator_count()` could never drain to
@@ -2888,8 +2897,7 @@ fn parallel_dispatch(
     // `LiveDispatchHandle` is moved into the handle's `_live_dispatch` field; it
     // frees the anchor slot when the `WaitForParallel` continuation is consumed.
     //
-    // GATE = `dedicated_gc_enabled()` ALONE (the dormancy switch; default OFF →
-    // byte-identical, the anchor never even initialises). The hard-constraint's
+    // GATE = `dedicated_gc_enabled()` ALONE. The hard-constraint's
     // "+ n_threads()>1" is a RUNTIME-COLLECTION-PATH dormancy condition, NOT a
     // registration condition: at THIS site `n_threads()` is RACY — the parent holds
     // its EvalGuard (count ≥ 1) but the just-`spawn`ed workers have NOT yet run
@@ -3033,7 +3041,7 @@ fn pump_parallel_wait(
     // occupied. `parallel_gc_coop_enabled()` is FALSE under dedicated (①a), so the legacy
     // coop block below is skipped — this is its dedicated replacement.
     //
-    // ⚠️ CORRECTNESS (the DEDICATED=1 deadlock/corruption fix): the parent here is
+    // CORRECTNESS: the parent here is
     // SUSPENDED MID-TRAMPOLINE — its `work_stack` + `continuations` (the `WaitForParallel`
     // K-frame plus everything beneath it) hold live `MettaValue`s that the sweep WILL drop
     // unless the park PUBLISHES them. A `TierLeaf`/`worker_cooperative_safepoint` park does
@@ -3044,7 +3052,7 @@ fn pump_parallel_wait(
     // current-work are empty: `operand_stack` = a fresh empty `OperandStack`, `current_work`
     // = a synthetic empty `Resume`. The park drains+restores the parent's full depth (it may
     // be at nested-eval depth>1) and blocks until the cycle resumes.
-    // Byte-identical at DEDICATED=0 (the conjunct short-circuits).
+    // Slab stays on the non-index path because dedicated_gc_enabled() is false.
     #[cfg(feature = "index-gc")]
     if crate::backend::models::gc_allocator::dedicated_gc_enabled()
         && crate::backend::models::gc_allocator::is_gc_requested()
@@ -3112,7 +3120,7 @@ fn pump_parallel_wait(
         // parent thread's thread-locals; off it, byte-identical clear_aba_sensitive_caches.
         clear_worker_caches_on_resume();
     }
-    // Slab/DEDICATED=0: the new full-park params are unused on this path (the index
+    // Slab: the new full-park params are unused on this path (the index
     // collector is the only consumer). Borrow them once to keep `-D warnings` quiet
     // without perturbing behaviour (no-op; the values are untouched).
     #[cfg(not(feature = "index-gc"))]
@@ -3242,7 +3250,7 @@ fn pump_parallel_collapse_wait(
     // `WaitForParallelCollapse` K-frame, so its `work_stack`/`continuations` hold live
     // values the sweep would drop — publish the FULL `Trampoline` contribution (mirror of
     // branch-B @ ~4249), `extra` = the collapse parent's in-flight roots (stable_items ∪
-    // handle.results). Byte-identical DEDICATED=0.
+    // handle.results). Slab stays on the non-index path.
     #[cfg(feature = "index-gc")]
     if crate::backend::models::gc_allocator::dedicated_gc_enabled()
         && crate::backend::models::gc_allocator::is_gc_requested()
@@ -3300,7 +3308,7 @@ fn pump_parallel_collapse_wait(
         // this parent thread's thread-locals); off it, byte-identical.
         clear_worker_caches_on_resume();
     }
-    // Slab/DEDICATED=0: borrow the new params once (no-op) to keep `-D warnings` quiet.
+    // Slab: borrow the new params once (no-op) to keep `-D warnings` quiet.
     #[cfg(not(feature = "index-gc"))]
     {
         let _ = (work_stack, continuations, env, deferred_shared_drops);
@@ -3486,8 +3494,7 @@ fn parallel_collapse_dispatch(
                 done_pair: Arc::clone(&done_pair),
             };
             PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));
-            // ── D2.1 WorkerEnter gate (DORMANT behind `dedicated_gc_enabled()`,
-            //    default OFF → byte-identical) ── mirror of the parallel-dispatch
+            // ── D2.1 WorkerEnter gate under the dedicated index-GC driver ── mirror of the parallel-dispatch
             //    worker above; see the full rationale there. Blocks a new collapse
             //    worker from joining `active` while a dedicated rendezvous GC is
             //    pending (TLA+ `WorkerEnter` `~gcRequested`, Risk R2). Placed at
@@ -3495,7 +3502,7 @@ fn parallel_collapse_dispatch(
             //    the only genuine "before joining the active set" site in this
             //    codebase. E1-FLIP fix (②): gate on `dedicated_gc_enabled()`, so collapse workers
             //    cannot join after the dedicated driver's participant snapshot.
-            //    OFF by default → one short-circuited boolean read.
+            //    Slab builds short-circuit through `dedicated_gc_enabled() == false`.
             if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                 crate::backend::models::gc_allocator::worker_wait_for_resume();
             }
@@ -3523,10 +3530,10 @@ fn parallel_collapse_dispatch(
             // this worker's forked binding is unmarked → swept → its arena slot
             // bump-reused → the parent's `collapse`/filter merge reads a stale value
             // (the observed nondeterministic wrong-subset corruption under
-            // DEDICATED=1 FANOUT=8). Registered BEFORE `env` is moved into the eval
+            // FANOUT=8 dedicated rendezvous collection). Registered BEFORE `env` is moved into the eval
             // at `:3432`; the RAII handle is held for the whole closure body (the
-            // worker's lifetime). BYTE-IDENTICAL WHEN DORMANT: the #[cfg(index-gc)]
-            // wall + `dedicated_gc_enabled()`-first short-circuit (default OFF).
+            // worker's lifetime). Slab stays byte-identical through the
+            // #[cfg(index-gc)] wall and `dedicated_gc_enabled()` short-circuit.
             #[cfg(feature = "index-gc")]
             let _worker_live_env = {
                 if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
@@ -3784,25 +3791,20 @@ fn parallel_collapse_threshold() -> usize {
 /// Internally, the trampoline may yield after exhausting its reduction budget,
 /// but this wrapper loops until `Complete`.
 /// Comprehensive mid-execution rooting (2026-05-28): a frame-chain payload that
-/// exposes a SUSPENDED trampoline activation's PENDING S/C/K (`work_stack` +
-/// `continuations`) as GC roots while it is parked outside its own loop — i.e.
-/// while a tier dispatch (the bytecode VM) it launched is running a NESTED
-/// `eval_trampoline`. Without this, in a VM → trampoline → VM → trampoline nest,
-/// the inner trampoline's safepoint would walk only ITS OWN S/C/K + the on-stack
-/// VM frames (via `with_vm_roots_frame`), missing the OUTER suspended
-/// trampolines' pending work — a mid-loop collection there would free it →
-/// use-after-free.
+/// exposes a SUSPENDED trampoline activation's C/K registers (`current_work` +
+/// `work_stack` + `continuations`) as GC roots while it is parked outside its
+/// own loop — i.e. while a tier dispatch, grounded op, or other nested evaluator
+/// it launched is running a NESTED `eval_trampoline`. Without this, an inner
+/// trampoline's safepoint would walk only ITS OWN S/C/K + the on-stack VM leaves,
+/// missing the OUTER suspended trampoline's in-flight control — a mid-loop
+/// collection there would free it → use-after-free.
 ///
-/// Holds raw pointers to the activation's `work_stack` / `continuations`, which
-/// are declared once per activation and mutated in place (never reassigned), so
-/// their addresses are stable for the activation's lifetime. The collector
-/// reuses `WorkItem::collect_values` / `Continuation::collect_values` (the exact
-/// same decode the trampoline's own `RootSet` uses) to walk the CURRENT contents
-/// at collection time. The in-flight (just-popped) work item is intentionally
-/// NOT held here: at a VM dispatch it has been consumed into the VM (its value
-/// is reconstructed from the VM's bytecode chunk + execution stacks, rooted by
-/// `with_vm_roots_frame`), and the VM's result re-enters this activation only as
-/// a `Resume` pushed onto `work_stack` (covered from that point on).
+/// Holds raw pointers to the activation's current-work slot, `work_stack`, and
+/// `continuations`, which are declared once per activation and mutated in place
+/// (never reassigned), so their addresses are stable for the activation's
+/// lifetime. The collector reuses `WorkItem::collect_values` /
+/// `Continuation::collect_values` (the exact same decode the trampoline's own
+/// `RootSet` uses) to walk the CURRENT contents at collection time.
 // A5.1: SLAB-ONLY. The index build roots the suspended-spine (C, K) structurally
 // via the typed K-spine `SuspendedActivation::Spine` (see the cfg-split guard push
 // below), so this frame_chain payload struct + its collector are compiled only for
@@ -4019,6 +4021,12 @@ fn eval_trampoline_inner<C: EvalContext>(
         cs
     };
 
+    // The native-stack K-spine must include the in-flight C register, not just
+    // pending work. Each loop iteration clones the popped `WorkItem` here before
+    // executing it, so nested evaluators can structurally root the outer
+    // activation's current control value.
+    let mut current_work_for_spine: Option<WorkItem> = None;
+
     // ── Comprehensive mid-execution rooting: suspended-trampoline frame ──
     // (index-gc only; 2026-05-28). Register THIS activation's pending S/C/K
     // (`work_stack` + `continuations`) on the thread-local frame chain so that a
@@ -4063,19 +4071,22 @@ fn eval_trampoline_inner<C: EvalContext>(
 
     // A4.2b: typed `SUSPENDED_ACTIVATIONS::Spine` record alongside the
     // `frame_chain` guard above (index-gc only ⇒ byte-identical slab path). It
-    // references the SAME in-scope `work_stack` (C) and `continuations` (K), read
-    // structurally by `collect_k_spine`. Declared after `_tramp_frame_guard`, so
-    // it drops first (LIFO); both Vecs outlive both guards.
+    // references the SAME in-scope `current_work_for_spine`/`work_stack` (C) and
+    // `continuations` (K), read structurally by `collect_k_spine`. Declared after
+    // `_tramp_frame_guard`, so it drops first (LIFO); all pointees outlive both
+    // guards.
     #[cfg(not(feature = "index-gc"))]
     let _tramp_kspine_guard: Option<
         crate::backend::eval::cesk::k_spine::SuspendedActivationGuard,
     > = if crate::backend::models::metta_value::gc_mode_is_index() {
-        // SAFETY: `work_stack` / `continuations` outlive this guard (locals of
-        // this activation, dropped after it) with stable addresses (declared
-        // once, mutated in place). `collect_k_spine` reads them read-only.
+        // SAFETY: `current_work_for_spine` / `work_stack` / `continuations`
+        // outlive this guard (locals of this activation, dropped after it) with
+        // stable addresses (declared once, mutated in place). `collect_k_spine`
+        // reads them read-only.
         Some(unsafe {
             crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
                 crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
+                    current_work: &current_work_for_spine as *const Option<WorkItem>,
                     work_stack: &work_stack as *const Vec<WorkItem>,
                     continuations: &continuations as *const Vec<Continuation>,
                 },
@@ -4088,13 +4099,14 @@ fn eval_trampoline_inner<C: EvalContext>(
     // A5.1 INDEX build: the typed K-spine `Spine` record is the SOLE mid-execution
     // root source for this activation (read by `collect_machine_roots` ->
     // `collect_k_spine`). Unconditional — the index build always runs index GC mode.
-    // SAFETY: `work_stack`/`continuations` outlive this guard (locals of this
-    // activation, dropped after it) with stable addresses (declared once, mutated in
-    // place); `collect_k_spine` reads them read-only.
+    // SAFETY: `current_work_for_spine`/`work_stack`/`continuations` outlive this
+    // guard (locals of this activation, dropped after it) with stable addresses
+    // (declared once, mutated in place); `collect_k_spine` reads them read-only.
     #[cfg(feature = "index-gc")]
     let _tramp_kspine_guard = unsafe {
         crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
             crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
+                current_work: &current_work_for_spine as *const Option<WorkItem>,
                 work_stack: &work_stack as *const Vec<WorkItem>,
                 continuations: &continuations as *const Vec<Continuation>,
             },
@@ -4117,7 +4129,7 @@ fn eval_trampoline_inner<C: EvalContext>(
     // HANG (witness-sole-gate ⇒ a missed poll is a HANG, never a UAF). Release-inert
     // (`#[cfg(debug_assertions)]`). Reset whenever GC is not pending OR a park fired.
     #[cfg(debug_assertions)]
-    let mut gc_requested_unparked_edges: u32 = 0;
+    let _gc_requested_unparked_edges: u32 = 0;
 
     // I-18: Reduction counter for cooperative yielding.
     // Initializes from resume_reductions for lifetime tracking across yields.
@@ -4175,6 +4187,8 @@ fn eval_trampoline_inner<C: EvalContext>(
     #[cfg(feature = "trace")]
     let mut _trampoline_iter: u64 = 0;
     while let Some(work) = work_stack.pop() {
+        current_work_for_spine = Some(work.clone());
+        let _published_current_work = current_work_for_spine.as_ref();
         if crate::backend::interrupt::is_interrupted() {
             let interrupted_env = match &work {
                 WorkItem::Eval { env, .. } | WorkItem::EvalWithBindings { env, .. } => env.clone(),
@@ -4489,17 +4503,19 @@ fn eval_trampoline_inner<C: EvalContext>(
             // In the slab build `gc_mode_is_index()` (inside the watermark heap read
             // and the midloop gate) const-folds away too.
 
-            // (A) FANOUT>0 WATERMARK TRIGGER: a worker that observes the heap watermark
-            // while OTHER mutators are live (`n_threads() > 1` — it holds its own
-            // EvalGuard, so `> 1` means ≥1 OTHER live mutator) and no cycle is pending
-            // (`!is_gc_requested()`) hands the cycle to the dedicated GC thread
-            // (`request_concurrent_collection` sets GC_REQUESTED + posts
-            // CollectRendezvous), then keeps reducing and parks via branch (B) at its
-            // NEXT safepoint as one of the `n` participants (trigger latency ≤ one
-            // 4096-iter cadence). No roots are sent here — every participant
-            // self-roots at its own park.
+            // (A) FANOUT WATERMARK TRIGGER: a fanout-enabled mutator that observes
+            // the heap watermark while inside an EvalGuard (`n_threads() >= 1`) and
+            // no cycle is pending (`!is_gc_requested()`) hands the cycle to the
+            // dedicated GC thread (`request_concurrent_collection` sets GC_REQUESTED
+            // + posts CollectRendezvous), then keeps reducing and parks via branch
+            // (B) at its NEXT safepoint as one of the `n` participants (trigger
+            // latency ≤ one 4096-iter cadence). `n == 1` is a valid one-participant
+            // rendezvous: the sole mutator self-roots and parks, and the driver waits
+            // on the same reified-witness protocol. No roots are sent here — every
+            // participant self-roots at its own park.
             if crate::backend::models::gc_allocator::dedicated_gc_enabled()
-                && crate::backend::models::gc_allocator::n_threads() > 1
+                && crate::backend::eval::trampoline::eval_loop::parallel_fanout_enabled()
+                && crate::backend::models::gc_allocator::n_threads() >= 1
                 && !crate::backend::models::gc_allocator::is_gc_requested()
                 && !crate::backend::eval::cesk::index_heap::index_gc::satb_marking_in_progress()
                 && crate::backend::eval::cesk::index_heap::index_gc::watermark_due_for_concurrent()

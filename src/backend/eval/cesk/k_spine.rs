@@ -6,8 +6,8 @@
 //! a *typed*, structurally-walkable representation:
 //!
 //! - [`SUSPENDED_ACTIVATIONS`] — the spine of suspended OUTER trampoline
-//!   activations: each holds either its (C, K) registers (`work_stack` +
-//!   `continuations`) or a caller-held `Vec` of compiled import/assert
+//!   activations: each holds either its (C, K) registers (`current_work` +
+//!   `work_stack` + `continuations`) or a caller-held `Vec` of compiled import/assert
 //!   expressions, live across the nested call.
 //! - [`LIVE_VM_STACK`] — live bytecode-VM leaves: each holds the VM object
 //!   (decoded via `GenericBytecodeVM::collect_roots_into`) or a VM template's
@@ -42,9 +42,12 @@ use super::super::trampoline::{Continuation, WorkItem};
 /// registers are held by raw pointer and read live (never cloned at push).
 pub(crate) enum SuspendedActivation {
     /// Site #1 (`eval_trampoline_inner`): the (C, K) projection of an
-    /// activation — its pending `work_stack` (C) and `continuations` (K).
-    /// Mirrors `eval_loop::TrampolineFrameRoots` exactly.
+    /// activation — its in-flight `current_work` plus pending `work_stack` (C)
+    /// and `continuations` (K). The current-work slot closes the native-stack
+    /// hole where an outer trampoline has popped a work item and then enters a
+    /// nested evaluator before pushing its successor work.
     Spine {
+        current_work: *const Option<WorkItem>,
         work_stack: *const Vec<WorkItem>,
         continuations: *const Vec<Continuation>,
     },
@@ -66,6 +69,11 @@ pub(crate) enum VmLeaf {
     /// Sites #10/#11: a VM template's saved-bindings `Vec`, built once and never
     /// mutated (a frozen snapshot — so holding its pointer is staleness-safe).
     SavedBindings { bindings: *const Vec<MettaValue> },
+    /// A VM-owned native-stack vector of transient local values live across a
+    /// nested trampoline call but not stored in the VM struct itself. Used for
+    /// type-driven pre-eval locals such as `expr`, `item_to_eval`, and
+    /// `per_arg_results`.
+    ValueVec { values: *const Vec<MettaValue> },
     /// B4: a live JIT execution's `JitContext` — the JIT analogue of `Vm`. Its
     /// operand stack / results / choice-points / binding-frames / saved-stack /
     /// template-results carry arena `Addr`s, walked structurally via
@@ -157,9 +165,13 @@ pub fn collect_k_spine(out: &mut Vec<MettaValue>) {
                 // SAFETY: pointers valid by the guard-lifetime invariant — the
                 // pushing activation has not returned, so its Vecs are in scope.
                 SuspendedActivation::Spine {
+                    current_work,
                     work_stack,
                     continuations,
                 } => unsafe {
+                    if let Some(w) = (*current_work).as_ref() {
+                        w.collect_values(out);
+                    }
                     for w in (*work_stack).iter() {
                         w.collect_values(out);
                     }
@@ -182,6 +194,9 @@ pub fn collect_k_spine(out: &mut Vec<MettaValue>) {
                 },
                 VmLeaf::SavedBindings { bindings } => unsafe {
                     out.extend_from_slice(&*bindings);
+                },
+                VmLeaf::ValueVec { values } => unsafe {
+                    out.extend_from_slice(&*values);
                 },
                 // SAFETY: the JitContext outlives the guard (the HybridExecutor
                 // holds its buffers across `native_fn`); read live at the
@@ -227,18 +242,29 @@ mod tests {
         }]
     }
 
-    /// LOAD-BEARING: the `Spine` arm reads the SAME roots `frame_chain`'s
-    /// trampoline-frame collector would, over the same `work_stack` /
-    /// `continuations`. (Here compared against a direct `collect_values` walk —
-    /// the identical decoder `collect_trampoline_frame_roots` uses.)
+    /// LOAD-BEARING: the `Spine` arm reads the full suspended C/K projection:
+    /// the in-flight current work item, the pending `work_stack`, and the
+    /// continuation stack.
     #[test]
-    fn test_kspine_spine_reads_work_and_kont() {
+    fn test_kspine_spine_reads_current_work_stack_and_kont() {
         let f = global_factory();
+        let current_work = Some(WorkItem::Eval {
+            value: f.atom("current-work-root"),
+            env: Arc::new(crate::backend::environment::MettaEnvironment::default()),
+            depth: 0,
+            is_tail_call: false,
+            expected_type: None,
+            demand: None,
+            carrying_bindings: crate::backend::eval::trampoline::types::empty_shared_bindings(),
+        });
         let work_stack = work_stack_with(f.long(7));
         let continuations = vec![Continuation::Done];
 
         // Expected = collect_values over every work item + continuation.
         let mut expected: Vec<MettaValue> = Vec::new();
+        if let Some(w) = current_work.as_ref() {
+            w.collect_values(&mut expected);
+        }
         for w in work_stack.iter() {
             w.collect_values(&mut expected);
         }
@@ -251,6 +277,7 @@ mod tests {
             // SAFETY: work_stack/continuations outlive the guard (same scope).
             let _g = unsafe {
                 SuspendedActivationGuard::push(SuspendedActivation::Spine {
+                    current_work: &current_work as *const Option<WorkItem>,
                     work_stack: &work_stack as *const Vec<WorkItem>,
                     continuations: &continuations as *const Vec<Continuation>,
                 })
@@ -300,6 +327,25 @@ mod tests {
             collect_k_spine(&mut got);
         }
         assert_eq!(sorted_ptrs(&got), sorted_ptrs(&bindings));
+    }
+
+    /// The `ValueVec` arm roots VM-owned native-stack locals that are not stored
+    /// in the VM struct itself.
+    #[test]
+    fn test_kspine_valuevec_equals_extend() {
+        let f = global_factory();
+        let values = vec![f.atom("vm-local"), f.long(17)];
+        let mut got = Vec::new();
+        {
+            // SAFETY: values outlives the guard.
+            let _g = unsafe {
+                VmLeafGuard::push(VmLeaf::ValueVec {
+                    values: &values as *const Vec<MettaValue>,
+                })
+            };
+            collect_k_spine(&mut got);
+        }
+        assert_eq!(sorted_ptrs(&got), sorted_ptrs(&values));
     }
 
     /// The `Vm` arm == `vm.collect_roots_into` (delegates to the same method
@@ -371,6 +417,7 @@ mod tests {
     #[test]
     fn test_kspine_reference_not_snapshot() {
         let f = global_factory();
+        let current_work: Option<WorkItem> = None;
         let mut work_stack: Vec<WorkItem> = Vec::new();
         let continuations: Vec<Continuation> = vec![Continuation::Done];
         let v = f.long(0xBEEF);
@@ -378,6 +425,7 @@ mod tests {
         // SAFETY: both Vecs outlive the guard (declared above it).
         let _g = unsafe {
             SuspendedActivationGuard::push(SuspendedActivation::Spine {
+                current_work: &current_work as *const Option<WorkItem>,
                 work_stack: &work_stack as *const Vec<WorkItem>,
                 continuations: &continuations as *const Vec<Continuation>,
             })

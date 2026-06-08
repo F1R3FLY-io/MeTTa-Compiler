@@ -295,14 +295,14 @@ pub fn eval_with_tier(
         }
     };
 
-    // ── Inc 6: single-threaded store-centric GC (TRUE-quiescence reclaim) ──
+    // ── Inc 6: store-centric GC (TRUE-quiescence reclaim) ──
     // The forced-tier `run_*` paths above complete fully synchronously before
     // returning — no trampoline loop or bytecode VM is live on the Rust stack
     // here, so this is a true-quiescence reclaim point (mirrors `eval()`'s
     // post-EvalGuard hook). The complete root set is `collect_all_roots()`
     // UNIONED with the outcome's result values (held in the outcome, not yet in
     // any RootProvider). Dead in the default (slab) build (gc_mode_is_index()
-    // const-folds to false). Gated on the single-threaded safety gate.
+    // const-folds to false). Gated on actual quiescence, not fanout dormancy.
     // Cheap pre-check (gate + watermark) avoids the `collect_all_roots()` walk on
     // every eval; only build the root set when a collection will actually fire.
     if crate::backend::eval::cesk::index_heap::index_gc::should_collect() {
@@ -342,8 +342,7 @@ pub fn eval_with_tier(
         // KEPT narrow driver-transport channel: SAFEPOINT_ROOTS (driver result
         // accumulator + cache snapshot). NOT replaced by the structural reader.
         crate::backend::models::collect_safepoint_roots(&mut roots);
-        // E1-a.3: route to the dedicated GC thread when enabled (default OFF ⇒
-        // inline, byte-identical) — mirrors eval/mod.rs.
+        // E1-a.3: route through the dedicated index-GC driver; mirrors eval/mod.rs.
         crate::backend::eval::cesk::gc_driver::collect_quiescence(roots);
     }
 

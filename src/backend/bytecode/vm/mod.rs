@@ -1152,6 +1152,100 @@ where
         }
     }
 
+    #[cfg(feature = "index-gc")]
+    #[inline]
+    fn push_metta_root_from_v(out: &mut Vec<MettaValue>, value: &V) {
+        if TypeId::of::<V>() == TypeId::of::<MettaValue>() {
+            // SAFETY: guarded by TypeId equality. `MettaValue` is `Copy`, so the
+            // read does not transfer ownership from the generic VM local.
+            out.push(unsafe { *(value as *const V as *const MettaValue) });
+        }
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn collect_bindings_roots_as_metta(
+        out: &mut Vec<MettaValue>,
+        bindings: &GenericBindings<V>,
+    ) {
+        if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
+            return;
+        }
+        for (_scope, _name, value) in bindings.iter_full() {
+            Self::push_metta_root_from_v(out, value);
+        }
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn collect_outcome_roots_as_metta(
+        out: &mut Vec<MettaValue>,
+        outcomes: &[(V, GenericBindings<V>)],
+    ) {
+        if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
+            return;
+        }
+        for (value, bindings) in outcomes {
+            Self::push_metta_root_from_v(out, value);
+            Self::collect_bindings_roots_as_metta(out, bindings);
+        }
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn collect_rule_match_roots_as_metta(
+        out: &mut Vec<MettaValue>,
+        matches: &[crate::backend::environment::rule_management::RuleMatchResult<V>],
+    ) {
+        if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
+            return;
+        }
+        for m in matches {
+            Self::push_metta_root_from_v(out, &m.instantiated_rhs);
+            Self::push_metta_root_from_v(out, &m.rhs_template);
+            Self::collect_bindings_roots_as_metta(out, &m.bindings);
+            Self::collect_bindings_roots_as_metta(out, &m.original_bindings);
+            if let Some(rhs_type) = &m.rhs_type {
+                Self::push_metta_root_from_v(out, rhs_type);
+            }
+        }
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn collect_pre_eval_local_roots_as_metta(
+        &self,
+        out: &mut Vec<MettaValue>,
+        expr: &V,
+        per_arg_results: &[Vec<(V, GenericBindings<V>)>],
+        item_to_eval: Option<&V>,
+    ) {
+        if TypeId::of::<V>() != TypeId::of::<MettaValue>() {
+            return;
+        }
+        Self::push_metta_root_from_v(out, expr);
+        if let Some(value) = item_to_eval {
+            Self::push_metta_root_from_v(out, value);
+        }
+        for arg_results in per_arg_results {
+            Self::collect_outcome_roots_as_metta(out, arg_results);
+        }
+    }
+
+    #[cfg(feature = "index-gc")]
+    fn with_vm_value_vec_roots(
+        values: &Vec<MettaValue>,
+    ) -> Option<crate::backend::eval::cesk::k_spine::VmLeafGuard> {
+        if values.is_empty() {
+            return None;
+        }
+        // SAFETY: `values` is a stack local in the guarded scope and outlives the
+        // returned guard. The K-spine reader only extends from the vector.
+        Some(unsafe {
+            crate::backend::eval::cesk::k_spine::VmLeafGuard::push(
+                crate::backend::eval::cesk::k_spine::VmLeaf::ValueVec {
+                    values: values as *const Vec<MettaValue>,
+                },
+            )
+        })
+    }
+
     /// Comprehensive mid-execution rooting (2026-05-28): push a thread-local
     /// frame-chain entry whose type-erased collector decodes THIS VM's complete
     /// execution stacks (via [`collect_roots_into`](Self::collect_roots_into))
@@ -7791,7 +7885,19 @@ where
                 .expect("op_dispatch_rules requires env")
                 .clone();
             let saved_outer_bindings = self.current_bindings.clone();
-            let sub_outcomes = self.eval_sub_expr_vm_all_with_bindings(rhs.clone(), env);
+            let sub_outcomes = {
+                #[cfg(feature = "index-gc")]
+                let _vm_nested_local_roots = {
+                    let mut roots = Vec::with_capacity(8);
+                    Self::push_metta_root_from_v(&mut roots, &rhs);
+                    Self::collect_bindings_roots_as_metta(&mut roots, &saved_outer_bindings);
+                    roots
+                };
+                #[cfg(feature = "index-gc")]
+                let _vm_nested_local_roots_guard =
+                    Self::with_vm_value_vec_roots(&_vm_nested_local_roots);
+                self.eval_sub_expr_vm_all_with_bindings(rhs.clone(), env)
+            };
 
             if sub_outcomes.is_empty() {
                 // No reduction — push the unevaluated RHS as a data
@@ -7965,7 +8071,7 @@ where
         let epoch_before_multi = crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
         let mut all_outcomes: Vec<(V, crate::backend::models::GenericBindings<V>)> = Vec::new();
 
-        for result in matches {
+        for result in matches.iter() {
             // Restore the outer ambient before each iteration so prior matches
             // don't leak into this one.
             self.current_bindings = saved_outer_bindings.clone();
@@ -7996,8 +8102,23 @@ where
 
             // Evaluate the instantiated RHS through the trampoline,
             // preserving each sub-result's bindings.
-            let sub_results =
-                self.eval_sub_expr_vm_all_with_bindings(result.instantiated_rhs, env.clone());
+            let rhs = result.instantiated_rhs.clone();
+            let sub_results = {
+                #[cfg(feature = "index-gc")]
+                let _vm_nested_local_roots = {
+                    let mut roots = Vec::with_capacity(matches.len().saturating_mul(4) + 16);
+                    Self::collect_rule_match_roots_as_metta(&mut roots, &matches);
+                    Self::collect_outcome_roots_as_metta(&mut roots, &all_outcomes);
+                    Self::collect_bindings_roots_as_metta(&mut roots, &saved_outer_bindings);
+                    Self::collect_bindings_roots_as_metta(&mut roots, &per_match_ambient);
+                    Self::push_metta_root_from_v(&mut roots, &rhs);
+                    roots
+                };
+                #[cfg(feature = "index-gc")]
+                let _vm_nested_local_roots_guard =
+                    Self::with_vm_value_vec_roots(&_vm_nested_local_roots);
+                self.eval_sub_expr_vm_all_with_bindings(rhs, env.clone())
+            };
             if sub_results.is_empty() {
                 continue;
             }
@@ -8136,7 +8257,7 @@ where
         let mut all_outcomes: Vec<(V, crate::backend::models::GenericBindings<V>)> =
             Vec::with_capacity(combinations.len());
 
-        for (combo_expr, combo_b) in combinations {
+        for (combo_expr, combo_b) in combinations.iter() {
             // Per-combination, install combo_b as the ambient bindings
             // before dispatch. Restore to `saved_bindings` before the
             // next iteration so combinations don't leak into each other.
@@ -8183,22 +8304,44 @@ where
                         // its per-combo bindings, then continue to the next
                         // combination. The error flows through the choice-
                         // point machinery the same as any other outcome.
-                        all_outcomes.push((err, combo_b));
+                        all_outcomes.push((err, combo_b.clone()));
                         continue;
                     }
                 }
                 // No rules for this combination — the expression is
                 // irreducible. Contribute it as a result with its own
                 // per-combination bindings.
-                all_outcomes.push((combo_expr, combo_b));
+                all_outcomes.push((combo_expr.clone(), combo_b.clone()));
                 continue;
             }
 
             // For each matched rule, evaluate the instantiated RHS via
             // the trampoline, collecting all sub-results with bindings.
-            for m in matches {
-                let rhs = m.instantiated_rhs;
-                let sub_results = self.eval_sub_expr_vm_all_with_bindings(rhs, env.clone());
+            for m in matches.iter() {
+                let rhs = m.instantiated_rhs.clone();
+                let sub_results = {
+                    #[cfg(feature = "index-gc")]
+                    let _vm_nested_local_roots = {
+                        let mut roots = Vec::with_capacity(
+                            combinations.len().saturating_mul(3)
+                                + matches.len().saturating_mul(4)
+                                + all_outcomes.len().saturating_mul(2)
+                                + 16,
+                        );
+                        Self::collect_outcome_roots_as_metta(&mut roots, &combinations);
+                        Self::collect_rule_match_roots_as_metta(&mut roots, &matches);
+                        Self::collect_outcome_roots_as_metta(&mut roots, &all_outcomes);
+                        Self::collect_bindings_roots_as_metta(&mut roots, &saved_bindings);
+                        Self::collect_bindings_roots_as_metta(&mut roots, combo_b);
+                        Self::push_metta_root_from_v(&mut roots, combo_expr);
+                        Self::push_metta_root_from_v(&mut roots, &rhs);
+                        roots
+                    };
+                    #[cfg(feature = "index-gc")]
+                    let _vm_nested_local_roots_guard =
+                        Self::with_vm_value_vec_roots(&_vm_nested_local_roots);
+                    self.eval_sub_expr_vm_all_with_bindings(rhs, env.clone())
+                };
                 if sub_results.is_empty() {
                     continue;
                 }
@@ -8474,8 +8617,24 @@ where
             // Multi-result pre-eval — collect ALL sub-VM results for
             // this arg. Empty vec means irreducible; treat as literal.
             let sub_env = self.env.as_ref().expect("env checked above").clone();
-            let sub_results =
-                self.eval_sub_expr_vm_all_with_bindings(item_to_eval.clone(), sub_env);
+            let sub_results = {
+                #[cfg(feature = "index-gc")]
+                let _pre_eval_local_roots = {
+                    let mut roots =
+                        Vec::with_capacity(per_arg_results.len().saturating_mul(4) + 8);
+                    self.collect_pre_eval_local_roots_as_metta(
+                        &mut roots,
+                        &expr,
+                        &per_arg_results,
+                        Some(&item_to_eval),
+                    );
+                    roots
+                };
+                #[cfg(feature = "index-gc")]
+                let _pre_eval_local_roots_guard =
+                    Self::with_vm_value_vec_roots(&_pre_eval_local_roots);
+                self.eval_sub_expr_vm_all_with_bindings(item_to_eval.clone(), sub_env)
+            };
 
             self.expected_type = None;
 
@@ -8683,10 +8842,19 @@ where
         std::mem::forget(sub_expr);
         std::mem::forget(env);
 
-        // Comprehensive mid-execution rooting (2026-05-28): register THIS VM's
-        // live execution stacks as GC roots for the duration of the nested
-        // trampoline call, so a mid-loop collection inside it cannot free the
-        // outer VM's values. Dropped immediately after the call returns.
+        // Comprehensive mid-execution rooting: expose THIS VM's live execution
+        // stacks and the copied sub-expression local for the duration of the
+        // nested trampoline call. The local is still used on the no-result path,
+        // so it must be visible to structural GC while the nested CESK machine
+        // is running.
+        #[cfg(feature = "index-gc")]
+        let _vm_local_roots = {
+            let mut roots = Vec::with_capacity(1);
+            roots.push(metta_sub_expr);
+            roots
+        };
+        #[cfg(feature = "index-gc")]
+        let _vm_local_roots_guard = Self::with_vm_value_vec_roots(&_vm_local_roots);
         let _vm_roots_guard = self.with_vm_roots_frame();
 
         // Full trampoline evaluation: trampolined, TCO, CPS-based.

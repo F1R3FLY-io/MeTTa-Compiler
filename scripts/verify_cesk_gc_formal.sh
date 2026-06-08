@@ -118,6 +118,9 @@ run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/NodeEdgeCompleteness.v"
 run_rocq "formal/rocq/gc/AbstractGCLiveNarrowing.v"
 run_rocq "formal/rocq/gc/MidloopRootUnion.v"
+run_rocq "formal/rocq/gc/KSpineCurrentWork.v"
+run_rocq "formal/rocq/gc/VmNestedLocals.v"
+run_rocq "formal/rocq/gc/NonRendezvousFanoutGate.v"
 run_rocq "formal/rocq/gc/RendezvousWitness.v"
 run_rocq "formal/rocq/gc/WitnessSlotLifecycle.v"
 run_rocq "formal/rocq/gc/WitnessOkReset.v"
@@ -219,6 +222,22 @@ run_tlc "midloop_root_union_missing_deferred" "MC_MidloopRootUnion.tla" "MC_Midl
   fail "Invariant MidloopRootUnionComplete is violated"
 run_tlc "midloop_root_union_missing_driver_c" "MC_MidloopRootUnion.tla" "MC_MidloopRootUnion_missing_driver_c.cfg" \
   fail "Invariant MidloopRootUnionComplete is violated"
+run_tlc "k_spine_current_work_all" "MC_KSpineCurrentWork.tla" "MC_KSpineCurrentWork_all.cfg" \
+  pass ""
+run_tlc "k_spine_current_work_missing_current" "MC_KSpineCurrentWork.tla" "MC_KSpineCurrentWork_missing_current.cfg" \
+  fail "Invariant NoLiveControlFreed is violated"
+run_tlc "vm_nested_locals_all" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_all.cfg" \
+  pass ""
+run_tlc "vm_nested_locals_missing_pre_eval" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_missing_pre_eval.cfg" \
+  fail "Invariant NoLiveVmLocalFreed is violated"
+run_tlc "vm_nested_locals_missing_rule_matches" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_missing_rule_matches.cfg" \
+  fail "Invariant NoLiveVmLocalFreed is violated"
+run_tlc "non_rendezvous_fanout_blocked" "MC_NonRendezvousFanoutGate.tla" "MC_NonRendezvousFanoutGate_fanout_blocked.cfg" \
+  pass ""
+run_tlc "non_rendezvous_fanout_zero" "MC_NonRendezvousFanoutGate.tla" "MC_NonRendezvousFanoutGate_fanout_zero.cfg" \
+  pass ""
+run_tlc "non_rendezvous_fanout_missing_gate" "MC_NonRendezvousFanoutGate.tla" "MC_NonRendezvousFanoutGate_missing_gate.cfg" \
+  fail "Invariant NoMidloopNonRendezvousUnderFanout is violated"
 run_tlc "registry_isolation_all" "MC_RegistryIsolation.tla" "MC_RegistryIsolation_all.cfg" \
   pass ""
 run_tlc "registry_isolation_enabled" "MC_RegistryIsolation.tla" "MC_RegistryIsolation_registry.cfg" \
@@ -279,11 +298,29 @@ run_tlc "side_free_missing_gate" "MC_SideFreeQuiescence.tla" "MC_SideFreeQuiesce
   fail "Invariant NoDanglingSideUse is violated"
 run_tlc "side_free_missing_shadow_clear" "MC_SideFreeQuiescence.tla" "MC_SideFreeQuiescence_missing_shadow_clear.cfg" \
   fail "Invariant NoDanglingSideUse is violated"
+run_tlc "side_reclaim_snapshot_safe" "MC_SideReclaimSnapshot.tla" "MC_SideReclaimSnapshot_safe.cfg" \
+  pass ""
+run_tlc "side_reclaim_snapshot_no_snapshot" "MC_SideReclaimSnapshot.tla" "MC_SideReclaimSnapshot_no_snapshot.cfg" \
+  fail "Invariant NoLiveSideFreed is violated"
+run_tlc "side_reclaim_snapshot_no_reset_drop" "MC_SideReclaimSnapshot.tla" "MC_SideReclaimSnapshot_no_reset_drop.cfg" \
+  fail "Invariant NoLiveSideFreed is violated"
+run_tlc "side_reclaim_snapshot_no_free_owner_gate" "MC_SideReclaimSnapshot.tla" "MC_SideReclaimSnapshot_no_free_owner_gate.cfg" \
+  fail "Invariant NoLiveSideFreed is violated"
+run_tlc "side_reclaim_snapshot_minor_drain" "MC_SideReclaimSnapshot.tla" "MC_SideReclaimSnapshot_minor_drain.cfg" \
+  fail "Invariant NoLiveSideFreed is violated"
+run_tlc "side_reclaim_snapshot_no_marked_owner_filter" "MC_SideReclaimSnapshot.tla" "MC_SideReclaimSnapshot_no_marked_owner_filter.cfg" \
+  fail "Invariant NoLiveSideFreed is violated"
 run_tlc "hash_cons_major_safe" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_safe.cfg" \
+  pass ""
+run_tlc "hash_cons_major_dead_validated" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_dead_validated.cfg" \
+  pass ""
+run_tlc "hash_cons_major_missing_side_validated" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_missing_side_validated.cfg" \
   pass ""
 run_tlc "hash_cons_major_dead_retained" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_dead_retained.cfg" \
   fail "Invariant NoReturnedFreed is violated"
 run_tlc "hash_cons_minor_old_retained" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_minor_old_retained.cfg" \
+  pass ""
+run_tlc "hash_cons_minor_dead_young_validated" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_minor_dead_young_validated.cfg" \
   pass ""
 run_tlc "hash_cons_minor_dead_young_retained" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_minor_dead_young_retained.cfg" \
   fail "Invariant NoReturnedFreed is violated"
@@ -355,6 +392,8 @@ run_tlc "epoch_protected_caches_missing_match" "MC_EpochProtectedCaches.tla" "MC
   fail "Invariant NoStaleAddrCacheHit is violated"
 run_tlc "epoch_protected_caches_missing_operator" "MC_EpochProtectedCaches.tla" "MC_EpochProtectedCaches_missing_operator.cfg" \
   fail "Invariant NoStaleAddrCacheHit is violated"
+run_tlc "epoch_protected_caches_missing_inner_shadow" "MC_EpochProtectedCaches.tla" "MC_EpochProtectedCaches_missing_inner_shadow.cfg" \
+  fail "Invariant NoStaleAddrCacheHit is violated"
 run_tlc "write_once_anchors_all" "MC_WriteOnceAnchors.tla" "MC_WriteOnceAnchors_all.cfg" \
   pass ""
 run_tlc "write_once_anchors_missing_if" "MC_WriteOnceAnchors.tla" "MC_WriteOnceAnchors_missing_if.cfg" \
@@ -406,6 +445,8 @@ run_tlc "generation_resume_boolean" "MC_GenerationResume.tla" "MC_GenerationResu
 run_tlc "generation_resume_no_bump" "MC_GenerationResume.tla" "MC_GenerationResume_no_bump.cfg" \
   fail "Invariant EndedCycleCanResume is violated"
 run_tlc "rendezvous_progress_all" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_all.cfg" \
+  pass ""
+run_tlc "rendezvous_progress_one_participant" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_one_participant.cfg" \
   pass ""
 run_tlc "rendezvous_progress_missing_contribution" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_missing_contribution.cfg" \
   fail "Temporal properties were violated"

@@ -45,6 +45,30 @@ Section HashConsSweepRetainModel.
       apply Hunmarked.
       exact Hmarked.
   Qed.
+
+  Theorem validated_hash_cons_hit_not_freed :
+    forall (Retained Allocated SidePresent Freed Returned : Addr -> Prop),
+      (forall a, Returned a -> Retained a /\ Allocated a /\ SidePresent a) ->
+      (forall a, Freed a -> ~ Allocated a) ->
+      forall a, Returned a -> ~ Freed a.
+  Proof.
+    intros Retained Allocated SidePresent Freed Returned Hreturned_valid
+           Hfreed_unallocated a Hreturned Hfreed.
+    destruct (Hreturned_valid a Hreturned) as [_ [Hallocated _]].
+    apply (Hfreed_unallocated a Hfreed).
+    exact Hallocated.
+  Qed.
+
+  Theorem missing_side_hash_cons_entry_is_not_returned :
+    forall (SidePresent Returned : Addr -> Prop),
+      (forall a, Returned a -> SidePresent a) ->
+      forall a, ~ SidePresent a -> ~ Returned a.
+  Proof.
+    intros SidePresent Returned Hreturned_side a Hmissing Hreturned.
+    apply Hmissing.
+    apply Hreturned_side.
+    exact Hreturned.
+  Qed.
 End HashConsSweepRetainModel.
 
 End MeTTaTron_GC_HashConsSweepRetain.

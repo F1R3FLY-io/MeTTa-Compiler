@@ -28,9 +28,9 @@
 ; spine) AND dead slots (last iteration's transient + last accumulator) — the
 ; partial-live segment that gets re-swept every cycle, the precise R-FL trigger.
 ;
-; FANOUT=0 (no superpose/collapse ⇒ no eval worker spawned ⇒ both the
-; single-threaded FANOUT=0 collector AND, under FANOUT=8 DEDICATED=1, the
-; dedicated collector run the SAME `sweep_range` — the bug is mode-independent).
+; FANOUT=0 (no superpose/collapse ⇒ no eval worker spawned) and FANOUT>0
+; (dedicated index-GC rendezvous) run the SAME `sweep_range` — the bug is
+; mode-independent.
 ; Deterministic: the final result is always `done`.
 
 ; --- per-iteration transient: a deep peano wrapper built then folded to a scalar

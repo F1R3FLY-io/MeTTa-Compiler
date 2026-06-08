@@ -510,7 +510,7 @@ fn push_free_list_entry<N: Copy>(
     addr: Addr,
     off: usize,
     check: bool,
-) {
+) -> bool {
     if check {
         assert_free_tracking_agrees(seg, addr, off, "before-push");
     }
@@ -520,11 +520,15 @@ fn push_free_list_entry<N: Copy>(
             assert_free_tracking_agrees(seg, addr, off, "after-push");
         }
         free_list.push(addr);
+        true
     } else if check {
         // A repeated sweep of an already-listed current-segment slot is expected
         // after R-FL. The detector now verifies the production bit and shadow both
         // say "already listed" instead of panicking on the duplicate opportunity.
         assert_free_tracking_agrees(seg, addr, off, "skip-duplicate-push");
+        false
+    } else {
+        false
     }
 }
 
@@ -881,6 +885,30 @@ impl<N: Copy> IndexArena<N> {
         }
     }
 
+    /// Borrow the node at `addr` only if the address still names an allocated
+    /// slot. Returns `None` for addresses in unpublished/released segments,
+    /// unpublished offsets, or slots currently owned by the free list.
+    #[inline]
+    pub fn get_if_allocated(&self, addr: Addr) -> Option<&N> {
+        let seg_idx = addr.segment();
+        if seg_idx >= self.seg_count.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: `seg_idx < seg_count` observed above, so the segment cell was
+        // published by `open_segment` before this read.
+        let seg = unsafe { self.segment(seg_idx) };
+        if seg.released.load(Ordering::Relaxed) {
+            return None;
+        }
+        let off = addr.offset();
+        if off >= seg.len.load(Ordering::Acquire) || seg.is_free_bit(off) {
+            return None;
+        }
+        // SAFETY: the segment is published and not released, `off < len`, and the
+        // slot is not free-list owned, so it names the current allocated occupant.
+        Some(unsafe { seg.node_at(off) })
+    }
+
     /// Mutably borrow the node at `addr`. **Stays `&mut self`** — its only caller
     /// is the arena's own cycle test; `IndexHeap` never exposes a mutable node
     /// borrow (the value model is immutable post-publish). `&mut self` ⇒ exclusive
@@ -1150,13 +1178,16 @@ impl<N: Copy> IndexArena<N> {
         mut on_release: F,
         reclaimed_out: &mut Vec<Addr>,
     ) -> SweepStats {
-        // C1.c #1: every slot reclaimed (partial-segment, unmarked) is also pushed to
-        // `reclaimed_out` so the wrapping `IndexHeap` can FREE its co-located
+        // C1.c #1: every slot whose free-list ownership is newly acquired is also
+        // pushed to `reclaimed_out` so the wrapping `IndexHeap` can FREE its co-located
         // side-arena entry (children/string/span `Box`) and recycle the side index —
         // without it a reused node-slot would orphan the prior occupant's side `Box`
         // (a leak bounded only by segment release). Released-segment slots are NOT
         // included (the release path `continue`s before the reclaim loop; the whole
-        // `sides[seg]` is reset wholesale by `on_release`).
+        // `sides[seg]` is reset wholesale by `on_release`). Duplicate sweep
+        // opportunities suppressed by the persistent `free_bit` MUST NOT be reported:
+        // the side-free snapshot for that dead occupant already exists, and a second
+        // snapshot could later free a side index that a reused live node owns.
         let mut stats = SweepStats::default();
         // DEBUG-ONLY free-list integrity: bound once.
         let check = freelist_check_enabled();
@@ -1247,19 +1278,21 @@ impl<N: Copy> IndexArena<N> {
                 } else if word == 0 {
                     for off in base..base + 64 {
                         let a = Addr::new(si as u32, off as u32);
-                        push_free_list_entry(seg, &mut self.free_list, a, off, check);
-                        reclaimed_out.push(a);
+                        if push_free_list_entry(seg, &mut self.free_list, a, off, check) {
+                            reclaimed_out.push(a);
+                            stats.reclaimed_to_free_list += 1;
+                        }
                     }
-                    stats.reclaimed_to_free_list += 64;
                 } else {
                     for b in 0..64usize {
                         if (word & (1u64 << b)) != 0 {
                             stats.live += 1;
                         } else {
                             let a = Addr::new(si as u32, (base + b) as u32);
-                            push_free_list_entry(seg, &mut self.free_list, a, base + b, check);
-                            reclaimed_out.push(a);
-                            stats.reclaimed_to_free_list += 1;
+                            if push_free_list_entry(seg, &mut self.free_list, a, base + b, check) {
+                                reclaimed_out.push(a);
+                                stats.reclaimed_to_free_list += 1;
+                            }
                         }
                     }
                 }
@@ -1278,9 +1311,10 @@ impl<N: Copy> IndexArena<N> {
                         // published prefix (an orphaned-payload leak). Byte-identical
                         // while the side-free is inert (the extra entries are unused).
                         let a = Addr::new(si as u32, (base + b) as u32);
-                        push_free_list_entry(seg, &mut self.free_list, a, base + b, check);
-                        reclaimed_out.push(a);
-                        stats.reclaimed_to_free_list += 1;
+                        if push_free_list_entry(seg, &mut self.free_list, a, base + b, check) {
+                            reclaimed_out.push(a);
+                            stats.reclaimed_to_free_list += 1;
+                        }
                     }
                 }
             }

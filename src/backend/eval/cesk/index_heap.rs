@@ -133,6 +133,33 @@ unsafe fn launder<'a, T: ?Sized>(r: &'a T) -> &'static T {
     std::mem::transmute::<&'a T, &'static T>(r)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SideReclaim {
+    Children { owner: Addr, seg: usize, idx: u32 },
+    Strings { owner: Addr, seg: usize, idx: u32 },
+    Spans { owner: Addr, seg: usize, idx: u32 },
+}
+
+impl SideReclaim {
+    #[inline]
+    fn segment(self) -> usize {
+        match self {
+            SideReclaim::Children { seg, .. }
+            | SideReclaim::Strings { seg, .. }
+            | SideReclaim::Spans { seg, .. } => seg,
+        }
+    }
+
+    #[inline]
+    fn owner(self) -> Addr {
+        match self {
+            SideReclaim::Children { owner, .. }
+            | SideReclaim::Strings { owner, .. }
+            | SideReclaim::Spans { owner, .. } => owner,
+        }
+    }
+}
+
 /// The index-arena value heap.
 pub struct IndexHeap {
     arena: IndexArena<Node>,
@@ -164,11 +191,11 @@ pub struct IndexHeap {
     /// per-`push` interner fast path does NOT take it once a segment's cell is
     /// published. Mirrors `IndexArena::dir_lock`.
     sides_dir_lock: std::sync::Mutex<()>,
-    /// Increment A: the slots the most recent `sweep`/`sweep_young` reclaimed, stashed for
-    /// the driver to free their side `Box`es via [`free_reclaimed_side_slots`] — but ONLY
-    /// at quiescence (a midloop sweep leaves this for the next quiescence sweep, for
-    /// launder soundness). `std::mem::take`-n by the driver after each collection.
-    last_reclaimed: Vec<Addr>,
+    /// Reclaim-time snapshots of side payloads whose owning node slots were swept.
+    /// Node slots may be reused before the next true-quiescence side-free, so this
+    /// stores `(segment, column, index)` at sweep time instead of rereading mutable
+    /// node bytes later.
+    pending_side_reclaims: Vec<SideReclaim>,
     /// `Arc`-backed `Space` handles, indexed by the `u64` id stored in
     /// `Node::Space(id)`. Append-only and never swept (handles are env-rooted).
     space_table: Vec<SpaceHandle>,
@@ -219,7 +246,7 @@ impl IndexHeap {
             sides,
             sides_count: std::sync::atomic::AtomicUsize::new(0),
             sides_dir_lock: std::sync::Mutex::new(()),
-            last_reclaimed: Vec::new(),
+            pending_side_reclaims: Vec::new(),
             space_table: Vec::new(),
             memo_table: Vec::new(),
             hash_cons: std::collections::HashMap::new(),
@@ -305,7 +332,7 @@ impl IndexHeap {
     }
 
     /// Mutably borrow segment `seg`'s side arena. **`&mut self`** (quiescence-only:
-    /// its only callers — [`free_reclaimed_side_slots`](Self::free_reclaimed_side_slots)
+    /// its only callers — [`free_pending_side_reclaims`](Self::free_pending_side_reclaims)
     /// and the segment-release reset — run under the heap write lock at a quiescent
     /// safepoint, statically exclusive of every `&self` reader/pusher, so the `&mut
     /// SegmentSideArenas` aliases nothing).
@@ -414,15 +441,21 @@ impl IndexHeap {
     /// it cannot deadlock.
     pub fn intern_ground_sexpr(&mut self, items: &[MettaValue]) -> MettaValue {
         let key = hash_cons_key(items);
+        let mut drop_stale_entry = false;
         if let Some(&existing) = self.hash_cons.get(&key) {
             if let Some(addr) = existing.as_arena_addr() {
-                let kids = self.children(addr);
-                if kids.len() == items.len()
-                    && kids.iter().zip(items).all(|(a, b)| a.tagged == b.tagged)
-                {
-                    return existing;
+                if let Some(kids) = self.children_if_present(addr) {
+                    if kids.len() == items.len()
+                        && kids.iter().zip(items).all(|(a, b)| a.tagged == b.tagged)
+                    {
+                        return existing;
+                    }
                 }
             }
+            drop_stale_entry = true;
+        }
+        if drop_stale_entry {
+            self.hash_cons.remove(&key);
         }
         // Miss (or hash collision → overwrite, matching the slab table's
         // last-writer-wins-per-key best-effort behavior).
@@ -516,7 +549,7 @@ impl IndexHeap {
     //     transitively gates the side entry's visibility (same ordering the loom
     //     `loom_side_node_ordering` model proves).
     //   * The collector (the only thing that frees) is `&mut self` everywhere
-    //     (`sweep`/`sweep_young`/`free_reclaimed_side_slots`/`SideColumn::free`),
+    //     (`sweep`/`sweep_young`/`free_pending_side_reclaims`/`SideColumn::free`),
     //     so it is UNCALLABLE through a `.read()` guard — type-enforced — AND it is
     //     gated OFF once any worker is spawned (`!worker_ever_spawned()`), which is
     //     exactly the regime in which concurrent (`.read()`) allocation occurs. So
@@ -678,10 +711,36 @@ impl IndexHeap {
                 // address was handed out, so `addr.segment() < sides_count`; `cr.idx
                 // < published_len()` and the slot is `Some` (live node) per above.
                 let side = unsafe { self.side(addr.segment()) };
-                unsafe { side.children.get(cr.idx) }.expect("live SExpr/Conjunction children slot")
+                unsafe { side.children.get(cr.idx) }.unwrap_or_else(|| {
+                    panic!(
+                        "live SExpr/Conjunction children slot: addr={addr:?} seg={} child_idx={}",
+                        addr.segment(),
+                        cr.idx
+                    )
+                })
             }
             _ => panic!("children() on a non-SExpr/Conjunction node"),
         }
+    }
+
+    /// Non-panicking child lookup for auxiliary tables whose entries can lag a
+    /// sweep. A valid hash-cons hit must still name an allocated node slot and a
+    /// present children side payload; otherwise the table entry is stale and the
+    /// caller must treat it as a miss.
+    fn children_if_present(&self, addr: Addr) -> Option<&[MettaValue]> {
+        let cr = match self.arena.get_if_allocated(addr)? {
+            Node::SExpr(cr) | Node::Conjunction(cr) => cr,
+            _ => return None,
+        };
+        let seg = addr.segment();
+        if seg >= self.sides_count.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: `seg < sides_count` observed above, so the side cell was
+        // published before this read. `get_if_published` checks the child index
+        // before using the column's unsafe indexed read.
+        let side = unsafe { self.side(seg) };
+        side.children.get_if_published(cr.idx)
     }
 
     /// The string of an `Atom`/`String` at `addr`.
@@ -835,8 +894,13 @@ impl IndexHeap {
                 // via raw pointer (no `&self.sides` borrow), so it does not conflict
                 // with the `arena` borrow above.
                 let side = unsafe { self.side(addr.segment()) };
-                let kids = unsafe { side.children.get(cr.idx) }
-                    .expect("live SExpr/Conjunction children slot");
+                let kids = unsafe { side.children.get(cr.idx) }.unwrap_or_else(|| {
+                    panic!(
+                        "live SExpr/Conjunction children slot during mark: addr={addr:?} seg={} child_idx={}",
+                        addr.segment(),
+                        cr.idx
+                    )
+                });
                 for c in kids.iter() {
                     if let Some(a) = c.as_arena_addr() {
                         out.push(a);
@@ -958,6 +1022,7 @@ impl IndexHeap {
                 .retain(|_, v| v.as_arena_addr().is_some_and(|a| arena.is_marked(a)));
         }
         let mut reclaimed: Vec<Addr> = Vec::new();
+        let mut released_segments: Vec<usize> = Vec::new();
         let stats = {
             // Disjoint-field capture: the release closure resets segment side
             // arenas through `&mut self.sides` (the directory `Box`), while
@@ -980,86 +1045,137 @@ impl IndexHeap {
                             **(*sides[seg].get()).assume_init_mut() = SegmentSideArenas::default();
                         }
                     }
+                    released_segments.push(seg);
                 },
                 &mut reclaimed,
             )
         };
-        // C1.c #1 (Increment A): stash the reclaimed (partial-segment) dead slots; the
-        // driver frees their payload `Box`es via `free_reclaimed_side_slots` ONLY at
-        // quiescence (launder soundness). Released segments were reset wholesale above.
-        self.last_reclaimed = reclaimed;
+        // Reclaim-time side snapshots survive node-slot reuse until the next
+        // quiescence side-free. Whole released segments were reset wholesale above,
+        // so any older pending per-slot snapshots for those segments are satisfied.
+        self.drop_pending_side_reclaims_for_released_segments(&released_segments);
+        self.append_pending_side_reclaims(&reclaimed);
         stats
     }
 
-    /// C1.c #1: free the co-located side-arena entry (children/string/span `Box`) of
-    /// each reclaimed (swept-dead, partial-segment) node — bounding side-arena growth
-    /// under variable-length node-slot reuse, since a slot reused by `alloc_sexpr`/etc.
-    /// orphans the prior occupant's side `Box` (a leak otherwise bounded only by
-    /// segment release, which resets the whole `sides[seg]`). `reclaimed` is the slots
-    /// `sweep`/`sweep_young` reclaimed (NOT released-segment slots). The node bytes are
-    /// still intact (the sweep frees a slot WITHOUT clobbering it), so `arena.get(addr)`
-    /// reads the dead node's side index; the slot is `None`d so its `Box` drops — and
-    /// the index is NOT recycled (intern only ever APPENDS fresh indices), so `None`-ing
-    /// index `i` touches no live node and is idempotent (a re-reclaimed still-free slot
-    /// just `None`s the same already-`None` index again). Recycling — which would hand
-    /// `i` to a live node — is the unsound path an earlier gate's "live … slot" panic
-    /// caught, hence the no-recycle design.
-    ///
-    /// QUIESCENCE-ONLY (Phase C Increment A — the soundness gate). The driver calls this
-    /// ONLY for `phase == "quiescence"` (`active_evaluator_count() == 0`). Freeing a side
-    /// `Box` at sweep is a USE-AFTER-FREE under the MID-LOOP collector: a live
-    /// `materialize_inner` result on the Rust stack can hold a launder'd `&'static` into
-    /// that `Box` (the launder contract — see module docs; every external launder consumer
-    /// runs DURING eval ⇒ `active >= 1`), which dropping the `Box` would dangle. At TRUE
-    /// QUIESCENCE no trampoline/VM frame is on the Rust stack ⇒ no live stack launder'd
-    /// ref exists; the only references into side `Box`es are this thread's `INNER_SHADOW`
-    /// entries, which the driver's post-sweep `clear_inner_shadow()` discards before any
-    /// next eval can deref one (the single-threaded collector thread is the sole
-    /// populator of `INNER_SHADOW`). A MIDLOOP collection still reclaims the node SLOT
-    /// (sound — the slot bytes stay intact; the launder'd ref is into the side `Box`, not
-    /// the node) and DEFERS the side `Box` to the next quiescence sweep, where the same
-    /// still-dead slot reappears in `reclaimed` (no-recycle idempotence makes the deferral
-    /// correct). So midloop stays sound at the cost of the side-free's RSS win on that cycle.
-    fn free_reclaimed_side_slots(&mut self, reclaimed: &[Addr]) {
-        enum Side {
-            Children(u32),
-            Strings(u32),
-            Spans(u32),
-            None,
+    /// Snapshot the side payload owned by a reclaimed node slot while that slot still
+    /// contains the swept occupant's bytes. This must run before any later
+    /// `write_reused` can overwrite the node with a different side index.
+    fn side_reclaim_for_addr(&self, addr: Addr) -> Option<SideReclaim> {
+        let seg = addr.segment();
+        match self.arena.get(addr) {
+            Node::SExpr(cr) | Node::Conjunction(cr) => Some(SideReclaim::Children {
+                owner: addr,
+                seg,
+                idx: cr.idx,
+            }),
+            Node::Atom(br) | Node::String(br) => Some(SideReclaim::Strings {
+                owner: addr,
+                seg,
+                idx: br.idx,
+            }),
+            Node::Spanned(_, sr) => Some(SideReclaim::Spans {
+                owner: addr,
+                seg,
+                idx: sr.idx,
+            }),
+            _ => None,
         }
+    }
+
+    /// Add reclaim-time side-owner snapshots for swept partial-segment slots.
+    ///
+    /// MIDLOOP/rendezvous collections may reclaim the fixed node slot while deferring
+    /// the side `Box` free for launder soundness. The node slot can be reused before
+    /// the next quiescence sweep, so the side owner must be recorded now; rereading
+    /// `arena.get(addr)` later can observe a different occupant and free a live side
+    /// slot.
+    fn append_pending_side_reclaims(&mut self, reclaimed: &[Addr]) {
+        self.pending_side_reclaims.reserve(reclaimed.len());
         for &addr in reclaimed {
-            let seg = addr.segment();
-            // Extract the dead node's side index (Copy) — the `arena` borrow ends here,
-            // before mutating the disjoint `sides` field. `reclaimed` holds exactly the
-            // unmarked, non-released slots `sweep_range` reclaimed (its contract), so the
-            // node bytes are intact and this reads the dead occupant's side index.
-            let side = match self.arena.get(addr) {
-                Node::SExpr(cr) | Node::Conjunction(cr) => Side::Children(cr.idx),
-                Node::Atom(br) | Node::String(br) => Side::Strings(br.idx),
-                Node::Spanned(_, sr) => Side::Spans(sr.idx),
-                _ => Side::None, // fixed node (Bool/Long/Var/…): no side slot
-            };
-            // D-TLAB-1.2: the published-cell bound is `sides_count` (was the `Vec`
-            // length). The `arena` borrow above has ended; `side_mut` takes `&mut
-            // self` (quiescence — exclusive), giving the dead node's segment side
-            // arena to free its column entry.
-            if seg >= self.sides_count.load(std::sync::atomic::Ordering::Acquire) {
+            if let Some(side) = self.side_reclaim_for_addr(addr) {
+                self.pending_side_reclaims.push(side);
+            }
+        }
+    }
+
+    /// A whole-segment release resets that segment's side columns, so any pending
+    /// per-slot side snapshots for the segment are already satisfied and must not be
+    /// applied after the segment is later reused with fresh side indices starting at 0.
+    fn drop_pending_side_reclaims_for_released_segments(&mut self, released: &[usize]) {
+        if released.is_empty() || self.pending_side_reclaims.is_empty() {
+            return;
+        }
+        self.pending_side_reclaims
+            .retain(|side| !released.contains(&side.segment()));
+    }
+
+    /// True iff the current node bytes at the owner address still name the same
+    /// side slot captured by `side`.
+    fn owner_still_owns_side_reclaim(&self, side: SideReclaim) -> bool {
+        let owner = side.owner();
+        match (side, self.arena.get(owner)) {
+            (SideReclaim::Children { idx, .. }, Node::SExpr(cr) | Node::Conjunction(cr)) => {
+                cr.idx == idx
+            }
+            (SideReclaim::Strings { idx, .. }, Node::Atom(br) | Node::String(br)) => br.idx == idx,
+            (SideReclaim::Spans { idx, .. }, Node::Spanned(_, sr)) => sr.idx == idx,
+            _ => false,
+        }
+    }
+
+    /// True iff the owner address is marked live by the current full mark and still
+    /// owns the same side slot captured by `side`.
+    fn marked_owner_still_owns_side_reclaim(&self, side: SideReclaim) -> bool {
+        self.arena.is_marked(side.owner()) && self.owner_still_owns_side_reclaim(side)
+    }
+
+    fn free_side_reclaim(&mut self, side: SideReclaim, sides_count: usize) {
+        let seg = side.segment();
+        if seg >= sides_count {
+            return;
+        }
+        // SAFETY: `seg < sides_count` => cell `seg` published; `&mut self`
+        // exclusive at the quiescence drain => unique access.
+        let arenas = unsafe { self.side_mut(seg) };
+        match side {
+            SideReclaim::Children { idx, .. } => arenas.children.free(idx),
+            SideReclaim::Strings { idx, .. } => arenas.strings.free(idx),
+            SideReclaim::Spans { idx, .. } => arenas.spans.free(idx),
+        }
+    }
+
+    /// A full mark can prove an older pending side snapshot is stale-live: a prior
+    /// young/rendezvous sweep reported the node slot, but this full mark found that
+    /// the owner address is live and still points at the same side index. Such a
+    /// snapshot must be dropped, not drained; the following full sweep rebuilds the
+    /// free list from the mark bits and therefore rescinds any stale free-list entry.
+    fn drop_or_free_pending_side_reclaims_after_full_mark(&mut self) {
+        let pending = std::mem::take(&mut self.pending_side_reclaims);
+        let sides_count = self.sides_count.load(std::sync::atomic::Ordering::Acquire);
+        for side in pending {
+            let owner_marked = self.arena.is_marked(side.owner());
+            let owner_still_owns = self.owner_still_owns_side_reclaim(side);
+            if owner_marked && owner_still_owns {
                 continue;
             }
-            // SAFETY: `seg < sides_count` ⇒ cell `seg` published; `&mut self`
-            // exclusive ⇒ unique access.
-            let s = unsafe { self.side_mut(seg) };
-            // Drop the dead node's `Box` (return the payload RSS); leave the index `None`
-            // (NOT recycled — intern only APPENDS, so index `i` is permanently this dead
-            // node's). D-TLAB-1.1: `SideColumn::free` does the `i < published_len`
-            // bounds check internally and is idempotent (re-freeing an already-`None`
-            // cell is a no-op), so the prior explicit `i < len()` guard is subsumed.
-            match side {
-                Side::Children(i) => s.children.free(i),
-                Side::Strings(i) => s.strings.free(i),
-                Side::Spans(i) => s.spans.free(i),
-                Side::None => {}
-            }
+            self.free_side_reclaim(side, sides_count);
+        }
+    }
+
+    /// C1.c #1: free known-dead side payload snapshots only at true quiescence.
+    ///
+    /// The snapshots were captured at reclaim time, so they remain valid even if the
+    /// node slot was later reused. SideColumn indices are append-only and never
+    /// recycled within a segment; duplicate snapshots are harmless because
+    /// `SideColumn::free` is idempotent. Snapshots for whole-released segments are
+    /// removed by [`drop_pending_side_reclaims_for_released_segments`] before this
+    /// drain can run.
+    fn free_pending_side_reclaims(&mut self) {
+        let pending = std::mem::take(&mut self.pending_side_reclaims);
+        let sides_count = self.sides_count.load(std::sync::atomic::Ordering::Acquire);
+        for side in pending {
+            self.free_side_reclaim(side, sides_count);
         }
     }
 
@@ -1092,6 +1208,7 @@ impl IndexHeap {
             });
         }
         let mut reclaimed: Vec<Addr> = Vec::new();
+        let mut released_segments: Vec<usize> = Vec::new();
         let stats = {
             // Disjoint-field capture (see `sweep`): reset released young segments'
             // side arenas through `&mut self.sides` while `self.arena` is borrowed
@@ -1109,13 +1226,16 @@ impl IndexHeap {
                             **(*sides[seg].get()).assume_init_mut() = SegmentSideArenas::default();
                         }
                     }
+                    released_segments.push(seg);
                 },
                 &mut reclaimed,
             )
         };
-        // C1.c #1 (Increment A): stash the reclaimed young slots; the driver frees their
-        // payload `Box`es ONLY at quiescence (launder soundness — a midloop minor defers).
-        self.last_reclaimed = reclaimed;
+        // Reclaim-time side snapshots survive node-slot reuse until the next
+        // quiescence side-free. Whole released segments were reset wholesale above,
+        // so any older pending per-slot snapshots for those segments are satisfied.
+        self.drop_pending_side_reclaims_for_released_segments(&released_segments);
+        self.append_pending_side_reclaims(&reclaimed);
         stats
     }
 
@@ -1206,6 +1326,11 @@ impl IndexHeap {
     pub fn promote_young(&self) {
         self.arena.promote_young();
     }
+
+    #[inline]
+    fn pending_side_reclaim_count(&self) -> usize {
+        self.pending_side_reclaims.len()
+    }
 }
 
 // SAFETY (D-TLAB-1.2): `IndexHeap` gained an `UnsafeCell` field — the never-realloc
@@ -1233,7 +1358,7 @@ impl IndexHeap {
 //
 //   (iii) CELL MUTATION AT QUIESCENCE. The only writes to an already-published
 //         directory cell's contents (the segment-release reset and
-//         `free_reclaimed_side_slots`) go through `&mut self` (`side_mut`, and the
+//         `free_pending_side_reclaims`) go through `&mut self` (`side_mut`, and the
 //         disjoint `&mut self.sides` capture in the `sweep*` release closures),
 //         which run only at a quiescent safepoint under the heap write lock —
 //         statically exclusive of every `&self` reader/pusher. A cell's
@@ -1242,7 +1367,7 @@ impl IndexHeap {
 //         deref stays valid; no cell is ever un-published (`sides_count` is monotone).
 //
 // The other fields are `Send`/`Sync` for the conventional reasons: `arena:
-// IndexArena<Node>` has its own (matching) unsafe impls; `last_reclaimed`/
+// IndexArena<Node>` has its own (matching) unsafe impls; `pending_side_reclaims`/
 // `space_table`/`memo_table`/`hash_cons` are plain owned collections mutated only
 // under the `RwLock` write guard; `sides_count`/`sides_dir_lock` are atomics/`Mutex`.
 // `Node` is `Copy` (no owned resources), and the `Box<SegmentSideArenas>` payloads
@@ -1252,9 +1377,9 @@ unsafe impl Send for IndexHeap {}
 unsafe impl Sync for IndexHeap {}
 
 /// The process-global index heap, mirroring the slab's `OnceLock<SlabAllocator>`.
-/// Backs the future `IndexHeapStore`; `RwLock` is correct for Inc 2 (default-OFF,
-/// single-threaded tests + sequential `--gc=index`), replaced by lock-free TLABs
-/// in Inc 5.
+/// Backs the future `IndexHeapStore`; `RwLock` is retained only around exclusive
+/// collection/reuse paths, while concurrent allocation uses the D-TLAB/read-lock
+/// path.
 static GLOBAL_INDEX_HEAP: OnceLock<RwLock<IndexHeap>> = OnceLock::new();
 
 /// Get (initializing on first use) the global index heap.
@@ -1633,6 +1758,11 @@ pub mod index_gc {
     static SATB_PHASE_LOCK: RwLock<()> = RwLock::new(());
     static SATB_MARKING_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
+    #[inline]
+    pub(super) fn should_drain_side_reclaims(phase: &str, did_major: bool) -> bool {
+        phase == "quiescence" && did_major
+    }
+
     /// True exactly while an E2 SATB mark is in progress.
     ///
     /// SATB cache barriers must shade only during that window. Outside it there is
@@ -1897,13 +2027,14 @@ pub mod index_gc {
         // C1.c: a collection is due if the MINOR trigger (young allocation since the
         // last promotion exceeds the nursery budget — PRIMARY) OR the MAJOR backstop
         // (total committed over the watermark, or the minor cadence elapsed) fires.
-        let (committed, young_alloc, old_live, nursery_pending) = {
+        let (committed, young_alloc, old_live, nursery_pending, pending_side_reclaims) = {
             let heap = global_index_heap().read().expect("index heap");
             (
                 heap.committed_bytes(),
                 heap.young_alloc_bytes(),
                 heap.old_live_bytes(),
                 heap.nursery_full_pending(),
+                heap.pending_side_reclaim_count(),
             )
         };
         // Increment B (CHANGE #3): the MAJOR triggers on OLD-gen live growth (`old_live`),
@@ -1914,6 +2045,7 @@ pub mod index_gc {
         // since the last promotion, the slab `request_gc` analogue).
         young_alloc > YOUNG_BUDGET
             || nursery_pending
+            || pending_side_reclaims > 0
             || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
             || committed > max_bytes()
             || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
@@ -1922,16 +2054,16 @@ pub mod index_gc {
     /// The provable single-threaded-quiescence gate:
     ///
     /// ```text
-    /// gc_mode_is_index() && !worker_ever_spawned() && active_evaluator_count() == 0
+    /// gc_mode_is_index() && active_evaluator_count() == 0 && n_threads() == 0
     /// ```
     ///
     /// The collector runs at TRUE quiescence — the point in `eval()` AFTER the
     /// `EvalGuard` has dropped, so `active_evaluator_count() == 0`: no trampoline
     /// loop and no bytecode VM is live on the Rust stack, so the only surviving
-    /// values are the environment / promoted roots (`collect_all_roots()`) plus
-    /// the about-to-be-returned result vector (which the caller passes in
-    /// explicitly). This is exactly the slab GC's session-release reclaim point
-    /// and exactly the proven `QuiescenceInvariant` (activeEvaluators empty).
+    /// values are the structural persistent roots plus the about-to-be-returned
+    /// result vector (which the caller passes in explicitly). This is exactly the
+    /// slab GC's session-release reclaim point and exactly the proven
+    /// `QuiescenceInvariant` (activeEvaluators empty).
     ///
     /// **Why NOT a mid-trampoline safepoint:** at a mid-loop safepoint the live
     /// bytecode-VM execution stacks (`value_stack` / `locals` / `results` /
@@ -1944,12 +2076,17 @@ pub mod index_gc {
     /// Rooting the full VM state at every nested call is the broader "comprehensive
     /// VM root coverage" increment, deliberately out of scope here.
     ///
-    /// `!worker_ever_spawned()` keeps the single-threaded guarantee: if any eval
-    /// worker has ever been spawned, a parked-resumable worker could exist, so
-    /// the collector backs off entirely.
+    /// Fanout configuration does NOT poison true quiescence. Once
+    /// `active_evaluator_count()==0 && n_threads()==0`, no worker/native stack can
+    /// touch σ and the persistent CESK root reader is complete. The FANOUT hazard is
+    /// mid-loop collection while a future or current branch has live control; that
+    /// path remains blocked by [`gate_open_midloop`] and must use rendezvous.
     #[inline]
     pub fn gate_open() -> bool {
-        gc_mode_is_index() && !worker_ever_spawned() && active_evaluator_count() == 0 && !disabled()
+        gc_mode_is_index()
+            && active_evaluator_count() == 0
+            && crate::backend::models::gc_allocator::n_threads() == 0
+            && !disabled()
     }
 
     /// E1-FLIP — the gate for the DEDICATED-GC-THREAD rendezvous collect (the ONLY
@@ -2005,12 +2142,11 @@ pub mod index_gc {
     /// Identical to [`gate_open`] except `active_evaluator_count() == 1`: the
     /// mid-loop safepoint runs INSIDE `eval_trampoline`, where the sole
     /// evaluator holds exactly one `EvalGuard` (so the count is 1, not 0). With
-    /// `!worker_ever_spawned()` this is still the trivially-true instance of the
-    /// proven `QuiescenceInvariant`: no eval worker has ever been spawned, so no
-    /// parked-resumable worker can exist, and the single calling thread at the
-    /// safepoint is the SOLE thread that can touch σ. The collection runs under
-    /// the heap write lock, mutually exclusive with allocation, so no `Addr` is
-    /// minted mid-mark.
+    /// `!parallel_fanout_enabled()` this is still the trivially-true instance of
+    /// the proven `QuiescenceInvariant`: no eval worker can be spawned by this
+    /// process configuration, and the single calling thread at the safepoint is
+    /// the SOLE thread that can touch σ. The collection runs under the heap write
+    /// lock, mutually exclusive with allocation, so no `Addr` is minted mid-mark.
     ///
     /// **Root completeness (the UAF linchpin):** unlike the quiescence point,
     /// the live trampoline S/C/K AND every on-stack bytecode-VM frame's
@@ -2025,6 +2161,7 @@ pub mod index_gc {
     #[inline]
     pub fn gate_open_midloop() -> bool {
         gc_mode_is_index()
+            && !crate::backend::eval::trampoline::eval_loop::parallel_fanout_enabled()
             && !worker_ever_spawned()
             && active_evaluator_count() == 1
             && !disabled()
@@ -2066,11 +2203,11 @@ pub mod index_gc {
     /// clauses to [`should_collect`] / [`should_collect_midloop`], but WITHOUT
     /// `gate_open*` — those require `active_evaluator_count()` ∈ {0,1} AND
     /// `!worker_ever_spawned()`, both FALSE under FANOUT>0, so neither probe can ever
-    /// fire there. The CALLER supplies the FANOUT>0 gate
-    /// (`dedicated_gc_enabled() && n_threads() > 1`), so this is pure "is the heap
-    /// over a trigger watermark?" — one read-lock + a few relaxed loads. Its sole
-    /// caller short-circuits on `dedicated_gc_enabled()` (default OFF), so the
-    /// default/slab build never reaches it (byte-identical). Keeps the watermark
+    /// fire there. The CALLER supplies the fanout-enabled participant gate
+    /// (`dedicated_gc_enabled() && parallel_fanout_enabled() && n_threads() >= 1`),
+    /// so this is pure "is the heap over a trigger watermark?" — one read-lock + a few relaxed loads. Its sole
+    /// caller short-circuits on `dedicated_gc_enabled()`, so the slab build never
+    /// reaches it (byte-identical). Keeps the watermark
     /// constants module-private (the alternative — inlining at the call site —
     /// would have to expose them).
     #[allow(dead_code)]
@@ -2200,10 +2337,12 @@ pub mod index_gc {
         let (live_after, old_live_after, stats) = {
             let mut heap = global_index_heap().write().expect("index heap");
             heap.mark(&addrs);
+            if should_drain_side_reclaims(phase, true) {
+                heap.drop_or_free_pending_side_reclaims_after_full_mark();
+            }
             let stats = heap.sweep();
-            if phase == "quiescence" {
-                let reclaimed = std::mem::take(&mut heap.last_reclaimed);
-                heap.free_reclaimed_side_slots(&reclaimed);
+            if should_drain_side_reclaims(phase, true) {
+                heap.free_pending_side_reclaims();
             }
             heap.promote_young();
             (heap.live_bytes(), heap.old_live_bytes(), stats)
@@ -2260,13 +2399,14 @@ pub mod index_gc {
         // The MAJOR is the BACKSTOP: total committed over the watermark OR the minor
         // cadence elapsed (bounding the old-gen dead a minor leaves behind). Major
         // takes precedence when both are due (it subsumes a minor and reclaims old).
-        let (committed, young_alloc, old_live, nursery_pending) = {
+        let (committed, young_alloc, old_live, nursery_pending, pending_side_reclaims) = {
             let heap = global_index_heap().read().expect("index heap");
             (
                 heap.committed_bytes(),
                 heap.young_alloc_bytes(),
                 heap.old_live_bytes(),
                 heap.nursery_full_pending(),
+                heap.pending_side_reclaim_count(),
             )
         };
         // Increment B (CHANGE #3): the MAJOR is LIVE-BASED — it fires on OLD-gen live
@@ -2279,7 +2419,8 @@ pub mod index_gc {
         let live_major = old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold());
         let cap_major = committed > cap;
         let cadence_major = MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE;
-        let major_due = live_major || cap_major || cadence_major;
+        let pending_side_major = phase == "quiescence" && pending_side_reclaims > 0;
+        let major_due = live_major || cap_major || cadence_major || pending_side_major;
         // Increment C (CHANGE #2): the MINOR is `young_alloc` past the budget OR the
         // backpressure signal (`nursery_pending` — a segment opened since the last promotion).
         let minor_due = young_alloc > YOUNG_BUDGET || nursery_pending;
@@ -2293,7 +2434,8 @@ pub mod index_gc {
         // (`cadence_major`), which must not be deferred. A deferred `live_major` still fires
         // within MAJOR_CADENCE (the cadence counts up regardless), so old dead stays bounded.
         let level = index_backpressure_level(young_alloc);
-        let do_major = major_due && !(level == 3 && minor_due && !cap_major && !cadence_major);
+        let do_major = pending_side_major
+            || (major_due && !(level == 3 && minor_due && !cap_major && !cadence_major));
 
         // Project the root values to arena addresses. filter_map drops inline
         // scalars (Bool / i48 Long / Unit / Empty) and any non-index handle.
@@ -2330,6 +2472,9 @@ pub mod index_gc {
             let mut heap = global_index_heap().write().expect("index heap");
             let (stats, did_major) = if do_major {
                 heap.mark(&addrs); // FULL mark
+                if should_drain_side_reclaims(phase, true) {
+                    heap.drop_or_free_pending_side_reclaims_after_full_mark();
+                }
                 (heap.sweep(), true)
             } else {
                 // Minor: a pure minor (only minor_due) OR a level-3-DEFERRED major (a minor
@@ -2337,18 +2482,15 @@ pub mod index_gc {
                 heap.mark_young(&addrs); // conservative traversal; young mark bits only
                 (heap.sweep_young(), false)
             };
-            // Increment A (the RSS half of CHANGE #1): free the swept-dead nodes' payload
-            // `Box`es — ONLY at quiescence. `phase == "quiescence"` ⇒ `gate_open()` ⇒
-            // `active_evaluator_count() == 0` ⇒ no trampoline/VM frame on the Rust stack ⇒
-            // no live launder'd `&'static` into a side `Box`; the only refs into side
-            // `Box`es are this thread's `INNER_SHADOW` entries, dropped by
-            // `clear_inner_shadow()` below before any next eval can deref one. A MIDLOOP
-            // collection reclaimed the node slots but DEFERS the side `Box`es to the next
-            // quiescence sweep (the still-dead slots reappear in `reclaimed`; no-recycle
-            // idempotence makes the deferral correct).
-            if phase == "quiescence" {
-                let reclaimed = std::mem::take(&mut heap.last_reclaimed);
-                heap.free_reclaimed_side_slots(&reclaimed);
+            // Increment A (the RSS half of CHANGE #1): free swept-dead side-payload
+            // snapshots only after a FULL quiescent mark/sweep. Quiescence proves no
+            // Rust stack can hold a laundered side reference; the full mark proves the
+            // side owner is genuinely dead. A young-only quiescence minor reclaims
+            // node slots, but it is not enough authority to destroy side boxes: any
+            // missed old/cache edge would turn into a "live ... slot" UAF. MIDLOOP and
+            // rendezvous collections likewise defer reclaim-time side snapshots.
+            if should_drain_side_reclaims(phase, did_major) {
+                heap.free_pending_side_reclaims();
             }
             heap.promote_young();
             // B.4: measure old_live AFTER promote (the just-swept survivors are now old),
@@ -2383,8 +2525,8 @@ pub mod index_gc {
         // ground-fragment, hash-cons) on its NEXT read (via
         // `ensure_value_hash_cache_epoch_current` etc.) — the documented purpose of
         // `bump_gc_sweep_epoch` ("work-pool threads idle/outside their own safepoint")
-        // and the residual ~2-4% DEDICATED=1 wrong-subset corruption's root cause (a
-        // stale Addr→hash after a reused-slot bump flips set-op bucketing / skip-eval).
+        // and the residual wrong-subset corruption's root cause (a stale Addr→hash
+        // after a reused-slot bump flips set-op bucketing / skip-eval).
         // Bump BEFORE the eager clear so `clear_value_hash_cache` syncs the sweeping
         // thread's local epoch to the post-bump value (no redundant re-clear there).
         crate::backend::models::gc_allocator::bump_gc_sweep_epoch();
@@ -2812,6 +2954,18 @@ impl<T: ?Sized> SideColumn<T> {
         let (c, off) = Self::locate(idx as usize);
         let chunk = self.chunk(c);
         (*chunk[off].get()).assume_init_ref().as_deref()
+    }
+
+    /// Safe wrapper for lagging auxiliary-table validation. Returns `None` if
+    /// the side index was never published or if the published slot has already
+    /// been freed.
+    #[inline]
+    fn get_if_published(&self, idx: u32) -> Option<&T> {
+        if (idx as usize) >= self.published_len() {
+            return None;
+        }
+        // SAFETY: the bounds check above establishes `idx < published_len`.
+        unsafe { self.get(idx) }
     }
 
     /// Drop the payload `Box` at `idx`, leaving the cell as `None`. `&mut self`
@@ -3245,18 +3399,167 @@ mod tests {
     }
 
     #[test]
-    fn gate_closes_after_worker_spawned() {
-        // The single-threaded safety gate must latch shut the instant any eval
-        // worker is noted as spawned. (Process-global flag; nextest isolates this
-        // test in its own process so the latch does not leak.)
+    fn side_reclaim_snapshot_survives_node_slot_reuse() {
         let _mode = enter_index_mode_for_test();
-        // No worker yet and a single (this) caller → gate may open. We don't
-        // assert it's open here (active_evaluator_count depends on guards), but we
-        // DO assert that after note_worker_spawned() it is definitively closed.
+        let mut heap = IndexHeap::with_segment_capacity(16);
+
+        let old_dead = heap.alloc_string("old-dead");
+        let live = heap.alloc_string("live-root");
+        heap.mark(&[live]);
+        let stats = heap.sweep_young();
+        assert_eq!(stats.reclaimed_to_free_list, 1, "old string reclaimed");
+        assert_eq!(
+            heap.pending_side_reclaims.len(),
+            1,
+            "side owner is snapshotted at reclaim time"
+        );
+
+        let replacement = heap.alloc_string("replacement");
+        assert_eq!(
+            replacement, old_dead,
+            "cur-segment free-list reuse should overwrite the reclaimed node slot"
+        );
+        assert_eq!(heap.str_slice(replacement), "replacement");
+
+        heap.free_pending_side_reclaims();
+        assert_eq!(
+            heap.str_slice(replacement),
+            "replacement",
+            "draining the old side snapshot must not free the replacement's side slot"
+        );
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn duplicate_sweep_opportunity_does_not_duplicate_side_snapshot() {
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(16);
+
+        let dead = heap.alloc_string("dead-once");
+        let live = heap.alloc_string("live-root");
+        heap.mark(&[live]);
+        let first = heap.sweep_young();
+        assert_eq!(first.reclaimed_to_free_list, 1, "dead slot first reclaimed");
+        assert_eq!(heap.pending_side_reclaims.len(), 1);
+
+        heap.mark(&[live]);
+        let second = heap.sweep_young();
+        assert_eq!(
+            second.reclaimed_to_free_list, 0,
+            "free_bit suppresses duplicate ownership of the same dead slot"
+        );
+        assert_eq!(
+            heap.pending_side_reclaims.len(),
+            1,
+            "side snapshot must be emitted only when free-list ownership is newly acquired"
+        );
+
+        let replacement = heap.alloc_string("replacement");
+        assert_eq!(replacement, dead, "the single free-list entry is reusable");
+        heap.free_pending_side_reclaims();
+        assert_eq!(heap.str_slice(replacement), "replacement");
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn duplicate_sweep_opportunity_does_not_duplicate_children_side_snapshot() {
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(16);
+
+        let dead = heap.alloc_sexpr(&[MettaValue::Bool(true)]);
+        let live = heap.alloc_sexpr(&[MettaValue::Bool(false)]);
+        heap.mark(&[live]);
+        let first = heap.sweep_young();
+        assert_eq!(first.reclaimed_to_free_list, 1, "dead slot first reclaimed");
+        assert_eq!(heap.pending_side_reclaims.len(), 1);
+
+        heap.mark(&[live]);
+        let second = heap.sweep_young();
+        assert_eq!(
+            second.reclaimed_to_free_list, 0,
+            "free_bit suppresses duplicate ownership of the same child slot owner"
+        );
+        assert_eq!(
+            heap.pending_side_reclaims.len(),
+            1,
+            "children side snapshot must be emitted only for newly acquired ownership"
+        );
+
+        let replacement = heap.alloc_sexpr(&[MettaValue::Bool(false), MettaValue::Bool(true)]);
+        assert_eq!(replacement, dead, "the single free-list entry is reusable");
+        heap.free_pending_side_reclaims();
+        assert_eq!(heap.children(replacement).len(), 2);
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn marked_owner_pending_side_snapshot_is_not_drained() {
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(16);
+
+        let live = heap.alloc_sexpr(&[MettaValue::Bool(true)]);
+        let snapshot = heap
+            .side_reclaim_for_addr(live)
+            .expect("live SExpr has a children side slot");
+        heap.pending_side_reclaims.push(snapshot);
+
+        heap.mark(&[live]);
+        heap.drop_or_free_pending_side_reclaims_after_full_mark();
+
+        assert!(
+            heap.pending_side_reclaims.is_empty(),
+            "the stale pending snapshot should be consumed"
+        );
+        assert_eq!(
+            heap.children(live).len(),
+            1,
+            "a full mark that proves the owner live must not free its children slot"
+        );
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn reused_owner_pending_side_snapshot_still_frees_old_side() {
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(16);
+
+        let old = heap.alloc_sexpr(&[MettaValue::Bool(true)]);
+        let snapshot = heap
+            .side_reclaim_for_addr(old)
+            .expect("old SExpr has a children side slot");
+        let replacement = heap.alloc_sexpr(&[MettaValue::Bool(false), MettaValue::Bool(true)]);
+        heap.arena.write_reused(old, *heap.arena.get(replacement));
+        heap.pending_side_reclaims.push(snapshot);
+
+        heap.mark(&[old]);
+        heap.drop_or_free_pending_side_reclaims_after_full_mark();
+
+        assert_eq!(
+            heap.children(old).len(),
+            2,
+            "a reused live owner with a different side index must keep the replacement side"
+        );
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn side_reclaim_drain_requires_quiescent_major() {
+        assert!(!index_gc::should_drain_side_reclaims("rendezvous", true));
+        assert!(!index_gc::should_drain_side_reclaims("midloop", true));
+        assert!(!index_gc::should_drain_side_reclaims("quiescence", false));
+        assert!(index_gc::should_drain_side_reclaims("quiescence", true));
+    }
+
+    #[test]
+    fn midloop_gate_closes_after_worker_spawned() {
+        // The midloop non-rendezvous gate must latch shut the instant any eval
+        // worker is noted as spawned. True quiescence is fanout-independent and is
+        // covered by `gate_open`'s active==0/n_threads==0 conditions.
+        let _mode = enter_index_mode_for_test();
         crate::backend::models::note_worker_spawned();
         assert!(
-            !index_gc::gate_open(),
-            "gate must be closed once a worker has ever been spawned"
+            !index_gc::gate_open_midloop(),
+            "midloop gate must be closed once a worker has ever been spawned"
         );
         reset_gc_mode_slab();
     }
@@ -3605,6 +3908,38 @@ mod tests {
     }
 
     #[test]
+    fn inner_shadow_is_cleared_lazily_after_sweep_epoch_bump() {
+        use crate::backend::models::gc_allocator::bump_gc_sweep_epoch;
+        use crate::backend::models::metta_value::{clear_inner_shadow, inner_shadow_len};
+        use crate::backend::models::MettaValueFactory;
+
+        let _mode = enter_index_mode_for_test();
+        clear_inner_shadow();
+        let f = IndexFactory;
+
+        let a = f.atom("inner-shadow-epoch-a");
+        let b = f.atom("inner-shadow-epoch-b");
+        let _ = a.inner_ref();
+        let _ = b.inner_ref();
+        assert_eq!(
+            inner_shadow_len(),
+            2,
+            "test setup should materialize two cached index inners"
+        );
+
+        bump_gc_sweep_epoch();
+        let _ = a.inner_ref();
+        assert_eq!(
+            inner_shadow_len(),
+            1,
+            "inner_ref_index must clear stale shadow entries before returning after an epoch bump"
+        );
+
+        clear_inner_shadow();
+        reset_gc_mode_slab();
+    }
+
+    #[test]
     fn index_factory_hash_conses_ground_sexpr() {
         // CRUX Step 4: ground SExprs are hash-consed exactly like GcFactory —
         // keyed by child HANDLE identity (tagged bits), ground-only. Equal child
@@ -3707,6 +4042,80 @@ mod tests {
                 && kids[1].tagged == f.long(4).tagged,
             "dead content re-interns to CORRECT (3,4) content — entry dropped + \
              re-allocated, not a dangling hit on the reclaimed (now-(5,6)) slot"
+        );
+
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn hash_cons_free_listed_stale_hit_is_reallocated_before_reuse() {
+        // A retained/stale table entry is not enough for a hit: the address must
+        // still name an allocated node slot. Otherwise a swept-but-not-yet-side-
+        // drained node can be returned while its Addr is still on the free list,
+        // and the next allocation can clobber the value just returned.
+        use crate::backend::models::MettaValueFactory;
+        let _mode = enter_index_mode_for_test();
+        let f = IndexFactory;
+        let mut heap = IndexHeap::with_segment_capacity(64);
+
+        let items = [f.long(1), f.long(2)];
+        let stale = heap.intern_ground_sexpr(&items);
+        let stale_addr = stale.as_arena_addr().expect("stale is an arena addr");
+        let key = hash_cons_key(&items);
+
+        let _ = heap.sweep();
+        heap.hash_cons.insert(key, stale);
+
+        let revived = heap.intern_ground_sexpr(&items);
+        let other = heap.intern_ground_sexpr(&[f.long(5), f.long(6)]);
+        assert_ne!(
+            revived.as_arena_addr(),
+            other.as_arena_addr(),
+            "validated stale miss must consume the free-listed slot before later allocations"
+        );
+        assert_eq!(
+            revived.as_arena_addr(),
+            Some(stale_addr),
+            "the miss may reuse the old Addr, but only after clearing free-list ownership"
+        );
+        let kids = heap.children(stale_addr);
+        assert!(
+            kids.len() == 2
+                && kids[0].tagged == items[0].tagged
+                && kids[1].tagged == items[1].tagged,
+            "the revived value must not be clobbered by a later allocation"
+        );
+
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn hash_cons_missing_side_hit_is_treated_as_miss() {
+        // After the true-quiescence side drain, a stale hash-cons entry points at
+        // a node whose children slot is `None`. Lookup must remove the entry and
+        // allocate fresh instead of calling the panicking live-node `children()`
+        // accessor.
+        use crate::backend::models::MettaValueFactory;
+        let _mode = enter_index_mode_for_test();
+        let f = IndexFactory;
+        let mut heap = IndexHeap::with_segment_capacity(64);
+
+        let items = [f.long(3), f.long(4)];
+        let stale = heap.intern_ground_sexpr(&items);
+        let key = hash_cons_key(&items);
+
+        let _ = heap.sweep();
+        heap.free_pending_side_reclaims();
+        heap.hash_cons.insert(key, stale);
+
+        let revived = heap.intern_ground_sexpr(&items);
+        let revived_addr = revived.as_arena_addr().expect("revived is an arena addr");
+        let kids = heap.children(revived_addr);
+        assert!(
+            kids.len() == 2
+                && kids[0].tagged == items[0].tagged
+                && kids[1].tagged == items[1].tagged,
+            "missing-side stale entry must be a miss that rebuilds the children slot"
         );
 
         reset_gc_mode_slab();

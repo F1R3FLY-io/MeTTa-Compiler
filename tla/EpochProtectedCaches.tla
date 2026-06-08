@@ -14,7 +14,8 @@ CONSTANTS
     CheckedCaches
 
 Caches ==
-    {"valueHash", "morkGround", "hashCons", "evalMemo", "matchResult", "operator"}
+    {"valueHash", "morkGround", "hashCons", "evalMemo", "matchResult", "operator",
+     "innerShadow"}
 
 VARIABLES
     phase,

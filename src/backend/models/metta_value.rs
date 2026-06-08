@@ -884,6 +884,14 @@ thread_local! {
     /// bounded by the live heap; Inc 6 clears it on the sweep epoch.
     static INNER_SHADOW: std::cell::RefCell<std::collections::HashMap<u32, Box<MettaValueInner>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+
+    /// GC sweep epoch observed by this thread's index-mode materialization cache.
+    ///
+    /// A dedicated GC thread cannot clear another mutator's thread-local
+    /// `INNER_SHADOW`. Since shadow entries contain child `MettaValue` handles
+    /// copied from the indexed heap, every mutator must lazily discard entries
+    /// from an older sweep epoch before `inner_ref_index` can return one.
+    static INNER_SHADOW_EPOCH: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Clear the index-mode `inner_ref()` materialization cache. Called at the Inc 6
@@ -892,6 +900,20 @@ thread_local! {
 #[allow(dead_code)] // wired into the safepoint/sweep epoch in Inc 6; used by tests now
 pub(crate) fn clear_inner_shadow() {
     INNER_SHADOW.with(|c| c.borrow_mut().clear());
+    INNER_SHADOW_EPOCH.with(|epoch| {
+        epoch.set(crate::backend::models::gc_allocator::gc_sweep_epoch());
+    });
+}
+
+#[inline]
+fn ensure_inner_shadow_epoch_current() {
+    let current_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
+    INNER_SHADOW_EPOCH.with(|epoch| {
+        if epoch.get() != current_epoch {
+            INNER_SHADOW.with(|c| c.borrow_mut().clear());
+            epoch.set(current_epoch);
+        }
+    });
 }
 
 /// Test-only: number of distinct Addrs currently materialized in the shadow cache.
@@ -1005,6 +1027,7 @@ impl MettaValue {
     #[inline(never)]
     fn inner_ref_index(&self) -> &'static MettaValueInner {
         let raw = (self.tagged >> 4) as u32;
+        ensure_inner_shadow_epoch_current();
         INNER_SHADOW.with(|c| {
             let mut m = c.borrow_mut();
             let boxed = m.entry(raw).or_insert_with(|| {

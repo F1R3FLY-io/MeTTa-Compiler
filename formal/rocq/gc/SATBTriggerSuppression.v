@@ -10,31 +10,31 @@ Module MeTTaTron_GC_SATBTriggerSuppression.
 
 Section SATBTriggerSuppressionModel.
   Definition FanoutWatermarkTrigger
-      (DedicatedCollector OtherMutatorLive NoRequestPending
+      (DedicatedCollector FanoutParticipantLive NoRequestPending
        SatbMarking WatermarkDue : Prop) : Prop :=
     DedicatedCollector /\
-    OtherMutatorLive /\
+    FanoutParticipantLive /\
     NoRequestPending /\
     ~ SatbMarking /\
     WatermarkDue.
 
   Definition UngatedWatermarkTrigger
-      (DedicatedCollector OtherMutatorLive NoRequestPending
+      (DedicatedCollector FanoutParticipantLive NoRequestPending
        WatermarkDue : Prop) : Prop :=
     DedicatedCollector /\
-    OtherMutatorLive /\
+    FanoutParticipantLive /\
     NoRequestPending /\
     WatermarkDue.
 
   Theorem active_satb_suppresses_fanout_trigger :
-    forall DedicatedCollector OtherMutatorLive NoRequestPending
+    forall DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue,
       SatbMarking ->
       ~ FanoutWatermarkTrigger
-          DedicatedCollector OtherMutatorLive NoRequestPending
+          DedicatedCollector FanoutParticipantLive NoRequestPending
           SatbMarking WatermarkDue.
   Proof.
-    intros DedicatedCollector OtherMutatorLive NoRequestPending
+    intros DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue Hsatb Htrigger.
     destruct Htrigger as [_ [_ [_ [Hnot_satb _]]]].
     apply Hnot_satb.
@@ -42,50 +42,50 @@ Section SATBTriggerSuppressionModel.
   Qed.
 
   Theorem fanout_trigger_implies_satb_idle :
-    forall DedicatedCollector OtherMutatorLive NoRequestPending
+    forall DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue,
       FanoutWatermarkTrigger
-        DedicatedCollector OtherMutatorLive NoRequestPending
+        DedicatedCollector FanoutParticipantLive NoRequestPending
         SatbMarking WatermarkDue ->
       ~ SatbMarking.
   Proof.
-    intros DedicatedCollector OtherMutatorLive NoRequestPending
+    intros DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue Htrigger.
     destruct Htrigger as [_ [_ [_ [Hnot_satb _]]]].
     exact Hnot_satb.
   Qed.
 
   Theorem active_satb_blocks_even_when_watermark_due :
-    forall DedicatedCollector OtherMutatorLive NoRequestPending
+    forall DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue,
       DedicatedCollector ->
-      OtherMutatorLive ->
+      FanoutParticipantLive ->
       NoRequestPending ->
       SatbMarking ->
       WatermarkDue ->
       ~ FanoutWatermarkTrigger
-          DedicatedCollector OtherMutatorLive NoRequestPending
+          DedicatedCollector FanoutParticipantLive NoRequestPending
           SatbMarking WatermarkDue.
   Proof.
-    intros DedicatedCollector OtherMutatorLive NoRequestPending
+    intros DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue _ _ _ Hsatb _.
     apply active_satb_suppresses_fanout_trigger.
     exact Hsatb.
   Qed.
 
   Theorem ungated_trigger_can_overlap_active_satb :
-    forall DedicatedCollector OtherMutatorLive NoRequestPending
+    forall DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue,
       DedicatedCollector ->
-      OtherMutatorLive ->
+      FanoutParticipantLive ->
       NoRequestPending ->
       SatbMarking ->
       WatermarkDue ->
       UngatedWatermarkTrigger
-        DedicatedCollector OtherMutatorLive NoRequestPending WatermarkDue /\
+        DedicatedCollector FanoutParticipantLive NoRequestPending WatermarkDue /\
       SatbMarking.
   Proof.
-    intros DedicatedCollector OtherMutatorLive NoRequestPending
+    intros DedicatedCollector FanoutParticipantLive NoRequestPending
            SatbMarking WatermarkDue Hdedicated Hother Hrequest Hsatb Hwatermark.
     split.
     - repeat split; assumption.

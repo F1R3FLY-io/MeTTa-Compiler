@@ -1784,13 +1784,6 @@ pub mod index_gc {
         depth > 0
     }
 
-    /// Opt-in E2 SATB concurrent marker path. Default-off until the full
-    /// FANOUT>0 ASAN/TSan/loom/perf gate is green.
-    pub(crate) fn concurrent_satb_enabled() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var("METTATRON_INDEX_GC_SATB").as_deref() == Ok("1"))
-    }
-
     /// Runs one E0 deletion/eviction under the SATB phase gate.
     ///
     /// The marker flips `SATB_MARKING_DEPTH` while holding the write side. A

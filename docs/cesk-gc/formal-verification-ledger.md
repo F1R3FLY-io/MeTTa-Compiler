@@ -22,20 +22,20 @@ The default dedicated FANOUT=8 discriminator on 2026-06-08 passed `Robot.metta` 
 and Arm C (`MIN=4294967295`) 0/16 failures; the Arm A non-vacuity witness reported rendezvous minor cycles with
 reclaimed slots and segment releases.
 The focused loom gate on 2026-06-08 passed the live rendezvous, straddle, arena bump/publish, and side-node ordering
-models under `RUSTFLAGS="--cfg loom -C target-cpu=native"` and `LOOM_MAX_PREEMPTIONS=3`; the two expected-fail
-straddle discriminator variants remained ignored.
+models under `RUSTFLAGS="--cfg loom -C target-cpu=native"` and model-specific `LOOM_MAX_PREEMPTIONS=2` or `3`;
+the two expected-fail straddle discriminator variants remained ignored.
 The focused TSan gate on 2026-06-08 passed
 `backend::eval::cesk::index_heap::tsan_concurrent_factory::concurrent_read_path_allocations_are_race_free`
 under `RUSTFLAGS="-Zsanitizer=thread -C target-cpu=native"` and `-Zbuild-std`, with no ThreadSanitizer warning.
 The E1-FLIP V4 ASAN gate on 2026-06-08 passed the default dedicated `index-gc` collector under `FANOUT=8`.
-`Robot.metta` reported 94 index cycles (93 rendezvous, 1 quiescence), `FlyingRaven.metta` reported 80 index cycles
-(78 rendezvous, 2 quiescence), and `examples/cesk-gc/stress_multidir.metta` reported 1142 index cycles
+`Robot.metta` reported 82 index cycles (81 rendezvous, 1 quiescence), `FlyingRaven.metta` reported 72 index cycles
+(70 rendezvous, 2 quiescence), and `examples/cesk-gc/stress_multidir.metta` reported 1142 index cycles
 (15 rendezvous, 1127 quiescence). All three arms reported 0 ASAN/UAF hits, 0 mid-loop cycles under FANOUT, 0
 unexpected non-rendezvous cycles, and no `Error`/`StackOverflow`.
-At commit `2d9b737f`, the full `scripts/verify_cesk_gc_formal.sh` harness passed: proof hygiene, TLC hygiene, 54
+After making SATB the default rendezvous path, the full `scripts/verify_cesk_gc_formal.sh` harness passed:
+proof hygiene, TLC hygiene, 54
 mandatory Rocq files, source coupling, and the full positive/negative TLC discriminator suite.
-There is also an opt-in E2 SATB major path
-(`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
+The E2 SATB major path is now the production rendezvous collector path: the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and
 allocate-black, releases workers while it marks under a shared heap read lock, then requests a second rendezvous,
 waits out in-flight deletion barriers by dropping the SATB guard, and performs a full-major final mark/sweep under the

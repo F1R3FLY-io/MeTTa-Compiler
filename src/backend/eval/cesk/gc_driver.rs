@@ -117,7 +117,9 @@ fn gc_driver_main(request_rx: mpsc::Receiver<GcDriverRequest>) {
                 // collection reclaims). `roots` drops HERE, after the cycle — never
                 // before the mark completes.
                 let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&roots)
+                    crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(
+                        &roots,
+                    )
                 }))
                 .unwrap_or(false);
                 let _ = resp_tx.send(GcDriverDone(ran)); // ignore if the mutator is gone
@@ -167,17 +169,12 @@ fn gc_driver_rendezvous_cycle() {
     let _gip = acquire_gc_in_progress_for_rendezvous();
     let roots = prepare_rendezvous_roots();
 
-    if crate::backend::eval::cesk::index_heap::index_gc::concurrent_satb_enabled() {
-        let satb_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            gc_driver_satb_rendezvous_cycle(roots, _gip);
-        }));
-        if satb_result.is_err() {
-            gc_driver_stw_rendezvous_cycle();
-        }
-        return;
+    let satb_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        gc_driver_satb_rendezvous_cycle(roots, _gip);
+    }));
+    if satb_result.is_err() {
+        gc_driver_stw_rendezvous_cycle();
     }
-
-    run_open_stw_rendezvous_cycle(roots, _gip);
 }
 
 fn gc_driver_stw_rendezvous_cycle() {
@@ -197,14 +194,17 @@ fn run_open_stw_rendezvous_cycle(
     // "rendezvous" (side-Box frees deferred; parked workers may hold laundered refs).
     // This is the FANOUT>0 collect that actually sweeps.
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered_rendezvous(&roots)
+        crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered_rendezvous(
+            &roots,
+        )
     }));
     // `roots` drops HERE, after the cycle — never before the mark completes.
     drop(roots);
     close_open_rendezvous_cycle(Some(gip));
 }
 
-fn acquire_gc_in_progress_for_rendezvous() -> crate::backend::models::gc_allocator::GcInProgressGuard {
+fn acquire_gc_in_progress_for_rendezvous() -> crate::backend::models::gc_allocator::GcInProgressGuard
+{
     use crate::backend::models::gc_allocator as ga;
     // Admission: become the sole collector. Brief yield-retry if a slab cron /
     // session-release path momentarily holds GC_IN_PROGRESS (design Part-12 #6).
@@ -406,7 +406,11 @@ fn assert_rendezvous_union_complete(roots: &[MettaValue], n_snapshot: u32) {
             .filter(|p| fed.binary_search(p).is_err())
             .collect();
         if !missing.is_empty() {
-            let sample: Vec<String> = missing.iter().take(16).map(|p| format!("{:#x}", p)).collect();
+            let sample: Vec<String> = missing
+                .iter()
+                .take(16)
+                .map(|p| format!("{:#x}", p))
+                .collect();
             panic!(
                 "E1-FLIP/CEX-1 D5 rendezvous-union oracle FAILED (a): {} live dispatch \
                  handle(s) registered, but {} of their INPUT∪OUTPUT Addr(s) are NOT in the \
@@ -445,9 +449,7 @@ fn assert_rendezvous_union_complete(roots: &[MettaValue], n_snapshot: u32) {
          `requestor_wait_for_all_reified_parked` and this oracle use the SAME predicate, so a \
          failure here means a slot was re-occupied for cur_gen AFTER the wait returned and \
          BEFORE this check — a straddle re-park ordering bug.",
-        violator,
-        cur_gen,
-        n_snapshot,
+        violator, cur_gen, n_snapshot,
     );
 }
 
@@ -547,7 +549,9 @@ pub(crate) fn collect_quiescence(roots: Vec<MettaValue>) {
     if dedicated_gc_enabled() && n_threads() == 0 {
         if let Err(returned) = try_drive_blocking(roots) {
             // Handoff failed BEFORE consuming roots → inline with the real roots.
-            crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(&returned);
+            crate::backend::eval::cesk::index_heap::index_gc::run_collection_if_triggered(
+                &returned,
+            );
         }
         // Ok(_) ⇒ consumed by the GC thread (ran or safely skipped) — no inline.
     } else {

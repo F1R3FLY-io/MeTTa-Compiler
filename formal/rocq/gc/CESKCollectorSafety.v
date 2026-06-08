@@ -2602,6 +2602,128 @@ Section CESKCollectorSafetyModel.
     - apply Hthunk_clear. exact Hthunk_clear_a.
     - apply Hthunk_replace. exact Hthunk_replace_a.
   Qed.
+
+  Theorem end_to_end_cesk_index_gc_safety :
+    forall (StructuralRoot DriverRoot WorkerRoot SafepointRoot EnvAnchor
+            DispatchAnchor ActiveWorkerRoot DispatchFanoutRoot BatchRoot
+            NewlyAdmittedRoot InitialRoot ShadedDeletion AllocateBlack
+            PublishedAlloc SegmentWritten SegmentPublished SlotWritten
+            SlotPublished AddrReturned ReadObserved ConcurrentReturned
+            ReuseReturned Fresh OnFreeList Marked Freed FutureTouch : Addr -> Prop)
+           (InlineEdge SideEdge SpaceEdge ReaderEdge SatbEdge : Addr -> Addr -> Prop),
+      (forall a,
+          FutureTouch a ->
+          Reach (CollectorRoot StructuralRoot DriverRoot)
+            (SemanticNodeEdge InlineEdge SideEdge SpaceEdge) a \/
+          DriverRootUnion WorkerRoot SafepointRoot EnvAnchor DispatchAnchor a \/
+          SchedulerLiveRoot ActiveWorkerRoot DispatchFanoutRoot BatchRoot
+            NewlyAdmittedRoot a \/
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack)
+            SatbEdge a \/
+          PublishedAlloc a) ->
+      (forall a, CollectorRoot StructuralRoot DriverRoot a -> Marked a) ->
+      (forall parent child, Marked parent -> ReaderEdge parent child -> Marked child) ->
+      (forall parent child, InlineEdge parent child -> ReaderEdge parent child) ->
+      (forall parent child, SideEdge parent child -> ReaderEdge parent child) ->
+      (forall parent child, SpaceEdge parent child -> ReaderEdge parent child) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      (forall a, WorkerRoot a -> DriverRoot a) ->
+      (forall a, SafepointRoot a -> DriverRoot a) ->
+      (forall a, EnvAnchor a -> DriverRoot a) ->
+      (forall a, DispatchAnchor a -> DriverRoot a) ->
+      (forall a, ActiveWorkerRoot a -> DriverRoot a) ->
+      (forall a, DispatchFanoutRoot a -> DriverRoot a) ->
+      (forall a, BatchRoot a -> DriverRoot a) ->
+      (forall a, NewlyAdmittedRoot a -> False) ->
+      (forall a,
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack)
+            SatbEdge a ->
+          Marked a) ->
+      (forall a, PublishedAlloc a -> AllocateBlack a) ->
+      (forall a, ReadObserved a -> AddrReturned a) ->
+      (forall a, AddrReturned a -> SlotPublished a) ->
+      (forall a, SlotPublished a -> SlotWritten a) ->
+      (forall a, SlotPublished a -> SegmentPublished a) ->
+      (forall a, SegmentPublished a -> SegmentWritten a) ->
+      ConcurrentFreshOnly ConcurrentReturned Fresh ->
+      FreeListSeparated Fresh OnFreeList ->
+      (forall a, ReuseReturned a -> OnFreeList a) ->
+      (forall a, FutureTouch a -> ~ Freed a) /\
+      (forall a,
+          ReadObserved a ->
+          PublishedSlotReady SegmentWritten SegmentPublished SlotWritten
+            SlotPublished AddrReturned a) /\
+      (forall a, ConcurrentReturned a -> ~ ReuseReturned a).
+  Proof.
+    intros StructuralRoot DriverRoot WorkerRoot SafepointRoot EnvAnchor
+           DispatchAnchor ActiveWorkerRoot DispatchFanoutRoot BatchRoot
+           NewlyAdmittedRoot InitialRoot ShadedDeletion AllocateBlack
+           PublishedAlloc SegmentWritten SegmentPublished SlotWritten
+           SlotPublished AddrReturned ReadObserved ConcurrentReturned
+           ReuseReturned Fresh OnFreeList Marked Freed FutureTouch
+           InlineEdge SideEdge SpaceEdge ReaderEdge SatbEdge
+           Hfuture_shape Hcollector_root_marked Hreader_closed Hinline Hside Hspace
+           Hsweep Hworker Hsafepoint Henv Hdispatch Hactive Hfanout Hbatch
+           Hadmission_closed Hsatb_mark Hpublished_black Hread Hreturned
+           Hslot_written Hslot_segment Hsegment_written Hfresh Hseparated
+           Hreuse_on_free.
+    split.
+    - intros a Htouch Hfreed.
+      destruct (Hfuture_shape a Htouch) as
+          [Hsemantic |
+           [Hdriver_union |
+            [Hscheduler |
+             [Hsatb | Hpublished]]]].
+      + pose proof
+          (complete_node_edge_reader_retains_semantic_reachability
+             StructuralRoot DriverRoot Marked Freed InlineEdge SideEdge SpaceEdge
+             ReaderEdge Hcollector_root_marked Hreader_closed Hinline Hside
+             Hspace Hsweep a Hsemantic) as Hnot_freed.
+        apply Hnot_freed.
+        exact Hfreed.
+      + apply (Hsweep a Hfreed).
+        apply Hcollector_root_marked.
+        right.
+        destruct Hdriver_union as
+            [Hworker_a | [Hsafepoint_a | [Henv_a | Hdispatch_a]]].
+        * apply Hworker. exact Hworker_a.
+        * apply Hsafepoint. exact Hsafepoint_a.
+        * apply Henv. exact Henv_a.
+        * apply Hdispatch. exact Hdispatch_a.
+      + apply (Hsweep a Hfreed).
+        apply Hcollector_root_marked.
+        right.
+        destruct Hscheduler as
+            [Hactive_a | [Hfanout_a | [Hbatch_a | Hnew_a]]].
+        * apply Hactive. exact Hactive_a.
+        * apply Hfanout. exact Hfanout_a.
+        * apply Hbatch. exact Hbatch_a.
+        * exfalso.
+          apply (Hadmission_closed a).
+          exact Hnew_a.
+      + apply (Hsweep a Hfreed).
+        apply Hsatb_mark.
+        exact Hsatb.
+      + apply (Hsweep a Hfreed).
+        apply Hsatb_mark.
+        apply reach_root.
+        right; right; right.
+        apply Hpublished_black.
+        exact Hpublished.
+    - split.
+      + intros a Hread_observed.
+        apply (index_arena_returned_addr_read_ready
+                 SegmentWritten SegmentPublished SlotWritten SlotPublished
+                 AddrReturned ReadObserved Hread Hreturned Hslot_written
+                 Hslot_segment Hsegment_written a Hread_observed).
+      + intros a Hconcurrent Hreuse.
+        pose proof
+          (concurrent_return_and_reuse_are_disjoint
+             ConcurrentReturned ReuseReturned Fresh OnFreeList Hfresh Hseparated
+             Hreuse_on_free a Hconcurrent) as Hnot_reuse.
+        apply Hnot_reuse.
+        exact Hreuse.
+  Qed.
 End CESKCollectorSafetyModel.
 
 End MeTTaTron_GC_CESKCollectorSafety.

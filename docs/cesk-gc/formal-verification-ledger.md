@@ -243,7 +243,10 @@ can replace the full-major final sweep.
   E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories. It also composes the explicit
   "machine completeness displaces manual registration" theorem into the top-level no-UAF story, and states that
   rendezvous live roots survive from the witness/root-coverage premise even when the old global-quiescence gate is
-  false.
+  false. The `end_to_end_cesk_index_gc_safety` theorem now ties those proof families into one checked boundary:
+  future CESK touches covered by structural roots, driver channels, scheduler-held roots, SATB roots, or
+  allocate-black publication are not freed; observed fixed-arena reads see fully published segment/slot state; and
+  shared concurrent allocation cannot alias exclusive free-list reuse.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:

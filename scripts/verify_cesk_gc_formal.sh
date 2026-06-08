@@ -546,6 +546,10 @@ run_tlc "satb_final_remark" "MC_SATBFinalRemark.tla" "MC_SATBFinalRemark_remark.
   pass ""
 run_tlc "satb_no_final_remark" "MC_SATBFinalRemark.tla" "MC_SATBFinalRemark_none.cfg" \
   fail "Invariant NoFinalRootFreed is violated"
+run_tlc "satb_final_remark_premarked_revisit" "MC_SATBFinalRemarkPremarked.tla" "MC_SATBFinalRemarkPremarked_revisit.cfg" \
+  pass ""
+run_tlc "satb_final_remark_premarked_new_only" "MC_SATBFinalRemarkPremarked.tla" "MC_SATBFinalRemarkPremarked_new_only.cfg" \
+  fail "Invariant NoReachableChildFreed is violated"
 run_tlc "satb_final_sweep_result_checked" "MC_SATBFinalSweepResult.tla" "MC_SATBFinalSweepResult_checked.cfg" \
   pass ""
 run_tlc "satb_final_sweep_result_unchecked" "MC_SATBFinalSweepResult.tla" "MC_SATBFinalSweepResult_unchecked.cfg" \

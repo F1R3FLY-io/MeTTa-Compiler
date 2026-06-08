@@ -227,10 +227,11 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/AllocateBlack.v` and `formal/lean/gc/AllocateBlack.lean`: bridge the E2 allocate-black publication
   order into the SATB theorem. If a freshly published allocation is black before publication makes it visible, then it
   is a SATB root and cannot be freed by sweep; the direct mark-before-publish theorem mirrors the TLA discriminator.
-- `formal/rocq/gc/SATBFinalization.v` and `formal/lean/gc/SATBFinalization.lean`: bridge the E2 finalization
-  obligations into the SATB safety story. Final-rendezvous roots survive because they are re-marked before the
-  exclusive sweep; if the final sweep gate is closed, the checked result must run the STW backstop; and an aborted SATB
-  request is handled only after a freshly requested STW rendezvous runs.
+- `formal/rocq/gc/SATBFinalization.v`: bridges the E2 finalization obligations into the SATB safety story.
+  Final-rendezvous roots survive because they are re-marked before the exclusive sweep; premarked allocate-black final
+  roots must still be revisited so their reachable children are marked; if the final sweep gate is closed, the checked
+  result must run the STW backstop; and an aborted SATB request is handled only after a freshly requested STW
+  rendezvous runs. Lean mirrors may exist for older obligations, but the mandatory proof for this rung is Rocq.
 - `formal/rocq/gc/FullMajorSweep.v` and `formal/lean/gc/FullMajorSweep.lean`: pin the E2 full-major-only mark
   lifecycle. If every SATB-marked address is in the full-major swept range and every swept address is cleared before
   promotion, no SATB mark can remain stale for a later cycle. They also prove the negative young-only obligation:
@@ -373,6 +374,9 @@ can replace the full-major final sweep.
 - `tla/SATBFinalRemark.tla`: checks the E2 final-rendezvous remark. Roots captured after the concurrent mark window
   must be re-marked before the exclusive sweep; omitting that remark frees a final root that was not in the initial
   snapshot.
+- `tla/SATBFinalRemarkPremarked.tla`: checks the E2 allocate-black/final-remark interaction. If a final-rendezvous
+  root was already marked by allocate-black, the final remark must still traverse through it with a separate visited
+  set; a newly-marked-only traversal leaves its white child sweepable.
 - `tla/SATBFinalSweepResult.tla`: checks the E2 final-sweep result obligation. If the final sweep's rendezvous gate is
   unexpectedly closed, the driver must treat the false result as a SATB abort and run the STW backstop; ignoring the
   result lets the request finish without either sweeping or falling back.
@@ -505,7 +509,8 @@ facts the proofs rely on:
   abort calls `gc_driver_stw_rendezvous_cycle`, which re-issues `request_gc`, acquires a fresh rendezvous, prepares
   structural roots, runs the normal STW rendezvous collection, drops roots, and then closes the cycle.
 - `mark_concurrent_roots` marks under `global_index_heap().read()` through `IndexHeap::mark_concurrent`; the final E2
-  sweep takes `global_index_heap().write()`, re-marks the final rendezvous roots, runs a full `heap.sweep()`, then
+  sweep takes `global_index_heap().write()`, re-marks and revisits the final rendezvous roots through
+  `IndexHeap::mark_revisit`, runs a full `heap.sweep()`, then
   promotes and clears all mark bits. The FANOUT trigger is suppressed while `satb_marking_in_progress()`.
 - The scheduler/thread-pool boundary is source-coupled at the GC-facing edges: dispatch/collapse workers wait for an
   in-progress dedicated rendezvous before `EvalGuard::enter`, live fan-outs are registered through

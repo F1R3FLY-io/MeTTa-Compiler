@@ -943,6 +943,17 @@ impl IndexHeap {
         arena.mark_from_roots_with(roots, |addr, out| self.child_addrs_for_mark(addr, out))
     }
 
+    /// E2 SATB final-remark mark.
+    ///
+    /// Allocate-black can leave final-rendezvous roots already marked before the
+    /// final exclusive sweep. The final remark must still traverse through those
+    /// roots, so it uses the arena variant that deduplicates with a separate
+    /// visited set instead of relying on newly set mark bits.
+    pub fn mark_revisit(&self, roots: &[Addr]) -> usize {
+        let arena = &self.arena;
+        arena.mark_from_roots_with_revisit(roots, |addr, out| self.child_addrs_for_mark(addr, out))
+    }
+
     /// E2 SATB concurrent mark entry. This is intentionally a thin wrapper over
     /// the existing full transitive mark: the distinction is the caller's lock
     /// regime. The dedicated GC thread calls this while holding only a shared heap
@@ -2324,7 +2335,7 @@ pub mod index_gc {
 
         let (live_after, old_live_after, stats) = {
             let mut heap = global_index_heap().write().expect("index heap");
-            heap.mark(&addrs);
+            heap.mark_revisit(&addrs);
             if should_drain_side_reclaims(phase, true) {
                 heap.drop_or_free_pending_side_reclaims_after_full_mark();
             }

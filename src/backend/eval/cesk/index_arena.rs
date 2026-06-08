@@ -1365,6 +1365,48 @@ impl<N: Copy> IndexArena<N> {
         marked
     }
 
+    /// Transitively mark from `roots`, traversing roots even if their mark bits
+    /// were already set before this call.
+    ///
+    /// The ordinary mark routine uses the mark bitmap as both the liveness bit
+    /// and the traversal deduplication set. That is correct for a stop-the-world
+    /// mark that starts with a clear bitmap, but the E2 SATB final remark can see
+    /// roots that were allocated black during the concurrent mark window. Those
+    /// roots are already marked, so final remark must deduplicate traversal with
+    /// a separate `seen` set and still walk their children.
+    pub fn mark_from_roots_with_revisit<F: FnMut(Addr, &mut Vec<Addr>)>(
+        &self,
+        roots: &[Addr],
+        mut child_fn: F,
+    ) -> usize {
+        let mut marked = 0usize;
+        let mut seen: std::collections::HashSet<Addr> =
+            std::collections::HashSet::with_capacity(roots.len().max(16));
+        let mut worklist: Vec<Addr> = Vec::with_capacity(roots.len().max(16));
+        for &r in roots {
+            if self.mark(r) {
+                marked += 1;
+            }
+            if seen.insert(r) {
+                worklist.push(r);
+            }
+        }
+        let mut kids: Vec<Addr> = Vec::new();
+        while let Some(addr) = worklist.pop() {
+            kids.clear();
+            child_fn(addr, &mut kids);
+            for &k in &kids {
+                if self.mark(k) {
+                    marked += 1;
+                }
+                if seen.insert(k) {
+                    worklist.push(k);
+                }
+            }
+        }
+        marked
+    }
+
     /// Generic young-only transitive mark. Like [`mark_from_roots_with`] but marks
     /// and descends ONLY young nodes (`addr.segment() >= young_floor`); old nodes
     /// (whether a root or a child) are skipped entirely — neither marked nor
@@ -1964,6 +2006,41 @@ mod tests {
         });
         assert_eq!(newly, 3, "a + b + c reached via the external child source");
         assert!(arena.is_marked(a) && arena.is_marked(b) && arena.is_marked(c));
+        assert!(!arena.is_marked(orphan));
+    }
+
+    #[test]
+    fn mark_from_roots_with_revisit_descends_from_premarked_root() {
+        use std::collections::HashMap;
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(64);
+        let root = arena.alloc(1);
+        let child = arena.alloc(2);
+        let orphan = arena.alloc(3);
+        let mut edges: HashMap<u32, Vec<Addr>> = HashMap::new();
+        edges.insert(root.raw(), vec![child]);
+
+        assert!(
+            arena.mark(root),
+            "setup marks root black before final remark"
+        );
+        let ordinary = arena.mark_from_roots_with(&[root], |addr, out| {
+            if let Some(kids) = edges.get(&addr.raw()) {
+                out.extend_from_slice(kids);
+            }
+        });
+        assert_eq!(
+            ordinary, 0,
+            "ordinary marking does not traverse an already-black root"
+        );
+        assert!(!arena.is_marked(child));
+
+        let revisit = arena.mark_from_roots_with_revisit(&[root], |addr, out| {
+            if let Some(kids) = edges.get(&addr.raw()) {
+                out.extend_from_slice(kids);
+            }
+        });
+        assert_eq!(revisit, 1, "final remark reaches the white child");
+        assert!(arena.is_marked(root) && arena.is_marked(child));
         assert!(!arena.is_marked(orphan));
     }
 

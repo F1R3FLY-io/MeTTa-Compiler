@@ -25,6 +25,65 @@ Section SATBFinalizationModel.
   Definition RequestHandled (SatbSwept StwFallbackRan : Prop) : Prop :=
     SatbSwept \/ StwFallbackRan.
 
+  Definition FinalRemarkRevisits
+      (FinalRoot : Addr -> Prop)
+      (Edge : Addr -> Addr -> Prop)
+      (Marked : Addr -> Prop) : Prop :=
+    forall a, Reach FinalRoot Edge a -> Marked a.
+
+  Definition NewlyMarkedFinalRoot
+      (FinalRoot Premarked : Addr -> Prop)
+      (a : Addr) : Prop :=
+    FinalRoot a /\ ~ Premarked a.
+
+  Theorem new_only_seed_excludes_premarked_final_root :
+    forall (FinalRoot Premarked : Addr -> Prop) a,
+      FinalRoot a ->
+      Premarked a ->
+      ~ NewlyMarkedFinalRoot FinalRoot Premarked a.
+  Proof.
+    intros FinalRoot Premarked a Hfinal Hpremarked Hnew.
+    unfold NewlyMarkedFinalRoot in Hnew.
+    destruct Hnew as [_ Hnot_premarked].
+    apply Hnot_premarked.
+    exact Hpremarked.
+  Qed.
+
+  Theorem final_remark_revisits_premarked_root_child :
+    forall (FinalRoot Premarked Marked : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop)
+           r c,
+      FinalRoot r ->
+      Premarked r ->
+      Edge r c ->
+      FinalRemarkRevisits FinalRoot Edge Marked ->
+      Marked c.
+  Proof.
+    intros FinalRoot Premarked Marked Edge r c Hfinal _ Hedge Hrevisit.
+    unfold FinalRemarkRevisits in Hrevisit.
+    apply Hrevisit.
+    eapply reach_step.
+    - apply reach_root.
+      exact Hfinal.
+    - exact Hedge.
+  Qed.
+
+  Theorem final_remark_revisit_reachable_values_survive_collection :
+    forall (FinalRoot Marked Freed : Addr -> Prop)
+           (Edge : Addr -> Addr -> Prop),
+      FinalRemarkRevisits FinalRoot Edge Marked ->
+      (forall a, Freed a -> ~ Marked a) ->
+      forall a,
+        Reach FinalRoot Edge a ->
+        ~ Freed a.
+  Proof.
+    intros FinalRoot Marked Freed Edge Hrevisit Hsweep a Hreach Hfreed.
+    apply (Hsweep a Hfreed).
+    unfold FinalRemarkRevisits in Hrevisit.
+    apply Hrevisit.
+    exact Hreach.
+  Qed.
+
   Theorem final_remark_root_is_satb_root :
     forall (InitialRoot FinalDriverRoot ShadedDeletion AllocateBlack
             FinalRoot : Addr -> Prop),

@@ -27,6 +27,11 @@ straddle discriminator variants remained ignored.
 The focused TSan gate on 2026-06-08 passed
 `backend::eval::cesk::index_heap::tsan_concurrent_factory::concurrent_read_path_allocations_are_race_free`
 under `RUSTFLAGS="-Zsanitizer=thread -C target-cpu=native"` and `-Zbuild-std`, with no ThreadSanitizer warning.
+The E1-FLIP V4 ASAN gate on 2026-06-08 passed the default dedicated `index-gc` collector under `FANOUT=8`.
+`Robot.metta` reported 94 index cycles (93 rendezvous, 1 quiescence), `FlyingRaven.metta` reported 80 index cycles
+(78 rendezvous, 2 quiescence), and `examples/cesk-gc/stress_multidir.metta` reported 1142 index cycles
+(15 rendezvous, 1127 quiescence). All three arms reported 0 ASAN/UAF hits, 0 mid-loop cycles under FANOUT, 0
+unexpected non-rendezvous cycles, and no `Error`/`StackOverflow`.
 There is also an opt-in E2 SATB major path
 (`METTATRON_INDEX_GC_SATB=1`): the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and

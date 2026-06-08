@@ -2,6 +2,15 @@
 
 use mettatron::{compile, eval, new_env};
 
+macro_rules! eval_bind {
+    (($results:pat, $env:pat) = eval($value:expr, $input_env:expr, $state:expr)) => {
+        #[cfg(feature = "index-gc")]
+        let ($results, $env, _eval_root_handle) = eval($value, $input_env, $state);
+        #[cfg(not(feature = "index-gc"))]
+        let ($results, $env) = eval($value, $input_env, $state);
+    };
+}
+
 fn main() {
     println!("=== MeTTa Backend Usage Examples ===\n");
 
@@ -28,7 +37,7 @@ fn example_arithmetic() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state.source()[0];
-    let (results, _new_env) = eval(expr, env, &state);
+    eval_bind!((results, _new_env) = eval(expr, env, &state));
     println!("Result: {:?}\n", results);
 }
 
@@ -42,7 +51,7 @@ fn example_rules() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = rule_state.source()[0];
-    let (_, env) = eval(expr, env, &rule_state);
+    eval_bind!((_, env) = eval(expr, env, &rule_state));
 
     // Evaluate (double 7)
     let expr_src = "!(double 7)";
@@ -54,7 +63,7 @@ fn example_rules() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = expr_state.source()[0];
-    let (results, _) = eval(expr, env, &expr_state);
+    eval_bind!((results, _) = eval(expr, env, &expr_state));
     println!("Result: {:?}\n", results);
 }
 
@@ -73,14 +82,14 @@ fn example_environment() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr1 = state1.source()[0];
-    let (result1, env_after1) = eval(expr1, env.clone(), &state1);
+    eval_bind!((result1, env_after1) = eval(expr1, env.clone(), &state1));
     println!("Result 1: {:?}", result1);
 
     println!("\nExpression 2: {}", src2);
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr2 = state2.source()[0];
-    let (result2, env_after2) = eval(expr2, env, &state2);
+    eval_bind!((result2, env_after2) = eval(expr2, env, &state2));
     println!("Result 2: {:?}", result2);
 
     // Union the environments (compositional)

@@ -5,6 +5,15 @@
 
 use mettatron::{compile, eval, new_env};
 
+macro_rules! eval_bind {
+    (($results:pat, $env:pat) = eval($value:expr, $input_env:expr, $state:expr)) => {
+        #[cfg(feature = "index-gc")]
+        let ($results, $env, _eval_root_handle) = eval($value, $input_env, $state);
+        #[cfg(not(feature = "index-gc"))]
+        let ($results, $env) = eval($value, $input_env, $state);
+    };
+}
+
 fn main() {
     let source = r#"
         ;; Define some functions
@@ -31,7 +40,7 @@ fn main() {
     let mut env = new_env();
     let source_exprs: Vec<_> = state.source().iter().copied().collect();
     for expr in source_exprs {
-        let (_, updated_env) = eval(expr, env, &state);
+        eval_bind!((_, updated_env) = eval(expr, env, &state));
         env = updated_env;
     }
 

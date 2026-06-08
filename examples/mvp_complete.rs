@@ -2,6 +2,15 @@
 
 use mettatron::{compile, eval, new_env, MettaValueInner};
 
+macro_rules! eval_bind {
+    (($results:pat, $env:pat) = eval($value:expr, $input_env:expr, $state:expr)) => {
+        #[cfg(feature = "index-gc")]
+        let ($results, $env, _eval_root_handle) = eval($value, $input_env, $state);
+        #[cfg(not(feature = "index-gc"))]
+        let ($results, $env) = eval($value, $input_env, $state);
+    };
+}
+
 fn main() {
     println!("=== MeTTa MVP Complete Example ===\n");
 
@@ -28,14 +37,14 @@ fn test_variable_binding() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = rule_state.source()[0];
-    let (_, env) = eval(expr, env, &rule_state);
+    eval_bind!((_, env) = eval(expr, env, &rule_state));
 
     // Evaluate: !(double (+ 3 4))
     let expr_state = compile("!(double (+ 3 4))").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = expr_state.source()[0];
-    let (result, _) = eval(expr, env, &expr_state);
+    eval_bind!((result, _) = eval(expr, env, &expr_state));
 
     println!("(double (+ 3 4)) = {}", result[0]);
     match result[0].inner() {
@@ -56,19 +65,19 @@ fn test_multivalued_results() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = rule1.source()[0];
-    let (_, env) = eval(expr, env, &rule1);
+    eval_bind!((_, env) = eval(expr, env, &rule1));
     let rule2 = compile("(= (color $x) blue)").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = rule2.source()[0];
-    let (_, env) = eval(expr, env, &rule2);
+    eval_bind!((_, env) = eval(expr, env, &rule2));
 
     // Query
     let query = compile("!(color sky)").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query.source()[0];
-    let (result, _) = eval(expr, env, &query);
+    eval_bind!((result, _) = eval(expr, env, &query));
     println!("(color sky) = {}", result[0]);
     println!("Multivalued results supported (returns first match)\n");
 }
@@ -84,7 +93,7 @@ fn test_control_flow() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state.source()[0];
-    let (result, _) = eval(expr, env.clone(), &state);
+    eval_bind!((result, _) = eval(expr, env.clone(), &state));
     println!("(if (< 5 10) \"less\" \"greater\") = {}", result[0]);
     match result[0].inner() {
         MettaValueInner::String(s) => assert_eq!(*s, "less"),
@@ -97,7 +106,7 @@ fn test_control_flow() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state2.source()[0];
-    let (result2, _) = eval(expr, env, &state2);
+    eval_bind!((result2, _) = eval(expr, env, &state2));
     println!("(if True 1 (error ...)) = {}", result2[0]);
     match result2[0].inner() {
         MettaValueInner::Long(1) => {}
@@ -117,7 +126,7 @@ fn test_grounded_functions() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state.source()[0];
-    let (result, _) = eval(expr, env.clone(), &state);
+    eval_bind!((result, _) = eval(expr, env.clone(), &state));
     println!("(+ 10 5) = {}", result[0]);
     match result[0].inner() {
         MettaValueInner::Long(15) => {}
@@ -129,7 +138,7 @@ fn test_grounded_functions() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state2.source()[0];
-    let (result2, _) = eval(expr, env, &state2);
+    eval_bind!((result2, _) = eval(expr, env, &state2));
     println!("(< 3 7) = {}", result2[0]);
     match result2[0].inner() {
         MettaValueInner::Bool(true) => {}
@@ -150,7 +159,7 @@ fn test_evaluation_order() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = state.source()[0];
-    let (result, _) = eval(expr, env, &state);
+    eval_bind!((result, _) = eval(expr, env, &state));
     println!("(quote (+ 1 2)) = {}", result[0]);
 
     match result[0].inner() {
@@ -173,19 +182,19 @@ fn test_equality_operator() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = r1.source()[0];
-    let (_, env) = eval(expr, env, &r1);
+    eval_bind!((_, env) = eval(expr, env, &r1));
     let r2 = compile("(= (factorial 1) 1)").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = r2.source()[0];
-    let (_, env) = eval(expr, env, &r2);
+    eval_bind!((_, env) = eval(expr, env, &r2));
 
     // Evaluate
     let query = compile("!(factorial 1)").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let expr = query.source()[0];
-    let (result, _) = eval(expr, env, &query);
+    eval_bind!((result, _) = eval(expr, env, &query));
     println!("(factorial 1) = {}", result[0]);
     match result[0].inner() {
         MettaValueInner::Long(1) => {}
@@ -207,14 +216,14 @@ fn test_error_termination() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let rule_expr = rule.source()[0];
-    let (_, env) = eval(rule_expr, env, &rule);
+    eval_bind!((_, env) = eval(rule_expr, env, &rule));
 
     // Test error case
     let expr = compile("!(safe-div 10 0)").expect("compile failed");
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let safe_div_expr = expr.source()[0];
-    let (result, _) = eval(safe_div_expr, env.clone(), &expr);
+    eval_bind!((result, _) = eval(safe_div_expr, env.clone(), &expr));
     match result[0].inner() {
         MettaValueInner::Error(_, detail) => {
             println!("(safe-div 10 0) = Error: {}", detail);
@@ -228,7 +237,7 @@ fn test_error_termination() {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let propagate_expr = expr2.source()[0];
-    let (result2, _) = eval(propagate_expr, env, &expr2);
+    eval_bind!((result2, _) = eval(propagate_expr, env, &expr2));
     match result2[0].inner() {
         MettaValueInner::Error(msg, _) => {
             println!("(+ (safe-div 10 0) 5) = Error: {}", msg);

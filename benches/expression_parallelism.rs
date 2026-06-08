@@ -3,6 +3,15 @@ use mettatron::backend::compile::compile;
 use mettatron::backend::eval::eval;
 use mettatron::backend::eval::trampoline::new_env;
 
+macro_rules! eval_bind {
+    (($results:pat, $env:pat) = eval($value:expr, $input_env:expr, $state:expr $(,)?)) => {
+        #[cfg(feature = "index-gc")]
+        let ($results, $env, _eval_root_handle) = eval($value, $input_env, $state);
+        #[cfg(not(feature = "index-gc"))]
+        let ($results, $env) = eval($value, $input_env, $state);
+    };
+}
+
 /// Generate nested arithmetic expressions as MeTTa text for benchmarking.
 /// Example: (+ (* 1 2) (- 3 4) (* 5 6) (/ 7 8))
 fn generate_arithmetic_text(num_operations: usize) -> String {
@@ -70,7 +79,7 @@ fn bench_simple_arithmetic(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
+                eval_bind!((result, _) = eval(black_box(expr), black_box(env), black_box(&state)));
                 black_box(result);
             });
         });
@@ -94,7 +103,7 @@ fn bench_nested_expressions(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("eval_depth", depth), depth, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
+                eval_bind!((result, _) = eval(black_box(expr), black_box(env), black_box(&state)));
                 black_box(result);
             });
         });
@@ -117,7 +126,7 @@ fn bench_mixed_complexity(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("eval", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
+                eval_bind!((result, _) = eval(black_box(expr), black_box(env), black_box(&state)));
                 black_box(result);
             });
         });
@@ -148,7 +157,7 @@ fn bench_threshold_tuning(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("operations", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
+                eval_bind!((result, _) = eval(black_box(expr), black_box(env), black_box(&state)));
                 black_box(result);
             });
         });
@@ -172,10 +181,12 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     group.bench_function("financial_calc", |b| {
         b.iter(|| {
             let env = new_env();
-            let (result, _) = eval(
-                black_box(financial_expr),
-                black_box(env),
-                black_box(&financial_state),
+            eval_bind!(
+                (result, _) = eval(
+                    black_box(financial_expr),
+                    black_box(env),
+                    black_box(&financial_state),
+                )
             );
             black_box(result);
         });
@@ -192,10 +203,12 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     group.bench_function("vector_dot_product", |b| {
         b.iter(|| {
             let env = new_env();
-            let (result, _) = eval(
-                black_box(vector_expr),
-                black_box(env),
-                black_box(&vector_state),
+            eval_bind!(
+                (result, _) = eval(
+                    black_box(vector_expr),
+                    black_box(env),
+                    black_box(&vector_state),
+                )
             );
             black_box(result);
         });
@@ -214,10 +227,12 @@ fn bench_realistic_expressions(c: &mut Criterion) {
     group.bench_function("complex_formula", |b| {
         b.iter(|| {
             let env = new_env();
-            let (result, _) = eval(
-                black_box(complex_expr),
-                black_box(env),
-                black_box(&complex_state),
+            eval_bind!(
+                (result, _) = eval(
+                    black_box(complex_expr),
+                    black_box(env),
+                    black_box(&complex_state),
+                )
             );
             black_box(result);
         });
@@ -244,7 +259,7 @@ fn bench_parallel_overhead(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("trivial_ops", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
+                eval_bind!((result, _) = eval(black_box(expr), black_box(env), black_box(&state)));
                 black_box(result);
             });
         });
@@ -268,7 +283,7 @@ fn bench_scalability(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("scale", num_ops), num_ops, |b, _| {
             b.iter(|| {
                 let env = new_env();
-                let (result, _) = eval(black_box(expr), black_box(env), black_box(&state));
+                eval_bind!((result, _) = eval(black_box(expr), black_box(env), black_box(&state)));
                 black_box(result);
             });
         });

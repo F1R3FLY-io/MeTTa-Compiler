@@ -3,6 +3,15 @@ use mettatron::backend::compile::compile;
 use mettatron::backend::eval::eval;
 use mettatron::backend::eval::trampoline::new_env;
 
+macro_rules! eval_bind {
+    (($results:pat, $env:pat) = eval($value:expr, $input_env:expr, $state:expr $(,)?)) => {
+        #[cfg(feature = "index-gc")]
+        let ($results, $env, _eval_root_handle) = eval($value, $input_env, $state);
+        #[cfg(not(feature = "index-gc"))]
+        let ($results, $env) = eval($value, $input_env, $state);
+    };
+}
+
 /// Generate N fibonacci rules for benchmarking
 fn generate_fibonacci_rules(n: usize) -> String {
     let mut rules = String::new();
@@ -54,7 +63,7 @@ fn bench_rule_matching(c: &mut Criterion) {
 
                     let source_exprs: Vec<_> = state.source().iter().copied().collect();
                     for expr in source_exprs {
-                        let (_, new_env) = eval(black_box(expr), env, black_box(&state));
+                        eval_bind!((_, new_env) = eval(black_box(expr), env, black_box(&state)));
                         env = new_env;
                     }
                     black_box(env)
@@ -81,7 +90,7 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     {
         let source_exprs: Vec<_> = simple_rule_state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (_, new_env) = eval(expr, simple_env, &simple_rule_state);
+            eval_bind!((_, new_env) = eval(expr, simple_env, &simple_rule_state));
             simple_env = new_env;
         }
     }
@@ -95,10 +104,12 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     group.bench_function("simple_variable", |b| {
         b.iter(|| {
             // Only measure query performance, not compilation or rule insertion
-            let (result, _) = eval(
-                black_box(simple_query_expr),
-                simple_env.clone(),
-                black_box(&simple_query_state),
+            eval_bind!(
+                (result, _) = eval(
+                    black_box(simple_query_expr),
+                    simple_env.clone(),
+                    black_box(&simple_query_state),
+                )
             );
             black_box(result)
         });
@@ -113,7 +124,7 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     {
         let source_exprs: Vec<_> = nested_rule_state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (_, new_env) = eval(expr, nested_env, &nested_rule_state);
+            eval_bind!((_, new_env) = eval(expr, nested_env, &nested_rule_state));
             nested_env = new_env;
         }
     }
@@ -125,10 +136,12 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let nested_query_expr = nested_query_state.source()[0];
     group.bench_function("nested_destructuring", |b| {
         b.iter(|| {
-            let (result, _) = eval(
-                black_box(nested_query_expr),
-                nested_env.clone(),
-                black_box(&nested_query_state),
+            eval_bind!(
+                (result, _) = eval(
+                    black_box(nested_query_expr),
+                    nested_env.clone(),
+                    black_box(&nested_query_state),
+                )
             );
             black_box(result)
         });
@@ -143,7 +156,7 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     {
         let source_exprs: Vec<_> = multi_rule_state.source().iter().copied().collect();
         for expr in source_exprs {
-            let (_, new_env) = eval(expr, multi_env, &multi_rule_state);
+            eval_bind!((_, new_env) = eval(expr, multi_env, &multi_rule_state));
             multi_env = new_env;
         }
     }
@@ -155,10 +168,12 @@ fn bench_pattern_complexity(c: &mut Criterion) {
     let multi_query_expr = multi_query_state.source()[0];
     group.bench_function("multi_argument", |b| {
         b.iter(|| {
-            let (result, _) = eval(
-                black_box(multi_query_expr),
-                multi_env.clone(),
-                black_box(&multi_query_state),
+            eval_bind!(
+                (result, _) = eval(
+                    black_box(multi_query_expr),
+                    multi_env.clone(),
+                    black_box(&multi_query_state),
+                )
             );
             black_box(result)
         });
@@ -186,7 +201,7 @@ fn bench_full_evaluation(c: &mut Criterion) {
 
             let source_exprs: Vec<_> = state.source().iter().copied().collect();
             for expr in source_exprs {
-                let (_, new_env) = eval(black_box(expr), env, &state);
+                eval_bind!((_, new_env) = eval(black_box(expr), env, &state));
                 env = new_env;
             }
             black_box(env)
@@ -208,7 +223,7 @@ fn bench_full_evaluation(c: &mut Criterion) {
             // SAFE: MutexGuard dropped at semicolon, before eval() runs.
             // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
             let expr = state.source()[0];
-            let (result, _) = eval(black_box(expr), env, &state);
+            eval_bind!((result, _) = eval(black_box(expr), env, &state));
             black_box(result)
         });
     });
@@ -228,7 +243,7 @@ fn bench_full_evaluation(c: &mut Criterion) {
 
             let source_exprs: Vec<_> = state.source().iter().copied().collect();
             for expr in source_exprs {
-                let (_, new_env) = eval(black_box(expr), env, &state);
+                eval_bind!((_, new_env) = eval(black_box(expr), env, &state));
                 env = new_env;
             }
             black_box(env)
@@ -260,7 +275,7 @@ fn bench_large_rule_sets(c: &mut Criterion) {
 
                     let source_exprs: Vec<_> = state.source().iter().copied().collect();
                     for expr in source_exprs {
-                        let (_, new_env) = eval(black_box(expr), env, black_box(&state));
+                        eval_bind!((_, new_env) = eval(black_box(expr), env, black_box(&state)));
                         env = new_env;
                     }
                     black_box(env)

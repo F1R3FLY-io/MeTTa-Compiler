@@ -12,6 +12,15 @@ use mettatron::backend::MettaValue;
 use std::sync::Arc;
 use std::time::Duration;
 
+macro_rules! eval_bind {
+    (($results:pat, $env:pat) = eval($value:expr, $input_env:expr, $state:expr $(,)?)) => {
+        #[cfg(feature = "index-gc")]
+        let ($results, $env, _eval_root_handle) = eval($value, $input_env, $state);
+        #[cfg(not(feature = "index-gc"))]
+        let ($results, $env) = eval($value, $input_env, $state);
+    };
+}
+
 /// Helper to create an atom
 fn atom(name: &str) -> MettaValue {
     MettaValue::Atom(name.to_string())
@@ -37,7 +46,7 @@ fn eval_tree_walker(expr: &MettaValue) -> Vec<String> {
     // SAFE: MutexGuard dropped at semicolon, before eval() runs.
     // Prevents ABBA deadlock between source mutex and GC_IN_PROGRESS.
     let compiled_expr = state.source()[0];
-    let (results, _env) = eval(compiled_expr, env, &state);
+    eval_bind!((results, _env) = eval(compiled_expr, env, &state));
     results.iter().map(|v| format!("{}", v)).collect()
 }
 

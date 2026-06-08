@@ -19,6 +19,15 @@ use mettatron::backend::eval::eval;
 use mettatron::backend::eval::trampoline::new_env;
 use std::time::Duration;
 
+macro_rules! eval_bind {
+    (($results:pat, $env:pat) = eval($value:expr, $input_env:expr, $state:expr $(,)?)) => {
+        #[cfg(feature = "index-gc")]
+        let ($results, $env, _eval_root_handle) = eval($value, $input_env, $state);
+        #[cfg(not(feature = "index-gc"))]
+        let ($results, $env) = eval($value, $input_env, $state);
+    };
+}
+
 // Include stress test program sources
 const TCO_DEEP_RECURSION: &str = include_str!("metta_samples/tco_deep_recursion.metta");
 const CARTESIAN_PRODUCT_STRESS: &str = include_str!("metta_samples/cartesian_product_stress.metta");
@@ -34,7 +43,7 @@ fn run_program(src: &str) -> usize {
 
     let source_exprs: Vec<_> = state.source().iter().copied().collect();
     for expr in source_exprs {
-        let (_, new_env) = eval(black_box(expr), env, &state);
+        eval_bind!((_, new_env) = eval(black_box(expr), env, &state));
         env = new_env;
         eval_count += 1;
     }

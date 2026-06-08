@@ -38,9 +38,8 @@ use std::hint;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::sync::OnceLock;
 
-// ─────────────────────── DEBUG-ONLY FREE-LIST INTEGRITY CHECK ───────────────
+// ───────────────────────── R-FL FREE-LIST INTEGRITY ─────────────────────────
 //
 // A deterministic detector for the R-FL hypothesis behind the ~3-5% robot
 // wrong-subset corruption under FANOUT>0 + the dedicated index collector,
@@ -60,26 +59,9 @@ use std::sync::OnceLock;
 // maintains the invariant
 //   free_bit(addr) set  ⟺  addr is currently on `free_list`
 // at every push/pop/clear site. A second sweep of an already-listed slot observes
-// the bit and skips the duplicate push. The debug-only `on_free_list` bitmap is a
-// shadow copy, allocated only when this check is enabled, and PANICS on any
-// disagreement with the production `free_bit` lifecycle.
-//
-// `Relaxed` is sufficient on the shadow: every free-list mutation runs under the
-// heap WRITE lock at quiescence (`&mut self`), so the shadow accesses are already
-// totally ordered by that lock — no extra happens-before is needed.
-
-/// `true` iff the free-list integrity check is enabled (env
-/// `METTATRON_INDEX_GC_FREELIST_CHECK=1`). Cached in a `OnceLock` so the env read
-/// happens once.
-#[inline]
-pub fn freelist_check_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("METTATRON_INDEX_GC_FREELIST_CHECK")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
+// the bit and skips the duplicate push. This is now the sole production
+// mechanism; the former env-gated shadow checker was retired after the invariant
+// was promoted into the mandatory Rocq/TLA/source-coupling gate.
 
 /// Number of low bits of an [`Addr`] used for the intra-segment slot offset.
 /// 18 bits ⇒ up to 262_144 slots per segment (~6 MiB at 24 B/node, within the
@@ -200,14 +182,6 @@ struct Segment<N: Copy> {
     /// `AtomicBool` (read `Relaxed`) future-proofs the D-phase concurrent reader;
     /// in B2 it is only flipped at quiescence under `&mut self`.
     released: AtomicBool,
-    /// DEBUG-ONLY free-list integrity shadow (one bit/slot). EMPTY (`Box::new([])`)
-    /// unless [`freelist_check_enabled`]. Bit `off` is SET when slot `off` is pushed
-    /// onto the arena free list and CLEARED when it is popped (or when the major's
-    /// `free_list.clear()` drains the list), maintaining the invariant
-    /// `bit set ⟺ on free_list` in parallel with the production `free_bit`.
-    /// `Relaxed`: all accesses run under the heap write lock at quiescence, which
-    /// already totally-orders them.
-    on_free_list: Box<[AtomicBool]>,
 }
 
 impl<N: Copy> Segment<N> {
@@ -221,14 +195,6 @@ impl<N: Copy> Segment<N> {
         let words = capacity.div_ceil(64);
         let marks: Box<[AtomicU64]> = (0..words).map(|_| AtomicU64::new(0)).collect();
         let free_bits: Box<[AtomicU64]> = (0..words).map(|_| AtomicU64::new(0)).collect();
-        // DEBUG-ONLY free-list integrity shadow: one AtomicBool per slot, allocated
-        // parallel to `nodes` ONLY when the check is enabled (else an empty box —
-        // zero overhead). All slots start NOT on the free list (false).
-        let on_free_list: Box<[AtomicBool]> = if freelist_check_enabled() {
-            (0..capacity).map(|_| AtomicBool::new(false)).collect()
-        } else {
-            Box::new([])
-        };
         Segment {
             nodes,
             len: AtomicUsize::new(0),
@@ -237,36 +203,7 @@ impl<N: Copy> Segment<N> {
             free_bits,
             capacity,
             released: AtomicBool::new(false),
-            on_free_list,
         }
-    }
-
-    /// DEBUG-ONLY free-list integrity: mark slot `off` as ON the free list
-    /// (`Relaxed` — under the heap write lock at quiescence). No-op if the check is
-    /// off (the `on_free_list` box is empty then).
-    #[inline]
-    fn mark_on_freelist(&self, off: usize) {
-        if let Some(b) = self.on_free_list.get(off) {
-            b.store(true, Ordering::Relaxed);
-        }
-    }
-
-    /// DEBUG-ONLY free-list integrity: mark slot `off` as NO LONGER on the free
-    /// list (popped or drained). No-op if the check is off (empty box).
-    #[inline]
-    fn clear_on_freelist(&self, off: usize) {
-        if let Some(b) = self.on_free_list.get(off) {
-            b.store(false, Ordering::Relaxed);
-        }
-    }
-
-    /// DEBUG-ONLY free-list integrity: `true` if slot `off` is currently recorded
-    /// as on the free list. Always false if the check is off (empty box).
-    #[inline]
-    fn is_on_freelist(&self, off: usize) -> bool {
-        self.on_free_list
-            .get(off)
-            .is_some_and(|b| b.load(Ordering::Relaxed))
     }
 
     /// Set the production free-list membership bit for `off`. Returns `true`
@@ -476,30 +413,7 @@ impl<N: Copy> Segment<N> {
         self.bump.store(0, Ordering::Relaxed);
         self.released.store(true, Ordering::Relaxed);
         self.free_bits = Box::new([]);
-        // DEBUG-ONLY free-list integrity: `sweep_range` drains this segment's
-        // existing free-list entries before calling `release`, and the release
-        // `continue`s before the reclaim loop can push new ones. The bitmap can
-        // therefore be dropped with the node storage.
-        self.on_free_list = Box::new([]);
         freed
-    }
-}
-
-#[inline]
-fn assert_free_tracking_agrees<N: Copy>(seg: &Segment<N>, addr: Addr, off: usize, context: &str) {
-    let production = seg.is_free_bit(off);
-    let shadow = seg.is_on_freelist(off);
-    if production != shadow {
-        panic!(
-            "FREE-LIST TRACKING DISAGREEMENT: addr={:?} seg={} off={} context={} \
-             free_bit={} shadow={}",
-            addr,
-            addr.segment(),
-            off,
-            context,
-            production,
-            shadow
-        );
     }
 }
 
@@ -509,24 +423,10 @@ fn push_free_list_entry<N: Copy>(
     free_list: &mut Vec<Addr>,
     addr: Addr,
     off: usize,
-    check: bool,
 ) -> bool {
-    if check {
-        assert_free_tracking_agrees(seg, addr, off, "before-push");
-    }
     if seg.set_free_bit(off) {
-        if check {
-            seg.mark_on_freelist(off);
-            assert_free_tracking_agrees(seg, addr, off, "after-push");
-        }
         free_list.push(addr);
         true
-    } else if check {
-        // A repeated sweep of an already-listed current-segment slot is expected
-        // after R-FL. The detector now verifies the production bit and shadow both
-        // say "already listed" instead of panicking on the duplicate opportunity.
-        assert_free_tracking_agrees(seg, addr, off, "skip-duplicate-push");
-        false
     } else {
         false
     }
@@ -537,7 +437,6 @@ fn drain_free_list_entries_for_released_segment<N: Copy>(
     seg: &Segment<N>,
     free_list: &mut Vec<Addr>,
     segment_index: usize,
-    check: bool,
 ) {
     // A fresh-bump/TLAB allocation path can advance `cur_seg` without consuming
     // this segment's current free-list entries. If the now-non-current young
@@ -548,18 +447,11 @@ fn drain_free_list_entries_for_released_segment<N: Copy>(
             return true;
         }
         let off = addr.offset();
-        if check {
-            assert_free_tracking_agrees(seg, *addr, off, "before-release-drain");
-            if !seg.is_free_bit(off) {
-                panic!(
-                    "RELEASE DRAIN OF NON-FREELIST SLOT: addr={:?} seg={} off={}",
-                    addr,
-                    addr.segment(),
-                    off
-                );
-            }
-            seg.clear_on_freelist(off);
-        }
+        debug_assert!(
+            seg.is_free_bit(off),
+            "release drain found a free-list entry without a free_bit: addr={:?}",
+            addr
+        );
         seg.clear_free_bit(off);
         false
     });
@@ -778,28 +670,18 @@ impl<N: Copy> IndexArena<N> {
     /// `cur_seg` slots ⇒ `cur_seg` is on top ⇒ this skips rarely.
     pub fn pop_young_free_slot(&mut self) -> Option<Addr> {
         let cur = self.current_seg();
-        let check = freelist_check_enabled();
         while let Some(addr) = self.free_list.pop() {
             // A popped slot — whether RETURNED for reuse or DISCARDED
             // (non-`cur_seg`) — is no longer on the free list, so clear the
-            // production bit BEFORE the cur-segment branch. The optional detector
-            // first checks the shadow agrees and that the popped slot was listed.
+            // production bit BEFORE the cur-segment branch.
             // SAFETY: `addr` came off our own free list, so `addr.segment() <
             // seg_count` and the segment is published.
             let seg = unsafe { self.segment(addr.segment()) };
-            if check {
-                assert_free_tracking_agrees(seg, addr, addr.offset(), "before-pop");
-                if !seg.is_free_bit(addr.offset()) {
-                    panic!(
-                        "POP OF NON-FREELIST SLOT: addr={:?} seg={} off={} — a slot \
-                         popped from the free list was not recorded as on it",
-                        addr,
-                        addr.segment(),
-                        addr.offset()
-                    );
-                }
-                seg.clear_on_freelist(addr.offset());
-            }
+            debug_assert!(
+                seg.is_free_bit(addr.offset()),
+                "popped free-list entry without a free_bit: addr={:?}",
+                addr
+            );
             seg.clear_free_bit(addr.offset());
             if addr.segment() == cur {
                 return Some(addr);
@@ -1189,8 +1071,6 @@ impl<N: Copy> IndexArena<N> {
         // the side-free snapshot for that dead occupant already exists, and a second
         // snapshot could later free a side index that a reused live node owns.
         let mut stats = SweepStats::default();
-        // DEBUG-ONLY free-list integrity: bound once.
-        let check = freelist_check_enabled();
         if clear_free_list {
             // A MAJOR drains the entire free list and rebuilds it from scratch, so
             // BEFORE draining we must reset the production free bit for EVERY entry
@@ -1202,18 +1082,11 @@ impl<N: Copy> IndexArena<N> {
             for a in &snapshot {
                 // SAFETY: every Addr on our free list names a published segment.
                 let seg = unsafe { self.segment(a.segment()) };
-                if check {
-                    assert_free_tracking_agrees(seg, *a, a.offset(), "before-major-drain");
-                    if !seg.is_free_bit(a.offset()) {
-                        panic!(
-                            "DRAIN OF NON-FREELIST SLOT: addr={:?} seg={} off={}",
-                            a,
-                            a.segment(),
-                            a.offset()
-                        );
-                    }
-                    seg.clear_on_freelist(a.offset());
-                }
+                debug_assert!(
+                    seg.is_free_bit(a.offset()),
+                    "major drain found a free-list entry without a free_bit: addr={:?}",
+                    a
+                );
                 seg.clear_free_bit(a.offset());
             }
             // Full sweep: rebuild from scratch (never persist across a full cycle).
@@ -1250,7 +1123,7 @@ impl<N: Copy> IndexArena<N> {
 
             if fully_dead && !is_current {
                 let seg: &Segment<N> = unsafe { &*seg_ptr };
-                drain_free_list_entries_for_released_segment(seg, &mut self.free_list, si, check);
+                drain_free_list_entries_for_released_segment(seg, &mut self.free_list, si);
                 on_release(si);
                 // Take a `&mut Segment` through the raw pointer to drop its storage.
                 // SAFETY: `&mut self` is exclusive; no other reference to this
@@ -1278,7 +1151,7 @@ impl<N: Copy> IndexArena<N> {
                 } else if word == 0 {
                     for off in base..base + 64 {
                         let a = Addr::new(si as u32, off as u32);
-                        if push_free_list_entry(seg, &mut self.free_list, a, off, check) {
+                        if push_free_list_entry(seg, &mut self.free_list, a, off) {
                             reclaimed_out.push(a);
                             stats.reclaimed_to_free_list += 1;
                         }
@@ -1289,7 +1162,7 @@ impl<N: Copy> IndexArena<N> {
                             stats.live += 1;
                         } else {
                             let a = Addr::new(si as u32, (base + b) as u32);
-                            if push_free_list_entry(seg, &mut self.free_list, a, base + b, check) {
+                            if push_free_list_entry(seg, &mut self.free_list, a, base + b) {
                                 reclaimed_out.push(a);
                                 stats.reclaimed_to_free_list += 1;
                             }
@@ -1311,7 +1184,7 @@ impl<N: Copy> IndexArena<N> {
                         // published prefix (an orphaned-payload leak). Byte-identical
                         // while the side-free is inert (the extra entries are unused).
                         let a = Addr::new(si as u32, (base + b) as u32);
-                        if push_free_list_entry(seg, &mut self.free_list, a, base + b, check) {
+                        if push_free_list_entry(seg, &mut self.free_list, a, base + b) {
                             reclaimed_out.push(a);
                             stats.reclaimed_to_free_list += 1;
                         }

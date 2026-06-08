@@ -302,6 +302,9 @@ assert_before "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_MIN_BYTES" "
 # live proof obligation is the persistent free-bit invariant below, so the
 # behavior-changing oracle and its collector-read bypass must not return.
 assert_zero "src/backend/eval/cesk/index_arena.rs" "METTATRON_INDEX_GC_SWEPT_ORACLE"
+assert_zero "src/backend/eval/cesk/index_arena.rs" "METTATRON_INDEX_GC_FREELIST_CHECK"
+assert_zero "src/backend/eval/cesk/index_arena.rs" "freelist_check_enabled"
+assert_zero "src/backend/eval/cesk/index_arena.rs" "on_free_list"
 assert_zero "src/backend/eval/cesk/index_arena.rs" "swept_oracle_enabled"
 assert_zero "src/backend/eval/cesk/index_arena.rs" "enter_collector_read_scope"
 assert_zero "src/backend/eval/cesk/index_arena.rs" "CollectorReadScope"
@@ -313,6 +316,7 @@ assert_zero "src/backend/models/metta_value.rs" "swept_oracle_enabled"
 assert_zero "src/backend/models/metta_value.rs" "in_collector_read_scope"
 assert_zero "src/backend/models/metta_value.rs" "is_addr_swept"
 assert_zero "src/backend/models/metta_value.rs" "INNER_SHADOW HIT"
+assert_regex_zero "src" "METTATRON_INDEX_GC_(DEDICATED|PARALLEL|SATB|SWEPT_ORACLE|FREELIST_CHECK|NO_RECYCLE|DISABLE)"
 
 # The rendezvous gate must be the witness flag, not the obsolete parked-count
 # equality. The old parked-count function can survive for unit tests, but not as
@@ -332,7 +336,7 @@ assert_count_between "src/backend/eval/cesk/index_arena.rs" "fn sweep_range" "se
 assert_count_between "src/backend/eval/cesk/index_arena.rs" "fn sweep_range" "seg.clear_marks();" "reclaimed_out.push(a);" "3"
 assert_before "src/backend/eval/cesk/index_arena.rs" "seg.clear_free_bit(addr.offset());" "if addr.segment() == cur {"
 assert_before "src/backend/eval/cesk/index_arena.rs" "free_list.retain(|addr| {" "seg.clear_free_bit(off);"
-assert_before "src/backend/eval/cesk/index_arena.rs" "drain_free_list_entries_for_released_segment(seg, &mut self.free_list, si, check);" "stats.bytes_released += seg_mut.release();"
+assert_before "src/backend/eval/cesk/index_arena.rs" "drain_free_list_entries_for_released_segment(seg, &mut self.free_list, si);" "stats.bytes_released += seg_mut.release();"
 
 # C1 young mark/reuse coupling: free-list reuse is current-segment-only. The
 # minor marker sets mark bits only on young nodes, but traverses every reachable

@@ -650,9 +650,9 @@ facts the proofs rely on:
   coupling rejects reintroducing either retired rendezvous env switch in `gc_allocator.rs` or the active GC scripts.
 - The index collector has no production environment-variable off switch. The quiescence, mid-loop, and rendezvous
   gates are safety predicates only; source coupling rejects reintroducing the retired index-GC disable hook.
-- The R-FL no-recycle/swept-slot diagnostic is retired from production source. Source coupling now rejects the
-  behavior-changing oracle and collector-read bypass; the live R-FL obligation is the persistent free-bit invariant
-  plus its Rocq/TLA/source-coupled checks.
+- The R-FL no-recycle/swept-slot diagnostic and env-gated free-list shadow checker are retired from production source.
+  Source coupling now rejects the behavior-changing oracle, collector-read bypass, and `METTATRON_INDEX_GC_FREELIST_CHECK`;
+  the live R-FL obligation is the persistent free-bit invariant plus its Rocq/TLA/source-coupled checks.
 - The reclaim-time side-owner bug is modeled as a side-reclaim snapshot obligation: side payload frees drain the
   saved owner snapshot captured before node-slot reuse, and segment reset drops any pending snapshot before side
   indices can be reused. `SideFreeQuiescence.v` and `SideReclaimSnapshot.tla` cover the positive and negative cases.

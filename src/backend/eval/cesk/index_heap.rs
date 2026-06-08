@@ -3558,7 +3558,6 @@ mod tests {
 
     #[test]
     fn rendezvous_forced_churn_reuses_free_list_without_duplicates() {
-        std::env::set_var("METTATRON_INDEX_GC_FREELIST_CHECK", "1");
         let _mode = enter_index_mode_for_test();
         let target_young_bytes = 3 * 1024 * 1024;
         let nodes_to_force_minor = target_young_bytes / std::mem::size_of::<Node>().max(1) + 1;

@@ -33,7 +33,7 @@ The E1-FLIP V4 ASAN gate on 2026-06-08 passed the default dedicated `index-gc` c
 (15 rendezvous, 1127 quiescence). All three arms reported 0 ASAN/UAF hits, 0 mid-loop cycles under FANOUT, 0
 unexpected non-rendezvous cycles, and no `Error`/`StackOverflow`.
 After making SATB the default rendezvous path, the full `scripts/verify_cesk_gc_formal.sh` harness passed:
-proof hygiene, TLC hygiene, 54
+proof hygiene, TLC hygiene, 58
 mandatory Rocq files, source coupling, and the full positive/negative TLC discriminator suite.
 The E2 SATB major path is now the production rendezvous collector path: the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and
@@ -78,6 +78,10 @@ can replace the full-major final sweep.
   inside the structural CESK-root closure and sweep frees only unmarked nodes, no future-touched node can be freed.
   Rocq also states the manual-registration boundary explicitly: a registry-only value is not an index collector root,
   and no-UAF follows from machine completeness rather than from auxiliary root registration.
+- `formal/rocq/gc/RegistryIsolation.v`: proves the dedicated A5/E1 index-mode root-source isolation companion to
+  `tla/RegistryIsolation.tla`. Structural CESK roots and driver transport roots are valid index collector sources;
+  the legacy `RootProvider` registry is not. A registry-only value is therefore not an index root, and future-touch
+  safety is independent of auxiliary manual registration.
 - `formal/rocq/gc/NodeEdgeCompleteness.v` and `formal/lean/gc/NodeEdgeCompleteness.lean`: prove the node-edge
   completeness obligation. If the marker's concrete reader covers every semantic index-node edge class
   (inline handle fields, side-arena `SExpr`/`Conjunction` children, and first-class `SpaceHandle` contents), then
@@ -415,6 +419,9 @@ can replace the full-major final sweep.
   `NoStaleOldMark`.
 - `tla/SATBAbortFallback.tla`: checks the E2 abort-to-STW backstop. If the SATB path aborts after cleanup, the
   driver must re-request and run a fresh STW rendezvous before treating the request as handled.
+- `formal/rocq/gc/SATBAbortFallback.v`: proves the abstract SATB abort-control obligation paired with the TLA+
+  discriminator. A completed request after SATB abort has a collection only if the abort posts and runs the requested
+  STW fallback; missing fallback or running a fallback without a request exposes a driver gap.
 - `tla/RegistryIsolation.tla`: checks the A5/E1 root-source boundary. Index mode may build roots from structural CESK
   readers and explicit driver transport roots only; enabling the legacy `RootProvider` registry as an index root source
   violates `NoRegistryInIndex`.

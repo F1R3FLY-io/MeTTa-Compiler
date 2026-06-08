@@ -161,6 +161,10 @@ can replace the full-major final sweep.
   Concurrent allocation returns only fresh bump slots, fresh slots are separated from the free list, and free-list reuse
   is reserved for the exclusive path; therefore a concurrent allocation cannot return a free-list slot or alias a
   reuse return.
+- `formal/rocq/gc/IndexAllocatorRefinement.v`: composes the Rust source-coupled allocator facts into the abstract
+  contract consumed by `CESKCollectorSafety.v`: fixed-slot reads observe published segment/slot bytes, side-payload
+  reads observe same-segment published side entries, published allocations satisfy allocate-black, shared concurrent
+  allocation is disjoint from exclusive free-list reuse, and `free_bit` tracks a duplicate-free free list.
 - `formal/rocq/gc/SideFreeQuiescence.v` and `formal/lean/gc/SideFreeQuiescence.lean`: prove the side-payload
   lifetime obligation. If side payload boxes are freed only on the true-quiescence arm, stack laundered references
   imply a non-quiescent evaluator, and the materialization shadow is cleared before any future dereference, then

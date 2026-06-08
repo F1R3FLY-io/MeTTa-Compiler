@@ -83,6 +83,11 @@ can replace the full-major final sweep.
   inside the structural CESK-root closure and sweep frees only unmarked nodes, no future-touched node can be freed.
   Rocq also states the manual-registration boundary explicitly: a registry-only value is not an index collector root,
   and no-UAF follows from machine completeness rather than from auxiliary root registration.
+- `formal/rocq/gc/StructuralRootSourceAudit.v`: closes the source-coupling audit over the no-registry root
+  architecture. It enumerates the source-coupled live root families (S/C/K, frame-local environments, E0/global
+  anchors, typed K-spine, VM/JIT leaves, selective choice points, deferred env drops, driver-C, worker/safepoint
+  publications, live env/dispatch anchors, and batch handoff roots) and proves that future-touch safety depends only
+  on those structural/driver roots, not on a RootProvider/root-registry/frame-chain side channel.
 - `formal/rocq/gc/RegistryIsolation.v`: proves the dedicated A5/E1 index-mode root-source isolation companion to
   `tla/RegistryIsolation.tla`. Structural CESK roots and driver transport roots are valid index collector sources;
   the legacy `RootProvider` registry is not. A registry-only value is therefore not an index root, and future-touch

@@ -125,6 +125,15 @@ assert_zero() {
   fi
 }
 
+assert_regex_zero() {
+  local path="$1" pattern="$2" actual
+  actual="$(rg -n -g '*.rs' -- "$pattern" "$REPO/$path" || true)"
+  if [[ -n "$actual" ]]; then
+    fail "expected zero regex match(es) for '$pattern' under $path; found:
+$actual"
+  fi
+}
+
 # A5 structural-root architecture: the dynamic root registry and raw frame-chain
 # discovery path must remain slab-only. The index collector reads roots from the
 # reified CESK machine plus narrow driver transport channels.
@@ -430,6 +439,7 @@ assert_after_before "src/backend/eval/mod.rs" "pub fn eval(" "state.collect_driv
 assert_after_before "src/backend/eval/mod.rs" "pub fn eval(" "crate::backend::models::register_temporary_roots(driver_roots)" "let _guard = EvalGuard::enter();"
 assert_after_before "src/backend/eval/tier_forced.rs" "pub fn eval_with_tier(" "state.collect_driver_program_roots(&mut driver_roots);" "let outcome = if let Err(reason) = tier_applicable"
 assert_after_before "src/backend/eval/tier_forced.rs" "pub fn eval_with_tier(" "crate::backend::models::register_temporary_roots(driver_roots)" "let outcome = if let Err(reason) = tier_applicable"
+assert_regex_zero "tests" "for .*source\\(\\)\\.iter"
 
 # E2 batch-result handoff coupling: async rholang batch workers leave the
 # rendezvous participant set before the caller consumes their result vectors.

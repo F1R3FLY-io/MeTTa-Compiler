@@ -27,9 +27,9 @@ fn eval_last(source: &str) -> Vec<String> {
     let state = compile(source).expect("compile failed");
     let mut env = new_env();
     let mut last: Vec<String> = Vec::new();
-    let expr_count = state.source().len();
-    for (idx, expr) in state.source().iter().enumerate() {
-        let expr = *expr;
+    let source_exprs = state.source_snapshot();
+    let expr_count = source_exprs.len();
+    for (idx, expr) in source_exprs.into_iter().enumerate() {
         let (results, env_after, ..) = eval(expr, env, &state);
         env = env_after;
         if idx == expr_count - 1 {
@@ -46,9 +46,9 @@ fn eval_last_tree(source: &str) -> Vec<String> {
     let state = compile(source).expect("compile failed");
     let mut env = new_env();
     let mut last: Vec<String> = Vec::new();
-    let expr_count = state.source().len();
-    for (idx, expr) in state.source().iter().enumerate() {
-        let expr = *expr;
+    let source_exprs = state.source_snapshot();
+    let expr_count = source_exprs.len();
+    for (idx, expr) in source_exprs.into_iter().enumerate() {
         let (results, env_after) = eval_tree(expr, env, &state);
         env = (*env_after).clone();
         if idx == expr_count - 1 {

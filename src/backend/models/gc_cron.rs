@@ -533,19 +533,16 @@ mod tests {
         singleton.shutdown();
     }
 
-    /// Test that high allocation rate triggers GC request.
+    /// Test that high allocation rate triggers the correct collector signal.
     ///
-    /// Polls the monotonic `gc_requests_total()` counter rather than the
-    /// transient `GC_REQUESTED` flag. Post Phase 9 (commit `82ccb77`), the
-    /// cron monitor calls `request_gc()` AND `maybe_async_gc()` back-to-back
-    /// on the same thread tick — `maybe_async_gc()` consumes the flag via
-    /// CAS within nanoseconds of being set, so cross-thread polling of
-    /// `is_gc_requested()` would race deterministically. The monotonic
-    /// counter is sticky and append-only: it captures the request event
-    /// regardless of which path subsequently consumed the flag.
+    /// Slab still uses the legacy cron producer and is checked through the
+    /// monotonic `gc_requests_total()` counter rather than the transient
+    /// `GC_REQUESTED` flag. Index-gc suppresses that producer by design: the
+    /// dedicated CESK collector is driven by the safepoint watermark, so a
+    /// driverless cron request would violate the single-regime proof.
     #[test]
     fn test_gc_requested_on_high_alloc_rate() {
-        use super::super::gc_allocator::gc_requests_total;
+        use super::super::gc_allocator::{dedicated_gc_enabled, gc_requests_total};
 
         // Capture baseline count before spawning the cron (other parallel
         // tests may have incremented it; we only care about the delta).
@@ -564,7 +561,6 @@ mod tests {
         // Simulate high allocation rate: 1M allocs
         alloc_count.store(1_000_000, Ordering::Relaxed);
 
-        // Poll until the monotonic counter advances (with timeout).
         // The monitor fires every 100ms; allow 20 poll cycles (2s) of
         // scheduler slack under heavy parallel test load.
         let deadline = Instant::now() + Duration::from_millis(2000);
@@ -577,14 +573,24 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
 
-        assert!(
-            observed,
-            "gc_requests_total() should advance after high allocation rate \
-             (baseline {}, current {}) — cron monitor must call request_gc() \
-             when alloc rate exceeds ALLOC_RATE_THRESHOLD",
-            baseline,
-            gc_requests_total(),
-        );
+        if dedicated_gc_enabled() {
+            assert!(
+                !observed,
+                "index-gc dedicated collector must suppress legacy cron \
+                 request_gc() producer (baseline {}, current {})",
+                baseline,
+                gc_requests_total(),
+            );
+        } else {
+            assert!(
+                observed,
+                "gc_requests_total() should advance after high allocation rate \
+                 (baseline {}, current {}) — slab cron monitor must call request_gc() \
+                 when alloc rate exceeds ALLOC_RATE_THRESHOLD",
+                baseline,
+                gc_requests_total(),
+            );
+        }
 
         singleton.shutdown();
     }

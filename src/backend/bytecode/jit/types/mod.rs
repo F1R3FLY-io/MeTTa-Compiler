@@ -62,7 +62,9 @@ pub use context::{FunctionTypeInfo, JitContext, TypeClassification, TypeSignatur
 pub use error::{JitError, JitResult};
 
 // Re-export nondeterminism types
-pub use nondet::{JitAlternative, JitAlternativeTag, JitBailoutReason, JitChoicePoint};
+pub use nondet::{
+    JitAlternative, JitAlternativeTag, JitBailoutReason, JitChoicePoint, JitChoicePointSpineOwner,
+};
 
 // Re-export value type
 pub use value::JitValue;

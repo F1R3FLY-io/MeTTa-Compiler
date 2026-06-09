@@ -175,6 +175,11 @@ can replace the full-major final sweep.
   JIT bridge proof. Native JIT fork now allocates stack-save-pool slots monotonically within one execution and bails out
   before publishing a choice point if no fresh slot is available. Therefore a later fork cannot wrap and overwrite a
   live choice point's saved stack values before the root walker or backtracking restore reads them.
+- `formal/rocq/gc/JitChoicePointProductionRestore.v`: proves the production E3 JIT choice-point restore carrier. The
+  generated-code ABI still receives a contiguous `repr(C)` pointer, but the backing buffer is owned by
+  `JitChoicePointSpineOwner`; `JitContext.choice_points` is only a transient pointer view. The theorem composes
+  owner-live-prefix coverage, ContinuationAddr bridge root walking, restore-from-owner-slot, and pop-removes-live-slot
+  premises to show every value a future JIT fail/backtrack transition can touch is rooted and cannot be freed.
 - `formal/rocq/gc/TrampolineFanoutSpineBridge.v`: proves the trampoline fan-out/collapse implementation-level E3
   bridge. Collector-facing root walking materializes `ProcessRuleMatches`, `ProcessAmb`, `ProcessMatchTemplates`,
   `ProcessCollapseEvalResults`,
@@ -651,8 +656,10 @@ facts the proofs rely on:
   `collect_roots_into` walks the `GenericChoicePointStack` through `ContinuationAddr` handles; JIT
   `collect_jit_roots_into` bridges the live native `choice_points[..]` prefix into a `SpineStore<JitChoicePoint>`
   before walking saved chunk constants, saved stack-pool values, and value/space-match/chunk/rule-match alternatives;
-  native JIT stack-save-pool allocation is non-wrapping and bails out before publishing a choice point when no fresh
-  slot exists; `StoredBranchCoroutine::collect_values` walks remaining branches, branch bindings, and yielded values;
+  production JIT execution owns the contiguous ABI buffer through `JitChoicePointSpineOwner` and passes
+  `JitContext.choice_points` only as a transient pointer view at the executor/backtracking/arena entry points; native
+  JIT stack-save-pool allocation is non-wrapping and bails out before publishing a choice point when no fresh slot
+  exists; `StoredBranchCoroutine::collect_values` walks remaining branches, branch bindings, and yielded values;
   trampoline fan-out/collapse K entries are normalized at the loop boundary into
   `Continuation::TrampolineFanoutSpine` handles backed by `SpineStore<Continuation>`, root walking resolves those
   handles through the bridge node walker for rule-match, amb, match-template, collapse-eval, parallel-dispatch, and

@@ -10,8 +10,8 @@ use crate::backend::bytecode::{BytecodeChunk, BytecodeVM, MorkBridge, VmResult};
 use crate::backend::models::MettaValue;
 
 use super::super::{
-    ChunkId, JitBindingFrame, JitCache, JitChoicePoint, JitCompiler, JitContext, JitValue, Tier,
-    TieredCompiler, STAGE2_THRESHOLD,
+    ChunkId, JitBindingFrame, JitCache, JitChoicePointSpineOwner, JitCompiler, JitContext,
+    JitValue, Tier, TieredCompiler, STAGE2_THRESHOLD,
 };
 use super::config::{HybridConfig, HybridStats};
 
@@ -42,8 +42,8 @@ pub struct HybridExecutor {
     pub(super) stats: HybridStats,
     /// Reusable JIT value stack
     pub(super) jit_stack: Vec<JitValue>,
-    /// Reusable JIT choice points buffer
-    pub(super) jit_choice_points: Vec<JitChoicePoint>,
+    /// Reusable JIT choice-point continuation-spine owner.
+    pub(super) jit_choice_points: JitChoicePointSpineOwner,
     /// Reusable JIT results buffer
     pub(super) jit_results: Vec<JitValue>,
     /// Reusable JIT binding frames buffer
@@ -89,7 +89,9 @@ impl HybridExecutor {
             jit_cache: Arc::new(JitCache::new()),
             tiered_compiler: Arc::new(TieredCompiler::new()),
             jit_stack: vec![JitValue::unit(); config.jit_stack_capacity],
-            jit_choice_points: Vec::with_capacity(config.jit_choice_point_capacity),
+            jit_choice_points: JitChoicePointSpineOwner::with_capacity(
+                config.jit_choice_point_capacity,
+            ),
             jit_results: Vec::with_capacity(config.jit_results_capacity),
             jit_binding_frames: Vec::with_capacity(config.jit_binding_frames_capacity),
             jit_cut_markers: Vec::with_capacity(config.jit_cut_markers_capacity),
@@ -118,7 +120,9 @@ impl HybridExecutor {
             jit_cache: cache,
             tiered_compiler: compiler,
             jit_stack: vec![JitValue::unit(); config.jit_stack_capacity],
-            jit_choice_points: Vec::with_capacity(config.jit_choice_point_capacity),
+            jit_choice_points: JitChoicePointSpineOwner::with_capacity(
+                config.jit_choice_point_capacity,
+            ),
             jit_results: Vec::with_capacity(config.jit_results_capacity),
             jit_binding_frames: Vec::with_capacity(config.jit_binding_frames_capacity),
             jit_cut_markers: Vec::with_capacity(config.jit_cut_markers_capacity),
@@ -436,15 +440,12 @@ impl HybridExecutor {
         for v in &mut self.jit_stack {
             *v = JitValue::unit();
         }
-        self.jit_choice_points.clear();
+        self.jit_choice_points
+            .reset_for_execution(self.config.jit_choice_point_capacity);
         self.jit_results.clear();
         self.jit_binding_frames.clear();
         self.jit_cut_markers.clear();
         // Ensure capacity
-        self.jit_choice_points.resize(
-            self.config.jit_choice_point_capacity,
-            JitChoicePoint::default(),
-        );
         self.jit_results
             .resize(self.config.jit_results_capacity, JitValue::unit());
         self.jit_binding_frames.resize(
@@ -465,7 +466,7 @@ impl HybridExecutor {
                 constants.as_ptr(),
                 constants.len(),
                 self.jit_choice_points.as_mut_ptr(),
-                self.config.jit_choice_point_capacity,
+                self.jit_choice_points.execution_cap(),
                 self.jit_results.as_mut_ptr(),
                 self.config.jit_results_capacity,
             )

@@ -32,9 +32,9 @@ use crate::backend::bytecode::{GenericBytecodeChunk, MettaEnvironment, VmError, 
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, SlabAllocator};
 
 use super::super::{
-    JitBindingFrame, JitChoicePoint, JitContext, JitValue, TypeSignatureRegistry,
-    MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, STACK_SAVE_POOL_SIZE, TAG_ATOM, TAG_BOOL, TAG_ERROR,
-    TAG_LONG, TAG_MASK, TAG_PTR, TAG_UNIT, TAG_VAR,
+    JitBindingFrame, JitContext, JitValue, TypeSignatureRegistry, MAX_STACK_SAVE_VALUES,
+    PAYLOAD_MASK, STACK_SAVE_POOL_SIZE, TAG_ATOM, TAG_BOOL, TAG_ERROR, TAG_LONG, TAG_MASK, TAG_PTR,
+    TAG_UNIT, TAG_VAR,
 };
 use super::executor::HybridExecutor;
 
@@ -67,16 +67,13 @@ impl HybridExecutor {
         for v in &mut self.jit_stack {
             *v = JitValue::unit();
         }
-        self.jit_choice_points.clear();
+        self.jit_choice_points
+            .reset_for_execution(self.config.jit_choice_point_capacity);
         self.jit_results.clear();
         self.jit_binding_frames.clear();
         self.jit_cut_markers.clear();
 
         // Ensure capacity
-        self.jit_choice_points.resize(
-            self.config.jit_choice_point_capacity,
-            JitChoicePoint::default(),
-        );
         self.jit_results
             .resize(self.config.jit_results_capacity, JitValue::unit());
         self.jit_binding_frames.resize(
@@ -98,7 +95,7 @@ impl HybridExecutor {
                 constants.len(),
                 allocator as *const SlabAllocator as *const (),
                 self.jit_choice_points.as_mut_ptr(),
-                self.config.jit_choice_point_capacity,
+                self.jit_choice_points.execution_cap(),
                 self.jit_results.as_mut_ptr(),
                 self.config.jit_results_capacity,
             )
@@ -247,16 +244,13 @@ impl HybridExecutor {
         for v in &mut self.jit_stack {
             *v = JitValue::unit();
         }
-        self.jit_choice_points.clear();
+        self.jit_choice_points
+            .reset_for_execution(self.config.jit_choice_point_capacity);
         self.jit_results.clear();
         self.jit_binding_frames.clear();
         self.jit_cut_markers.clear();
 
         // Ensure capacity
-        self.jit_choice_points.resize(
-            self.config.jit_choice_point_capacity,
-            JitChoicePoint::default(),
-        );
         self.jit_results
             .resize(self.config.jit_results_capacity, JitValue::unit());
         self.jit_binding_frames.resize(
@@ -278,7 +272,7 @@ impl HybridExecutor {
                 constants.len(),
                 allocator as *const SlabAllocator as *const (),
                 self.jit_choice_points.as_mut_ptr(),
-                self.config.jit_choice_point_capacity,
+                self.jit_choice_points.execution_cap(),
                 self.jit_results.as_mut_ptr(),
                 self.config.jit_results_capacity,
             )

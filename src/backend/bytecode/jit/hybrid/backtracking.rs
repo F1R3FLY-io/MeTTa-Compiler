@@ -9,9 +9,7 @@ use tracing::{debug, trace};
 use crate::backend::bytecode::{BytecodeChunk, BytecodeVM, VmError, VmResult};
 use crate::backend::models::MettaValue;
 
-use super::super::{
-    JitBindingFrame, JitChoicePoint, JitContext, JitValue, JIT_SIGNAL_FAIL, STAGE2_THRESHOLD,
-};
+use super::super::{JitBindingFrame, JitContext, JitValue, JIT_SIGNAL_FAIL, STAGE2_THRESHOLD};
 use super::executor::HybridExecutor;
 
 impl HybridExecutor {
@@ -47,15 +45,12 @@ impl HybridExecutor {
         for v in &mut self.jit_stack {
             *v = JitValue::unit();
         }
-        self.jit_choice_points.clear();
+        self.jit_choice_points
+            .reset_for_execution(self.config.jit_choice_point_capacity);
         self.jit_results.clear();
         self.jit_binding_frames.clear();
         self.jit_cut_markers.clear();
         // Ensure capacity
-        self.jit_choice_points.resize(
-            self.config.jit_choice_point_capacity,
-            JitChoicePoint::default(),
-        );
         self.jit_results
             .resize(self.config.jit_results_capacity, JitValue::unit());
         self.jit_binding_frames.resize(
@@ -75,7 +70,7 @@ impl HybridExecutor {
                 constants.as_ptr(),
                 constants.len(),
                 self.jit_choice_points.as_mut_ptr(),
-                self.config.jit_choice_point_capacity,
+                self.jit_choice_points.execution_cap(),
                 self.jit_results.as_mut_ptr(),
                 self.config.jit_results_capacity,
             )

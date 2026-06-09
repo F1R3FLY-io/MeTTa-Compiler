@@ -218,3 +218,86 @@ impl Default for JitChoicePoint {
         }
     }
 }
+
+/// Production owner for the JIT choice-point continuation spine.
+///
+/// Generated JIT code requires a contiguous `repr(C)` `JitChoicePoint` buffer
+/// through `JitContext.choice_points`. This wrapper keeps that ABI while making
+/// ownership explicit: production code resets and passes the buffer only through
+/// this owner, and the raw pointer exposed to `JitContext` is a transient view.
+#[derive(Debug)]
+pub struct JitChoicePointSpineOwner {
+    nodes: Vec<JitChoicePoint>,
+}
+
+impl JitChoicePointSpineOwner {
+    /// Create an owner with storage reserved for the configured choice-point cap.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            nodes: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Reset the execution buffer to exactly `capacity` writable slots.
+    pub fn reset_for_execution(&mut self, capacity: usize) {
+        self.nodes.clear();
+        self.nodes.resize(capacity, JitChoicePoint::default());
+    }
+
+    /// Transient mutable pointer view for `JitContext`.
+    pub fn as_mut_ptr(&mut self) -> *mut JitChoicePoint {
+        self.nodes.as_mut_ptr()
+    }
+
+    /// Number of writable choice-point slots in the current execution.
+    pub fn execution_cap(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Read a slot by index for tests and source-coupling checks.
+    #[cfg(test)]
+    pub fn get(&self, index: usize) -> Option<&JitChoicePoint> {
+        self.nodes.get(index)
+    }
+}
+
+impl Default for JitChoicePointSpineOwner {
+    fn default() -> Self {
+        Self::with_capacity(0)
+    }
+}
+
+#[cfg(test)]
+mod spine_owner_tests {
+    use super::*;
+
+    #[test]
+    fn jit_choice_point_spine_owner_resets_and_exposes_transient_view() {
+        let mut owner = JitChoicePointSpineOwner::with_capacity(4);
+        owner.reset_for_execution(3);
+        assert_eq!(owner.execution_cap(), 3);
+        assert!(!owner.as_mut_ptr().is_null());
+
+        unsafe {
+            (*owner.as_mut_ptr().add(1)).saved_ip = 99;
+        }
+
+        assert_eq!(
+            owner
+                .get(1)
+                .expect("choice-point owner slot should exist")
+                .saved_ip,
+            99
+        );
+
+        owner.reset_for_execution(2);
+        assert_eq!(owner.execution_cap(), 2);
+        assert_eq!(
+            owner
+                .get(1)
+                .expect("choice-point owner slot should be reinitialized")
+                .saved_ip,
+            0
+        );
+    }
+}

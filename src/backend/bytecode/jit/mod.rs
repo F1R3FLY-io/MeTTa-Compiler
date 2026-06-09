@@ -44,6 +44,7 @@ pub use types::{
     JitBindingEntry,
     JitBindingFrame,
     JitChoicePoint,
+    JitChoicePointSpineOwner,
     JitContext,
     JitError,
     JitResult,

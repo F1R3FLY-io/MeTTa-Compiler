@@ -722,12 +722,25 @@ line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_narrows_p
 line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_barrier_zero_never_narrows()" >/dev/null
 line_no "src/backend/eval/trampoline/types.rs" "fn trampoline_fanout_spine_bridge_process_amb_include_remaining_gate()" >/dev/null
 
-# E3 trampoline fan-out continuation-spine bridge: the live trampoline K remains
-# native for execution, but the collector-facing shape of re-enterable
-# fan-out/collapse frames is a typed ContinuationAddr-backed bridge node. Full
-# root walks include remaining-branch families; live walks skip only the three
-# cut-dead remaining families when their barrier has fired.
+# E3 trampoline fan-out continuation-spine bridge + production restore carrier:
+# the live trampoline K is normalized into ContinuationAddr-backed production
+# spine handles at the loop boundary, root walks resolve through that address,
+# and process_continuation removes/resolves the stored payload before execution.
+# Full root walks include remaining-branch families; live walks skip only the
+# three cut-dead remaining families when their barrier has fired.
 line_no "src/backend/eval/trampoline/types.rs" "use crate::backend::eval::cesk::{ContinuationAddr, SpineStore};" >/dev/null
+line_no "src/backend/eval/trampoline/types.rs" "static TRAMPOLINE_FANOUT_SPINE_STORE: RefCell<SpineStore<Continuation>>" >/dev/null
+line_no "src/backend/eval/trampoline/types.rs" "pub struct TrampolineFanoutSpineHandle" >/dev/null
+line_no "src/backend/eval/trampoline/types.rs" "TrampolineFanoutSpine { handle: TrampolineFanoutSpineHandle }" >/dev/null
+assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn into_trampoline_fanout_spine(self) -> Self" "TRAMPOLINE_FANOUT_SPINE_STORE.with(|store| store.borrow_mut().alloc(cont))" "TrampolineFanoutSpineHandle::new(addr)"
+assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn resolve_trampoline_fanout_spine(self) -> Self" "let addr = handle.take();" ".remove(addr)"
+assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn resolve_trampoline_fanout_spine(self) -> Self" ".remove(addr)" "expect(\"trampoline fan-out continuation address missing from spine store\")"
+assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn persist_trampoline_fanout_spines(stack: &mut [Self])" "std::mem::replace(cont, Self::Done)" "raw.into_trampoline_fanout_spine()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "while let Some(work) = work_stack.pop() {" "Continuation::persist_trampoline_fanout_spines(&mut continuations);" "current_work_for_spine = Some(work.clone());"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn process_continuation<C: EvalContext>(" "let cont = cont.resolve_trampoline_fanout_spine();" "match cont {"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Continuation::TrampolineFanoutSpine { .. } =>" "unreachable!(\"trampoline fan-out spine handles are resolved before execution\")" "Continuation::CollectSExpr"
+assert_after_before "src/backend/eval/trampoline/types.rs" "Self::TrampolineFanoutSpine { handle } =>" ".get(handle.addr())" ".collect_values(out);"
+assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn collect_live_values(&self, out: &mut Vec<MettaValue>)" "Self::TrampolineFanoutSpine { handle } =>" ".collect_live_values(out);"
 assert_after_before "src/backend/eval/trampoline/types.rs" "struct TrampolineFanoutSpineBridge" "order: Vec<ContinuationAddr>" "store: SpineStore<TrampolineFanoutSpineNode"
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn push(&mut self, node: TrampolineFanoutSpineNode" "self.store.alloc(node)" "self.order.push(addr);"
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn collect_values(&self, out: &mut Vec<MettaValue>)" ".get(*addr)" ".collect_values(out);"
@@ -744,6 +757,7 @@ assert_count_between "src/backend/eval/trampoline/types.rs" "pub fn collect_live
 assert_after_before "src/backend/eval/trampoline/types.rs" "Self::ProcessRuleMatches {" "TrampolineFanoutSpineNode::ProcessRuleMatches" "include_remaining: !cut_fired_peek(*cut_barrier)"
 assert_after_before "src/backend/eval/trampoline/types.rs" "Self::ProcessAmb {" "TrampolineFanoutSpineNode::ProcessAmb" "include_remaining: !cut_fired_peek(*cut_barrier)"
 assert_after_before "src/backend/eval/trampoline/types.rs" "Self::ProcessMatchTemplates {" "TrampolineFanoutSpineNode::ProcessMatchTemplates" "include_remaining: !cut_fired_peek(*cut_barrier)"
+line_no "src/backend/eval/trampoline/types.rs" "fn trampoline_fanout_production_spine_persists_and_resolves_process_amb()" >/dev/null
 
 # E2 cache-epoch source coupling: OPERATOR_CACHE is pointer-keyed
 # (`head.as_ptr()`), so index mode must lazily clear it when gc_sweep_epoch

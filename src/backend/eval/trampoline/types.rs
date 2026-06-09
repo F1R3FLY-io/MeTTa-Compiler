@@ -12,6 +12,7 @@
 //! - Bindings use `GenericBindings<MettaValue>` (heap-allocated binding map)
 //! - Names retain the `Generic` prefix for now; renaming is a separate step
 
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -77,6 +78,50 @@ pub fn empty_shared_bindings() -> SharedBindings {
     EMPTY
         .get_or_init(|| Arc::new(GenericBindings::new()))
         .clone()
+}
+
+thread_local! {
+    static TRAMPOLINE_FANOUT_SPINE_STORE: RefCell<SpineStore<Continuation>> =
+        RefCell::new(SpineStore::new());
+}
+
+/// Owning handle for a trampoline fan-out continuation-spine node.
+///
+/// Dropping an unresolved handle removes the node so abandoned continuation
+/// stacks do not leak store entries. Resolving a handle takes the address first,
+/// so the drop path becomes a no-op after ownership has moved back out of the
+/// store.
+#[derive(Debug)]
+pub struct TrampolineFanoutSpineHandle {
+    addr: Option<ContinuationAddr>,
+}
+
+impl TrampolineFanoutSpineHandle {
+    fn new(addr: ContinuationAddr) -> Self {
+        Self { addr: Some(addr) }
+    }
+
+    #[inline]
+    pub fn addr(&self) -> ContinuationAddr {
+        self.addr
+            .expect("trampoline fan-out continuation handle used after resolve")
+    }
+
+    fn take(&mut self) -> ContinuationAddr {
+        self.addr
+            .take()
+            .expect("trampoline fan-out continuation handle resolved twice")
+    }
+}
+
+impl Drop for TrampolineFanoutSpineHandle {
+    fn drop(&mut self) {
+        if let Some(addr) = self.addr.take() {
+            TRAMPOLINE_FANOUT_SPINE_STORE.with(|store| {
+                let _ = store.borrow_mut().remove(addr);
+            });
+        }
+    }
 }
 
 /// Evaluation result: (bound_values, environment)
@@ -570,6 +615,12 @@ pub enum WorkItem {
 pub enum Continuation {
     /// Final result - return from eval()
     Done,
+
+    /// Production selective-CESK carrier for re-enterable trampoline fan-out
+    /// frames. The live continuation stack holds only this compact address;
+    /// the payload lives in the continuation-spine store until the trampoline
+    /// pops and resolves it.
+    TrampolineFanoutSpine { handle: TrampolineFanoutSpineHandle },
 
     /// Collecting S-expression sub-results before processing
     CollectSExpr {
@@ -2146,6 +2197,51 @@ impl<'a> TrampolineFanoutSpineNode<'a> {
 }
 
 impl Continuation {
+    /// Persist a re-enterable trampoline fan-out frame in the production
+    /// continuation-spine store and leave only its address on the K stack.
+    pub fn into_trampoline_fanout_spine(self) -> Self {
+        match self {
+            cont @ (Self::ProcessRuleMatches { .. }
+            | Self::ProcessCollapseEvalResults { .. }
+            | Self::ProcessAmb { .. }
+            | Self::WaitForParallel { .. }
+            | Self::WaitForParallelCollapse { .. }
+            | Self::ProcessMatchTemplates { .. }) => {
+                let addr =
+                    TRAMPOLINE_FANOUT_SPINE_STORE.with(|store| store.borrow_mut().alloc(cont));
+                Self::TrampolineFanoutSpine {
+                    handle: TrampolineFanoutSpineHandle::new(addr),
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Resolve a production trampoline fan-out spine handle back into the
+    /// owned continuation payload that the evaluator executes.
+    pub fn resolve_trampoline_fanout_spine(self) -> Self {
+        match self {
+            Self::TrampolineFanoutSpine { mut handle } => {
+                let addr = handle.take();
+                TRAMPOLINE_FANOUT_SPINE_STORE.with(|store| {
+                    store
+                        .borrow_mut()
+                        .remove(addr)
+                        .expect("trampoline fan-out continuation address missing from spine store")
+                })
+            }
+            other => other,
+        }
+    }
+
+    /// Normalize all live K-stack fan-out frames into the production spine.
+    pub fn persist_trampoline_fanout_spines(stack: &mut [Self]) {
+        for cont in stack {
+            let raw = std::mem::replace(cont, Self::Done);
+            *cont = raw.into_trampoline_fanout_spine();
+        }
+    }
+
     /// The per-frame environment carried by this continuation, if any.
     ///
     /// EXHAUSTIVE match (no `_` arm): adding a new `Continuation` variant forces
@@ -2160,7 +2256,10 @@ impl Continuation {
     fn frame_env(&self) -> Option<&SharedEnv> {
         match self {
             // ── env-free variants ──
-            Self::Done | Self::ProcessOnceRestore { .. } | Self::ReexportLetBindings { .. } => None,
+            Self::Done
+            | Self::TrampolineFanoutSpine { .. }
+            | Self::ProcessOnceRestore { .. }
+            | Self::ReexportLetBindings { .. } => None,
             // ── the naming trap: env lives in `original_env` ──
             Self::CollectSExpr { original_env, .. } => Some(original_env),
             // ── every remaining variant carries `env` ──
@@ -2254,6 +2353,16 @@ impl Continuation {
         }
         match self {
             Self::Done => {}
+
+            Self::TrampolineFanoutSpine { handle } => {
+                TRAMPOLINE_FANOUT_SPINE_STORE.with(|store| {
+                    let store = store.borrow();
+                    store
+                        .get(handle.addr())
+                        .expect("trampoline fan-out continuation address missing from spine store")
+                        .collect_values(out);
+                });
+            }
 
             Self::CollectSExpr {
                 remaining,
@@ -3231,6 +3340,15 @@ impl Continuation {
     pub fn collect_live_values(&self, out: &mut Vec<MettaValue>) {
         use crate::backend::eval::trampoline::eval_loop::cut_fired_peek;
         match self {
+            Self::TrampolineFanoutSpine { handle } => {
+                TRAMPOLINE_FANOUT_SPINE_STORE.with(|store| {
+                    let store = store.borrow();
+                    store
+                        .get(handle.addr())
+                        .expect("trampoline fan-out continuation address missing from spine store")
+                        .collect_live_values(out);
+                });
+            }
             Self::ProcessRuleMatches {
                 remaining_matches,
                 results,
@@ -3315,6 +3433,13 @@ impl Continuation {
     pub fn depth_hint(&self) -> usize {
         match self {
             Self::Done => 0,
+            Self::TrampolineFanoutSpine { handle } => TRAMPOLINE_FANOUT_SPINE_STORE.with(|store| {
+                store
+                    .borrow()
+                    .get(handle.addr())
+                    .expect("trampoline fan-out continuation address missing from spine store")
+                    .depth_hint()
+            }),
             Self::CollectSExpr { depth, .. }
             | Self::ProcessRuleMatches { depth, .. }
             | Self::ProcessRuleMatchesLazy { depth, .. }
@@ -3400,6 +3525,7 @@ impl Continuation {
     pub fn discriminant_name(&self) -> &'static str {
         match self {
             Self::Done => "Done",
+            Self::TrampolineFanoutSpine { .. } => "TrampolineFanoutSpine",
             Self::CollectSExpr { .. } => "CollectSExpr",
             Self::ProcessRuleMatches { .. } => "ProcessRuleMatches",
             Self::ProcessRuleMatchesLazy { .. } => "ProcessRuleMatchesLazy",
@@ -3531,6 +3657,55 @@ mod tests {
         let mut live_roots = Vec::new();
         live_bridge.collect_values(&mut live_roots);
         assert_eq!(longs(&live_roots), vec![3]);
+    }
+
+    #[test]
+    fn trampoline_fanout_production_spine_persists_and_resolves_process_amb() {
+        let f = factory();
+        let mut stack = vec![Continuation::ProcessAmb {
+            remaining_alts: vec![bv(f.long(1)), bv(f.long(2))].into_iter(),
+            results: vec![bv(f.long(3))],
+            env: env(),
+            depth: 7,
+            outer_carrying: empty_shared_bindings(),
+            project_alt_carrying: true,
+            cut_barrier: 0,
+        }];
+
+        Continuation::persist_trampoline_fanout_spines(&mut stack);
+        let addr = match &stack[0] {
+            Continuation::TrampolineFanoutSpine { handle } => handle.addr(),
+            other => panic!("expected production spine handle, got {other:?}"),
+        };
+
+        let mut roots = Vec::new();
+        stack[0].collect_values(&mut roots);
+        let mut longs: Vec<i64> = roots.iter().filter_map(|v| v.as_long()).collect();
+        longs.sort_unstable();
+        assert_eq!(longs, vec![1, 2, 3]);
+        assert_eq!(stack[0].depth_hint(), 7);
+
+        let resolved = stack
+            .pop()
+            .expect("stack entry present")
+            .resolve_trampoline_fanout_spine();
+        match resolved {
+            Continuation::ProcessAmb {
+                remaining_alts,
+                results,
+                depth,
+                ..
+            } => {
+                assert_eq!(remaining_alts.len(), 2);
+                assert_eq!(results.len(), 1);
+                assert_eq!(depth, 7);
+            }
+            other => panic!("expected ProcessAmb after resolve, got {other:?}"),
+        }
+
+        TRAMPOLINE_FANOUT_SPINE_STORE.with(|store| {
+            assert!(!store.borrow().contains(addr));
+        });
     }
 
     /// Increment D (C2): the abstract-GC narrowing is SOUND on the primary narrowed

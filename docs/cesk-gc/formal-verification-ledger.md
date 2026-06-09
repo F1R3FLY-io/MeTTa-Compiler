@@ -33,8 +33,8 @@ The E1-FLIP V4 ASAN gate on 2026-06-08 passed the default dedicated `index-gc` c
 (15 rendezvous, 1127 quiescence). All three arms reported 0 ASAN/UAF hits, 0 mid-loop cycles under FANOUT, 0
 unexpected non-rendezvous cycles, and no `Error`/`StackOverflow`.
 After making SATB the default rendezvous path, the full `scripts/verify_cesk_gc_formal.sh` harness passed:
-proof hygiene, TLC hygiene, 58
-mandatory Rocq files, source coupling, and the full positive/negative TLC discriminator suite.
+proof hygiene, TLC hygiene, the mandatory Rocq corpus, source coupling, and the full positive/negative TLC
+discriminator suite.
 The E2 SATB major path is now the production rendezvous collector path: the dedicated GC thread
 uses the same witness/root-union rendezvous to capture the initial structural roots, arms SATB deletion barriers and
 allocate-black, releases workers while it marks under a shared heap read lock, then requests a second rendezvous,
@@ -176,11 +176,17 @@ can replace the full-major final sweep.
   before publishing a choice point if no fresh slot is available. Therefore a later fork cannot wrap and overwrite a
   live choice point's saved stack values before the root walker or backtracking restore reads them.
 - `formal/rocq/gc/TrampolineFanoutSpineBridge.v`: proves the trampoline fan-out/collapse implementation-level E3
-  bridge. Native trampoline continuations remain the execution representation, but collector-facing root walking
-  materializes `ProcessRuleMatches`, `ProcessAmb`, `ProcessMatchTemplates`, `ProcessCollapseEvalResults`,
+  bridge. Collector-facing root walking materializes `ProcessRuleMatches`, `ProcessAmb`, `ProcessMatchTemplates`,
+  `ProcessCollapseEvalResults`,
   `WaitForParallel`, and `WaitForParallelCollapse` as `ContinuationAddr`-backed bridge nodes. If the bridge resolves a
   live frame and its node walker includes the future-touch fields, then every future resume/collapse value is rooted;
   the proof models the three cut-pruned remaining families as future touches only when their cut barrier has not fired.
+- `formal/rocq/gc/TrampolineFanoutProductionRestore.v`: proves the production E3 trampoline fan-out restore carrier.
+  The trampoline loop now normalizes live re-enterable fan-out frames into a thread-local
+  `SpineStore<Continuation>` and leaves `Continuation::TrampolineFanoutSpine { handle }` on K. Root walking resolves
+  the address-backed handle; `process_continuation` removes/resolves the same address before executing the payload; and
+  handle drop removes abandoned nodes. The theorem composes normalization, root walk, resolve-before-execute, and
+  post-resolve no-stale-node premises to show every future-touch value is rooted and cannot be freed.
 - `formal/rocq/gc/SerializableContinuationSlice.v`: proves the E4 serialized-continuation slice obligation. If a
   serialized suspended state includes its control, environment, and continuation roots and is closed under store
   edges, every address a restored transition can touch is in the serialized slice and cannot be reclaimed as outside
@@ -647,9 +653,12 @@ facts the proofs rely on:
   before walking saved chunk constants, saved stack-pool values, and value/space-match/chunk/rule-match alternatives;
   native JIT stack-save-pool allocation is non-wrapping and bails out before publishing a choice point when no fresh
   slot exists; `StoredBranchCoroutine::collect_values` walks remaining branches, branch bindings, and yielded values;
-  trampoline fan-out/collapse root walking goes through `TrampolineFanoutSpineBridge` nodes for rule-match, amb,
-  match-template, collapse-eval, parallel-dispatch, and parallel-collapse frames, with `collect_live_values` setting
-  `include_remaining: !cut_fired_peek(*cut_barrier)` for the three cut-pruned remaining iterators.
+  trampoline fan-out/collapse K entries are normalized at the loop boundary into
+  `Continuation::TrampolineFanoutSpine` handles backed by `SpineStore<Continuation>`, root walking resolves those
+  handles through the bridge node walker for rule-match, amb, match-template, collapse-eval, parallel-dispatch, and
+  parallel-collapse frames, `process_continuation` resolves/removes the handle before executing the payload, and
+  `collect_live_values` sets `include_remaining: !cut_fired_peek(*cut_barrier)` for the three cut-pruned remaining
+  iterators.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

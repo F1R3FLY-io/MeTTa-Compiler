@@ -4189,6 +4189,7 @@ fn eval_trampoline_inner<C: EvalContext>(
     #[cfg(feature = "trace")]
     let mut _trampoline_iter: u64 = 0;
     while let Some(work) = work_stack.pop() {
+        Continuation::persist_trampoline_fanout_spines(&mut continuations);
         current_work_for_spine = Some(work.clone());
         let _published_current_work = current_work_for_spine.as_ref();
         if crate::backend::interrupt::is_interrupted() {
@@ -8828,6 +8829,8 @@ fn process_continuation<C: EvalContext>(
         std::sync::Arc<crate::backend::environment::GenericEnvironmentShared<MettaValue>>,
     >,
 ) {
+    let cont = cont.resolve_trampoline_fanout_spine();
+
     // Eval-trace binding-flow instrumentation (v5).
     // Capture the Resume boundary's inputs BEFORE the match consumes cont
     // and result. After the match we inspect the last pushed WorkItem:
@@ -8878,6 +8881,10 @@ fn process_continuation<C: EvalContext>(
     match cont {
         Continuation::Done => {
             *final_result = Some(result);
+        }
+
+        Continuation::TrampolineFanoutSpine { .. } => {
+            unreachable!("trampoline fan-out spine handles are resolved before execution")
         }
 
         Continuation::CollectSExpr {

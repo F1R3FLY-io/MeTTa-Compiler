@@ -303,6 +303,10 @@ line_no "formal/rocq/gc/E1DefaultConcurrentFlip.v" "DefaultDedicatedFollowsIndex
 line_no "formal/rocq/gc/E1DefaultConcurrentFlip.v" "LegacyRequestsSuppressedUnderDedicated" >/dev/null
 line_no "formal/rocq/gc/E1DefaultConcurrentFlip.v" "FanoutTriggerTotal" >/dev/null
 line_no "formal/rocq/gc/E1DefaultConcurrentFlip.v" "FailedTriggerBackstopped" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/E1SatbStwDriverProgress.v\"" >/dev/null
+line_no "formal/rocq/gc/E1SatbStwDriverProgress.v" "posted_driver_satb_or_stw_releases" >/dev/null
+line_no "formal/rocq/gc/E1SatbStwDriverProgress.v" "posted_driver_no_sticky_request_or_witness" >/dev/null
+line_no "formal/rocq/gc/E1SatbStwDriverProgress.v" "panic_or_closed_final_sweep_is_satb_abort" >/dev/null
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "request_gc();" "tx.send(GcDriverRequest::CollectRendezvous)"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "None => crate::backend::models::gc_allocator::resume_workers()" "fn spawn_gc_driver"
 
@@ -872,10 +876,13 @@ assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn run_open_stw_rendez
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_satb_rendezvous_cycle" "enter_satb_marking()" "cleanup.close_cycle();"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_satb_rendezvous_cycle" "cleanup.close_cycle();" "mark_concurrent_roots"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_satb_rendezvous_cycle" "mark_concurrent_roots" "cleanup.request_next_cycle();"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_satb_rendezvous_cycle" "cleanup.request_next_cycle();" "cleanup.open_cycle(acquire_gc_in_progress_for_rendezvous());"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_satb_rendezvous_cycle" "cleanup.open_cycle(acquire_gc_in_progress_for_rendezvous());" "let final_roots = prepare_rendezvous_roots();"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_satb_rendezvous_cycle" "cleanup.request_next_cycle();" "let final_roots = prepare_rendezvous_roots();"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_satb_rendezvous_cycle" "drop(satb_guard);" "sweep_after_concurrent_mark"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_satb_rendezvous_cycle" "let swept = crate::backend::eval::cesk::index_heap::index_gc::sweep_after_concurrent_mark" "assert!("
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_satb_rendezvous_cycle" "assert!(" "drop(final_roots);"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "let swept = crate::backend::eval::cesk::index_heap::index_gc::sweep_after_concurrent_mark" "drop(final_roots);" "cleanup.close_cycle();"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "impl Drop for SatbRendezvousCleanup" "if self.cycle_open" "close_open_rendezvous_cycle(self.gip.take());"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "impl Drop for SatbRendezvousCleanup" "else if self.request_open" "resume_workers();"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn satb_shade_evicted_roots" "gc_mode_is_index()" "let mut addrs"
@@ -1198,6 +1205,8 @@ assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn requesto
 assert_zero "src/backend/models/gc_allocator.rs" 'block until exactly `n`'
 assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn end_rendezvous_cycle() {" "GC_CYCLE_GEN.fetch_add(1, Ordering::AcqRel);" "RENDEZVOUS_CONDVAR.notify_all();"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn close_open_rendezvous_cycle" "ga::end_rendezvous_cycle();" "ga::resume_workers();"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn close_open_rendezvous_cycle" "ga::end_rendezvous_cycle();" "drop(gip);"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn close_open_rendezvous_cycle" "drop(gip);" "ga::resume_workers();"
 assert_zero "src/backend/eval/cesk/index_heap.rs" "DORMANT until E1-FLIP"
 assert_zero "src/backend/eval/cesk/index_heap.rs" 'all `n` parked/finished'
 assert_zero "src/backend/eval/cesk/index_heap.rs" 'WORKER_ROOT_BUFFER ∪ collect_safepoint_roots` ='
@@ -1211,6 +1220,7 @@ assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn request_concurrent_
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "if !sent {" "crate::backend::models::gc_allocator::resume_workers();" "}"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn run_open_stw_rendezvous_cycle" "std::panic::catch_unwind" "close_open_rendezvous_cycle(Some(gip));"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "impl Drop for SatbRendezvousCleanup" "if self.cycle_open" "close_open_rendezvous_cycle(self.gip.take());"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "impl Drop for SatbRendezvousCleanup" "else if self.request_open" "resume_workers();"
 assert_after_before "src/backend/models/gc_allocator.rs" "impl Drop for EvalGuard" "if dedicated_gc_enabled() && is_gc_requested()" "worker_finish_into_buffer(&[], my_gen);"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_park_and_root_in_cycle" "WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);" "RENDEZVOUS_CONDVAR.notify_all();"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_finish_into_buffer" "WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);" "RENDEZVOUS_CONDVAR.notify_all();"

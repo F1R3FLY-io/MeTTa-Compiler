@@ -271,6 +271,11 @@ can replace the full-major final sweep.
   generation, clears the request, and resumes parked workers. The source-coupling harness pins this theorem to
   `dedicated_gc_enabled()`, `request_concurrent_collection`, and the no-`METTATRON_INDEX_GC_DEDICATED` production
   invariant.
+- `formal/rocq/gc/E1SatbStwDriverProgress.v`: refines the E1 posted-driver progress premise to the shipped E2
+  default path. A posted `CollectRendezvous` either completes the SATB initial/final rendezvous sequence and releases
+  workers, or a SATB panic / closed final-sweep result becomes an abort that posts and runs a fresh STW rendezvous
+  backstop. In both cases the request is cleared, parked workers resume, witness-ok is reset, and GC-in-progress is
+  released.
 - `formal/rocq/gc/OperatorCacheEpoch.v` and `formal/lean/gc/OperatorCacheEpoch.lean`: prove the pointer-keyed
   operator-cache sweep-epoch obligation. A returned cache entry is current if the local sweep-epoch guard runs before
   lookup; if the local epoch is stale, the guarded lookup misses after clearing the cache.
@@ -632,6 +637,12 @@ facts the proofs rely on:
 - The E2 abort path is source-coupled: `gc_driver_rendezvous_cycle` checks the SATB `catch_unwind` result, and an
   abort calls `gc_driver_stw_rendezvous_cycle`, which re-issues `request_gc`, acquires a fresh rendezvous, prepares
   structural roots, runs the normal STW rendezvous collection, drops roots, and then closes the cycle.
+- The E1/SATB driver-progress refinement is source-coupled: the formal harness requires
+  `E1SatbStwDriverProgress.v`; `gc_driver_satb_rendezvous_cycle` closes the initial rendezvous before concurrent
+  marking, requests and opens the final rendezvous before taking final roots, checks the final sweep result before
+  closing, and `SatbRendezvousCleanup` closes any open cycle or clears an open request on panic. The STW fallback
+  closes through `close_open_rendezvous_cycle`, whose order is generation/witness reset, drop GC-in-progress, then
+  `resume_workers`.
 - `mark_concurrent_roots` marks under `global_index_heap().read()` through `IndexHeap::mark_concurrent`; the final E2
   sweep takes `global_index_heap().write()`, re-marks and revisits the final rendezvous roots through
   `IndexHeap::mark_revisit`, runs a full `heap.sweep()`, then

@@ -154,6 +154,12 @@ can replace the full-major final sweep.
   If trampoline coroutine/choice state, VM choice points, JIT choice points, and captured/suspended spines are all
   included in the structural K root contribution, mark/sweep cannot free a re-enterable continuation address that a
   future resume can touch. The companion TLC discriminator rejects omitting the VM, JIT, or trampoline choice family.
+- `formal/rocq/gc/StoredBranchCoroutineSpine.v`: proves the first implementation-level E3 lowering. A live
+  `StoredBranchCoroutine` carries a `ContinuationAddr` into the continuation-spine store; if that address resolves to
+  a stored branch-coroutine node and the node walker includes remaining RHS values, remaining branch binding values,
+  and yielded results, then every value a future lazy resume can touch is rooted and cannot be swept as unrooted. The
+  source-coupling gate pins the Rust lowering from `ProcessRuleMatchesLazy` to `StoredBranchCoroutine` and rejects a
+  return to `Box<BranchCoroutine<MettaValue>>`.
 - `formal/rocq/gc/SerializableContinuationSlice.v`: proves the E4 serialized-continuation slice obligation. If a
   serialized suspended state includes its control, environment, and continuation roots and is closed under store
   edges, every address a restored transition can touch is in the serialized slice and cannot be reclaimed as outside

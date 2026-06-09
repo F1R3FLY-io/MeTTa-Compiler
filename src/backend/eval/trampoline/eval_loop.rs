@@ -1459,8 +1459,10 @@ fn dispatch_rule_matches<C: EvalContext>(
     // which has no cut handling. Bounded-demand pruning is an optimization;
     // cut correctness (ordered commit) takes precedence.
     if cut_barrier == 0 && !effective_demand.is_all() && matches.len() > 1 {
-        let mut coroutine =
-            crate::backend::eval::cesk::coroutine::BranchCoroutine::new(matches, effective_demand);
+        let mut coroutine = crate::backend::eval::cesk::coroutine::StoredBranchCoroutine::new(
+            matches,
+            effective_demand,
+        );
         // BranchCoroutine with non-empty matches always has at least one branch.
         let (rhs, bindings) = coroutine
             .next_branch()
@@ -1489,7 +1491,7 @@ fn dispatch_rule_matches<C: EvalContext>(
         });
         let tracked_vars_hint = active_tracked_vars().map(std::sync::Arc::new);
         continuations.push(Continuation::ProcessRuleMatchesLazy {
-            coroutine: Box::new(coroutine),
+            coroutine,
             results: base_results.into_vec(),
             env: env.clone(),
             depth,

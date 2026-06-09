@@ -604,10 +604,27 @@ assert_after_before "src/backend/bytecode/jit/hybrid/arena.rs" "pub fn execute_j
 # families are unified into one store-addressed spine, every concrete
 # re-enterable state family remains a structural K contribution. VM/JIT
 # choice points are pinned above; coroutine-based lazy nondeterminism roots
-# its remaining branches, branch bindings, and yielded values.
+# its remaining branches, branch bindings, and yielded values. The first
+# production E3 lowering is `StoredBranchCoroutine`: ProcessRuleMatchesLazy now
+# carries a compact ContinuationAddr handle into the continuation-spine store
+# instead of embedding a Box<BranchCoroutine<MettaValue>> in the native K enum.
 assert_after_before "src/backend/eval/cesk/coroutine.rs" "pub fn collect_values(&self, out: &mut Vec<V>)" "for (rhs, bindings) in &self.remaining[self.cursor..]" "out.extend(self.yielded.iter().cloned());"
 assert_after_before "src/backend/eval/cesk/coroutine.rs" "pub fn collect_values(&self, out: &mut Vec<V>)" "out.push(rhs.clone());" "for (_name, val) in bindings.iter()"
 assert_after_before "src/backend/eval/cesk/coroutine.rs" "pub fn collect_values(&self, out: &mut Vec<V>)" "for (_name, val) in bindings.iter()" "out.push(val.clone());"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "pub struct ContinuationAddr" "pub fn raw(self) -> u32" "struct StoredBranchCoroutineNode"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "impl StoredBranchCoroutineNode" "for (rhs, bindings) in &self.remaining[self.cursor..]" "out.extend(self.yielded.iter().copied());"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "impl StoredBranchCoroutineNode" "out.push(*rhs);" "for (_name, val) in bindings.iter()"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "impl StoredBranchCoroutineNode" "for (_name, val) in bindings.iter()" "out.push(*val);"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "fn alloc_branch_coroutine" "let addr = ContinuationAddr(raw);" "ContinuationSpineNode::BranchCoroutine"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "pub struct StoredBranchCoroutine" "addr: Option<ContinuationAddr>" "impl StoredBranchCoroutine"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "impl StoredBranchCoroutine" "alloc_branch_coroutine(branches, demand)" "Self { addr: Some(addr) }"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "impl StoredBranchCoroutine" "branch_mut(self.addr())" ".next_branch()"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "impl StoredBranchCoroutine" "pub fn collect_values(&self, out: &mut Vec<MettaValue>)" ".collect_values(out);"
+assert_after_before "src/backend/eval/cesk/coroutine.rs" "impl Drop for StoredBranchCoroutine" "if let Some(addr) = self.addr.take()" "remove_branch(addr)"
+assert_after_before "src/backend/eval/trampoline/types.rs" "ProcessRuleMatchesLazy {" "StoredBranchCoroutine" "results: Vec<BoundValue>"
+assert_zero "src/backend/eval/trampoline/types.rs" "Box<crate::backend::eval::cesk::coroutine::BranchCoroutine<MettaValue>"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "if cut_barrier == 0 && !effective_demand.is_all() && matches.len() > 1" "StoredBranchCoroutine::new" ".next_branch()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "continuations.push(Continuation::ProcessRuleMatchesLazy {" "coroutine," "results: base_results.into_vec()"
 
 # Forked-env frame roots: fork_for_nondeterminism deep-copies the five
 # Addr-bearing local maps, and every index-mode live work item / continuation

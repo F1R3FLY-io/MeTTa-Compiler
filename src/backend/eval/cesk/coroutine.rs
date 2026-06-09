@@ -14,8 +14,10 @@
 //! unevaluated branches and yields results incrementally.
 
 use smallvec::SmallVec;
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use crate::backend::models::{GenericBindings, MettaValueTrait};
+use crate::backend::models::{GenericBindings, MettaValue, MettaValueTrait};
 
 // ============================================================================
 // Demand
@@ -284,6 +286,256 @@ impl<V: MettaValueTrait + Clone> BranchCoroutine<V> {
 }
 
 // ============================================================================
+// Store-addressed selective continuation spine
+// ============================================================================
+
+/// Address of a re-enterable continuation node in the selective continuation
+/// spine. This is the E3 capability boundary: production lazy branch state is
+/// named by a compact store address rather than embedded directly in the native
+/// continuation enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContinuationAddr(u32);
+
+impl ContinuationAddr {
+    #[inline]
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug)]
+struct StoredBranchCoroutineNode {
+    remaining: Vec<(MettaValue, GenericBindings<MettaValue>)>,
+    yielded: SmallVec<[MettaValue; 2]>,
+    demand: Demand,
+    cursor: usize,
+}
+
+impl StoredBranchCoroutineNode {
+    fn new(branches: Vec<(MettaValue, GenericBindings<MettaValue>)>, demand: Demand) -> Self {
+        Self {
+            remaining: branches,
+            yielded: SmallVec::new(),
+            demand,
+            cursor: 0,
+        }
+    }
+
+    fn next_branch(&mut self) -> Option<(MettaValue, GenericBindings<MettaValue>)> {
+        if self.demand.is_satisfied(self.yielded.len()) || self.cursor >= self.remaining.len() {
+            return None;
+        }
+        let (rhs, bindings) = self.remaining[self.cursor].clone();
+        self.cursor += 1;
+        Some((rhs, bindings))
+    }
+
+    fn record_result(&mut self, result: MettaValue) {
+        self.yielded.push(result);
+    }
+
+    fn is_satisfied(&self) -> bool {
+        self.demand.is_satisfied(self.yielded.len())
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.cursor >= self.remaining.len()
+    }
+
+    fn is_done(&self) -> bool {
+        self.is_satisfied() || self.is_exhausted()
+    }
+
+    fn collect_values(&self, out: &mut Vec<MettaValue>) {
+        for (rhs, bindings) in &self.remaining[self.cursor..] {
+            out.push(*rhs);
+            for (_name, val) in bindings.iter() {
+                out.push(*val);
+            }
+        }
+        out.extend(self.yielded.iter().copied());
+    }
+
+    fn take_results(self) -> SmallVec<[MettaValue; 2]> {
+        self.yielded
+    }
+
+    fn result_count(&self) -> usize {
+        self.yielded.len()
+    }
+
+    fn remaining_count(&self) -> usize {
+        self.remaining.len() - self.cursor
+    }
+}
+
+#[derive(Debug)]
+enum ContinuationSpineNode {
+    BranchCoroutine(StoredBranchCoroutineNode),
+}
+
+#[derive(Debug)]
+struct ContinuationSpineStore {
+    next_raw: u32,
+    nodes: HashMap<ContinuationAddr, ContinuationSpineNode>,
+}
+
+impl ContinuationSpineStore {
+    fn new() -> Self {
+        Self {
+            next_raw: 1,
+            nodes: HashMap::new(),
+        }
+    }
+
+    fn alloc_branch_coroutine(
+        &mut self,
+        branches: Vec<(MettaValue, GenericBindings<MettaValue>)>,
+        demand: Demand,
+    ) -> ContinuationAddr {
+        let raw = self.next_raw;
+        self.next_raw = self
+            .next_raw
+            .checked_add(1)
+            .expect("continuation spine address space exhausted");
+        let addr = ContinuationAddr(raw);
+        let old = self.nodes.insert(
+            addr,
+            ContinuationSpineNode::BranchCoroutine(StoredBranchCoroutineNode::new(
+                branches, demand,
+            )),
+        );
+        debug_assert!(
+            old.is_none(),
+            "fresh continuation address was already occupied"
+        );
+        addr
+    }
+
+    fn branch_mut(&mut self, addr: ContinuationAddr) -> &mut StoredBranchCoroutineNode {
+        match self.nodes.get_mut(&addr) {
+            Some(ContinuationSpineNode::BranchCoroutine(node)) => node,
+            None => panic!("missing branch-coroutine continuation node at {:?}", addr),
+        }
+    }
+
+    fn branch(&self, addr: ContinuationAddr) -> &StoredBranchCoroutineNode {
+        match self.nodes.get(&addr) {
+            Some(ContinuationSpineNode::BranchCoroutine(node)) => node,
+            None => panic!("missing branch-coroutine continuation node at {:?}", addr),
+        }
+    }
+
+    fn remove_branch(&mut self, addr: ContinuationAddr) -> Option<StoredBranchCoroutineNode> {
+        match self.nodes.remove(&addr) {
+            Some(ContinuationSpineNode::BranchCoroutine(node)) => Some(node),
+            None => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn contains(&self, addr: ContinuationAddr) -> bool {
+        self.nodes.contains_key(&addr)
+    }
+}
+
+fn continuation_spine_store() -> &'static Mutex<ContinuationSpineStore> {
+    static STORE: OnceLock<Mutex<ContinuationSpineStore>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(ContinuationSpineStore::new()))
+}
+
+fn lock_continuation_spine_store() -> MutexGuard<'static, ContinuationSpineStore> {
+    match continuation_spine_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Store-backed branch coroutine used by the production trampoline
+/// continuation. The handle is movable across Rust stack frames and names its
+/// payload by [`ContinuationAddr`]; dropping the handle releases the spine node.
+#[derive(Debug)]
+pub struct StoredBranchCoroutine {
+    addr: Option<ContinuationAddr>,
+}
+
+impl StoredBranchCoroutine {
+    pub fn new(branches: Vec<(MettaValue, GenericBindings<MettaValue>)>, demand: Demand) -> Self {
+        let addr = lock_continuation_spine_store().alloc_branch_coroutine(branches, demand);
+        Self { addr: Some(addr) }
+    }
+
+    #[inline]
+    pub fn addr(&self) -> ContinuationAddr {
+        self.addr
+            .expect("stored branch coroutine used after its spine node was taken")
+    }
+
+    pub fn next_branch(&mut self) -> Option<(MettaValue, GenericBindings<MettaValue>)> {
+        lock_continuation_spine_store()
+            .branch_mut(self.addr())
+            .next_branch()
+    }
+
+    pub fn record_result(&mut self, result: MettaValue) {
+        lock_continuation_spine_store()
+            .branch_mut(self.addr())
+            .record_result(result);
+    }
+
+    #[inline]
+    pub fn is_done(&self) -> bool {
+        lock_continuation_spine_store()
+            .branch(self.addr())
+            .is_done()
+    }
+
+    pub fn take_results(mut self) -> SmallVec<[MettaValue; 2]> {
+        let addr = self
+            .addr
+            .take()
+            .expect("stored branch coroutine results already taken");
+        lock_continuation_spine_store()
+            .remove_branch(addr)
+            .expect("stored branch coroutine node missing at take_results")
+            .take_results()
+    }
+
+    pub fn collect_values(&self, out: &mut Vec<MettaValue>) {
+        lock_continuation_spine_store()
+            .branch(self.addr())
+            .collect_values(out);
+    }
+
+    #[inline]
+    pub fn result_count(&self) -> usize {
+        lock_continuation_spine_store()
+            .branch(self.addr())
+            .result_count()
+    }
+
+    #[inline]
+    pub fn remaining_count(&self) -> usize {
+        lock_continuation_spine_store()
+            .branch(self.addr())
+            .remaining_count()
+    }
+}
+
+impl Drop for StoredBranchCoroutine {
+    fn drop(&mut self) {
+        if let Some(addr) = self.addr.take() {
+            let _ = lock_continuation_spine_store().remove_branch(addr);
+        }
+    }
+}
+
+#[cfg(test)]
+fn stored_node_is_live_for_tests(addr: ContinuationAddr) -> bool {
+    lock_continuation_spine_store().contains(addr)
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -382,5 +634,52 @@ mod tests {
 
         assert!(coro.is_exhausted());
         assert!(coro.next_branch().is_none());
+    }
+
+    #[test]
+    fn test_stored_coroutine_roots_remaining_bindings_and_yielded_values() {
+        let factory = f();
+        let yielded = factory.atom("stored-yielded");
+        let remaining_rhs = factory.atom("stored-remaining-rhs");
+        let binding_value = factory.atom("stored-binding-value");
+        let mut bindings = GenericBindings::new();
+        bindings.insert("$x", binding_value);
+        let branches = vec![
+            (factory.atom("stored-first-rhs"), GenericBindings::new()),
+            (remaining_rhs, bindings),
+        ];
+
+        let mut coro = StoredBranchCoroutine::new(branches, Demand::All);
+        let addr = coro.addr();
+        assert!(stored_node_is_live_for_tests(addr));
+
+        let (_rhs, _bindings) = coro.next_branch().expect("first branch is present");
+        coro.record_result(yielded);
+
+        let mut roots = Vec::new();
+        coro.collect_values(&mut roots);
+        assert!(roots.iter().any(|v| v.inner_ptr() == yielded.inner_ptr()));
+        assert!(roots
+            .iter()
+            .any(|v| v.inner_ptr() == remaining_rhs.inner_ptr()));
+        assert!(roots
+            .iter()
+            .any(|v| v.inner_ptr() == binding_value.inner_ptr()));
+    }
+
+    #[test]
+    fn test_stored_coroutine_drop_releases_spine_node() {
+        let factory = f();
+        let addr = {
+            let coro = StoredBranchCoroutine::new(
+                vec![(factory.atom("stored-drop-rhs"), GenericBindings::new())],
+                Demand::All,
+            );
+            let addr = coro.addr();
+            assert!(stored_node_is_live_for_tests(addr));
+            addr
+        };
+
+        assert!(!stored_node_is_live_for_tests(addr));
     }
 }

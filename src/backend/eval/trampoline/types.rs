@@ -660,7 +660,7 @@ pub enum Continuation {
     /// Evaluates branches one-at-a-time until demand is satisfied.
     ProcessRuleMatchesLazy {
         /// The coroutine managing unevaluated branches.
-        coroutine: Box<crate::backend::eval::cesk::coroutine::BranchCoroutine<MettaValue>>,
+        coroutine: crate::backend::eval::cesk::coroutine::StoredBranchCoroutine,
         /// Results accumulated so far.
         results: Vec<BoundValue>,
         /// Environment for evaluation.

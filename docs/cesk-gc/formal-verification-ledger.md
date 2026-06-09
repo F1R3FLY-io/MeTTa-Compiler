@@ -175,6 +175,12 @@ can replace the full-major final sweep.
   JIT bridge proof. Native JIT fork now allocates stack-save-pool slots monotonically within one execution and bails out
   before publishing a choice point if no fresh slot is available. Therefore a later fork cannot wrap and overwrite a
   live choice point's saved stack values before the root walker or backtracking restore reads them.
+- `formal/rocq/gc/TrampolineFanoutSpineBridge.v`: proves the trampoline fan-out/collapse implementation-level E3
+  bridge. Native trampoline continuations remain the execution representation, but collector-facing root walking
+  materializes `ProcessRuleMatches`, `ProcessAmb`, `ProcessMatchTemplates`, `ProcessCollapseEvalResults`,
+  `WaitForParallel`, and `WaitForParallelCollapse` as `ContinuationAddr`-backed bridge nodes. If the bridge resolves a
+  live frame and its node walker includes the future-touch fields, then every future resume/collapse value is rooted;
+  the proof models the three cut-pruned remaining families as future touches only when their cut barrier has not fired.
 - `formal/rocq/gc/SerializableContinuationSlice.v`: proves the E4 serialized-continuation slice obligation. If a
   serialized suspended state includes its control, environment, and continuation roots and is closed under store
   edges, every address a restored transition can touch is in the serialized slice and cannot be reclaimed as outside
@@ -640,7 +646,10 @@ facts the proofs rely on:
   `collect_jit_roots_into` bridges the live native `choice_points[..]` prefix into a `SpineStore<JitChoicePoint>`
   before walking saved chunk constants, saved stack-pool values, and value/space-match/chunk/rule-match alternatives;
   native JIT stack-save-pool allocation is non-wrapping and bails out before publishing a choice point when no fresh
-  slot exists; `StoredBranchCoroutine::collect_values` walks remaining branches, branch bindings, and yielded values.
+  slot exists; `StoredBranchCoroutine::collect_values` walks remaining branches, branch bindings, and yielded values;
+  trampoline fan-out/collapse root walking goes through `TrampolineFanoutSpineBridge` nodes for rule-match, amb,
+  match-template, collapse-eval, parallel-dispatch, and parallel-collapse frames, with `collect_live_values` setting
+  `include_remaining: !cut_fired_peek(*cut_barrier)` for the three cut-pruned remaining iterators.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

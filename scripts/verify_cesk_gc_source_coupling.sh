@@ -707,9 +707,9 @@ assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "} else if crate
 assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "// Phase 2.2: Incremental nursery collection" "crate::backend::models::collect_safepoint_roots(&mut midloop_roots);" "1"
 assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "// Phase 2.2: Incremental nursery collection" "run_collection_if_triggered_midloop(" "1"
 assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "// Phase 2.2: Incremental nursery collection" "crate::backend::models::collect_all_roots()"
-assert_after_before "src/backend/eval/trampoline/types.rs" "\`remaining_matches\` is dead once the cut fired for this barrier." "if !cut_fired_peek(*cut_barrier) {" "remaining_matches.as_slice()"
-assert_after_before "src/backend/eval/trampoline/types.rs" "\`remaining_alts\` is dead once the cut fired for this barrier." "if !cut_fired_peek(*cut_barrier) {" "remaining_alts.as_slice()"
-assert_after_before "src/backend/eval/trampoline/types.rs" "\`remaining_templates\` is dead once the cut fired for this barrier." "if !cut_fired_peek(*cut_barrier) {" "remaining_templates.as_slice()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "\`remaining_matches\` is dead once the cut fired for this barrier." "include_remaining: !cut_fired_peek(*cut_barrier)" "results,"
+assert_after_before "src/backend/eval/trampoline/types.rs" "\`remaining_alts\` is dead once the cut fired for this barrier." "include_remaining: !cut_fired_peek(*cut_barrier)" "results,"
+assert_after_before "src/backend/eval/trampoline/types.rs" "\`remaining_templates\` is dead once the cut fired for this barrier." "include_remaining: !cut_fired_peek(*cut_barrier)" "results,"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Continuation::ProcessRuleMatches {" "if remaining_matches.len() == 0 || cut_fired {" "let (rhs, raw_bindings) = remaining_matches"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "D-2 (C2) soundness coupling: \`collect_live_values\` SKIPS \`remaining_matches\`" "debug_assert!(" "let (rhs, raw_bindings) = remaining_matches"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Phase 1 cut-barrier: if a \`(cut)\` fired this disjunction's" "if cut_fired_peek(cut_barrier) {" "remaining_alts.next()"
@@ -720,6 +720,30 @@ line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_narrows_p
 line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_narrows_process_amb_on_cut()" >/dev/null
 line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_narrows_process_match_templates_on_cut()" >/dev/null
 line_no "src/backend/eval/trampoline/types.rs" "fn collect_live_values_barrier_zero_never_narrows()" >/dev/null
+line_no "src/backend/eval/trampoline/types.rs" "fn trampoline_fanout_spine_bridge_process_amb_include_remaining_gate()" >/dev/null
+
+# E3 trampoline fan-out continuation-spine bridge: the live trampoline K remains
+# native for execution, but the collector-facing shape of re-enterable
+# fan-out/collapse frames is a typed ContinuationAddr-backed bridge node. Full
+# root walks include remaining-branch families; live walks skip only the three
+# cut-dead remaining families when their barrier has fired.
+line_no "src/backend/eval/trampoline/types.rs" "use crate::backend::eval::cesk::{ContinuationAddr, SpineStore};" >/dev/null
+assert_after_before "src/backend/eval/trampoline/types.rs" "struct TrampolineFanoutSpineBridge" "order: Vec<ContinuationAddr>" "store: SpineStore<TrampolineFanoutSpineNode"
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn push(&mut self, node: TrampolineFanoutSpineNode" "self.store.alloc(node)" "self.order.push(addr);"
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn collect_values(&self, out: &mut Vec<MettaValue>)" ".get(*addr)" ".collect_values(out);"
+assert_after_before "src/backend/eval/trampoline/types.rs" "enum TrampolineFanoutSpineNode" "ProcessRuleMatches {" "ProcessAmb {"
+assert_after_before "src/backend/eval/trampoline/types.rs" "enum TrampolineFanoutSpineNode" "ProcessAmb {" "ProcessMatchTemplates {"
+assert_after_before "src/backend/eval/trampoline/types.rs" "enum TrampolineFanoutSpineNode" "ProcessMatchTemplates {" "ProcessCollapseEvalResults {"
+assert_after_before "src/backend/eval/trampoline/types.rs" "enum TrampolineFanoutSpineNode" "ProcessCollapseEvalResults {" "WaitForParallel {"
+assert_after_before "src/backend/eval/trampoline/types.rs" "enum TrampolineFanoutSpineNode" "WaitForParallel {" "WaitForParallelCollapse {"
+assert_count_between "src/backend/eval/trampoline/types.rs" "enum TrampolineFanoutSpineNode" "impl<'a> TrampolineFanoutSpineNode" "include_remaining: bool" "3"
+assert_count_between "src/backend/eval/trampoline/types.rs" "pub fn collect_values(&self, out: &mut Vec<MettaValue>)" "pub fn collect_live_values(&self, out: &mut Vec<MettaValue>)" "TrampolineFanoutSpineBridge::new()" "6"
+assert_count_between "src/backend/eval/trampoline/types.rs" "pub fn collect_values(&self, out: &mut Vec<MettaValue>)" "pub fn collect_live_values(&self, out: &mut Vec<MettaValue>)" "include_remaining: true" "3"
+assert_count_between "src/backend/eval/trampoline/types.rs" "pub fn collect_live_values(&self, out: &mut Vec<MettaValue>)" "pub fn depth_hint(&self) -> usize" "TrampolineFanoutSpineBridge::new()" "3"
+assert_count_between "src/backend/eval/trampoline/types.rs" "pub fn collect_live_values(&self, out: &mut Vec<MettaValue>)" "pub fn depth_hint(&self) -> usize" "include_remaining: !cut_fired_peek(*cut_barrier)" "3"
+assert_after_before "src/backend/eval/trampoline/types.rs" "Self::ProcessRuleMatches {" "TrampolineFanoutSpineNode::ProcessRuleMatches" "include_remaining: !cut_fired_peek(*cut_barrier)"
+assert_after_before "src/backend/eval/trampoline/types.rs" "Self::ProcessAmb {" "TrampolineFanoutSpineNode::ProcessAmb" "include_remaining: !cut_fired_peek(*cut_barrier)"
+assert_after_before "src/backend/eval/trampoline/types.rs" "Self::ProcessMatchTemplates {" "TrampolineFanoutSpineNode::ProcessMatchTemplates" "include_remaining: !cut_fired_peek(*cut_barrier)"
 
 # E2 cache-epoch source coupling: OPERATOR_CACHE is pointer-keyed
 # (`head.as_ptr()`), so index mode must lazily clear it when gc_sweep_epoch

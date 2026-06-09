@@ -19,6 +19,7 @@ use std::sync::Mutex;
 use smallvec::SmallVec;
 
 use crate::backend::eval::cesk::coroutine::CancelToken;
+use crate::backend::eval::cesk::{ContinuationAddr, SpineStore};
 // A5.6: frame_chain is cfg-walled to the slab build (`#[cfg(not(feature = "index-gc"))]`
 // on `mod frame_chain` at eval/mod.rs). The `EvalFrameGuard` import — and the two
 // `_root_guard` fields it types below — are therefore slab-only. In the index build the
@@ -1965,6 +1966,185 @@ fn collect_cartesian_values(
     }
 }
 
+#[derive(Debug)]
+struct TrampolineFanoutSpineBridge<'a> {
+    order: Vec<ContinuationAddr>,
+    store: SpineStore<TrampolineFanoutSpineNode<'a>>,
+}
+
+impl<'a> TrampolineFanoutSpineBridge<'a> {
+    fn new() -> Self {
+        Self {
+            order: Vec::new(),
+            store: SpineStore::new(),
+        }
+    }
+
+    fn push(&mut self, node: TrampolineFanoutSpineNode<'a>) {
+        let addr = self.store.alloc(node);
+        self.order.push(addr);
+    }
+
+    fn collect_values(&self, out: &mut Vec<MettaValue>) {
+        for addr in &self.order {
+            self.store
+                .get(*addr)
+                .expect("trampoline fan-out bridge address missing from spine store")
+                .collect_values(out);
+        }
+    }
+}
+
+#[derive(Debug)]
+enum TrampolineFanoutSpineNode<'a> {
+    ProcessRuleMatches {
+        remaining_matches: &'a [(MettaValue, GenericBindings<MettaValue>)],
+        include_remaining: bool,
+        results: &'a [BoundValue],
+        current_branch_bindings: &'a SharedBindings,
+        outer_carrying: &'a SharedBindings,
+    },
+    ProcessAmb {
+        remaining_alts: &'a [BoundValue],
+        include_remaining: bool,
+        results: &'a [BoundValue],
+        outer_carrying: &'a SharedBindings,
+    },
+    ProcessMatchTemplates {
+        remaining_templates: &'a [MettaValue],
+        include_remaining: bool,
+        results: &'a [BoundValue],
+        outer_carrying: &'a SharedBindings,
+    },
+    ProcessCollapseEvalResults {
+        remaining_raw: &'a [BoundValue],
+        evaluated: &'a [BoundValue],
+        current_raw_bindings: &'a SharedBindings,
+        outer_carrying: &'a SharedBindings,
+    },
+    WaitForParallel {
+        handle: &'a ParallelDispatchHandle,
+        base_results: &'a SmallVec<[BoundValue; 2]>,
+        outer_carrying: &'a SharedBindings,
+        stable_branches_snapshot: &'a [super::eval_loop::ParallelBranch],
+    },
+    WaitForParallelCollapse {
+        handle: &'a ParallelCollapseDispatchHandle,
+        stable_items_snapshot: &'a [BoundValue],
+        outer_carrying: &'a SharedBindings,
+    },
+}
+
+impl<'a> TrampolineFanoutSpineNode<'a> {
+    fn collect_bound_values(values: &[BoundValue], out: &mut Vec<MettaValue>) {
+        for (v, bindings) in values.iter() {
+            out.push(*v);
+            collect_bindings_values(bindings, out);
+        }
+    }
+
+    fn collect_parallel_branches(
+        branches: &[super::eval_loop::ParallelBranch],
+        out: &mut Vec<MettaValue>,
+    ) {
+        for (v, bindings) in branches.iter() {
+            out.push(*v);
+            collect_bindings_values(bindings, out);
+        }
+    }
+
+    fn collect_values(&self, out: &mut Vec<MettaValue>) {
+        match self {
+            Self::ProcessRuleMatches {
+                remaining_matches,
+                include_remaining,
+                results,
+                current_branch_bindings,
+                outer_carrying,
+            } => {
+                if *include_remaining {
+                    for (rhs, bindings) in *remaining_matches {
+                        out.push(*rhs);
+                        collect_bindings_values(bindings, out);
+                    }
+                }
+                Self::collect_bound_values(results, out);
+                collect_bindings_values(current_branch_bindings, out);
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::ProcessAmb {
+                remaining_alts,
+                include_remaining,
+                results,
+                outer_carrying,
+            } => {
+                if *include_remaining {
+                    Self::collect_bound_values(remaining_alts, out);
+                }
+                Self::collect_bound_values(results, out);
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::ProcessMatchTemplates {
+                remaining_templates,
+                include_remaining,
+                results,
+                outer_carrying,
+            } => {
+                if *include_remaining {
+                    out.extend(remaining_templates.iter().copied());
+                }
+                Self::collect_bound_values(results, out);
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::ProcessCollapseEvalResults {
+                remaining_raw,
+                evaluated,
+                current_raw_bindings,
+                outer_carrying,
+            } => {
+                Self::collect_bound_values(remaining_raw, out);
+                Self::collect_bound_values(evaluated, out);
+                collect_bindings_values(current_raw_bindings, out);
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::WaitForParallel {
+                handle,
+                base_results,
+                outer_carrying,
+                stable_branches_snapshot,
+            } => {
+                Self::collect_parallel_branches(stable_branches_snapshot, out);
+                let guard = handle
+                    .results
+                    .lock()
+                    .expect("parallel results mutex poisoned");
+                for slot in guard.iter().flatten() {
+                    Self::collect_bound_values(slot, out);
+                }
+                drop(guard);
+                Self::collect_bound_values(base_results, out);
+                collect_bindings_values(outer_carrying, out);
+            }
+            Self::WaitForParallelCollapse {
+                handle,
+                stable_items_snapshot,
+                outer_carrying,
+            } => {
+                Self::collect_bound_values(stable_items_snapshot, out);
+                let guard = handle
+                    .results
+                    .lock()
+                    .expect("parallel collapse results mutex poisoned");
+                for slot in guard.iter().flatten() {
+                    Self::collect_bound_values(slot, out);
+                }
+                drop(guard);
+                collect_bindings_values(outer_carrying, out);
+            }
+        }
+    }
+}
+
 impl Continuation {
     /// The per-frame environment carried by this continuation, if any.
     ///
@@ -2099,17 +2279,15 @@ impl Continuation {
                 outer_carrying,
                 ..
             } => {
-                for (rhs, bindings) in remaining_matches.as_slice() {
-                    out.push(*rhs);
-                    collect_bindings_values(bindings, out);
-                }
-                for (v, bindings) in results.iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                // H14 (2026-05-05): root-walk per-branch + caller-scope bindings.
-                collect_bindings_values(current_branch_bindings, out);
-                collect_bindings_values(outer_carrying, out);
+                let mut bridge = TrampolineFanoutSpineBridge::new();
+                bridge.push(TrampolineFanoutSpineNode::ProcessRuleMatches {
+                    remaining_matches: remaining_matches.as_slice(),
+                    include_remaining: true,
+                    results,
+                    current_branch_bindings,
+                    outer_carrying,
+                });
+                bridge.collect_values(out);
             }
 
             Self::ProcessGroundedOp {
@@ -2513,17 +2691,14 @@ impl Continuation {
                 outer_carrying,
                 ..
             } => {
-                for (v, bindings) in remaining_raw.as_slice().iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                for (v, bindings) in evaluated.iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                // H14 (2026-05-05): root-walk current iteration's bindings.
-                collect_bindings_values(current_raw_bindings, out);
-                collect_bindings_values(outer_carrying, out);
+                let mut bridge = TrampolineFanoutSpineBridge::new();
+                bridge.push(TrampolineFanoutSpineNode::ProcessCollapseEvalResults {
+                    remaining_raw: remaining_raw.as_slice(),
+                    evaluated,
+                    current_raw_bindings,
+                    outer_carrying,
+                });
+                bridge.collect_values(out);
             }
 
             Self::ProcessAmb {
@@ -2532,15 +2707,14 @@ impl Continuation {
                 outer_carrying,
                 ..
             } => {
-                for (v, bindings) in remaining_alts.as_slice().iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                for (v, bindings) in results.iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                collect_bindings_values(outer_carrying, out);
+                let mut bridge = TrampolineFanoutSpineBridge::new();
+                bridge.push(TrampolineFanoutSpineNode::ProcessAmb {
+                    remaining_alts: remaining_alts.as_slice(),
+                    include_remaining: true,
+                    results,
+                    outer_carrying,
+                });
+                bridge.collect_values(out);
             }
 
             Self::WaitForParallel {
@@ -2550,34 +2724,14 @@ impl Continuation {
                 stable_branches_snapshot,
                 ..
             } => {
-                // 1. Walk the input branches snapshot (mirrors what
-                //    `collect_parallel_branch_frame_roots` does for the
-                //    frame_chain-registered entry — the two collectors fire
-                //    independently from the safepoint, both must report the
-                //    same roots so this is intentional).
-                for (value, bindings) in stable_branches_snapshot.iter() {
-                    out.push(*value);
-                    collect_bindings_values(bindings, out);
-                }
-                // 2. Walk any partial results that branch workers have
-                //    written so far (slots are `Option<Vec<BoundValue>>`).
-                let guard = handle
-                    .results
-                    .lock()
-                    .expect("parallel results mutex poisoned");
-                for slot in guard.iter().flatten() {
-                    for (v, bindings) in slot.iter() {
-                        out.push(*v);
-                        collect_bindings_values(bindings, out);
-                    }
-                }
-                drop(guard);
-                // 3. Walk caller-side accumulators.
-                for (v, bindings) in base_results.iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                collect_bindings_values(outer_carrying, out);
+                let mut bridge = TrampolineFanoutSpineBridge::new();
+                bridge.push(TrampolineFanoutSpineNode::WaitForParallel {
+                    handle,
+                    base_results,
+                    outer_carrying,
+                    stable_branches_snapshot: stable_branches_snapshot.as_ref().as_slice(),
+                });
+                bridge.collect_values(out);
             }
 
             Self::WaitForParallelCollapse {
@@ -2586,24 +2740,13 @@ impl Continuation {
                 outer_carrying,
                 ..
             } => {
-                // 1. Walk the input collapse items.
-                for (value, bindings) in stable_items_snapshot.iter() {
-                    out.push(*value);
-                    collect_bindings_values(bindings, out);
-                }
-                // 2. Walk any partial results.
-                let guard = handle
-                    .results
-                    .lock()
-                    .expect("parallel collapse results mutex poisoned");
-                for slot in guard.iter().flatten() {
-                    for (v, bindings) in slot.iter() {
-                        out.push(*v);
-                        collect_bindings_values(bindings, out);
-                    }
-                }
-                drop(guard);
-                collect_bindings_values(outer_carrying, out);
+                let mut bridge = TrampolineFanoutSpineBridge::new();
+                bridge.push(TrampolineFanoutSpineNode::WaitForParallelCollapse {
+                    handle,
+                    stable_items_snapshot: stable_items_snapshot.as_ref().as_slice(),
+                    outer_carrying,
+                });
+                bridge.collect_values(out);
             }
 
             Self::ProcessGuard { outer_carrying, .. } => {
@@ -2702,12 +2845,14 @@ impl Continuation {
                 outer_carrying,
                 ..
             } => {
-                out.extend(remaining_templates.as_slice().iter().copied());
-                for (v, bindings) in results.iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                collect_bindings_values(outer_carrying, out);
+                let mut bridge = TrampolineFanoutSpineBridge::new();
+                bridge.push(TrampolineFanoutSpineNode::ProcessMatchTemplates {
+                    remaining_templates: remaining_templates.as_slice(),
+                    include_remaining: true,
+                    results,
+                    outer_carrying,
+                });
+                bridge.collect_values(out);
             }
 
             Self::ProcessAddAtomSpace {
@@ -3102,19 +3247,16 @@ impl Continuation {
                 collect_fork_local_roots(env, out);
                 #[cfg(not(feature = "index-gc"))]
                 let _ = env;
-                // `remaining_matches` is dead once the cut fired for this barrier.
-                if !cut_fired_peek(*cut_barrier) {
-                    for (rhs, bindings) in remaining_matches.as_slice() {
-                        out.push(*rhs);
-                        collect_bindings_values(bindings, out);
-                    }
-                }
-                for (v, bindings) in results.iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                collect_bindings_values(current_branch_bindings, out);
-                collect_bindings_values(outer_carrying, out);
+                let mut bridge = TrampolineFanoutSpineBridge::new();
+                bridge.push(TrampolineFanoutSpineNode::ProcessRuleMatches {
+                    remaining_matches: remaining_matches.as_slice(),
+                    // `remaining_matches` is dead once the cut fired for this barrier.
+                    include_remaining: !cut_fired_peek(*cut_barrier),
+                    results,
+                    current_branch_bindings,
+                    outer_carrying,
+                });
+                bridge.collect_values(out);
             }
             Self::ProcessAmb {
                 remaining_alts,
@@ -3128,18 +3270,15 @@ impl Continuation {
                 collect_fork_local_roots(env, out);
                 #[cfg(not(feature = "index-gc"))]
                 let _ = env;
-                // `remaining_alts` is dead once the cut fired for this barrier.
-                if !cut_fired_peek(*cut_barrier) {
-                    for (v, bindings) in remaining_alts.as_slice().iter() {
-                        out.push(*v);
-                        collect_bindings_values(bindings, out);
-                    }
-                }
-                for (v, bindings) in results.iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                collect_bindings_values(outer_carrying, out);
+                let mut bridge = TrampolineFanoutSpineBridge::new();
+                bridge.push(TrampolineFanoutSpineNode::ProcessAmb {
+                    remaining_alts: remaining_alts.as_slice(),
+                    // `remaining_alts` is dead once the cut fired for this barrier.
+                    include_remaining: !cut_fired_peek(*cut_barrier),
+                    results,
+                    outer_carrying,
+                });
+                bridge.collect_values(out);
             }
             Self::ProcessMatchTemplates {
                 remaining_templates,
@@ -3153,15 +3292,15 @@ impl Continuation {
                 collect_fork_local_roots(env, out);
                 #[cfg(not(feature = "index-gc"))]
                 let _ = env;
-                // `remaining_templates` is dead once the cut fired for this barrier.
-                if !cut_fired_peek(*cut_barrier) {
-                    out.extend(remaining_templates.as_slice().iter().copied());
-                }
-                for (v, bindings) in results.iter() {
-                    out.push(*v);
-                    collect_bindings_values(bindings, out);
-                }
-                collect_bindings_values(outer_carrying, out);
+                let mut bridge = TrampolineFanoutSpineBridge::new();
+                bridge.push(TrampolineFanoutSpineNode::ProcessMatchTemplates {
+                    remaining_templates: remaining_templates.as_slice(),
+                    // `remaining_templates` is dead once the cut fired for this barrier.
+                    include_remaining: !cut_fired_peek(*cut_barrier),
+                    results,
+                    outer_carrying,
+                });
+                bridge.collect_values(out);
             }
             // Every other (and future) variant: conservative full walk — no narrowing.
             _ => self.collect_values(out),
@@ -3358,6 +3497,42 @@ mod tests {
         std::sync::Arc::new(crate::backend::environment::MettaEnvironment::new(factory()))
     }
 
+    #[test]
+    fn trampoline_fanout_spine_bridge_process_amb_include_remaining_gate() {
+        let f = factory();
+        let remaining = vec![bv(f.long(1)), bv(f.long(2))];
+        let results = vec![bv(f.long(3))];
+        let outer_carrying = empty_shared_bindings();
+
+        let longs = |v: &[MettaValue]| {
+            let mut xs: Vec<i64> = v.iter().filter_map(|x| x.as_long()).collect();
+            xs.sort_unstable();
+            xs
+        };
+
+        let mut full_bridge = TrampolineFanoutSpineBridge::new();
+        full_bridge.push(TrampolineFanoutSpineNode::ProcessAmb {
+            remaining_alts: remaining.as_slice(),
+            include_remaining: true,
+            results: results.as_slice(),
+            outer_carrying: &outer_carrying,
+        });
+        let mut full_roots = Vec::new();
+        full_bridge.collect_values(&mut full_roots);
+        assert_eq!(longs(&full_roots), vec![1, 2, 3]);
+
+        let mut live_bridge = TrampolineFanoutSpineBridge::new();
+        live_bridge.push(TrampolineFanoutSpineNode::ProcessAmb {
+            remaining_alts: remaining.as_slice(),
+            include_remaining: false,
+            results: results.as_slice(),
+            outer_carrying: &outer_carrying,
+        });
+        let mut live_roots = Vec::new();
+        live_bridge.collect_values(&mut live_roots);
+        assert_eq!(longs(&live_roots), vec![3]);
+    }
+
     /// Increment D (C2): the abstract-GC narrowing is SOUND on the primary narrowed
     /// variant — `collect_live_values` equals `collect_values` when no cut has fired, and
     /// drops EXACTLY the dead `remaining_matches` (keeping `results`) once the cut fired
@@ -3410,8 +3585,16 @@ mod tests {
         let (mut live, mut full) = (Vec::new(), Vec::new());
         frame.collect_live_values(&mut live);
         frame.collect_values(&mut full);
-        assert_eq!(longs(&live), vec![3], "cut fired: only results remain (matches are dead)");
-        assert_eq!(longs(&full), vec![1, 2, 3], "collect_values is unchanged by the cut");
+        assert_eq!(
+            longs(&live),
+            vec![3],
+            "cut fired: only results remain (matches are dead)"
+        );
+        assert_eq!(
+            longs(&full),
+            vec![1, 2, 3],
+            "collect_values is unchanged by the cut"
+        );
         for x in longs(&live) {
             assert!(longs(&full).contains(&x), "live ⊆ full");
         }
@@ -3458,8 +3641,16 @@ mod tests {
         let (mut live, mut full) = (Vec::new(), Vec::new());
         frame.collect_live_values(&mut live);
         frame.collect_values(&mut full);
-        assert_eq!(longs(&live), vec![3], "cut fired: only results remain (alts are dead)");
-        assert_eq!(longs(&full), vec![1, 2, 3], "collect_values is unchanged by the cut");
+        assert_eq!(
+            longs(&live),
+            vec![3],
+            "cut fired: only results remain (alts are dead)"
+        );
+        assert_eq!(
+            longs(&full),
+            vec![1, 2, 3],
+            "collect_values is unchanged by the cut"
+        );
         force_cut_signal_for_test(0);
     }
 
@@ -3497,8 +3688,16 @@ mod tests {
         let (mut live, mut full) = (Vec::new(), Vec::new());
         frame.collect_live_values(&mut live);
         frame.collect_values(&mut full);
-        assert_eq!(longs(&live), vec![3], "cut fired: only results remain (templates are dead)");
-        assert_eq!(longs(&full), vec![1, 2, 3], "collect_values is unchanged by the cut");
+        assert_eq!(
+            longs(&live),
+            vec![3],
+            "cut fired: only results remain (templates are dead)"
+        );
+        assert_eq!(
+            longs(&full),
+            vec![1, 2, 3],
+            "collect_values is unchanged by the cut"
+        );
         force_cut_signal_for_test(0);
     }
 
@@ -3535,8 +3734,16 @@ mod tests {
         let (mut live, mut full) = (Vec::new(), Vec::new());
         frame.collect_live_values(&mut live);
         frame.collect_values(&mut full);
-        assert_eq!(longs(&live), longs(&full), "barrier 0: live == full (no scope to cut)");
-        assert_eq!(longs(&live), vec![1, 2, 3], "barrier 0: all alts kept despite the signal");
+        assert_eq!(
+            longs(&live),
+            longs(&full),
+            "barrier 0: live == full (no scope to cut)"
+        );
+        assert_eq!(
+            longs(&live),
+            vec![1, 2, 3],
+            "barrier 0: all alts kept despite the signal"
+        );
         force_cut_signal_for_test(0);
     }
 

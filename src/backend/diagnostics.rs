@@ -182,48 +182,88 @@ fn dump_diagnostics(signal_name: &str) {
     eprintln!();
 }
 
-/// Dump GC state from existing public APIs.
+/// Dump GC state from existing public APIs. Thin wrapper over [`render_gc_state`]
+/// so the section is unit-testable (it returns the text instead of writing stderr).
 #[cfg(unix)]
 fn dump_gc_state() {
-    use crate::backend::models::gc_allocator;
+    eprint!("{}", render_gc_state());
+}
 
-    let alloc = gc_allocator::global_allocator();
-    let committed = alloc.committed_bytes();
-    let threshold = alloc.gc_threshold();
-    let bp_level = gc_allocator::backpressure_level();
+/// Render the GC-state section as a string.
+///
+/// #275 — the dump is SOURCE-COUPLED to the active GC mode. In index mode it reports the
+/// CESK/`IndexHeap` allocator state + the dedicated-collector rendezvous/witness cycle state
+/// and MUST NOT present the legacy slab page counters as the authoritative GC state; in slab
+/// mode it reports the slab allocator's pages exactly as before. The shared rendezvous booleans
+/// (`gc_cycle_in_flight`/`gc_requested`/…) are mode-agnostic and printed in both.
+#[cfg(unix)]
+fn render_gc_state() -> String {
+    use crate::backend::models::gc_allocator;
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(1024);
+
     let in_flight = gc_allocator::gc_cycle_in_flight();
     let requested = gc_allocator::is_gc_requested();
     let disabled = gc_allocator::is_gc_disabled();
     let reachable = gc_allocator::gc_reachable_counter();
+    let bp_level = gc_allocator::backpressure_level();
+    // The canonical write-once runtime mode flag (false in a slab-only build).
+    let index_mode = crate::backend::models::metta_value::gc_mode_is_index();
 
+    let _ = writeln!(
+        out,
+        "── GC State ──────────────────────────────────────────────────"
+    );
+    let _ = writeln!(
+        out,
+        "  gc_mode:            {:>12}",
+        if index_mode { "index (CESK)" } else { "slab" }
+    );
+    let _ = writeln!(
+        out,
+        "  backpressure_level: {:>12} (max={})",
+        bp_level,
+        gc_allocator::MAX_BACKPRESSURE
+    );
+    let _ = writeln!(out, "  gc_cycle_in_flight: {:>12}", in_flight);
+    let _ = writeln!(out, "  gc_requested:       {:>12}", requested);
+    let _ = writeln!(out, "  gc_disabled:        {:>12}", disabled);
+    let _ = writeln!(out, "  gc_reachable_ctr:   {:>12}", reachable);
+    let _ = writeln!(out);
+
+    // ---- index mode: report the CESK IndexHeap + rendezvous cycle, NOT the slab pages ----
+    #[cfg(feature = "index-gc")]
+    {
+        if index_mode {
+            render_index_heap_state(&mut out);
+            return out;
+        }
+    }
+
+    // ---- slab mode (and any non-index build): the legacy slab allocator pages ----
+    let alloc = gc_allocator::global_allocator();
+    let committed = alloc.committed_bytes();
+    let threshold = alloc.gc_threshold();
     let ratio = if threshold > 0 {
         committed as f64 / threshold as f64
     } else {
         0.0
     };
-
-    eprintln!("── GC State ──────────────────────────────────────────────────");
-    eprintln!(
+    let _ = writeln!(
+        out,
         "  committed_bytes:    {:>12} ({:.1} MB)",
         committed,
         committed as f64 / (1024.0 * 1024.0)
     );
-    eprintln!(
+    let _ = writeln!(
+        out,
         "  gc_threshold:       {:>12} ({:.1} MB)",
         threshold,
         threshold as f64 / (1024.0 * 1024.0)
     );
-    eprintln!("  commit/threshold:   {:>12.2}", ratio);
-    eprintln!(
-        "  backpressure_level: {:>12} (max={})",
-        bp_level,
-        gc_allocator::MAX_BACKPRESSURE
-    );
-    eprintln!("  gc_cycle_in_flight: {:>12}", in_flight);
-    eprintln!("  gc_requested:       {:>12}", requested);
-    eprintln!("  gc_disabled:        {:>12}", disabled);
-    eprintln!("  gc_reachable_ctr:   {:>12}", reachable);
-    eprintln!();
+    let _ = writeln!(out, "  commit/threshold:   {:>12.2}", ratio);
+    let _ = writeln!(out);
 
     // Page statistics
     let ps = alloc.page_stats();
@@ -234,52 +274,176 @@ fn dump_gc_state() {
         0.0
     };
 
-    eprintln!("── Slab Pages ────────────────────────────────────────────────");
-    eprintln!("  value_pages:        {:>12}", ps.value_page_count);
-    eprintln!("  slots_per_page:     {:>12}", ps.slots_per_page);
-    eprintln!("  total_bumped:       {:>12}", ps.total_bumped_slots);
-    eprintln!("  total_live:         {:>12}", ps.total_live_slots);
-    eprintln!("  dead (bumped-live): {:>12}", dead_slots);
-    eprintln!("  occupancy:          {:>11.1}%", occupancy);
-    eprintln!(
+    let _ = writeln!(
+        out,
+        "── Slab Pages ────────────────────────────────────────────────"
+    );
+    let _ = writeln!(out, "  value_pages:        {:>12}", ps.value_page_count);
+    let _ = writeln!(out, "  slots_per_page:     {:>12}", ps.slots_per_page);
+    let _ = writeln!(out, "  total_bumped:       {:>12}", ps.total_bumped_slots);
+    let _ = writeln!(out, "  total_live:         {:>12}", ps.total_live_slots);
+    let _ = writeln!(out, "  dead (bumped-live): {:>12}", dead_slots);
+    let _ = writeln!(out, "  occupancy:          {:>11.1}%", occupancy);
+    let _ = writeln!(
+        out,
         "  value_committed:    {:>12} ({:.1} MB)",
         ps.value_committed_bytes,
         ps.value_committed_bytes as f64 / (1024.0 * 1024.0)
     );
-    eprintln!("  data_pages:         {:>12}", ps.data_page_count);
-    eprintln!(
+    let _ = writeln!(out, "  data_pages:         {:>12}", ps.data_page_count);
+    let _ = writeln!(
+        out,
         "  data_committed:     {:>12} ({:.1} MB)",
         ps.data_committed_bytes,
         ps.data_committed_bytes as f64 / (1024.0 * 1024.0)
     );
-    eprintln!();
+    let _ = writeln!(out);
 
     // Session GC statistics (requires track-stats feature)
     #[cfg(feature = "track-stats")]
     {
         let sgc = gc_allocator::session_gc_stats();
-        eprintln!("── Session GC ────────────────────────────────────────────────");
-        eprintln!("  sessions_released:  {:>12}", sgc.releases_total);
-        eprintln!("  values_freed:       {:>12}", sgc.values_freed_total);
-        eprintln!("  values_promoted:    {:>12}", sgc.values_promoted_total);
-        eprintln!("  values_scanned:     {:>12}", sgc.values_scanned_total);
-        eprintln!("  surviving_set_size: {:>12}", sgc.last_surviving_set_size);
+        let _ = writeln!(
+            out,
+            "── Session GC ────────────────────────────────────────────────"
+        );
+        let _ = writeln!(out, "  sessions_released:  {:>12}", sgc.releases_total);
+        let _ = writeln!(out, "  values_freed:       {:>12}", sgc.values_freed_total);
+        let _ = writeln!(
+            out,
+            "  values_promoted:    {:>12}",
+            sgc.values_promoted_total
+        );
+        let _ = writeln!(
+            out,
+            "  values_scanned:     {:>12}",
+            sgc.values_scanned_total
+        );
+        let _ = writeln!(
+            out,
+            "  surviving_set_size: {:>12}",
+            sgc.last_surviving_set_size
+        );
         if sgc.releases_total > 0 {
-            eprintln!(
+            let _ = writeln!(
+                out,
                 "  avg freed/release:  {:>12.0}",
                 sgc.values_freed_total as f64 / sgc.releases_total as f64
             );
-            eprintln!(
+            let _ = writeln!(
+                out,
                 "  avg promoted/rel:   {:>12.0}",
                 sgc.values_promoted_total as f64 / sgc.releases_total as f64
             );
             if sgc.values_freed_total == 0 {
-                eprintln!("  NOTE: 0 freed values is expected during sequential evaluation —");
-                eprintln!("        all values remain reachable from the live environment.");
+                let _ = writeln!(
+                    out,
+                    "  NOTE: 0 freed values is expected during sequential evaluation —"
+                );
+                let _ = writeln!(
+                    out,
+                    "        all values remain reachable from the live environment."
+                );
             }
         }
-        eprintln!();
+        let _ = writeln!(out);
     }
+
+    out
+}
+
+/// #275 — render the CESK/index allocator state for the diagnostic dump (index mode only).
+///
+/// Reports the `IndexHeap` allocator telemetry (committed / live / old-live / young-alloc /
+/// nursery backpressure) and the dedicated concurrent collector's rendezvous CYCLE state
+/// (generation, started-gate, witness gate, and the witness-slot occupancy summary). The latter
+/// is the E1 liveness lever: a nonzero `occupied_unpublished` while the GC is idle
+/// (`gc_cycle_in_flight=false`, `gc_requested=false`) is a mutator parked for a cycle no driver
+/// will close. The `IndexHeap` is read with `try_read()` so the dump NEVER blocks the diagnostic
+/// watcher thread on the heap lock (a collection holding the write lock prints a clear note
+/// instead of deadlocking the dump).
+#[cfg(all(unix, feature = "index-gc"))]
+fn render_index_heap_state(out: &mut String) {
+    use crate::backend::eval::cesk::index_heap::global_index_heap;
+    use crate::backend::models::gc_allocator;
+    use std::fmt::Write as _;
+
+    let _ = writeln!(
+        out,
+        "── Index Heap (CESK) ─────────────────────────────────────────"
+    );
+    match global_index_heap().try_read() {
+        Ok(heap) => {
+            let committed = heap.committed_bytes();
+            let live = heap.live_bytes();
+            let old_live = heap.old_live_bytes();
+            let young = heap.young_alloc_bytes();
+            let nursery_pending = heap.nursery_full_pending();
+            let occupancy = if committed > 0 {
+                live as f64 / committed as f64 * 100.0
+            } else {
+                0.0
+            };
+            let _ = writeln!(
+                out,
+                "  committed_bytes:    {:>12} ({:.1} MB)",
+                committed,
+                committed as f64 / (1024.0 * 1024.0)
+            );
+            let _ = writeln!(
+                out,
+                "  live_bytes:         {:>12} ({:.1} MB)",
+                live,
+                live as f64 / (1024.0 * 1024.0)
+            );
+            let _ = writeln!(
+                out,
+                "  old_live_bytes:     {:>12} ({:.1} MB)",
+                old_live,
+                old_live as f64 / (1024.0 * 1024.0)
+            );
+            let _ = writeln!(
+                out,
+                "  young_alloc_bytes:  {:>12} ({:.1} MB)",
+                young,
+                young as f64 / (1024.0 * 1024.0)
+            );
+            let _ = writeln!(out, "  live/committed:     {:>11.1}%", occupancy);
+            let _ = writeln!(out, "  nursery_full_pending:{:>11}", nursery_pending);
+        }
+        Err(_) => {
+            let _ = writeln!(
+                out,
+                "  (index heap is write-locked — a collection is in progress; stats are"
+            );
+            let _ = writeln!(
+                out,
+                "   read with try_read to avoid blocking the diagnostic dump)"
+            );
+        }
+    }
+    let _ = writeln!(out);
+
+    // Dedicated collector rendezvous / cycle state (the E1 liveness diagnosis lever).
+    let gen = gc_allocator::current_cycle_gen();
+    let started = gc_allocator::current_cycle_started();
+    let witness_ok = gc_allocator::current_witness_ok();
+    let (total, occupied, occupied_unpublished) = gc_allocator::witness_directory_summary(gen);
+    let _ = writeln!(
+        out,
+        "── GC Cycle / Rendezvous (CESK) ──────────────────────────────"
+    );
+    let _ = writeln!(out, "  cycle_gen:          {:>12}", gen);
+    let _ = writeln!(out, "  cycle_started:      {:>12}", started);
+    let _ = writeln!(out, "  witness_ok:         {:>12}", witness_ok);
+    let _ = writeln!(out, "  witness_slots:      {:>12}", total);
+    let _ = writeln!(out, "  occupied:           {:>12}", occupied);
+    let _ = writeln!(
+        out,
+        "  occupied_unpublished:{:>11}  (occupied ∧ published<cycle_gen — parked, not re-rooted this cycle)",
+        occupied_unpublished
+    );
+    let _ = writeln!(out);
 }
 
 /// Dump evaluator state.
@@ -768,4 +932,45 @@ pub fn print_pool_stats() {
         crp_median_ns, crp_median_ms
     );
     eprintln!();
+}
+
+#[cfg(all(test, unix, feature = "index-gc"))]
+mod index_dump_coupling_tests {
+    use super::*;
+
+    /// #275 source-coupling: in index mode the diagnostic GC-state dump must report the
+    /// CESK `IndexHeap` allocator + the dedicated-collector rendezvous cycle, and must NOT
+    /// present the legacy slab "Slab Pages" counters as the authoritative GC state.
+    #[test]
+    fn index_mode_dump_reports_index_heap_not_slab_pages() {
+        // An `index-gc` build runs index mode by default; assert it explicitly so the test
+        // is robust to ordering with any test that touches the mode flag.
+        crate::backend::models::metta_value::set_gc_mode_index();
+        // Ensure the global index heap is initialized so the telemetry path is exercised.
+        let _ = crate::backend::eval::cesk::index_heap::global_index_heap();
+
+        let report = render_gc_state();
+
+        assert!(
+            report.contains("gc_mode:") && report.contains("index (CESK)"),
+            "index-mode dump must label the active mode as index; got:\n{report}"
+        );
+        assert!(
+            report.contains("── Index Heap (CESK) ──"),
+            "index-mode dump must report IndexHeap/CESK allocator state; got:\n{report}"
+        );
+        assert!(
+            report.contains("── GC Cycle / Rendezvous (CESK) ──"),
+            "index-mode dump must report the dedicated-collector rendezvous/witness cycle; got:\n{report}"
+        );
+        assert!(
+            report.contains("occupied_unpublished:"),
+            "index-mode dump must include the stranded-parker witness indicator; got:\n{report}"
+        );
+        assert!(
+            !report.contains("Slab Pages"),
+            "index-mode dump must NOT present legacy slab page counters as the authoritative \
+             GC state; got:\n{report}"
+        );
+    }
 }

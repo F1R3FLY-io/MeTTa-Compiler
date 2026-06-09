@@ -1265,4 +1265,18 @@ assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn end_rend
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn close_open_rendezvous_cycle" "ga::end_rendezvous_cycle();" "drop(gip);"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn close_open_rendezvous_cycle" "drop(gip);" "ga::resume_workers();"
 
+# #275 — the SIGUSR1 diagnostic dump is SOURCE-COUPLED to the active GC mode. In index mode
+# `render_gc_state` must branch on `gc_mode_is_index()` and report the CESK IndexHeap +
+# dedicated-collector rendezvous/witness cycle (via `render_index_heap_state`), returning
+# BEFORE the legacy "Slab Pages" block — so it never presents slab page counters as the
+# authoritative GC state. The index branch + helper are feature-gated (slab byte-identical),
+# the IndexHeap is read with `try_read()` (never blocks the watcher), and the witness summary
+# (`witness_directory_summary`, itself index-gc-gated) is the E1 liveness diagnosis lever.
+assert_after_before "src/backend/diagnostics.rs" "fn render_gc_state()" "gc_mode_is_index()" "render_index_heap_state(&mut out);"
+assert_after_before "src/backend/diagnostics.rs" "fn render_gc_state()" "render_index_heap_state(&mut out);" "── Slab Pages ──"
+assert_immediate_cfg_before "src/backend/diagnostics.rs" "render_index_heap_state(&mut out);" "#[cfg(feature = \"index-gc\")]"
+assert_immediate_cfg_before "src/backend/diagnostics.rs" "fn render_index_heap_state(out: &mut String) {" "#[cfg(all(unix, feature = \"index-gc\"))]"
+assert_after_before "src/backend/diagnostics.rs" "fn render_index_heap_state(out: &mut String) {" "global_index_heap().try_read()" "witness_directory_summary(gen)"
+assert_immediate_cfg_before "src/backend/models/gc_allocator.rs" "pub(crate) fn witness_directory_summary(" "#[cfg(feature = \"index-gc\")]"
+
 echo "CESK GC source-coupling checks passed"

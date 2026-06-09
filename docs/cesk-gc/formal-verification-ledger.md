@@ -769,6 +769,19 @@ facts the proofs rely on:
 - The follow-on liveness case is a one-participant rendezvous: with fanout enabled and exactly one active mutator,
   the watermark trigger posts `CollectRendezvous`, the mutator self-roots at the next safepoint, and the driver waits
   on the same reified-witness protocol. `MC_RendezvousProgress_one_participant.cfg` covers this `N=1` progress path.
+- #275 (observability prerequisite for the E1 evaluator-progress liveness proof) — the SIGUSR1 diagnostic dump is now
+  source-coupled to the active GC mode. `render_gc_state` (`src/backend/diagnostics.rs`) branches on
+  `gc_mode_is_index()`: in index mode it reports the CESK `IndexHeap` allocator (committed / live / old-live /
+  young-alloc / nursery backpressure, read with `try_read()` so the diagnostic watcher thread NEVER blocks on the heap
+  lock during a suspected hang) and the dedicated collector's rendezvous CYCLE state (`cycle_gen` / `cycle_started` /
+  `witness_ok` plus the witness-slot occupancy summary `witness_directory_summary`), returning BEFORE the legacy
+  "Slab Pages" block; in slab mode the output is byte-identical to before. The `occupied_unpublished` witness count
+  (occupied slots not yet re-rooted for the current cycle while the GC is idle) is the direct lever for diagnosing the
+  E1 evaluator-progress hang. `verify_cesk_gc_source_coupling.sh` pins the mode branch, the feature-gated index helper,
+  the `try_read`→witness-summary order, and the index-gc gate on `witness_directory_summary`; the focused
+  `index_mode_dump_reports_index_heap_not_slab_pages` test asserts index mode does not present slab pages as the
+  authoritative GC state. This is a diagnostics source-coupling (no new proof obligation) that makes the subsequent
+  liveness counterexample evidence trustworthy.
 
 ## Harness
 

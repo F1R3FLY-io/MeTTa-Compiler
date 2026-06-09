@@ -3459,6 +3459,36 @@ pub(crate) fn all_occupied_slots_satisfied(cur_gen: u64) -> (bool, *const Witnes
     (true, ptr::null())
 }
 
+/// Diagnostic aggregate over the V4 witness directory — the SAME lock-free live-re-walk
+/// the driver wait ([`all_occupied_slots_satisfied`]) uses, but summing instead of
+/// short-circuiting. Returns `(total_slots, occupied, occupied_unpublished)` where
+/// `occupied_unpublished` counts OCCUPIED slots NOT yet satisfied for `cur_gen` (a parked
+/// mutator that has not re-published its machine for the current cycle — the stranded-parker
+/// indicator the E1 liveness diagnosis keys on). Lock-free (atomic loads over the never-realloc
+/// leaked chunk list), so it is safe to call from the SIGUSR1 diagnostic watcher thread during
+/// a suspected hang. #275: feeds the index-mode dump's `GC Cycle / Rendezvous` section.
+#[cfg(feature = "index-gc")]
+pub(crate) fn witness_directory_summary(cur_gen: u64) -> (usize, usize, usize) {
+    let total = WITNESS_NEXT_INDEX.load(Ordering::Acquire);
+    let mut occupied = 0usize;
+    let mut occupied_unpublished = 0usize;
+    let mut cur = WITNESS_HEAD.load(Ordering::Acquire);
+    while !cur.is_null() {
+        // SAFETY: process-lifetime leaked chunk (same invariant as `all_occupied_slots_satisfied`).
+        let chunk = unsafe { &*cur };
+        for slot in chunk.slots.iter() {
+            if slot.occupied.load(Ordering::Acquire) {
+                occupied += 1;
+                if !witness_slot_satisfied(slot, cur_gen) {
+                    occupied_unpublished += 1;
+                }
+            }
+        }
+        cur = chunk.next.load(Ordering::Acquire);
+    }
+    (total, occupied, occupied_unpublished)
+}
+
 /// Driver: publish that the witness gate is SATISFIED for the in-flight cycle (the
 /// SOLE thing `gate_open_rendezvous` reads). Set true only AFTER
 /// [`requestor_wait_for_all_reified_parked`] returns; cleared at

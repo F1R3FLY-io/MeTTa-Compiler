@@ -237,6 +237,22 @@ can replace the full-major final sweep.
   freed it and consumed the reclaim snapshot; non-quiescent or deferred-pending indices cannot be reused. When
   reusable pressure exists, `SideColumn::push` consumes a reusable index without increasing the side-column
   high-water, so a long-lived current segment is not forced into append-only side-page growth after quiescent drains.
+  The `GenerationGuardSafety` section certifies the SAFETY half (added with the side-index ABA fix, commit
+  `f6dd7a76`): because `266d19d` made side indices RECYCLABLE, a stale `SideReclaim` snapshot `{dead owner, idx}`
+  could free a cell a LIVE node had reused — the `live Spanned slot` use-after-free at `index_heap.rs:876`
+  (gdb-confirmed: dead owner `Addr(2)` vs live reuser `Addr(220)` on span idx 43, freed by the guard-less
+  `free_pending_side_reclaims` drain; only tripped under the greenwall `MAX_BYTES=1MiB` config, which forces a full
+  major + side-drain every cycle). The earlier `owner_still_owns` drain guard FAILED (the stale owner bytes still
+  name `idx`, so value-equality cannot tell the dead occupant from the live one). The fix stamps each
+  `SideColumn::push` with a fresh, strictly-increasing per-cell generation (stored in `SpanRef`/`ChildRef`/`ByteRef`,
+  captured in `SideReclaim`); `SideColumn::free(idx, gen)` drops the cell ONLY when the cell's current generation
+  equals the snapshot's captured one. `gen_guard_never_frees_live` proves a dead-owner snapshot whose generation
+  matches the current cell forces — by generation injectivity (each `push` strictly bumps it) — `owner = current`, so
+  the current occupant is that dead owner, hence not live; the non-vacuity `idx_only_free_drops_live_reuser` shows the
+  pre-fix idx-only free drops the live reuser while the guard does not. Rocq-only (a deductive safety obligation with
+  no temporal component ⇒ no TLA mirror, per write-each-obligation-once). Source-coupled on the refs' `gen` field,
+  `push`'s gen stamp, the snapshot's gen capture, and `free`'s gen check. Verified: 84-fixture cross-fixture repro
+  EXIT 0 (was the panic), greenwall 483/0 both modes + debug-oracle 0-panics, slab byte-identical (4387/0).
 - `formal/rocq/gc/HashConsSweepRetain.v` and `formal/lean/gc/HashConsSweepRetain.lean`: prove the Addr-valued
   hash-cons retain obligation. A major hash-cons hit cannot return a freed address when retained entries imply marked
   entries and sweep frees only unmarked entries; a minor hash-cons hit cannot return a freed address when retained

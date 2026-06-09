@@ -399,6 +399,20 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let do_major = pending_side_major" "if do_major {"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "if did_major {" "MINORS_SINCE_MAJOR.store(0, Ordering::Relaxed);" "MINOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "if did_major {" "MINOR_CYCLES_RUN.fetch_add(1, Ordering::Relaxed);" "MINORS_SINCE_MAJOR.fetch_add(1, Ordering::Relaxed);"
+
+# Side-index ABA fix: per-cell GENERATION guard (formal/rocq/gc/QuiescentSideIndexReuse.v
+# §GenerationGuardSafety). 266d19d made SideColumn indices recyclable; the per-cell
+# generation distinguishes a freed occupant from a live reuser, so a stale SideReclaim
+# snapshot never frees a live cell. Pins: the three node refs carry the generation; push
+# stamps a fresh (strictly-increasing ⇒ injective) generation; the reclaim snapshot
+# captures the ref's generation; free drops ONLY on a matching generation (the GuardDrops
+# predicate / gen_injective premise the proof rests on).
+assert_after_before "src/backend/eval/cesk/index_node.rs" "pub struct ChildRef {" "pub idx: u32," "pub gen: u32,"
+assert_after_before "src/backend/eval/cesk/index_node.rs" "pub struct ByteRef {" "pub idx: u32," "pub gen: u32,"
+assert_after_before "src/backend/eval/cesk/index_node.rs" "pub struct SpanRef {" "pub idx: u32," "pub gen: u32,"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> (u32, u32)" "let g = slot.0.wrapping_add(1);" "slot.1 = Some(boxed);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn free(&mut self, idx: u32, gen: u32)" "if slot.0 == gen {" "slot.1.take().is_some()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn side_reclaim_for_addr" "idx: sr.idx," "gen: sr.gen,"
 assert_count "src/backend/eval/cesk/index_heap.rs" "const GROWTH: usize = 2;" "1"
 assert_count "src/backend/eval/cesk/index_heap.rs" "old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())" "4"
 assert_count "src/backend/eval/cesk/index_heap.rs" "old_live_after.saturating_mul(GROWTH).max(min_threshold())," "2"
@@ -928,12 +942,12 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn grow_to(&self, c: 
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn grow_to(&self, c: usize)" "self.page_count.store(p + 1, Ordering::Release);" "(*page[ck].get()).write(chunk);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn grow_to(&self, c: usize)" "(*page[ck].get()).write(chunk);" "self.chunk_count.store(next + 1, Ordering::Release);"
 line_no "src/backend/eval/cesk/index_heap.rs" "free_indices: std::sync::Mutex<Vec<u32>>" >/dev/null
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" "free_indices" "let idx = self.bump.fetch_add"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" ".pop()" "let idx = self.bump.fetch_add"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" "assume_init_mut() = Some(boxed);" "return idx;"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn free(&mut self, idx: u32)" "take().is_some()" ".push(idx)"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" "self.grow_to(c);" "let chunk = self.chunk(c);"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" "(*chunk[off].get()).write(Some(boxed));" "self.publish(idx);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> (u32, u32)" "free_indices" "let idx = self.bump.fetch_add"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> (u32, u32)" ".pop()" "let idx = self.bump.fetch_add"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> (u32, u32)" "slot.1 = Some(boxed);" "return (idx, g);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn free(&mut self, idx: u32, gen: u32)" "slot.1.take().is_some()" ".push(idx)"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> (u32, u32)" "self.grow_to(c);" "let chunk = self.chunk(c);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> (u32, u32)" "cell.1 = Some(boxed);" "self.publish(idx);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "unsafe fn get(&self, idx: u32) -> Option<&T>" "self.len.load(Ordering::Acquire)" "let chunk = self.chunk(c);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr(&mut self, items: &[MettaValue]) -> Addr" "let cs = self.intern_children_in(seg, items);" "self.arena.try_bump_in(seg, Node::SExpr(cs))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunction(&mut self, goals: &[MettaValue]) -> Addr" "let cs = self.intern_children_in(seg, goals);" "self.arena.try_bump_in(seg, Node::Conjunction(cs))"

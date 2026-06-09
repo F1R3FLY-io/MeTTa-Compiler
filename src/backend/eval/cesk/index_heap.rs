@@ -2689,6 +2689,14 @@ struct SideColumn<T: ?Sized> {
     /// `SIDE_CHUNK_LEN` pushes). A plain `Mutex<()>` — `push`'s fast path does
     /// NOT take it once the target chunk is published.
     grow_lock: std::sync::Mutex<()>,
+    /// Quiescence-proven reusable published entry indices.
+    ///
+    /// Entries are pushed only by [`SideColumn::free`], which is reached from the
+    /// full true-quiescence side-drain path after the pending reclaim snapshot has
+    /// been consumed. Rendezvous/midloop collectors do not call `free`, so side
+    /// indices captured by deferred snapshots cannot re-enter this stack before
+    /// the snapshot is resolved.
+    free_indices: std::sync::Mutex<Vec<u32>>,
 }
 
 impl<T: ?Sized> SideColumn<T> {
@@ -2718,6 +2726,7 @@ impl<T: ?Sized> SideColumn<T> {
             bump: AtomicUsize::new(0),
             len: AtomicUsize::new(0),
             grow_lock: std::sync::Mutex::new(()),
+            free_indices: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -2856,16 +2865,41 @@ impl<T: ?Sized> SideColumn<T> {
         }
     }
 
-    /// Append `boxed`, returning its stable index. Lock-free on the steady-state
-    /// fast path (the `grow_to` lock is taken only when crossing into a not-yet-
-    /// published chunk, once per `SIDE_CHUNK_LEN` pushes).
+    /// Append `boxed`, returning its stable index. It first consumes a
+    /// quiescence-proven reusable index if one exists; otherwise it takes the
+    /// monotone bump path. The bump path is lock-free on the steady-state fast path
+    /// (the `grow_to` lock is taken only when crossing into a not-yet-published
+    /// chunk, once per `SIDE_CHUNK_LEN` pushes).
     ///
-    /// Protocol (mirrors `IndexArena::alloc_bump` → `Segment::{bump_one,
+    /// Reuse protocol: `free_indices` contains only published cells whose prior
+    /// payload was dropped by a full true-quiescence drain. Popping an index gives
+    /// this caller unique ownership to write a fresh `Some(Box<T>)` into a cell
+    /// that no live node can still read.
+    ///
+    /// Bump protocol (mirrors `IndexArena::alloc_bump` → `Segment::{bump_one,
     /// write_claimed, publish}`): CLAIM a unique `idx` (`Relaxed` `fetch_add`);
     /// ensure the target chunk is published (`grow_to` under `Acquire` re-check);
     /// WRITE the (uniquely claimed, exclusive, unpublished) cell; PUBLISH `idx`.
     fn push(&self, boxed: Box<T>) -> u32 {
         use std::sync::atomic::Ordering;
+        if let Some(idx) = self
+            .free_indices
+            .lock()
+            .expect("side-column free_indices poisoned")
+            .pop()
+        {
+            let (c, off) = Self::locate(idx as usize);
+            // SAFETY: indices in `free_indices` were previously published, so
+            // their chunks are initialized. The pop gives this writer unique
+            // ownership of the freed cell until it is published again by storing
+            // `Some`.
+            unsafe {
+                let reused_chunk = self.chunk(c);
+                *(*reused_chunk[off].get()).assume_init_mut() = Some(boxed);
+            }
+            return idx;
+        }
+
         let idx = self.bump.fetch_add(1, Ordering::Relaxed); // unique claim
         let (c, off) = Self::locate(idx);
         if c >= self.chunk_count.load(Ordering::Acquire) {
@@ -2918,14 +2952,13 @@ impl<T: ?Sized> SideColumn<T> {
         unsafe { self.get(idx) }
     }
 
-    /// Drop the payload `Box` at `idx`, leaving the cell as `None`. `&mut self`
-    /// (quiescence-only): a free runs only at a quiescent safepoint, statically
-    /// exclusive of every `&self` reader/pusher, so it races nothing (the index
-    /// analogue of the arena's free-list-reuse-at-quiescence rule). Never
-    /// decrements `bump`/`len` and never recycles the index — a later `push`
-    /// APPENDS a fresh index (keeping the side-free idempotent: re-freeing an
-    /// already-`None` cell is a no-op). `Relaxed` load of `len` is fine under
-    /// `&mut self` (no concurrent writer).
+    /// Drop the payload `Box` at `idx`, leaving the cell as `None`, and make the
+    /// published entry index reusable. `&mut self` (quiescence-only): a free runs
+    /// only at a quiescent safepoint, statically exclusive of every `&self`
+    /// reader/pusher, so it races nothing (the index analogue of the arena's
+    /// free-list-reuse-at-quiescence rule). Re-freeing an already-`None` cell is a
+    /// no-op and does not push a duplicate reusable index. `Relaxed` load of `len`
+    /// is fine under `&mut self` (no concurrent writer).
     fn free(&mut self, idx: u32) {
         use std::sync::atomic::Ordering;
         if (idx as usize) < self.len.load(Ordering::Relaxed) {
@@ -2933,9 +2966,15 @@ impl<T: ?Sized> SideColumn<T> {
             // SAFETY: `idx < len` ⇒ `c < chunk_count` (published) and the cell is
             // initialized (every cell is `None` from `grow_to`, then possibly a
             // `Some` from `push`). `&mut self` is exclusive, so no aliasing.
-            unsafe {
+            let was_live = unsafe {
                 let chunk = self.chunk(c);
-                *(*chunk[off].get()).assume_init_mut() = None; // drops the Box
+                (*chunk[off].get()).assume_init_mut().take().is_some()
+            };
+            if was_live {
+                self.free_indices
+                    .lock()
+                    .expect("side-column free_indices poisoned")
+                    .push(idx);
             }
         }
     }
@@ -2945,6 +2984,14 @@ impl<T: ?Sized> SideColumn<T> {
     fn published_len(&self) -> usize {
         use std::sync::atomic::Ordering;
         self.len.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn reusable_len(&self) -> usize {
+        self.free_indices
+            .lock()
+            .expect("side-column free_indices poisoned")
+            .len()
     }
 
     /// The number of published chunks (diagnostics / tests).
@@ -3401,6 +3448,70 @@ mod tests {
             !heap.has_current_free_slot(),
             "the exclusive reuse path consumed the current-segment slot"
         );
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn side_column_reuses_quiescence_freed_index_once() {
+        let mut column = SideColumn::<str>::new();
+
+        let old = column.push("old".into());
+        assert_eq!(old, 0);
+        assert_eq!(column.published_len(), 1);
+
+        column.free(old);
+        assert_eq!(column.reusable_len(), 1);
+        column.free(old);
+        assert_eq!(
+            column.reusable_len(),
+            1,
+            "idempotent free must not duplicate a reusable side index"
+        );
+
+        let replacement = column.push("replacement".into());
+        assert_eq!(
+            replacement, old,
+            "quiescence-freed side index should be reused before bumping"
+        );
+        assert_eq!(
+            column.published_len(),
+            1,
+            "side-column high-water must not grow when a reusable index exists"
+        );
+        assert_eq!(column.reusable_len(), 0);
+        // SAFETY: `replacement < published_len`.
+        assert_eq!(unsafe { column.get(replacement) }, Some("replacement"));
+    }
+
+    #[test]
+    fn full_quiescence_side_drain_enables_side_index_reuse() {
+        fn string_side_idx(heap: &IndexHeap, addr: Addr) -> u32 {
+            match heap.arena.get(addr) {
+                Node::String(br) => br.idx,
+                _ => panic!("expected String node"),
+            }
+        }
+
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(16);
+
+        let dead = heap.alloc_string("dead-current");
+        let dead_side_idx = string_side_idx(&heap, dead);
+        let live = heap.alloc_string("live-root");
+        heap.mark(&[live]);
+        let stats = heap.sweep();
+        assert_eq!(stats.reclaimed_to_free_list, 1);
+        heap.free_pending_side_reclaims();
+
+        let replacement = heap.alloc_string("replacement");
+        assert_eq!(replacement, dead, "node slot should be reused");
+        assert_eq!(
+            string_side_idx(&heap, replacement),
+            dead_side_idx,
+            "full quiescence drain should make the old side index reusable"
+        );
+        assert_eq!(heap.str_slice(replacement), "replacement");
+        assert_eq!(heap.str_slice(live), "live-root");
         reset_gc_mode_slab();
     }
 
@@ -4222,25 +4333,27 @@ mod tests {
     }
 
     #[test]
-    fn side_column_no_recycle_after_free() {
-        // After freeing an index, the next push gets a NEW (higher) index — the
-        // freed slot is never reused (no-recycle invariant).
+    fn side_column_recycles_after_quiescence_free() {
+        // After a true-quiescence free, the next push reuses that published index
+        // instead of growing the side-column high-water.
         let mut col: SideColumn<[i32]> = SideColumn::new();
         let i0 = col.push(vec![0].into_boxed_slice());
         let i1 = col.push(vec![1].into_boxed_slice());
         col.free(i0);
         let i2 = col.push(vec![2].into_boxed_slice());
-        assert_eq!(i2, 2, "push after free APPENDS a fresh index (no recycle)");
-        assert_ne!(i2, i0, "freed index {i0} is not reused");
-        // The freed slot stays freed; the new entry is the appended one.
-        // SAFETY: indices < published_len() (== 3).
-        assert_eq!(unsafe { col.get(i0) }, None, "freed slot still None");
+        assert_eq!(i2, i0, "push after quiescence free reuses the index");
+        // The freed slot now contains the replacement; no new entry was appended.
+        // SAFETY: indices < published_len() (== 2).
+        assert_eq!(
+            unsafe { col.get(i0) },
+            Some(&[2][..]),
+            "freed slot now holds the replacement"
+        );
         assert_eq!(unsafe { col.get(i1) }, Some(&[1][..]), "i1 intact");
-        assert_eq!(unsafe { col.get(i2) }, Some(&[2][..]), "new entry present");
         assert_eq!(
             col.published_len(),
-            3,
-            "len counts every push, freed or not"
+            2,
+            "len does not grow when a reusable index is available"
         );
     }
 

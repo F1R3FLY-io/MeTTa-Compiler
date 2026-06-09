@@ -310,6 +310,10 @@ line_no "formal/rocq/gc/E1SatbStwDriverProgress.v" "panic_or_closed_final_sweep_
 line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/ConcurrentReusePressureProgress.v\"" >/dev/null
 line_no "formal/rocq/gc/ConcurrentReusePressureProgress.v" "try_write_loss_with_reuse_pressure_chooses_exclusive" >/dev/null
 line_no "formal/rocq/gc/ConcurrentReusePressureProgress.v" "pressure_path_reuses_without_weakening_concurrent_safety" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/QuiescentSideIndexReuse.v\"" >/dev/null
+line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "reusable_index_implies_quiescent_full_consumed" >/dev/null
+line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "free_then_push_reuses_without_bump" >/dev/null
+line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "reusable_pressure_excludes_bump_path" >/dev/null
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "request_gc();" "tx.send(GcDriverRequest::CollectRendezvous)"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "None => crate::backend::models::gc_allocator::resume_workers()" "fn spawn_gc_driver"
 
@@ -923,6 +927,11 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn intern_span_in" "s
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn grow_to(&self, c: usize)" "(*self.pages[p].get()).write(page);" "self.page_count.store(p + 1, Ordering::Release);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn grow_to(&self, c: usize)" "self.page_count.store(p + 1, Ordering::Release);" "(*page[ck].get()).write(chunk);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn grow_to(&self, c: usize)" "(*page[ck].get()).write(chunk);" "self.chunk_count.store(next + 1, Ordering::Release);"
+line_no "src/backend/eval/cesk/index_heap.rs" "free_indices: std::sync::Mutex<Vec<u32>>" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" "free_indices" "let idx = self.bump.fetch_add"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" ".pop()" "let idx = self.bump.fetch_add"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" "assume_init_mut() = Some(boxed);" "return idx;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn free(&mut self, idx: u32)" "take().is_some()" ".push(idx)"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" "self.grow_to(c);" "let chunk = self.chunk(c);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> u32" "(*chunk[off].get()).write(Some(boxed));" "self.publish(idx);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "unsafe fn get(&self, idx: u32) -> Option<&T>" "self.len.load(Ordering::Acquire)" "let chunk = self.chunk(c);"

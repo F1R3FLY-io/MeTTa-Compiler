@@ -232,6 +232,11 @@ can replace the full-major final sweep.
   observe published same-segment payloads, future side reads cannot target freed pending snapshots, freed side boxes
   have an owner snapshot plus quiescent full-mark drain and shadow clear, marked owners that still own the side are
   retained, released segment resets drop pending snapshots, and duplicate reports require fresh free-owner acquisition.
+- `formal/rocq/gc/QuiescentSideIndexReuse.v`: proves the side-column allocator-progress refinement discovered by the
+  E1 V4 ASAN stress timeout. A side index may enter the reusable stack only after a full true-quiescence drain has
+  freed it and consumed the reclaim snapshot; non-quiescent or deferred-pending indices cannot be reused. When
+  reusable pressure exists, `SideColumn::push` consumes a reusable index without increasing the side-column
+  high-water, so a long-lived current segment is not forced into append-only side-page growth after quiescent drains.
 - `formal/rocq/gc/HashConsSweepRetain.v` and `formal/lean/gc/HashConsSweepRetain.lean`: prove the Addr-valued
   hash-cons retain obligation. A major hash-cons hit cannot return a freed address when retained entries imply marked
   entries and sweep frees only unmarked entries; a minor hash-cons hit cannot return a freed address when retained

@@ -135,9 +135,28 @@ unsafe fn launder<'a, T: ?Sized>(r: &'a T) -> &'static T {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SideReclaim {
-    Children { owner: Addr, seg: usize, idx: u32 },
-    Strings { owner: Addr, seg: usize, idx: u32 },
-    Spans { owner: Addr, seg: usize, idx: u32 },
+    Children {
+        owner: Addr,
+        seg: usize,
+        idx: u32,
+        /// Generation the owner's ref carried when this snapshot was captured.
+        /// `SideColumn::free` drops cell `idx` only when its current generation
+        /// still equals this — so a reused index (whose generation a live
+        /// re-intern bumped) is never freed by this stale snapshot.
+        gen: u32,
+    },
+    Strings {
+        owner: Addr,
+        seg: usize,
+        idx: u32,
+        gen: u32,
+    },
+    Spans {
+        owner: Addr,
+        seg: usize,
+        idx: u32,
+        gen: u32,
+    },
 }
 
 impl SideReclaim {
@@ -661,24 +680,24 @@ impl IndexHeap {
         // was), so `seg < sides_count` as observed here (the `Release` store in
         // `ensure_side_seg` is observed by this same thread).
         let side = unsafe { self.side(seg) };
-        let idx = side.children.push(items.to_vec().into_boxed_slice());
-        ChildRef { idx }
+        let (idx, gen) = side.children.push(items.to_vec().into_boxed_slice());
+        ChildRef { idx, gen }
     }
 
     fn intern_bytes_in(&self, seg: usize, s: &str) -> ByteRef {
         self.ensure_side_seg(seg);
         // SAFETY: as `intern_children_in` — cell `seg` published by the call above.
         let side = unsafe { self.side(seg) };
-        let idx = side.strings.push(s.to_string().into_boxed_str());
-        ByteRef { idx }
+        let (idx, gen) = side.strings.push(s.to_string().into_boxed_str());
+        ByteRef { idx, gen }
     }
 
     fn intern_span_in(&self, seg: usize, span: Span) -> SpanRef {
         self.ensure_side_seg(seg);
         // SAFETY: as `intern_children_in` — cell `seg` published by the call above.
         let side = unsafe { self.side(seg) };
-        let idx = side.spans.push(Box::new(span));
-        SpanRef { idx }
+        let (idx, gen) = side.spans.push(Box::new(span));
+        SpanRef { idx, gen }
     }
 
     /// Bump-path interning: into the current bump segment (`ensure_bump_room`).
@@ -1086,16 +1105,19 @@ impl IndexHeap {
                 owner: addr,
                 seg,
                 idx: cr.idx,
+                gen: cr.gen,
             }),
             Node::Atom(br) | Node::String(br) => Some(SideReclaim::Strings {
                 owner: addr,
                 seg,
                 idx: br.idx,
+                gen: br.gen,
             }),
             Node::Spanned(_, sr) => Some(SideReclaim::Spans {
                 owner: addr,
                 seg,
                 idx: sr.idx,
+                gen: sr.gen,
             }),
             _ => None,
         }
@@ -1157,9 +1179,9 @@ impl IndexHeap {
         // exclusive at the quiescence drain => unique access.
         let arenas = unsafe { self.side_mut(seg) };
         match side {
-            SideReclaim::Children { idx, .. } => arenas.children.free(idx),
-            SideReclaim::Strings { idx, .. } => arenas.strings.free(idx),
-            SideReclaim::Spans { idx, .. } => arenas.spans.free(idx),
+            SideReclaim::Children { idx, gen, .. } => arenas.children.free(idx, gen),
+            SideReclaim::Strings { idx, gen, .. } => arenas.strings.free(idx, gen),
+            SideReclaim::Spans { idx, gen, .. } => arenas.spans.free(idx, gen),
         }
     }
 
@@ -1184,11 +1206,15 @@ impl IndexHeap {
     /// C1.c #1: free known-dead side payload snapshots only at true quiescence.
     ///
     /// The snapshots were captured at reclaim time, so they remain valid even if the
-    /// node slot was later reused. SideColumn indices are append-only and never
-    /// recycled within a segment; duplicate snapshots are harmless because
-    /// `SideColumn::free` is idempotent. Snapshots for whole-released segments are
-    /// removed by [`drop_pending_side_reclaims_for_released_segments`] before this
-    /// drain can run.
+    /// node slot was later reused. SideColumn indices ARE recycled (post-266d19d
+    /// free-list reuse), so a captured `idx` alone no longer identifies the snapshot
+    /// occupant across reuse — the snapshot therefore also captured the cell's
+    /// GENERATION, and `SideColumn::free` drops the cell only when that captured
+    /// generation still equals the cell's current one (so a reused index whose
+    /// generation a live re-intern bumped is never freed by a stale snapshot).
+    /// Duplicate snapshots are harmless because `SideColumn::free` is idempotent.
+    /// Snapshots for whole-released segments are removed by
+    /// [`drop_pending_side_reclaims_for_released_segments`] before this drain runs.
     fn free_pending_side_reclaims(&mut self) {
         let pending = std::mem::take(&mut self.pending_side_reclaims);
         let sides_count = self.sides_count.load(std::sync::atomic::Ordering::Acquire);
@@ -2624,14 +2650,23 @@ const SIDE_PAGE_MASK: usize = SIDE_PAGE_LEN - 1;
 const MAX_SIDE_PAGES: usize = 1 << (32 - SIDE_CHUNK_BITS - SIDE_PAGE_BITS);
 
 /// One side-column chunk: `SIDE_CHUNK_LEN` cells, each an
-/// `UnsafeCell<MaybeUninit<Option<Box<T>>>>`. Every cell is initialized to
-/// `MaybeUninit::new(None)` at chunk creation (`grow_to`) — NOT `uninit()` —
+/// `UnsafeCell<MaybeUninit<(u32, Option<Box<T>>)>>`. The `u32` is the cell's
+/// PER-CELL GENERATION (bumped by each `push` that claims the cell); the
+/// `Option<Box<T>>` is the payload. Every cell is initialized to
+/// `MaybeUninit::new((0, None))` at chunk creation (`grow_to`) — NOT `uninit()` —
 /// so `assume_init_ref` on ANY in-bounds offset is always sound, even before a
 /// `push` writes it. (This diverges from the node arena, which gates reads on
-/// `len`; for the `Option<Box<T>>` column initializing to `None` is the safe
-/// and robust choice and costs nothing — the niche keeps `Option<Box<_>>` the
-/// same size as the bare `Box`.)
-type SideChunk<T> = Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<Option<Box<T>>>>]>;
+/// `len`; for the `(gen, Option<Box<T>>)` column initializing to `(0, None)` is
+/// the safe and robust choice.)
+///
+/// The generation is what makes index RECYCLING (post-266d19d free-list reuse)
+/// safe against a stale deferred-free snapshot: a `SideReclaim` captures the
+/// generation it observed in the owning node's ref, and `free` drops the cell
+/// only when the cell's current generation still equals the captured one — so a
+/// reused index whose generation a live re-intern bumped is never freed by a
+/// stale snapshot. (The pair is no longer niche-packed to the size of a bare
+/// `Box`, but a side-column entry is only one word per payload regardless.)
+type SideChunk<T> = Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<(u32, Option<Box<T>>)>>]>;
 
 /// One super-directory page: `SIDE_PAGE_LEN` chunk-pointer cells, each an
 /// `UnsafeCell<MaybeUninit<SideChunk<T>>>`. A page is allocated (its cells all
@@ -2759,7 +2794,7 @@ impl<T: ?Sized> SideColumn<T> {
     unsafe fn chunk(
         &self,
         c: usize,
-    ) -> &[std::cell::UnsafeCell<std::mem::MaybeUninit<Option<Box<T>>>>] {
+    ) -> &[std::cell::UnsafeCell<std::mem::MaybeUninit<(u32, Option<Box<T>>)>>] {
         let (p, ck) = Self::locate_chunk(c);
         let page = (*self.pages[p].get()).assume_init_ref(); // &SidePage<T> -> &[..]
         let chunk_cell = page[ck].get(); // *mut MaybeUninit<SideChunk<T>>
@@ -2806,9 +2841,9 @@ impl<T: ?Sized> SideColumn<T> {
         );
         // Fill every gap chunk_count..=c. For each chunk: ensure its page is
         // allocated+published FIRST, then allocate+write the chunk, then publish
-        // the chunk. Each chunk cell is initialized to `None` (NOT uninit) so
+        // the chunk. Each chunk cell is initialized to `(0, None)` (NOT uninit) so
         // `assume_init_ref` is sound on any in-bounds offset before a `push`
-        // writes it (see the `SideChunk` type docs).
+        // writes it (see the `SideChunk` type docs): generation 0, no payload.
         while next <= c {
             let (p, ck) = Self::locate_chunk(next);
             // (1) Ensure page `p` is allocated + published. A page's cells are
@@ -2828,10 +2863,10 @@ impl<T: ?Sized> SideColumn<T> {
                 }
                 self.page_count.store(p + 1, Ordering::Release); // publish page
             }
-            // (2) Allocate the chunk (all cells `None`) and write it into page
-            // `p`'s chunk-cell `ck`.
+            // (2) Allocate the chunk (all cells `(0, None)`: generation 0, no
+            // payload) and write it into page `p`'s chunk-cell `ck`.
             let chunk: SideChunk<T> = (0..SIDE_CHUNK_LEN)
-                .map(|_| UnsafeCell::new(MaybeUninit::new(None)))
+                .map(|_| UnsafeCell::new(MaybeUninit::new((0u32, None))))
                 .collect();
             // SAFETY: page `p` is published (`p < page_count`, just ensured), so
             // its cell array is initialized. Chunk cell `ck` is not yet published
@@ -2865,22 +2900,31 @@ impl<T: ?Sized> SideColumn<T> {
         }
     }
 
-    /// Append `boxed`, returning its stable index. It first consumes a
-    /// quiescence-proven reusable index if one exists; otherwise it takes the
-    /// monotone bump path. The bump path is lock-free on the steady-state fast path
-    /// (the `grow_to` lock is taken only when crossing into a not-yet-published
-    /// chunk, once per `SIDE_CHUNK_LEN` pushes).
+    /// Append `boxed`, returning its stable index AND the cell's new generation
+    /// (`(idx, gen)`). It first consumes a quiescence-proven reusable index if one
+    /// exists; otherwise it takes the monotone bump path. The bump path is
+    /// lock-free on the steady-state fast path (the `grow_to` lock is taken only
+    /// when crossing into a not-yet-published chunk, once per `SIDE_CHUNK_LEN`
+    /// pushes).
+    ///
+    /// GENERATION: every claim of a cell (reuse OR first bump) increments that
+    /// cell's stored generation and returns the new value, which the caller stores
+    /// in the node's ref (`ChildRef`/`ByteRef`/`SpanRef`). A deferred-free snapshot
+    /// captures it and `free` honors it (see [`Self::free`]) — so a recycled index
+    /// whose generation a live re-intern bumped is never freed by a stale snapshot.
+    /// A fresh (bumped) cell is `(0, None)` from `grow_to`, so its first claim
+    /// yields generation 1; a reused cell yields its prior generation + 1.
     ///
     /// Reuse protocol: `free_indices` contains only published cells whose prior
     /// payload was dropped by a full true-quiescence drain. Popping an index gives
-    /// this caller unique ownership to write a fresh `Some(Box<T>)` into a cell
-    /// that no live node can still read.
+    /// this caller unique ownership to write a fresh `Some(Box<T>)` (and a bumped
+    /// generation) into a cell that no live node can still read.
     ///
     /// Bump protocol (mirrors `IndexArena::alloc_bump` → `Segment::{bump_one,
     /// write_claimed, publish}`): CLAIM a unique `idx` (`Relaxed` `fetch_add`);
     /// ensure the target chunk is published (`grow_to` under `Acquire` re-check);
     /// WRITE the (uniquely claimed, exclusive, unpublished) cell; PUBLISH `idx`.
-    fn push(&self, boxed: Box<T>) -> u32 {
+    fn push(&self, boxed: Box<T>) -> (u32, u32) {
         use std::sync::atomic::Ordering;
         if let Some(idx) = self
             .free_indices
@@ -2892,12 +2936,18 @@ impl<T: ?Sized> SideColumn<T> {
             // SAFETY: indices in `free_indices` were previously published, so
             // their chunks are initialized. The pop gives this writer unique
             // ownership of the freed cell until it is published again by storing
-            // `Some`.
-            unsafe {
+            // `Some`. The cell is already initialized (a `(gen, None)` left by the
+            // `free` that recycled it), so `assume_init_mut` is sound; bump the
+            // generation in place and install the fresh payload.
+            let g = unsafe {
                 let reused_chunk = self.chunk(c);
-                *(*reused_chunk[off].get()).assume_init_mut() = Some(boxed);
-            }
-            return idx;
+                let slot = (*reused_chunk[off].get()).assume_init_mut();
+                let g = slot.0.wrapping_add(1);
+                slot.0 = g;
+                slot.1 = Some(boxed);
+                g
+            };
+            return (idx, g);
         }
 
         let idx = self.bump.fetch_add(1, Ordering::Relaxed); // unique claim
@@ -2910,13 +2960,20 @@ impl<T: ?Sized> SideColumn<T> {
         // `grow_to`'s store / the load above). `idx` was uniquely claimed by the
         // `fetch_add`, so no other writer holds `(c, off)`; `off` is not yet
         // published (`off >= len` until `publish`), so no reader observes it.
-        // The write is therefore exclusive and races no reader.
-        unsafe {
+        // The write is therefore exclusive and races no reader. The cell is
+        // already initialized to `(0, None)` by `grow_to`, so we READ-MODIFY it
+        // (bump the generation, install the payload) rather than `.write(..)` over
+        // a `MaybeUninit` we'd then have to re-seed with a generation.
+        let g = unsafe {
             let chunk = self.chunk(c);
-            (*chunk[off].get()).write(Some(boxed));
-        }
+            let cell = (*chunk[off].get()).assume_init_mut();
+            let g = cell.0.wrapping_add(1);
+            cell.0 = g;
+            cell.1 = Some(boxed);
+            g
+        };
         self.publish(idx);
-        idx as u32
+        (idx as u32, g)
     }
 
     /// Borrow the published entry at `idx`, or `None` if it was freed.
@@ -2937,7 +2994,8 @@ impl<T: ?Sized> SideColumn<T> {
         );
         let (c, off) = Self::locate(idx as usize);
         let chunk = self.chunk(c);
-        (*chunk[off].get()).assume_init_ref().as_deref()
+        // `.1` is the payload; `.0` is the cell generation (not read here).
+        (*chunk[off].get()).assume_init_ref().1.as_deref()
     }
 
     /// Safe wrapper for lagging auxiliary-table validation. Returns `None` if
@@ -2952,23 +3010,49 @@ impl<T: ?Sized> SideColumn<T> {
         unsafe { self.get(idx) }
     }
 
-    /// Drop the payload `Box` at `idx`, leaving the cell as `None`, and make the
-    /// published entry index reusable. `&mut self` (quiescence-only): a free runs
-    /// only at a quiescent safepoint, statically exclusive of every `&self`
-    /// reader/pusher, so it races nothing (the index analogue of the arena's
-    /// free-list-reuse-at-quiescence rule). Re-freeing an already-`None` cell is a
+    /// Drop the payload `Box` at `idx` — but ONLY when the cell's current
+    /// generation still equals `gen` (the generation captured in the deferred-free
+    /// snapshot) — leaving the cell as `(gen, None)`, and make the published entry
+    /// index reusable.
+    ///
+    /// THE GENERATION GUARD is the use-after-free fix: side-column indices are
+    /// RECYCLED (post-266d19d free-list reuse), so a stale `SideReclaim` snapshot
+    /// `{owner(dead), idx}` whose `idx` was meanwhile re-claimed by a LIVE node
+    /// would, without this guard, drop the live node's payload `Box` (then a read
+    /// of the live node observes `None` ⇒ the `live ... slot` panic / a true UAF).
+    /// Each `push` that claims a cell bumps its generation; the snapshot captured
+    /// the generation it observed in the owner's ref. So when the captured `gen`
+    /// no longer matches the cell's current generation, the cell has been reused by
+    /// a newer occupant and the snapshot MUST NOT free it; the guard skips it. A
+    /// matching generation means the cell is still the exact occupant the snapshot
+    /// named, so dropping it is correct. The cell's generation is NOT reset here —
+    /// the next `push` that reuses the index increments it again, so a second stale
+    /// snapshot bearing the same (now-superseded) generation still mismatches.
+    ///
+    /// `&mut self` (quiescence-only): a free runs only at a quiescent safepoint,
+    /// statically exclusive of every `&self` reader/pusher, so it races nothing
+    /// (the index analogue of the arena's free-list-reuse-at-quiescence rule).
+    /// Re-freeing an already-`None` cell (or one whose generation moved on) is a
     /// no-op and does not push a duplicate reusable index. `Relaxed` load of `len`
     /// is fine under `&mut self` (no concurrent writer).
-    fn free(&mut self, idx: u32) {
+    fn free(&mut self, idx: u32, gen: u32) {
         use std::sync::atomic::Ordering;
         if (idx as usize) < self.len.load(Ordering::Relaxed) {
             let (c, off) = Self::locate(idx as usize);
             // SAFETY: `idx < len` ⇒ `c < chunk_count` (published) and the cell is
-            // initialized (every cell is `None` from `grow_to`, then possibly a
-            // `Some` from `push`). `&mut self` is exclusive, so no aliasing.
+            // initialized (every cell is `(0, None)` from `grow_to`, then possibly
+            // a `(g, Some)` from `push`). `&mut self` is exclusive, so no aliasing.
             let was_live = unsafe {
                 let chunk = self.chunk(c);
-                (*chunk[off].get()).assume_init_mut().take().is_some()
+                let slot = (*chunk[off].get()).assume_init_mut();
+                if slot.0 == gen {
+                    // The captured generation still names THIS occupant: drop it.
+                    slot.1.take().is_some()
+                } else {
+                    // Reused by a newer occupant (generation moved on): the stale
+                    // snapshot must not free the live payload. Leave it untouched.
+                    false
+                }
             };
             if was_live {
                 self.free_indices
@@ -3037,15 +3121,16 @@ impl<T: ?Sized> Drop for SideColumn<T> {
             unsafe {
                 let page = (*self.pages[p].get()).assume_init_ref(); // &SidePage<T>
                 let chunk_cell = page[ck].get(); // *mut MaybeUninit<SideChunk<T>>
-                                                 // Borrow the chunk to drop each cell's `Option<Box<T>>`. EVERY cell
-                                                 // of a published chunk is initialized — `grow_to` fills all
-                                                 // `SIDE_CHUNK_LEN` cells with `MaybeUninit::new(None)`, and `push`
-                                                 // only overwrites a cell with `Some(..)` — so `assume_init_drop` is
-                                                 // sound on each, dropping any live payload `Box<T>` (a freed cell is
-                                                 // `None`, whose drop is a no-op).
+                                                 // Borrow the chunk to drop each cell's `(u32, Option<Box<T>>)`.
+                                                 // EVERY cell of a published chunk is initialized — `grow_to` fills
+                                                 // all `SIDE_CHUNK_LEN` cells with `MaybeUninit::new((0, None))`, and
+                                                 // `push` only mutates a cell's generation/payload in place — so
+                                                 // `assume_init_drop` is sound on each, dropping any live payload
+                                                 // `Box<T>` (a freed cell is `(g, None)`, whose drop is a no-op; the
+                                                 // `u32` generation drops trivially).
                 let chunk: &mut SideChunk<T> = (*chunk_cell).assume_init_mut();
                 for cell in chunk.iter() {
-                    (*cell.get()).assume_init_drop(); // drops `Option<Box<T>>`
+                    (*cell.get()).assume_init_drop(); // drops `(u32, Option<Box<T>>)`
                 }
                 // Now drop the chunk `Box` itself (frees the cell array). The page
                 // `Box` that holds this chunk cell is dropped only in pass (2),
@@ -3102,11 +3187,20 @@ impl<T: ?Sized> Drop for SideColumn<T> {
 //         reader indexes it. The single `chunk_count` check therefore covers
 //         both directory levels.
 //
-//   (iv)  FREE AT QUIESCENCE. The only in-place rewrite of an already-published
-//         entry is `free`, which is `&mut self` and runs only at a quiescent
-//         safepoint. `&mut self` is statically exclusive of every `&self`
-//         reader/pusher, so a free never races a concurrent access (and the
-//         index is never recycled ⇒ no ABA).
+//   (iv)  FREE AT QUIESCENCE, GENERATION-GUARDED. The only in-place rewrites of
+//         an already-published entry are `free` and a reuse `push`, both of which
+//         claim the cell only at a quiescent safepoint (`free` is `&mut self`; a
+//         reuse `push` pops an index `free` made reusable, which only happens at
+//         the same quiescent drain). `&mut self`/quiescence is statically
+//         exclusive of every `&self` reader/pusher, so a free never races a
+//         concurrent access. Indices ARE recycled (post-266d19d free-list reuse),
+//         so the cell carries a PER-CELL GENERATION (bumped by each claiming
+//         `push`): a deferred-free snapshot captures the generation it observed,
+//         and `free` drops the cell only when the captured generation still equals
+//         the cell's current one — so a recycled index whose generation a live
+//         re-intern bumped is never freed by a stale snapshot. The generation
+//         guard is the index-ABA defense the never-recycle assumption used to
+//         provide.
 //
 // Hence no data race on any field. `Send` requires `T: Send` (the column owns
 // `Box<T>` payloads it may hand to another thread); `Sync` requires `T: Send +
@@ -3455,20 +3549,23 @@ mod tests {
     fn side_column_reuses_quiescence_freed_index_once() {
         let mut column = SideColumn::<str>::new();
 
-        let old = column.push("old".into());
+        let (old, old_gen) = column.push("old".into());
         assert_eq!(old, 0);
         assert_eq!(column.published_len(), 1);
 
-        column.free(old);
+        column.free(old, old_gen);
         assert_eq!(column.reusable_len(), 1);
-        column.free(old);
+        // Idempotent re-free with the same generation: the payload is already
+        // `None`, so it does not push a duplicate reusable index (the generation
+        // still matches but `take()` finds nothing live).
+        column.free(old, old_gen);
         assert_eq!(
             column.reusable_len(),
             1,
             "idempotent free must not duplicate a reusable side index"
         );
 
-        let replacement = column.push("replacement".into());
+        let (replacement, _replacement_gen) = column.push("replacement".into());
         assert_eq!(
             replacement, old,
             "quiescence-freed side index should be reused before bumping"
@@ -3604,25 +3701,75 @@ mod tests {
     }
 
     #[test]
-    fn reused_owner_pending_side_snapshot_still_frees_old_side() {
+    fn reused_owner_pending_side_snapshot_is_not_freed() {
+        // REGRESSION (per-cell generation fix): the gdb-confirmed REUSE-ABA. A
+        // stale `SideReclaim` snapshot whose side index was RECYCLED (post-266d19d
+        // free-list reuse) by a LIVE re-intern must NOT free the live cell's
+        // payload. PRE-FIX, `SideColumn::free(idx)` blindly `take()`s cell `idx`,
+        // dropping the live node's `Box` ⇒ a later read panics ("live ... slot") or
+        // is a true UAF. POST-FIX, the cell carries a generation the reuse `push`
+        // bumped, the snapshot captured the OLD generation, and `free` is a no-op on
+        // the mismatch — so the live reused payload survives.
         let _mode = enter_index_mode_for_test();
         let mut heap = IndexHeap::with_segment_capacity(16);
 
+        // A live co-resident node keeps the segment from being RELEASED wholesale
+        // (so the dead slot's SIDE INDEX is recycled WITHIN the segment, which is
+        // the reuse the bug needs — not a whole-segment reset).
+        let keep = heap.alloc_sexpr(&[MettaValue::Bool(true)]);
+
+        // `old`: a node whose single child occupies a side index I_old (gen 1).
         let old = heap.alloc_sexpr(&[MettaValue::Bool(true)]);
-        let snapshot = heap
+        // Capture the STALE snapshot now (owner=old, idx=I_old, gen=1). This is the
+        // snapshot we will mis-apply AFTER I_old has been reused by a live node.
+        let stale = heap
             .side_reclaim_for_addr(old)
             .expect("old SExpr has a children side slot");
-        let replacement = heap.alloc_sexpr(&[MettaValue::Bool(false), MettaValue::Bool(true)]);
-        heap.arena.write_reused(old, *heap.arena.get(replacement));
-        heap.pending_side_reclaims.push(snapshot);
 
-        heap.mark(&[old]);
-        heap.drop_or_free_pending_side_reclaims_after_full_mark();
+        // Reclaim `old`'s node slot and FREE its side index I_old at quiescence, so
+        // I_old becomes reusable (cell left `(gen 1, None)`). `keep` stays live so
+        // the segment is not released.
+        heap.mark(&[keep]);
+        let stats = heap.sweep();
+        assert_eq!(stats.reclaimed_to_free_list, 1, "old's node slot reclaimed");
+        heap.free_pending_side_reclaims();
 
+        // A live re-intern reuses node slot `old` AND side index I_old, bumping the
+        // cell's generation to 2 and installing a fresh 2-child payload.
+        let reused = heap.alloc_sexpr(&[MettaValue::Bool(false), MettaValue::Bool(true)]);
+        assert_eq!(reused, old, "node slot reused");
+        match heap.arena.get(reused) {
+            Node::SExpr(cr) => {
+                assert_eq!(
+                    cr.gen, 2,
+                    "the reuse push bumped the side cell's generation past the stale snapshot's"
+                );
+            }
+            _ => panic!("expected reused SExpr node"),
+        }
+
+        // Mis-apply the STALE snapshot (it still names I_old with the OLD gen 1).
+        // The generation guard inside `SideColumn::free` must reject it.
+        heap.pending_side_reclaims.push(stale);
+        heap.mark(&[keep, reused]);
+        heap.free_pending_side_reclaims();
+
+        // POST-FIX: the live reused payload SURVIVES (PRE-FIX this panicked /
+        // UAF'd inside `children`).
         assert_eq!(
-            heap.children(old).len(),
+            heap.children(reused).len(),
             2,
-            "a reused live owner with a different side index must keep the replacement side"
+            "a stale snapshot for a REUSED side index must not free the live cell"
+        );
+        assert_eq!(
+            heap.children(reused),
+            &[MettaValue::Bool(false), MettaValue::Bool(true)],
+            "the live reused side payload is intact and readable"
+        );
+        assert_eq!(
+            heap.children(keep).len(),
+            1,
+            "the co-resident live node's side payload is unaffected"
         );
         reset_gc_mode_slab();
     }
@@ -4262,7 +4409,11 @@ mod tests {
         let mut idxs = Vec::with_capacity(10);
         for i in 0..10i32 {
             let boxed: Box<[i32]> = vec![i, i * 10, i * 100].into_boxed_slice();
-            idxs.push(col.push(boxed));
+            let (idx, gen) = col.push(boxed);
+            // Each fresh (bumped) cell starts `(0, None)` from `grow_to`, so its
+            // first claim yields generation 1.
+            assert_eq!(gen, 1, "first claim of a fresh cell yields generation 1");
+            idxs.push(idx);
         }
         // Indices are claimed monotonically from 0 (no recycling, no gaps here).
         assert_eq!(
@@ -4286,7 +4437,7 @@ mod tests {
         let col: SideColumn<[i32]> = SideColumn::new();
         for i in 0..n {
             let boxed: Box<[i32]> = vec![i as i32].into_boxed_slice();
-            let idx = col.push(boxed);
+            let (idx, _gen) = col.push(boxed);
             assert_eq!(idx as usize, i, "index tracks push order");
         }
         assert_eq!(col.published_len(), n, "all entries published");
@@ -4313,12 +4464,12 @@ mod tests {
     fn side_column_free_drops_only_target() {
         // free(idx) ⇒ get returns None there; a neighbor is unaffected.
         let mut col: SideColumn<str> = SideColumn::new();
-        let a = col.push(Box::from("alpha"));
-        let b = col.push(Box::from("beta"));
-        let c = col.push(Box::from("gamma"));
+        let (a, _ag) = col.push(Box::from("alpha"));
+        let (b, bg) = col.push(Box::from("beta"));
+        let (c, _cg) = col.push(Box::from("gamma"));
         // SAFETY: all indices < published_len() (just pushed).
         assert_eq!(unsafe { col.get(b) }, Some("beta"));
-        col.free(b);
+        col.free(b, bg);
         assert_eq!(unsafe { col.get(b) }, None, "freed entry reads None");
         // Neighbors unaffected.
         assert_eq!(unsafe { col.get(a) }, Some("alpha"), "left neighbor intact");
@@ -4328,7 +4479,7 @@ mod tests {
             "right neighbor intact"
         );
         // Idempotent re-free is a no-op (still None, no double-drop).
-        col.free(b);
+        col.free(b, bg);
         assert_eq!(unsafe { col.get(b) }, None, "re-free is idempotent");
     }
 
@@ -4337,11 +4488,17 @@ mod tests {
         // After a true-quiescence free, the next push reuses that published index
         // instead of growing the side-column high-water.
         let mut col: SideColumn<[i32]> = SideColumn::new();
-        let i0 = col.push(vec![0].into_boxed_slice());
-        let i1 = col.push(vec![1].into_boxed_slice());
-        col.free(i0);
-        let i2 = col.push(vec![2].into_boxed_slice());
+        let (i0, g0) = col.push(vec![0].into_boxed_slice());
+        let (i1, _g1) = col.push(vec![1].into_boxed_slice());
+        assert_eq!(g0, 1, "first claim of cell i0 yields generation 1");
+        col.free(i0, g0);
+        let (i2, g2) = col.push(vec![2].into_boxed_slice());
         assert_eq!(i2, i0, "push after quiescence free reuses the index");
+        assert_eq!(
+            g2, 2,
+            "reusing the index bumps its generation (so a stale snapshot bearing g0 \
+             no longer matches and cannot free the reused cell)"
+        );
         // The freed slot now contains the replacement; no new entry was appended.
         // SAFETY: indices < published_len() (== 2).
         assert_eq!(
@@ -4376,7 +4533,7 @@ mod tests {
         let col: SideColumn<[i32]> = SideColumn::new();
         for i in 0..N {
             let boxed: Box<[i32]> = vec![i as i32].into_boxed_slice();
-            let idx = col.push(boxed); // MUST NOT panic past the old 66-chunk cap
+            let (idx, _gen) = col.push(boxed); // MUST NOT panic past the old 66-chunk cap
             assert_eq!(idx as usize, i, "index tracks push order at {i}");
         }
         assert_eq!(

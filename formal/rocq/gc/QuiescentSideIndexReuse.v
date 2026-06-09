@@ -180,4 +180,100 @@ Section QuiescentSideIndexReuseModel.
   Qed.
 End QuiescentSideIndexReuseModel.
 
+(** ===== Generation guard: the span/child/byte side-index ABA fix =====
+
+    The reuse model above counts indices but treats a side index as an opaque
+    identity over time: its [ReusableIndexSafe] contract ASSUMES a reusable index
+    already had its reclaim snapshot consumed ([SnapshotConsumed]). That
+    abstraction cannot express the use-after-free that the free-list reuse
+    introduced: a STALE [SideReclaim] snapshot {idx} (captured from a dead node
+    slot whose bytes still name [idx]) can be drained AFTER [idx] was freed and
+    re-handed by [SideColumn::push] to a LIVE node — so the same [idx] is named by
+    both a dead snapshot and a live occupant, and a [free] keyed on [idx] ALONE
+    drops the live occupant's payload (the "live Spanned slot" panic / a true UAF;
+    gdb-confirmed: dead owner Addr(2) vs live reuser Addr(220) on span idx 43).
+
+    The fix stamps every [SideColumn::push] with a fresh, strictly-increasing
+    per-cell GENERATION (source: index_heap.rs `slot.0 = slot.0.wrapping_add(1)`),
+    stores it in the node's ref ([SpanRef]/[ChildRef]/[ByteRef] `{idx, gen}`),
+    captures it in [SideReclaim], and frees the cell ONLY when the cell's current
+    generation equals the snapshot's captured generation ([SideColumn::free(idx,
+    gen)]). This section models a single side cell as a succession of OCCUPANTS,
+    each interned at a DISTINCT generation (push bumps it), and proves the guard
+    never frees a live occupant. (Generations are idealized as [nat]: the source
+    [u32] would only alias after 2^32 reuses of ONE cell — unreachable in any run
+    — so [gen_injective] is the sound abstraction of the strictly-monotone bump.) *)
+
+Section GenerationGuardSafety.
+  (* An occupant = one [push]'s tenant of a fixed side cell. *)
+  Variable Occupant : Type.
+  (* The generation each occupant was interned at. Distinct occupants of one cell
+     have DISTINCT generations: every [SideColumn::push] increments the cell's
+     generation, so it is strictly monotone across the cell's tenancy — hence
+     [gen_of] is injective on this cell. *)
+  Variable gen_of : Occupant -> nat.
+  Hypothesis gen_injective :
+    forall o1 o2, gen_of o1 = gen_of o2 -> o1 = o2.
+
+  (* Whether an occupant is a LIVE node (reachable / marked by the collector). *)
+  Variable live : Occupant -> Prop.
+
+  (* The cell's CURRENT occupant; the cell's current generation is [gen_of current]
+     (the most recent [push] set it). *)
+  Variable current : Occupant.
+
+  (* The implemented guard ([SideColumn::free]): a deferred-free snapshot taken
+     from occupant [o] drops the cell iff [o]'s captured generation equals the
+     cell's current generation. *)
+  Definition GuardDrops (o : Occupant) : Prop := gen_of o = gen_of current.
+
+  (* MAIN SAFETY: a guarded free driven by a DEAD-owner snapshot never drops a
+     LIVE occupant. A [SideReclaim] snapshot is captured only from a slot the
+     sweep RECLAIMED (a dead occupant [o]); if the guard fires
+     ([gen_of o = gen_of current]), injectivity forces [o = current], so the
+     current occupant IS that dead owner — not live. *)
+  Theorem gen_guard_never_frees_live :
+    forall o, ~ live o -> GuardDrops o -> ~ live current.
+  Proof.
+    intros o Hdead Hguard. unfold GuardDrops in Hguard.
+    rewrite <- (gen_injective o current Hguard). exact Hdead.
+  Qed.
+
+  (* Contrapositive: while the cell's current occupant is LIVE, NO dead-owner
+     snapshot can free it — the guard never fires for it. *)
+  Theorem live_current_survives_stale_free :
+    forall o, ~ live o -> live current -> ~ GuardDrops o.
+  Proof.
+    intros o Hdead Hlive Hguard.
+    exact (gen_guard_never_frees_live o Hdead Hguard Hlive).
+  Qed.
+
+  (* The reuse case is exactly a generation mismatch: an index reused since the
+     snapshot has [gen_of o < gen_of current] (strictly older), so the guard
+     SKIPS it — precisely the case the bug mishandled. *)
+  Theorem reused_index_snapshot_does_not_drop :
+    forall o, gen_of o < gen_of current -> ~ GuardDrops o.
+  Proof.
+    intros o Hlt Hguard. unfold GuardDrops in Hguard. lia.
+  Qed.
+
+  (* The PRE-FIX free, keyed on the bare index alone, drops whatever occupies the
+     cell regardless of generation. *)
+  Definition IdxOnlyDrops (_ : Occupant) : Prop := True.
+
+  (* NON-VACUITY: the index-only free DROPS the cell for a stale dead-owner
+     snapshot even when the current occupant is LIVE and the index was reused
+     ([gen_of o < gen_of current]) — committing the use-after-free — whereas the
+     generation guard does NOT. So the generation field is load-bearing: the guard
+     removes exactly the unsafe drops the unguarded free performed. *)
+  Theorem idx_only_free_drops_live_reuser :
+    forall o, ~ live o -> live current -> gen_of o < gen_of current ->
+      IdxOnlyDrops o /\ ~ GuardDrops o.
+  Proof.
+    intros o _ _ Hlt. split.
+    - exact I.
+    - unfold GuardDrops. lia.
+  Qed.
+End GenerationGuardSafety.
+
 End MeTTaTron_GC_QuiescentSideIndexReuse.

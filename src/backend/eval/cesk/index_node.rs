@@ -43,6 +43,15 @@ use crate::backend::models::MettaValue;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChildRef {
     pub idx: u32,
+    /// Per-cell generation stamped by `SideColumn::push` when this `idx` was
+    /// claimed. Side-column indices are RECYCLED (post-266d19d free-list reuse),
+    /// so an index alone no longer identifies a payload across reuse; the
+    /// generation does. A deferred `SideReclaim` snapshot captures THIS value and
+    /// `SideColumn::free` drops the cell only when its current generation still
+    /// equals the captured one — so a stale snapshot whose `idx` was reused by a
+    /// live re-intern (which bumped the cell's generation) never frees the live
+    /// payload. See [`SideColumn`](crate::backend::eval::cesk::index_heap).
+    pub gen: u32,
 }
 
 /// Index into a segment's byte side-arena (`Vec<Box<str>>`) for `Atom`/`String`
@@ -50,6 +59,8 @@ pub struct ChildRef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ByteRef {
     pub idx: u32,
+    /// Per-cell generation; see [`ChildRef::gen`].
+    pub gen: u32,
 }
 
 /// Index into a segment's span side-arena (`Vec<Box<Span>>`) for `Spanned`
@@ -57,6 +68,8 @@ pub struct ByteRef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpanRef {
     pub idx: u32,
+    /// Per-cell generation; see [`ChildRef::gen`].
+    pub gen: u32,
 }
 
 /// A fixed-size, `Copy` arena node mirroring all 18 `MettaValueInner` variants.
@@ -170,7 +183,7 @@ mod tests {
         assert_eq!(out, vec![a]);
 
         out.clear();
-        Node::Spanned(hb, SpanRef { idx: 7 }).child_addrs(&mut out);
+        Node::Spanned(hb, SpanRef { idx: 7, gen: 0 }).child_addrs(&mut out);
         assert_eq!(
             out,
             vec![b],
@@ -179,10 +192,10 @@ mod tests {
 
         // Side-arena composites and leaves contribute nothing from a bare node.
         out.clear();
-        Node::SExpr(ChildRef { idx: 0 }).child_addrs(&mut out);
-        Node::Conjunction(ChildRef { idx: 1 }).child_addrs(&mut out);
+        Node::SExpr(ChildRef { idx: 0, gen: 0 }).child_addrs(&mut out);
+        Node::Conjunction(ChildRef { idx: 1, gen: 0 }).child_addrs(&mut out);
         Node::Long(42).child_addrs(&mut out);
-        Node::Atom(ByteRef { idx: 0 }).child_addrs(&mut out);
+        Node::Atom(ByteRef { idx: 0, gen: 0 }).child_addrs(&mut out);
         Node::Space(9).child_addrs(&mut out);
         Node::Unit.child_addrs(&mut out);
         assert!(

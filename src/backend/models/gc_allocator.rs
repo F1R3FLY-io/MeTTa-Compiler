@@ -3897,6 +3897,7 @@ pub(crate) fn worker_finish_into_buffer(roots: &[MettaValue], my_gen: u64) {
 /// Source-coupled by generation-gated worker park/resume.
 #[allow(dead_code)]
 pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
+    let _site = GcWaitSiteGuard::enter(&GC_PARK_WAITERS);
     let mut lock = RENDEZVOUS_MUTEX.lock();
     while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
         let result = RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
@@ -3932,7 +3933,53 @@ pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
 /// Live for dedicated WorkerEnter gating and the legacy D2 park helper; the
 /// attribute is for build/test configurations that do not enter those paths.
 #[allow(dead_code)]
+// ── E1 liveness diagnosis (Inc B): GC wait-site occupancy counters ──
+// Lock-free occupancy of the three GC wait sites a parallel-collapse participant (a
+// worker OR the collapse parent) can block in. The SIGUSR1 dump prints these so a hang's
+// stranded site is identified WITHOUT a debugger (gdb-under-launch perturbs the timing
+// race away; `ptrace_scope=1` blocks sibling-attach). A nonzero count at a hang with the
+// GC idle names the permanently-blocked site: GATE = `worker_wait_for_resume`
+// (WorkerEnter admission), PARK = `worker_resume_wait_for_cycle` (rendezvous gen-wait),
+// STRADDLE = `reacquire_eval_guard_after_safepoint_full`. Always compiled (cheap atomics);
+// the instrumented fns are dead in the slab build, so slab runtime stays byte-identical.
+pub(crate) static GC_GATE_WAITERS: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static GC_PARK_WAITERS: AtomicUsize = AtomicUsize::new(0);
+// STRADDLE's only writer is the `#[cfg(feature = "index-gc")]` straddle loop in
+// `reacquire_eval_guard_after_safepoint_full`, and its only reader is the index-gc
+// dump accessor — so it is index-gc-only (GATE/PARK are referenced by the
+// always-compiled, slab-dead `worker_wait_for_resume`/`worker_resume_wait_for_cycle`).
+#[cfg(feature = "index-gc")]
+pub(crate) static GC_STRADDLE_WAITERS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII occupancy guard: increments a wait-site counter on entry, decrements on EVERY
+/// exit path (normal return, loop break, panic-unwind) via `Drop`.
+pub(crate) struct GcWaitSiteGuard(&'static AtomicUsize);
+impl GcWaitSiteGuard {
+    #[inline]
+    pub(crate) fn enter(counter: &'static AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        GcWaitSiteGuard(counter)
+    }
+}
+impl Drop for GcWaitSiteGuard {
+    #[inline]
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Snapshot `(gate, park, straddle)` GC wait-site occupancy for the diagnostic dump.
+#[cfg(feature = "index-gc")]
+pub(crate) fn gc_wait_site_occupancy() -> (usize, usize, usize) {
+    (
+        GC_GATE_WAITERS.load(Ordering::Acquire),
+        GC_PARK_WAITERS.load(Ordering::Acquire),
+        GC_STRADDLE_WAITERS.load(Ordering::Acquire),
+    )
+}
+
 pub(crate) fn worker_wait_for_resume() {
+    let _site = GcWaitSiteGuard::enter(&GC_GATE_WAITERS);
     let mut lock = RESUME_MUTEX.lock();
     while is_gc_requested() {
         let result = RESUME_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
@@ -6147,6 +6194,7 @@ pub fn reacquire_eval_guard_after_safepoint_full(
     #[cfg(feature = "index-gc")]
     {
         if dedicated_gc_enabled() {
+            let _site = GcWaitSiteGuard::enter(&GC_STRADDLE_WAITERS);
             // The slot is ALREADY occupied (acquired at EvalGuard::enter, never
             // released at the safepoint drop) — so the pre-loop acquire is a
             // RESTAMP, not an acquire (V4 §"the slot lifecycle"). `my_reparked_gen`

@@ -50,6 +50,19 @@ pub fn install_signal_handlers() {
     use std::sync::atomic::Ordering;
 
     INSTALL_ONCE.call_once(|| {
+        // Diagnostic-only (env-gated, default off): permit any same-uid process (gdb)
+        // to PTRACE_ATTACH under yama `ptrace_scope=1`, so a reliably-reproduced hang
+        // can be inspected by attaching to the ALREADY-hung process — gdb cannot LAUNCH
+        // it because the debugger's overhead perturbs the timing race away. No effect
+        // unless `METTATRON_ALLOW_PTRACE=1`; never enabled in production runs.
+        #[cfg(target_os = "linux")]
+        if std::env::var("METTATRON_ALLOW_PTRACE").as_deref() == Ok("1") {
+            // SAFETY: a single libc prctl with PR_SET_PTRACER_ANY ((unsigned long)-1).
+            unsafe {
+                libc::prctl(libc::PR_SET_PTRACER, libc::c_ulong::MAX, 0, 0, 0);
+            }
+        }
+
         // Check opt-out env var
         if std::env::var("METTATRON_NO_SIGNAL_DIAG")
             .map(|v| v == "1")
@@ -443,6 +456,23 @@ fn render_index_heap_state(out: &mut String) {
         "  occupied_unpublished:{:>11}  (occupied ∧ published<cycle_gen — parked, not re-rooted this cycle)",
         occupied_unpublished
     );
+    // GC wait-site occupancy — names the permanently-blocked site at a hang (Inc B).
+    let (gate, park, straddle) = gc_allocator::gc_wait_site_occupancy();
+    let _ = writeln!(
+        out,
+        "  gc_wait gate:       {:>12}  (worker_wait_for_resume / WorkerEnter)",
+        gate
+    );
+    let _ = writeln!(
+        out,
+        "  gc_wait park:       {:>12}  (worker_resume_wait_for_cycle)",
+        park
+    );
+    let _ = writeln!(
+        out,
+        "  gc_wait straddle:   {:>12}  (reacquire_eval_guard_after_safepoint_full)",
+        straddle
+    );
     let _ = writeln!(out);
 }
 
@@ -455,6 +485,18 @@ fn dump_evaluator_state() {
 
     eprintln!("── Evaluator State ───────────────────────────────────────────");
     eprintln!("  active_evaluators:  {:>12}", active);
+    eprintln!();
+
+    // Work pool (eval scheduler) state. `queue_depth > 0` while all workers are
+    // idle/parked pins a submitted task that no worker ever dequeued — the
+    // dispatch/wakeup-gap signature of a stuck parallel-collapse completion
+    // (`remaining` never reaches 0, parent pumps forever). `queue_depth == 0`
+    // means the missing work is instead blocked INSIDE a worker closure.
+    let pool = crate::backend::models::work_pool::global_eval_pool();
+    eprintln!("── Work Pool (eval scheduler) ────────────────────────────────");
+    eprintln!("  queue_depth:        {:>12}", pool.queue().len());
+    eprintln!("  active_workers:     {:>12}", pool.active_workers());
+    eprintln!("  max_threads:        {:>12}", pool.max_threads());
     eprintln!();
 }
 

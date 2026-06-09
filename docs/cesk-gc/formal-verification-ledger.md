@@ -794,8 +794,9 @@ facts the proofs rely on:
   re-push the strictly-smaller tail, with a terminal base case (push Resume, not self) when
   empty; the spine lowering (`into_/resolve_trampoline_fanout_spine`, types.rs) is a FAITHFUL,
   idempotent round-trip — `resolve(persist c) = c` via SpineStore `alloc(cont)`/`remove(addr)`,
-  a no-op `other => other` on an already-lowered frame — invoked every trampoline tick by
-  `persist_trampoline_fanout_spines`. Rocq `faithful_lowering_preserves_termination` proves
+  a no-op `other => other` on an already-lowered frame — invoked INCREMENTALLY from the
+  trampoline loop top by `persist_trampoline_fanout_spines_from` (low-water mark). Rocq
+  `faithful_lowering_preserves_termination` proves
   (admit-free, fuel-bounded well-foundedness; no library WF lemma relied upon) that a faithful
   round-trip preserves the fan-out progress measure, so the LOWERED fan-out succession relation
   is `Acc` (well-founded) — the spine lowering introduces NO divergence of its own, and the
@@ -804,10 +805,32 @@ facts the proofs rely on:
   resolve RESETS `remaining`) are the non-vacuity witnesses — both reproduce the never-
   terminating lasso (`EventuallyDone` VIOLATED), while `_faithful.cfg` holds it. Source-coupled
   in `verify_cesk_gc_source_coupling.sh` (the `alloc(cont)`/`remove(addr)` round-trip + the
-  persist-every-tick trampoline call site). CONSEQUENCE (formal-verification-driven debugging
-  result): an observed non-terminating FANOUT run — reproduced on `FlyingRaven.metta` in BOTH
-  slab and index modes — is a workload-level rewrite divergence, NOT a GC/allocator or
-  spine-lowering defect: the trampoline machine + spine lowering are formally progress-sound.
+  incremental `persist_trampoline_fanout_spines_from` call site + watermark + Resume-arm clamp).
+  CONSEQUENCE (formal-verification-driven debugging result): because the lowering provably
+  TERMINATES, the observed `FlyingRaven.metta` slowdown was NOT a non-termination but a COST
+  regression — the progress proof redirected the diagnosis, and `git bisect` then pinned commit
+  `8c29d4c3`, which re-lowered the WHOLE K stack on every trampoline tick (O(depth·ticks),
+  quadratic; `FANOUT_DEPTH=0` reproduced it with no rendezvous straddle, refuting the
+  SATB-straddle-liveness hypothesis). Fixed in `8b74952e` by incremental low-water-mark
+  persistence.
+
+- IncrementalSpinePersistEquivalence (`formal/rocq/gc/IncrementalSpinePersistEquivalence.v`) —
+  the CORRECTNESS companion to that COST fix (Rocq-only: a deductive functional-equivalence
+  obligation with no temporal/liveness component, so no paired TLA+ model — written once, in
+  Rocq). Models `lower` = `into_trampoline_fanout_spine` (idempotent: the `other => other` arm),
+  the incremental `persist_from s from = firstn from s ++ map lower (skipn from s)` =
+  `persist_trampoline_fanout_spines_from`, and the trampoline loop as a state machine over
+  `(stack, watermark)`: `loop_top` (persist + set mark = len), `op_push` (append raw frames,
+  mark unchanged), `op_pop` (drop top + `min`-clamp the mark — the Resume arm). `incremental_eq_full`
+  proves that a lowered persisted prefix makes the incremental persist EQUAL the whole-stack
+  `persist_full`; `inv_preserved` + `reachable_inv` carry the invariant (persisted prefix lowered
+  ∧ mark ≤ len) along ANY push/pop sequence, so `incremental_eq_full_at_every_loop_top` gives
+  observational equivalence at EVERY reachable loop top — the fix changes only COST, never the
+  lowered K-stack state. Non-vacuity `clamp_is_necessary`/`clamp_restores_equivalence`: dropping
+  the Resume-arm clamp leaves a frame pushed after a pop un-lowered (`[false] ≠ [true]`), breaking
+  the equivalence — so the clamp is load-bearing, not incidental. Admit-free; source-coupled on
+  the same pins as the progress proof (idempotence `other => other`, `persist_from` suffix-lower,
+  the loop-top persist + watermark-set, the Resume-arm clamp).
 
 ## Harness
 

@@ -1290,6 +1290,14 @@ assert_immediate_cfg_before "src/backend/models/gc_allocator.rs" "pub(crate) fn 
 # only the `[spine_persisted_len..]` suffix of newly-pushed frames, with the low-water mark
 # clamped down at the sole continuation pop — amortized O(1)/frame instead of the
 # O(stack-depth)/tick whole-stack scan that regressed deep evaluation to quadratic time.
+#
+# IncrementalSpinePersistEquivalence (formal/rocq/gc/IncrementalSpinePersistEquivalence.v)
+# is the CORRECTNESS companion to that COST fix: it proves the incremental persist is
+# OBSERVABLY EQUIVALENT to the whole-stack persist it replaced (same lowered K stack at
+# every loop top), on the SAME source pins — idempotence is the `other => other` arm (1293);
+# `persist_from` lowers exactly the suffix (1295); the loop-top persist + watermark-set
+# (1296/1297) and the Resume-arm clamp (1298) are its [loop_top]/[op_pop] transitions. The
+# clamp at 1298 is proven load-bearing (its [clamp_is_necessary] non-vacuity).
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn into_trampoline_fanout_spine" "store.borrow_mut().alloc(cont)" "other => other,"
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn resolve_trampoline_fanout_spine" ".remove(addr)" "other => other,"
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn persist_trampoline_fanout_spines_from" "std::mem::replace(cont, Self::Done)" "into_trampoline_fanout_spine()"

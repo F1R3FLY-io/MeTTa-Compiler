@@ -23,10 +23,14 @@
     and a strictly-decreasing advance, the LOWERED step's fan-out succession relation
     is well-founded (Acc) — the spine lowering introduces NO divergence of its own, so
     the lowered trampoline terminates exactly when the un-lowered (program) machine
-    does. (Hence an observed non-terminating run is a workload-level rewrite
-    divergence, not a lowering/machine defect.) [nonfaithful_reset_breaks_progress]
-    exhibits the non-vacuity: a resolve that RESETS `remaining` (the TLA _reset.cfg
-    bug) violates the strict-decrease premise and can loop forever. No admits/axioms. *)
+    does. (CONSEQUENCE — confirmed by git-bisect: since the lowering itself
+    terminates, the observed FlyingRaven slowdown was NOT a non-termination but a COST
+    regression. Commit 8c29d4c3 re-lowered the WHOLE K stack on every trampoline tick
+    (O(depth*ticks), quadratic); the fix persists INCREMENTALLY from a low-water mark,
+    proven observationally equivalent to the whole-stack persist in the companion
+    IncrementalSpinePersistEquivalence.) [nonfaithful_reset_breaks_progress] exhibits the
+    non-vacuity: a resolve that RESETS `remaining` (the TLA _reset.cfg bug) violates the
+    strict-decrease premise and can loop forever. No admits/axioms. *)
 
 From Stdlib Require Import PeanoNat.
 From Stdlib Require Import Lia.

@@ -144,6 +144,7 @@ run_rocq "formal/rocq/gc/JitChoicePointProductionRestore.v"
 run_rocq "formal/rocq/gc/TrampolineFanoutSpineBridge.v"
 run_rocq "formal/rocq/gc/TrampolineFanoutProductionRestore.v"
 run_rocq "formal/rocq/gc/UnifiedChoicePointRestore.v"
+run_rocq "formal/rocq/gc/TrampolineFanoutSpineProgress.v"
 run_rocq "formal/rocq/gc/SerializableContinuationSlice.v"
 run_rocq "formal/rocq/gc/IndexArenaPublication.v"
 run_rocq "formal/rocq/gc/SideArenaPublication.v"
@@ -216,6 +217,10 @@ run_tlc "abstract_gc_live_narrowing_templates_live" "MC_AbstractGCLiveNarrowing.
 run_tlc "collapse_fix" "CollapseCompletion.tla" "CollapseCompletion_fix.cfg" \
   pass ""
 run_tlc "collapse_bug" "CollapseCompletion.tla" "CollapseCompletion_bug.cfg" \
+  fail "Temporal properties were violated"
+run_tlc "trampoline_fanout_spine_progress_faithful" "TrampolineFanoutSpineProgress.tla" "TrampolineFanoutSpineProgress_faithful.cfg" \
+  pass ""
+run_tlc "trampoline_fanout_spine_progress_reset" "TrampolineFanoutSpineProgress.tla" "TrampolineFanoutSpineProgress_reset.cfg" \
   fail "Temporal properties were violated"
 run_tlc "worker_admission_gate" "MC_WorkerAdmission.tla" "MC_WorkerAdmission_gate.cfg" \
   pass ""

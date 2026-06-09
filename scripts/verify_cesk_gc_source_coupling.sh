@@ -1279,4 +1279,17 @@ assert_immediate_cfg_before "src/backend/diagnostics.rs" "fn render_index_heap_s
 assert_after_before "src/backend/diagnostics.rs" "fn render_index_heap_state(out: &mut String) {" "global_index_heap().try_read()" "witness_directory_summary(gen)"
 assert_immediate_cfg_before "src/backend/models/gc_allocator.rs" "pub(crate) fn witness_directory_summary(" "#[cfg(feature = \"index-gc\")]"
 
+# TrampolineFanoutSpineProgress (formal/rocq/gc/TrampolineFanoutSpineProgress.v +
+# tla/TrampolineFanoutSpineProgress.tla) — the PROGRESS/termination companion to the
+# spine SAFETY proofs. The fan-out continuation-spine lowering is a FAITHFUL, idempotent
+# round-trip: `into_trampoline_fanout_spine` stores the EXACT continuation (`alloc(cont)`)
+# with a no-op pass-through (`other => other`) on an already-lowered frame, and
+# `resolve_trampoline_fanout_spine` retrieves the EXACT payload (`remove(addr)`). That is
+# the `resolve(persist c) = c` premise the progress proof rests on. `persist_*` is invoked
+# every trampoline tick over the K stack.
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn into_trampoline_fanout_spine" "store.borrow_mut().alloc(cont)" "other => other,"
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn resolve_trampoline_fanout_spine" ".remove(addr)" "other => other,"
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn persist_trampoline_fanout_spines" "std::mem::replace(cont, Self::Done)" "into_trampoline_fanout_spine()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline loop" "while let Some(work) = work_stack.pop()" "Continuation::persist_trampoline_fanout_spines(&mut continuations);"
+
 echo "CESK GC source-coupling checks passed"

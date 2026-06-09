@@ -783,6 +783,32 @@ facts the proofs rely on:
   authoritative GC state. This is a diagnostics source-coupling (no new proof obligation) that makes the subsequent
   liveness counterexample evidence trustworthy.
 
+- TrampolineFanoutSpineProgress (`formal/rocq/gc/TrampolineFanoutSpineProgress.v` +
+  `tla/TrampolineFanoutSpineProgress.tla`) — the PROGRESS/termination companion to the spine
+  SAFETY proofs. `TrampolineFanoutSpineBridge` / `TrampolineFanoutProductionRestore` /
+  `UnifiedChoicePointRestore` / `VmChoicePointSpine` / `JitChoicePointSpineBridge` prove
+  root/value/restore SAFETY of the continuation-spine round-trip; NONE proved that the fan-out
+  exploration makes progress. The CESK trampoline fan-out continuations (`ProcessRuleMatches` /
+  `ProcessAmb` / `ProcessMatchTemplates` / `ProcessCollapseEvalResults`, eval_loop.rs
+  process_continuation arms) each consume EXACTLY ONE `remaining_*` element per visit and
+  re-push the strictly-smaller tail, with a terminal base case (push Resume, not self) when
+  empty; the spine lowering (`into_/resolve_trampoline_fanout_spine`, types.rs) is a FAITHFUL,
+  idempotent round-trip — `resolve(persist c) = c` via SpineStore `alloc(cont)`/`remove(addr)`,
+  a no-op `other => other` on an already-lowered frame — invoked every trampoline tick by
+  `persist_trampoline_fanout_spines`. Rocq `faithful_lowering_preserves_termination` proves
+  (admit-free, fuel-bounded well-foundedness; no library WF lemma relied upon) that a faithful
+  round-trip preserves the fan-out progress measure, so the LOWERED fan-out succession relation
+  is `Acc` (well-founded) — the spine lowering introduces NO divergence of its own, and the
+  lowered trampoline terminates exactly when the un-lowered (program) machine does.
+  `nonfaithful_reset_breaks_progress` (Rocq) and the TLA `_reset.cfg` (`LoweringFaithful=FALSE`:
+  resolve RESETS `remaining`) are the non-vacuity witnesses — both reproduce the never-
+  terminating lasso (`EventuallyDone` VIOLATED), while `_faithful.cfg` holds it. Source-coupled
+  in `verify_cesk_gc_source_coupling.sh` (the `alloc(cont)`/`remove(addr)` round-trip + the
+  persist-every-tick trampoline call site). CONSEQUENCE (formal-verification-driven debugging
+  result): an observed non-terminating FANOUT run — reproduced on `FlyingRaven.metta` in BOTH
+  slab and index modes — is a workload-level rewrite divergence, NOT a GC/allocator or
+  spine-lowering defect: the trampoline machine + spine lowering are formally progress-sound.
+
 ## Harness
 
 Run:

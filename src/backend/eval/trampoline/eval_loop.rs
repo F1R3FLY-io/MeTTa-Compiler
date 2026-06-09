@@ -4186,8 +4186,19 @@ fn eval_trampoline_inner<C: EvalContext>(
     // Main trampoline loop
     #[cfg(feature = "trace")]
     let mut _trampoline_iter: u64 = 0;
+    // Low-water mark for INCREMENTAL fan-out-spine persistence. The continuation
+    // prefix `[0..spine_persisted_len)` has already been lowered into the spine, so
+    // each tick lowers only the NEWLY-pushed frames (amortized O(1)/frame) rather
+    // than re-scanning the entire K stack every tick — the latter regressed deep
+    // nondeterministic evaluation (e.g. FlyingRaven PLN) to quadratic time. Clamped
+    // down at the sole continuation pop (the Resume arm) so a re-pushed frame
+    // re-enters the unpersisted suffix and is re-lowered on the next tick. Lowering
+    // is progress-preserving (TrampolineFanoutSpineProgress), and non-lowered frames
+    // are equally GC-walkable, so deferring a push's lowering by one tick is sound.
+    let mut spine_persisted_len = 0usize;
     while let Some(work) = work_stack.pop() {
-        Continuation::persist_trampoline_fanout_spines(&mut continuations);
+        Continuation::persist_trampoline_fanout_spines_from(&mut continuations, spine_persisted_len);
+        spine_persisted_len = continuations.len();
         current_work_for_spine = Some(work.clone());
         let _published_current_work = current_work_for_spine.as_ref();
         if crate::backend::interrupt::is_interrupted() {
@@ -8718,6 +8729,11 @@ fn eval_trampoline_inner<C: EvalContext>(
             WorkItem::Resume { result } => {
                 // Take ownership of continuation for processing
                 let cont = continuations.pop().expect("non-empty continuation stack");
+                // Incremental fan-out-spine persistence (see `spine_persisted_len` at the
+                // loop head): the popped frame leaves the stack, so clamp the low-water
+                // mark — any frame `process_continuation` re-pushes below then re-enters
+                // the unpersisted suffix and is re-lowered on the next tick.
+                spine_persisted_len = spine_persisted_len.min(continuations.len());
                 trace!(target: "mettatron::backend::eval::eval_trampoline", ?cont, result_values = ?result.0, "resume work item");
 
                 // Process continuation - delegate to continuation handler

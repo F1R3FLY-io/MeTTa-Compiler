@@ -2235,8 +2235,25 @@ impl Continuation {
     }
 
     /// Normalize all live K-stack fan-out frames into the production spine.
+    /// Kept for non-incremental callers; the hot trampoline loop uses
+    /// [`Self::persist_trampoline_fanout_spines_from`] with a low-water mark.
     pub fn persist_trampoline_fanout_spines(stack: &mut [Self]) {
-        for cont in stack {
+        Self::persist_trampoline_fanout_spines_from(stack, 0);
+    }
+
+    /// Incrementally normalize the K-stack fan-out frames at indices `[from..]`
+    /// — the frames pushed since the previous persist — into the production
+    /// spine. `into_trampoline_fanout_spine` is the idempotent no-op on an
+    /// already-lowered or non-fan-out frame, so the round-trip stays faithful
+    /// (see `TrampolineFanoutSpineProgress`); passing a low-water `from` means
+    /// each tick lowers only the NEWLY-pushed frames, making persistence
+    /// amortized O(1) per frame instead of O(stack-depth) per trampoline tick.
+    /// The whole-stack-every-tick form regressed deep nondeterministic
+    /// evaluations (e.g. FlyingRaven PLN) to quadratic time — a slowdown, not a
+    /// non-termination, since the lowering is progress-preserving.
+    pub fn persist_trampoline_fanout_spines_from(stack: &mut [Self], from: usize) {
+        let from = from.min(stack.len());
+        for cont in &mut stack[from..] {
             let raw = std::mem::replace(cont, Self::Done);
             *cont = raw.into_trampoline_fanout_spine();
         }

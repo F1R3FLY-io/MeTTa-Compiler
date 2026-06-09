@@ -774,8 +774,8 @@ line_no "src/backend/eval/trampoline/types.rs" "TrampolineFanoutSpine { handle: 
 assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn into_trampoline_fanout_spine(self) -> Self" "TRAMPOLINE_FANOUT_SPINE_STORE.with(|store| store.borrow_mut().alloc(cont))" "TrampolineFanoutSpineHandle::new(addr)"
 assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn resolve_trampoline_fanout_spine(self) -> Self" "let addr = handle.take();" ".remove(addr)"
 assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn resolve_trampoline_fanout_spine(self) -> Self" ".remove(addr)" "expect(\"trampoline fan-out continuation address missing from spine store\")"
-assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn persist_trampoline_fanout_spines(stack: &mut [Self])" "std::mem::replace(cont, Self::Done)" "raw.into_trampoline_fanout_spine()"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "while let Some(work) = work_stack.pop() {" "Continuation::persist_trampoline_fanout_spines(&mut continuations);" "current_work_for_spine = Some(work.clone());"
+assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn persist_trampoline_fanout_spines_from(stack: &mut [Self], from: usize)" "std::mem::replace(cont, Self::Done)" "raw.into_trampoline_fanout_spine()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "while let Some(work) = work_stack.pop() {" "Continuation::persist_trampoline_fanout_spines_from(&mut continuations, spine_persisted_len);" "current_work_for_spine = Some(work.clone());"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn process_continuation<C: EvalContext>(" "let cont = cont.resolve_trampoline_fanout_spine();" "match cont {"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Continuation::TrampolineFanoutSpine { .. } =>" "unreachable!(\"trampoline fan-out spine handles are resolved before execution\")" "Continuation::CollectSExpr"
 assert_after_before "src/backend/eval/trampoline/types.rs" "Self::TrampolineFanoutSpine { handle } =>" ".get(handle.addr())" ".collect_values(out);"
@@ -1285,11 +1285,16 @@ assert_immediate_cfg_before "src/backend/models/gc_allocator.rs" "pub(crate) fn 
 # round-trip: `into_trampoline_fanout_spine` stores the EXACT continuation (`alloc(cont)`)
 # with a no-op pass-through (`other => other`) on an already-lowered frame, and
 # `resolve_trampoline_fanout_spine` retrieves the EXACT payload (`remove(addr)`). That is
-# the `resolve(persist c) = c` premise the progress proof rests on. `persist_*` is invoked
-# every trampoline tick over the K stack.
+# the `resolve(persist c) = c` premise the progress proof rests on. Because the round-trip
+# is faithful + progress-preserving, persistence is applied INCREMENTALLY: each tick lowers
+# only the `[spine_persisted_len..]` suffix of newly-pushed frames, with the low-water mark
+# clamped down at the sole continuation pop — amortized O(1)/frame instead of the
+# O(stack-depth)/tick whole-stack scan that regressed deep evaluation to quadratic time.
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn into_trampoline_fanout_spine" "store.borrow_mut().alloc(cont)" "other => other,"
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn resolve_trampoline_fanout_spine" ".remove(addr)" "other => other,"
-assert_after_before "src/backend/eval/trampoline/types.rs" "fn persist_trampoline_fanout_spines" "std::mem::replace(cont, Self::Done)" "into_trampoline_fanout_spine()"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline loop" "while let Some(work) = work_stack.pop()" "Continuation::persist_trampoline_fanout_spines(&mut continuations);"
+assert_after_before "src/backend/eval/trampoline/types.rs" "fn persist_trampoline_fanout_spines_from" "std::mem::replace(cont, Self::Done)" "into_trampoline_fanout_spine()"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline loop" "while let Some(work) = work_stack.pop()" "Continuation::persist_trampoline_fanout_spines_from(&mut continuations, spine_persisted_len);"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline loop" "Continuation::persist_trampoline_fanout_spines_from(&mut continuations, spine_persisted_len);" "spine_persisted_len = continuations.len();"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "WorkItem::Resume { result } =>" "continuations.pop().expect" "spine_persisted_len = spine_persisted_len.min(continuations.len());"
 
 echo "CESK GC source-coupling checks passed"

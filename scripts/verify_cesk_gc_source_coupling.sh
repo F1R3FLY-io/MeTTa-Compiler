@@ -778,6 +778,13 @@ assert_after_before "src/backend/eval/trampoline/types.rs" "Self::ProcessRuleMat
 assert_after_before "src/backend/eval/trampoline/types.rs" "Self::ProcessAmb {" "TrampolineFanoutSpineNode::ProcessAmb" "include_remaining: !cut_fired_peek(*cut_barrier)"
 assert_after_before "src/backend/eval/trampoline/types.rs" "Self::ProcessMatchTemplates {" "TrampolineFanoutSpineNode::ProcessMatchTemplates" "include_remaining: !cut_fired_peek(*cut_barrier)"
 line_no "src/backend/eval/trampoline/types.rs" "fn trampoline_fanout_production_spine_persists_and_resolves_process_amb()" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/UnifiedChoicePointRestore.v\"" >/dev/null
+line_no "formal/rocq/gc/UnifiedChoicePointRestore.v" "Inductive ReenterableFamily" >/dev/null
+line_no "formal/rocq/gc/UnifiedChoicePointRestore.v" "LazyBranchCoroutine" >/dev/null
+line_no "formal/rocq/gc/UnifiedChoicePointRestore.v" "VmChoicePoint" >/dev/null
+line_no "formal/rocq/gc/UnifiedChoicePointRestore.v" "JitChoicePoint" >/dev/null
+line_no "formal/rocq/gc/UnifiedChoicePointRestore.v" "TrampolineFanout" >/dev/null
+line_no "formal/rocq/gc/UnifiedChoicePointRestore.v" "unified_choice_point_root_then_restore_safe" >/dev/null
 
 # E2 cache-epoch source coupling: OPERATOR_CACHE is pointer-keyed
 # (`head.as_ptr()`), so index mode must lazily clear it when gc_sweep_epoch

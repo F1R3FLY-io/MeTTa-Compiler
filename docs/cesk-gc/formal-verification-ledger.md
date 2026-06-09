@@ -192,6 +192,11 @@ can replace the full-major final sweep.
   the address-backed handle; `process_continuation` removes/resolves the same address before executing the payload; and
   handle drop removes abandoned nodes. The theorem composes normalization, root walk, resolve-before-execute, and
   post-resolve no-stale-node premises to show every future-touch value is rooted and cannot be freed.
+- `formal/rocq/gc/UnifiedChoicePointRestore.v`: proves the final E3 aggregate restore obligation for Selective
+  CESK*. Stored lazy branch coroutines, VM choice-point spine handles, JIT choice-point ABI spine owner slots, and
+  trampoline fan-out spine handles are the four production re-enterable families. If each family roots every
+  future-touch value and restores from its carrier without leaving a stale live node, then the unified re-enterable
+  continuation relation roots every future resume/fail/backtrack touch and prevents sweep from freeing it.
 - `formal/rocq/gc/SerializableContinuationSlice.v`: proves the E4 serialized-continuation slice obligation. If a
   serialized suspended state includes its control, environment, and continuation roots and is closed under store
   edges, every address a restored transition can touch is in the serialized slice and cannot be reclaimed as outside
@@ -665,7 +670,8 @@ facts the proofs rely on:
   handles through the bridge node walker for rule-match, amb, match-template, collapse-eval, parallel-dispatch, and
   parallel-collapse frames, `process_continuation` resolves/removes the handle before executing the payload, and
   `collect_live_values` sets `include_remaining: !cut_fired_peek(*cut_barrier)` for the three cut-pruned remaining
-  iterators.
+  iterators. `UnifiedChoicePointRestore.v` is mandatory in the formal harness and composes these four production
+  carriers into the aggregate Selective CESK* root-then-restore safety theorem.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

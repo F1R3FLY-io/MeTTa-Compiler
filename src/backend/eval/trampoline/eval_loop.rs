@@ -183,9 +183,9 @@ pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
     // ── E1-c step 3: DEDICATED GC THREAD park on the index path ──
     // When the dedicated GC thread is driving a FANOUT>0 rendezvous, a worker that
     // reaches a cooperative safepoint must PARK (self-root + block) so the driver's
-    // `requestor_wait_for_parked_count(n)` can balance. BYTE-IDENTICAL WHEN DORMANT:
-    // `dedicated_gc_enabled()` first → when OFF, control falls through to the
-    // unchanged slab/async register-temporary-roots path below.
+    // `requestor_wait_for_parked_count(n)` can balance. SLAB-BYTE-IDENTICAL:
+    // `dedicated_gc_enabled()` follows index mode, so slab falls through to the
+    // unchanged async register-temporary-roots path below.
     //
     // The VM/JIT and grounded/MORK callers are now source-coupled to pass complete
     // `extra_roots`; this helper owns the common park/resume protocol for those tier
@@ -2716,7 +2716,7 @@ fn parallel_dispatch(
             // parent's (core.rs:916), which the parent's eval/mod.rs registration does
             // NOT cover. Registered BEFORE `env` is moved into the eval; the RAII
             // handle is held for the whole closure body (the worker's lifetime).
-            // BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+            // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
             #[cfg(feature = "index-gc")]
             let _worker_live_env = {
                 if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
@@ -2753,11 +2753,9 @@ fn parallel_dispatch(
                     // notify, NO park), then return normally; the parent's
                     // `WaitForParallel` K-frame roots the result thereafter.
                     //
-                    // BYTE-IDENTICAL WHEN DORMANT: the block is behind the
-                    // `#[cfg(feature = "index-gc")]` wall AND `dedicated_gc_enabled()`
-                    // is the FIRST conjunct (cached OnceLock bool, const-OFF default),
-                    // so slab does not compile it and index-default short-circuits it
-                    // to one predicted-false read off the worker-return path.
+                    // SLAB-BYTE-IDENTICAL: the block is behind the
+                    // `#[cfg(feature = "index-gc")]` wall, and the runtime arm first
+                    // checks `dedicated_gc_enabled()`, which follows index mode.
                     #[cfg(feature = "index-gc")]
                     {
                         if crate::backend::models::gc_allocator::dedicated_gc_enabled()
@@ -3624,7 +3622,7 @@ fn parallel_collapse_dispatch(
             // Sibling of the parallel_dispatch finisher above; see the full rationale
             // there. The collapse worker's `eval_results: SmallVec<[BoundValue; 2]>`
             // is about to move into `results[slot]`; until then it is live only on
-            // this stack. BYTE-IDENTICAL WHEN DORMANT via the `#[cfg(feature =
+            // this stack. SLAB-BYTE-IDENTICAL via the `#[cfg(feature =
             // "index-gc")]` wall + `dedicated_gc_enabled()`-first short-circuit.
             #[cfg(feature = "index-gc")]
             {
@@ -4498,13 +4496,12 @@ fn eval_trampoline_inner<C: EvalContext>(
             // worker SELF-ROOTS its own machine into the shared buffer and parks; the
             // dedicated GC thread drains the BUFFER, never the parked stacks.
             //
-            // BYTE-IDENTICAL WHEN DORMANT: `dedicated_gc_enabled()` (a cached OnceLock
-            // bool, const-OFF by default) is the FIRST conjunct of BOTH branches, so
-            // when OFF they short-circuit WITHOUT reading `n_threads()` / the watermark
-            // / `is_gc_requested()`, and control falls straight to the unchanged
-            // `else if should_collect_midloop()` — identical to the prior bare path.
-            // In the slab build `gc_mode_is_index()` (inside the watermark heap read
-            // and the midloop gate) const-folds away too.
+            // SLAB-BYTE-IDENTICAL: `dedicated_gc_enabled()` follows index mode and is
+            // the FIRST conjunct of BOTH branches, so slab short-circuits WITHOUT
+            // reading `n_threads()` / the watermark / `is_gc_requested()`, and control
+            // falls straight to the unchanged `else if should_collect_midloop()`.
+            // In slab, `gc_mode_is_index()` const-folds false inside the watermark heap
+            // read and the midloop gate too.
 
             // (A) FANOUT WATERMARK TRIGGER: a fanout-enabled mutator that observes
             // the heap watermark while inside an EvalGuard (`n_threads() >= 1`) and

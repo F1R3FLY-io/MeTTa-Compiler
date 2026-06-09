@@ -265,6 +265,12 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/ConcurrentTriggerBackstop.v`: proves the E1 FANOUT rendezvous-trigger backstop rule. If a worker
   trigger cannot hand `CollectRendezvous` to the dedicated GC thread, the resume backstop must clear the pending
   request and wake workers; otherwise the trigger must have posted a driver request.
+- `formal/rocq/gc/E1DefaultConcurrentFlip.v`: composes the E1 default-flip boundary. In index mode the dedicated
+  collector is the active regime; legacy request producers are suppressed; a FANOUT watermark trigger either posts
+  `CollectRendezvous` or runs the request-clear/resume backstop; and a posted driver cycle closes, advances the
+  generation, clears the request, and resumes parked workers. The source-coupling harness pins this theorem to
+  `dedicated_gc_enabled()`, `request_concurrent_collection`, and the no-`METTATRON_INDEX_GC_DEDICATED` production
+  invariant.
 - `formal/rocq/gc/OperatorCacheEpoch.v` and `formal/lean/gc/OperatorCacheEpoch.lean`: prove the pointer-keyed
   operator-cache sweep-epoch obligation. A returned cache entry is current if the local sweep-epoch guard runs before
   lookup; if the local epoch is stale, the guarded lookup misses after clearing the cache.

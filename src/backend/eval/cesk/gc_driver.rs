@@ -155,11 +155,10 @@ fn gc_driver_main(request_rx: mpsc::Receiver<GcDriverRequest>) {
 ///   (9) resume_workers()                       // GC_REQUESTED=false + notify RESUME_CONDVAR
 /// ```
 ///
-/// Until **E1-FLIP**, `gate_open()` still requires `!worker_ever_spawned()`, so under
-/// FANOUT>0 step (6) backs off to a no-op — but the rendezvous (park/drain/resume)
-/// still runs end-to-end, which is exactly what the V1/V4 gate exercises. The cleanup
-/// (7)-(9) runs even if (6) panics (catch_unwind), so parked workers are ALWAYS
-/// released — a panicked cycle never wedges the mutators.
+/// On the default index path, step (6) enters the rendezvous collector through
+/// `gate_open_rendezvous()`, whose sweep gate is the per-slot witness proved in
+/// step (4). The cleanup (7)-(9) runs even if (6) panics (catch_unwind), so parked
+/// workers are ALWAYS released — a panicked cycle never wedges the mutators.
 ///
 /// E₀ is covered through the live-env anchor registry, plus each participant's
 /// structural self-root includes its machine-local persistent roots. driver-C

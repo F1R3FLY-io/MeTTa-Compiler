@@ -297,6 +297,14 @@ assert_zero "scripts/e1_flip_v4_asan.sh" "METTATRON_INDEX_GC_DEDICATED"
 assert_zero "scripts/e1_flip_discriminator.sh" "METTATRON_INDEX_GC_DEDICATED"
 assert_zero "scripts/e1_flip_h2_head_compare.sh" "METTATRON_INDEX_GC_DEDICATED"
 assert_before "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_MIN_BYTES" "METTATRON_INDEX_GC_REPORT"
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/E1DefaultConcurrentFlip.v\"" >/dev/null
+line_no "formal/rocq/gc/E1DefaultConcurrentFlip.v" "default_flip_no_driverless_request_or_stuck_workers" >/dev/null
+line_no "formal/rocq/gc/E1DefaultConcurrentFlip.v" "DefaultDedicatedFollowsIndex" >/dev/null
+line_no "formal/rocq/gc/E1DefaultConcurrentFlip.v" "LegacyRequestsSuppressedUnderDedicated" >/dev/null
+line_no "formal/rocq/gc/E1DefaultConcurrentFlip.v" "FanoutTriggerTotal" >/dev/null
+line_no "formal/rocq/gc/E1DefaultConcurrentFlip.v" "FailedTriggerBackstopped" >/dev/null
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "request_gc();" "tx.send(GcDriverRequest::CollectRendezvous)"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "None => crate::backend::models::gc_allocator::resume_workers()" "fn spawn_gc_driver"
 
 # The R-FL no-recycle/swept-slot diagnostic was a one-off discriminator. The
 # live proof obligation is the persistent free-bit invariant below, so the

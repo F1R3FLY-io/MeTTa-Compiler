@@ -3776,7 +3776,7 @@ pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
             // driver's cycle-end gen bump (same mutex) and the parker's notify
             // (above) is never lost. The finishers + the zero-root drop bump get NO
             // note_reified_park ⇒ they can NEVER satisfy the witness BY CONSTRUCTION.
-            // BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+            // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
             #[cfg(feature = "index-gc")]
             {
                 if dedicated_gc_enabled() {
@@ -4574,7 +4574,7 @@ impl EvalGuard {
                 // `n` snapshot is also present (occupied) in the witness snapshot. The
                 // slot stays occupied continuously from here to the OUTERMOST drop
                 // (across parks) — DECOUPLED from N_THREADS (which releases at a park).
-                // BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+                // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
                 #[cfg(feature = "index-gc")]
                 {
                     if dedicated_gc_enabled() {
@@ -4610,7 +4610,7 @@ impl Drop for EvalGuard {
                     // is_gc_requested() load, only on depth 1→0). worker_finish_into_buffer
                     // locks a parking_lot mutex (no poison, unwind-safe) + only infallible
                     // ops, so it is safe during a panic-unwind drop (no double-panic).
-                    // BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
+                    // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
                     #[cfg(feature = "index-gc")]
                     {
                         if dedicated_gc_enabled() && is_gc_requested() {
@@ -4625,7 +4625,7 @@ impl Drop for EvalGuard {
                     // (true outermost drop), so un-occupy its witness slot. A safepoint
                     // (park) drop does NOT release — the frozen machine is still live —
                     // so this is reached ONLY at the genuine end of the thread's
-                    // evaluation. BYTE-IDENTICAL WHEN DORMANT: cfg + dedicated-first.
+                    // evaluation. SLAB-BYTE-IDENTICAL: cfg + index-mode gate.
                     #[cfg(feature = "index-gc")]
                     {
                         if dedicated_gc_enabled() {
@@ -6059,7 +6059,7 @@ pub fn reacquire_eval_guard_after_safepoint() {
             // non-full reacquire is reached only by the test-only safepoint pair in
             // production (the FANOUT>0 reified parks use the `_full` variant), so the
             // restamp is inert there, but it is wired for lifecycle consistency with
-            // the `_full` rejoin. BYTE-IDENTICAL WHEN DORMANT: cfg + dedicated-first.
+            // the `_full` rejoin. SLAB-BYTE-IDENTICAL: cfg + index-mode gate.
             #[cfg(feature = "index-gc")]
             {
                 if dedicated_gc_enabled() {
@@ -6255,7 +6255,7 @@ pub fn reacquire_eval_guard_after_safepoint_full(
         }
     }
 
-    // ── Base protocol (DORMANT-path / slab) — UNCHANGED, byte-identical ──
+    // ── Base protocol (slab / non-dedicated async path) — UNCHANGED, byte-identical ──
     // F2: wait until MY cycle ended (the gen advanced), then re-admit.
     worker_resume_wait_for_cycle(my_gen);
     // Admission: GC_IN_PROGRESS gate, passed ONCE (no per-level race).

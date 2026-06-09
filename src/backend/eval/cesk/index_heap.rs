@@ -636,6 +636,13 @@ impl IndexHeap {
         a
     }
 
+    /// True when the exclusive allocation path can immediately consume a
+    /// reclaimed slot in the current bump segment.
+    #[inline]
+    fn has_current_free_slot(&self) -> bool {
+        self.arena.has_current_free_slot()
+    }
+
     /// C1.c #1: box `items` into segment `seg`'s child side-arena, APPENDING a
     /// fresh stable index (no-recycle — see [`SegmentSideArenas`]), returning it.
     /// The caller co-locates the owning node in the SAME `seg` (so node + children
@@ -1418,23 +1425,35 @@ fn flag_vars(has: bool) -> usize {
     }
 }
 
+#[inline]
+fn current_segment_reuse_pressure() -> bool {
+    global_index_heap()
+        .try_read()
+        .map(|h| h.has_current_free_slot())
+        .unwrap_or(false)
+}
+
+#[inline]
+fn alloc_with_reuse_pressure<E, C>(exclusive: E, concurrent: C) -> Addr
+where
+    E: FnOnce(&mut IndexHeap) -> Addr,
+    C: FnOnce(&IndexHeap) -> Addr,
+{
+    if let Ok(mut h) = global_index_heap().try_write() {
+        return exclusive(&mut h);
+    }
+    if current_segment_reuse_pressure() {
+        let mut h = global_index_heap().write().expect("index heap");
+        return exclusive(&mut h);
+    }
+    let h = global_index_heap().read().expect("index heap");
+    concurrent(&h)
+}
+
 impl MettaValueFactory<MettaValue> for IndexFactory {
     fn atom(&self, s: &str) -> MettaValue {
         let flags = flag_vars(is_variable_str(s));
-        // D-RLOCK.2: try the EXCLUSIVE (`&mut`) reuse-or-bump path first via a
-        // NON-BLOCKING `try_write` (one shot, no retry loop ⇒ no livelock); fall
-        // back to the concurrent (`.read()`+`&self`) BUMP-ONLY path when the write
-        // lock is held by another worker (the parallel-eval case this increment
-        // de-serializes). At FANOUT=0 (one thread) `try_write` always succeeds, so
-        // this is byte-identical to the prior unconditional `.write()` path.
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_atom(s)
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_atom_concurrent(s)
-        };
+        let addr = alloc_with_reuse_pressure(|h| h.alloc_atom(s), |h| h.alloc_atom_concurrent(s));
         MettaValue::from_addr(addr, flags)
     }
 
@@ -1446,41 +1465,24 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
         if let Some(v) = MettaValue::try_inline_long(n) {
             return v;
         }
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_fixed(Node::Long(n))
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_fixed_concurrent(Node::Long(n))
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_fixed(Node::Long(n)),
+            |h| h.alloc_fixed_concurrent(Node::Long(n)),
+        );
         MettaValue::from_addr(addr, 0)
     }
 
     fn float(&self, f: f64) -> MettaValue {
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_fixed(Node::Float(f))
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_fixed_concurrent(Node::Float(f))
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_fixed(Node::Float(f)),
+            |h| h.alloc_fixed_concurrent(Node::Float(f)),
+        );
         MettaValue::from_addr(addr, 0)
     }
 
     fn string(&self, s: &str) -> MettaValue {
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_string(s)
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_string_concurrent(s)
-        };
+        let addr =
+            alloc_with_reuse_pressure(|h| h.alloc_string(s), |h| h.alloc_string_concurrent(s));
         MettaValue::from_addr(addr, 0)
     }
 
@@ -1516,42 +1518,28 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
         // ground ⇒ compared structurally, never by the `inner_ptr`-keyed
         // VALUE_HASH_CACHE in a content-equality-sensitive way that a fresh `Addr`
         // would corrupt — so the concurrent path is output-equivalent.
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_sexpr(items)
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_sexpr_concurrent(items)
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_sexpr(items),
+            |h| h.alloc_sexpr_concurrent(items),
+        );
         MettaValue::from_addr(addr, FLAG_HAS_VARIABLES)
     }
 
     fn error(&self, offending: MettaValue, detail: MettaValue) -> MettaValue {
         let flags = flag_vars(offending.has_variables_fast() || detail.has_variables_fast());
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_fixed(Node::Error(offending, detail))
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_fixed_concurrent(Node::Error(offending, detail))
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_fixed(Node::Error(offending, detail)),
+            |h| h.alloc_fixed_concurrent(Node::Error(offending, detail)),
+        );
         MettaValue::from_addr(addr, flags)
     }
 
     fn type_value(&self, inner: MettaValue) -> MettaValue {
         let flags = flag_vars(inner.has_variables_fast());
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_fixed(Node::Type(inner))
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_fixed_concurrent(Node::Type(inner))
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_fixed(Node::Type(inner)),
+            |h| h.alloc_fixed_concurrent(Node::Type(inner)),
+        );
         MettaValue::from_addr(addr, flags)
     }
 
@@ -1561,17 +1549,10 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
 
     fn conjunction_from_slice(&self, goals: &[MettaValue]) -> MettaValue {
         let flags = flag_vars(goals.iter().any(|g| g.has_variables_fast()));
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        // Conjunctions are not hash-consed (no ground-dedup branch), so the whole
-        // method de-serializes.
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_conjunction(goals)
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_conjunction_concurrent(goals)
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_conjunction(goals),
+            |h| h.alloc_conjunction_concurrent(goals),
+        );
         MettaValue::from_addr(addr, flags)
     }
 
@@ -1584,18 +1565,10 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
     }
 
     fn state(&self, id: u64) -> MettaValue {
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        // The `State` NODE is a fixed node (`alloc_fixed`); the State *cell* it
-        // names is registered separately by the caller — only the node alloc is
-        // de-serialized here.
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_fixed(Node::State(id))
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_fixed_concurrent(Node::State(id))
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_fixed(Node::State(id)),
+            |h| h.alloc_fixed_concurrent(Node::State(id)),
+        );
         MettaValue::from_addr(addr, 0)
     }
 
@@ -1630,15 +1603,10 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
 
     fn quote(&self, inner: MettaValue) -> MettaValue {
         let flags = flag_vars(inner.has_variables_fast());
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_fixed(Node::Quoted(inner))
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_fixed_concurrent(Node::Quoted(inner))
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_fixed(Node::Quoted(inner)),
+            |h| h.alloc_fixed_concurrent(Node::Quoted(inner)),
+        );
         MettaValue::from_addr(addr, flags)
     }
 
@@ -1647,29 +1615,19 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
         // Lazy). That check needs the mode-aware `is_lazy`/decode, so it is added
         // in Inc 2a-5; until then `lazy` always wraps (correct, just non-idempotent).
         let flags = flag_vars(inner.has_variables_fast());
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_fixed(Node::Lazy(inner))
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_fixed_concurrent(Node::Lazy(inner))
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_fixed(Node::Lazy(inner)),
+            |h| h.alloc_fixed_concurrent(Node::Lazy(inner)),
+        );
         MettaValue::from_addr(addr, flags)
     }
 
     fn spanned(&self, value: MettaValue, span: crate::ir::Span) -> MettaValue {
         let flags = flag_vars(value.has_variables_fast());
-        // D-RLOCK.2: try_write reuse-or-bump, else concurrent bump-only (see `atom`).
-        let addr = if let Ok(mut h) = global_index_heap().try_write() {
-            h.alloc_spanned(value, span)
-        } else {
-            global_index_heap()
-                .read()
-                .expect("index heap")
-                .alloc_spanned_concurrent(value, span)
-        };
+        let addr = alloc_with_reuse_pressure(
+            |h| h.alloc_spanned(value, span),
+            |h| h.alloc_spanned_concurrent(value, span),
+        );
         MettaValue::from_addr(addr, flags)
     }
 
@@ -3418,6 +3376,30 @@ mod tests {
             heap.str_slice(replacement),
             "replacement",
             "draining the old side snapshot must not free the replacement's side slot"
+        );
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn current_segment_reuse_pressure_tracks_exclusive_progress() {
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(16);
+
+        let dead = heap.alloc_string("dead-current");
+        let live = heap.alloc_string("live-root");
+        heap.mark(&[live]);
+        let stats = heap.sweep_young();
+        assert_eq!(stats.reclaimed_to_free_list, 1);
+        assert!(
+            heap.has_current_free_slot(),
+            "exclusive allocator should see a reusable current-segment slot"
+        );
+
+        let replacement = heap.alloc_string("replacement");
+        assert_eq!(replacement, dead);
+        assert!(
+            !heap.has_current_free_slot(),
+            "the exclusive reuse path consumed the current-segment slot"
         );
         reset_gc_mode_slab();
     }

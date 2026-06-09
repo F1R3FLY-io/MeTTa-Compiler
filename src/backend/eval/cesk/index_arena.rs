@@ -691,6 +691,16 @@ impl<N: Copy> IndexArena<N> {
         None
     }
 
+    /// True when the exclusive allocation path can make immediate progress by
+    /// reusing a slot in the current bump segment.
+    pub fn has_current_free_slot(&self) -> bool {
+        let cur = self.current_seg();
+        self.free_list
+            .iter()
+            .rev()
+            .any(|addr| addr.segment() == cur)
+    }
+
     /// C1.c #1: write `node` into an already-published slot returned by
     /// [`pop_young_free_slot`] (reuse in place — the slot stays published, `len`
     /// unchanged, so no publish step). Counts the alloc + the young nursery odometer.

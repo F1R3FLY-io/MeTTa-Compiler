@@ -214,6 +214,11 @@ can replace the full-major final sweep.
   Concurrent allocation returns only fresh bump slots, fresh slots are separated from the free list, and free-list reuse
   is reserved for the exclusive path; therefore a concurrent allocation cannot return a free-list slot or alias a
   reuse return.
+- `formal/rocq/gc/ConcurrentReusePressureProgress.v`: proves the E1 allocator-progress refinement added after the
+  default FANOUT ASAN gate exposed reclaim pressure without enough reuse. If `try_write` loses while a current-segment
+  free slot is observed, the factory policy chooses the exclusive allocation path rather than the shared fresh-bump
+  path; the existing exclusive reuse proof can then consume the reclaimed slot, while the concurrent path remains
+  fresh-only and free-list-separated.
 - `formal/rocq/gc/IndexAllocatorRefinement.v`: composes the Rust source-coupled allocator facts into the abstract
   contract consumed by `CESKCollectorSafety.v`: fixed-slot reads observe published segment/slot bytes, side-payload
   reads observe same-segment published side entries, published allocations satisfy allocate-black, shared concurrent

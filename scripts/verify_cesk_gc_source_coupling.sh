@@ -307,6 +307,9 @@ line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/E1SatbStwD
 line_no "formal/rocq/gc/E1SatbStwDriverProgress.v" "posted_driver_satb_or_stw_releases" >/dev/null
 line_no "formal/rocq/gc/E1SatbStwDriverProgress.v" "posted_driver_no_sticky_request_or_witness" >/dev/null
 line_no "formal/rocq/gc/E1SatbStwDriverProgress.v" "panic_or_closed_final_sweep_is_satb_abort" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/ConcurrentReusePressureProgress.v\"" >/dev/null
+line_no "formal/rocq/gc/ConcurrentReusePressureProgress.v" "try_write_loss_with_reuse_pressure_chooses_exclusive" >/dev/null
+line_no "formal/rocq/gc/ConcurrentReusePressureProgress.v" "pressure_path_reuses_without_weakening_concurrent_safety" >/dev/null
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "request_gc();" "tx.send(GcDriverRequest::CollectRendezvous)"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "None => crate::backend::models::gc_allocator::resume_workers()" "fn spawn_gc_driver"
 
@@ -945,6 +948,23 @@ assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom_con
 assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_string_concurrent(&self, s: &str) -> Addr" "pub fn alloc_spanned_concurrent(&self, inner: MettaValue, span: Span) -> Addr" "write_reused"
 assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_spanned_concurrent(&self, inner: MettaValue, span: Span) -> Addr" "pub fn alloc_fixed_concurrent(&self, node: Node) -> Addr" "write_reused"
 assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_fixed_concurrent(&self, node: Node) -> Addr" "fn intern_children_in" "write_reused"
+line_no "src/backend/eval/cesk/index_arena.rs" "pub fn has_current_free_slot(&self) -> bool" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn has_current_free_slot(&self) -> bool" "let cur = self.current_seg();" "self.free_list"
+assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn has_current_free_slot(&self) -> bool" "self.free_list" ".iter()"
+assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn has_current_free_slot(&self) -> bool" ".iter()" ".rev()"
+assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn has_current_free_slot(&self) -> bool" ".rev()" ".any(|addr| addr.segment() == cur)"
+line_no "src/backend/eval/cesk/index_heap.rs" "fn current_segment_reuse_pressure() -> bool" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn current_segment_reuse_pressure() -> bool" "global_index_heap()" ".try_read()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn current_segment_reuse_pressure() -> bool" ".try_read()" ".map(|h| h.has_current_free_slot())"
+line_no "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" "global_index_heap().try_write()" "current_segment_reuse_pressure()"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" "current_segment_reuse_pressure()" "global_index_heap().write().expect(\"index heap\")"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "if current_segment_reuse_pressure() {" "global_index_heap().write().expect(\"index heap\")" "return exclusive(&mut h);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "if current_segment_reuse_pressure() {" "return exclusive(&mut h);" "global_index_heap().read().expect(\"index heap\")"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" "global_index_heap().read().expect(\"index heap\")" "concurrent(&h)"
+assert_zero_between "src/backend/eval/cesk/index_heap.rs" "fn current_segment_reuse_pressure() -> bool" "impl MettaValueFactory<MettaValue> for IndexFactory" "std::env::var"
+assert_zero_between "src/backend/eval/cesk/index_heap.rs" "fn current_segment_reuse_pressure() -> bool" "impl MettaValueFactory<MettaValue> for IndexFactory" "METTATRON_"
+assert_count "src/backend/eval/cesk/index_heap.rs" "alloc_with_reuse_pressure(" "12"
 
 # Side-payload free quiescence coupling: dropping side-arena Boxes is separated
 # from reclaiming fixed node slots. Reclaim-time side-owner snapshots are

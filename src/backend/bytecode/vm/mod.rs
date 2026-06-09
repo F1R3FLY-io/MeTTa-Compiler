@@ -58,9 +58,10 @@ mod proptests;
 pub use types::{VmConfig, VmError, VmResult};
 // Generic types
 pub use types::{
-    Alternative, BindingFrame, CallFrame, ChoicePoint, CollapseBindFrame, CollapseFrame,
-    GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
-    GenericCollapseBindFrame, GenericCollapseFrame, TrailEntry, VmBoundValue,
+    Alternative, BindingFrame, CallFrame, ChoicePoint, ChoicePointStack, CollapseBindFrame,
+    CollapseFrame, GenericAlternative, GenericBindingFrame, GenericCallFrame, GenericChoicePoint,
+    GenericChoicePointStack, GenericCollapseBindFrame, GenericCollapseFrame, TrailEntry,
+    VmBoundValue,
 };
 
 // ============================================================================
@@ -166,7 +167,7 @@ unsafe fn vm_roots_collector(data: *const (), out: &mut Vec<MettaValue>) {
 /// The generic VM uses:
 /// - `GenericBytecodeChunk<V>` for constant storage
 /// - `GenericBindingFrame<V>` for pattern variable bindings
-/// - `GenericChoicePoint<V, GenericBytecodeChunk<V>>` for nondeterminism
+/// - `GenericChoicePointStack<V, GenericBytecodeChunk<V>>` for nondeterminism
 /// - `GenericEnvironment<V, F>` for rule storage
 /// - `MettaValueFactory<V>` trait methods for value construction
 ///
@@ -238,8 +239,8 @@ where
     /// Bindings stack for pattern variables
     pub(crate) bindings_stack: Vec<GenericBindingFrame<V>>,
 
-    /// Choice points for nondeterminism
-    pub(crate) choice_points: Vec<GenericChoicePoint<V, GenericBytecodeChunk<V>>>,
+    /// Choice points for nondeterminism, stored as CESK continuation addresses.
+    pub(crate) choice_points: GenericChoicePointStack<V, GenericBytecodeChunk<V>>,
 
     /// Collected results (for nondeterministic evaluation)
     pub(crate) results: Vec<V>,
@@ -446,7 +447,7 @@ where
             locals_base: 0,
             call_stack: Vec::with_capacity(64),
             bindings_stack: vec![GenericBindingFrame::new(0)],
-            choice_points: Vec::new(),
+            choice_points: GenericChoicePointStack::new(),
             results: Vec::new(),
             ip: 0,
             chunk,
@@ -506,7 +507,7 @@ where
             locals_base: 0,
             call_stack: Vec::with_capacity(64),
             bindings_stack: vec![GenericBindingFrame::new(0)],
-            choice_points: Vec::new(),
+            choice_points: GenericChoicePointStack::new(),
             results: Vec::new(),
             ip: 0,
             chunk,
@@ -559,7 +560,7 @@ where
             locals_base: 0,
             call_stack: Vec::with_capacity(64),
             bindings_stack: vec![GenericBindingFrame::new(0)],
-            choice_points: Vec::new(),
+            choice_points: GenericChoicePointStack::new(),
             results: Vec::new(),
             ip: 0,
             chunk,
@@ -1084,7 +1085,8 @@ where
             }
         }
 
-        // choice_points: Vec<GenericChoicePoint<V, _>> — alternatives + saved_current_bindings
+        // choice_points: ContinuationAddr-backed GenericChoicePoint stack —
+        // alternatives + saved_current_bindings
         for cp in self.choice_points.iter() {
             super::cache::collect_generic_chunk_constants(&cp.chunk, out);
             for alt in cp.alternatives.iter() {

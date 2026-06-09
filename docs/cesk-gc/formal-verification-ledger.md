@@ -160,6 +160,12 @@ can replace the full-major final sweep.
   and yielded results, then every value a future lazy resume can touch is rooted and cannot be swept as unrooted. The
   source-coupling gate pins the Rust lowering from `ProcessRuleMatchesLazy` to `StoredBranchCoroutine` and rejects a
   return to `Box<BranchCoroutine<MettaValue>>`.
+- `formal/rocq/gc/VmChoicePointSpine.v`: proves the VM implementation-level E3 lowering. A live VM choice-point stack
+  entry is now a `ContinuationAddr` into the typed continuation-spine store; if that address resolves to a stored
+  choice-point node and the node walker includes the continuation chunk constants, alternatives, rule-match bindings,
+  bound values/bindings, and saved current bindings, then every value a future VM fail/backtrack transition can touch is
+  rooted and cannot be swept. The source-coupling gate rejects restoring `GenericBytecodeVM.choice_points` to a raw
+  `Vec<GenericChoicePoint<...>>` and pins `push`, `pop`, `truncate`, `clear`, and `iter` to the address-backed stack.
 - `formal/rocq/gc/SerializableContinuationSlice.v`: proves the E4 serialized-continuation slice obligation. If a
   serialized suspended state includes its control, environment, and continuation roots and is closed under store
   edges, every address a restored transition can touch is in the serialized slice and cannot be reclaimed as outside

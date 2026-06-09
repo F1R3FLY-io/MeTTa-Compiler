@@ -29,6 +29,7 @@ use smallvec::SmallVec;
 use std::sync::Arc;
 
 use crate::backend::bytecode::chunk::{BytecodeChunk, GenericBytecodeChunk};
+use crate::backend::eval::cesk::{ContinuationAddr, SpineStore};
 use crate::backend::models::{GenericBindings, MettaValue, MettaValueTrait};
 
 /// Result of VM execution
@@ -444,6 +445,104 @@ where
     pub locals_base_at_cp: usize,
 }
 
+/// Store-addressed stack of VM choice points.
+///
+/// The VM's fail/backtrack machinery still sees a stack-shaped API, but the
+/// re-enterable continuation payloads are owned by a continuation-spine store
+/// and named by [`ContinuationAddr`]. This makes VM choice points part of the
+/// structural K contribution rather than another unaddressed side stack.
+#[derive(Debug)]
+pub struct GenericChoicePointStack<V, C>
+where
+    V: MettaValueTrait + Clone + Send + Sync + 'static,
+{
+    order: Vec<ContinuationAddr>,
+    store: SpineStore<GenericChoicePoint<V, C>>,
+}
+
+impl<V, C> Default for GenericChoicePointStack<V, C>
+where
+    V: MettaValueTrait + Clone + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<V, C> GenericChoicePointStack<V, C>
+where
+    V: MettaValueTrait + Clone + Send + Sync + 'static,
+{
+    /// Create an empty VM choice-point stack.
+    pub fn new() -> Self {
+        Self {
+            order: Vec::new(),
+            store: SpineStore::new(),
+        }
+    }
+
+    /// Push a choice point into the continuation-spine store.
+    pub fn push(&mut self, choice_point: GenericChoicePoint<V, C>) {
+        let addr = self.store.alloc(choice_point);
+        self.order.push(addr);
+    }
+
+    /// Pop and remove the top choice point from the continuation-spine store.
+    pub fn pop(&mut self) -> Option<GenericChoicePoint<V, C>> {
+        let addr = self.order.pop()?;
+        Some(
+            self.store
+                .remove(addr)
+                .expect("VM choice-point stack address missing from spine store"),
+        )
+    }
+
+    /// Number of live choice-point handles on the stack.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Whether the stack has no live choice points.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    /// Remove all choice points and their continuation-spine nodes.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.order.clear();
+        self.store.clear();
+    }
+
+    /// Drop all choice points at indexes `len..`, removing their stored nodes.
+    pub fn truncate(&mut self, len: usize) {
+        while self.order.len() > len {
+            let addr = self
+                .order
+                .pop()
+                .expect("choice-point stack length checked before pop");
+            let _ = self.store.remove(addr);
+        }
+    }
+
+    /// Iterate over live choice points in stack order by resolving their
+    /// continuation addresses.
+    pub fn iter(&self) -> impl Iterator<Item = &GenericChoicePoint<V, C>> {
+        self.order.iter().map(|addr| {
+            self.store
+                .get(*addr)
+                .expect("VM choice-point stack address missing from spine store")
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_node_count_for_tests(&self) -> usize {
+        self.store.len()
+    }
+}
+
 // ============================================================================
 // Trail Entry
 // ============================================================================
@@ -487,6 +586,9 @@ pub type Alternative = GenericAlternative<MettaValue, BytecodeChunk>;
 
 /// Choice point for nondeterminism (concrete type alias).
 pub type ChoicePoint = GenericChoicePoint<MettaValue, BytecodeChunk>;
+
+/// Store-addressed choice-point stack (concrete type alias).
+pub type ChoicePointStack = GenericChoicePointStack<MettaValue, BytecodeChunk>;
 
 /// Collapse frame for nondeterminism sandboxing.
 ///

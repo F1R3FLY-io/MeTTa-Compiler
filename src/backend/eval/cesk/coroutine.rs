@@ -14,9 +14,9 @@
 //! unevaluated branches and yields results incrementally.
 
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use super::continuation_spine::{ContinuationAddr, SpineStore};
 use crate::backend::models::{GenericBindings, MettaValue, MettaValueTrait};
 
 // ============================================================================
@@ -289,20 +289,6 @@ impl<V: MettaValueTrait + Clone> BranchCoroutine<V> {
 // Store-addressed selective continuation spine
 // ============================================================================
 
-/// Address of a re-enterable continuation node in the selective continuation
-/// spine. This is the E3 capability boundary: production lazy branch state is
-/// named by a compact store address rather than embedded directly in the native
-/// continuation enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ContinuationAddr(u32);
-
-impl ContinuationAddr {
-    #[inline]
-    pub fn raw(self) -> u32 {
-        self.0
-    }
-}
-
 #[derive(Debug)]
 struct StoredBranchCoroutineNode {
     remaining: Vec<(MettaValue, GenericBindings<MettaValue>)>,
@@ -375,16 +361,14 @@ enum ContinuationSpineNode {
 }
 
 #[derive(Debug)]
-struct ContinuationSpineStore {
-    next_raw: u32,
-    nodes: HashMap<ContinuationAddr, ContinuationSpineNode>,
+struct BranchContinuationSpineStore {
+    nodes: SpineStore<ContinuationSpineNode>,
 }
 
-impl ContinuationSpineStore {
+impl BranchContinuationSpineStore {
     fn new() -> Self {
         Self {
-            next_raw: 1,
-            nodes: HashMap::new(),
+            nodes: SpineStore::new(),
         }
     }
 
@@ -393,41 +377,27 @@ impl ContinuationSpineStore {
         branches: Vec<(MettaValue, GenericBindings<MettaValue>)>,
         demand: Demand,
     ) -> ContinuationAddr {
-        let raw = self.next_raw;
-        self.next_raw = self
-            .next_raw
-            .checked_add(1)
-            .expect("continuation spine address space exhausted");
-        let addr = ContinuationAddr(raw);
-        let old = self.nodes.insert(
-            addr,
-            ContinuationSpineNode::BranchCoroutine(StoredBranchCoroutineNode::new(
-                branches, demand,
-            )),
-        );
-        debug_assert!(
-            old.is_none(),
-            "fresh continuation address was already occupied"
-        );
-        addr
+        self.nodes.alloc(ContinuationSpineNode::BranchCoroutine(
+            StoredBranchCoroutineNode::new(branches, demand),
+        ))
     }
 
     fn branch_mut(&mut self, addr: ContinuationAddr) -> &mut StoredBranchCoroutineNode {
-        match self.nodes.get_mut(&addr) {
+        match self.nodes.get_mut(addr) {
             Some(ContinuationSpineNode::BranchCoroutine(node)) => node,
             None => panic!("missing branch-coroutine continuation node at {:?}", addr),
         }
     }
 
     fn branch(&self, addr: ContinuationAddr) -> &StoredBranchCoroutineNode {
-        match self.nodes.get(&addr) {
+        match self.nodes.get(addr) {
             Some(ContinuationSpineNode::BranchCoroutine(node)) => node,
             None => panic!("missing branch-coroutine continuation node at {:?}", addr),
         }
     }
 
     fn remove_branch(&mut self, addr: ContinuationAddr) -> Option<StoredBranchCoroutineNode> {
-        match self.nodes.remove(&addr) {
+        match self.nodes.remove(addr) {
             Some(ContinuationSpineNode::BranchCoroutine(node)) => Some(node),
             None => None,
         }
@@ -435,16 +405,16 @@ impl ContinuationSpineStore {
 
     #[cfg(test)]
     fn contains(&self, addr: ContinuationAddr) -> bool {
-        self.nodes.contains_key(&addr)
+        self.nodes.contains(addr)
     }
 }
 
-fn continuation_spine_store() -> &'static Mutex<ContinuationSpineStore> {
-    static STORE: OnceLock<Mutex<ContinuationSpineStore>> = OnceLock::new();
-    STORE.get_or_init(|| Mutex::new(ContinuationSpineStore::new()))
+fn continuation_spine_store() -> &'static Mutex<BranchContinuationSpineStore> {
+    static STORE: OnceLock<Mutex<BranchContinuationSpineStore>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(BranchContinuationSpineStore::new()))
 }
 
-fn lock_continuation_spine_store() -> MutexGuard<'static, ContinuationSpineStore> {
+fn lock_continuation_spine_store() -> MutexGuard<'static, BranchContinuationSpineStore> {
     match continuation_spine_store().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),

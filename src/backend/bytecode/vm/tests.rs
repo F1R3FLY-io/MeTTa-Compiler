@@ -43,6 +43,43 @@ use crate::backend::environment::GenericEnvironment;
 use crate::backend::models::{GenericBindings, MettaValue, MettaValueInner, SpaceHandle};
 
 #[test]
+fn test_vm_choice_point_stack_removes_spine_nodes() {
+    let chunk = ChunkBuilder::new("choice_point_spine").build_arc();
+    let mut vm = BytecodeVM::new(Arc::clone(&chunk));
+
+    let make_cp = |ip| ChoicePoint {
+        value_stack_height: 0,
+        call_stack_height: 0,
+        bindings_stack_height: 0,
+        ip,
+        chunk: Arc::clone(&chunk),
+        alternatives: vec![Alternative::Index(ip)],
+        saved_unreduced: false,
+        trail_height: 0,
+        saved_current_bindings: GenericBindings::new(),
+        locals_height: 0,
+        locals_base_at_cp: 0,
+    };
+
+    vm.choice_points.push(make_cp(1));
+    vm.choice_points.push(make_cp(2));
+    assert_eq!(vm.choice_points.len(), 2);
+    assert_eq!(vm.choice_points.live_node_count_for_tests(), 2);
+
+    vm.choice_points.truncate(1);
+    assert_eq!(vm.choice_points.len(), 1);
+    assert_eq!(vm.choice_points.live_node_count_for_tests(), 1);
+
+    let popped = vm
+        .choice_points
+        .pop()
+        .expect("choice point should remain after truncation");
+    assert_eq!(popped.ip, 1);
+    assert!(vm.choice_points.is_empty());
+    assert_eq!(vm.choice_points.live_node_count_for_tests(), 0);
+}
+
+#[test]
 fn test_vm_push_pop() {
     let mut builder = ChunkBuilder::new("test");
     builder.emit_byte(Opcode::PushLongSmall, 42);

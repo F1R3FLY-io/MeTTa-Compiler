@@ -39,6 +39,7 @@ pub mod adaptive_indexing;
 pub mod binding_arena;
 pub mod branch_analysis;
 pub mod continuation_compression;
+pub mod continuation_spine;
 pub mod coroutine;
 pub mod discrimination_tree;
 pub mod enhanced_matcher;
@@ -65,6 +66,7 @@ pub mod thunk;
 pub use adaptive_indexing::with_adaptive_registry;
 pub use binding_arena::{clear_thread_arena, with_thread_arena, BindingArena, ChoicePoint};
 pub use branch_analysis::{analyze_branch_purity, classify_branches, BranchPurity};
+pub use continuation_spine::{ContinuationAddr, SpineStore};
 pub use discrimination_tree::{DiscKey, DiscriminationTree};
 pub use enhanced_matcher::{EnhancedMatcher, MatchPathDyn};
 pub use incremental_gc::{

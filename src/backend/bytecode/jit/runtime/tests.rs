@@ -83,7 +83,8 @@ mod tests {
     use crate::backend::bytecode::jit::types::{
         JitAlternative, JitAlternativeTag, JitBailoutReason, JitBindingFrame, JitChoicePoint,
         JitContext, JitValue, JIT_SIGNAL_ERROR, JIT_SIGNAL_FAIL, JIT_SIGNAL_OK, JIT_SIGNAL_YIELD,
-        PAYLOAD_MASK, TAG_BOOL, TAG_LONG, TAG_MASK, TAG_PTR, TAG_UNIT,
+        MAX_STACK_SAVE_VALUES, PAYLOAD_MASK, STACK_SAVE_POOL_SIZE, TAG_BOOL, TAG_LONG, TAG_MASK,
+        TAG_PTR, TAG_UNIT,
     };
     use crate::backend::models::{MettaValue, MettaValueInner, SpaceHandle};
 
@@ -5574,6 +5575,47 @@ mod tests {
 
         let result = unsafe { jit_runtime_fork_native(&mut ctx, 0, std::ptr::null(), 0) };
         assert_eq!(result, TAG_UNIT, "Zero alternatives returns NIL");
+    }
+
+    #[test]
+    fn test_fork_native_exhausted_stack_save_pool_bails_before_choice_point() {
+        let mut stack: Vec<JitValue> = vec![JitValue::from_raw(box_long(99))];
+        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
+        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
+        let constants = vec![MettaValue::Long(1), MettaValue::Long(2)];
+        let indices = [0_u64, 1_u64];
+        let mut stack_save_pool =
+            vec![JitValue::unit(); STACK_SAVE_POOL_SIZE * MAX_STACK_SAVE_VALUES];
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+        ctx.sp = stack.len();
+        ctx.stack_save_pool = stack_save_pool.as_mut_ptr();
+        ctx.stack_save_pool_cap = stack_save_pool.len();
+        ctx.stack_save_pool_next = STACK_SAVE_POOL_SIZE;
+
+        let _first = unsafe { jit_runtime_fork_native(&mut ctx, 2, indices.as_ptr(), 42) };
+
+        assert!(ctx.bailout, "pool exhaustion must fall back to bailout");
+        assert_eq!(ctx.bailout_reason, JitBailoutReason::Fork);
+        assert_eq!(
+            ctx.choice_point_count, 0,
+            "must not publish an un-restorable choice point"
+        );
+        assert_eq!(
+            ctx.stack_save_pool_next, STACK_SAVE_POOL_SIZE,
+            "exhausted pool must not wrap or overwrite live slots"
+        );
     }
 
     #[test]

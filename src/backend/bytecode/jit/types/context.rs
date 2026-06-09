@@ -316,15 +316,18 @@ pub struct JitContext {
     // -------------------------------------------------------------------------
     /// Pool of pre-allocated stack save buffers for Fork operations.
     /// Each buffer can hold up to MAX_STACK_SAVE_VALUES JitValues.
-    /// This is a ring buffer - `stack_save_pool_next` points to next available slot.
+    /// `stack_save_pool_next` points to the next never-used slot for this
+    /// execution. Slots are not reused while live choice points may still
+    /// reference them.
     /// Eliminates Box::leak() memory leaks from jit_runtime_fork_native.
     pub stack_save_pool: *mut JitValue,
 
     /// Total capacity of stack save pool (STACK_SAVE_POOL_SIZE * MAX_STACK_SAVE_VALUES)
     pub stack_save_pool_cap: usize,
 
-    /// Next available slot index in the stack save pool (ring buffer index)
-    /// Wraps around when reaching STACK_SAVE_POOL_SIZE
+    /// Next available slot index in the stack save pool for this execution.
+    /// Once it reaches STACK_SAVE_POOL_SIZE, native JIT nondeterminism falls
+    /// back to bailout rather than overwriting a live choice point's stack.
     pub stack_save_pool_next: usize,
 
     // -------------------------------------------------------------------------
@@ -668,10 +671,12 @@ impl JitContext {
         !self.stack_save_pool.is_null() && self.stack_save_pool_cap > 0
     }
 
-    /// Allocate a slot in the stack save pool.
+    /// Allocate a fresh slot in the stack save pool.
     ///
     /// Returns the slot index if successful, or -1 if the pool is not available
-    /// or the stack is too large to save.
+    /// or the stack is too large to save. Slots are intentionally not reused
+    /// during one JIT execution: a live choice point stores only the slot index,
+    /// so wrapping would let a later fork overwrite a future stack restore.
     ///
     /// # Safety
     /// Caller must ensure the pool is valid and stack_count <= MAX_STACK_SAVE_VALUES.
@@ -686,9 +691,12 @@ impl JitContext {
             return -1;
         }
 
-        // Allocate next slot (ring buffer)
+        if self.stack_save_pool_next >= STACK_SAVE_POOL_SIZE {
+            return -1;
+        }
+
         let slot_idx = self.stack_save_pool_next;
-        self.stack_save_pool_next = (slot_idx + 1) % STACK_SAVE_POOL_SIZE;
+        self.stack_save_pool_next = slot_idx + 1;
 
         slot_idx as isize
     }

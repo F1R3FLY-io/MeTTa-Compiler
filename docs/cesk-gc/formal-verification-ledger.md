@@ -166,6 +166,15 @@ can replace the full-major final sweep.
   bound values/bindings, and saved current bindings, then every value a future VM fail/backtrack transition can touch is
   rooted and cannot be swept. The source-coupling gate rejects restoring `GenericBytecodeVM.choice_points` to a raw
   `Vec<GenericChoicePoint<...>>` and pins `push`, `pop`, `truncate`, `clear`, and `iter` to the address-backed stack.
+- `formal/rocq/gc/JitChoicePointSpineBridge.v`: proves the JIT implementation-level E3 bridge. The repr(C) native JIT
+  choice-point buffer remains the execution ABI, but the collector materializes the live prefix into
+  `ContinuationAddr`-backed spine nodes before walking it. If the bridge resolves every live native choice point and
+  the node walker includes saved chunk constants, saved stack-pool values, inline value/space-match alternatives, and
+  chunk/rule-match constants, then every value a future JIT fail/backtrack transition can touch is rooted.
+- `formal/rocq/gc/JitStackSavePoolFreshness.v`: proves the stack-save-pool freshness obligation discovered during the
+  JIT bridge proof. Native JIT fork now allocates stack-save-pool slots monotonically within one execution and bails out
+  before publishing a choice point if no fresh slot is available. Therefore a later fork cannot wrap and overwrite a
+  live choice point's saved stack values before the root walker or backtracking restore reads them.
 - `formal/rocq/gc/SerializableContinuationSlice.v`: proves the E4 serialized-continuation slice obligation. If a
   serialized suspended state includes its control, environment, and continuation roots and is closed under store
   edges, every address a restored transition can touch is in the serialized slice and cannot be reclaimed as outside
@@ -626,11 +635,12 @@ facts the proofs rely on:
 - The rooted thread-local value tables scan eval memo entries, match-result RHS templates/bindings/RHS types, subgoal
   results, and thunk results as structural roots. The subgoal and thunk tables additionally shade cached result values
   on stale eviction, overwrite, explicit removal, invalidation, full clear, and thunk result replacement.
-- E3 selective-CESK choice-point source order is pinned for the current pre-unification implementation: VM
-  `collect_roots_into` walks each choice point's chunk constants, alternatives, rule-match bindings, bound values, and
-  saved current bindings; JIT `collect_jit_roots_into` walks `choice_points[..]` and each choice point's saved chunk
-  plus value, space-match, chunk, and rule-match alternatives; `BranchCoroutine::collect_values` walks remaining
-  branches, branch bindings, and yielded values.
+- E3 selective-CESK choice-point source order is pinned for the current partially unified implementation: VM
+  `collect_roots_into` walks the `GenericChoicePointStack` through `ContinuationAddr` handles; JIT
+  `collect_jit_roots_into` bridges the live native `choice_points[..]` prefix into a `SpineStore<JitChoicePoint>`
+  before walking saved chunk constants, saved stack-pool values, and value/space-match/chunk/rule-match alternatives;
+  native JIT stack-save-pool allocation is non-wrapping and bails out before publishing a choice point when no fresh
+  slot exists; `StoredBranchCoroutine::collect_values` walks remaining branches, branch bindings, and yielded values.
 - R-FL source order keeps push guarded by `set_free_bit`, pop clearing the bit before reuse/discard, and released
   segments draining listed entries before dropping the segment bitmap.
 - C1 source order keeps reuse current-segment-only, successful bump allocation guarded by the current segment, segment

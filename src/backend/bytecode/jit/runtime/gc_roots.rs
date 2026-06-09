@@ -27,8 +27,10 @@
 //! This invariant holds by construction in the JIT runtime.
 
 use crate::backend::bytecode::jit::types::{
-    JitAlternativeTag, JitChoicePoint, JitContext, JitValue, PAYLOAD_MASK, TAG_ERROR, TAG_PTR,
+    JitAlternativeTag, JitChoicePoint, JitContext, JitValue, MAX_STACK_SAVE_VALUES, PAYLOAD_MASK,
+    STACK_SAVE_POOL_SIZE, TAG_ERROR, TAG_PTR,
 };
+use crate::backend::eval::cesk::{ContinuationAddr, SpineStore};
 use crate::backend::models::{MettaValue, MettaValueInner};
 
 /// Walk `ctx` and append every live `MettaValue` root the JIT runtime is
@@ -73,12 +75,14 @@ pub(crate) unsafe fn collect_jit_roots_into(ctx: &JitContext, out: &mut Vec<Mett
         }
     }
 
-    // F4: choice_points[0..choice_point_count] — alternatives + saved-stack
-    // pool (saved_stack already covered above; pool entries reach via cp.idx)
+    // F4: choice_points[0..choice_point_count] — bridge the native JIT buffer
+    // into ContinuationAddr-backed nodes before walking alternatives. The raw
+    // buffer remains the repr(C) execution ABI; the collector sees the same
+    // live family as a typed CESK continuation-spine view.
     if !ctx.choice_points.is_null() && ctx.choice_point_count > 0 {
-        for i in 0..ctx.choice_point_count {
-            let cp = &*ctx.choice_points.add(i);
-            collect_choice_point_roots_into(cp, out);
+        let bridge = JitChoicePointSpineBridge::from_context(ctx);
+        for cp in bridge.iter() {
+            collect_choice_point_roots_into(ctx, cp, out);
         }
     }
 
@@ -116,6 +120,58 @@ pub(crate) unsafe fn collect_jit_roots_into(ctx: &JitContext, out: &mut Vec<Mett
             let (_state_id, cached_bits) = ctx.state_cache[slot_idx];
             collect_jit_value_into(JitValue::from_raw(cached_bits), out);
         }
+    }
+}
+
+#[derive(Debug)]
+struct JitChoicePointSpineBridge {
+    order: Vec<ContinuationAddr>,
+    store: SpineStore<JitChoicePoint>,
+}
+
+impl JitChoicePointSpineBridge {
+    fn new() -> Self {
+        Self {
+            order: Vec::new(),
+            store: SpineStore::new(),
+        }
+    }
+
+    /// Materialize the live native JIT choice-point prefix as typed
+    /// continuation-spine nodes for root collection.
+    ///
+    /// # Safety
+    /// `ctx.choice_points[0..ctx.choice_point_count]` must be readable for the
+    /// duration of the call.
+    unsafe fn from_context(ctx: &JitContext) -> Self {
+        let mut bridge = Self::new();
+        if ctx.choice_points.is_null() {
+            return bridge;
+        }
+        let live_count = ctx.choice_point_count.min(ctx.choice_point_cap);
+        bridge.order.reserve(live_count);
+        for i in 0..live_count {
+            bridge.push((*ctx.choice_points.add(i)).clone());
+        }
+        bridge
+    }
+
+    fn push(&mut self, choice_point: JitChoicePoint) {
+        let addr = self.store.alloc(choice_point);
+        self.order.push(addr);
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &JitChoicePoint> {
+        self.order.iter().map(|addr| {
+            self.store
+                .get(*addr)
+                .expect("JIT choice-point bridge address missing from spine store")
+        })
+    }
+
+    #[cfg(test)]
+    fn live_node_count_for_tests(&self) -> usize {
+        self.store.len()
     }
 }
 
@@ -174,7 +230,8 @@ pub(crate) unsafe fn collect_jit_value_into(v: JitValue, out: &mut Vec<MettaValu
     // QNAN-clear (Float) values also fall through silently.
 }
 
-/// Walk one `JitChoicePoint`'s alternatives and push slab roots to `out`.
+/// Walk one `JitChoicePoint`'s saved stack pool slice and alternatives, pushing
+/// slab roots to `out`.
 ///
 /// Alternatives use a 4-byte tag enum (`JitAlternativeTag`) plus up to three
 /// payloads. `Value` and `SpaceMatch` carry slab pointers as their primary
@@ -189,8 +246,13 @@ pub(crate) unsafe fn collect_jit_value_into(v: JitValue, out: &mut Vec<MettaValu
 /// values are also reachable through `binding_frames` (F9), so they're
 /// covered by the main walk above.
 #[inline]
-unsafe fn collect_choice_point_roots_into(cp: &JitChoicePoint, out: &mut Vec<MettaValue>) {
+unsafe fn collect_choice_point_roots_into(
+    ctx: &JitContext,
+    cp: &JitChoicePoint,
+    out: &mut Vec<MettaValue>,
+) {
     collect_chunk_ptr_constants(cp.saved_chunk, out);
+    collect_choice_point_saved_stack_pool_roots(ctx, cp, out);
     if cp.alt_count == 0 {
         return;
     }
@@ -219,12 +281,42 @@ unsafe fn collect_choice_point_roots_into(cp: &JitChoicePoint, out: &mut Vec<Met
     }
 }
 
+#[inline]
+unsafe fn collect_choice_point_saved_stack_pool_roots(
+    ctx: &JitContext,
+    cp: &JitChoicePoint,
+    out: &mut Vec<MettaValue>,
+) {
+    if cp.saved_stack_pool_idx < 0 || cp.saved_stack_count == 0 || ctx.stack_save_pool.is_null() {
+        return;
+    }
+
+    let slot_idx = cp.saved_stack_pool_idx as usize;
+    if slot_idx >= STACK_SAVE_POOL_SIZE {
+        return;
+    }
+
+    let start = slot_idx.saturating_mul(MAX_STACK_SAVE_VALUES);
+    if start >= ctx.stack_save_pool_cap {
+        return;
+    }
+
+    let count = cp
+        .saved_stack_count
+        .min(MAX_STACK_SAVE_VALUES)
+        .min(ctx.stack_save_pool_cap - start);
+    for i in 0..count {
+        let raw = (*ctx.stack_save_pool.add(start + i)).0;
+        collect_jit_value_into(JitValue::from_raw(raw), out);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::backend::bytecode::jit::types::{JitAlternative, JitChoicePoint};
+    use crate::backend::bytecode::jit::types::{JitAlternative, JitChoicePoint, JitContext};
     use crate::backend::bytecode::ChunkBuilder;
 
     fn chunk_with_constant(
@@ -234,6 +326,136 @@ mod tests {
         let mut builder = ChunkBuilder::new(name);
         builder.add_constant(value);
         builder.build_arc()
+    }
+
+    #[test]
+    fn test_jit_choice_point_bridge_materializes_live_prefix() {
+        let mut stack = vec![JitValue::unit(); 4];
+        let constants: Vec<MettaValue> = Vec::new();
+        let mut choice_points = vec![JitChoicePoint::default(); 3];
+        let mut results = vec![JitValue::unit(); 2];
+        choice_points[0].saved_ip = 10;
+        choice_points[1].saved_ip = 20;
+        choice_points[2].saved_ip = 30;
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+        ctx.choice_point_count = 2;
+
+        let bridge = unsafe { JitChoicePointSpineBridge::from_context(&ctx) };
+        let saved_ips: Vec<u64> = bridge.iter().map(|cp| cp.saved_ip).collect();
+
+        assert_eq!(bridge.live_node_count_for_tests(), 2);
+        assert_eq!(saved_ips, vec![10, 20]);
+    }
+
+    #[test]
+    fn test_collect_jit_roots_includes_choice_point_stack_save_pool() {
+        use crate::backend::bytecode::jit::runtime::helpers::metta_to_jit;
+
+        let pool_root = MettaValue::SExpr(vec![MettaValue::sym("jit-stack-save-pool-root")]);
+        let mut stack = vec![JitValue::unit(); 4];
+        let constants: Vec<MettaValue> = Vec::new();
+        let mut choice_points = vec![JitChoicePoint::default(); 1];
+        let mut results = vec![JitValue::unit(); 2];
+        let mut stack_save_pool =
+            vec![JitValue::unit(); STACK_SAVE_POOL_SIZE * MAX_STACK_SAVE_VALUES];
+
+        choice_points[0].saved_stack_pool_idx = 1;
+        choice_points[0].saved_stack_count = 1;
+        stack_save_pool[MAX_STACK_SAVE_VALUES] = metta_to_jit(&pool_root);
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+        ctx.choice_point_count = 1;
+        ctx.stack_save_pool = stack_save_pool.as_mut_ptr();
+        ctx.stack_save_pool_cap = stack_save_pool.len();
+
+        let mut roots = Vec::new();
+        unsafe {
+            collect_jit_roots_into(&ctx, &mut roots);
+        }
+
+        assert!(
+            roots.contains(&pool_root),
+            "missing JIT choice-point saved stack pool root"
+        );
+    }
+
+    #[test]
+    fn test_collect_jit_roots_preserves_live_stack_save_pool_slots_after_later_alloc() {
+        use crate::backend::bytecode::jit::runtime::helpers::metta_to_jit;
+
+        let early_root = MettaValue::SExpr(vec![MettaValue::sym("jit-stack-save-pool-early")]);
+        let later_root = MettaValue::SExpr(vec![MettaValue::sym("jit-stack-save-pool-later")]);
+        let mut stack = vec![JitValue::unit(); 4];
+        let constants: Vec<MettaValue> = Vec::new();
+        let mut choice_points = vec![JitChoicePoint::default(); 2];
+        let mut results = vec![JitValue::unit(); 2];
+        let mut stack_save_pool =
+            vec![JitValue::unit(); STACK_SAVE_POOL_SIZE * MAX_STACK_SAVE_VALUES];
+
+        choice_points[0].saved_stack_pool_idx = 0;
+        choice_points[0].saved_stack_count = 1;
+        stack_save_pool[0] = metta_to_jit(&early_root);
+
+        choice_points[1].saved_stack_pool_idx = 1;
+        choice_points[1].saved_stack_count = 1;
+        stack_save_pool[MAX_STACK_SAVE_VALUES] = metta_to_jit(&later_root);
+
+        let mut ctx = unsafe {
+            JitContext::with_nondet(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+                choice_points.as_mut_ptr(),
+                choice_points.len(),
+                results.as_mut_ptr(),
+                results.len(),
+            )
+        };
+        ctx.choice_point_count = 2;
+        ctx.stack_save_pool = stack_save_pool.as_mut_ptr();
+        ctx.stack_save_pool_cap = stack_save_pool.len();
+        ctx.stack_save_pool_next = 2;
+
+        let next_slot = unsafe { ctx.stack_save_pool_alloc(1) };
+        assert_eq!(next_slot, 2, "later allocation must use a fresh slot");
+
+        let mut roots = Vec::new();
+        unsafe {
+            collect_jit_roots_into(&ctx, &mut roots);
+        }
+
+        assert!(
+            roots.contains(&early_root),
+            "earlier live choice-point stack-pool root was overwritten or skipped"
+        );
+        assert!(
+            roots.contains(&later_root),
+            "later live choice-point stack-pool root was skipped"
+        );
     }
 
     #[test]

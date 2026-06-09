@@ -490,7 +490,7 @@ pub unsafe extern "C" fn jit_runtime_fork_native(
             return first_jit.to_bits();
         }
 
-        // Optimization 5.2: Check if stack fits in pool
+        // Optimization 5.2: Check if stack fits in a fresh pool slot.
         let stack_count = ctx_ref.sp;
         if stack_count > MAX_STACK_SAVE_VALUES {
             // Stack too large for pool - fall back to bailout
@@ -498,6 +498,30 @@ pub unsafe extern "C" fn jit_runtime_fork_native(
             ctx_ref.bailout_ip = ip as usize;
             ctx_ref.bailout_reason = JitBailoutReason::Fork;
             return first_jit.to_bits();
+        }
+
+        // A choice point with a non-empty saved stack must own a fresh pool
+        // slot until it is popped. If no fresh slot is available, the native
+        // path bails out before publishing an un-restorable choice point.
+        let mut saved_stack_pool_idx = -1;
+        if stack_count > 0 {
+            if ctx_ref.value_stack.is_null() || !ctx_ref.has_stack_save_pool() {
+                ctx_ref.bailout = true;
+                ctx_ref.bailout_ip = ip as usize;
+                ctx_ref.bailout_reason = JitBailoutReason::Fork;
+                return first_jit.to_bits();
+            }
+
+            let pool_idx = ctx_ref.stack_save_pool_alloc(stack_count);
+            if pool_idx < 0 {
+                ctx_ref.bailout = true;
+                ctx_ref.bailout_ip = ip as usize;
+                ctx_ref.bailout_reason = JitBailoutReason::Fork;
+                return first_jit.to_bits();
+            }
+
+            ctx_ref.stack_save_to_pool(pool_idx as usize, stack_count);
+            saved_stack_pool_idx = pool_idx;
         }
 
         // Create choice point with inline alternatives (no allocation)
@@ -525,18 +549,7 @@ pub unsafe extern "C" fn jit_runtime_fork_native(
             }
         }
 
-        // Optimization 5.2: Use stack save pool (eliminates Box::leak)
-        if stack_count > 0 && !ctx_ref.value_stack.is_null() && ctx_ref.has_stack_save_pool() {
-            let pool_idx = ctx_ref.stack_save_pool_alloc(stack_count);
-            if pool_idx >= 0 {
-                ctx_ref.stack_save_to_pool(pool_idx as usize, stack_count);
-                cp.saved_stack_pool_idx = pool_idx;
-            } else {
-                cp.saved_stack_pool_idx = -1;
-            }
-        } else {
-            cp.saved_stack_pool_idx = -1;
-        }
+        cp.saved_stack_pool_idx = saved_stack_pool_idx;
 
         ctx_ref.choice_point_count += 1;
 

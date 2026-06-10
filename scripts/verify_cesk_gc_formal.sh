@@ -123,6 +123,7 @@ run_rocq "formal/rocq/gc/TrackedVarSideRetention.v"
 # AHEAD of the interning implementation (per formal-method-first); the source-coupling
 # pins binding it to alloc_atom/intern_static land with that implementation.
 run_rocq "formal/rocq/gc/InternedAtomNeverFreed.v"
+run_rocq "formal/rocq/gc/AtomDedupMemoSoundness.v"
 run_rocq "formal/rocq/gc/RegistryIsolation.v"
 run_rocq "formal/rocq/gc/NodeEdgeCompleteness.v"
 run_rocq "formal/rocq/gc/AbstractGCLiveNarrowing.v"

@@ -878,6 +878,39 @@ pub(crate) fn is_inline_singleton_inner_ptr(ptr: *const MettaValueInner) -> bool
         || std::ptr::eq(ptr, &INLINE_FALSE_INNER)
 }
 
+/// Identity hasher for dense `u32` arena-`Addr` keys (and `Addr`, which hashes
+/// its inner `u32`). Arena addresses are a dense, unique id space, so the key
+/// IS a good hash — the default `SipHash` (DoS-resistant, designed for adversarial
+/// string keys) wastes ~10% of `inner_ref_index` on every value access (perf F1:
+/// `hash_one::<&Addr>` 8.6% + `SipHasher::write` 2.1%). This passes the key
+/// through unchanged; dense ids spread across buckets without collision-prone
+/// clustering. `write` keeps a correct byte-fold fallback for any non-`u32` use.
+#[derive(Default)]
+pub(crate) struct AddrIdentityHasher(u64);
+impl std::hash::Hasher for AddrIdentityHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 << 8) | u64::from(b);
+        }
+    }
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.0 = u64::from(i);
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
+}
+/// `BuildHasher` for [`AddrIdentityHasher`] — use on `HashMap`/`HashSet` keyed by
+/// a dense `Addr`/`u32` id.
+pub(crate) type BuildAddrIdentity = std::hash::BuildHasherDefault<AddrIdentityHasher>;
+
 thread_local! {
     /// Index-mode `inner_ref()` materialization cache (CRUX Step 2c): an arena
     /// handle's payload is an `Addr`, not a `*const MettaValueInner`, so a slab
@@ -894,8 +927,8 @@ thread_local! {
     /// never its target), so a laundered `&'static` stays valid until
     /// [`clear_inner_shadow`]. For Inc 2–4 (no live Index sweep) it persists,
     /// bounded by the live heap; Inc 6 clears it on the sweep epoch.
-    static INNER_SHADOW: std::cell::RefCell<std::collections::HashMap<u32, Box<MettaValueInner>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+    static INNER_SHADOW: std::cell::RefCell<std::collections::HashMap<u32, Box<MettaValueInner>, BuildAddrIdentity>> =
+        std::cell::RefCell::new(std::collections::HashMap::default());
 
     /// GC sweep epoch observed by this thread's index-mode materialization cache.
     ///

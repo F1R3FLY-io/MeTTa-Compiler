@@ -229,7 +229,11 @@ pub struct IndexHeap {
     /// identity sites for the Inc-3 A/B differential (R9). Cleared on
     /// [`sweep`](Self::sweep) (Inc 6 wires the live sweep; until then it is a
     /// bounded monotone intern table, like the slab table between safepoints).
-    hash_cons: std::collections::HashMap<u64, MettaValue>,
+    // Keyed on `hash_cons_key` (already a well-distributed u64), so the default
+    // SipHash would re-hash an existing hash — use the identity build-hasher
+    // (perf F1: the index access/alloc path spent ~10% in SipHash on handle keys).
+    hash_cons:
+        std::collections::HashMap<u64, MettaValue, crate::backend::hash_utils::IdentityU64BuildHasher>,
 }
 
 impl Default for IndexHeap {
@@ -268,7 +272,9 @@ impl IndexHeap {
             pending_side_reclaims: Vec::new(),
             space_table: Vec::new(),
             memo_table: Vec::new(),
-            hash_cons: std::collections::HashMap::new(),
+            hash_cons: std::collections::HashMap::with_hasher(
+                crate::backend::hash_utils::IdentityU64BuildHasher,
+            ),
         };
         // Materialize the side arena for every segment the arena has already opened
         // (its constructor opens segment 0). `&self` even during construction —

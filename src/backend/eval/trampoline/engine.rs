@@ -1487,6 +1487,8 @@ pub fn try_deferred_deterministic_chain(
     env: &Environment,
     factory: &ActiveFactory,
 ) -> Option<DeferredChainResult> {
+    const MAX_CHAIN_LENGTH: usize = 512;
+
     // Template must be an S-expr with a resolvable head
     let items = template.as_sexpr()?;
     if items.is_empty() {
@@ -1525,22 +1527,109 @@ pub fn try_deferred_deterministic_chain(
         return None;
     }
 
-    // First step: materialize and match
+    // First step: materialize and freshen-match under a fresh epoch.
     let materialized = apply_bindings(template, bindings, factory);
-    let (rhs_template, _match_bindings) = try_deterministic_match(&materialized, head, arity, env)?;
+    let (rhs_template, match_bindings) =
+        try_deterministic_match_freshened(&materialized, head, arity, env, factory)?;
 
-    // Finding 2 / formal/rocq/gc/AtomDedupMemoSoundness.v `InlineFreshening`
-    // (`inline_sound_under_ground_gate`): the former free-variable deferral here
-    // composed match bindings across chain steps WITHOUT the per-match FRESHENING
-    // the trampoline performs. The proof shows an inline step equals dispatch ONLY
-    // when the result is GROUND; with free variables the composed RAW rule-variable
-    // names capture across steps where dispatch's per-match-fresh names would not.
-    // Atom interning made the operator cache hit (content-stable head pointer),
-    // firing this path far more often and exposing that latent divergence. So when
-    // free variables remain, bail to the trampoline (which freshens) — restoring
-    // hit ≡ miss for this consumer. (Ground RHSs continue inline below.)
+    // Finding 2 REPAIR / formal/rocq/gc/AtomDedupMemoSoundness.v `FreshenedDeferral`:
+    // the free-variable deferral is RESTORED (b8ef180b removed it as the unsound
+    // path). The former bug: `try_deterministic_match` returned the RAW rule RHS +
+    // RAW match bindings, so the deferred `(template, bindings)` pair carried RAW
+    // rule-LHS names ($x) that could capture against the consumer's carrying
+    // context (and a sibling nondet branch's same-named rule vars). Atom interning
+    // made the operator cache hit far more often (content-stable head pointer),
+    // firing this path and exposing that latent divergence.
+    //
+    // The repair: `try_deterministic_match_freshened` applies the SAME per-match
+    // freshening the trampoline (`match_rules_native`, rule_management.rs:4137)
+    // performs — one FRESH epoch per step. Each loop step RE-MATERIALIZES (the
+    // `apply_bindings` below) the prior step's freshened bindings INTO the expr
+    // before the next match, so bindings never compose across steps in RAW form;
+    // only the FINAL freshened (template, bindings) is handed to the consumer,
+    // whose composition with the carrying context is then a disjoint union
+    // (distinct epoch ⇒ no capture). Proof: `freshened_step_eq_dispatch` (step ≡
+    // dispatch by construction), `freshened_chain2_eq_dispatch` (distinct epochs ⇒
+    // disjoint ⇒ no cross-step capture), `epoch_reuse_breaks_disjointness`.
     if rhs_template.has_variables_fast() {
-        return None;
+        // Chain subsequent steps, re-materializing then freshen-matching each.
+        let mut current_template = rhs_template;
+        let mut current_bindings = match_bindings;
+
+        for _ in 1..MAX_CHAIN_LENGTH {
+            // Current template must be an S-expr with a chainable head.
+            let next_items = current_template.as_sexpr()?;
+            if next_items.is_empty() {
+                break;
+            }
+
+            // Resolve the head through the current (freshened) bindings.
+            let next_head_item = &next_items[0];
+            let next_head = if let Some(var) = next_head_item.as_atom() {
+                if var.starts_with('$') {
+                    match current_bindings.get(var).and_then(|v| v.as_atom()) {
+                        Some(h) => h,
+                        None => break,
+                    }
+                } else {
+                    var
+                }
+            } else {
+                break;
+            };
+
+            if next_head.starts_with('$') {
+                break;
+            }
+            if is_reducible_head(next_head) {
+                break;
+            }
+
+            let next_arity = next_items.len() - 1;
+            let next_cache = match operator_cache_get(next_head, next_arity) {
+                // Phase 1 cut-barrier: stop the inline chain at a cut-carrying
+                // head so the trampoline handles its barrier (see sibling guard).
+                Some(c)
+                    if c.all_structural
+                        && c.candidate_count == 1
+                        && !c.any_rule_body_contains_cut =>
+                {
+                    c
+                }
+                _ => break,
+            };
+            let _ = next_cache;
+
+            // Re-materialize the current template with the current (freshened)
+            // bindings, then freshen-match under a NEW epoch. Re-materialization
+            // bakes the prior step's bindings into the expr, so the next match's
+            // freshened bindings stand alone (no RAW cross-step composition).
+            let next_materialized = apply_bindings(&current_template, &current_bindings, factory);
+            match try_deterministic_match_freshened(
+                &next_materialized,
+                next_head,
+                next_arity,
+                env,
+                factory,
+            ) {
+                Some((next_rhs, next_match_bindings)) => {
+                    if next_rhs.has_variables_fast() {
+                        current_template = next_rhs;
+                        current_bindings = next_match_bindings;
+                    } else if is_normal_form_bounded(&next_rhs, env, 2) {
+                        return Some(DeferredChainResult::Done(next_rhs));
+                    } else {
+                        return Some(DeferredChainResult::Concrete(next_rhs));
+                    }
+                }
+                None => break,
+            }
+        }
+
+        return Some(DeferredChainResult::Deferred {
+            template: current_template,
+            bindings: current_bindings,
+        });
     }
 
     // Ground RHS — check if we can chain further
@@ -1555,18 +1644,43 @@ pub fn try_deferred_deterministic_chain(
     }
 }
 
-/// Execute a single deterministic match step, returning the RHS template and bindings.
+/// Execute a single deterministic match step *with per-match freshening*,
+/// returning the freshened RHS template and freshened-key bindings for deferred
+/// (not-yet-applied) binding composition.
+///
+/// Observationally equal to ONE `match_rules_native` match step
+/// (`rule_management.rs:4137`), minus the immediate `apply_bindings`: it
+/// allocates ONE fresh epoch and freshens the match bindings' rule-LHS keys
+/// (`$x → $__fr_E_x`) and the RHS template (`freshen_variables_with_epoch`) under
+/// that SAME epoch. The fresh-per-step epoch is what prevents cross-step variable
+/// capture once these flow to the consumer (formal/rocq/gc/AtomDedupMemoSoundness.v
+/// `FreshenedDeferral`: `freshened_step_eq_dispatch`,
+/// `freshened_chain2_eq_dispatch`, `epoch_reuse_breaks_disjointness`).
+///
+/// Scope-tagging (`retag_rule_keys_at_scope` / `apply_bindings_with_rename_scoped`)
+/// is intentionally omitted: per `rule_management.rs:4113-4129`,
+/// `freshen_bindings_keys_with_epoch` is the PRIMARY disambiguator that makes
+/// rule-side and caller-side names textually distinct; scope-tagging is an
+/// additional "robust" layer. With a globally-unique epoch per step, rule vars are
+/// already textually separated from every caller var (free or bound) and from
+/// every other step, so epoch-renaming alone achieves full namespace disjointness
+/// in this deterministic-inline path.
 ///
 /// Unlike `try_deterministic_step` which applies bindings immediately, this
-/// returns the raw (rhs_template, match_bindings) for deferred binding composition.
+/// returns the (freshened rhs_template, freshened match_bindings) so the caller
+/// can defer materialization.
 #[inline]
-fn try_deterministic_match(
+fn try_deterministic_match_freshened(
     expr: &MettaValue,
     head: &str,
     arity: usize,
     env: &Environment,
+    factory: &ActiveFactory,
 ) -> Option<(MettaValue, Bindings)> {
     use crate::backend::environment::rule_management::get_first_arg_head;
+    use crate::backend::eval::freshening::{
+        allocate_epoch, freshen_bindings_keys_with_epoch, freshen_variables_with_epoch,
+    };
 
     let first_arg_head = get_first_arg_head(expr);
     let rule_index = env.shared.rule_index.read();
@@ -1578,9 +1692,24 @@ fn try_deterministic_match(
     }
 
     let matcher = entry.structural_matcher.as_ref()?;
-    let bindings = matcher.try_match(expr)?;
+    let match_bindings = matcher.try_match(expr)?;
 
-    Some((entry.rhs, bindings))
+    // PER-MATCH FRESHENING — ONE fresh epoch per step, exactly like dispatch
+    // (`match_rules_native`). `allocate_epoch` mints a globally-unique token from
+    // `FRESHEN_COUNTER`, so the same rule fired at two chain positions gets two
+    // epochs (`$__fr_E1_x` vs `$__fr_E2_x`) — the `epoch_injective` premise the
+    // `FreshenedDeferral` proof relies on. Do NOT hoist this out of the per-step
+    // call: epoch reuse re-introduces the capture bug
+    // (`epoch_reuse_breaks_disjointness`).
+    let epoch = allocate_epoch();
+    let fresh_bindings = freshen_bindings_keys_with_epoch(match_bindings, epoch, &entry.var_names);
+    let fresh_rhs = if entry.rhs_has_variables {
+        freshen_variables_with_epoch(&entry.rhs, epoch, factory)
+    } else {
+        entry.rhs
+    };
+
+    Some((fresh_rhs, fresh_bindings))
 }
 
 // ============================================================================

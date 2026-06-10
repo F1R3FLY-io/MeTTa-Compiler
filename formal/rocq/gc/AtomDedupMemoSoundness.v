@@ -308,8 +308,13 @@ Section FreshenedDeferral.
 
   (* (H3) DISJOINT-NAMESPACE COMPOSE IS SEQUENTIAL APPLY: composing two binding
      sets whose keys are in DISTINCT epoch namespaces never conflicts and applying
-     the composite agrees with sequential application [the per-step
-     compose_outer_inner_strict_generic, sound because epochs are injective]. *)
+     the composite agrees with sequential application; sound because epochs are
+     injective. In the implementation the per-step bindings are accumulated by
+     RE-MATERIALIZATION (engine.rs `try_deferred_deterministic_chain` applies each
+     step's freshened bindings into the expr before the next match), and only the
+     FINAL deferred bindings are combined with the caller's carrying context by
+     `compose_outer_inner_strict_generic` at the EvalWithBindings hand-off — that
+     final combine is the `compose` abstracted here. *)
   Hypothesis compose_disjoint_is_seq :
     forall (bi bo : Binds) (ei eo : Epoch) (t : Term),
       ei <> eo ->

@@ -1343,18 +1343,28 @@ line_no "src/backend/eval/cesk/continuation_slice.rs" "pub kont: Vec<SlotRef>," 
 assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "pub fn capture_slice(" "let control_refs: Vec<SlotRef> = control.iter().map(|v| SlotRef::from_value(*v)).collect();" "let env_local_refs: Vec<SlotRef> = env_local.iter().map(|v| SlotRef::from_value(*v)).collect();"
 assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "pub fn capture_slice(" "let env_local_refs: Vec<SlotRef> = env_local.iter().map(|v| SlotRef::from_value(*v)).collect();" "let kont_refs: Vec<SlotRef> = kont.iter().map(|v| SlotRef::from_value(*v)).collect();"
 assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "fn from_value(v: MettaValue) -> Self" "v.as_arena_addr()" "flags: (v.addr_flags() & 0xF) as u8,"
-# The SuspendedEval bridge extracts the three seeds via the SAME GC root readers
-# (seed completeness == GC root completeness): work_stack→collect_values (control),
-# active-frame env-local→collect_env_local_roots (E_local), continuations→
-# collect_values (kont).
-# NOTE: these three `to_slice` pins are RE-ENABLED in the rholang ship/resume
-# increment (which lands SuspendedEval::to_slice/from_restored + the
-# run_state_async_resumable/resume_shipped wrapper with a faithful, gate-tested
-# continuation restore). The E4 CORE commit ships only the validated slice API
-# (capture_slice/restore_slice/checkpoint), so the bridge is not yet present.
-# assert_after_before "src/backend/eval/cesk/reductions.rs" "pub fn to_slice(&self)" "w.collect_values(&mut control);" "active.collect_env_local_roots(&mut env_local);"
-# assert_after_before "src/backend/eval/cesk/reductions.rs" "pub fn to_slice(&self)" "active.collect_env_local_roots(&mut env_local);" "k.collect_values(&mut kont);"
-# assert_after_before "src/backend/eval/cesk/reductions.rs" "pub fn to_slice(&self)" "k.collect_values(&mut kont);" "super::continuation_slice::capture_slice("
+# ── E4 rholang ship/resume wrapper (directive-granularity ship; FAITHFUL) ──────
+# The integration boundary is the DIRECTIVE, not a mid-reduction snapshot (a
+# mid-reduction trampoline state is NOT faithfully serializable — not every frame is
+# σ-reified). run_state_async_resumable ships a PENDING DIRECTIVE's σ-closure via
+# capture_slice (control=[expr], env_local=[], kont=[] — no mid-reduction state) and
+# returns Suspended; resume_shipped restores it and EVALUATES it against `into`'s env
+# (resume == evaluate; the env is NOT serialized). Uses ONLY the validated core
+# (capture_slice / restore_from_bytes) + the production eval path. The rholang runtime
+# is not empirically runnable here, so this path is verified by compile-check
+# (`cargo check --features index-gc,rholang`, scripts/e4_rholang_resume_gate.sh) +
+# these structural source-coupling pins — NOT a behavioral test.
+# (R1) RunOutcome carries a serialized slice (not a SuspendedEval).
+line_no "src/rholang_integration.rs" "Suspended(crate::backend::eval::cesk::SerializedContinuationSlice)," >/dev/null
+line_no "src/rholang_integration.rs" "Completed(MettaState)," >/dev/null
+# (R2) run_state_async_resumable ships the CLEAN directive expr's closure via
+# capture_slice with EMPTY env_local/kont (no mid-reduction state) and returns Suspended.
+assert_after_before "src/rholang_integration.rs" "pub async fn run_state_async_resumable(" "let slice = capture_slice(&[expr], &[], &[], 0, 0);" "return Ok(RunOutcome::Suspended(slice));"
+# (R3) rule-defs / ground-facts run to completion threading env (NOT shipped).
+assert_after_before "src/rholang_integration.rs" "pub async fn run_state_async_resumable(" "let (_results, new_env, ..) = eval(expr, env, compiled_state);" "env = new_env;"
+# (R4) resume_shipped = restore_from_bytes → eval the restored directive → drain output.
+assert_after_before "src/rholang_integration.rs" "pub async fn resume_shipped(" "let restored = restore_from_bytes(buf).map_err(|e| e.to_string())?;" "let (results, _new_env, ..) = eval(directive, into.environment.clone(), into);"
+assert_after_before "src/rholang_integration.rs" "pub async fn resume_shipped(" "let (results, _new_env, ..) = eval(directive, into.environment.clone(), into);" "output.push(result);"
 
 # (2) Closure completeness — `capture_slice` drives `reachable_closure`, and
 # `reachable_closure` visits children through `child_addrs_for_mark` (the

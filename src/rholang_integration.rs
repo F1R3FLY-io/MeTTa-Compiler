@@ -478,6 +478,119 @@ pub async fn run_state_async(
     Ok(result_state)
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// E4: resumable continuation shipping (additive; index-store only)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Outcome of a resumable evaluation step:
+/// [`run_state_async_resumable`] returns `Suspended` (carrying a serialized
+/// continuation slice) when the trampoline yields, and `Completed` (carrying the
+/// finished state) otherwise. A `Suspended` slice is self-rooting (it owns copied
+/// `Node` bytes), so it needs no `SafepointRootHandle` across the ship boundary.
+#[cfg(all(feature = "async", feature = "index-gc"))]
+#[derive(Debug)]
+pub enum RunOutcome {
+    /// Evaluation finished without yielding; the result state is attached.
+    Completed(MettaState),
+    /// The trampoline yielded; a serialized, shippable continuation slice is
+    /// attached (restore + resume via [`resume_shipped`]).
+    Suspended(crate::backend::eval::cesk::SerializedContinuationSlice),
+}
+
+/// Resumable twin of [`run_state_async`] at DIRECTIVE granularity: evaluate
+/// `compiled_state`'s side-effecting directives (rule defs / ground facts) into the
+/// environment, and SHIP the first eval (`!`) directive as a serialized continuation
+/// slice instead of evaluating it inline — returning [`RunOutcome::Suspended`]. When
+/// there is no eval directive, behaves like [`run_state_async`] and returns
+/// [`RunOutcome::Completed`].
+///
+/// This is the "ship a pending computation" entry. The shipped unit is a CLEAN
+/// pending directive expression, NOT a mid-reduction machine (a mid-reduction
+/// trampoline state is not faithfully serializable — not every frame is σ-reified).
+/// Because every heap handle's payload is a `u32` arena
+/// [`Addr`](crate::backend::eval::cesk::index_arena::Addr),
+/// [`capture_slice`](crate::backend::eval::cesk::continuation_slice::capture_slice)
+/// closes over `σ|_Reachable(expr)` (the proof's `Hclosed`) by reusing the
+/// collector's edge relation, so the slice is serializable BY CONSTRUCTION. The
+/// environment (the program rules) is NOT serialized — the resume side supplies it
+/// via [`resume_shipped`]'s `into`. Contract: one slice = one shipped directive
+/// (directives after the shipped one are evaluated by a subsequent run over the
+/// remaining source).
+#[cfg(all(feature = "async", feature = "index-gc"))]
+pub async fn run_state_async_resumable(
+    accumulated_state: MettaState,
+    compiled_state: &MettaState,
+) -> Result<RunOutcome, String> {
+    use crate::backend::eval::cesk::continuation_slice::capture_slice;
+
+    let mut env = accumulated_state.environment;
+    let result_state = MettaState::new_empty(); // GC-rooted immediately
+
+    // Deadlock-safe snapshot (no source() guard held across eval).
+    let source_exprs: Vec<MettaValue> = compiled_state.source_snapshot();
+    for &expr in &source_exprs {
+        let is_eval_expr = is_eval_expression(&expr);
+        let is_rule_def = matches!(expr.view(), ValueView::SExpr(items)
+            if !items.is_empty() && matches!(items[0].view(), ValueView::Atom("=")));
+        let is_ground_fact = expr.is_sexpr() && !is_rule_def && !is_eval_expr;
+
+        if is_rule_def || is_ground_fact {
+            // Side-effecting directive: run to completion, threading the env so the
+            // shipped directive's rules are already in place.
+            let (_results, new_env, ..) = eval(expr, env, compiled_state);
+            env = new_env;
+            continue;
+        }
+
+        // EVAL directive — SHIP POLICY: ship the FIRST one. Capture the CLEAN
+        // directive expression's σ-closure (control = [expr]; env_local = []; kont =
+        // []; no mid-reduction state). The resume side re-evaluates it against its
+        // own environment, so the env is deliberately not serialized.
+        let slice = capture_slice(&[expr], &[], &[], 0, 0);
+        return Ok(RunOutcome::Suspended(slice));
+    }
+
+    // No eval directive shipped: return the finished (env-threaded) state.
+    let mut result_state = result_state;
+    result_state.environment = env;
+    Ok(RunOutcome::Completed(result_state))
+}
+
+/// Restore a shipped continuation checkpoint and RESUME it by evaluating the shipped
+/// directive against `into`'s environment, draining the results into `into.output`.
+///
+/// `buf` is a postcard checkpoint (from
+/// [`checkpoint`](crate::backend::eval::cesk::checkpoint)) of a
+/// [`RunOutcome::Suspended`] slice.
+/// [`restore_from_bytes`](crate::backend::eval::cesk::restore_from_bytes) re-interns
+/// the slice's store closure into FRESH Addrs (never reusing source Addrs), so
+/// `restored.control[0]` is the shipped directive over fresh, non-freed σ slots (the
+/// `restored_future_touch_not_freed` safety obligation). Resume == evaluate the
+/// directive: the program rules are supplied by `into` (the env is NOT serialized).
+#[cfg(all(feature = "async", feature = "index-gc"))]
+pub async fn resume_shipped(buf: &[u8], into: &MettaState) -> Result<(), String> {
+    use crate::backend::eval::cesk::restore_from_bytes;
+
+    let restored = restore_from_bytes(buf).map_err(|e| e.to_string())?;
+    if restored.control.is_empty() {
+        return Err("resume_shipped: restored slice has no control root".to_string());
+    }
+    // The shipped directive, re-interned over fresh σ slots.
+    let directive = restored.control[0];
+
+    // RESUME == EVALUATE the shipped directive against `into`'s environment (which
+    // holds the same program rules). `eval` handles the `(! ...)` head internally and
+    // runs its own EvalGuard / GC lifecycle.
+    let (results, _new_env, ..) = eval(directive, into.environment.clone(), into);
+    {
+        let mut output = into.output_mut();
+        for &result in &results {
+            output.push(result);
+        }
+    }
+    Ok(())
+}
+
 /// E1-c (F1, design §1.1): one batch expression's gathered outcome. Carries the
 /// original index, the complete result value set, the output flag, and — ONLY in the
 /// index-gc build — the persistent [`SafepointRootHandle`] that keeps every result

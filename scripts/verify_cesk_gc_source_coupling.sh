@@ -1323,4 +1323,71 @@ assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline 
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline loop" "Continuation::persist_trampoline_fanout_spines_from(&mut continuations, spine_persisted_len);" "spine_persisted_len = continuations.len();"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "WorkItem::Resume { result } =>" "continuations.pop().expect" "spine_persisted_len = spine_persisted_len.min(continuations.len());"
 
+# ── E4 serializable continuations (formal/rocq/gc/SerializableContinuationSlice.v
+# + tla/SerializableContinuationSlice.tla + the 3 TLC discriminators) ──────────
+#
+# The captured slice IS σ|_Reachable(⟨C, E_local, a_k⟩): the closure walk REUSES
+# the collector's exact edge relation (it does NOT roll its own), so the
+# serialized Addr set == the set `mark` keeps live == `Reach(Seed)` in the proof
+# (its `Hclosed` premise satisfied BY CONSTRUCTION). Restore re-interns to FRESH
+# Addrs (never reuses source Addrs — `ConcurrentBumpFreshOnly`) and rejects a
+# slice without C/E/K closure (the #254 "reject without closure" gate), which is
+# the runtime image of the two negative TLC configs.
+
+# (1) Seed set — `capture_slice` folds all THREE seed lists (control/env_local/
+# kont) through `SlotRef::from_value` (which goes through `as_arena_addr`), pinning
+# the proof's `SerializedSeed = ControlRoot ∨ EnvRoot ∨ KontRoot`.
+line_no "src/backend/eval/cesk/continuation_slice.rs" "pub control: Vec<SlotRef>," >/dev/null
+line_no "src/backend/eval/cesk/continuation_slice.rs" "pub env_local: Vec<SlotRef>," >/dev/null
+line_no "src/backend/eval/cesk/continuation_slice.rs" "pub kont: Vec<SlotRef>," >/dev/null
+assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "pub fn capture_slice(" "let control_refs: Vec<SlotRef> = control.iter().map(|v| SlotRef::from_value(*v)).collect();" "let env_local_refs: Vec<SlotRef> = env_local.iter().map(|v| SlotRef::from_value(*v)).collect();"
+assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "pub fn capture_slice(" "let env_local_refs: Vec<SlotRef> = env_local.iter().map(|v| SlotRef::from_value(*v)).collect();" "let kont_refs: Vec<SlotRef> = kont.iter().map(|v| SlotRef::from_value(*v)).collect();"
+assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "fn from_value(v: MettaValue) -> Self" "v.as_arena_addr()" "flags: (v.addr_flags() & 0xF) as u8,"
+# The SuspendedEval bridge extracts the three seeds via the SAME GC root readers
+# (seed completeness == GC root completeness): work_stack→collect_values (control),
+# active-frame env-local→collect_env_local_roots (E_local), continuations→
+# collect_values (kont).
+# NOTE: these three `to_slice` pins are RE-ENABLED in the rholang ship/resume
+# increment (which lands SuspendedEval::to_slice/from_restored + the
+# run_state_async_resumable/resume_shipped wrapper with a faithful, gate-tested
+# continuation restore). The E4 CORE commit ships only the validated slice API
+# (capture_slice/restore_slice/checkpoint), so the bridge is not yet present.
+# assert_after_before "src/backend/eval/cesk/reductions.rs" "pub fn to_slice(&self)" "w.collect_values(&mut control);" "active.collect_env_local_roots(&mut env_local);"
+# assert_after_before "src/backend/eval/cesk/reductions.rs" "pub fn to_slice(&self)" "active.collect_env_local_roots(&mut env_local);" "k.collect_values(&mut kont);"
+# assert_after_before "src/backend/eval/cesk/reductions.rs" "pub fn to_slice(&self)" "k.collect_values(&mut kont);" "super::continuation_slice::capture_slice("
+
+# (2) Closure completeness — `capture_slice` drives `reachable_closure`, and
+# `reachable_closure` visits children through `child_addrs_for_mark` (the
+# collector's EXACT edge function), so slice == σ|_Reachable.
+assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "pub fn capture_slice(" "let closure: Vec<Addr> = heap.reachable_closure(&seeds);" "heap.emit_node(addr, &mut children, &mut bytes, &mut spans)"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn reachable_closure(&self, roots: &[Addr]) -> Vec<Addr>" "self.child_addrs_for_mark(addr, &mut frontier);" "for &k in &frontier {"
+# `mark` (the collector's transitive mark) uses the SAME edge function — the twin
+# relationship `reachable_closure` mirrors.
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn mark(&self, roots: &[Addr]) -> usize" "arena.mark_from_roots_with(roots, |addr, out| self.child_addrs_for_mark(addr, out))" "}"
+
+# (3) Reject-without-closure — `restore_slice` returns BOTH discriminator
+# variants: MissingKontRoot (D-KONT == _missing_kont.cfg) and
+# MissingReachableChild (D-CHILD == _missing_child.cfg).
+assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "pub fn restore_slice(" "return Err(SliceError::MissingKontRoot);" "return Err(SliceError::MissingReachableChild { old_raw: raw });"
+assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "pub fn restore_slice(" "if slice.kont_nonempty && slice.kont.is_empty() {" "return Err(SliceError::MissingKontRoot);"
+line_no "src/backend/eval/cesk/continuation_slice.rs" "MissingKontRoot," >/dev/null
+line_no "src/backend/eval/cesk/continuation_slice.rs" "MissingReachableChild { old_raw: u32 }," >/dev/null
+# Restore re-interns to FRESH Addrs via alloc_* (never reuses source Addrs).
+assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "fn intern_node(" "heap.alloc_sexpr(&kids)" "heap.alloc_conjunction(&kids)"
+
+# (4) Proof + theorem names — the Rocq run is wired into the harness and the
+# theorems it proves are pinned so they cannot silently change.
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/SerializableContinuationSlice.v\"" >/dev/null
+line_no "formal/rocq/gc/SerializableContinuationSlice.v" "reachable_store_in_serialized_slice" >/dev/null
+line_no "formal/rocq/gc/SerializableContinuationSlice.v" "restored_future_touch_is_in_slice" >/dev/null
+line_no "formal/rocq/gc/SerializableContinuationSlice.v" "restored_future_touch_not_freed" >/dev/null
+line_no "formal/rocq/gc/SerializableContinuationSlice.v" "SerializedSeed" >/dev/null
+
+# (5) TLA discriminators — the positive run plus the two negatives (missing child
+# == Hclosed failing; missing kont == a missing seed) are pinned so they cannot be
+# dropped from the harness.
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"serializable_continuation_slice_all\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"serializable_continuation_slice_missing_child\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"serializable_continuation_slice_missing_kont\"" >/dev/null
+
 echo "CESK GC source-coupling checks passed"

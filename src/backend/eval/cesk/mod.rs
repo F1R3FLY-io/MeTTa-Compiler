@@ -40,6 +40,11 @@ pub mod binding_arena;
 pub mod branch_analysis;
 pub mod continuation_compression;
 pub mod continuation_spine;
+/// E4: serializable continuation slices (capture/restore/checkpoint over the
+/// σ-reified suspended CESK state). Index-store only — slab build stays
+/// byte-identical.
+#[cfg(feature = "index-gc")]
+pub mod continuation_slice;
 pub mod coroutine;
 pub mod discrimination_tree;
 pub mod enhanced_matcher;
@@ -67,6 +72,11 @@ pub use adaptive_indexing::with_adaptive_registry;
 pub use binding_arena::{clear_thread_arena, with_thread_arena, BindingArena, ChoicePoint};
 pub use branch_analysis::{analyze_branch_purity, classify_branches, BranchPurity};
 pub use continuation_spine::{ContinuationAddr, SpineStore};
+#[cfg(feature = "index-gc")]
+pub use continuation_slice::{
+    capture_slice, checkpoint, restore_from_bytes, restore_slice, RestoredSuspension,
+    SerializedContinuationSlice, SliceError,
+};
 pub use discrimination_tree::{DiscKey, DiscriminationTree};
 pub use enhanced_matcher::{EnhancedMatcher, MatchPathDyn};
 pub use incremental_gc::{

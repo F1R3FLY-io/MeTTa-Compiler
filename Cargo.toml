@@ -280,7 +280,10 @@ symbol-interning = ["lasso"]
 # and `GC_MODE` inits to index. Default build stays on the slab (byte-identical).
 # A/B differential = build both (default vs --features index-gc) and diff via
 # scripts/ab_gc_diff.sh. The slab becomes `--features legacy-slab-gc` at Inc 7.
-index-gc = []
+# E4 (serializable continuations) checkpoints slices with postcard — already an
+# optional dep (used by `trace`); index-gc pulls it in. The default/slab build
+# does NOT enable index-gc, so it does not pull postcard and stays byte-identical.
+index-gc = ["dep:postcard"]
 
 # Evaluation trace: binary tracing of every rewrite, type check, error,
 # bailout, and tier transition with full source location provenance.

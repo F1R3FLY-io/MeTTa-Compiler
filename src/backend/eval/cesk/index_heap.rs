@@ -969,6 +969,120 @@ impl IndexHeap {
         arena.mark_from_roots_with(roots, |addr, out| self.child_addrs_for_mark(addr, out))
     }
 
+    /// E4 (serializable continuations): the transitive store closure of `roots`,
+    /// as a `Vec<Addr>`, WITHOUT setting any mark bit.
+    ///
+    /// This is the NON-bit-setting twin of [`mark`](Self::mark): it visits
+    /// children through the EXACT SAME [`child_addrs_for_mark`](Self::child_addrs_for_mark)
+    /// edge function the collector uses, so the returned set is precisely
+    /// `σ|_Reachable(roots)` == the set [`mark`] would keep live. Capture
+    /// ([`continuation_slice::capture_slice`](crate::backend::eval::cesk::continuation_slice::capture_slice))
+    /// reuses this so the serialized slice == `Reach(Seed)` in the
+    /// `SerializableContinuationSlice` proof (its `Hclosed` premise) — the slice is
+    /// closed under the collector's edge relation by CONSTRUCTION, not by a
+    /// hand-written walk that could drift from `mark`.
+    ///
+    /// Dedup is a local `HashSet` (mark bits are reserved for the collector and a
+    /// capture must not perturb them — capture runs under a SHARED `.read()` lock).
+    /// Stack-safe explicit worklist; idempotent; order of the returned vector is
+    /// the discovery order (irrelevant — restore topo-sorts via the remap fixpoint).
+    #[cfg(feature = "index-gc")]
+    pub fn reachable_closure(&self, roots: &[Addr]) -> Vec<Addr> {
+        let mut seen: std::collections::HashSet<Addr> =
+            std::collections::HashSet::with_capacity(roots.len().max(16));
+        let mut order: Vec<Addr> = Vec::with_capacity(roots.len().max(16));
+        let mut worklist: Vec<Addr> = Vec::with_capacity(roots.len().max(16));
+        for &r in roots {
+            if seen.insert(r) {
+                order.push(r);
+                worklist.push(r);
+            }
+        }
+        // NOTE: the frontier buffer is named `frontier` (not `kids`) so this line
+        // does not collide with the generic `child_addrs_for_mark(addr, &mut kids)`
+        // marker the `mark_young` source-coupling pin anchors on.
+        let mut frontier: Vec<Addr> = Vec::new();
+        while let Some(addr) = worklist.pop() {
+            frontier.clear();
+            // Reuse the collector's exact edge relation (Error/Type/Quoted/Lazy/
+            // Spanned inline handles + SExpr/Conjunction side-arena children +
+            // value-bearing SpaceHandle contents).
+            self.child_addrs_for_mark(addr, &mut frontier);
+            for &k in &frontier {
+                if seen.insert(k) {
+                    order.push(k);
+                    worklist.push(k);
+                }
+            }
+        }
+        order
+    }
+
+    /// E4: emit the serde mirror [`SerNode`](crate::backend::eval::cesk::continuation_slice::SerNode)
+    /// of the node at `addr`, flattening its variable-length side data into the
+    /// growing dense `children`/`bytes`/`spans` pools and encoding child handles as
+    /// [`SlotRef`](crate::backend::eval::cesk::continuation_slice::SlotRef)s.
+    ///
+    /// Reads the SAME side-arena accessors the collector/`view_at` use
+    /// (`children`/`str_slice`/`span_at`), so an emitted node is a faithful,
+    /// position-independent copy of the live σ node. Lives next to
+    /// `child_addrs_for_mark` so the closure-and-emit pair stays in lockstep with
+    /// the edge relation.
+    #[cfg(feature = "index-gc")]
+    pub fn emit_node(
+        &self,
+        addr: Addr,
+        children: &mut Vec<Vec<crate::backend::eval::cesk::continuation_slice::SlotRef>>,
+        bytes: &mut Vec<String>,
+        spans: &mut Vec<crate::backend::eval::cesk::continuation_slice::SerSpan>,
+    ) -> crate::backend::eval::cesk::continuation_slice::SerNode {
+        use crate::backend::eval::cesk::continuation_slice::{SerNode, SlotRef};
+        match *self.arena.get(addr) {
+            Node::Atom(_) => {
+                let idx = bytes.len() as u32;
+                bytes.push(self.str_slice(addr).to_string());
+                SerNode::Atom { bytes_idx: idx }
+            }
+            Node::String(_) => {
+                let idx = bytes.len() as u32;
+                bytes.push(self.str_slice(addr).to_string());
+                SerNode::String { bytes_idx: idx }
+            }
+            Node::Bool(b) => SerNode::Bool(b),
+            Node::Long(n) => SerNode::Long(n),
+            Node::Float(f) => SerNode::Float(f),
+            Node::Unit => SerNode::Unit,
+            Node::Empty => SerNode::Empty,
+            Node::NotReducible => SerNode::NotReducible,
+            Node::Space(id) => SerNode::Space(id),
+            Node::State(id) => SerNode::State(id),
+            Node::Memo(id) => SerNode::Memo(id),
+            Node::SExpr(_) => {
+                let idx = children.len() as u32;
+                let kids: Vec<SlotRef> =
+                    self.children(addr).iter().map(|c| SlotRef::from_value(*c)).collect();
+                children.push(kids);
+                SerNode::SExpr { children_idx: idx }
+            }
+            Node::Conjunction(_) => {
+                let idx = children.len() as u32;
+                let kids: Vec<SlotRef> =
+                    self.children(addr).iter().map(|c| SlotRef::from_value(*c)).collect();
+                children.push(kids);
+                SerNode::Conjunction { children_idx: idx }
+            }
+            Node::Error(a, b) => SerNode::Error(SlotRef::from_value(a), SlotRef::from_value(b)),
+            Node::Type(a) => SerNode::Type(SlotRef::from_value(a)),
+            Node::Quoted(a) => SerNode::Quoted(SlotRef::from_value(a)),
+            Node::Lazy(a) => SerNode::Lazy(SlotRef::from_value(a)),
+            Node::Spanned(inner, _) => {
+                let span_idx = spans.len() as u32;
+                spans.push(self.span_at(addr).into());
+                SerNode::Spanned(SlotRef::from_value(inner), span_idx)
+            }
+        }
+    }
+
     /// E2 SATB final-remark mark.
     ///
     /// Allocate-black can leave final-rendezvous roots already marked before the

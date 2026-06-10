@@ -550,6 +550,18 @@ impl MettaValue {
         ))
     }
 
+    /// The 4 handle flag bits (`FLAG_HAS_VARIABLES` etc.) carried in `[3:0]` of a
+    /// slab/index heap handle. E4 serializable continuations record these next to a
+    /// heap handle's old raw `Addr` so [`from_addr`](Self::from_addr)`(new, flags)`
+    /// reconstructs the EXACT handle after a fresh re-intern. Only meaningful for a
+    /// non-inline (heap) handle; for an inline scalar the low bits are part of the
+    /// NaN-box payload and the caller carries the scalar by value instead.
+    #[cfg(feature = "index-gc")]
+    #[inline]
+    pub(crate) fn addr_flags(&self) -> usize {
+        self.tagged & 0xF
+    }
+
     /// Construct an index-mode heap handle from an arena `Addr` + 4 flag bits
     /// (`FLAG_HAS_VARIABLES` etc.). Inverse of [`as_arena_addr`](Self::as_arena_addr).
     /// Mode-agnostic bit-packing; only meaningful when the process is in Index mode.

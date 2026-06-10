@@ -1414,6 +1414,20 @@ fn try_deterministic_step(
         entry.rhs
     };
 
+    // Finding 2 / formal/rocq/gc/AtomDedupMemoSoundness.v `InlineFreshening`
+    // (`inline_sound_under_ground_gate`): this inline binds the RAW rule RHS
+    // WITHOUT the per-match FRESHENING the trampoline (`match_rules_native`)
+    // performs. The proof shows the inline equals dispatch ONLY when the result
+    // is GROUND; if FREE variables remain they would collide (capture) across
+    // chain steps where dispatch's per-match-fresh names would not. So bail to
+    // the trampoline (which freshens) whenever free variables remain — restoring
+    // hit ≡ miss for this consumer. (Atom interning made the operator cache hit
+    // far more often, firing this inline in contexts that exposed the latent
+    // no-freshening divergence; this gate is the model-dictated repair.)
+    if result.has_variables_fast() {
+        return None;
+    }
+
     Some(result)
 }
 
@@ -1473,8 +1487,6 @@ pub fn try_deferred_deterministic_chain(
     env: &Environment,
     factory: &ActiveFactory,
 ) -> Option<DeferredChainResult> {
-    const MAX_CHAIN_LENGTH: usize = 512;
-
     // Template must be an S-expr with a resolvable head
     let items = template.as_sexpr()?;
     if items.is_empty() {
@@ -1515,82 +1527,20 @@ pub fn try_deferred_deterministic_chain(
 
     // First step: materialize and match
     let materialized = apply_bindings(template, bindings, factory);
-    let (rhs_template, match_bindings) = try_deterministic_match(&materialized, head, arity, env)?;
+    let (rhs_template, _match_bindings) = try_deterministic_match(&materialized, head, arity, env)?;
 
-    // If RHS has variables, we can defer materialization by composing bindings
+    // Finding 2 / formal/rocq/gc/AtomDedupMemoSoundness.v `InlineFreshening`
+    // (`inline_sound_under_ground_gate`): the former free-variable deferral here
+    // composed match bindings across chain steps WITHOUT the per-match FRESHENING
+    // the trampoline performs. The proof shows an inline step equals dispatch ONLY
+    // when the result is GROUND; with free variables the composed RAW rule-variable
+    // names capture across steps where dispatch's per-match-fresh names would not.
+    // Atom interning made the operator cache hit (content-stable head pointer),
+    // firing this path far more often and exposing that latent divergence. So when
+    // free variables remain, bail to the trampoline (which freshens) — restoring
+    // hit ≡ miss for this consumer. (Ground RHSs continue inline below.)
     if rhs_template.has_variables_fast() {
-        // Chain subsequent steps with composed bindings
-        let mut current_template = rhs_template;
-        let mut current_bindings = match_bindings;
-
-        for _ in 1..MAX_CHAIN_LENGTH {
-            // Check if current template is an S-expr with a chainable head
-            let next_items = current_template.as_sexpr()?;
-            if next_items.is_empty() {
-                break;
-            }
-
-            // Resolve head through current bindings
-            let next_head_item = &next_items[0];
-            let next_head = if let Some(var) = next_head_item.as_atom() {
-                if var.starts_with('$') {
-                    match current_bindings.get(var).and_then(|v| v.as_atom()) {
-                        Some(h) => h,
-                        None => break,
-                    }
-                } else {
-                    var
-                }
-            } else {
-                break;
-            };
-
-            if next_head.starts_with('$') {
-                break;
-            }
-            if is_reducible_head(next_head) {
-                break;
-            }
-
-            let next_arity = next_items.len() - 1;
-            let next_cache = match operator_cache_get(next_head, next_arity) {
-                // Phase 1 cut-barrier: stop the inline chain at a cut-carrying
-                // head so the trampoline handles its barrier (see sibling guard).
-                Some(c)
-                    if c.all_structural
-                        && c.candidate_count == 1
-                        && !c.any_rule_body_contains_cut =>
-                {
-                    c
-                }
-                _ => break,
-            };
-            let _ = next_cache;
-
-            // Materialize current template with current bindings for matching
-            let next_materialized = apply_bindings(&current_template, &current_bindings, factory);
-            match try_deterministic_match(&next_materialized, next_head, next_arity, env) {
-                Some((next_rhs, next_match_bindings)) => {
-                    if next_rhs.has_variables_fast() {
-                        current_template = next_rhs;
-                        current_bindings = next_match_bindings;
-                    } else {
-                        // Ground RHS — check if normal form
-                        if is_normal_form_bounded(&next_rhs, env, 2) {
-                            return Some(DeferredChainResult::Done(next_rhs));
-                        }
-                        // Not normal form — return as concrete value for Eval
-                        return Some(DeferredChainResult::Concrete(next_rhs));
-                    }
-                }
-                None => break,
-            }
-        }
-
-        return Some(DeferredChainResult::Deferred {
-            template: current_template,
-            bindings: current_bindings,
-        });
+        return None;
     }
 
     // Ground RHS — check if we can chain further

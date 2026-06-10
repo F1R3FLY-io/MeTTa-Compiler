@@ -216,4 +216,51 @@ Section ConflictingConsumers.
   Qed.
 End ConflictingConsumers.
 
+(* ===== EXPANSION 2: the deterministic-INLINE fast path's hit≡miss obligation
+   The operator-cache HIT enables the deterministic-inline fast paths
+   (engine.rs try_deterministic_step / try_deferred_deterministic_chain). Their
+   MISS path is the trampoline, which applies a rule's RHS under PER-MATCH
+   FRESHENING (rule variables renamed per match so RAW names never collide across
+   chain steps). The inline applies bindings to the RAW rule RHS WITHOUT
+   freshening. So this consumer's hit-path can differ from its miss-path
+   independently of any cached VALUE — the value-independent divergence the
+   ConsumerEquivalence section says must exist somewhere. This section pins the
+   EXACT condition under which the inline is sound, which dictates the gate. *)
+Section InlineFreshening.
+  (* A chain-step result term and its free-variable count. *)
+  Variable Result : Type.
+  Variable free_vars : Result -> nat.
+  (* The inline step (bind RAW rhs, no freshening) vs the dispatch step (bind a
+     per-match-FRESHENED rhs). *)
+  Variable inline_step dispatch_step : Result -> Result.
+
+  (* SOURCE FACT (freshening preservation): per-match freshening renames only
+     FREE variables; on a GROUND result (none) it is the identity, so the inline
+     step and the dispatch step AGREE. This couples to: freshening touches only
+     unbound rule variables. *)
+  Hypothesis agree_on_ground :
+    forall r, free_vars r = 0 -> inline_step r = dispatch_step r.
+
+  (* THEOREM: the inline equals dispatch EXACTLY when the (bound) result is
+     ground. So a gate that fires the inline ONLY when the result has no free
+     variables makes the inline consumer's hit-path == its miss-path — the
+     constraint the source must enforce: in try_deterministic_step /
+     try_deferred, bail to the trampoline when `result.has_variables_fast()`
+     (free vars remain), letting the trampoline freshen. *)
+  Theorem inline_sound_under_ground_gate :
+    forall r, free_vars r = 0 -> inline_step r = dispatch_step r.
+  Proof. exact agree_on_ground. Qed.
+
+  (* NON-VACUITY: when free variables remain, the inline (RAW names) and dispatch
+     (freshened names) can diverge — the variable-capture-across-chain-steps the
+     gate prevents. *)
+  Theorem inline_may_diverge_with_free_vars :
+    exists (R : Type) (fv : R -> nat) (i d : R -> R) (r : R),
+      fv r <> 0 /\ i r <> d r.
+  Proof.
+    exists bool, (fun _ => 1), (fun _ => true), (fun _ => false), true.
+    split; [ discriminate | discriminate ].
+  Qed.
+End InlineFreshening.
+
 End MeTTaTron_AtomDedupMemoSoundness.

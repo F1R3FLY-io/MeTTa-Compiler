@@ -3760,41 +3760,40 @@ where
                 });
             }
 
-            // Check if ALL candidates have structural matchers
+            // Check if ALL candidates have structural matchers — over THIS expr's
+            // first_arg_head/disc-tree-FILTERED match set, for the matching fast
+            // path below.
             let all_structural = candidates.iter().all(|e| e.structural_matcher.is_some());
 
-            // PT-canonical rule-body preservation: if any candidate rule's
-            // RHS top-level head is a lazy form (add-atom, quote, if, ...),
-            // the caller's args must NOT be pre-evaluated. See `RuleEntry::
-            // body_wants_lazy_args`.
-            let any_rule_wants_lazy_args = candidates.iter().any(|e| e.body_wants_lazy_args);
-            // PT-canonical meta-typed signature gate (Plan agent Phase B):
-            // ANY candidate with `(-> meta* meta)` signature triggers the
-            // dispatcher's "return verbatim" path.
-            let any_rule_lhs_head_all_meta_typed =
-                candidates.iter().any(|e| e.lhs_head_all_meta_typed);
-
-            // Phase 1 cut-barrier: O(1) precomputed aggregate of the per-rule
-            // `body_contains_cut` flag for this (head, arity). Consumed by the
-            // dispatcher as a fast precheck for whether a cut scope may need to
-            // be opened for calls to this head.
-            let any_rule_body_contains_cut = candidates.iter().any(|e| e.body_contains_cut);
-
-            // Phase E: Populate operator inline cache with metadata about this
-            // (head, arity) — the caller can use this to skip hash_value()
-            // computation on subsequent calls.
+            // Phase E: populate the operator inline cache with per-(head,arity)
+            // metadata. Finding 2 (formal/rocq/gc/AtomDedupMemoSoundness.v —
+            // ConsumerEquivalence/ConflictingConsumers): this entry is read by
+            // consumers whose MISS path computes the UNFILTERED per-(head,arity)
+            // value (the pre-eval gate's miss scans get_candidates(None) via
+            // RuleIndex::any_rule_wants_lazy_args / any_rule_lhs_head_all_meta_typed).
+            // The proof requires the cached value to EQUAL each consumer's
+            // miss-path value, so these flags are computed over the UNFILTERED
+            // candidate set — NOT the FILTERED `candidates` above (this expr's
+            // match set). Caching the FILTERED (expr-specific) metadata under a
+            // (head,arity) key was a residual atom interning exposed (a
+            // content-stable head pointer made the first expr's filtered metadata
+            // stick for every later expr with that head, so a cache HIT differed
+            // from a MISS). Unfiltered counts only make the dispatch fast-path
+            // gates more CONSERVATIVE, never less correct.
             if !head.is_empty() {
+                let meta: SmallVec<[&RuleEntry<V>; 16]> =
+                    rule_index.get_candidates(head, arity, None).collect();
                 let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
                 crate::backend::eval::trampoline::dispatch_hints::operator_cache_put(
                     head,
                     arity,
                     crate::backend::eval::trampoline::dispatch_hints::OperatorCacheEntry {
                         rule_epoch: current_epoch,
-                        all_structural,
-                        candidate_count: candidates.len(),
-                        any_rule_wants_lazy_args,
-                        lhs_head_all_meta_typed: any_rule_lhs_head_all_meta_typed,
-                        any_rule_body_contains_cut,
+                        all_structural: meta.iter().all(|e| e.structural_matcher.is_some()),
+                        candidate_count: meta.len(),
+                        any_rule_wants_lazy_args: meta.iter().any(|e| e.body_wants_lazy_args),
+                        lhs_head_all_meta_typed: meta.iter().any(|e| e.lhs_head_all_meta_typed),
+                        any_rule_body_contains_cut: meta.iter().any(|e| e.body_contains_cut),
                     },
                 );
             }

@@ -27,6 +27,15 @@ the two expected-fail straddle discriminator variants remained ignored.
 The focused TSan gate on 2026-06-08 passed
 `backend::eval::cesk::index_heap::tsan_concurrent_factory::concurrent_read_path_allocations_are_race_free`
 under `RUSTFLAGS="-Zsanitizer=thread -C target-cpu=native"` and `-Zbuild-std`, with no ThreadSanitizer warning.
+The E5 system-level TSan gate (`scripts/e5_satb_tsan.sh`) on 2026-06-10 extended that focused unit check to the
+WHOLE concurrent SATB collector running under load at HEAD `a5996d1f`: a `-Zsanitizer=thread -Zbuild-std`
+`--features index-gc` release binary ran `Robot.metta` and `examples/cesk-gc/stress_alloc.metta` at `FANOUT=8`
+with `MIN_BYTES=131072`. `Robot.metta` reported 89 index cycles (88 rendezvous SATB-major, 1 quiescence) with the
+dedicated GC thread marking under the shared read lock while 8 worker threads allocated through
+`alloc_*_concurrent(&self)` (roots 39426..69181, reclaimed_slots 84208..132372 per cycle), produced the correct
+detection answer, and ThreadSanitizer reported 0 data races and 0 warnings; `stress_alloc.metta` reported the same
+rendezvous path race-free. This is the design-doc E5 TSan target — the read-locked concurrent mark racing the
+concurrent allocator — exercised end-to-end at scale with no race.
 The E1-FLIP V4 ASAN gate on 2026-06-08 passed the default dedicated `index-gc` collector under `FANOUT=8`.
 `Robot.metta` reported 82 index cycles (81 rendezvous, 1 quiescence), `FlyingRaven.metta` reported 72 index cycles
 (70 rendezvous, 2 quiescence), and `examples/cesk-gc/stress_multidir.metta` reported 1142 index cycles

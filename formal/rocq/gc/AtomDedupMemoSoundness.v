@@ -142,4 +142,78 @@ Proof.
   simpl. discriminate.
 Qed.
 
+(* ===== EXPANSION: per-CONSUMER hit≡miss equivalence ======================
+   The value-soundness above ensures op_cache_get returns a value determined by
+   (key,guard). But that is NOT sufficient for system correctness: a cache HIT
+   also ENABLES, at each call site (consumer), a gated FAST PATH that a MISS does
+   not take (e.g. dispatch_hints.rs/engine.rs skip pre-evaluation, or take a
+   deterministic-inline chain, when the cached flags say so). The MISS path is
+   the spec (cache-disabled is observed correct). So EACH consumer must satisfy:
+   whenever its gate fires on the cached value, its hit-path equals its
+   miss-path. This is the obligation atom dedup exposed at the consumers (a
+   content-stable head pointer makes the gate fire far more often). *)
+Section ConsumerEquivalence.
+  Variable Input  : Type.   (* the dispatch input (expr, env, …) *)
+  Variable Obs    : Type.   (* the observable result *)
+  Variable Cached : Type.   (* the cached value f(x) *)
+
+  Variable miss : Input -> Obs.            (* the spec: recompute / full dispatch *)
+  Variable hit  : Cached -> Input -> Obs.  (* the gated fast path on a hit *)
+  Variable gate : Cached -> bool.          (* fast-path gate over the cached value *)
+
+  (* A consumer is SOUND under caching iff, whenever its gate fires on the cached
+     value, its hit-path equals its miss-path — for ALL inputs (the gate may not
+     fire only where they happen to agree on this run). *)
+  Definition consumer_sound (f : Input -> Cached) : Prop :=
+    forall x, gate (f x) = true -> hit (f x) x = miss x.
+
+  (* If sound, a gated cache hit changes no observable result. *)
+  Theorem gated_hit_preserves_obs :
+    forall (f : Input -> Cached) (x : Input),
+      consumer_sound f -> gate (f x) = true -> hit (f x) x = miss x.
+  Proof. intros f x Hs Hg. exact (Hs x Hg). Qed.
+
+  (* NON-VACUITY / the BUG: a gate that fires where hit ≠ miss is unsound — the
+     cache changes the observable result. (This is the regression class: the gate
+     fired more under dedup and the fast path was NOT equivalent there.) *)
+  Theorem gate_firing_where_hit_differs_is_unsound :
+    exists (Cached Input Obs : Type) (miss : Input -> Obs)
+           (hit : Cached -> Input -> Obs) (gate : Cached -> bool)
+           (f : Input -> Cached) (x : Input),
+      gate (f x) = true /\ hit (f x) x <> miss x.
+  Proof.
+    exists bool, unit, bool, (fun _ => true), (fun c _ => c),
+           (fun _ => true), (fun _ => false), tt.
+    split; [ reflexivity | discriminate ].
+  Qed.
+End ConsumerEquivalence.
+
+(* ===== COROLLARY: conflicting consumers cannot share one cached value =====
+   The cache stores ONE value per key, read by MANY consumers. If two consumers
+   are sound only for DIFFERENT cached values (e.g. one needs the UNFILTERED
+   per-(head,arity) flags — the pre-eval gate, whose miss-path scans
+   get_candidates(None); another would need an expr-FILTERED value), then NO
+   single cached value keeps both sound: the value must be the consumers' COMMON
+   requirement, or each consumer must recompute its own. This is the precise
+   constraint that dictates the fix: the cached metadata MUST be exactly what
+   EVERY consumer's miss-path computes (here: the UNFILTERED per-(head,arity)
+   flags), and any consumer needing a different value must NOT read this entry. *)
+Section ConflictingConsumers.
+  Variable Cached : Type.
+  Variables need1 need2 : Cached.            (* the value each consumer requires *)
+  Hypothesis distinct : need1 <> need2.
+  Variable sound_for1 sound_for2 : Cached -> Prop.
+  Hypothesis iff1 : forall c, sound_for1 c <-> c = need1.
+  Hypothesis iff2 : forall c, sound_for2 c <-> c = need2.
+
+  (* No single cached value satisfies both conflicting consumers. *)
+  Theorem no_shared_value_for_conflicting_consumers :
+    ~ exists c, sound_for1 c /\ sound_for2 c.
+  Proof.
+    intros [c [H1 H2]].
+    apply iff1 in H1. apply iff2 in H2.
+    apply distinct. rewrite <- H1. exact H2.
+  Qed.
+End ConflictingConsumers.
+
 End MeTTaTron_AtomDedupMemoSoundness.

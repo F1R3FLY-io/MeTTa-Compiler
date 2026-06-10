@@ -878,39 +878,6 @@ pub(crate) fn is_inline_singleton_inner_ptr(ptr: *const MettaValueInner) -> bool
         || std::ptr::eq(ptr, &INLINE_FALSE_INNER)
 }
 
-/// Identity hasher for dense `u32` arena-`Addr` keys (and `Addr`, which hashes
-/// its inner `u32`). Arena addresses are a dense, unique id space, so the key
-/// IS a good hash — the default `SipHash` (DoS-resistant, designed for adversarial
-/// string keys) wastes ~10% of `inner_ref_index` on every value access (perf F1:
-/// `hash_one::<&Addr>` 8.6% + `SipHasher::write` 2.1%). This passes the key
-/// through unchanged; dense ids spread across buckets without collision-prone
-/// clustering. `write` keeps a correct byte-fold fallback for any non-`u32` use.
-#[derive(Default)]
-pub(crate) struct AddrIdentityHasher(u64);
-impl std::hash::Hasher for AddrIdentityHasher {
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.0
-    }
-    #[inline]
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.0 = (self.0 << 8) | u64::from(b);
-        }
-    }
-    #[inline]
-    fn write_u32(&mut self, i: u32) {
-        self.0 = u64::from(i);
-    }
-    #[inline]
-    fn write_u64(&mut self, i: u64) {
-        self.0 = i;
-    }
-}
-/// `BuildHasher` for [`AddrIdentityHasher`] — use on `HashMap`/`HashSet` keyed by
-/// a dense `Addr`/`u32` id.
-pub(crate) type BuildAddrIdentity = std::hash::BuildHasherDefault<AddrIdentityHasher>;
-
 thread_local! {
     /// Index-mode `inner_ref()` materialization cache (CRUX Step 2c): an arena
     /// handle's payload is an `Addr`, not a `*const MettaValueInner`, so a slab
@@ -923,12 +890,20 @@ thread_local! {
     /// reuses ONE box — bounding the cache by distinct live Addrs and giving a
     /// **stable** materialized pointer per handle (so `from_inner` round-trips and
     /// pointer-identity comparisons behave). The boxes' pointees are
-    /// address-stable across `HashMap` growth (growth moves only the 8-byte `Box`,
-    /// never its target), so a laundered `&'static` stays valid until
-    /// [`clear_inner_shadow`]. For Inc 2–4 (no live Index sweep) it persists,
-    /// bounded by the live heap; Inc 6 clears it on the sweep epoch.
-    static INNER_SHADOW: std::cell::RefCell<std::collections::HashMap<u32, Box<MettaValueInner>, BuildAddrIdentity>> =
-        std::cell::RefCell::new(std::collections::HashMap::default());
+    /// address-stable across `Vec` growth (growth moves only the 8-byte
+    /// `Option<Box>` slots, never the Box targets), so a laundered `&'static`
+    /// stays valid until [`clear_inner_shadow`]. For Inc 2–4 (no live Index
+    /// sweep) it persists, bounded by the live heap; Inc 6 clears it on the sweep
+    /// epoch.
+    ///
+    /// Perf (F1): `Addr.raw()` is a DENSE bump-allocated id, so this is a
+    /// DIRECT-INDEXED `Vec` (index = raw), not a `HashMap` — `inner_ref_index`
+    /// was the single hottest symbol (~33% at FANOUT=0), dominated by the
+    /// per-access cache lookup during root scanning; an O(1) array index removes
+    /// the hash + probe + entry machinery. `resize_with` grows geometrically
+    /// (amortized O(1)); the Vec is bounded by the live heap's distinct Addrs.
+    static INNER_SHADOW: std::cell::RefCell<Vec<Option<Box<MettaValueInner>>>> =
+        std::cell::RefCell::new(Vec::new());
 
     /// GC sweep epoch observed by this thread's index-mode materialization cache.
     ///
@@ -1074,8 +1049,14 @@ impl MettaValue {
         let raw = (self.tagged >> 4) as u32;
         ensure_inner_shadow_epoch_current();
         INNER_SHADOW.with(|c| {
-            let mut m = c.borrow_mut();
-            let boxed = m.entry(raw).or_insert_with(|| {
+            let mut v = c.borrow_mut();
+            let idx = raw as usize;
+            if idx >= v.len() {
+                // `resize_with` reserves geometrically (amortized O(1) growth);
+                // the Vec is bounded by the live heap's distinct Addr count.
+                v.resize_with(idx + 1, || None);
+            }
+            let boxed = v[idx].get_or_insert_with(|| {
                 let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(raw);
                 Box::new(
                     crate::backend::eval::cesk::index_heap::global_index_heap()

@@ -34,7 +34,7 @@ run_rocq() {
     cd "$REPO"
     systemd-run --user --scope \
       -p MemoryMax=4G -p MemorySwapMax=0 -p CPUQuota=200% --quiet \
-      rocq c -q "$file"
+      rocq c -q -Q formal/rocq/gc "" "$file"
   )
 }
 
@@ -131,6 +131,9 @@ run_rocq "formal/rocq/gc/WitnessOkReset.v"
 run_rocq "formal/rocq/gc/GenerationResume.v"
 run_rocq "formal/rocq/gc/RendezvousProgress.v"
 run_rocq "formal/rocq/gc/StartedCycleGate.v"
+# E5: liveness of the SATB double-rendezvous straddle (composes GenerationResume +
+# StartedCycleGate via Require Import; the -Q loadpath above resolves the siblings).
+run_rocq "formal/rocq/gc/PostCycleEvaluatorProgress.v"
 run_rocq "formal/rocq/gc/CollapseCompletion.v"
 run_rocq "formal/rocq/gc/WorkerAdmission.v"
 run_rocq "formal/rocq/gc/ThreadContribution.v"
@@ -505,6 +508,17 @@ run_tlc "rendezvous_progress_no_gen_bump" "MC_RendezvousProgress.tla" "MC_Rendez
 run_tlc "rendezvous_progress_boolean_resume" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_boolean_resume.cfg" \
   fail "Temporal properties were violated"
 run_tlc "rendezvous_progress_no_resume_notify" "MC_RendezvousProgress.tla" "MC_RendezvousProgress_no_resume_notify.cfg" \
+  fail "Temporal properties were violated"
+# E5: SATB DOUBLE-rendezvous straddle liveness (PostCycleEvaluatorProgress). The fix
+# (started-gate + B-closure + reopen-notify) closes every posted cycle; each missing
+# mechanism strands the parent. Safety NoSweepWhileUnpublished holds in ALL 4.
+run_tlc "post_cycle_evaluator_progress_fix" "MC_PostCycleEvaluatorProgress.tla" "MC_PostCycleEvaluatorProgress_fix.cfg" \
+  pass ""
+run_tlc "post_cycle_evaluator_progress_reopen_no_notify" "MC_PostCycleEvaluatorProgress.tla" "MC_PostCycleEvaluatorProgress_reopen_no_notify.cfg" \
+  fail "Temporal properties were violated"
+run_tlc "post_cycle_evaluator_progress_no_bclosure" "MC_PostCycleEvaluatorProgress.tla" "MC_PostCycleEvaluatorProgress_no_bclosure.cfg" \
+  fail "Temporal properties were violated"
+run_tlc "post_cycle_evaluator_progress_gen_gate" "MC_PostCycleEvaluatorProgress.tla" "MC_PostCycleEvaluatorProgress_gen_gate.cfg" \
   fail "Temporal properties were violated"
 run_tlc "witness_ok_reset_clear" "MC_WitnessOkReset.tla" "MC_WitnessOkReset_clear.cfg" \
   pass ""

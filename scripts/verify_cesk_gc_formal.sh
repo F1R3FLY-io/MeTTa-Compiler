@@ -353,6 +353,10 @@ run_tlc "side_reclaim_snapshot_minor_drain" "MC_SideReclaimSnapshot.tla" "MC_Sid
   fail "Invariant NoLiveSideFreed is violated"
 run_tlc "side_reclaim_snapshot_no_marked_owner_filter" "MC_SideReclaimSnapshot.tla" "MC_SideReclaimSnapshot_no_marked_owner_filter.cfg" \
   fail "Invariant NoLiveSideFreed is violated"
+run_tlc "side_reclaim_generation_guard" "MC_SideReclaimGeneration.tla" "MC_SideReclaimGeneration_guard.cfg" \
+  pass ""
+run_tlc "side_reclaim_generation_no_guard" "MC_SideReclaimGeneration.tla" "MC_SideReclaimGeneration_no_guard.cfg" \
+  fail "Invariant NoLiveCellFreed is violated"
 run_tlc "hash_cons_major_safe" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_safe.cfg" \
   pass ""
 run_tlc "hash_cons_major_dead_validated" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_dead_validated.cfg" \

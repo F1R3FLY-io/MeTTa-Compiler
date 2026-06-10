@@ -51,6 +51,17 @@ pub struct ChildRef {
     /// equals the captured one — so a stale snapshot whose `idx` was reused by a
     /// live re-intern (which bumped the cell's generation) never frees the live
     /// payload. See [`SideColumn`](crate::backend::eval::cesk::index_heap).
+    ///
+    /// `u32` (not `u64`) is sufficient and deliberate: a stale snapshot could only
+    /// ALIAS a reused cell after `2^32` reuses of THIS one cell BETWEEN the
+    /// snapshot's capture and its drain — but a snapshot is drained at the very next
+    /// true-quiescence collection (`pending_side_major` forces a major the moment a
+    /// quiescence point is reached with pending reclaims > 0), i.e. within a handful
+    /// of reuses, so the wrap is unreachable by a factor of ~`2^32`. Widening to
+    /// `u64` would grow each `{idx, gen}` ref 8→16 bytes (still under the `Node`
+    /// 32-byte budget) for zero benefit. The injective-generation abstraction is
+    /// proven in `formal/rocq/gc/QuiescentSideIndexReuse.v` (gen_injective) +
+    /// model-checked in `tla/SideReclaimGeneration.tla`.
     pub gen: u32,
 }
 

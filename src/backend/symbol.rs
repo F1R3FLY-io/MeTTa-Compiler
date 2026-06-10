@@ -143,6 +143,18 @@ mod interned {
     pub fn intern_string(s: String) -> Symbol {
         Symbol::from_string(s)
     }
+
+    /// Finding 2: intern `s` into the PERPETUAL interner and return a process-lifetime
+    /// `&'static str`. The borrow is HONESTLY `'static` — the interner is a
+    /// `static OnceLock<ThreadedRodeo>` that outlives the process — so an atom whose
+    /// bytes come from here can never be freed by a GC sweep (it is not in any
+    /// freeable arena side-column). This is the correct-by-construction confinement of
+    /// the laundered-`&'static str` UAF class, proven in
+    /// `formal/rocq/gc/InternedAtomNeverFreed.v`.
+    #[inline]
+    pub fn intern_static(s: &str) -> &'static str {
+        interner().resolve(&interner().get_or_intern(s))
+    }
 }
 
 #[cfg(not(feature = "symbol-interning"))]
@@ -240,14 +252,23 @@ mod string_based {
     pub fn intern_string(s: String) -> Symbol {
         Symbol::from_string(s)
     }
+
+    /// Finding 2 fallback (no interner compiled in): leak a `Box<str>` to obtain an
+    /// honest process-lifetime `&'static str` (no dedup — matches the slab's existing
+    /// leaked-atom semantics). With the default `symbol-interning` feature this path is
+    /// not compiled; the `interned` variant dedups via the perpetual rodeo.
+    #[inline]
+    pub fn intern_static(s: &str) -> &'static str {
+        Box::leak(s.to_string().into_boxed_str())
+    }
 }
 
 // Re-export the appropriate implementation
 #[cfg(feature = "symbol-interning")]
-pub use interned::{intern, intern_string, Symbol};
+pub use interned::{intern, intern_static, intern_string, Symbol};
 
 #[cfg(not(feature = "symbol-interning"))]
-pub use string_based::{intern, intern_string, Symbol};
+pub use string_based::{intern, intern_static, intern_string, Symbol};
 
 #[cfg(test)]
 mod tests {

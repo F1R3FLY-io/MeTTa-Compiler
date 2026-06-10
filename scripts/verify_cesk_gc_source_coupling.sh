@@ -451,7 +451,9 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "} else if stats.segments_released > 0 {" "CAP_FLOOR.store(0, Ordering::Relaxed);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr(&mut self, items: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), items);" "self.arena.write_reused(addr, Node::SExpr(cr));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunction(&mut self, goals: &[MettaValue]) -> Addr" "let cr = self.intern_children_in(addr.segment(), goals);" "self.arena.write_reused(addr, Node::Conjunction(cr));"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom(&mut self, s: &str) -> Addr" "let br = self.intern_bytes_in(addr.segment(), s);" "self.arena.write_reused(addr, Node::Atom(br));"
+# Finding 2: atoms intern into the PERPETUAL interner (symbol::intern_static), NOT
+# the byte side-arena, so the reuse path writes the interned &'static (no intern_bytes_in).
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom(&mut self, s: &str) -> Addr" "crate::backend::symbol::intern_static(s)" "self.arena.write_reused(addr, Node::Atom(interned));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_string(&mut self, s: &str) -> Addr" "let br = self.intern_bytes_in(addr.segment(), s);" "self.arena.write_reused(addr, Node::String(br));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_spanned(&mut self, inner: MettaValue, span: Span) -> Addr" "let sr = self.intern_span_in(addr.segment(), span);" "self.arena.write_reused(addr, Node::Spanned(inner, sr));"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_mark(&self, addr: Addr, out: &mut Vec<Addr>)" "Node::Space(id) =>" "self.space_handle(id).collect_gc_values(&mut values);"
@@ -968,12 +970,12 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed:
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "unsafe fn get(&self, idx: u32) -> Option<&T>" "self.len.load(Ordering::Acquire)" "let chunk = self.chunk(c);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr(&mut self, items: &[MettaValue]) -> Addr" "let cs = self.intern_children_in(seg, items);" "self.arena.try_bump_in(seg, Node::SExpr(cs))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunction(&mut self, goals: &[MettaValue]) -> Addr" "let cs = self.intern_children_in(seg, goals);" "self.arena.try_bump_in(seg, Node::Conjunction(cs))"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom(&mut self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::Atom(bs))"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom(&mut self, s: &str) -> Addr" "crate::backend::symbol::intern_static(s)" "self.arena.try_bump_in(seg, Node::Atom(interned))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_string(&mut self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::String(bs))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_spanned(&mut self, inner: MettaValue, span: Span) -> Addr" "let sr = self.intern_span_in(seg, span);" "self.arena.try_bump_in(seg, Node::Spanned(inner, sr))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr_concurrent(&self, items: &[MettaValue]) -> Addr" "let cs = self.intern_children_in(seg, items);" "self.arena.try_bump_in(seg, Node::SExpr(cs))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_conjunction_concurrent(&self, goals: &[MettaValue]) -> Addr" "let cs = self.intern_children_in(seg, goals);" "self.arena.try_bump_in(seg, Node::Conjunction(cs))"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom_concurrent(&self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::Atom(bs))"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom_concurrent(&self, s: &str) -> Addr" "crate::backend::symbol::intern_static(s)" "self.arena.try_bump_in(seg, Node::Atom(interned))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_string_concurrent(&self, s: &str) -> Addr" "let bs = self.intern_bytes_in(seg, s);" "self.arena.try_bump_in(seg, Node::String(bs))"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_spanned_concurrent(&self, inner: MettaValue, span: Span) -> Addr" "let sr = self.intern_span_in(seg, span);" "self.arena.try_bump_in(seg, Node::Spanned(inner, sr))"
 assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_sexpr_concurrent(&self, items: &[MettaValue]) -> Addr" "pub fn alloc_conjunction_concurrent(&self, goals: &[MettaValue]) -> Addr" "pop_young_free_slot"
@@ -1024,7 +1026,9 @@ line_no "src/backend/eval/cesk/index_heap.rs" "fn pending_side_reclaim_count(&se
 line_no "src/backend/eval/cesk/index_heap.rs" "fn marked_owner_still_owns_side_reclaim(&self, side: SideReclaim) -> bool" >/dev/null
 line_no "src/backend/eval/cesk/index_heap.rs" "fn drop_or_free_pending_side_reclaims_after_full_mark(&mut self)" >/dev/null
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn side_reclaim_for_addr(&self, addr: Addr)" "owner: addr" "idx: cr.idx"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn side_reclaim_for_addr(&self, addr: Addr)" "Node::Atom(br) | Node::String(br) => Some(SideReclaim::Strings" "Node::Spanned(_, sr) => Some(SideReclaim::Spans"
+# Finding 2: atoms are interned (no byte side-column) ⇒ only String produces a
+# Strings side-reclaim; the atom arm is gone.
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn side_reclaim_for_addr(&self, addr: Addr)" "Node::String(br) => Some(SideReclaim::Strings" "Node::Spanned(_, sr) => Some(SideReclaim::Spans"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn drop_or_free_pending_side_reclaims_after_full_mark" "let owner_marked = self.arena.is_marked(side.owner());" "let owner_still_owns = self.owner_still_owns_side_reclaim(side);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn drop_or_free_pending_side_reclaims_after_full_mark" "if owner_marked && owner_still_owns" "self.free_side_reclaim(side, sides_count);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn sweep(&mut self) -> SweepStats" "self.drop_pending_side_reclaims_for_released_segments(&released_segments);" "self.append_pending_side_reclaims(&reclaimed);"
@@ -1412,5 +1416,45 @@ line_no "formal/rocq/gc/SerializableContinuationSlice.v" "SerializedSeed" >/dev/
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"serializable_continuation_slice_all\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"serializable_continuation_slice_missing_child\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"serializable_continuation_slice_missing_kont\"" >/dev/null
+
+# ── audit Finding 2: interned-atom never-freed (correct-by-construction) ──────
+# Source (Finding 2 fix): atom bytes are interned into the PERPETUAL process-
+# lifetime interner (symbol::intern_static), NOT a freeable arena side-column, so
+# MettaValueTrait::as_atom's `&'static str` is HONEST in index mode and the
+# laundered-borrow UAF class (audit Finding 1's generalization) is impossible BY
+# CONSTRUCTION. Proven in formal/rocq/gc/InternedAtomNeverFreed.v (interned ⇒ not
+# side-boxed ⇒ never released). These pins keep the source coupled to that proof.
+
+# (1) the perpetual interner primitive exists (both the interning module and the
+# no-feature fallback define it; only one compiles per feature, both pinned).
+assert_count "src/backend/symbol.rs" "pub fn intern_static" "2"
+line_no "src/backend/symbol.rs" "interner().resolve(&interner().get_or_intern(s))" >/dev/null
+
+# (2) index atom alloc INTERNS (honest &'static) and stores THAT in the node — the
+# interned ref reaches Node::Atom on both the &mut and the concurrent &self path.
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom" "crate::backend::symbol::intern_static(s)" "Node::Atom(interned)"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom_concurrent" "crate::backend::symbol::intern_static(s)" "Node::Atom(interned)"
+
+# (3) the node variant carries an honest &'static str (NOT a freeable ByteRef), and
+# NO atom anywhere binds a byte side-index (the Node::Atom(br) pattern is gone) —
+# this is the source form of the proof's `interned_not_sideboxed` hypothesis.
+assert_count "src/backend/eval/cesk/index_node.rs" "Atom(&'static str)" "1"
+assert_zero "src/backend/eval/cesk/index_heap.rs" "Node::Atom(br)"
+
+# (4) decode reads the interned ref DIRECTLY — the atom `launder` unsafe is deleted
+# (the borrow is already honestly 'static, so no transmute is needed).
+assert_count "src/backend/eval/cesk/index_heap.rs" "Node::Atom(s) => ValueView::Atom(*s)" "1"
+assert_count "src/backend/eval/cesk/index_heap.rs" "Node::Atom(s) => MettaValueInner::Atom(*s)" "1"
+
+# (5) freshening shares the same perpetual interner (a fresh name and its atom dedup
+# to ONE allocation instead of an alloc_str leak + a separate intern).
+assert_count "src/backend/eval/freshening.rs" "crate::backend::symbol::intern_static(&formatted)" "2"
+
+# (6) the proof is wired into the harness and its load-bearing names cannot drift.
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/InternedAtomNeverFreed.v\"" >/dev/null
+line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "interned_atom_bytes_never_released" >/dev/null
+line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "interned_not_sideboxed" >/dev/null
+line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "release_only_sideboxed" >/dev/null
+line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "pre_fix_sidebox_atom_releasable" >/dev/null
 
 echo "CESK GC source-coupling checks passed"

@@ -219,7 +219,9 @@ const FRESH_NAME_CACHE_CAP: usize = 1024;
 
 /// Look up or allocate an interned fresh name for `(epoch, bare_name)`.
 ///
-/// Returns a `&'static str` pointing into the global slab allocator.
+/// Returns a `&'static str` interned in the PERPETUAL process-lifetime interner
+/// (`symbol::intern_static`) — honest `'static`, shared with the atom-intern table
+/// (Finding 2), so a fresh name and its atom dedup to one allocation.
 ///
 /// **Defensive guard**: if `bare_name` is already a freshened form
 /// (starts with `__fr_`), the input is returned `$`-prefixed unchanged
@@ -243,7 +245,7 @@ pub fn intern_fresh_name(epoch: u64, bare_name: &'static str) -> &'static str {
             }
             let formatted = format!("${}", bare_name);
             let interned: &'static str =
-                crate::backend::models::global_allocator().alloc_str(&formatted);
+                crate::backend::symbol::intern_static(&formatted);
             c.insert((0, bare_name), interned);
             interned
         });
@@ -258,7 +260,7 @@ pub fn intern_fresh_name(epoch: u64, bare_name: &'static str) -> &'static str {
         }
         let formatted = format!("$__fr_{}_{}", epoch, bare_name);
         let interned: &'static str =
-            crate::backend::models::global_allocator().alloc_str(&formatted);
+            crate::backend::symbol::intern_static(&formatted);
         c.insert((epoch, bare_name), interned);
         interned
     })

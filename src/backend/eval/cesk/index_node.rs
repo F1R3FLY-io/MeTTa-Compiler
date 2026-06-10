@@ -90,7 +90,13 @@ pub struct SpanRef {
 /// a faithful, total mirror (the factory decides inline vs. node).
 #[derive(Clone, Copy)]
 pub enum Node {
-    Atom(ByteRef),
+    /// Finding 2 (correct-by-construction): an atom's bytes are interned into the
+    /// PERPETUAL process-lifetime interner (`symbol::intern_static`), NOT a freeable
+    /// arena side-column — so the stored `&'static str` is HONEST and a GC sweep can
+    /// never dangle it. Proven in `formal/rocq/gc/InternedAtomNeverFreed.v`. (String
+    /// keeps its `ByteRef` side-column; only atoms are interned.) 16 B payload (ptr+len)
+    /// = the same width as `Error`, so `Node` stays within its 32 B budget.
+    Atom(&'static str),
     Bool(bool),
     Long(i64),
     Float(f64),
@@ -206,7 +212,7 @@ mod tests {
         Node::SExpr(ChildRef { idx: 0, gen: 0 }).child_addrs(&mut out);
         Node::Conjunction(ChildRef { idx: 1, gen: 0 }).child_addrs(&mut out);
         Node::Long(42).child_addrs(&mut out);
-        Node::Atom(ByteRef { idx: 0, gen: 0 }).child_addrs(&mut out);
+        Node::Atom("").child_addrs(&mut out);
         Node::Space(9).child_addrs(&mut out);
         Node::Unit.child_addrs(&mut out);
         assert!(

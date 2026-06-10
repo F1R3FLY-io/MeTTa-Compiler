@@ -488,16 +488,20 @@ impl IndexHeap {
 
     /// Allocate an `Atom`, co-locating its bytes (reuse-or-bump, as `alloc_sexpr`).
     pub fn alloc_atom(&mut self, s: &str) -> Addr {
+        // Finding 2: intern the atom's bytes into the PERPETUAL interner (honest
+        // `&'static str`) instead of a freeable side-column — so a sweep can never
+        // dangle the borrow (`formal/rocq/gc/InternedAtomNeverFreed.v`). The interned
+        // `&'static` is `Copy`, so re-passing it across the bump retry is free, and
+        // atoms no longer touch `intern_bytes_in` / the byte side-arena at all.
+        let interned = crate::backend::symbol::intern_static(s);
         if let Some(addr) = self.arena.pop_young_free_slot() {
-            let br = self.intern_bytes_in(addr.segment(), s);
-            self.arena.write_reused(addr, Node::Atom(br));
+            self.arena.write_reused(addr, Node::Atom(interned));
             addr
         } else {
             // D-TLAB-1.2 single-pick + retry (see `alloc_sexpr`).
             loop {
                 let seg = self.arena.ensure_bump_room();
-                let bs = self.intern_bytes_in(seg, s);
-                if let Some(addr) = self.arena.try_bump_in(seg, Node::Atom(bs)) {
+                if let Some(addr) = self.arena.try_bump_in(seg, Node::Atom(interned)) {
                     return addr;
                 }
             }
@@ -607,10 +611,12 @@ impl IndexHeap {
     /// twin of [`alloc_atom`](Self::alloc_atom)'s `else` branch — see the D-RLOCK.1
     /// block comment above.
     pub fn alloc_atom_concurrent(&self, s: &str) -> Addr {
+        // Finding 2: intern into the perpetual interner (see `alloc_atom`); atoms carry
+        // an honest `&'static str`, never a freeable side-column byte index.
+        let interned = crate::backend::symbol::intern_static(s);
         loop {
             let seg = self.arena.ensure_bump_room();
-            let bs = self.intern_bytes_in(seg, s);
-            if let Some(addr) = self.arena.try_bump_in(seg, Node::Atom(bs)) {
+            if let Some(addr) = self.arena.try_bump_in(seg, Node::Atom(interned)) {
                 return addr;
             }
         }
@@ -772,13 +778,16 @@ impl IndexHeap {
     /// The string of an `Atom`/`String` at `addr`.
     pub fn str_slice(&self, addr: Addr) -> &str {
         match self.arena.get(addr) {
+            // Finding 2: an atom's bytes are INTERNED (`&'static str`), not in a
+            // freeable side-column — return them directly (honest, never freed).
+            Node::Atom(s) => s,
             // SAFETY (D-TLAB-1.1): `br.idx` came from `SideColumn::push` at intern,
             // so `idx < published_len()`; the node is live ⇒ slot is `Some`.
-            Node::Atom(br) | Node::String(br) => {
+            Node::String(br) => {
                 // SAFETY (D-TLAB-1.2): cell `addr.segment()` published before this
                 // node's address was handed out (see `children`); `br.idx` in range.
                 let side = unsafe { self.side(addr.segment()) };
-                unsafe { side.strings.get(br.idx) }.expect("live Atom/String slot")
+                unsafe { side.strings.get(br.idx) }.expect("live String slot")
             }
             _ => panic!("str_slice() on a non-Atom/String node"),
         }
@@ -836,7 +845,9 @@ impl IndexHeap {
             Node::Unit => ValueView::Unit,
             Node::Empty => ValueView::Empty,
             Node::NotReducible => ValueView::NotReducible,
-            Node::Atom(_) => ValueView::Atom(unsafe { launder(self.str_slice(a)) }),
+            // Finding 2: the atom's `&'static str` is already honest (interned, never
+            // freed — `InternedAtomNeverFreed.v`), so read it directly — NO `launder`.
+            Node::Atom(s) => ValueView::Atom(*s),
             Node::String(_) => ValueView::String(unsafe { launder(self.str_slice(a)) }),
             Node::SExpr(_) => ValueView::SExpr(unsafe { launder(self.children(a)) }),
             Node::Conjunction(_) => ValueView::Conjunction(unsafe { launder(self.children(a)) }),
@@ -862,7 +873,9 @@ impl IndexHeap {
     /// by value).
     pub fn materialize_inner(&self, addr: Addr) -> MettaValueInner {
         match self.arena.get(addr) {
-            Node::Atom(_) => MettaValueInner::Atom(unsafe { launder(self.str_slice(addr)) }),
+            // Finding 2: the atom's `&'static str` is already honest (interned) — read
+            // it directly, NO `launder` (`InternedAtomNeverFreed.v`).
+            Node::Atom(s) => MettaValueInner::Atom(*s),
             Node::Bool(b) => MettaValueInner::Bool(*b),
             Node::Long(n) => MettaValueInner::Long(*n),
             Node::Float(f) => MettaValueInner::Float(*f),
@@ -1221,7 +1234,9 @@ impl IndexHeap {
                 idx: cr.idx,
                 gen: cr.gen,
             }),
-            Node::Atom(br) | Node::String(br) => Some(SideReclaim::Strings {
+            // Finding 2: atoms are interned (no byte side-column) ⇒ they own no
+            // freeable side slot and produce no reclaim; only `String` still does.
+            Node::String(br) => Some(SideReclaim::Strings {
                 owner: addr,
                 seg,
                 idx: br.idx,
@@ -1272,7 +1287,10 @@ impl IndexHeap {
             (SideReclaim::Children { idx, .. }, Node::SExpr(cr) | Node::Conjunction(cr)) => {
                 cr.idx == idx
             }
-            (SideReclaim::Strings { idx, .. }, Node::Atom(br) | Node::String(br)) => br.idx == idx,
+            // Finding 2: a `Strings` reclaim is owned only by a live `String` slot; if
+            // the slot was reused by an interned `Atom` (no side), the owner no longer
+            // owns it ⇒ falls to `_ => false`.
+            (SideReclaim::Strings { idx, .. }, Node::String(br)) => br.idx == idx,
             (SideReclaim::Spans { idx, .. }, Node::Spanned(_, sr)) => sr.idx == idx,
             _ => false,
         }

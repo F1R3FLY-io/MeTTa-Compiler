@@ -118,6 +118,11 @@ run_rocq "formal/rocq/gc/MajorWatermarkRearm.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/StructuralRootSourceAudit.v"
 run_rocq "formal/rocq/gc/TrackedVarSideRetention.v"
+# Finding 2 (correct-by-construction): interned atom bytes are never freed, so
+# as_atom's &'static is HONEST and the laundered-&str UAF class is impossible. Verified
+# AHEAD of the interning implementation (per formal-method-first); the source-coupling
+# pins binding it to alloc_atom/intern_static land with that implementation.
+run_rocq "formal/rocq/gc/InternedAtomNeverFreed.v"
 run_rocq "formal/rocq/gc/RegistryIsolation.v"
 run_rocq "formal/rocq/gc/NodeEdgeCompleteness.v"
 run_rocq "formal/rocq/gc/AbstractGCLiveNarrowing.v"

@@ -48,3 +48,4 @@ repos/
 .mettatron-*
 
 .pgmcp.toml
+.nia.cache

@@ -417,6 +417,19 @@ assert_after_before "src/backend/eval/cesk/index_node.rs" "pub struct SpanRef {"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn push(&self, boxed: Box<T>) -> (u32, u32)" "let g = slot.0.wrapping_add(1);" "slot.1 = Some(boxed);"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn free(&mut self, idx: u32, gen: u32)" "if slot.0 == gen {" "slot.1.take().is_some()"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn side_reclaim_for_addr" "idx: sr.idx," "gen: sr.gen,"
+# #273 bounded side-reclaim PROGRESS (formal/rocq/gc/RendezvousSideReclaimProgress.v +
+# tla/RendezvousSideReclaimProgress.tla). Design B: pending_side_major FORCES a major the
+# moment a quiescence point has pending side reclaims; free_pending_side_reclaims drains
+# the ENTIRE vec exhaustively (mem::take then iterate every entry);
+# append_pending_side_reclaims appends one snapshot per reclaimed owner. So pending is
+# emptied every quiescence and committed side storage stays bounded (PendingBounded).
+line_no "src/backend/eval/cesk/index_heap.rs" "let pending_side_major = phase == \"quiescence\" && pending_side_reclaims > 0;" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "let major_due = live_major || cap_major || cadence_major || pending_side_major;" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn free_pending_side_reclaims(&mut self)" "let pending = std::mem::take(&mut self.pending_side_reclaims);" "for side in pending {"
+line_no "src/backend/eval/cesk/index_heap.rs" "fn append_pending_side_reclaims(&mut self, reclaimed: &[Addr])" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/RendezvousSideReclaimProgress.v\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"rendezvous_side_reclaim_bounded\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"rendezvous_side_reclaim_unbounded\"" >/dev/null
 assert_count "src/backend/eval/cesk/index_heap.rs" "const GROWTH: usize = 2;" "1"
 assert_count "src/backend/eval/cesk/index_heap.rs" "old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())" "4"
 assert_count "src/backend/eval/cesk/index_heap.rs" "old_live_after.saturating_mul(GROWTH).max(min_threshold())," "2"

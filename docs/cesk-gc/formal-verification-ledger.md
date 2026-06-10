@@ -253,6 +253,22 @@ can replace the full-major final sweep.
   no temporal component ⇒ no TLA mirror, per write-each-obligation-once). Source-coupled on the refs' `gen` field,
   `push`'s gen stamp, the snapshot's gen capture, and `free`'s gen check. Verified: 84-fixture cross-fixture repro
   EXIT 0 (was the panic), greenwall 483/0 both modes + debug-oracle 0-panics, slab byte-identical (4387/0).
+- `formal/rocq/gc/RendezvousSideReclaimProgress.v` + `tla/RendezvousSideReclaimProgress.tla`: prove the #273 BOUNDED
+  side-payload reclaim PROGRESS obligation under the default dedicated (rendezvous) collector. A rendezvous/minor sweep
+  that reclaims an owner slot only APPENDS a `SideReclaim` snapshot (`append_pending_side_reclaims`) — the payload Box
+  stays committed, deferred — while a true-quiescence MAJOR drains the ENTIRE pending vec exhaustively
+  (`free_pending_side_reclaims`, `std::mem::take` then iterate every entry). The trigger `pending_side_major`
+  (`phase == "quiescence" && pending_side_reclaims > 0`) FORCES that major the moment a quiescence point has pending
+  reclaims, so `pending` is emptied every quiescence and committed side storage cannot grow unboundedly across cycles.
+  `side_committed_bounded` proves `committed_side <= live_side + pending` under the committed invariant;
+  `forced_drain_reduces_committed_to_live` proves the forced major reduces committed storage to exactly the live
+  high-water. Non-vacuity `without_pending_trigger_side_grows_unbounded` exhibits the pre-`266d19d` rendezvous-only
+  world where, with no forced drain, `pending` grows past any bound. The TLA discriminator `PendingBounded` PASSES with
+  `PendingSideTrigger = TRUE` and is VIOLATED with `FALSE`. Admit-free + axiom-free; source-coupled on
+  `pending_side_major`, the exhaustive `mem::take` drain, and `append_pending_side_reclaims`. Design B (defer the side
+  free to the next quiescence) is what is implemented; design A (drain side payloads every rendezvous) is deferred to
+  Finding 2's `'static` confinement, since a parked worker may otherwise hold a laundered side reference across the
+  park (the `index_heap.rs` rendezvous-vs-quiescence safety comment). No `src/*.rs` logic change ⇒ byte-identical.
 - `formal/rocq/gc/HashConsSweepRetain.v` and `formal/lean/gc/HashConsSweepRetain.lean`: prove the Addr-valued
   hash-cons retain obligation. A major hash-cons hit cannot return a freed address when retained entries imply marked
   entries and sweep frees only unmarked entries; a minor hash-cons hit cannot return a freed address when retained

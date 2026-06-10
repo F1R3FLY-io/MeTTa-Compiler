@@ -159,6 +159,9 @@ run_rocq "formal/rocq/gc/IndexAllocatorRefinement.v"
 run_rocq "formal/rocq/gc/SideFreeQuiescence.v"
 run_rocq "formal/rocq/gc/SideReclaimRefinement.v"
 run_rocq "formal/rocq/gc/QuiescentSideIndexReuse.v"
+# #273: bounded side-payload reclaim progress under the rendezvous collector (design B:
+# pending_side_major forces a quiescence drain; the drain is exhaustive mem::take).
+run_rocq "formal/rocq/gc/RendezvousSideReclaimProgress.v"
 run_rocq "formal/rocq/gc/HashConsSweepRetain.v"
 run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
@@ -361,6 +364,12 @@ run_tlc "side_reclaim_generation_guard" "MC_SideReclaimGeneration.tla" "MC_SideR
   pass ""
 run_tlc "side_reclaim_generation_no_guard" "MC_SideReclaimGeneration.tla" "MC_SideReclaimGeneration_no_guard.cfg" \
   fail "Invariant NoLiveCellFreed is violated"
+# #273: with pending_side_major the rendezvous collector drains side reclaims every
+# quiescence (PendingBounded holds); WITHOUT it (pre-266d19d) pending grows unbounded.
+run_tlc "rendezvous_side_reclaim_bounded" "MC_RendezvousSideReclaimProgress.tla" "MC_RendezvousSideReclaimProgress_bounded.cfg" \
+  pass ""
+run_tlc "rendezvous_side_reclaim_unbounded" "MC_RendezvousSideReclaimProgress.tla" "MC_RendezvousSideReclaimProgress_unbounded.cfg" \
+  fail "Invariant PendingBounded is violated"
 run_tlc "hash_cons_major_safe" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_safe.cfg" \
   pass ""
 run_tlc "hash_cons_major_dead_validated" "MC_HashConsSweepRetain.tla" "MC_HashConsSweepRetain_major_dead_validated.cfg" \

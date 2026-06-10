@@ -3726,7 +3726,7 @@ pub fn project_bindings_generic<V: MettaValueTrait + Clone>(
 pub fn project_bindings_for_consumer_generic<V, F>(
     bindings: &GenericBindings<V>,
     consumers: &[&V],
-    tracked_vars: Option<&[&'static str]>,
+    tracked_vars: Option<&[&str]>,
     factory: &F,
 ) -> Option<GenericBindings<V>>
 where

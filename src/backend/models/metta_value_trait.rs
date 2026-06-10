@@ -460,6 +460,110 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
         vars
     }
 
+    /// Collect the free variable ATOMS (not just their names) referenced in
+    /// this value.
+    ///
+    /// Mirrors [`collect_free_variables`] exactly — same iterative work-list,
+    /// same `$`/`&`/`'` variable predicate, same exclusions (`_`, `&`,
+    /// `&self`, `&kb`, `&stack`) — but pushes the variable NODE handle
+    /// (`v.clone()`, i.e. the `&Self` being inspected, which IS the variable
+    /// atom) instead of its `name` `&'static str`.
+    ///
+    /// # Why a node, not a name (UAF fix, Finding 1)
+    ///
+    /// In the index-gc backend, `as_atom()` returns a laundered
+    /// `&'static str` that borrows an arena string side-`Box`. That `&str`
+    /// is NOT a GC root: capturing it into a `collapse-bind`
+    /// `BindingCaptureFrame` and sharing it cross-thread into branch workers
+    /// lets a FANOUT>0 rendezvous major release the segment (workers parked)
+    /// and drop the string `Box`, so a worker later reads freed bytes
+    /// (use-after-free / silent wrong-projection). Capturing the variable
+    /// ATOM `Self` handle instead keeps the value rootable via
+    /// `collect_binding_capture_roots` ⟶ `collect_global_anchors`, so the
+    /// collector retains the segment and the laundered `&str` stays valid.
+    ///
+    /// # Dedup is BY NAME
+    ///
+    /// Two distinct `Addr`s can name the same hash-consed variable. To keep
+    /// the *name set* identical to `free_variables()` (memo-key invariance),
+    /// dedup is performed against a transient set of `as_atom()` names, not
+    /// against the stored handles.
+    fn free_variable_atoms(&self) -> smallvec::SmallVec<[Self; 4]>
+    where
+        Self: Sized,
+    {
+        let mut out: smallvec::SmallVec<[Self; 4]> = smallvec::SmallVec::new();
+        // Transient name set for dedup-by-name (two distinct Addrs can name
+        // the same variable; dedup-by-handle would change the name set).
+        let mut seen: smallvec::SmallVec<[&'static str; 4]> = smallvec::SmallVec::new();
+
+        let mut work: Vec<&Self> = Vec::with_capacity(8);
+        work.push(self);
+
+        while let Some(v) = work.pop() {
+            // Fast path: no variables in this subvalue.
+            if !v.has_variables_fast() {
+                continue;
+            }
+
+            if let Some(name) = v.as_atom() {
+                if name != "_"
+                    && name != "&"
+                    && name != "&self"
+                    && name != "&kb"
+                    && name != "&stack"
+                    && name.len() > 1
+                    && (name.starts_with('$') || name.starts_with('&') || name.starts_with('\''))
+                {
+                    if !seen.contains(&name) {
+                        seen.push(name);
+                        // Push the variable NODE handle, not its name.
+                        out.push(v.clone());
+                    }
+                }
+                continue;
+            }
+
+            if let Some(items) = v.as_sexpr() {
+                // Push in reverse so the first item is processed first on pop.
+                for item in items.iter().rev() {
+                    work.push(item);
+                }
+                continue;
+            }
+
+            if let Some(goals) = v.as_conjunction() {
+                for g in goals.iter().rev() {
+                    work.push(g);
+                }
+                continue;
+            }
+
+            if let Some((_, details)) = v.as_error() {
+                work.push(details);
+                continue;
+            }
+
+            if let Some(t) = v.as_type() {
+                work.push(t);
+                continue;
+            }
+
+            if let Some(q) = v.as_quoted_ref() {
+                work.push(q);
+                continue;
+            }
+
+            if let Some(inner) = v.as_lazy_ref() {
+                // Lazy is transparent to variable OBSERVATION (commit 8032687).
+                work.push(inner);
+                continue;
+            }
+        }
+
+        out
+    }
+
     /// **H1 full (2026-05-05)**: Names introduced by binders inside this value.
     ///
     /// Collects variables that `let`, `let*`, `sealed`, `function`, `match`,

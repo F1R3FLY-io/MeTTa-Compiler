@@ -240,17 +240,21 @@ assert_immediate_cfg_before "src/backend/environment/core.rs" "impl RootProvider
 assert_immediate_cfg_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::RootProvider for ParallelDispatchRootProvider {" "#[cfg(not(feature = \"index-gc\"))]"
 assert_immediate_cfg_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::RootProvider for ParallelCollapseRootProvider {" "#[cfg(not(feature = \"index-gc\"))]"
 
-# Collapse-bind binding-capture frames are metadata only. Values must keep
-# travelling through BoundValue / work-item / continuation readers, not through
-# a separate thread-local root source.
+# Collapse-bind binding-capture frames carry the variable ATOM handles
+# (MettaValue), NOT laundered &'static str, and ARE a first-class structural root
+# source (audit Finding 1 fix): collect_binding_capture_roots is wired into
+# collect_global_anchors so every mark (rendezvous/midloop/quiescence) keeps each
+# tracked-var atom — hence its string side-Box — reachable. This makes the tracked
+# var part of σ|_Reachable, closing the laundered-&str UAF (proof
+# formal/rocq/gc/TrackedVarSideRetention.v). The frame still carries ONLY atom
+# handles — no BoundValue/GenericBindings (it is not a bindings root).
 assert_zero "src/backend/eval/trampoline/eval_loop.rs" "capture_bindings_if_active"
-assert_zero "src/backend/eval/trampoline/eval_loop.rs" "collect_binding_capture_roots"
-assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "tracked_vars: SmallVec<[&'static str; 4]>," "1"
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "fn collect_binding_capture_roots" "1"
+assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "tracked_vars: SmallVec<[MettaValue; 4]>," "1"
 assert_count_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "collapse_fork_depth: u32," "1"
-assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "MettaValue"
 assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "BoundValue"
 assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "struct BindingCaptureFrame {" "thread_local! {" "GenericBindings"
-assert_zero "src/backend/eval/cesk/roots.rs" "binding_capture"
+assert_after_before "src/backend/eval/cesk/roots.rs" "fn collect_global_anchors" "collect_thunk_roots(out);" "collect_binding_capture_roots(out);"
 
 # E1 rendezvous safety: the dedicated driver must wait on the V4 witness, publish
 # witness_ok, build the root union, run the oracle, and only then enter the

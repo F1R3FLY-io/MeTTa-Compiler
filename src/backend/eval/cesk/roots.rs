@@ -316,6 +316,13 @@ pub fn collect_global_anchors(out: &mut Vec<crate::backend::models::MettaValue>)
     crate::backend::eval::trampoline::dispatch_hints::collect_match_result_roots(out);
     crate::backend::eval::cesk::tabling::collect_subgoal_roots(out);
     crate::backend::eval::cesk::thunk::collect_thunk_roots(out);
+    // Finding 1 UAF fix: the thread-local `collapse-bind` binding-capture stack
+    // holds free-variable ATOM handles whose laundered `&str` is consumed at the
+    // projection / sidecar-encoding sites and shared cross-thread into branch
+    // workers. Without rooting them, a FANOUT>0 rendezvous major could release
+    // the segment (workers parked) and drop the arena string Box, leaving the
+    // `&str` dangling (use-after-free).
+    crate::backend::eval::trampoline::eval_loop::collect_binding_capture_roots(out);
 }
 
 /// CESK Phase A4.2b — the single **structural machine-root** reader. The one

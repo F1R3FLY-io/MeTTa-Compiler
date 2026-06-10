@@ -925,16 +925,22 @@ fn format_args_he(fmt: &str, args: &[&MettaValue]) -> String {
 fn project_carrying_for_consumer(
     bindings: &SharedBindings,
     consumer: &MettaValue,
-    tracked_vars: Option<&[&'static str]>,
+    // UAF fix (Finding 1): callers pass `active_tracked_vars().as_deref()`,
+    // now a slice of variable ATOMS. The underlying generic projector only
+    // reads NAMES, so materialize a transient `&str` name slice here under a
+    // borrow (the atom handles stay rooted by the binding-capture stack).
+    tracked_vars: Option<&[MettaValue]>,
     factory: &ActiveFactory,
 ) -> Option<SharedBindings> {
     if bindings.is_empty() {
         return Some(bindings.clone());
     }
+    let tracked_names: Option<SmallVec<[&str; 4]>> =
+        tracked_vars.map(|tv| tv.iter().filter_map(|a| a.as_atom()).collect());
     let projected = crate::backend::eval::bindings::project_bindings_for_consumer_generic(
         bindings,
         &[consumer],
-        tracked_vars,
+        tracked_names.as_deref(),
         factory,
     )?;
     if projected.is_empty() {
@@ -950,13 +956,23 @@ fn project_carrying_for_consumer(
 fn project_owned_bindings_for_consumer(
     bindings: &crate::backend::models::GenericBindings<MettaValue>,
     consumer: &MettaValue,
-    tracked_vars: Option<&[&'static str]>,
+    // UAF fix (Finding 1): `tracked_vars` is now a slice of variable ATOMS
+    // (from `active_tracked_vars()` / the capture frame). The generic
+    // projector only reads NAMES, so materialize a transient `&str` slice
+    // here under a borrow; the atom handles stay rooted by the
+    // binding-capture stack.
+    tracked_vars: Option<&[MettaValue]>,
     factory: &ActiveFactory,
 ) -> Option<crate::backend::models::GenericBindings<MettaValue>> {
+    let tracked_names: SmallVec<[&str; 4]> = match tracked_vars {
+        Some(tv) => tv.iter().filter_map(|a| a.as_atom()).collect(),
+        None => SmallVec::new(),
+    };
+    let tracked_slice = tracked_vars.map(|_| tracked_names.as_slice());
     crate::backend::eval::bindings::project_bindings_for_consumer_generic(
         bindings,
         &[consumer],
-        tracked_vars,
+        tracked_slice,
         factory,
     )
 }
@@ -2035,10 +2051,19 @@ impl Drop for DemandScope {
 /// distinguish sibling branches at nested fork depths. Per-branch bindings
 /// now flow via the BoundValue pipeline instead.
 struct BindingCaptureFrame {
-    /// Free variable names from the original `collapse-bind` expression.
+    /// Free variable ATOMS from the original `collapse-bind` expression.
     /// Used to project match bindings to just the variables the caller
     /// cares about (keeps carried bindings small).
-    tracked_vars: SmallVec<[&'static str; 4]>,
+    ///
+    /// **UAF fix (Finding 1)**: these are the variable ATOM handles, NOT
+    /// laundered `&'static str` names. In the index-gc backend a variable's
+    /// `as_atom()` `&str` borrows an arena string side-`Box` that is not a GC
+    /// root; capturing the name and sharing it cross-thread into branch
+    /// workers let a FANOUT>0 rendezvous major drop the `Box` (segment
+    /// released while workers parked) → worker reads freed bytes. Holding the
+    /// ATOM `MettaValue` instead makes the value rootable via
+    /// `collect_binding_capture_roots` so the segment is retained.
+    tracked_vars: SmallVec<[MettaValue; 4]>,
     /// Fork depth at which the collapse-bind was entered (kept for debug
     /// and future depth-aware cancellation logic; not currently consumed).
     #[allow(dead_code)]
@@ -2067,8 +2092,9 @@ fn next_flow_id() -> u64 {
 }
 
 /// Push a new scope marker when entering `collapse-bind`.
-/// `tracked_vars` are the free variable names from the inner expression.
-fn push_binding_capture_frame(tracked_vars: SmallVec<[&'static str; 4]>) {
+/// `tracked_vars` are the free variable ATOMS from the inner expression
+/// (see [`BindingCaptureFrame::tracked_vars`] for why atoms, not names).
+fn push_binding_capture_frame(tracked_vars: SmallVec<[MettaValue; 4]>) {
     let fork_depth = FORK_DEPTH.with(|c| c.get());
     BINDING_CAPTURE_STACK.with(|stack| {
         stack.borrow_mut().push(BindingCaptureFrame {
@@ -2112,7 +2138,7 @@ pub(crate) struct WorkerCaptureScope {
 }
 
 impl WorkerCaptureScope {
-    pub(crate) fn enter(hint: Option<Arc<SmallVec<[&'static str; 4]>>>) -> Self {
+    pub(crate) fn enter(hint: Option<Arc<SmallVec<[MettaValue; 4]>>>) -> Self {
         let pushed = if let Some(vars) = hint {
             // Clone the SmallVec out of the Arc — the worker pushes its
             // OWN frame, not a reference to the parent's. This keeps the
@@ -2147,22 +2173,57 @@ impl Drop for WorkerCaptureScope {
 ///
 /// Returns `None` when no collapse-bind is active (the caller should skip
 /// filtering entirely for zero overhead on the hot path).
-fn active_tracked_vars() -> Option<SmallVec<[&'static str; 4]>> {
+fn active_tracked_vars() -> Option<SmallVec<[MettaValue; 4]>> {
     BINDING_CAPTURE_STACK.with(|stack| {
         let stack = stack.borrow();
         if stack.is_empty() {
             return None;
         }
-        let mut out: SmallVec<[&'static str; 4]> = SmallVec::new();
+        let mut out: SmallVec<[MettaValue; 4]> = SmallVec::new();
+        // Dedup BY NAME, not by Addr: two distinct Addrs can name the same
+        // hash-consed variable, and the *name set* is what every downstream
+        // consumer (projection, memo key) observes. Dedup-by-handle would
+        // change that set. Keep a transient name set for the `contains`
+        // check while STORING the variable ATOM handle.
+        let mut seen: SmallVec<[&'static str; 4]> = SmallVec::new();
         for frame in stack.iter() {
-            for &v in frame.tracked_vars.iter() {
-                if !out.contains(&v) {
-                    out.push(v);
+            for v in frame.tracked_vars.iter() {
+                let name = match v.as_atom() {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if !seen.contains(&name) {
+                    seen.push(name);
+                    out.push(v.clone());
                 }
             }
         }
         Some(out)
     })
+}
+
+/// **UAF fix (Finding 1)**: GC root collector for the thread-local
+/// `collapse-bind` binding-capture stack.
+///
+/// Each active `BindingCaptureFrame` holds variable ATOM handles
+/// (`tracked_vars`) whose `as_atom()` `&'static str` is consumed later (at
+/// the projection / sidecar-encoding sites) and is shared cross-thread into
+/// branch workers via `WorkerCaptureScope`. In the index-gc backend that
+/// `&str` borrows an arena string side-`Box` that is otherwise unrooted, so
+/// without this collector a FANOUT>0 rendezvous major could release the
+/// segment (workers parked) and drop the `Box`, leaving the laundered `&str`
+/// dangling. Rooting the ATOM handles here keeps the segment retained.
+///
+/// Modeled on
+/// [`crate::backend::eval::cesk::thunk::collect_thunk_roots`]; wired into
+/// [`crate::backend::eval::cesk::roots::collect_global_anchors`] so it is
+/// reached by every index-GC safepoint and worker-publication path.
+pub(crate) fn collect_binding_capture_roots(out: &mut Vec<MettaValue>) {
+    BINDING_CAPTURE_STACK.with(|stack| {
+        for frame in stack.borrow().iter() {
+            out.extend(frame.tracked_vars.iter().cloned());
+        }
+    });
 }
 
 /// Content hash of the active collapse-bind `tracked_vars`, used to namespace
@@ -2177,10 +2238,15 @@ fn current_memo_tracked_key() -> u64 {
         None => 0,
         Some(tv) => {
             let mut h = 0xcbf29ce484222325u64; // FNV-1a offset basis
-            for s in tv.iter() {
-                for b in s.bytes() {
-                    h ^= b as u64;
-                    h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            // `tv` now holds variable ATOMS; hash their NAME bytes so the memo
+            // key stays BYTE-IDENTICAL to the prior `&'static str` version
+            // (`as_atom()` yields exactly those name bytes).
+            for atom in tv.iter() {
+                if let Some(s) = atom.as_atom() {
+                    for b in s.bytes() {
+                        h ^= b as u64;
+                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
                 }
                 h = h.wrapping_mul(0x9e3779b97f4a7c15).wrapping_add(1); // field separator
             }
@@ -2581,7 +2647,7 @@ fn parallel_dispatch(
     // re-established on the worker thread via `WorkerCaptureScope::enter`
     // so `in_collapse_bind_scope()` and `active_tracked_vars()` return the
     // correct answers on the worker.
-    let parent_tracked_vars: Option<Arc<SmallVec<[&'static str; 4]>>> =
+    let parent_tracked_vars: Option<Arc<SmallVec<[MettaValue; 4]>>> =
         active_tracked_vars().map(Arc::new);
 
     // Spawn ALL branches to the pool — including branch 0 (stack-safety mandate).
@@ -3445,7 +3511,7 @@ fn parallel_collapse_dispatch(
     // `active_tracked_vars()` return the right answers on the worker
     // thread during nested evaluation. No-op when the parent has no
     // active collapse-bind. See `WorkerCaptureScope` docs at `:1380`.
-    let parent_tracked_vars: Option<Arc<SmallVec<[&'static str; 4]>>> =
+    let parent_tracked_vars: Option<Arc<SmallVec<[MettaValue; 4]>>> =
         active_tracked_vars().map(Arc::new);
 
     // Spawn ALL items to the pool — NO inline item-0 (stack-safety mandate).
@@ -7102,10 +7168,12 @@ fn eval_trampoline_inner<C: EvalContext>(
                             )
                         };
                         if effective_expr.has_variables_fast() {
-                            let free_vars = effective_expr.free_variables();
-                            if !free_vars.is_empty() {
-                                let tracked: SmallVec<[&'static str; 4]> =
-                                    free_vars.into_iter().collect();
+                            // UAF fix (Finding 1): capture the free variable
+                            // ATOMS (rootable handles), not laundered
+                            // `&'static str` names.
+                            let tracked: SmallVec<[MettaValue; 4]> =
+                                effective_expr.free_variable_atoms();
+                            if !tracked.is_empty() {
                                 push_binding_capture_frame(tracked);
                             }
                         }
@@ -15122,7 +15190,7 @@ fn process_continuation<C: EvalContext>(
             // so the sidecar encoding site can project each result's bindings
             // to just the user-visible set (matching HE's Bindings::resolve()
             // at the observation point). None ⇒ no projection needed.
-            let tracked_vars_for_sidecar: Option<std::sync::Arc<SmallVec<[&'static str; 4]>>> =
+            let tracked_vars_for_sidecar: Option<std::sync::Arc<SmallVec<[MettaValue; 4]>>> =
                 captured_frame
                     .as_ref()
                     .map(|f| std::sync::Arc::new(f.tracked_vars.clone()));
@@ -15225,11 +15293,13 @@ fn process_continuation<C: EvalContext>(
                 // `$who=a` never reach the sidecar encoding at line
                 // ~8407 below. Matches HE's semantics where bindings flow
                 // hierarchically through collapse-bind re-interpretation.
-                let tracked_slice = tracked_vars_for_sidecar.as_deref().map(|tv| tv.as_slice());
+                // UAF fix (Finding 1): `tracked_vars_for_sidecar` now holds
+                // variable ATOMS; `project_owned_bindings_for_consumer`
+                // materializes the transient `&str` names internally.
                 let raw_bindings_for_eval = match project_owned_bindings_for_consumer(
                     &first_raw_bindings,
                     &first_raw,
-                    tracked_slice,
+                    tracked_vars_for_sidecar.as_deref().map(|tv| tv.as_slice()),
                     ctx.factory(),
                 ) {
                     Some(b) => b,
@@ -15329,12 +15399,13 @@ fn process_continuation<C: EvalContext>(
 
             if let Some((next_raw, next_raw_bindings)) = remaining_raw.next() {
                 // More results to evaluate — preserve state.
-                let tracked_slice = tracked_vars_hint.as_deref().map(|tv| tv.as_slice());
+                // UAF fix (Finding 1): pass the tracked-var ATOM slice;
+                // `project_owned_bindings_for_consumer` materializes names.
                 let projected_next_raw_bindings = if is_bind {
                     match project_owned_bindings_for_consumer(
                         &next_raw_bindings,
                         &next_raw,
-                        tracked_slice,
+                        tracked_vars_hint.as_deref().map(|tv| tv.as_slice()),
                         ctx.factory(),
                     ) {
                         Some(b) => b,
@@ -15470,8 +15541,11 @@ fn process_continuation<C: EvalContext>(
                     let pairs: Vec<MettaValue> = evaluated
                         .into_iter()
                         .map(|(result_val, bindings)| {
-                            let tracked_slice =
-                                tracked_vars_hint.as_deref().map(|tv| tv.as_slice());
+                            // UAF fix (Finding 1): materialize transient `&str` names.
+                            let tracked_names: Option<SmallVec<[&str; 4]>> = tracked_vars_hint
+                                .as_deref()
+                                .map(|tv| tv.iter().filter_map(|a| a.as_atom()).collect());
+                            let tracked_slice = tracked_names.as_deref();
                             let projected = crate::backend::eval::bindings::project_bindings_for_consumer_generic(
                                 &bindings,
                                 &[&result_val],
@@ -15931,7 +16005,12 @@ fn process_continuation<C: EvalContext>(
                     }
                     crate::backend::eval::trampoline::types::CollapseMergeMode::Bind => {
                         // collapse-bind: per-result (value (Bindings ...)) sidecar.
-                        let tracked_slice = tracked_vars_hint.as_deref().map(|tv| tv.as_slice());
+                        // UAF fix (Finding 1): materialize transient `&str` names
+                        // (outlives the closure; `tracked_slice` borrows it).
+                        let tracked_names: Option<SmallVec<[&str; 4]>> = tracked_vars_hint
+                            .as_deref()
+                            .map(|tv| tv.iter().filter_map(|a| a.as_atom()).collect());
+                        let tracked_slice = tracked_names.as_deref();
                         let pairs: Vec<MettaValue> = evaluated
                             .into_iter()
                             .map(|(result_val, bindings)| {

@@ -283,7 +283,7 @@ pub struct ParallelDispatchHandle {
     /// dominant `in_collapse_bind_scope() → 0` veto (eval_loop.rs:408)
     /// which previously forced all four dispatch sites sequential inside
     /// PLN's `(let $derivations (collapse ...) ...)` body.
-    pub tracked_vars_hint: Option<Arc<SmallVec<[&'static str; 4]>>>,
+    pub tracked_vars_hint: Option<Arc<SmallVec<[MettaValue; 4]>>>,
     /// E1-FLIP / CEX-1 (D2): RAII registration of this dispatch's fan-out in the
     /// global `LIVE_DISPATCHES` anchor, so the dedicated GC thread can walk the
     /// branch INPUTS + completed OUTPUTS for the dispatch's lifetime
@@ -455,7 +455,7 @@ pub struct ParallelCollapseDispatchHandle {
     #[allow(dead_code)]
     pub(crate) _root_provider_arc: Arc<ParallelCollapseRootProvider>,
     /// See `ParallelDispatchHandle::tracked_vars_hint` (Phase 10.A).
-    pub tracked_vars_hint: Option<Arc<SmallVec<[&'static str; 4]>>>,
+    pub tracked_vars_hint: Option<Arc<SmallVec<[MettaValue; 4]>>>,
     /// E1-FLIP / CEX-1 (D2): see `ParallelDispatchHandle::_live_dispatch`.
     #[cfg(feature = "index-gc")]
     pub(crate) _live_dispatch: Option<crate::backend::models::gc_allocator::LiveDispatchHandle>,
@@ -684,7 +684,7 @@ pub enum Continuation {
         /// collapse-bind is active (99% of evaluations) — zero overhead.
         /// Shared via Arc so parallel workers can see the same projection
         /// set without reading the thread-local.
-        tracked_vars_hint: Option<std::sync::Arc<SmallVec<[&'static str; 4]>>>,
+        tracked_vars_hint: Option<std::sync::Arc<SmallVec<[MettaValue; 4]>>>,
         /// Span correlation ID for the current branch (format v2).
         #[cfg(feature = "trace")]
         branch_span_id: u64,
@@ -724,7 +724,7 @@ pub enum Continuation {
         /// Stage 1d-revised: see `ProcessRuleMatches.outer_carrying`.
         outer_carrying: SharedBindings,
         /// Stage 1c: see `ProcessRuleMatches.tracked_vars_hint`.
-        tracked_vars_hint: Option<std::sync::Arc<SmallVec<[&'static str; 4]>>>,
+        tracked_vars_hint: Option<std::sync::Arc<SmallVec<[MettaValue; 4]>>>,
     },
 
     /// Processing TCO grounded operation.
@@ -1161,7 +1161,7 @@ pub enum Continuation {
         /// just the user-visible set (matching HE `Bindings::resolve()` at
         /// the observation point, not earlier during match composition).
         /// None for plain `collapse` or when no free vars were tracked.
-        tracked_vars_hint: Option<std::sync::Arc<smallvec::SmallVec<[&'static str; 4]>>>,
+        tracked_vars_hint: Option<std::sync::Arc<smallvec::SmallVec<[MettaValue; 4]>>>,
         /// Plan Phase E (2026-05-20): if true (default for plain `collapse`),
         /// the assembled tuple is sorted by canonical printable form before
         /// emission (HE behavior, fixture T04/063 / §06.11). If false (used
@@ -1284,7 +1284,7 @@ pub enum Continuation {
         /// Layer A: tracked-variable hints from the enclosing collapse-bind
         /// frame, projected at the sidecar encoding step. None for plain
         /// collapse.
-        tracked_vars_hint: Option<Arc<SmallVec<[&'static str; 4]>>>,
+        tracked_vars_hint: Option<Arc<SmallVec<[MettaValue; 4]>>>,
         env: SharedEnv,
         depth: usize,
         budget_acquired: u32,
@@ -2403,8 +2403,15 @@ impl Continuation {
                 results,
                 current_branch_bindings,
                 outer_carrying,
+                tracked_vars_hint,
                 ..
             } => {
+                // UAF fix (Finding 1): root the collapse-bind tracked-var ATOM
+                // handles — their laundered `&str` is read at projection and
+                // shared cross-thread into workers, so the atoms must survive GC.
+                if let Some(tv) = tracked_vars_hint {
+                    out.extend(tv.iter().cloned());
+                }
                 let mut bridge = TrampolineFanoutSpineBridge::new();
                 bridge.push(TrampolineFanoutSpineNode::ProcessRuleMatches {
                     remaining_matches: remaining_matches.as_slice(),
@@ -2815,8 +2822,13 @@ impl Continuation {
                 evaluated,
                 current_raw_bindings,
                 outer_carrying,
+                tracked_vars_hint,
                 ..
             } => {
+                // UAF fix (Finding 1): root the collapse-bind tracked-var atoms.
+                if let Some(tv) = tracked_vars_hint {
+                    out.extend(tv.iter().cloned());
+                }
                 let mut bridge = TrampolineFanoutSpineBridge::new();
                 bridge.push(TrampolineFanoutSpineNode::ProcessCollapseEvalResults {
                     remaining_raw: remaining_raw.as_slice(),
@@ -2864,8 +2876,13 @@ impl Continuation {
                 handle,
                 stable_items_snapshot,
                 outer_carrying,
+                tracked_vars_hint,
                 ..
             } => {
+                // UAF fix (Finding 1): root the collapse-bind tracked-var atoms.
+                if let Some(tv) = tracked_vars_hint {
+                    out.extend(tv.iter().cloned());
+                }
                 let mut bridge = TrampolineFanoutSpineBridge::new();
                 bridge.push(TrampolineFanoutSpineNode::WaitForParallelCollapse {
                     handle,
@@ -3302,6 +3319,7 @@ impl Continuation {
                 results,
                 current_branch_bindings,
                 outer_carrying,
+                tracked_vars_hint,
                 ..
             } => {
                 coroutine.collect_values(out);
@@ -3311,6 +3329,10 @@ impl Continuation {
                 }
                 collect_bindings_values(current_branch_bindings, out);
                 collect_bindings_values(outer_carrying, out);
+                // UAF fix (Finding 1): root the collapse-bind tracked-var atoms.
+                if let Some(tv) = tracked_vars_hint {
+                    out.extend(tv.iter().cloned());
+                }
             }
 
             Self::CompleteSubgoal { .. } => {
@@ -3373,6 +3395,7 @@ impl Continuation {
                 outer_carrying,
                 cut_barrier,
                 env,
+                tracked_vars_hint,
                 ..
             } => {
                 // Forked-env-local roots — these three narrowed arms do NOT
@@ -3382,6 +3405,14 @@ impl Continuation {
                 collect_fork_local_roots(env, out);
                 #[cfg(not(feature = "index-gc"))]
                 let _ = env;
+                // UAF fix (Finding 1): root the collapse-bind tracked-var atoms.
+                // `tracked_vars_hint` is NEVER narrowed by the cut (it is the
+                // caller's observation set, not a `remaining_*` alternative), so
+                // it is rooted unconditionally — same as the non-narrowed
+                // `collect_values` arm.
+                if let Some(tv) = tracked_vars_hint {
+                    out.extend(tv.iter().cloned());
+                }
                 let mut bridge = TrampolineFanoutSpineBridge::new();
                 bridge.push(TrampolineFanoutSpineNode::ProcessRuleMatches {
                     remaining_matches: remaining_matches.as_slice(),

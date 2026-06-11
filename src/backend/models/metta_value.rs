@@ -926,6 +926,19 @@ thread_local! {
     /// `INNER_SHADOW`. Since shadow entries contain child `MettaValue` handles
     /// copied from the indexed heap, every mutator must lazily discard entries
     /// from an older sweep epoch before `inner_ref_index` can return one.
+    ///
+    /// VETOED-alternative note (experiment #14, 2026-06-11): moving this check
+    /// from per-access to enumerated safepoint/guard boundaries (EvalGuard
+    /// enter, reacquire, worker resume, requester post-cycle recv, + a debug
+    /// tripwire) measured -3.0% (accepted on the locked criterion, p=7e-5) but
+    /// was VETOED by the gate wall: stress_multidir FANOUT=8 ASAN SEGV in a
+    /// worker + sorted-content nondeterminism (3 hashes/10 runs) — a park/
+    /// resume edge the 6-boundary enumeration missed (and the FANOUT=0 debug
+    /// tripwire cannot see). The per-access check is correct-by-construction
+    /// LOCALLY; a boundary enumeration is a fragile global invariant that every
+    /// future park edge must remember to maintain. Do not re-attempt without a
+    /// machine-checked enumeration of ALL park/resume edges (patch preserved at
+    /// /tmp/exp14-vetoed-boundary-sync.patch; pgmcp experiment #14).
     static INNER_SHADOW_EPOCH: Cell<u64> = const { Cell::new(0) };
 }
 

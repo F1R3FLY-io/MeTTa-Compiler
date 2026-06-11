@@ -1,0 +1,205 @@
+diff --git a/src/backend/eval/cesk/gc_driver.rs b/src/backend/eval/cesk/gc_driver.rs
+index afd0ac3d..87045f3e 100644
+--- a/src/backend/eval/cesk/gc_driver.rs
++++ b/src/backend/eval/cesk/gc_driver.rs
+@@ -552,7 +552,16 @@ fn try_drive_blocking(roots: Vec<MettaValue>) -> Result<bool, Vec<MettaValue>> {
+     }
+     // Sent (roots moved to the thread). Wait for done; on recv failure the roots
+     // are gone ⇒ skip this cycle (Ok(false)), do NOT collect inline.
+-    Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))
++    let ran = resp_rx.recv().map(|d| d.0).unwrap_or(false);
++    // Experiment #14: the REQUESTER's post-cycle boundary. The dedicated GC
++    // thread may have swept (bumping the sweep epoch) while this thread waited
++    // here BETWEEN guards (a directive boundary) — and the very next accesses
++    // (result formatting/comparison) happen before any EvalGuard::enter. Sync
++    // the shadow cache now, exactly as the inline-collection path does via its
++    // eager clear_inner_shadow. (Found by the debug tripwire: thread 'main'
++    // epoch 0 vs sweep 1 with an occupied cache in the conformance oracle.)
++    crate::backend::models::metta_value::ensure_inner_shadow_epoch_current();
++    Ok(ran)
+ }
+ 
+ /// E1-a.3 entry from the quiescence collection point (eval/mod.rs, tier_forced.rs).
+diff --git a/src/backend/eval/cesk/index_heap.rs b/src/backend/eval/cesk/index_heap.rs
+index c7feca97..41ebb426 100644
+--- a/src/backend/eval/cesk/index_heap.rs
++++ b/src/backend/eval/cesk/index_heap.rs
+@@ -4433,9 +4433,21 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn inner_shadow_is_cleared_lazily_after_sweep_epoch_bump() {
++    fn inner_shadow_is_cleared_at_boundary_after_sweep_epoch_bump() {
++        // Experiment #14: the epoch sync moved from per-access (the former
++        // lazy clear in inner_ref_index) to the SAFEPOINT/GUARD BOUNDARIES
++        // (ensure_inner_shadow_epoch_current at EvalGuard::enter, the
++        // reacquire paths, worker resume, and the requester's post-cycle
++        // recv). The contract under test: after a sweep-epoch bump, the
++        // BOUNDARY sync drops every cached page; accesses after the boundary
++        // re-materialize. (An access BETWEEN bump and boundary with an
++        // occupied cache is the debug tripwire's hazard and panics in debug
++        // builds — the conformance DEBUG oracle enforces that no production
++        // path does it, so this test exercises only the boundary contract.)
+         use crate::backend::models::gc_allocator::bump_gc_sweep_epoch;
+-        use crate::backend::models::metta_value::{clear_inner_shadow, inner_shadow_len};
++        use crate::backend::models::metta_value::{
++            clear_inner_shadow, ensure_inner_shadow_epoch_current, inner_shadow_len,
++        };
+         use crate::backend::models::MettaValueFactory;
+ 
+         let _mode = enter_index_mode_for_test();
+@@ -4453,11 +4465,21 @@ mod tests {
+         );
+ 
+         bump_gc_sweep_epoch();
++        // The boundary sync (what EvalGuard::enter / reacquire / worker resume
++        // / the requester post-cycle path call) must drop the stale pages.
++        ensure_inner_shadow_epoch_current();
++        assert_eq!(
++            inner_shadow_len(),
++            0,
++            "the boundary sync must drop every cached page after an epoch bump"
++        );
++
++        // Post-boundary accesses re-materialize fresh entries.
+         let _ = a.inner_ref();
+         assert_eq!(
+             inner_shadow_len(),
+             1,
+-            "inner_ref_index must clear stale shadow entries before returning after an epoch bump"
++            "post-boundary access re-materializes into the synced cache"
+         );
+ 
+         clear_inner_shadow();
+diff --git a/src/backend/models/gc_allocator.rs b/src/backend/models/gc_allocator.rs
+index c5b2720a..2c814e40 100644
+--- a/src/backend/models/gc_allocator.rs
++++ b/src/backend/models/gc_allocator.rs
+@@ -3909,6 +3909,9 @@ pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
+             );
+         }
+     }
++    // Experiment #14: the cycle this worker parked for has swept — sync the
++    // shadow cache at the resume boundary (replaces the per-access epoch check).
++    crate::backend::models::metta_value::ensure_inner_shadow_epoch_current();
+ }
+ 
+ /// WORKER side: park on [`RESUME_CONDVAR`] until the requestor clears
+@@ -4661,6 +4664,11 @@ impl EvalGuard {
+                 N_THREADS.fetch_add(1, Ordering::AcqRel);
+             }
+         });
++        // Experiment #14: sync the thread-local shadow cache with the sweep
++        // epoch at the guard BOUNDARY (a sweep can only have happened while
++        // this thread held no guard / was parked), replacing the former
++        // per-access check in `inner_ref_index`.
++        crate::backend::models::metta_value::ensure_inner_shadow_epoch_current();
+         EvalGuard
+     }
+ }
+@@ -6146,6 +6154,9 @@ pub fn reacquire_eval_guard_after_safepoint() {
+             N_THREADS.fetch_add(1, Ordering::AcqRel);
+         }
+     });
++    // Experiment #14: a sweep may have run while this thread was parked at the
++    // safepoint — sync the shadow cache at the reacquire boundary.
++    crate::backend::models::metta_value::ensure_inner_shadow_epoch_current();
+ }
+ 
+ /// E1-c (design §Part 9 + Round-4 F2) + **E1-FLIP Path B V4 straddle re-park**:
+@@ -6329,6 +6340,9 @@ pub fn reacquire_eval_guard_after_safepoint_full(
+             ACTIVE_EVALUATORS.fetch_add(saved_depth, Ordering::AcqRel);
+             N_THREADS.fetch_add(1, Ordering::AcqRel);
+             EVAL_GUARD_DEPTH.with(|d| d.set(saved_depth));
++            // Experiment #14: rejoin-from-straddle boundary — the cycle(s) this
++            // thread straddled have swept; sync the shadow cache.
++            crate::backend::models::metta_value::ensure_inner_shadow_epoch_current();
+             return;
+         }
+     }
+@@ -6357,6 +6371,9 @@ pub fn reacquire_eval_guard_after_safepoint_full(
+     ACTIVE_EVALUATORS.fetch_add(saved_depth, Ordering::AcqRel);
+     N_THREADS.fetch_add(1, Ordering::AcqRel);
+     EVAL_GUARD_DEPTH.with(|d| d.set(saved_depth));
++    // Experiment #14: reacquire boundary (normal resume path) — a sweep ran
++    // while this thread was parked; sync the shadow cache.
++    crate::backend::models::metta_value::ensure_inner_shadow_epoch_current();
+     // `reparked_roots` is only used by the V4 straddle path above; in the dormant/
+     // slab path it is intentionally unused (the base protocol does not re-publish).
+     let _ = reparked_roots;
+diff --git a/src/backend/models/metta_value.rs b/src/backend/models/metta_value.rs
+index e944aee2..73def899 100644
+--- a/src/backend/models/metta_value.rs
++++ b/src/backend/models/metta_value.rs
+@@ -947,8 +947,20 @@ pub(crate) fn clear_inner_shadow() {
+     });
+ }
+ 
++/// Synchronize this thread's shadow cache with the global sweep epoch,
++/// dropping every page if a sweep happened since the last sync.
++///
++/// Experiment #14: called at the SAFEPOINT/GUARD BOUNDARIES (EvalGuard::enter,
++/// reacquire-after-safepoint, worker resume-from-rendezvous) instead of on
++/// every `inner_ref_index` access. The sweep epoch can only advance while this
++/// thread is parked (rendezvous/quiescence sweeps require it) or when this
++/// thread itself collects (whose inline path calls `clear_inner_shadow`
++/// eagerly) — so a per-access check re-reads a GC-thread-written shared atomic
++/// for no information between safepoints. Debug builds keep a per-access
++/// tripwire ([`inner_shadow_debug_epoch_check`]) so the conformance DEBUG
++/// oracle fails loudly if a transition point is ever missed.
+ #[inline]
+-fn ensure_inner_shadow_epoch_current() {
++pub(crate) fn ensure_inner_shadow_epoch_current() {
+     let current_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
+     INNER_SHADOW_EPOCH.with(|epoch| {
+         if epoch.get() != current_epoch {
+@@ -962,6 +974,32 @@ fn ensure_inner_shadow_epoch_current() {
+     });
+ }
+ 
++/// Debug-only per-access tripwire (experiment #14): a STALE epoch observed at
++/// an access while the shadow holds entries means a safepoint sync point was
++/// missed — the exact hazard class the boundary-sync design must never allow
++/// (a stale entry for a swept-and-reused Addr). A stale epoch with an EMPTY
++/// shadow is benign (a fresh thread that has not passed a boundary yet) and is
++/// synced silently.
++#[cfg(debug_assertions)]
++fn inner_shadow_debug_epoch_check() {
++    let current_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
++    INNER_SHADOW_EPOCH.with(|epoch| {
++        if epoch.get() != current_epoch {
++            let occupied =
++                INNER_SHADOW.with(|c| c.borrow().iter().any(|page| page.is_some()));
++            assert!(
++                !occupied,
++                "INNER_SHADOW epoch stale at access with an occupied cache \
++                 (thread epoch {} vs sweep epoch {}): a safepoint sync point \
++                 was missed — see experiment #14 boundary list",
++                epoch.get(),
++                current_epoch
++            );
++            epoch.set(current_epoch);
++        }
++    });
++}
++
+ /// Test-only: number of distinct Addrs currently materialized in the shadow cache.
+ #[cfg(test)]
+ pub(crate) fn inner_shadow_len() -> usize {
+@@ -1079,7 +1117,15 @@ impl MettaValue {
+     #[inline(never)]
+     fn inner_ref_index(&self) -> &'static MettaValueInner {
+         let raw = (self.tagged >> 4) as u32;
+-        ensure_inner_shadow_epoch_current();
++        // Experiment #14: the epoch sync moved to the safepoint/guard
++        // boundaries (EvalGuard::enter, reacquire-after-safepoint, worker
++        // resume) — the sweep epoch cannot advance while this thread runs
++        // between safepoints, so the former per-access shared-atomic load +
++        // compare was pure overhead on the hottest access path. Debug builds
++        // keep the per-access tripwire (the conformance DEBUG oracle fails if
++        // a transition point is ever missed).
++        #[cfg(debug_assertions)]
++        inner_shadow_debug_epoch_check();
+         INNER_SHADOW.with(|c| {
+             let mut dir = c.borrow_mut();
+             let page_idx = (raw as usize) >> SHADOW_PAGE_BITS;

@@ -145,3 +145,61 @@ pub fn assert_gc_request(request: Option<&str>) -> Result<&'static str, String> 
     }
     Ok(compiled)
 }
+
+#[cfg(test)]
+mod gc_request_tests {
+    use super::{assert_gc_request, compiled_gc_store};
+
+    /// F2 (the --gc/MTT_GC assert + reporter): the resolved request must match
+    /// the compile-time store or hard-error BEFORE evaluation. These tests are
+    /// cfg-agnostic — they derive expectations from `compiled_gc_store()`, so
+    /// they hold in both the slab (default) and `--features index-gc` builds.
+    #[test]
+    fn matching_request_passes_and_reports_the_compiled_store() {
+        let compiled = compiled_gc_store();
+        assert_eq!(assert_gc_request(Some(compiled)), Ok(compiled));
+    }
+
+    #[test]
+    fn auto_empty_and_absent_requests_always_pass() {
+        let compiled = compiled_gc_store();
+        assert_eq!(assert_gc_request(Some("auto")), Ok(compiled));
+        assert_eq!(assert_gc_request(Some("")), Ok(compiled));
+        assert_eq!(assert_gc_request(Some("  ")), Ok(compiled));
+        assert_eq!(assert_gc_request(None), Ok(compiled));
+    }
+
+    #[test]
+    fn request_is_case_insensitive_and_trimmed() {
+        let compiled = compiled_gc_store();
+        let shouty = compiled.to_ascii_uppercase();
+        assert_eq!(assert_gc_request(Some(shouty.as_str())), Ok(compiled));
+        let padded = format!("  {compiled}  ");
+        assert_eq!(assert_gc_request(Some(padded.as_str())), Ok(compiled));
+    }
+
+    #[test]
+    fn the_other_store_is_a_hard_error_with_a_rebuild_hint() {
+        let compiled = compiled_gc_store();
+        let other = if compiled == "slab" { "index" } else { "slab" };
+        let err = assert_gc_request(Some(other)).expect_err("store mismatch must hard-error");
+        assert!(
+            err.contains(&format!("--gc={other} requested")),
+            "names the rejected request: {err}"
+        );
+        assert!(
+            err.contains(&format!("compiled with the '{compiled}' GC store")),
+            "names the compiled store: {err}"
+        );
+        assert!(err.contains("rebuild with"), "carries the rebuild hint: {err}");
+    }
+
+    #[test]
+    fn unknown_values_are_rejected_with_the_expected_set() {
+        let err = assert_gc_request(Some("bogus")).expect_err("unknown value must error");
+        assert!(
+            err.contains("unknown --gc value 'bogus'") && err.contains("slab | index | auto"),
+            "names the value and the accepted set: {err}"
+        );
+    }
+}

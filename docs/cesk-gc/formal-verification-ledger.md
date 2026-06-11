@@ -902,3 +902,18 @@ neither run nor explicitly classified, and rejects any tracked `tla/*.tla` modul
 imported by a run/classified wrapper, or explicitly classified. The only classified exclusions are legacy slab
 mark-sweep models, the older non-generational store-centric mark-sweep wrapper/configs, and larger CESK generational
 discriminator configs whose disk-light small counterparts are the default gate.
+
+## Whole-system verification wall (capstone, 2026-06-11)
+
+`scripts/verify_cesk_gc_all.sh` is the single-entrypoint capstone harness (pgmcp #149/#22): it runs
+every standing gate in dependency order — proof hygiene, TLC hygiene, source coupling, the full
+Rocq corpus + TLC discriminator suite, the greenwall (both stores: nextest, conformance 483
+release, 49/49 warnings, the DEBUG machine-equivalence oracle), the forced-cycle FANOUT=8 ASAN
+gate (3 arms, 0-UAF + rendezvous non-vacuity), the loom concurrency models, mmverify "Correct
+proof!" on both store binaries, and the 20-run Robot FANOUT=8 sorted-content determinism check
+(order-insensitive: the unsorted output ORDER is pre-existing nondeterministic at HEAD; content
+must be invariant) — each stage hard-gating the next, ending in a single verdict table. It pairs
+with the end-to-end composition theorem `formal/rocq/gc/CESKCollectorSafety.v` (#152): the theorem
+composes the local obligations; the wall re-checks every obligation's mechanized artifact and the
+runtime evidence on the live tree. First full run (label `capstone`, HEAD 8cfe9cdd):
+ALL 9 STAGES GREEN (logs `target/gc-logs/allwall_capstone.fTdf7jEl`).

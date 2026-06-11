@@ -9639,6 +9639,13 @@ mod tests {
         // on (no other thread bumps it — RENDEZVOUS_TEST_LOCK is held).
         reset_rendezvous_counters();
         let my_gen = current_cycle_gen();
+        // #309 cycle-reality gate: OPEN the cycle exactly as the production driver
+        // now guarantees at every rendezvous open (request_gc re-assert in
+        // gc_driver_rendezvous_cycle + set_current_cycle_started in
+        // prepare_rendezvous_roots) — otherwise the gate correctly classifies
+        // these parks as phantoms and the requestor wait below never completes.
+        request_gc();
+        set_current_cycle_started(my_gen);
         const N: u32 = 4;
         let mut handles = Vec::with_capacity(N as usize);
         for i in 0..N {
@@ -9696,6 +9703,11 @@ mod tests {
         let _serial = RENDEZVOUS_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_rendezvous_counters();
         let my_gen = current_cycle_gen();
+        // #309 cycle-reality gate: OPEN the cycle exactly as the production driver
+        // now guarantees at every rendezvous open — otherwise the gate correctly
+        // classifies these parks as phantoms and the requestor wait never completes.
+        request_gc();
+        set_current_cycle_started(my_gen);
         const N: u32 = 4;
         let mut handles = Vec::with_capacity(N as usize);
         for i in 0..N {

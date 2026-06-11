@@ -404,7 +404,10 @@ impl<N: Copy> Segment<N> {
     /// Drop the slot storage, returning the byte estimate freed. `&mut self`:
     /// release runs only inside `sweep_with` at quiescence (exclusive access), so
     /// the storage teardown cannot race a reader. The freed-byte estimate uses
-    /// `capacity` (storage is allocated once to `capacity`, never grown).
+    /// `capacity` (storage is allocated once to `capacity`, never grown — this
+    /// "never grown" claim is about NODE slots only; side-payload columns live in
+    /// `index_heap.rs`'s [`SideColumn`]s, which recycle indices via per-cell
+    /// generations and have their own bounded-growth story — audit Finding 3).
     fn release(&mut self) -> usize {
         let freed = self.capacity * std::mem::size_of::<N>();
         // Drop the once-allocated cell storage.

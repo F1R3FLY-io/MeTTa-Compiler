@@ -428,6 +428,17 @@ line_no "src/backend/eval/cesk/index_heap.rs" "let major_due = live_major || cap
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn free_pending_side_reclaims(&mut self)" "let pending = std::mem::take(&mut self.pending_side_reclaims);" "for side in pending {"
 line_no "src/backend/eval/cesk/index_heap.rs" "fn append_pending_side_reclaims(&mut self, reclaimed: &[Addr])" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/RendezvousSideReclaimProgress.v\"" >/dev/null
+# Audit Finding 3 (Increment 1): the SOURCE comments must state the proven
+# bounded-growth story, not the pre-266d19d "unbounded by design" framing —
+# ADDRESSABILITY spans u32 (free-list node reuse decouples side indices from
+# node count) but the OCCUPIED footprint is recycling-bounded (live high-water
+# + pending-drain), and the ChildRef generation's u32 width carries its
+# sufficiency argument (drain-before-2^32-reuses; the QuiescentSideIndexReuse.v
+# / SideReclaimGeneration.tla argument) at the field itself.
+line_no "src/backend/eval/cesk/index_heap.rs" "ADDRESSABILITY vs GROWTH (audit Finding 3)" >/dev/null
+line_no "src/backend/eval/cesk/index_heap.rs" "Its OCCUPIED footprint is nonetheless bounded (audit Finding 3)" >/dev/null
+line_no "src/backend/eval/cesk/index_node.rs" "is sufficient and deliberate" >/dev/null
+line_no "src/backend/eval/cesk/index_arena.rs" "claim is about NODE slots only" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"rendezvous_side_reclaim_bounded\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"rendezvous_side_reclaim_unbounded\"" >/dev/null
 assert_count "src/backend/eval/cesk/index_heap.rs" "const GROWTH: usize = 2;" "1"

@@ -28,10 +28,14 @@
 //! node bump cursor put while `intern_*_in` APPENDS a fresh side index into the
 //! same segment's [`SideColumn`]. Because `cur_seg` is release-exempt (it is the
 //! live allocation frontier and is never co-released), a long-lived `cur_seg`
-//! under reuse-heavy churn can append side entries without bound — so the side
-//! column must be **unbounded by design**, exactly like the `Vec<Option<Box<_>>>`
-//! it replaced (see the [`SideColumn`] docs: a two-level lazy-growing directory
-//! addresses the entire `u32` index space, never the segment capacity).
+//! under reuse-heavy churn can claim side indices without an a-priori cap — so
+//! the side column's ADDRESSABLE space must span the entire `u32` index range,
+//! exactly like the `Vec<Option<Box<_>>>` it replaced (see the [`SideColumn`]
+//! docs: a two-level lazy-growing directory, never capped by segment capacity).
+//! Its OCCUPIED footprint is nonetheless bounded (audit Finding 3): post-`266d19d`
+//! freed cells are RECYCLED via the per-cell-generation free list before the bump
+//! grows, and `pending_side_major` forces a quiescence drain of pending reclaims —
+//! growth ≤ live-side high-water + pending-drain, not append-only.
 //!
 //! This heap is the active `index-gc` value heap. A single global
 //! `RwLock<IndexHeap>` backs the current index factory and collector paths; the
@@ -2890,10 +2894,19 @@ type SidePage<T> = Box<[std::cell::UnsafeCell<std::mem::MaybeUninit<SideChunk<T>
 
 /// A per-(segment, field) never-realloc chunked column of address-stable
 /// `Box<T>` payloads, appendable under `&self` (lock-free bump+publish) — the
-/// concurrent replacement for the `Vec<Option<Box<T>>>` side arenas, and
-/// **unbounded by design** (it grows to address the entire `u32` index space,
-/// not the segment capacity — see [`MAX_SIDE_PAGES`] and the module docs on the
-/// C1.c #1 free-list reuse that makes unboundedness mandatory).
+/// concurrent replacement for the `Vec<Option<Box<T>>>` side arenas.
+///
+/// ADDRESSABILITY vs GROWTH (audit Finding 3): the directory can ADDRESS the
+/// entire `u32` index space (not the segment capacity — see [`MAX_SIDE_PAGES`];
+/// C1.c #1 free-list node reuse decouples side indices from node count, so the
+/// index space must not be capped). GROWTH, however, is NOT append-only:
+/// post-`266d19d` side indices are RECYCLED through the per-cell generation
+/// free list (`SideColumn::push` reuses a freed cell before bumping), and the
+/// `pending_side_major` quiescence trigger drains pending reclaims — so the
+/// occupied footprint is bounded by the live-side high-water mark plus the
+/// reclaims awaiting the next quiescence drain (proven:
+/// `QuiescentSideIndexReuse.v`, `RendezvousSideReclaimProgress.v` /
+/// `RendezvousSideReclaimProgress.tla`).
 ///
 /// Mirrors [`IndexArena`](crate::backend::eval::cesk::index_arena)'s directory
 /// + [`Segment`]'s two-cursor, but with a **two-level lazy-growing directory**

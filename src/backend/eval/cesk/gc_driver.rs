@@ -168,6 +168,24 @@ fn gc_driver_rendezvous_cycle() {
     let _gip = acquire_gc_in_progress_for_rendezvous();
     let roots = prepare_rendezvous_roots();
 
+    // F1 SATB-young lever — classify the trigger NOW (workers parked ⇒ heap
+    // metrics stable; `_gip` held ⇒ no concurrent cycle): a young-budget-only
+    // trigger takes the proven STW rendezvous body INSIDE this already-held
+    // rendezvous — its classifier independently selects the MINOR arm
+    // (`mark_young` + `sweep_young` + `clear_old_marks` + promote), one
+    // rendezvous, ONE conservative traversal, no SATB window. The full SATB
+    // major (concurrent mark + final remark + full sweep, TWO rendezvouses and
+    // TWO full traversals) is reserved for genuine major triggers (old-live
+    // growth / hard cap / the MAJOR_CADENCE backstop, every ≤16 cycles), which
+    // keeps old dead bounded and the mark lifecycle identical to the pre-lever
+    // behavior on those cycles. Census at 42180ca9 (default env): 96/96
+    // rendezvous cycles were young-budget-triggered yet ran as full SATB majors
+    // — see docs/cesk-gc/f1-satb-young-cycles-design.md.
+    if !crate::backend::eval::cesk::index_heap::index_gc::rendezvous_major_due() {
+        run_open_stw_rendezvous_cycle(roots, _gip);
+        return;
+    }
+
     let satb_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         gc_driver_satb_rendezvous_cycle(roots, _gip);
     }));

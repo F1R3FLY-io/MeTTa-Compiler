@@ -1509,6 +1509,15 @@ impl IndexHeap {
         self.arena.promote_young();
     }
 
+    /// F1 SATB-young lever: clear all OLD-generation mark bits (forwards to
+    /// [`IndexArena::clear_old_marks`]). Called by the rendezvous-phase minor arm
+    /// after [`sweep_young`](Self::sweep_young) — the ClearOldMarks=TRUE wiring of
+    /// `tla/SATBYoungSweepStaleOldMark.tla` (see that model's `NoStaleOldMark`).
+    #[inline]
+    pub fn clear_old_marks(&self) {
+        self.arena.clear_old_marks();
+    }
+
     #[inline]
     fn pending_side_reclaim_count(&self) -> usize {
         self.pending_side_reclaims.len()
@@ -2351,6 +2360,40 @@ pub mod index_gc {
             || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
     }
 
+    /// F1 SATB-young lever: the MAJOR-only half of the trigger disjunction, for the
+    /// dedicated GC thread's rendezvous-cycle ROUTING (`gc_driver_rendezvous_cycle`).
+    /// TRUE ⇒ the cycle takes the full SATB major (concurrent mark + final remark +
+    /// full sweep); FALSE (the trigger was young-budget/nursery-only) ⇒ the driver
+    /// routes to the proven STW rendezvous body, whose classifier independently
+    /// agrees on the minor arm (`major_due` below is the SAME three clauses, so
+    /// `do_major` cannot flip back to true).
+    ///
+    /// SOURCE-COUPLED to `mark_sweep_if_over_watermark`'s major clauses:
+    /// `live_major` (old-gen live growth past the rearmed watermark) ∨ `cap_major`
+    /// (hard ceiling, R3-floored) ∨ `cadence_major` (MAJOR_CADENCE minors since the
+    /// last major — ALSO the bound on how long rendezvous minors may defer a full
+    /// sweep). `pending_side_major` is omitted: it is `phase == "quiescence"`-gated
+    /// and can never hold at a rendezvous. Read on the GC thread AFTER the
+    /// rendezvous parked every mutator (no allocation ⇒ metrics stable) and under
+    /// `GcInProgressGuard` (no concurrent cycle mutates WATERMARK/CAP_FLOOR/
+    /// MINORS_SINCE_MAJOR) ⇒ no TOCTOU against the STW classifier's re-read.
+    ///
+    /// Conservative by design: the STW classifier's level-3 minor-preference
+    /// inversion (acute young pressure deferring a `live_major`) is NOT replicated
+    /// here — when any major clause holds the cycle takes the SATB major exactly as
+    /// every rendezvous cycle did before this lever.
+    #[allow(dead_code)]
+    pub(crate) fn rendezvous_major_due() -> bool {
+        let (committed, old_live) = {
+            let heap = global_index_heap().read().expect("index heap");
+            (heap.committed_bytes(), heap.old_live_bytes())
+        };
+        let cap = max_bytes().max(CAP_FLOOR.load(Ordering::Relaxed));
+        old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
+            || committed > cap
+            || MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE
+    }
+
     /// Run a single-threaded mark+sweep cycle IF the safety gate is open AND the
     /// committed-bytes watermark is exceeded.
     ///
@@ -2594,7 +2637,24 @@ pub mod index_gc {
                 // Minor: a pure minor (only minor_due) OR a level-3-DEFERRED major (a minor
                 // ran instead this cycle; the live_major re-fires next cycle / within cadence).
                 heap.mark_young(&addrs); // conservative traversal; young mark bits only
-                (heap.sweep_young(), false)
+                let stats = heap.sweep_young();
+                // F1 SATB-young lever — ClearOldMarks=TRUE of
+                // `tla/SATBYoungSweepStaleOldMark.tla` (`NoStaleOldMark`). The
+                // rendezvous phase is the only one that can follow an ARMED SATB
+                // window (the routed young rendezvous cycle, and the STW fallback
+                // after an aborted `gc_driver_satb_rendezvous_cycle`): deletion-
+                // barrier shades / allocate-black may have set OLD marks during
+                // that window, `sweep_young` never visits old segments, and the
+                // next full `mark` PRUNES its descent at already-marked nodes — a
+                // stale old mark would hide that node's live children from the
+                // next major (under-mark → use-after-free). Clearing the old
+                // bitmap here re-establishes the all-clear mark invariant every
+                // other cycle shape ends with. Quiescence/midloop minors skip it
+                // (no SATB window can precede them — byte-identical).
+                if phase == "rendezvous" {
+                    heap.clear_old_marks();
+                }
+                (stats, false)
             };
             // Increment A (the RSS half of CHANGE #1): free swept-dead side-payload
             // snapshots only after a FULL quiescent mark/sweep. Quiescence proves no
@@ -3577,6 +3637,91 @@ mod tests {
         );
         assert_eq!(heap.str_slice(child), "young-space-child");
         let _ = orphan;
+        reset_gc_mode_slab();
+    }
+
+    // ---- F1 SATB-young lever: the stale-old-mark discriminator + the fix ----
+    // Source form of `tla/SATBYoungSweepStaleOldMark.tla`: a stale old mark (an
+    // aborted SATB window's deletion-barrier shade) violates `NoStaleOldMark`
+    // under a young-only sweep (ClearOldMarks=FALSE, the expected-fail cfg) and
+    // the consequence is an UNDER-MARK: the pruning full mark treats the stale
+    // node as visited and never marks its live children. `clear_old_marks` is
+    // the ClearOldMarks=TRUE wiring that removes the hazard.
+
+    #[test]
+    fn stale_old_mark_hides_live_children_from_the_pruning_full_mark() {
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(4);
+        let child = heap.alloc_atom("old-child");
+        let parent = heap.alloc_sexpr(&[MettaValue::from_addr(child, 0)]);
+        let _f1 = heap.alloc_atom("fill-a");
+        let _f2 = heap.alloc_atom("fill-b"); // seg 0 full
+        let _young = heap.alloc_atom("young-opens-seg1"); // cur_seg -> 1
+        heap.promote_young(); // young_floor = 1: parent/child are OLD
+        assert!(parent.segment() < heap.arena.young_floor());
+
+        // The stale shade: ONE old mark, no traversal (what an armed SATB
+        // deletion barrier leaves behind if the cycle aborts before its full sweep).
+        heap.arena.mark(parent);
+
+        // THE HAZARD (model cfg young_only / ClearOldMarks=FALSE): the full mark
+        // prunes at the already-marked parent — the live child is NEVER marked.
+        heap.mark(&[parent]);
+        assert!(
+            !heap.arena.is_marked(child),
+            "under-mark: the pruning full mark never descends through the \
+             stale-marked old parent (this is the UAF mechanism NoStaleOldMark guards)"
+        );
+
+        // THE FIX (ClearOldMarks=TRUE): clear old marks, re-mark — the child is found.
+        heap.clear_old_marks();
+        assert!(!heap.arena.is_marked(parent), "stale mark cleared");
+        heap.mark(&[parent]);
+        assert!(
+            heap.arena.is_marked(child),
+            "after clear_old_marks the full mark descends and marks the live child"
+        );
+        reset_gc_mode_slab();
+    }
+
+    #[test]
+    fn rendezvous_minor_sequence_clears_stale_old_marks() {
+        // The exact young-cycle sequence the rendezvous-phase minor arm runs
+        // (mark_sweep_if_over_watermark, phase == "rendezvous"): mark_young →
+        // sweep_young → clear_old_marks → promote_young. A pre-existing stale old
+        // mark must NOT survive it (NoStaleOldMark at phase=promoted), young
+        // liveness must be respected, and old slots must be untouched.
+        let _mode = enter_index_mode_for_test();
+        let mut heap = IndexHeap::with_segment_capacity(4);
+        let old_atom = heap.alloc_atom("old-stale");
+        let _f1 = heap.alloc_atom("fill-a");
+        let _f2 = heap.alloc_atom("fill-b");
+        let _f3 = heap.alloc_atom("fill-c"); // seg 0 full
+        let young_live = heap.alloc_atom("young-live"); // opens seg 1
+        let young_orphan = heap.alloc_atom("young-orphan");
+        heap.promote_young(); // young_floor = 1: old_atom OLD, seg-1 atoms YOUNG
+        assert!(old_atom.segment() < heap.arena.young_floor());
+        assert!(young_live.segment() >= heap.arena.young_floor());
+
+        heap.arena.mark(old_atom); // the stale shade
+
+        // The rendezvous minor sequence.
+        heap.mark_young(&[young_live]);
+        let stats = heap.sweep_young();
+        heap.clear_old_marks();
+        heap.promote_young();
+
+        assert!(
+            !heap.arena.is_marked(old_atom),
+            "NoStaleOldMark: the stale old mark is cleared by the rendezvous minor"
+        );
+        assert_eq!(heap.str_slice(old_atom), "old-stale", "old slot untouched");
+        assert_eq!(heap.str_slice(young_live), "young-live", "live young survives");
+        assert!(
+            stats.reclaimed_to_free_list >= 1,
+            "the unreachable young orphan is reclaimed"
+        );
+        let _ = young_orphan;
         reset_gc_mode_slab();
     }
 

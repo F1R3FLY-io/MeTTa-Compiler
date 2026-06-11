@@ -115,6 +115,11 @@ run_rocq "formal/rocq/gc/YoungAllocationOdometer.v"
 run_rocq "formal/rocq/gc/MajorMinorScheduler.v"
 run_rocq "formal/rocq/gc/CapFloorAntiThrash.v"
 run_rocq "formal/rocq/gc/MajorWatermarkRearm.v"
+# F1 SATB-young lever: the pruning-mark stale-old-mark discriminator + the
+# ClearOldMarks=TRUE completeness/NoStaleOldMark obligations (the Rocq side of
+# tla/SATBYoungSweepStaleOldMark.tla; wired to IndexArena::clear_old_marks and
+# the rendezvous-phase minor arm).
+run_rocq "formal/rocq/gc/StaleOldMarkClear.v"
 run_rocq "formal/rocq/gc/StructuralRoots.v"
 run_rocq "formal/rocq/gc/StructuralRootSourceAudit.v"
 run_rocq "formal/rocq/gc/TrackedVarSideRetention.v"

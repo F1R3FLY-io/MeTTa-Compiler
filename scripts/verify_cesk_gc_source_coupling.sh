@@ -431,7 +431,11 @@ line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/Rendezvous
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"rendezvous_side_reclaim_bounded\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"rendezvous_side_reclaim_unbounded\"" >/dev/null
 assert_count "src/backend/eval/cesk/index_heap.rs" "const GROWTH: usize = 2;" "1"
-assert_count "src/backend/eval/cesk/index_heap.rs" "old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())" "4"
+# 5 occurrences: the pre-lever 4 (the mark_sweep_if_over_watermark classifier +
+# watermark_due_for_concurrent + docs) + the F1 SATB-young lever's
+# `rendezvous_major_due()` — the deliberately source-coupled duplicate the
+# GC-thread router consults (see the lever pin block at the end of this script).
+assert_count "src/backend/eval/cesk/index_heap.rs" "old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())" "5"
 assert_count "src/backend/eval/cesk/index_heap.rs" "old_live_after.saturating_mul(GROWTH).max(min_threshold())," "2"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.promote_young();" "(heap.live_bytes(), heap.old_live_bytes(), stats)"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "(heap.live_bytes(), heap.old_live_bytes(), stats)" "WATERMARK.store("
@@ -864,8 +868,11 @@ assert_after_before "src/backend/models/metta_value.rs" "pub fn clear_value_hash
 assert_after_before "src/backend/models/metta_value.rs" "fn hash_value(&self) -> u64" "ensure_value_hash_cache_epoch_current();" "VALUE_HASH_CACHE.with"
 assert_before "src/backend/models/metta_value.rs" "static INNER_SHADOW_EPOCH:" "fn ensure_inner_shadow_epoch_current()"
 assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "gc_sweep_epoch()" "INNER_SHADOW.with"
-assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "INNER_SHADOW.with(|c| c.borrow_mut().clear());" "epoch.set(current_epoch);"
-assert_after_before "src/backend/models/metta_value.rs" "pub(crate) fn clear_inner_shadow()" "INNER_SHADOW.with(|c| c.borrow_mut().clear());" "INNER_SHADOW_EPOCH.with"
+# Paged shadow (6aea1af0): the epoch handshake invalidates by DROPPING every
+# allocated page (freeing the materialized boxes) before publishing the epoch —
+# the page-drop loop is the paged equivalent of the former wholesale .clear().
+assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "*page = None;" "epoch.set(current_epoch);"
+assert_after_before "src/backend/models/metta_value.rs" "pub(crate) fn clear_inner_shadow()" "*page = None;" "INNER_SHADOW_EPOCH.with"
 assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "ensure_inner_shadow_epoch_current();" "INNER_SHADOW.with"
 
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "gc_sweep_epoch()" "HASH_CONS_EPOCH.with"
@@ -1093,7 +1100,10 @@ assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn resume_w
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "GcInProgressGuard::try_enter();" "global_index_heap().write().expect(\"index heap\")"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "global_index_heap().write().expect(\"index heap\")" "heap.mark(&addrs); // FULL mark"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.mark(&addrs); // FULL mark" "(heap.sweep(), true)"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.mark_young(&addrs);" "(heap.sweep_young(), false)"
+# F1 SATB-young lever: the minor arm binds the young-sweep stats so the
+# rendezvous-phase ClearOldMarks step can run between sweep and return.
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.mark_young(&addrs);" "let stats = heap.sweep_young();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let stats = heap.sweep_young();" "(stats, false)"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "fn ensure_eval_caches_gc_epoch_current()" "clear_eval_memo();" "clear_match_result_cache();"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "if stale {" "let evicted = memo.pop(&expr_hash);" "shade_evicted_eval_memo_entry(entry);"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "if stale {" "with_satb_deletion_barrier" "let evicted = memo.pop(&expr_hash);"
@@ -1456,5 +1466,29 @@ line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "interned_atom_bytes_never_rel
 line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "interned_not_sideboxed" >/dev/null
 line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "release_only_sideboxed" >/dev/null
 line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "pre_fix_sidebox_atom_releasable" >/dev/null
+
+# ---- F1 SATB-young lever (rendezvous young-cycle routing + ClearOldMarks) ----
+# (1) The GC-thread router classifies BEFORE entering the SATB body, and the
+#     young route targets the proven STW rendezvous body with the held guard.
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_rendezvous_cycle" "rendezvous_major_due()" "run_open_stw_rendezvous_cycle(roots, _gip);"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_rendezvous_cycle" "run_open_stw_rendezvous_cycle(roots, _gip);" "gc_driver_satb_rendezvous_cycle(roots, _gip);"
+# (2) The classifier is the MAJOR-only disjunction, read under the held guard.
+line_no "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn rendezvous_major_due() -> bool" >/dev/null
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn rendezvous_major_due" "old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())" "MINORS_SINCE_MAJOR.load(Ordering::Relaxed) >= MAJOR_CADENCE"
+# (3) The rendezvous-phase minor arm clears OLD marks after the young sweep —
+#     ClearOldMarks=TRUE of tla/SATBYoungSweepStaleOldMark.tla (NoStaleOldMark);
+#     quiescence/midloop minors skip it (no SATB window can precede them).
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "let stats = heap.sweep_young();" "if phase == \"rendezvous\" {" "heap.clear_old_marks();"
+# (4) clear_old_marks clears ONLY the old generation (below young_floor),
+#     skipping released segments.
+assert_after_before "src/backend/eval/cesk/index_arena.rs" "pub fn clear_old_marks(&self)" "self.young_floor.load(Ordering::Acquire).min(n)" "seg.clear_marks();"
+# (5) The Rocq side is wired into the harness and its load-bearing names exist.
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/StaleOldMarkClear.v\"" >/dev/null
+line_no "formal/rocq/gc/StaleOldMarkClear.v" "clear_marks_makes_pruning_mark_complete" >/dev/null
+line_no "formal/rocq/gc/StaleOldMarkClear.v" "stale_mark_can_hide_live_child" >/dev/null
+line_no "formal/rocq/gc/StaleOldMarkClear.v" "final_sweep_clear_old_no_stale" >/dev/null
+# (6) The TLC discriminator pair stays in the harness.
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"satb_young_sweep_full\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"satb_young_sweep_young_only\"" >/dev/null
 
 echo "CESK GC source-coupling checks passed"

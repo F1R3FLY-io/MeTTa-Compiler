@@ -981,6 +981,30 @@ impl<N: Copy> IndexArena<N> {
         self.nursery_full_pending.store(false, Ordering::Relaxed);
     }
 
+    /// F1 SATB-young lever (ClearOldMarks=TRUE of `tla/SATBYoungSweepStaleOldMark.tla`):
+    /// clear every mark bit of the OLD generation (non-released segments
+    /// `[0, young_floor)`). A young-only sweep never visits old segments, so any
+    /// old mark left by an armed SATB window (deletion-barrier shades /
+    /// allocate-black) would otherwise go STALE — and the full mark
+    /// ([`mark_from_roots_with`]) prunes its descent at already-marked nodes, so a
+    /// stale old mark hides that node's live children from the next major
+    /// (under-mark → use-after-free). The rendezvous-phase minor calls this after
+    /// [`sweep_young_with`] to re-establish the all-clear mark invariant every
+    /// other cycle shape ends with. Cost: one `Release` store per 64 slots of old
+    /// committed capacity (microseconds at tens of MiB). Quiescence-only, like the
+    /// sweeps (`&self` suffices: `clear_marks` is per-word atomic stores).
+    pub fn clear_old_marks(&self) {
+        let n = self.seg_count.load(Ordering::Acquire);
+        let floor = self.young_floor.load(Ordering::Acquire).min(n);
+        for si in 0..floor {
+            // SAFETY: si < seg_count ⇒ published.
+            let seg = unsafe { self.segment(si) };
+            if !seg.released.load(Ordering::Relaxed) {
+                seg.clear_marks();
+            }
+        }
+    }
+
     /// C1.c: bytes of young node-slot allocated since the last [`promote_young`] —
     /// the nursery-fill odometer the driver compares against `YOUNG_BUDGET` to fire a
     /// minor. Tracks real young allocation (bump AND young free-list reuse), unlike
@@ -2134,6 +2158,40 @@ mod tests {
             "young mark cleared after the minor"
         );
         assert_eq!(*arena.get(seg1[0]), 100, "young live value intact");
+    }
+
+    // ---- F1 SATB-young lever: ClearOldMarks=TRUE (tla/SATBYoungSweepStaleOldMark.tla) ----
+
+    #[test]
+    fn clear_old_marks_clears_only_the_old_generation() {
+        // capacity 64: seg 0 = OLD (64 slots), seg 1 = YOUNG (10 slots, current).
+        let mut arena: IndexArena<u64> = IndexArena::with_segment_capacity(64);
+        let seg0: Vec<Addr> = (0..64u64).map(|v| arena.alloc(v)).collect();
+        let seg1: Vec<Addr> = (0..10u64).map(|v| arena.alloc(100 + v)).collect();
+        arena.set_young_floor(1);
+
+        // A stale OLD mark (an aborted SATB window's shade) + a live YOUNG mark.
+        arena.mark(seg0[5]);
+        arena.mark(seg1[3]);
+
+        arena.clear_old_marks();
+
+        assert!(
+            !arena.is_marked(seg0[5]),
+            "stale old mark cleared (ClearOldMarks=TRUE → NoStaleOldMark)"
+        );
+        assert!(
+            arena.is_marked(seg1[3]),
+            "young mark untouched — clear_old_marks visits only [0, young_floor)"
+        );
+        assert_eq!(*arena.get(seg0[5]), 5, "old node bytes untouched");
+
+        // The cleared old node is again traversable by the prune-at-marked full
+        // mark: `mark` returns newly-marked=true, so a major would descend into it.
+        assert!(
+            arena.mark(seg0[5]),
+            "cleared old slot is newly markable by the next full mark"
+        );
     }
 
     #[test]

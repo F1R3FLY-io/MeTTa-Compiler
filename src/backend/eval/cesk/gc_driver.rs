@@ -166,6 +166,22 @@ fn gc_driver_main(request_rx: mpsc::Receiver<GcDriverRequest>) {
 /// parallel fan-out C is covered by `collect_live_dispatch_anchors`.
 fn gc_driver_rendezvous_cycle() {
     let _gip = acquire_gc_in_progress_for_rendezvous();
+    // ── Bug #309 (second mechanism): RE-ASSERT the request at cycle OPEN ──
+    // `request_concurrent_collection` = flag-set + channel-send (two effects).
+    // TWO coalesced requests leave TWO CollectRendezvous messages: cycle 1
+    // opens with the flag true, closes (resume_workers clears the flag) —
+    // then cycle 2 opens FROM THE SECOND MESSAGE with the flag FALSE. Mutators
+    // only park + stamp their witness slots at safepoints that see
+    // `is_gc_requested()`, so nobody ever stamps and the witness wait in
+    // `prepare_rendezvous_roots` starves FOREVER (captured live: validate
+    // rep 36 — cycle_gen 88 == cycle_started 88, gc_requested false,
+    // witness_ok false, occupied_unpublished 4, park 3 + straddle 3). The
+    // same hole exists for a request racing the previous close's clear.
+    // Re-asserting here is idempotent on the normal path and makes the flag
+    // state match the open cycle for its whole duration; the close clears it
+    // exactly as before. Model: tla/RequestReassertAtOpen.tla (+ Rocq
+    // companion); pinned in verify_cesk_gc_source_coupling.sh.
+    crate::backend::models::gc_allocator::request_gc();
     let roots = prepare_rendezvous_roots();
 
     // F1 SATB-young lever — classify the trigger NOW (workers parked ⇒ heap

@@ -3789,6 +3789,31 @@ pub(crate) fn worker_park_and_root(roots: &[MettaValue]) {
 pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
     {
         let _lock = RENDEZVOUS_MUTEX.lock();
+        // ── Bug #309: the PHANTOM-FUTURE park gate (tla/ParkedPhantomCycleGate.tla,
+        // RealCycleGate = TRUE; the branch-B/pump twin of the E5 straddle's
+        // StartedCycleGate). A worker that observed `is_gc_requested()` reads
+        // `my_gen = current_cycle_gen()` on its way here; if the driver CLOSED the
+        // cycle in that window (end-bump K→K+1 + request cleared, both under THIS
+        // mutex), the worker arrives with my_gen = K+1 — the post-close gen of a
+        // cycle NOBODY requested. The straggler gate below (`gen == my_gen`)
+        // PASSES for it, so without this gate the phantom would (a) pre-bump the
+        // parked count of a future cycle (a masked-parker missed-root hazard),
+        // (b) publish stale-conservative roots into that cycle's buffer, and
+        // (c) strand forever in `worker_resume_wait_for_cycle` waiting for a
+        // gen bump that never comes (captured live: autopsy rep 17 —
+        // cycle_gen 95, cycle_started 94, gc_requested false, gc_wait park = 2).
+        // A cycle `my_gen` is REAL iff it is already OPEN (started == my_gen) or
+        // still PENDING (requested). Otherwise: skip the park entirely and
+        // resume evaluating — the request this worker saw is fully serviced.
+        let real_cycle = current_cycle_started() == my_gen || is_gc_requested();
+        if !real_cycle && GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
+            tracing::debug!(
+                my_gen,
+                started = current_cycle_started(),
+                "worker_park_and_root_in_cycle: phantom-future park skipped (#309)"
+            );
+            return;
+        }
         if GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
             // still my cycle: publish roots; the AcqRel fetch_add release-fences
             // the append (HB2); then wake the requestor.
@@ -3899,7 +3924,16 @@ pub(crate) fn worker_finish_into_buffer(roots: &[MettaValue], my_gen: u64) {
 pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {
     let _site = GcWaitSiteGuard::enter(&GC_PARK_WAITERS);
     let mut lock = RENDEZVOUS_MUTEX.lock();
-    while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
+    // Bug #309 (defense-in-depth twin of the entry gate in
+    // `worker_park_and_root_in_cycle`): wait only while the cycle `my_gen` is
+    // REAL — already open (started == my_gen) or still pending (requested). A
+    // phantom-future gen (the post-close TOCTOU read) would otherwise wait for
+    // a gen bump that no requested cycle will ever produce. Re-evaluated on
+    // every wakeup: a real parked cycle exits via the close's gen bump; a
+    // pending one becomes open (started catches up) and then closes.
+    while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen
+        && (current_cycle_started() == my_gen || is_gc_requested())
+    {
         let result = RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);
         if result.timed_out() && GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {
             tracing::warn!(

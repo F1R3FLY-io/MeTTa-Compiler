@@ -142,6 +142,9 @@ run_rocq "formal/rocq/gc/WitnessOkReset.v"
 run_rocq "formal/rocq/gc/GenerationResume.v"
 run_rocq "formal/rocq/gc/RendezvousProgress.v"
 run_rocq "formal/rocq/gc/StartedCycleGate.v"
+# Bug #309: the phantom-future park gate (the branch-B/pump twin of the straddle gate).
+run_rocq "formal/rocq/gc/ParkedPhantomCycleGate.v"
+run_rocq "formal/rocq/gc/RequestReassertAtOpen.v"
 # E5: liveness of the SATB double-rendezvous straddle (composes GenerationResume +
 # StartedCycleGate via Require Import; the -Q loadpath above resolves the siblings).
 run_rocq "formal/rocq/gc/PostCycleEvaluatorProgress.v"
@@ -640,6 +643,19 @@ run_tlc "satb_young_sweep_full" "MC_SATBYoungSweepStaleOldMark.tla" "MC_SATBYoun
   pass ""
 run_tlc "satb_young_sweep_young_only" "MC_SATBYoungSweepStaleOldMark.tla" "MC_SATBYoungSweepStaleOldMark_young_only.cfg" \
   fail "Invariant NoStaleOldMark is violated"
+
+# Bug #309 phantom-future park: the gated protocol is live + phantom-bump-free;
+# the ungated protocol deadlocks at the phantom-parked state (the captured wedge).
+run_tlc "parked_phantom_gated" "MC_ParkedPhantomCycleGate.tla" "MC_ParkedPhantomCycleGate_gated.cfg" \
+  pass ""
+run_tlc "parked_phantom_ungated" "MC_ParkedPhantomCycleGate.tla" "MC_ParkedPhantomCycleGate_phantom.cfg" \
+  fail "Deadlock reached"
+# Bug #309 (second mechanism): coalesced requests must not starve the witness
+# wait — the driver re-asserts the request at every rendezvous open.
+run_tlc "request_reassert_at_open" "MC_RequestReassertAtOpen.tla" "MC_RequestReassertAtOpen_reassert.cfg" \
+  pass ""
+run_tlc "request_lost_at_open" "MC_RequestReassertAtOpen.tla" "MC_RequestReassertAtOpen_lost.cfg" \
+  fail "Deadlock reached"
 run_tlc "satb_abort_fallback" "MC_SATBAbortFallback.tla" "MC_SATBAbortFallback_stw.cfg" \
   pass ""
 run_tlc "satb_abort_no_fallback" "MC_SATBAbortFallback.tla" "MC_SATBAbortFallback_none.cfg" \

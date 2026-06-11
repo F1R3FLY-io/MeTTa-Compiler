@@ -883,13 +883,16 @@ assert_after_before "src/backend/models/metta_value.rs" "fn ensure_value_hash_ca
 assert_after_before "src/backend/models/metta_value.rs" "pub fn clear_value_hash_cache()" "VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());" "VALUE_HASH_CACHE_EPOCH.with"
 assert_after_before "src/backend/models/metta_value.rs" "fn hash_value(&self) -> u64" "ensure_value_hash_cache_epoch_current();" "VALUE_HASH_CACHE.with"
 assert_before "src/backend/models/metta_value.rs" "static INNER_SHADOW_EPOCH:" "fn ensure_inner_shadow_epoch_current()"
-assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "gc_sweep_epoch()" "INNER_SHADOW.with"
+# Experiment #15: all shadow access flows through with_shadow (the cfg-split
+# RefCell/UnsafeCell chokepoint); the epoch handshake must still read the sweep
+# epoch and then invalidate via that chokepoint before publishing the epoch.
+assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "gc_sweep_epoch()" "with_shadow"
 # Paged shadow (6aea1af0): the epoch handshake invalidates by DROPPING every
 # allocated page (freeing the materialized boxes) before publishing the epoch —
 # the page-drop loop is the paged equivalent of the former wholesale .clear().
 assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "*page = None;" "epoch.set(current_epoch);"
 assert_after_before "src/backend/models/metta_value.rs" "pub(crate) fn clear_inner_shadow()" "*page = None;" "INNER_SHADOW_EPOCH.with"
-assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "ensure_inner_shadow_epoch_current();" "INNER_SHADOW.with"
+assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "ensure_inner_shadow_epoch_current();" "with_shadow"
 
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "gc_sweep_epoch()" "HASH_CONS_EPOCH.with"
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "clear_hash_cons_table_local();" "epoch.set(current_epoch);"
@@ -1287,9 +1290,19 @@ assert_after_before "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_
 # GC_CYCLE_GEN has advanced, not when the shared GC_REQUESTED boolean happens
 # to be false. This prevents a back-to-back request from re-blocking a worker
 # whose own rendezvous cycle ended.
-assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "let mut lock = RENDEZVOUS_MUTEX.lock();" "while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {"
-assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen {" "RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);"
-assert_zero_between "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "/// WORKER side: park on" "is_gc_requested()"
+# (#309 gate: the wait condition is now multi-line — gen equality AND cycle
+# reality (started == my_gen \/ requested) — same Mesa-style loop.)
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "let mut lock = RENDEZVOUS_MUTEX.lock();" "while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen"
+assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen" "RENDEZVOUS_CONDVAR.wait_for(&mut lock, RENDEZVOUS_WAIT_TIMEOUT);"
+# SUPERSEDED by the #309 phantom gate (2026-06-11): the wait now reads
+# is_gc_requested() EXACTLY ONCE, as the PENDING disjunct of the cycle-reality
+# check (gen == my_gen && (started == my_gen || requested)). The original
+# intent of this zero-pin — a parked worker of an OPEN cycle must not exit
+# early when the request flag clears — is preserved by the STARTED disjunct
+# (started == my_gen holds for the whole open window; the gen bump remains the
+# sole release for a real parked cycle). See tla/ParkedPhantomCycleGate.tla +
+# formal/rocq/gc/ParkedPhantomCycleGate.v.
+assert_count_between "src/backend/models/gc_allocator.rs" "pub(crate) fn worker_resume_wait_for_cycle(my_gen: u64) {" "/// WORKER side: park on" "is_gc_requested()" "1"
 assert_zero_between "src/backend/models/gc_allocator.rs" "pub fn reacquire_eval_guard_after_safepoint_full(" "/// Get the committed bytes" "worker_wait_for_resume()"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn requestor_wait_for_parked_count(n: u32) {" "while WORKERS_PARKED_FOR_GC.load(Ordering::Acquire) < n" "RENDEZVOUS_CONDVAR.wait_for"
 assert_zero "src/backend/models/gc_allocator.rs" 'block until exactly `n`'
@@ -1506,5 +1519,20 @@ line_no "formal/rocq/gc/StaleOldMarkClear.v" "final_sweep_clear_old_no_stale" >/
 # (6) The TLC discriminator pair stays in the harness.
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"satb_young_sweep_full\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"satb_young_sweep_young_only\"" >/dev/null
+# ---- Bug #309: the phantom-future park gate (ParkedPhantomCycleGate) ----
+# The entry gate must evaluate cycle-reality BEFORE the count bump, and the
+# wait loop must hold only while the cycle is real (open or pending); both
+# under RENDEZVOUS_MUTEX. The Rocq companion + TLC pair stay in the harness.
+assert_after_before "src/backend/models/gc_allocator.rs" "fn worker_park_and_root_in_cycle" "let real_cycle = current_cycle_started() == my_gen || is_gc_requested();" "WORKERS_PARKED_FOR_GC.fetch_add(1, Ordering::AcqRel);"
+assert_after_before "src/backend/models/gc_allocator.rs" "fn worker_resume_wait_for_cycle" "while GC_CYCLE_GEN.load(Ordering::Acquire) == my_gen" "current_cycle_started() == my_gen || is_gc_requested()"
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/ParkedPhantomCycleGate.v\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"parked_phantom_gated\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"parked_phantom_ungated\"" >/dev/null
+# (#309 second mechanism) The driver re-asserts the request at every rendezvous
+# open, BEFORE the witness wait (request_gc after admission, before prepare).
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_rendezvous_cycle()" "crate::backend::models::gc_allocator::request_gc();" "let roots = prepare_rendezvous_roots();"
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/RequestReassertAtOpen.v\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"request_reassert_at_open\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"request_lost_at_open\"" >/dev/null
 
 echo "CESK GC source-coupling checks passed"

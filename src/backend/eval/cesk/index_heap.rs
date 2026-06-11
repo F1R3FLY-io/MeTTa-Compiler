@@ -1612,6 +1612,17 @@ where
     E: FnOnce(&mut IndexHeap) -> Addr,
     C: FnOnce(&IndexHeap) -> Addr,
 {
+    // Lock discipline (REFUTED-alternative note, experiment #13 2026-06-11): the
+    // `try_write()`-FIRST order below is LOAD-BEARING, not lock greed. A
+    // "prefer-read under no pressure" reorder (pressure ? write : read+bump) was
+    // measured 13.7% SLOWER on default-env Toothbrush with 9x the variance
+    // (p=0.999 vs the pre-registered improvement direction): bump-only
+    // allocation skips the exclusive arm's free-list reuse AND ground-sexpr
+    // hash-cons dedup, so young allocation grows faster and the young-budget
+    // trigger fires MORE GC rendezvous cycles — each parking all workers, far
+    // costlier than the futex contention saved (~22% of the profile). Do not
+    // re-attempt writer demotion; the contention must be attacked on the READER
+    // side (shadow-miss materialization rate / lock-free published-node reads).
     if let Ok(mut h) = global_index_heap().try_write() {
         return exclusive(&mut h);
     }

@@ -28,9 +28,15 @@ run_rep() {
   local arm="$1" bin="$2" rep="$3" attempt rc wall hung
   for attempt in $(seq 1 "$RETRIES"); do
     local err="$OUT/err_${arm}_${rep}_${attempt}.log" twall="$OUT/twall_${arm}_${rep}_${attempt}.txt"
-    env -u METTATRON_PARALLEL_FANOUT_DEPTH /usr/bin/time -f '%e' -o "$twall" \
+    # NO /usr/bin/time wrapper for the signaled process: GNU time does NOT
+    # forward signals — SIGUSR1 killed the WRAPPER and orphaned the wedged
+    # mettatron alive (that is how the long-lived #309 specimens were created,
+    # and why every farmed dump was empty). Wall time now comes from bash's
+    # SECONDS at kill/exit; the binary is the direct child so signals land.
+    env -u METTATRON_PARALLEL_FANOUT_DEPTH \
       taskset -c "$AFFINITY" "$bin" "$FX" > /dev/null 2> "$err" &
     local tpid=$!
+    SECONDS=0
     hung=0
     local waited=0
     while kill -0 "$tpid" 2>/dev/null; do
@@ -48,7 +54,7 @@ run_rep() {
       echo "$arm,$rep,$attempt,," >> "$CSV"; sed -i '$ s/$/1/' "$CSV"
       continue  # retry
     fi
-    wall="$(cat "$twall" 2>/dev/null | tail -1)"
+    wall="$SECONDS"  # (integer seconds; the time-wrapper was removed — see above)
     echo "$arm,$rep,$attempt,$wall,$rc,0" >> "$CSV"
     rm -f "$err" "$twall"   # keep stderr only for hangs (the dump farm)
     return 0

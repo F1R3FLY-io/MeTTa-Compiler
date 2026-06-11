@@ -439,6 +439,11 @@ line_no "src/backend/eval/cesk/index_heap.rs" "ADDRESSABILITY vs GROWTH (audit F
 line_no "src/backend/eval/cesk/index_heap.rs" "Its OCCUPIED footprint is nonetheless bounded (audit Finding 3)" >/dev/null
 line_no "src/backend/eval/cesk/index_node.rs" "is sufficient and deliberate" >/dev/null
 line_no "src/backend/eval/cesk/index_arena.rs" "claim is about NODE slots only" >/dev/null
+# Finding 2/3 trait-surface contract: as_atom's 'static is HONEST (interned —
+# InternedAtomNeverFreed.v) and stays documented as the ONE genuine-'static
+# accessor; the slice accessors stay &self-tied.
+line_no "src/backend/models/metta_value_trait.rs" "whose \`'static\` is genuine" >/dev/null
+line_no "src/backend/models/metta_value_trait.rs" "fn as_sexpr(&self) -> Option<&[Self]>;" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"rendezvous_side_reclaim_bounded\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"rendezvous_side_reclaim_unbounded\"" >/dev/null
 assert_count "src/backend/eval/cesk/index_heap.rs" "const GROWTH: usize = 2;" "1"

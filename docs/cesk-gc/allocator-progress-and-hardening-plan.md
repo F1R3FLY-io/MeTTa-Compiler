@@ -30,3 +30,21 @@ Design B is implemented: `pending_side_major` (`index_heap.rs:2512`: `phase=="qu
 Root: `metta_value_trait.rs:168` `as_atom→Option<&'static str>`; the 'static points into the thread-local INNER_SHADOW (`metta_value.rs:881-918`, valid only until `clear_inner_shadow`). Tie to &self: trait (`:168/180/283`) + inherent (`metta_value.rs:1585/1657/1676/1160`) + trait-impl (`:2897`) + JIT `bytecode/jit/types/value.rs` + the HARDER `MettaValueInner` fields (`:656/666/720` `Atom(&'static str)` etc — need a backing-store borrow). 682 as_atom + 456 as_sexpr + 265 view; 309 let-bound as_atom = the audit set. Strategy: change trait+impls, let `cargo check` enumerate breakages, fix the STORING sites (clone-to-owned or narrow scope); most use-then-drop recompile unchanged. Borrow checker = the proof. Extend `TrackedVarSideRetention.v` / add `LaunderedRefConfinement.v` + flip the Finding-1 'static pins (`verify_cesk_gc_source_coupling.sh:243-257`). Verify: full ladder + greenwall --with-oracle (483/0/0, warnings 49/49) + `e1_flip_v4_asan.sh` GATE_RC=0. FOLLOW-ON: design A (#273) — drain side every rendezvous, now safe since no laundered side ref escapes &self.
 
 ## Then: E5 loom/TSan (#256/#257), Phase F (F1 Welch bench / F2 --gc reporter / F3 index-default / F4 delete slab), final composition (#152 done) + whole-system harness (#22), pgmcp reconcile (#21).
+
+## INCREMENT 3 — RESOLUTION (2026-06-11): largely SUPERSEDED; residual closed as doc + pins
+Source-verified against HEAD (post atom-interning `c7744140` + Finding-1 `895378bf`):
+- The ROOT (`as_atom -> Option<&'static str>` laundering INNER_SHADOW bytes) was FIXED by
+  permanent atom interning: `Node::Atom(&'static str)` holds `symbol::intern_static` bytes
+  owned by the perpetual interner — honest `'static`, never freed by any sweep (PROVEN:
+  `formal/rocq/gc/InternedAtomNeverFreed.v`; the trait doc now states this and is pinned).
+- The slice/str accessors (`as_sexpr`, `as_string`, `as_error`, …) are ALREADY `&self`-tied
+  in the trait — the confinement this increment prescribed exists; no 1400-site refactor is
+  needed. (A `&self` tie on a `Copy` handle cannot, by itself, forbid holding across a
+  safepoint — that hazard class was closed by the Finding-1 fix + `TrackedVarSideRetention.v`
+  + the Finding-1 source-coupling pins, which audit/guard the holders.)
+- Side-payload reuse aliasing is closed by the per-cell generations (`QuiescentSideIndexReuse.v`)
+  and bounded drain (`RendezvousSideReclaimProgress.v/.tla`).
+Residual delivered: the corrected `as_atom` trait doc (+ pin), the Finding-3 Increment-1
+comment corrections (+4 pins), and this resolution note. The FOLLOW-ON idea (drain side every
+rendezvous — design A for #273) remains explicitly NOT taken: design B (pending_side_major
+quiescence drain) is the proven, shipped mechanism.

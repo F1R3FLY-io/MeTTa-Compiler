@@ -164,7 +164,18 @@ pub trait MettaValueTrait: Clone + Debug + PartialEq + Sized {
     // =========================================================================
 
     /// Try to extract as atom string.
-    /// Returns `&'static str` because atom strings are slab-allocated with static lifetime.
+    ///
+    /// Returns `&'static str` because atom strings are HONESTLY `'static` in
+    /// both stores (audit Finding 2, fixed by permanent atom interning): the
+    /// slab interns atoms, and the index store's `Node::Atom(&'static str)`
+    /// holds `symbol::intern_static` bytes owned by the perpetual
+    /// process-lifetime interner — never freed by any GC sweep (proven:
+    /// `formal/rocq/gc/InternedAtomNeverFreed.v`). This is the ONE accessor
+    /// whose `'static` is genuine; the slice/str accessors below (`as_string`,
+    /// `as_sexpr`, `as_error`, …) are deliberately `&self`-tied because their
+    /// referents live in per-thread materializations that a GC safepoint may
+    /// invalidate (audit Finding 3 / Increment-3 confinement — already the
+    /// case, kept that way).
     fn as_atom(&self) -> Option<&'static str>;
 
     /// Try to extract as bool

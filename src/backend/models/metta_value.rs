@@ -878,6 +878,12 @@ pub(crate) fn is_inline_singleton_inner_ptr(ptr: *const MettaValueInner) -> bool
         || std::ptr::eq(ptr, &INLINE_FALSE_INNER)
 }
 
+/// One [`INNER_SHADOW`] page: 512 slots × 8 B = one 4 KiB OS page. Slots hold
+/// the materialized box for `raw = (page_idx << SHADOW_PAGE_BITS) | slot_idx`.
+type ShadowPage = [Option<Box<MettaValueInner>>; SHADOW_PAGE_SLOTS];
+const SHADOW_PAGE_BITS: usize = 9;
+const SHADOW_PAGE_SLOTS: usize = 1 << SHADOW_PAGE_BITS;
+
 thread_local! {
     /// Index-mode `inner_ref()` materialization cache (CRUX Step 2c): an arena
     /// handle's payload is an `Addr`, not a `*const MettaValueInner`, so a slab
@@ -897,12 +903,21 @@ thread_local! {
     /// epoch.
     ///
     /// Perf (F1): `Addr.raw()` is a DENSE bump-allocated id, so this is a
-    /// DIRECT-INDEXED `Vec` (index = raw), not a `HashMap` — `inner_ref_index`
-    /// was the single hottest symbol (~33% at FANOUT=0), dominated by the
-    /// per-access cache lookup during root scanning; an O(1) array index removes
-    /// the hash + probe + entry machinery. `resize_with` grows geometrically
-    /// (amortized O(1)); the Vec is bounded by the live heap's distinct Addrs.
-    static INNER_SHADOW: std::cell::RefCell<Vec<Option<Box<MettaValueInner>>>> =
+    /// DIRECT-INDEXED two-level PAGED directory (page = raw >> 9, slot =
+    /// raw & 511), not a `HashMap` — `inner_ref_index` was the single hottest
+    /// symbol (~33% at FANOUT=0), dominated by the per-access cache lookup
+    /// during root scanning; a two-load array index removes the hash + probe +
+    /// entry machinery.
+    ///
+    /// WHY PAGED and not one flat `Vec` (the F1 mmverify lesson): the shadow is
+    /// THREAD-LOCAL and mmverify-style workloads spawn ~200k short-lived worker
+    /// threads (strace: 208k `clone3`), each starting EMPTY. A flat
+    /// `resize_with(max_raw_id)` made every fresh thread memset a multi-MB Vec
+    /// on its first high-id touch (25M page faults; 2.2x slab). With 4 KiB
+    /// pages a fresh thread allocates only the pages it actually touches
+    /// (typically a few — ~KBs), while a long-lived thread still gets O(1)
+    /// direct indexing over the dense id space.
+    static INNER_SHADOW: std::cell::RefCell<Vec<Option<Box<ShadowPage>>>> =
         std::cell::RefCell::new(Vec::new());
 
     /// GC sweep epoch observed by this thread's index-mode materialization cache.
@@ -919,7 +934,14 @@ thread_local! {
 /// is only populated when `gc_mode_is_index()`).
 #[allow(dead_code)] // wired into the safepoint/sweep epoch in Inc 6; used by tests now
 pub(crate) fn clear_inner_shadow() {
-    INNER_SHADOW.with(|c| c.borrow_mut().clear());
+    // Drop every allocated page (freeing its materialized boxes — no retention
+    // across cycles) but KEEP the directory length, so re-population re-allocates
+    // only the pages actually touched again. O(allocated pages + occupied slots).
+    INNER_SHADOW.with(|c| {
+        for page in c.borrow_mut().iter_mut() {
+            *page = None;
+        }
+    });
     INNER_SHADOW_EPOCH.with(|epoch| {
         epoch.set(crate::backend::models::gc_allocator::gc_sweep_epoch());
     });
@@ -930,7 +952,11 @@ fn ensure_inner_shadow_epoch_current() {
     let current_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
     INNER_SHADOW_EPOCH.with(|epoch| {
         if epoch.get() != current_epoch {
-            INNER_SHADOW.with(|c| c.borrow_mut().clear());
+            INNER_SHADOW.with(|c| {
+                for page in c.borrow_mut().iter_mut() {
+                    *page = None;
+                }
+            });
             epoch.set(current_epoch);
         }
     });
@@ -939,7 +965,13 @@ fn ensure_inner_shadow_epoch_current() {
 /// Test-only: number of distinct Addrs currently materialized in the shadow cache.
 #[cfg(test)]
 pub(crate) fn inner_shadow_len() -> usize {
-    INNER_SHADOW.with(|c| c.borrow().len())
+    INNER_SHADOW.with(|c| {
+        c.borrow()
+            .iter()
+            .flatten()
+            .map(|page| page.iter().filter(|slot| slot.is_some()).count())
+            .sum()
+    })
 }
 
 impl MettaValue {
@@ -1049,14 +1081,19 @@ impl MettaValue {
         let raw = (self.tagged >> 4) as u32;
         ensure_inner_shadow_epoch_current();
         INNER_SHADOW.with(|c| {
-            let mut v = c.borrow_mut();
-            let idx = raw as usize;
-            if idx >= v.len() {
-                // `resize_with` reserves geometrically (amortized O(1) growth);
-                // the Vec is bounded by the live heap's distinct Addr count.
-                v.resize_with(idx + 1, || None);
+            let mut dir = c.borrow_mut();
+            let page_idx = (raw as usize) >> SHADOW_PAGE_BITS;
+            let slot_idx = (raw as usize) & (SHADOW_PAGE_SLOTS - 1);
+            if page_idx >= dir.len() {
+                // Directory growth is 8 B per page entry (≈ 2 KiB per MiB of id
+                // space) — trivial even for a fresh short-lived thread.
+                dir.resize_with(page_idx + 1, || None);
             }
-            let boxed = v[idx].get_or_insert_with(|| {
+            // First touch of this 4 KiB page on this thread: allocate it. A
+            // fresh worker thread pays only for the pages it actually touches.
+            let page = dir[page_idx]
+                .get_or_insert_with(|| Box::new([const { None }; SHADOW_PAGE_SLOTS]));
+            let boxed = page[slot_idx].get_or_insert_with(|| {
                 let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(raw);
                 Box::new(
                     crate::backend::eval::cesk::index_heap::global_index_heap()
@@ -1065,10 +1102,11 @@ impl MettaValue {
                         .materialize_inner(addr),
                 )
             });
-            // SAFETY: the box's pointee is address-stable for the cache's life
-            // (HashMap growth relocates only the 8-byte Box value, not its target),
-            // and the entry is removed only by clear_inner_shadow() at a quiescent
-            // point — so the laundered &'static outlives this borrow_mut guard.
+            // SAFETY: the box's pointee is address-stable (directory/page growth
+            // relocates only the 8-byte Box slots, never the Box targets), and a
+            // slot's box is dropped only by clear_inner_shadow()/the sweep-epoch
+            // handshake at a quiescent point — so the laundered &'static
+            // outlives this borrow_mut guard.
             let out = unsafe { &*(&**boxed as *const MettaValueInner) };
             out
         })

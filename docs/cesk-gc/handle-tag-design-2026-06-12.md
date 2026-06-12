@@ -1,6 +1,6 @@
 # Handle-borne variant tags (index mode) — design for the next F1 lever
 
-Status: **v4 — R1–R4 complete. R4 (confirming round) verified the core
+Status: **v4.1 — R1–R5 complete; R5 NET-SUBTRACTIVE ⇒ CONVERGED. R4 (confirming round) verified the core
 lever bit-exactly (recovery arithmetic, oracle soundness, fence
 reachability+lock-safety) and was NET-ADDITIVE on two v3 sub-decisions,
 folded below: the flags rider is DEFERRED (unimplementable as written),
@@ -134,6 +134,20 @@ fraction needs ONE fallthrough materialization (status quo cost).
 
 ## Design
 
+### Canonical TAG5 mapping (v4.1, R5-F7)
+
+`Node`'s DECLARATION ORDER (index_node.rs:92-117, exactly 18 variants) is
+THE canonical mapping: `UNSET = 0`, then `Atom = 1 … Spanned = 18` in
+declaration order, emitted by a single `Node::variant_code()` — and the E4
+restore derive (`SerNode`, continuation_slice.rs:211-230, which mirrors
+`Node` in identical declaration order) MUST share that one table (a
+`SerNode::variant_code()` delegating to the same constants). A divergence
+trips the I1 DEBUG tripwire on the first materialization of any restored
+handle. Index-vacuity note (R5-F2): `from_inner_ptr`'s two non-JIT feeders
+(gc_cron.rs:486 counter-sync, gc_allocator.rs:7002 slab GC Phase 2) feed
+raw slab-slot pointers but are unreachable in index mode (the slab
+collector is index-inert; counter pages receive no index traffic).
+
 ### Representation
 
 A `MettaValue` heap handle's tagged word (index mode) currently uses:
@@ -196,7 +210,7 @@ idea was a silent postcard wire break and is REVERSED).
   split identical values. Hazard: any path comparing handles minted BEFORE
   and AFTER this change within one process (none — no persistence of raw
   tagged words across runs except E4 slices, which derive tags at restore
-  field explicitly and reconstruct deterministically).
+  from the re-interned node variants, deterministically).
 - **I4 (Addr extraction)**: `as_arena_addr` truncates to u32 after `>>4` —
   unaffected by bits [40:36]. Audit every OTHER reader of the raw word in
   index mode (grep `tagged >>`, `& PTR_MASK`, transmutes) for masks that
@@ -227,8 +241,10 @@ Criterion: the standard Welch one-tailed α=0.05, d≥0.5, n=51 interleaved.
   `identity_eq` (2841) is a raw-word identity — a mixed tagged/untagged pair
   for the same node would miss those fast paths. Under totality they never
   mix.
-- **T2 — FAIL-SOFT (verified, the design's strongest property):** even
-  under a totality BUG, no raw-word reader is correctness-relevant:
+- **T2 — FAIL-SOFT (scope NARROWED by v3 revision 5: the UNSET direction
+  only — wrong-nonzero tags are CORRECTNESS bugs; I1 is the hard
+  invariant):** even under a MISSING-tag totality bug, no raw-word reader
+  is correctness-relevant:
   `PartialEq` falls through to structural `inner() == inner()` (2704);
   `identity_eq`'s 8 call sites are all trampoline REBUILD-AVOIDANCE checks
   (engine.rs:305-372, bindings.rs:1126) where a false-negative causes a
@@ -269,5 +285,8 @@ Criterion: the standard Welch one-tailed α=0.05, d≥0.5, n=51 interleaved.
   NET-ADDITIVE on two v3 sub-decisions (flags rider unimplementable;
   exemption/assert contradiction) — folded as v4 (rider deferred; Option A
   fence-first, exemption deleted).
-- R5 (pending): final confirming pass on v4; net-subtractive ⇒ CONVERGED ⇒
+- ✅ R5 (2026-06-12, final confirming): every v4 amendment survived direct
+  attack (fence census closed — TAG_ERROR never minted; assert has a tag
+  source at every production call site; widened remap wire-invisible by
+  type). NET-SUBTRACTIVE ⇒ CONVERGED at v4.1 (3 editorial touch-ups) ⇒
   pre-register #18.

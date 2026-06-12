@@ -32,7 +32,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 PLN="${PLN:-$(cd -- "$REPO/.." && pwd -P)/PLN-main}"
-FX="$PLN/examples/Toothbrush.metta"
+# FX/BENCH_ENV overridable so later experiments reuse the rig (exp16: Robot
+# under METTATRON_PARALLEL_FANOUT_DEPTH=0 per its locked protocol).
+FX="${FX:-$PLN/examples/Toothbrush.metta}"
 OUT="${OUT:-$REPO/target/gc-logs/exp15_clean}"
 CTRL="${CTRL:-$OUT/mtt-control}"
 TREAT="${TREAT:-$OUT/mtt-treat}"

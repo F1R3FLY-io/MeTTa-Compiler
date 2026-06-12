@@ -1,0 +1,269 @@
+diff --git a/src/backend/eval/cesk/index_heap.rs b/src/backend/eval/cesk/index_heap.rs
+index 9c9149cc..af5a7088 100644
+--- a/src/backend/eval/cesk/index_heap.rs
++++ b/src/backend/eval/cesk/index_heap.rs
+@@ -921,6 +921,109 @@ impl IndexHeap {
+         }
+     }
+ 
++    // ── Experiment #16: index-native copy-free impure/cut gate walk ────────
++
++    /// Collect every candidate head symbol the materializing
++    /// `eval::expression_involves_rule_rhs_atom` walk would needle-check for
++    /// the expression at `addr` — IN PLACE: no `inner_ref_index`
++    /// materialization, no shadow Box, no per-node heap lock (the caller
++    /// holds ONE read guard for the whole walk).
++    ///
++    /// WHY (profile-backed F1 lever, experiment #16): the gate is re-walked
++    /// per eval dispatch over freshly-substituted expressions, so its
++    /// materializing accessors Box+shadow-cache every Addr they touch and
++    /// never hit the cache — ~18% of Robot FANOUT=0 wall at HEAD `0595eca3`
++    /// (`docs/cesk-gc/f1-profile-post309-2026-06-11.md`).
++    ///
++    /// VERDICT IDENTITY (the locked-experiment contract): this mirrors
++    /// EXACTLY the `MettaValue::get_head_symbol` + `as_sexpr` composition of
++    /// the original walk:
++    ///   - descent ONLY into `SExpr` items (NOT Conjunction / Error / Type /
++    ///     Quoted / Lazy — `as_sexpr` is intentionally Lazy-opaque);
++    ///   - `Spanned` is transparent for both the head and the descent;
++    ///   - a bare passing `Atom` is itself a candidate head (no descent);
++    ///   - the head filter is `get_head_symbol`'s: not `$…`, not `&…` unless
++    ///     a space ref (`&`, `&self`, `&kb`, `&stack`), not `'…`, not `_`;
++    ///   - an `SExpr`'s head comes from `items[0]` matched as Atom-or-Spanned
++    ///     only, where the Spanned arm re-enters the FULL value-level head
++    ///     resolution (so `Spanned(SExpr(f …))` as a head item yields `f`).
++    /// OR-commutativity makes collect-then-check ≡ the original
++    /// short-circuit walk. Needle checks happen AFTER the heap guard is
++    /// released: they take the `rule_index` lock, and `note_rule_added`
++    /// walks values UNDER the `rule_index` write lock — nesting
++    /// heap→rule_index here would invert that order and risk deadlock.
++    pub fn collect_gate_head_symbols(&self, addr: Addr, out: &mut Vec<&'static str>) {
++        fn passes_head_filter(s: &str) -> bool {
++            // Mirror of `get_head_symbol`'s filter (metta_value.rs) — keep in sync.
++            fn is_space_ref(s: &str) -> bool {
++                s == "&" || s == "&self" || s == "&kb" || s == "&stack"
++            }
++            !s.starts_with('$')
++                && (!s.starts_with('&') || is_space_ref(s))
++                && !s.starts_with('\'')
++                && s != "_"
++        }
++        // Full value-level `get_head_symbol` mirror (inline scalar ⇒ None).
++        fn head_of_value(heap: &IndexHeap, v: MettaValue) -> Option<&'static str> {
++            head_of_addr(heap, v.as_arena_addr()?)
++        }
++        fn head_of_addr(heap: &IndexHeap, addr: Addr) -> Option<&'static str> {
++            match heap.get(addr) {
++                Node::Atom(s) if passes_head_filter(s) => Some(s),
++                Node::Spanned(inner, _) => head_of_value(heap, *inner),
++                Node::SExpr(_) => head_of_item(heap, *heap.children(addr).first()?),
++                _ => None,
++            }
++        }
++        // `get_head_symbol`'s `items[0]` match: Atom + Spanned arms only
++        // (a nested-SExpr head item yields None); the Spanned arm re-enters
++        // the full value-level resolution.
++        fn head_of_item(heap: &IndexHeap, item: MettaValue) -> Option<&'static str> {
++            match heap.get(item.as_arena_addr()?) {
++                Node::Atom(s) if passes_head_filter(s) => Some(s),
++                Node::Spanned(inner, _) => head_of_value(heap, *inner),
++                _ => None,
++            }
++        }
++        fn walk(heap: &IndexHeap, addr: Addr, out: &mut Vec<&'static str>) {
++            match heap.get(addr) {
++                // Spanned is transparent for head + descent: walking the
++                // inner reproduces both effects (inline inner ⇒ nothing,
++                // matching get_head_symbol/as_sexpr's inline early-outs).
++                Node::Spanned(inner, _) => {
++                    if let Some(a) = inner.as_arena_addr() {
++                        walk(heap, a, out);
++                    }
++                }
++                // Bare atom: get_head_symbol(atom) = the atom (filtered);
++                // as_sexpr = None ⇒ no descent.
++                Node::Atom(s) => {
++                    if passes_head_filter(s) {
++                        out.push(s);
++                    }
++                }
++                Node::SExpr(_) => {
++                    if let Some(h) = head_of_addr(heap, addr) {
++                        out.push(h);
++                    }
++                    // as_sexpr descent: EVERY item, including items[0] (the
++                    // original walk recurses into the head item too — a bare
++                    // atom head simply needle-checks again, harmlessly).
++                    for item in heap.children(addr) {
++                        if let Some(a) = item.as_arena_addr() {
++                            walk(heap, a, out);
++                        }
++                    }
++                }
++                // Conjunction/Error/Type/Quoted/Lazy/leaves: get_head_symbol
++                // falls to its `_ => None` arm and as_sexpr is None ⇒ the
++                // original walk neither checks nor descends.
++                _ => {}
++            }
++        }
++        walk(self, addr, out);
++    }
++
+     // ── Collection ─────────────────────────────────────────────────────────
+ 
+     /// Append every arena edge leaving `addr`.
+@@ -3449,8 +3552,11 @@ pub(super) use crate::backend::models::metta_value::{
+ };
+ #[cfg(test)]
+ static GC_MODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
++// pub(crate) (was pub(super)): experiment #16's gate-walk differential test in
++// eval/mod.rs needs the SAME process-wide mode lock — see the cross-module-race
++// rationale above; a second lock elsewhere would reintroduce exactly that race.
+ #[cfg(test)]
+-pub(super) struct IndexModeTestGuard {
++pub(crate) struct IndexModeTestGuard {
+     #[allow(dead_code)] // held for RAII: Drop resets the mode + releases the lock
+     lock: std::sync::MutexGuard<'static, ()>,
+ }
+@@ -3465,7 +3571,7 @@ impl Drop for IndexModeTestGuard {
+ }
+ #[cfg(test)]
+ #[must_use = "bind as `let _mode = enter_index_mode_for_test();` to hold the lock for the test"]
+-pub(super) fn enter_index_mode_for_test() -> IndexModeTestGuard {
++pub(crate) fn enter_index_mode_for_test() -> IndexModeTestGuard {
+     let lock = GC_MODE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+     real_set_gc_mode_index();
+     IndexModeTestGuard { lock }
+diff --git a/src/backend/eval/mod.rs b/src/backend/eval/mod.rs
+index c5b237d7..3f33682c 100644
+--- a/src/backend/eval/mod.rs
++++ b/src/backend/eval/mod.rs
+@@ -522,6 +522,93 @@ pub fn eval_with_trace(
+ mod tests {
+     use super::*;
+ 
++    // Experiment #16: the index-native copy-free gate walk
++    // (IndexHeap::collect_gate_head_symbols) must be VERDICT-IDENTICAL to the
++    // materializing walk it replaces. The oracle below is the verbatim
++    // pre-#16 implementation (the get_head_symbol/as_sexpr composition that
++    // still serves slab mode); each case asserts oracle == new == expected
++    // for both the cut needle set and an impure needle set.
++    //
++    // index-gc build ONLY: in the slab build `compile()` is monomorphized on
++    // the slab `GcFactory`, so flipping the runtime mode to index makes value
++    // accessors reinterpret slab POINTERS as arena `Addr`s (SEGV) — the exact
++    // cross-module hazard the IndexModeTestGuard doc describes. In the index
++    // build `compile()` emits genuine index handles and the test is sound.
++    #[cfg(feature = "index-gc")]
++    #[test]
++    fn gate_walk_matches_materializing_oracle_index_mode() {
++        let _mode = crate::backend::eval::cesk::index_heap::enter_index_mode_for_test();
++
++        fn oracle(value: &MettaValue, env: &MettaEnvironment, needles: &[&str]) -> bool {
++            if let Some(head) = value.get_head_symbol() {
++                if needles
++                    .iter()
++                    .any(|needle| env.rule_rhs_contains_atom(head, needle))
++                {
++                    return true;
++                }
++            }
++            if let Some(items) = value.as_sexpr() {
++                return items.iter().any(|item| oracle(item, env, needles));
++            }
++            false
++        }
++
++        // Load the rules through the production path: compile + eval each
++        // (= …) form (rule_rhs_atoms is populated by add_rule during eval).
++        let state = crate::backend::compile::compile(
++            "(= (danger $x) (cut))\n(= (printer $x) (println! $x))\n(= (safe $x) (+ $x 1))",
++        )
++        .expect("rules compile");
++        let mut env = state.environment.clone();
++        let source: Vec<MettaValue> = state.source().clone();
++        for item in source {
++            let (_results, new_env, _root_handle) = eval(item, env, &state);
++            env = new_env;
++        }
++        assert!(
++            env.rule_rhs_contains_atom("danger", "cut"),
++            "precondition: the danger rule's RHS must register the cut atom"
++        );
++
++        let compile1 = |src: &str| -> MettaValue {
++            let s = crate::backend::compile::compile(src).expect("case compiles");
++            let v = s.source().first().cloned().expect("one expr");
++            v
++        };
++
++        let cut_needles: &[&str] = &["cut"];
++        let impure_needles: &[&str] = &["println!", "trace!"];
++        let cases: &[(&str, bool, bool)] = &[
++            // (source, involves-cut, involves-impure)
++            ("(danger 1)", true, false),
++            ("(foo (bar (danger 2)) baz)", true, false), // nested descent
++            ("danger", true, false),                     // bare-atom head
++            ("(printer 7)", false, true),
++            ("(outer (printer 7))", false, true),
++            ("(safe 3)", false, false),
++            ("($f (danger 1))", true, false), // $-head filtered; descent still finds it
++            // quote compiles to a Quoted NODE (not a plain SExpr) — opaque to
++            // BOTH walks (get_head_symbol `_ => None`, as_sexpr None); the
++            // original gate never saw through quote and neither must we.
++            ("(quote (danger 1))", false, false),
++            ("42", false, false),             // inline scalar
++            ("True", false, false),           // inline scalar
++            ("(_ (danger 1))", true, false),  // `_` head filtered; descent finds it
++        ];
++        for (src, want_cut, want_impure) in cases {
++            let v = compile1(src);
++            let o_cut = oracle(&v, &env, cut_needles);
++            let n_cut = expression_involves_rule_rhs_atom(&v, &env, cut_needles);
++            assert_eq!(o_cut, *want_cut, "oracle/cut disagrees on {src}");
++            assert_eq!(n_cut, *want_cut, "new-walk/cut disagrees on {src}");
++            let o_imp = oracle(&v, &env, impure_needles);
++            let n_imp = expression_involves_rule_rhs_atom(&v, &env, impure_needles);
++            assert_eq!(o_imp, *want_impure, "oracle/impure disagrees on {src}");
++            assert_eq!(n_imp, *want_impure, "new-walk/impure disagrees on {src}");
++        }
++    }
++
+     // A5.5: calls collect_all_roots() (slab-only registry reader after A5.5) —
+     // compile in slab only. Same class as the gc_allocator.rs registry tests.
+     #[cfg(not(feature = "index-gc"))]
+@@ -1133,6 +1220,34 @@ fn expression_involves_rule_rhs_atom(
+     env: &MettaEnvironment,
+     needles: &[&str],
+ ) -> bool {
++    // Experiment #16 (profile-backed F1 lever): in index mode this gate is
++    // re-walked per eval dispatch over freshly-substituted expressions, so
++    // the materializing accessors below (`get_head_symbol`/`as_sexpr` →
++    // `inner_ref_index`) Box+shadow-cache every Addr they touch and never
++    // hit the cache — ~18% of Robot FANOUT=0 wall at HEAD 0595eca3
++    // (docs/cesk-gc/f1-profile-post309-2026-06-11.md). Collect the candidate
++    // heads IN PLACE under ONE heap read guard (a verdict-identical mirror —
++    // see IndexHeap::collect_gate_head_symbols), release the guard, then
++    // needle-check. The rule_index lock is taken strictly AFTER the heap
++    // guard drops: note_rule_added walks values UNDER the rule_index write
++    // lock, so nesting heap→rule_index would invert that order.
++    if crate::backend::models::metta_value::gc_mode_is_index() {
++        if let Some(addr) = value.as_arena_addr() {
++            let mut heads: Vec<&'static str> = Vec::with_capacity(16);
++            crate::backend::eval::cesk::index_heap::global_index_heap()
++                .read()
++                .expect("index heap poisoned")
++                .collect_gate_head_symbols(addr, &mut heads);
++            return heads.iter().any(|head| {
++                needles
++                    .iter()
++                    .any(|needle| env.rule_rhs_contains_atom(head, needle))
++            });
++        }
++        // Inline scalar (no arena addr in index mode): get_head_symbol and
++        // as_sexpr are both None ⇒ the materializing walk returns false.
++        return false;
++    }
+     if let Some(head) = value.get_head_symbol() {
+         if needles
+             .iter()

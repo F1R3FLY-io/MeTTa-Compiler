@@ -1128,6 +1128,19 @@ pub(crate) fn expression_involves_impure_rules(value: &MettaValue, env: &MettaEn
         )
 }
 
+/// REJECTED-alternative note (experiment #16, 2026-06-11): an index-native
+/// copy-free walk (IndexHeap-level, child Addrs in place, verdict-identical —
+/// conformance 483/0 + an 11-case differential oracle green) replaced this
+/// function's materializing accessors and measured Robot FANOUT=0 at
+/// p=0.416, d=-0.04 (n=51/arm, interleaved) — PURE NULL. That refuted the
+/// frame-pointer profile's claim that ~18% of Robot wall was memmove called
+/// from this gate: FP unwinds through the FRAMELESS AVX memmove leaf walk a
+/// stale rbp chain and mis-attribute the caller. The gate's shadow accesses
+/// are evidently warm cache hits (cf. exp14: the epoch CHECK, not
+/// materialization, was that path's cost). Patch archived at
+/// docs/cesk-gc/rejected-patches/exp16-copy-free-gate-walk.patch; do not
+/// re-attempt from sampled-attribution data — use exact call graphs
+/// (callgrind) or an intervention experiment.
 fn expression_involves_rule_rhs_atom(
     value: &MettaValue,
     env: &MettaEnvironment,

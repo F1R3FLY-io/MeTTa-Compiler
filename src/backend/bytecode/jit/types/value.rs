@@ -61,6 +61,20 @@ impl JitValue {
         if let Some(inline) = Self::try_from_long_inline(n) {
             return inline;
         }
+        // Index fence (experiment #18, design v4.1 revision 4 — fixes a
+        // PRE-EXISTING latent bug): in index mode the slab alloc below would
+        // produce a REAL slab pointer whose low 32 bits every index-mode
+        // unpack (`ptr as u32`) misreads as an arena Addr — a garbage handle.
+        // Mint a genuine index heap Long via the factory and pack its
+        // `inner_ptr()` form (`INDEX_KEY_TAG | tagged >> 4`) — the ONLY
+        // payload shape index unpacks trust (and the shape that carries the
+        // TAG5 variant bits at payload [36:32]).
+        #[cfg(feature = "index-gc")]
+        if crate::backend::models::metta_value::gc_mode_is_index() {
+            use crate::backend::models::MettaValueFactory;
+            let v = crate::backend::models::global_factory().long(n);
+            return JitValue::from_inner_ptr(v.inner_ptr());
+        }
         // Heap fallback: allocate MettaValueInner::Long(n) on the slab
         // and tag as PTR. The slab guarantees 'static lifetime.
         let inner = crate::backend::models::gc_allocator::global_allocator()
@@ -505,4 +519,32 @@ impl JitValue {
 
     /// Constant for one
     pub const ONE: JitValue = JitValue::from_long_inline_unchecked(1);
+}
+
+#[cfg(all(test, feature = "index-gc"))]
+mod index_fence_tests {
+    use super::*;
+    use crate::backend::eval::cesk::index_heap::enter_index_mode_for_test;
+
+    /// Experiment #18 fence (design v4.1 revision 4): an out-of-inline-range
+    /// Long must round-trip through the JIT in index mode. PRE-fence,
+    /// `from_long` slab-allocated the overflow value even in index mode, and
+    /// every index unpack misread the TAG_PTR payload's low 32 bits as an
+    /// arena `Addr` — a garbage handle (the pre-existing latent bug this
+    /// fence fixes). This is the index-build coverage the slab-only
+    /// `tests/jit_long_range.rs` cfg gap left open.
+    #[test]
+    fn index_mode_big_long_round_trips_through_jit() {
+        let _mode = enter_index_mode_for_test();
+        let big = JitValue::INLINE_LONG_MAX + 12_345;
+        let v = unsafe { JitValue::from_long(big).to_metta() };
+        assert_eq!(
+            v.as_long(),
+            Some(big),
+            "out-of-range Long must survive the index JIT pack/unpack"
+        );
+        let neg = JitValue::INLINE_LONG_MIN - 99;
+        let v2 = unsafe { JitValue::from_long(neg).to_metta() };
+        assert_eq!(v2.as_long(), Some(neg), "negative overflow Long round-trip");
+    }
 }

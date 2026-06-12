@@ -3449,8 +3449,12 @@ pub(super) use crate::backend::models::metta_value::{
 };
 #[cfg(test)]
 static GC_MODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// pub(crate) (was pub(super)): cross-module index-mode tests (the exp18 JIT
+// fence round-trip in jit/types/value.rs) must serialize on this SAME
+// process-wide mode lock — a second lock elsewhere would reintroduce the
+// cross-module mode-flip race documented above.
 #[cfg(test)]
-pub(super) struct IndexModeTestGuard {
+pub(crate) struct IndexModeTestGuard {
     #[allow(dead_code)] // held for RAII: Drop resets the mode + releases the lock
     lock: std::sync::MutexGuard<'static, ()>,
 }
@@ -3465,7 +3469,7 @@ impl Drop for IndexModeTestGuard {
 }
 #[cfg(test)]
 #[must_use = "bind as `let _mode = enter_index_mode_for_test();` to hold the lock for the test"]
-pub(super) fn enter_index_mode_for_test() -> IndexModeTestGuard {
+pub(crate) fn enter_index_mode_for_test() -> IndexModeTestGuard {
     let lock = GC_MODE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     real_set_gc_mode_index();
     IndexModeTestGuard { lock }

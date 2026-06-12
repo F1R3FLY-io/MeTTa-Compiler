@@ -139,6 +139,17 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/StartedCycleGate.v` and `formal/lean/gc/StartedCycleGate.lean`: prove the E5 started-cycle
   straddle-gate obligation. If re-park is gated by `GC_CYCLE_STARTED > my_reparked_gen`, a teardown-only generation
   bump cannot cause a phantom re-park before the next driver starts.
+- `formal/rocq/gc/ParkedPhantomCycleGate.v`: proves the #309 phantom-future-park gate obligation (the branch-B/pump
+  park path's twin of the E5 straddle gate). If parking requires a REAL cycle (`current_cycle_started() == my_gen`
+  or `is_gc_requested()`), every park resumes and a phantom (post-close) generation can never park — closing the
+  masked-parker missed-root hazard by construction; the companion theorem captures the ungated negative shape where
+  a phantom park strands forever (the captured wedge: autopsy rep 17).
+- `formal/rocq/gc/RequestReassertAtOpen.v`: proves the #309 coalesced-request witness-starvation fix obligation.
+  `request_concurrent_collection` posts two effects (flag + channel message); two coalesced requests leave two
+  messages and cycle 1's close clears the flag, so cycle 2 opens with the flag false and no safepoint ever stamps.
+  If the driver re-asserts `request_gc()` at every rendezvous open, then `open ⇒ requested` holds and every opened
+  cycle closes; the companion theorem captures the unreasserted starved-open negative shape (the captured wedge:
+  validate rep 36).
 - `formal/rocq/gc/CollapseCompletion.v` and `formal/lean/gc/CollapseCompletion.lean`: prove the E1 parallel
   dispatch/collapse completion obligation. If every spawned worker exits and the RAII completion guard drops on both
   normal and panic-unwind exits, then the parent wait cannot be stranded by a skipped worker decrement; the companion
@@ -485,6 +496,13 @@ can replace the full-major final sweep.
   child violates the invariant.
 - `tla/StartedCycleGate.tla`: checks the E5 straddle gate. Gating re-park on `GC_CYCLE_STARTED` avoids phantom
   re-parks during teardown; gating on `GC_CYCLE_GEN` violates `NoPhantomRepark`.
+- `tla/ParkedPhantomCycleGate.tla`: checks the #309 phantom-future-park gate on the branch-B/pump park path. With
+  the cycle-reality gate (`started == my_gen ∨ requested`), `ParkedEventuallyResumes` and `NoPhantomCountBump`
+  hold; the ungated config deadlocks at exactly the captured phantom-parked state (autopsy rep 17: `gen 95,
+  started 94, requested F, park 2`).
+- `tla/RequestReassertAtOpen.tla`: checks the #309 coalesced-request re-assert. With `ReassertAtOpen`, both queued
+  messages' cycles close (`EveryCycleCloses`) and `OpenImpliesRequested` holds; the lost config deadlocks at
+  exactly the captured starved-open state (validate rep 36: cycle open, `requested F`, witness unstamped).
 - `tla/GenerationResume.tla`: checks the E1/E5 worker-resume rule. Generation-gated resume with an end-of-cycle
   bump preserves `EndedCycleCanResume` even after a back-to-back request; boolean `GC_REQUESTED` resume and
   generation resume without the end bump both violate it.

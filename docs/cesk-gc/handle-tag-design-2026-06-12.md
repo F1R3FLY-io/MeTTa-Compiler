@@ -1,23 +1,59 @@
 # Handle-borne variant tags (index mode) — design for the next F1 lever
 
-Status: **v3 — R1/R2/R3 complete, R2 verdict CONVERGED with 4 mandatory
-revisions (folded below); one confirming round (R4) before pre-registration
-(experiment #18).** Data basis: the callgrind-exact post-exp17 profile
-(`a69dc8de`, `target/gc-logs/f1_profile_post-exp17/robot_f0.callgrind`).
+Status: **v4 — R1–R4 complete. R4 (confirming round) verified the core
+lever bit-exactly (recovery arithmetic, oracle soundness, fence
+reachability+lock-safety) and was NET-ADDITIVE on two v3 sub-decisions,
+folded below: the flags rider is DEFERRED (unimplementable as written),
+and the gc_roots exemption is DELETED in favor of fence-first sequencing
+(Option A). One final confirming pass (R5) gates pre-registration (#18).**
+Data basis: the callgrind-exact post-exp17 profile (`a69dc8de`,
+`target/gc-logs/f1_profile_post-exp17/robot_f0.callgrind`).
+
+## v4 amendments (R4 findings 2 & 6 + precision edits)
+
+- **Flags rider DEFERRED (R4-F2):** "carry FLAG_HAS_VARIABLES through the
+  same recovery" is impossible — the pack is `tagged >> 4`
+  (metta_value.rs:1404), which destroys bits [3:0] BEFORE packing; unlike
+  TAG5 the flags are simply absent from the JitValue payload. Recovering
+  them needs a PACK-SIDE `inner_ptr()` change (free payload bits [47:37]
+  exist) — but `inner_ptr()` output is a hash/identity KEY for five
+  subsystems, so that is its own determinism-analyzed future item, NOT a
+  rider on this lever. The pre-existing JIT flags-loss bug stays documented
+  as-is.
+- **Option A adopted; gc_roots exemption DELETED (R4-F6):** sequencing is
+  FENCE FIRST (revision 4 lands before any recovery site), after which
+  every TAG_PTR payload is `inner_ptr()`-packed and gc_roots.rs:217
+  recovers the tag exactly like the other five unpacks. `from_addr` carries
+  ONE unconditional `debug_assert!(tag != TAG_UNSET && tag <= 18)`; no
+  mark-only constructor, no exemption; revision 8's "tagged == 0 impossible
+  for index handles" becomes unconditionally true. (R4 verified the
+  no-soundness-hole status quo: the only 0-sentinel reader is fed by
+  interpreter handles, never gc_roots output.)
+- **Revision 3 precision (R4-F4):** the variant is statically in hand at
+  remap-INSERT (the restore fixpoint holds `node: &SerNode` at every
+  `remap.insert`, continuation_slice.rs:464-478), not at `resolve()`.
+  Implementation: widen the IN-MEMORY remap to `HashMap<u32, (Addr, u8)>`;
+  `resolve()` reads the tag from the map. Zero wire change, zero heap
+  reads, no lock interaction (the per-node write guard is released before
+  resolve_all).
+- Optional hardening adopted: the unpack recovery asserts
+  `debug_assert!(tag <= 18)` (probabilistic leak detector for any future
+  non-`inner_ptr()`-packed payload).
 
 ## v3 mandatory revisions (R2 findings 1–6, all local)
 
-1. **JIT unpack tag recovery (R2-F1, MAJOR).** The tag SURVIVES the pack:
-   `inner_ptr()`'s index arm returns `INDEX_KEY_TAG | (tagged >> 4)`
-   (metta_value.rs:1402-1404), placing TAG5 at fake-pointer bits [36:32]
-   inside the 48-bit JitValue payload. Recovery at ALL SIX unpacks =
+1. **JIT unpack tag recovery (R2-F1, MAJOR; R4-verified bit-exact).** The
+   tag SURVIVES the pack: `inner_ptr()`'s index arm returns
+   `INDEX_KEY_TAG | (tagged >> 4)` (metta_value.rs:1402-1404), placing
+   TAG5 at fake-pointer bits [36:32] inside the 48-bit JitValue payload
+   (INDEX_KEY_TAG = bit 48, OUTSIDE the payload mask — no collision;
+   payload bits [47:37] are zero). Recovery at ALL SIX unpacks =
    `tag = (payload >> 32) & 0x1F`: metta_value.rs:2852 (`from_inner_ptr`),
    jit/types/value.rs:382/402, jit/hybrid/arena.rs:501/520,
-   jit/runtime/gc_roots.rs:215. EXEMPTION: gc_roots.rs:217 may mint UNSET
-   with a documented "mark-only, never materialized" note (marking uses
-   `as_arena_addr` exclusively; a heap read there risks lock-order issues).
-   Precedent fixed alongside: this path already loses FLAG_HAS_VARIABLES
-   (the same metadata-loss class) — carry flags through the same recovery.
+   jit/runtime/gc_roots.rs:215→217 (NO exemption — see v4/Option A; the
+   fence lands first, so every TAG_PTR payload is `inner_ptr()`-packed).
+   (The FLAG_HAS_VARIABLES loss on this path is a PRE-EXISTING separate
+   bug — flags do NOT survive the `>>4` pack; deferred, see v4.)
 2. **Accessor-side DEBUG oracle (R2-F2, MAJOR).** The inner_ref_index
    tripwire is BLIND to wrong-tag fast negatives (the failure bypasses
    inner_ref_index entirely). The real coupling: in DEBUG builds, on every
@@ -136,9 +172,11 @@ a small set of sites — the `IndexFactory` intern/alloc returns, and
 `MettaValue::from_addr(raw, flags)` (E4 reconstruction). Setting rule:
 `tag = variant_of(node)` at mint time, where the node variant is ALREADY
 known statically at each factory method (`f.atom(..)` mints `TAG_ATOM` with
-no heap read) — `from_addr` gains a tag parameter persisted in the E4 slice
-beside `(raw, flags)` (slices re-intern identical content ⇒ identical
-variant; persisting beats re-deriving, which would need a heap read).
+no heap read) — `from_addr` gains a mandatory tag parameter. E4 restore
+DERIVES the tag at remap-insert (the fixpoint holds the `SerNode` variant
+statically; the in-memory remap widens to `HashMap<u32, (Addr, u8)>`) —
+zero wire change, zero heap reads (v4/R4-F4; the earlier persisted-field
+idea was a silent postcard wire break and is REVERSED).
 
 ### Invariants + verification
 
@@ -157,7 +195,7 @@ variant; persisting beats re-deriving, which would need a heap read).
   same node ⇒ same Addr ⇒ same mint path ⇒ same TAG5, so tag bits never
   split identical values. Hazard: any path comparing handles minted BEFORE
   and AFTER this change within one process (none — no persistence of raw
-  tagged words across runs except E4 slices, which carry their own tag
+  tagged words across runs except E4 slices, which derive tags at restore
   field explicitly and reconstruct deterministically).
 - **I4 (Addr extraction)**: `as_arena_addr` truncates to u32 after `>>4` —
   unaffected by bits [40:36]. Audit every OTHER reader of the raw word in
@@ -182,8 +220,8 @@ Criterion: the standard Welch one-tailed α=0.05, d≥0.5, n=51 interleaved.
 
 - **T1 — TOTALITY (load-bearing):** every index mint path MUST set
   `TAG5 ≠ UNSET`. `from_addr(raw, flags)` gains a mandatory `tag` parameter;
-  the E4 `SlotRef::Heap { raw, flags }` gains a `tag: u8` field (slices
-  reconstruct deterministically — same content ⇒ same variant). Rationale:
+  E4 restore derives tags at remap-insert (NO wire field — see v4; the
+  `SlotRef` postcard format is untouched). Rationale:
   `PartialEq::eq` (metta_value.rs:2681) and the heap path (2698,
   `tagged & PTR_MASK` — PTR_MASK KEEPS bits [40:36]) compare raw words, and
   `identity_eq` (2841) is a raw-word identity — a mixed tagged/untagged pair
@@ -221,9 +259,15 @@ Criterion: the standard Welch one-tailed α=0.05, d≥0.5, n=51 interleaved.
   as_conjunction/as_quoted_ref/as_error exclusively — bindings.rs:104-130);
   find_grounded uses as_sexpr/as_atom (grounded.rs:181-210); `view()` is not
   on the hot path; no coverage reductions.
-- R2 (pending): adversarial pass on the v2 design (T1 totality enumeration:
-  EVERY mint site listed and tag-assigned; hash_cons_key interplay;
-  Lazy/Quoted wrapper mint paths; JIT `from_inner_ptr` index packing
-  (metta_value.rs:2846+) — does the JIT mint raw handles that bypass
-  from_addr?; `peel_span` paths; the inline-Long NB_TAG_LONG slab-alloc
-  path).
+- ✅ R2 (2026-06-12): exhaustive mint-site census (5 classes, all
+  file:line-enumerated); verdict CONVERGED with 4 mandatory revisions —
+  folded as v3.
+- ✅ R4 (2026-06-12, confirming): core lever verified bit-exactly (recovery
+  arithmetic incl. INDEX_KEY_TAG non-collision; oracle soundness by
+  status-quo equivalence; fence reachability + lock-safety by the JIT's
+  existing factory-mint precedent; six-site unpack list complete).
+  NET-ADDITIVE on two v3 sub-decisions (flags rider unimplementable;
+  exemption/assert contradiction) — folded as v4 (rider deferred; Option A
+  fence-first, exemption deleted).
+- R5 (pending): final confirming pass on v4; net-subtractive ⇒ CONVERGED ⇒
+  pre-register #18.

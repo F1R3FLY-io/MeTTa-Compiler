@@ -148,6 +148,8 @@
 
 From Stdlib Require Import Arith.
 From Stdlib Require Import Lia.
+From Stdlib Require Import List.
+Import ListNotations.
 
 Module MeTTaTron_GC_CESKCollectorSafety.
 
@@ -245,6 +247,17 @@ Section CESKCollectorSafetyModel.
     SegmentWritten a /\ SegmentPublished a /\ SlotWritten a /\ SlotPublished a /\
       AddrReturned a.
 
+  Definition PublishedSidePayloadReady
+      (SideSegmentWritten SideSegmentPublished SidePageWritten SidePagePublished
+       SideChunkWritten SideChunkPublished SideEntryWritten SideEntryPublished
+       SideAddrReturned OwnerNodePublished SameSegment : Addr -> Prop)
+      (a : Addr) : Prop :=
+    SideSegmentWritten a /\ SideSegmentPublished a /\
+      SidePageWritten a /\ SidePagePublished a /\
+      SideChunkWritten a /\ SideChunkPublished a /\
+      SideEntryWritten a /\ SideEntryPublished a /\
+      SideAddrReturned a /\ OwnerNodePublished a /\ SameSegment a.
+
   Definition ConcurrentFreshOnly
       (ConcurrentReturned Fresh : Addr -> Prop) : Prop :=
     forall a, ConcurrentReturned a -> Fresh a.
@@ -256,6 +269,14 @@ Section CESKCollectorSafetyModel.
   Definition ReuseExclusiveOnly
       (ReuseReturned Exclusive : Addr -> Prop) : Prop :=
     forall a, ReuseReturned a -> Exclusive a.
+
+  Definition FreeBitTracksFreeList
+      (freeList : list Addr)
+      (FreeBit : Addr -> bool)
+      (OnFreeList : Addr -> Prop) : Prop :=
+    (forall a, FreeBit a = true <-> In a freeList) /\
+      (forall a, OnFreeList a <-> In a freeList) /\
+      NoDup freeList.
 
   Definition LiveMachineVisible
       (Machine : Type)
@@ -2723,6 +2744,224 @@ Section CESKCollectorSafetyModel.
              Hreuse_on_free a Hconcurrent) as Hnot_reuse.
         apply Hnot_reuse.
         exact Hreuse.
+  Qed.
+
+  Theorem end_to_end_cesk_index_gc_allocator_cache_safety :
+    forall (freeList : list Addr)
+           (CacheEntry Epoch : Type)
+           (heap_epoch local_epoch : Epoch)
+           (Stale : Epoch -> CacheEntry -> Prop)
+           (StructuralRoot DriverRoot WorkerRoot SafepointRoot EnvAnchor
+            DispatchAnchor ActiveWorkerRoot DispatchFanoutRoot BatchRoot
+            NewlyAdmittedRoot InitialRoot ShadedDeletion AllocateBlack
+            PublishedAlloc SegmentWritten SegmentPublished SlotWritten
+            SlotPublished AddrReturned ReadObserved ConcurrentReturned
+            ReuseReturned Fresh OnFreeList
+            SideSegmentWritten SideSegmentPublished SidePageWritten
+            SidePagePublished SideChunkWritten SideChunkPublished
+            SideEntryWritten SideEntryPublished SideAddrReturned
+            OwnerNodePublished SameSegment SideReadObserved
+            Marked Freed FutureTouch : Addr -> Prop)
+           (InlineEdge SideEdge SpaceEdge ReaderEdge SatbEdge : Addr -> Addr -> Prop)
+           (FreeBit : Addr -> bool)
+           (CacheBefore CacheAfter ReturnedCache : CacheEntry -> Prop)
+           (Quiescent SideFreed StackLaunderLive ShadowCleared FutureDeref : Prop),
+      (forall a,
+          FutureTouch a ->
+          Reach (CollectorRoot StructuralRoot DriverRoot)
+            (SemanticNodeEdge InlineEdge SideEdge SpaceEdge) a \/
+          DriverRootUnion WorkerRoot SafepointRoot EnvAnchor DispatchAnchor a \/
+          SchedulerLiveRoot ActiveWorkerRoot DispatchFanoutRoot BatchRoot
+            NewlyAdmittedRoot a \/
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack)
+            SatbEdge a \/
+          PublishedAlloc a) ->
+      (forall a, CollectorRoot StructuralRoot DriverRoot a -> Marked a) ->
+      (forall parent child, Marked parent -> ReaderEdge parent child -> Marked child) ->
+      (forall parent child, InlineEdge parent child -> ReaderEdge parent child) ->
+      (forall parent child, SideEdge parent child -> ReaderEdge parent child) ->
+      (forall parent child, SpaceEdge parent child -> ReaderEdge parent child) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      (forall a, WorkerRoot a -> DriverRoot a) ->
+      (forall a, SafepointRoot a -> DriverRoot a) ->
+      (forall a, EnvAnchor a -> DriverRoot a) ->
+      (forall a, DispatchAnchor a -> DriverRoot a) ->
+      (forall a, ActiveWorkerRoot a -> DriverRoot a) ->
+      (forall a, DispatchFanoutRoot a -> DriverRoot a) ->
+      (forall a, BatchRoot a -> DriverRoot a) ->
+      (forall a, NewlyAdmittedRoot a -> False) ->
+      (forall a,
+          Reach (ConcurrentCollectorRoot InitialRoot DriverRoot ShadedDeletion AllocateBlack)
+            SatbEdge a ->
+          Marked a) ->
+      (forall a, PublishedAlloc a -> AllocateBlack a) ->
+      (forall a, ReadObserved a -> AddrReturned a) ->
+      (forall a, AddrReturned a -> SlotPublished a) ->
+      (forall a, SlotPublished a -> SlotWritten a) ->
+      (forall a, SlotPublished a -> SegmentPublished a) ->
+      (forall a, SegmentPublished a -> SegmentWritten a) ->
+      ConcurrentFreshOnly ConcurrentReturned Fresh ->
+      FreeListSeparated Fresh OnFreeList ->
+      (forall a, ReuseReturned a -> OnFreeList a) ->
+      (forall a, SideReadObserved a -> OwnerNodePublished a) ->
+      (forall a, OwnerNodePublished a -> SideAddrReturned a) ->
+      (forall a, SideAddrReturned a -> SideEntryPublished a) ->
+      (forall a, SideEntryPublished a -> SideEntryWritten a) ->
+      (forall a, SideEntryPublished a -> SideChunkPublished a) ->
+      (forall a, SideChunkPublished a -> SideChunkWritten a) ->
+      (forall a, SideChunkPublished a -> SidePagePublished a) ->
+      (forall a, SidePagePublished a -> SidePageWritten a) ->
+      (forall a, SideAddrReturned a -> SideSegmentPublished a) ->
+      (forall a, SideSegmentPublished a -> SideSegmentWritten a) ->
+      (forall a, OwnerNodePublished a -> SameSegment a) ->
+      FreeBitTracksFreeList freeList FreeBit OnFreeList ->
+      (local_epoch = heap_epoch ->
+        forall e, CacheBefore e -> ~ Stale heap_epoch e) ->
+      EpochProtectedCacheValidatePost CacheEntry Epoch heap_epoch local_epoch
+        CacheBefore CacheAfter Stale ->
+      (forall e, ReturnedCache e -> CacheAfter e) ->
+      (SideFreed -> Quiescent) ->
+      (StackLaunderLive -> ~ Quiescent) ->
+      (SideFreed -> ShadowCleared) ->
+      (FutureDeref -> StackLaunderLive \/ ~ ShadowCleared) ->
+      (forall a, FutureTouch a -> ~ Freed a) /\
+      (forall a,
+          ReadObserved a ->
+          PublishedSlotReady SegmentWritten SegmentPublished SlotWritten
+            SlotPublished AddrReturned a) /\
+      (forall a,
+          SideReadObserved a ->
+          PublishedSidePayloadReady
+            SideSegmentWritten SideSegmentPublished SidePageWritten
+            SidePagePublished SideChunkWritten SideChunkPublished
+            SideEntryWritten SideEntryPublished SideAddrReturned
+            OwnerNodePublished SameSegment a) /\
+      (forall a, PublishedAlloc a -> ~ Freed a) /\
+      (forall a, ConcurrentReturned a -> ~ ReuseReturned a) /\
+      FreeBitTracksFreeList freeList FreeBit OnFreeList /\
+      (forall e, ReturnedCache e -> ~ Stale heap_epoch e) /\
+      (SideFreed -> ~ FutureDeref).
+  Proof.
+    intros freeList CacheEntry Epoch heap_epoch local_epoch Stale
+           StructuralRoot DriverRoot WorkerRoot SafepointRoot EnvAnchor
+           DispatchAnchor ActiveWorkerRoot DispatchFanoutRoot BatchRoot
+           NewlyAdmittedRoot InitialRoot ShadedDeletion AllocateBlack
+           PublishedAlloc SegmentWritten SegmentPublished SlotWritten
+           SlotPublished AddrReturned ReadObserved ConcurrentReturned
+           ReuseReturned Fresh OnFreeList
+           SideSegmentWritten SideSegmentPublished SidePageWritten
+           SidePagePublished SideChunkWritten SideChunkPublished SideEntryWritten
+           SideEntryPublished SideAddrReturned OwnerNodePublished SameSegment
+           SideReadObserved Marked Freed FutureTouch
+           InlineEdge SideEdge SpaceEdge ReaderEdge SatbEdge FreeBit
+           CacheBefore CacheAfter ReturnedCache
+           Quiescent SideFreed StackLaunderLive ShadowCleared FutureDeref
+           Hfuture_shape Hcollector_root_marked Hreader_closed Hinline Hside
+           Hspace Hsweep Hworker Hsafepoint Henv Hdispatch Hactive Hfanout
+           Hbatch Hadmission_closed Hsatb_mark Hpublished_black Hread
+           Hreturned Hslot_written Hslot_segment Hsegment_written Hfresh
+           Hseparated Hreuse_on_free Hside_read Howner_side Hside_returned
+           Hside_entry_written Hside_entry_chunk Hside_chunk_written
+           Hside_chunk_page Hside_page_written Hside_segment
+           Hside_segment_written Hsame_segment Hfree_bits Hcurrent_safe
+           Hvalidated Hcache_lookup Hfree_quiescent Hstack_nonquiescent
+           Hclear Hderef_shape.
+    pose proof
+      (end_to_end_cesk_index_gc_safety
+         StructuralRoot DriverRoot WorkerRoot SafepointRoot EnvAnchor
+         DispatchAnchor ActiveWorkerRoot DispatchFanoutRoot BatchRoot
+         NewlyAdmittedRoot InitialRoot ShadedDeletion AllocateBlack
+         PublishedAlloc SegmentWritten SegmentPublished SlotWritten SlotPublished
+         AddrReturned ReadObserved ConcurrentReturned ReuseReturned Fresh
+         OnFreeList Marked Freed FutureTouch InlineEdge SideEdge SpaceEdge
+         ReaderEdge SatbEdge Hfuture_shape Hcollector_root_marked
+         Hreader_closed Hinline Hside Hspace Hsweep Hworker Hsafepoint Henv
+         Hdispatch Hactive Hfanout Hbatch Hadmission_closed Hsatb_mark
+         Hpublished_black Hread Hreturned Hslot_written Hslot_segment
+         Hsegment_written Hfresh Hseparated Hreuse_on_free)
+      as [Hno_uaf [Hslot_ready Hconcurrent_disjoint]].
+    split.
+    - exact Hno_uaf.
+    - split.
+      + exact Hslot_ready.
+      + split.
+        * intros addr Hside_observed.
+          unfold PublishedSidePayloadReady.
+          repeat split.
+          -- apply Hside_segment_written.
+             apply Hside_segment.
+             apply Howner_side.
+             apply Hside_read.
+             exact Hside_observed.
+          -- apply Hside_segment.
+             apply Howner_side.
+             apply Hside_read.
+             exact Hside_observed.
+          -- apply Hside_page_written.
+             apply Hside_chunk_page.
+             apply Hside_entry_chunk.
+             apply Hside_returned.
+             apply Howner_side.
+             apply Hside_read.
+             exact Hside_observed.
+          -- apply Hside_chunk_page.
+             apply Hside_entry_chunk.
+             apply Hside_returned.
+             apply Howner_side.
+             apply Hside_read.
+             exact Hside_observed.
+          -- apply Hside_chunk_written.
+             apply Hside_entry_chunk.
+             apply Hside_returned.
+             apply Howner_side.
+             apply Hside_read.
+             exact Hside_observed.
+          -- apply Hside_entry_chunk.
+             apply Hside_returned.
+             apply Howner_side.
+             apply Hside_read.
+             exact Hside_observed.
+          -- apply Hside_entry_written.
+             apply Hside_returned.
+             apply Howner_side.
+             apply Hside_read.
+             exact Hside_observed.
+          -- apply Hside_returned.
+             apply Howner_side.
+             apply Hside_read.
+             exact Hside_observed.
+          -- apply Howner_side.
+             apply Hside_read.
+             exact Hside_observed.
+          -- apply Hside_read.
+             exact Hside_observed.
+          -- apply Hsame_segment.
+             apply Hside_read.
+             exact Hside_observed.
+        * split.
+          -- intros addr Hpublished.
+             intros Hfreed.
+             apply (Hsweep addr Hfreed).
+             apply Hsatb_mark.
+             apply reach_root.
+             right; right; right.
+             apply Hpublished_black.
+             exact Hpublished.
+          -- split.
+             ++ exact Hconcurrent_disjoint.
+             ++ split.
+                ** exact Hfree_bits.
+                ** split.
+                   { intros e Hreturned_cache.
+                     eapply epoch_protected_cache_lookup_not_stale_after_validate;
+                       eauto. }
+                   { intros Hfreed_side.
+                     intros Hderef.
+                     apply
+                       (side_free_shadow_clear_blocks_future_deref
+                          Quiescent SideFreed StackLaunderLive ShadowCleared
+                          FutureDeref Hfree_quiescent Hstack_nonquiescent
+                          Hclear Hderef_shape Hfreed_side Hderef). }
   Qed.
 End CESKCollectorSafetyModel.
 

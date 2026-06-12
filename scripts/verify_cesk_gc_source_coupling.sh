@@ -883,16 +883,21 @@ assert_after_before "src/backend/models/metta_value.rs" "fn ensure_value_hash_ca
 assert_after_before "src/backend/models/metta_value.rs" "pub fn clear_value_hash_cache()" "VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());" "VALUE_HASH_CACHE_EPOCH.with"
 assert_after_before "src/backend/models/metta_value.rs" "fn hash_value(&self) -> u64" "ensure_value_hash_cache_epoch_current();" "VALUE_HASH_CACHE.with"
 assert_before "src/backend/models/metta_value.rs" "static INNER_SHADOW_EPOCH:" "fn ensure_inner_shadow_epoch_current()"
-# Experiment #15: all shadow access flows through with_shadow (the cfg-split
-# RefCell/UnsafeCell chokepoint); the epoch handshake must still read the sweep
-# epoch and then invalidate via that chokepoint before publishing the epoch.
-assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "gc_sweep_epoch()" "with_shadow"
+# Experiment #15 was rejected and reverted: the production shadow remains the
+# RefCell-backed paged directory. The source coupling now pins the accepted
+# shape directly and guards against reintroducing the rejected with_shadow /
+# release-UnsafeCell chokepoint without a new proof+benchmark gate.
+assert_zero "src/backend/models/metta_value.rs" "fn with_shadow"
+assert_zero "src/backend/models/metta_value.rs" "UnsafeCell<Vec<Option<Box<ShadowPage>>>>"
+assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "gc_sweep_epoch()" "INNER_SHADOW_EPOCH.with"
+assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "INNER_SHADOW_EPOCH.with" "INNER_SHADOW.with"
 # Paged shadow (6aea1af0): the epoch handshake invalidates by DROPPING every
 # allocated page (freeing the materialized boxes) before publishing the epoch —
 # the page-drop loop is the paged equivalent of the former wholesale .clear().
 assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "*page = None;" "epoch.set(current_epoch);"
 assert_after_before "src/backend/models/metta_value.rs" "pub(crate) fn clear_inner_shadow()" "*page = None;" "INNER_SHADOW_EPOCH.with"
-assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "ensure_inner_shadow_epoch_current();" "with_shadow"
+assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "ensure_inner_shadow_epoch_current();" "INNER_SHADOW.with"
+assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "INNER_SHADOW.with" "materialize_inner(addr)"
 
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "gc_sweep_epoch()" "HASH_CONS_EPOCH.with"
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "clear_hash_cons_table_local();" "epoch.set(current_epoch);"

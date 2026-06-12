@@ -242,7 +242,8 @@ can replace the full-major final sweep.
 - `formal/rocq/gc/IndexAllocatorRefinement.v`: composes the Rust source-coupled allocator facts into the abstract
   contract consumed by `CESKCollectorSafety.v`: fixed-slot reads observe published segment/slot bytes, side-payload
   reads observe same-segment published side entries, published allocations satisfy allocate-black, shared concurrent
-  allocation is disjoint from exclusive free-list reuse, and `free_bit` tracks a duplicate-free free list.
+  allocation is disjoint from exclusive free-list reuse, and the full `FreeBitTracksFreeList` invariant is preserved:
+  `free_bit(addr)`, `OnFreeList addr`, concrete list membership, and `NoDup` all agree.
 - `formal/rocq/gc/SideFreeQuiescence.v` and `formal/lean/gc/SideFreeQuiescence.lean`: prove the side-payload
   lifetime obligation. If side payload boxes are freed only on the true-quiescence arm, stack laundered references
   imply a non-quiescent evaluator, and the materialization shadow is cleared before any future dereference, then
@@ -388,10 +389,14 @@ can replace the full-major final sweep.
   E2 snapshot-live values removed from the pinned value-bearing E0 mutation categories. It also composes the explicit
   "machine completeness displaces manual registration" theorem into the top-level no-UAF story, and states that
   rendezvous live roots survive from the witness/root-coverage premise even when the old global-quiescence gate is
-  false. The `end_to_end_cesk_index_gc_safety` theorem now ties those proof families into one checked boundary:
+  false. The `end_to_end_cesk_index_gc_safety` theorem ties the core no-UAF story into one checked boundary:
   future CESK touches covered by structural roots, driver channels, scheduler-held roots, SATB roots, or
   allocate-black publication are not freed; observed fixed-arena reads see fully published segment/slot state; and
-  shared concurrent allocation cannot alias exclusive free-list reuse.
+  shared concurrent allocation cannot alias exclusive free-list reuse. The stronger
+  `end_to_end_cesk_index_gc_allocator_cache_safety` capstone composes that theorem with the allocator/cache
+  refinements: same-segment side-payload publication, allocate-black survival, concurrent/exclusive reuse
+  disjointness, the full free-bit/free-list/no-duplicate invariant, epoch-protected `INNER_SHADOW` stale-entry
+  exclusion, and the side-free quiescence/shadow-clear no-dangling-deref obligation.
 - `formal/rocq/gc/SATB.v` and `formal/lean/gc/SATB.lean`: prove the E2 concurrent-mark SATB obligation: if
   snapshot-live values are covered by initial roots, final-rendezvous driver roots, shaded deletion pre-images, or
   allocate-black roots, sweep cannot free them. They also state the final-rendezvous driver-root theorem directly:
@@ -674,6 +679,11 @@ facts the proofs rely on:
   VALUE_HASH_CACHE, hash-cons, EVAL_MEMO, MATCH_RESULT_CACHE, OPERATOR_CACHE, and the MORK ground-fragment cache
   are pinned to validate that epoch before returning hits. MORK ground fragments clear under index-gc on epoch advance
   because index `Addr` keys cannot be checked through slab slot allocation epochs.
+- The index-mode `INNER_SHADOW` materialization cache is source-pinned to the accepted paged `RefCell` shape:
+  `ensure_inner_shadow_epoch_current` reads `gc_sweep_epoch`, drops allocated pages on epoch mismatch, and only then
+  publishes `INNER_SHADOW_EPOCH`; `inner_ref_index` validates the epoch before entering `INNER_SHADOW.with` and
+  materializing from the heap. The source-coupling gate also rejects reintroducing the rejected experiment #15
+  `with_shadow` / release-`UnsafeCell` chokepoint without a new proof+benchmark gate.
 - `collect_global_anchors` is source-pinned to scan the thread-local value-bearing evaluation tables in order:
   eval memo roots, match-result roots, subgoal roots, then thunk roots. That keeps the formal `Global` component tied
   to the actual E0 root reader, not only to the SATB deletion-barrier paths for those tables.

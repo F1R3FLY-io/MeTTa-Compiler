@@ -80,8 +80,7 @@ Section IndexAllocatorRefinementModel.
       ReuseIsExclusiveCurrent ReuseReturned ExclusivePath CurrentSegment
         OnFreeList /\
       (forall a, ConcurrentReturned a -> ~ ReuseReturned a) /\
-      (forall a, OnFreeList a <-> FreeBit a = true) /\
-      NoDup freeList.
+      FreeBitTracksFreeList freeList FreeBit OnFreeList.
 
   Theorem source_coupled_index_allocator_refines_abstract_contract :
     forall (freeList : list Addr)
@@ -136,7 +135,7 @@ Section IndexAllocatorRefinementModel.
            Hside_chunk_page Hside_page_written Hside_segment
            Hside_segment_written Hsame_segment Hpublished_black Hfresh
            Hfresh_separated Hreuse_on_free Hreuse_exclusive Hreuse_current
-           [Hbit [Honlist Hnodup]].
+           Hfree_bits.
     unfold AllocatorAbstractContract.
     split.
     - intros addr Hread_observed.
@@ -238,18 +237,7 @@ Section IndexAllocatorRefinementModel.
                    apply Hnot_on_free.
                    apply Hreuse_on_free.
                    exact Hreuse.
-                ** split.
-                   { intro addr.
-                     split.
-                     - intro Hon.
-                       apply Hbit.
-                       apply Honlist.
-                       exact Hon.
-                     - intro Hfree_bit.
-                       apply Honlist.
-                       apply Hbit.
-                       exact Hfree_bit. }
-                   { exact Hnodup. }
+                ** exact Hfree_bits.
   Qed.
 End IndexAllocatorRefinementModel.
 

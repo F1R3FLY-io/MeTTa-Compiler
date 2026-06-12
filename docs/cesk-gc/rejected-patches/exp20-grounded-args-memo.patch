@@ -1,0 +1,130 @@
+diff --git a/src/backend/eval/step/sexpr.rs b/src/backend/eval/step/sexpr.rs
+index 241f510d..5511af21 100644
+--- a/src/backend/eval/step/sexpr.rs
++++ b/src/backend/eval/step/sexpr.rs
+@@ -4648,7 +4648,19 @@ where
+                     }
+                 }
+                 None => {
+-                    let bloom_indices = find_grounded_arg_indices_generic(&items, &env);
++                    let bloom_indices = {
++                        // exp20: content-keyed memo (epoch-validated) — the
++                        // scan re-runs per dispatch on hash-consed PLN bodies.
++                        let memo_key = grounded_args_memo_key(&items);
++                        match crate::backend::eval::trampoline::dispatch_hints::grounded_args_memo_get(memo_key) {
++                            Some(v) => v,
++                            None => {
++                                let v = find_grounded_arg_indices_generic(&items, &env);
++                                crate::backend::eval::trampoline::dispatch_hints::grounded_args_memo_put(memo_key, &v);
++                                v
++                            }
++                        }
++                    };
+                     if !bloom_indices.is_empty() {
+                         #[cfg(feature = "trace")]
+                         {
+@@ -4704,7 +4716,19 @@ where
+                 }
+             }
+             None => {
+-                let bloom_indices = find_grounded_arg_indices_generic(&items, &env);
++                let bloom_indices = {
++                        // exp20: content-keyed memo (epoch-validated) — the
++                        // scan re-runs per dispatch on hash-consed PLN bodies.
++                        let memo_key = grounded_args_memo_key(&items);
++                        match crate::backend::eval::trampoline::dispatch_hints::grounded_args_memo_get(memo_key) {
++                            Some(v) => v,
++                            None => {
++                                let v = find_grounded_arg_indices_generic(&items, &env);
++                                crate::backend::eval::trampoline::dispatch_hints::grounded_args_memo_put(memo_key, &v);
++                                v
++                            }
++                        }
++                    };
+                 if !bloom_indices.is_empty() {
+                     return GenericEvalStep::EvalGroundedArgs {
+                         items,
+@@ -5357,3 +5381,18 @@ mod tests {
+         assert_eq!(result[1].as_atom(), Some("&self"));
+     }
+ }
++
++/// exp20: the grounded-args memo key — FNV-1a over each item's CONTENT hash
++/// (`hash_value()`, cached per value). Content keys are ABA-immune (Addr/word
++/// reuse cannot alias a different expression onto a live key).
++fn grounded_args_memo_key<V: MettaValueTrait>(items: &[V]) -> u64 {
++    let mut h = 0xcbf2_9ce4_8422_2325u64;
++    for it in items {
++        let v = it.hash_value();
++        for b in v.to_le_bytes() {
++            h ^= b as u64;
++            h = h.wrapping_mul(0x0000_0100_0000_01b3);
++        }
++    }
++    h
++}
+diff --git a/src/backend/eval/trampoline/dispatch_hints.rs b/src/backend/eval/trampoline/dispatch_hints.rs
+index 26702bdd..deb17aa4 100644
+--- a/src/backend/eval/trampoline/dispatch_hints.rs
++++ b/src/backend/eval/trampoline/dispatch_hints.rs
+@@ -830,7 +830,60 @@ pub fn collect_eval_memo_roots(out: &mut Vec<MettaValue>) {
+ ///
+ /// Called on space mutation (add-atom/remove-atom) to invalidate cached results
+ /// that may depend on the changed rules/facts.
++thread_local! {
++    /// Experiment #20: content-keyed memo for `find_grounded_arg_indices_generic`
++    /// verdicts. Key = FNV over the parent items' `hash_value()`s (CONTENT —
++    /// ABA-immune in both modes, unlike Addr/word keys); entry =
++    /// `(mutation_epoch, indices)`, validated against the CURRENT mutation
++    /// epoch at get (the same rule/space-mutation guard `eval_memo` trusts
++    /// for full eval results — a strictly stronger dependence class).
++    /// Holds PLAIN indices (no `MettaValue`s) ⇒ no root/SATB integration;
++    /// cleared by `clear_grounded_args_memo` from `clear_eval_memo` (so the
++    /// index gc-epoch self-heal + every existing invalidation site cover it),
++    /// and self-caps to avoid unbounded growth.
++    static GROUNDED_ARGS_MEMO: std::cell::RefCell<
++        std::collections::HashMap<u64, (u64, Vec<u16>)>,
++    > = std::cell::RefCell::new(std::collections::HashMap::with_capacity(1024));
++}
++
++/// exp20: memo get — validates the entry's mutation epoch.
++pub fn grounded_args_memo_get(key: u64) -> Option<Vec<usize>> {
++    if eval_caches_disabled() {
++        return None;
++    }
++    #[cfg(feature = "index-gc")]
++    ensure_eval_caches_gc_epoch_current();
++    GROUNDED_ARGS_MEMO.with(|m| {
++        m.borrow().get(&key).and_then(|(epoch, v)| {
++            (*epoch == mutation_epoch()).then(|| v.iter().map(|&i| i as usize).collect())
++        })
++    })
++}
++
++/// exp20: memo put. Skips absurd arities (u16 cast guard) and self-caps.
++pub fn grounded_args_memo_put(key: u64, indices: &[usize]) {
++    if eval_caches_disabled() || indices.iter().any(|&i| i > u16::MAX as usize) {
++        return;
++    }
++    GROUNDED_ARGS_MEMO.with(|m| {
++        let mut map = m.borrow_mut();
++        if map.len() >= 65_536 {
++            map.clear(); // plain data — a miss is always safe (recompute)
++        }
++        map.insert(
++            key,
++            (mutation_epoch(), indices.iter().map(|&i| i as u16).collect()),
++        );
++    });
++}
++
++/// exp20: bulk clear (plain data — no SATB shading needed).
++pub fn clear_grounded_args_memo() {
++    GROUNDED_ARGS_MEMO.with(|m| m.borrow_mut().clear());
++}
++
+ pub fn clear_eval_memo() {
++    clear_grounded_args_memo(); // exp20: same invalidation envelope
+     EVAL_MEMO.with(|memo_cell| {
+         let mut memo = memo_cell.borrow_mut();
+         #[cfg(feature = "index-gc")]

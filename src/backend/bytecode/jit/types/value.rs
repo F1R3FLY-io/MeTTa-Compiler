@@ -397,7 +397,11 @@ impl JitValue {
                     // exp18: TAG5 rides the inner_ptr pack at payload [36:32].
                     let tag = ((self.0 >> 32) & 0x1F) as u8;
                     debug_assert!(tag <= 18, "non-inner_ptr-packed TAG_PTR payload leak");
-                    MettaValue::from_addr(addr, 0, tag)
+                    MettaValue::from_addr(
+                        addr,
+                        crate::backend::models::metta_value::FLAG_HAS_VARIABLES,
+                        tag,
+                    )
                 } else {
                     debug_assert!(
                         !ptr.is_null(),
@@ -420,7 +424,11 @@ impl JitValue {
                     // exp18: TAG5 recovery (see TAG_PTR arm above).
                     let tag = ((self.0 >> 32) & 0x1F) as u8;
                     debug_assert!(tag <= 18, "non-inner_ptr-packed TAG_ERROR payload leak");
-                    MettaValue::from_addr(addr, 0, tag)
+                    MettaValue::from_addr(
+                        addr,
+                        crate::backend::models::metta_value::FLAG_HAS_VARIABLES,
+                        tag,
+                    )
                 } else {
                     debug_assert!(
                         !ptr.is_null(),

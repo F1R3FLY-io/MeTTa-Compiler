@@ -106,6 +106,20 @@ pub fn collect_variables_generic<V: MettaValueTrait>(expr: &V) -> HashSet<String
     work_stack.push(expr);
 
     while let Some(val) = work_stack.pop() {
+        // exp19 (flag-pruned descent): FLAG_HAS_VARIABLES is an EXACT
+        // superset witness for collectible variables — is_variable_str ⊇
+        // is_unification_variable on atoms (`_`/`$_` are flagged-but-
+        // uncollected, the safe direction), and the flag ORs through every
+        // constructor this walk descends (sexpr/conjunction/quote/error/
+        // lazy/spanned mints). A flag-false value therefore contains ZERO
+        // collectible variables anywhere in its subtree: skip it without
+        // materializing anything (an O(1) bit check on the handle).
+        // Soundness prerequisite: the six JIT unpacks set the flag
+        // CONSERVATIVELY (the R4-F2 metadata-loss fix, exp19) — a forced
+        // flag only disables pruning, never drops a variable.
+        if !val.has_variables_fast() {
+            continue;
+        }
         if let Some(name) = val.as_atom() {
             // BUG-T0-007 (spec §3.4): include &-sigil and '-sigil variables,
             // not only $-prefixed ones. The canonical predicate

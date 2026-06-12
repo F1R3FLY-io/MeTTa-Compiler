@@ -219,7 +219,11 @@ pub(crate) unsafe fn collect_jit_value_into(v: JitValue, out: &mut Vec<MettaValu
             // inner_ptr()-packed, so the tag is present here like anywhere else.
             let tag = ((v.0 >> 32) & 0x1F) as u8;
             debug_assert!(tag <= 18, "non-inner_ptr-packed payload leak (gc_roots)");
-            out.push(MettaValue::from_addr(addr, 0, tag));
+            out.push(MettaValue::from_addr(
+                addr,
+                crate::backend::models::metta_value::FLAG_HAS_VARIABLES,
+                tag,
+            ));
         } else {
             let p = (v.0 & PAYLOAD_MASK) as *const MettaValueInner;
             if !p.is_null() {

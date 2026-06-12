@@ -503,7 +503,11 @@ fn jit_to_value(jit_val: u64, factory: &crate::backend::models::ActiveFactory) -
                 // exp18: TAG5 rides the inner_ptr pack at payload [36:32].
                 let tag = ((jit_val >> 32) & 0x1F) as u8;
                 debug_assert!(tag <= 18, "non-inner_ptr-packed TAG_PTR payload leak");
-                MettaValue::from_addr(addr, 0, tag)
+                MettaValue::from_addr(
+                    addr,
+                    crate::backend::models::metta_value::FLAG_HAS_VARIABLES,
+                    tag,
+                )
             } else {
                 // Pointer to slab-allocated MettaValueInner
                 let ptr = (jit_val & PAYLOAD_MASK) as *const MettaValueInner;
@@ -525,7 +529,11 @@ fn jit_to_value(jit_val: u64, factory: &crate::backend::models::ActiveFactory) -
                 // exp18: TAG5 recovery (see TAG_PTR arm above).
                 let tag = ((jit_val >> 32) & 0x1F) as u8;
                 debug_assert!(tag <= 18, "non-inner_ptr-packed TAG_ERROR payload leak");
-                MettaValue::from_addr(addr, 0, tag)
+                MettaValue::from_addr(
+                    addr,
+                    crate::backend::models::metta_value::FLAG_HAS_VARIABLES,
+                    tag,
+                )
             } else {
                 let ptr = (jit_val & PAYLOAD_MASK) as *const MettaValueInner;
                 if !ptr.is_null() {

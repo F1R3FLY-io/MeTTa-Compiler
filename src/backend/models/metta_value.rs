@@ -3055,7 +3055,10 @@ impl MettaValueTrait for MettaValue {
             // exp18: TAG5 rides the inner_ptr pack at payload [36:32].
             let tag = (((ptr as u64) >> 32) & 0x1F) as u8;
             debug_assert!(tag <= 18, "non-inner_ptr-packed payload leak (from_inner_ptr)");
-            return MettaValue::from_addr(addr, 0, tag); // flags=0 matches the slab from_inner path
+            // exp19: flags are CONSERVATIVELY forced (R4-F2: the >>4 pack destroys
+            // them) — flag=1 never breaks anything (routes to var/safe paths and
+            // disables the collect_variables prune for this subtree only).
+            return MettaValue::from_addr(addr, FLAG_HAS_VARIABLES, tag);
         }
         // SAFETY: The pointer is slab-allocated with 'static lifetime (managed by GC).
         MettaValue::from_inner(&*ptr)

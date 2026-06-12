@@ -1,6 +1,6 @@
 # Handle-borne variant tags (index mode) — design for the next F1 lever
 
-Status: **v4.1 — R1–R5 complete; R5 NET-SUBTRACTIVE ⇒ CONVERGED. R4 (confirming round) verified the core
+Status: **IMPLEMENTED + ACCEPTED (experiment #18, observation 220: Robot FANOUT=0 −5.49%, p=5.4e-05, d=0.80; wall green at f3539c65; TWO pre-existing index bugs exposed+fixed by the totality discipline). Honest calibration: the register-negative fraction bought ~5.5%, not the ~20-27% Ir-share projection — cache-hit page-chases pipeline better than instruction counts imply (MLP, measured a second way). v4.1 — R1–R5 complete; R5 NET-SUBTRACTIVE ⇒ CONVERGED. R4 (confirming round) verified the core
 lever bit-exactly (recovery arithmetic, oracle soundness, fence
 reachability+lock-safety) and was NET-ADDITIVE on two v3 sub-decisions,
 folded below: the flags rider is DEFERRED (unimplementable as written),

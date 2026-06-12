@@ -116,6 +116,39 @@ pub enum Node {
     Spanned(MettaValue, SpanRef),
 }
 
+impl Node {
+    /// Experiment #18 (handle-borne variant tags): THE canonical TAG5 table —
+    /// `Node`'s DECLARATION ORDER, `UNSET = 0`, `Atom = 1` … `Spanned = 18`.
+    /// `SerNode`'s restore derive (continuation_slice.rs) and the handle-side
+    /// dispatch constants (`metta_value::TAG5_*`) MUST agree with this one
+    /// mapping; the `inner_ref_index` materialization tripwire asserts
+    /// handle-tag/node-variant agreement on every materialization, so a
+    /// divergence anywhere trips on the 483-fixture DEBUG oracle.
+    #[inline]
+    pub fn variant_code(&self) -> u8 {
+        match self {
+            Node::Atom(_) => 1,
+            Node::Bool(_) => 2,
+            Node::Long(_) => 3,
+            Node::Float(_) => 4,
+            Node::String(_) => 5,
+            Node::SExpr(_) => 6,
+            Node::Error(_, _) => 7,
+            Node::Type(_) => 8,
+            Node::Conjunction(_) => 9,
+            Node::Space(_) => 10,
+            Node::State(_) => 11,
+            Node::Unit => 12,
+            Node::Memo(_) => 13,
+            Node::Quoted(_) => 14,
+            Node::Lazy(_) => 15,
+            Node::Empty => 16,
+            Node::NotReducible => 17,
+            Node::Spanned(_, _) => 18,
+        }
+    }
+}
+
 impl ArenaNode for Node {
     #[inline]
     fn child_addrs(&self, out: &mut Vec<Addr>) {
@@ -180,8 +213,8 @@ mod tests {
         set_gc_mode_index();
         let a = Addr::new(1, 2);
         let b = Addr::new(3, 4);
-        let ha = MettaValue::from_addr(a, 0);
-        let hb = MettaValue::from_addr(b, 0);
+        let ha = MettaValue::from_addr(a, 0, 1); // synthetic: any valid TAG5 (child_addrs ignores tags)
+        let hb = MettaValue::from_addr(b, 0, 1);
 
         let mut out = Vec::new();
         Node::Error(ha, hb).child_addrs(&mut out);

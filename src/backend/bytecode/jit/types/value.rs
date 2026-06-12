@@ -394,7 +394,10 @@ impl JitValue {
                 // slab-pointer invariants on it). Slab arm below is byte-identical.
                 if crate::backend::models::metta_value::gc_mode_is_index() {
                     let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(ptr as u32);
-                    MettaValue::from_addr(addr, 0)
+                    // exp18: TAG5 rides the inner_ptr pack at payload [36:32].
+                    let tag = ((self.0 >> 32) & 0x1F) as u8;
+                    debug_assert!(tag <= 18, "non-inner_ptr-packed TAG_PTR payload leak");
+                    MettaValue::from_addr(addr, 0, tag)
                 } else {
                     debug_assert!(
                         !ptr.is_null(),
@@ -414,7 +417,10 @@ impl JitValue {
                 let ptr = (self.0 & PAYLOAD_MASK) as *const MettaValueInner;
                 if crate::backend::models::metta_value::gc_mode_is_index() {
                     let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(ptr as u32);
-                    MettaValue::from_addr(addr, 0)
+                    // exp18: TAG5 recovery (see TAG_PTR arm above).
+                    let tag = ((self.0 >> 32) & 0x1F) as u8;
+                    debug_assert!(tag <= 18, "non-inner_ptr-packed TAG_ERROR payload leak");
+                    MettaValue::from_addr(addr, 0, tag)
                 } else {
                     debug_assert!(
                         !ptr.is_null(),

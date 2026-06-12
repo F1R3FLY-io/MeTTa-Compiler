@@ -214,7 +214,12 @@ pub(crate) unsafe fn collect_jit_value_into(v: JitValue, out: &mut Vec<MettaValu
             let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(
                 (v.0 & PAYLOAD_MASK) as u32,
             );
-            out.push(MettaValue::from_addr(addr, 0));
+            // exp18: TAG5 recovery — NO exemption (design v4.1 Option A): the
+            // from_long fence guarantees every TAG_PTR payload is
+            // inner_ptr()-packed, so the tag is present here like anywhere else.
+            let tag = ((v.0 >> 32) & 0x1F) as u8;
+            debug_assert!(tag <= 18, "non-inner_ptr-packed payload leak (gc_roots)");
+            out.push(MettaValue::from_addr(addr, 0, tag));
         } else {
             let p = (v.0 & PAYLOAD_MASK) as *const MettaValueInner;
             if !p.is_null() {

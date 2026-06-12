@@ -126,10 +126,10 @@ impl SlotRef {
     /// Rebuild a live `MettaValue` for this slot, mapping a heap `raw` through
     /// `remap`. Returns `Err(MissingReachableChild)` if a heap slot's old raw is
     /// absent from `remap` (the runtime image of `Hclosed` failing).
-    fn resolve(&self, remap: &HashMap<u32, Addr>) -> Result<MettaValue, SliceError> {
+    fn resolve(&self, remap: &HashMap<u32, (Addr, u8)>) -> Result<MettaValue, SliceError> {
         match self {
             SlotRef::Heap { raw, flags } => match remap.get(raw) {
-                Some(&new_addr) => Ok(MettaValue::from_addr(new_addr, *flags as usize)),
+                Some(&(new_addr, tag)) => Ok(MettaValue::from_addr(new_addr, *flags as usize, tag)),
                 None => Err(SliceError::MissingReachableChild { old_raw: *raw }),
             },
             SlotRef::Inline(SerInline::Bool(b)) => Ok(MettaValue::inline_bool(*b)),
@@ -227,6 +227,39 @@ pub enum SerNode {
     Empty,
     NotReducible,
     Spanned(SlotRef, u32),
+}
+
+
+impl SerNode {
+    /// Experiment #18: TAG5 derive-at-restore. SerNode mirrors `Node` in
+    /// IDENTICAL declaration order, and this table MUST equal
+    /// `Node::variant_code()` (index_node.rs — the canonical mapping). The
+    /// `inner_ref_index` materialization tripwire asserts handle-tag/node
+    /// agreement on every materialization, so any divergence trips on the
+    /// first restored handle the DEBUG oracle materializes.
+    #[inline]
+    fn variant_code(&self) -> u8 {
+        match self {
+            SerNode::Atom { .. } => 1,
+            SerNode::Bool(_) => 2,
+            SerNode::Long(_) => 3,
+            SerNode::Float(_) => 4,
+            SerNode::String { .. } => 5,
+            SerNode::SExpr { .. } => 6,
+            SerNode::Error(_, _) => 7,
+            SerNode::Type(_) => 8,
+            SerNode::Conjunction { .. } => 9,
+            SerNode::Space(_) => 10,
+            SerNode::State(_) => 11,
+            SerNode::Unit => 12,
+            SerNode::Memo(_) => 13,
+            SerNode::Quoted(_) => 14,
+            SerNode::Lazy(_) => 15,
+            SerNode::Empty => 16,
+            SerNode::NotReducible => 17,
+            SerNode::Spanned(_, _) => 18,
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -451,7 +484,10 @@ pub fn restore_slice(
     // passed) and acyclic-by-construction (σ nodes form a DAG — handles point only
     // at earlier-allocated nodes) converges. We bound the passes by node count.
     let heap_lock = global_index_heap();
-    let mut remap: HashMap<u32, Addr> = HashMap::with_capacity(slice.nodes.len());
+    // Experiment #18 (derive-at-restore): the IN-MEMORY remap carries the
+    // TAG5 variant code derived from each SerNode at insert — zero wire
+    // change (SlotRef/postcard untouched), zero heap reads at resolve.
+    let mut remap: HashMap<u32, (Addr, u8)> = HashMap::with_capacity(slice.nodes.len());
     let mut pending: Vec<&(u32, SerNode)> = slice.nodes.iter().collect();
 
     let max_passes = slice.nodes.len() + 1;
@@ -475,7 +511,7 @@ pub fn restore_slice(
                 let mut heap = heap_lock.write().expect("global index heap poisoned");
                 intern_node(&mut heap, node, slice, &remap)?
             };
-            remap.insert(*old_raw, new_addr);
+            remap.insert(*old_raw, (new_addr, node.variant_code()));
             progressed = true;
         }
         pending = next_pending;
@@ -511,7 +547,7 @@ pub fn restore_slice(
 fn node_children_ready(
     node: &SerNode,
     children: &[Vec<SlotRef>],
-    remap: &HashMap<u32, Addr>,
+    remap: &HashMap<u32, (Addr, u8)>,
 ) -> bool {
     first_unresolved_child(node, children, remap).is_none()
 }
@@ -520,7 +556,7 @@ fn node_children_ready(
 fn first_unresolved_child(
     node: &SerNode,
     children: &[Vec<SlotRef>],
-    remap: &HashMap<u32, Addr>,
+    remap: &HashMap<u32, (Addr, u8)>,
 ) -> Option<u32> {
     let check = |r: &SlotRef| -> Option<u32> {
         match r.old_raw() {
@@ -545,7 +581,7 @@ fn intern_node(
     heap: &mut crate::backend::eval::cesk::index_heap::IndexHeap,
     node: &SerNode,
     slice: &SerializedContinuationSlice,
-    remap: &HashMap<u32, Addr>,
+    remap: &HashMap<u32, (Addr, u8)>,
 ) -> Result<Addr, SliceError> {
     let addr = match node {
         SerNode::Atom { bytes_idx } => heap.alloc_atom(&slice.bytes[*bytes_idx as usize]),
@@ -588,7 +624,7 @@ fn intern_node(
 /// Resolve a slice of [`SlotRef`]s to live `MettaValue`s over `remap`.
 fn resolve_all(
     refs: &[SlotRef],
-    remap: &HashMap<u32, Addr>,
+    remap: &HashMap<u32, (Addr, u8)>,
 ) -> Result<Vec<MettaValue>, SliceError> {
     let mut out = Vec::with_capacity(refs.len());
     for r in refs {

@@ -565,18 +565,104 @@ impl MettaValue {
     /// Construct an index-mode heap handle from an arena `Addr` + 4 flag bits
     /// (`FLAG_HAS_VARIABLES` etc.). Inverse of [`as_arena_addr`](Self::as_arena_addr).
     /// Mode-agnostic bit-packing; only meaningful when the process is in Index mode.
-    #[allow(dead_code)] // wired into IndexFactory (Inc 2a-4) + mode-aware decode (Inc 2a-5)
+    ///
+    /// Experiment #18 (handle-borne variant tags, design v4.1): every index
+    /// handle ALSO carries `TAG5` — the node's variant code (the canonical
+    /// `Node` declaration-order table, `Node::variant_code()`, UNSET=0 /
+    /// Atom=1 … Spanned=18) — in bits [40:36] (R1-verified dead pre-#18).
+    /// TOTALITY is load-bearing (raw-word equality/identity comparers exist:
+    /// PartialEq fast paths + identity_eq): the assert below is the ONE
+    /// unconditional mint-side gate; every production caller has a static
+    /// variant (factory mints), a derived variant (E4 restore remap), or a
+    /// recovered variant (the six JIT unpacks — TAG5 survives `inner_ptr()`
+    /// packing at payload bits [36:32]).
     #[inline]
     pub(crate) fn from_addr(
         addr: crate::backend::eval::cesk::index_arena::Addr,
         flags: usize,
+        tag: u8,
     ) -> Self {
         debug_assert!(flags <= 0xF, "flags must fit in the low 4 bits");
+        debug_assert!(
+            tag != TAG5_UNSET && tag <= TAG5_MAX,
+            "TAG5 totality violation: every index mint must carry the node's \
+             variant code (got {tag}; see handle-tag-design-2026-06-12.md)"
+        );
         MettaValue {
-            tagged: ((addr.raw() as usize) << 4) | (flags & 0xF),
+            tagged: ((tag as usize) << TAG5_SHIFT)
+                | ((addr.raw() as usize) << 4)
+                | (flags & 0xF),
         }
     }
+
+    /// The handle's TAG5 variant code (experiment #18). Meaningful ONLY for a
+    /// non-inline INDEX-mode handle; 0 (`TAG5_UNSET`) never occurs on one
+    /// (the `from_addr` totality assert). Register-only: no memory access.
+    /// Unconditional (no cfg): pure bit arithmetic, used by the DEBUG
+    /// materialization tripwire which runs whenever the RUNTIME mode is
+    /// index (slab builds flip the mode in tests).
+    #[inline(always)]
+    pub(crate) fn tag5(&self) -> u8 {
+        ((self.tagged >> TAG5_SHIFT) & 0x1F) as u8
+    }
 }
+
+/// TAG5 code of a materialized `MettaValueInner` — the SAME canonical table
+/// as `Node::variant_code()` (matched BY VARIANT NAME; `MettaValueInner`'s
+/// declaration order is irrelevant). Used by the I1 materialization tripwire.
+#[cfg(debug_assertions)]
+pub(crate) fn inner_variant_code(inner: &MettaValueInner) -> u8 {
+    match inner {
+        MettaValueInner::Atom(_) => 1,
+        MettaValueInner::Bool(_) => 2,
+        MettaValueInner::Long(_) => 3,
+        MettaValueInner::Float(_) => 4,
+        MettaValueInner::String(_) => 5,
+        MettaValueInner::SExpr(_) => 6,
+        MettaValueInner::Error(_, _) => 7,
+        MettaValueInner::Type(_) => 8,
+        MettaValueInner::Conjunction(_) => 9,
+        MettaValueInner::Space(_) => 10,
+        MettaValueInner::State(_) => 11,
+        MettaValueInner::Unit => 12,
+        MettaValueInner::Memo(_) => 13,
+        MettaValueInner::Quoted(_) => 14,
+        MettaValueInner::Lazy(_) => 15,
+        MettaValueInner::Empty => 16,
+        MettaValueInner::NotReducible => 17,
+        MettaValueInner::Spanned(_, _) => 18,
+    }
+}
+
+// ── Experiment #18: TAG5 handle-borne variant tags (index mode) ─────────────
+// The canonical mapping is Node's DECLARATION ORDER (index_node.rs,
+// `Node::variant_code()`); these handle-side constants mirror the codes the
+// accessors' fast paths dispatch on. Bits [40:36] of the tagged word;
+// [47:36] verified dead pre-#18 (design doc R1).
+pub(crate) const TAG5_SHIFT: usize = 36;
+pub(crate) const TAG5_UNSET: u8 = 0;
+pub(crate) const TAG5_MAX: u8 = 18;
+pub(crate) const TAG5_ATOM: u8 = 1;
+#[allow(dead_code)] // Bool/Unit/Empty are inline-only; codes exist for table completeness
+pub(crate) const TAG5_BOOL: u8 = 2;
+pub(crate) const TAG5_LONG: u8 = 3;
+pub(crate) const TAG5_FLOAT: u8 = 4;
+pub(crate) const TAG5_STRING: u8 = 5;
+pub(crate) const TAG5_SEXPR: u8 = 6;
+pub(crate) const TAG5_ERROR: u8 = 7;
+pub(crate) const TAG5_TYPE: u8 = 8;
+pub(crate) const TAG5_CONJUNCTION: u8 = 9;
+pub(crate) const TAG5_SPACE: u8 = 10;
+pub(crate) const TAG5_STATE: u8 = 11;
+#[allow(dead_code)]
+pub(crate) const TAG5_UNIT: u8 = 12;
+pub(crate) const TAG5_MEMO: u8 = 13;
+pub(crate) const TAG5_QUOTED: u8 = 14;
+pub(crate) const TAG5_LAZY: u8 = 15;
+#[allow(dead_code)]
+pub(crate) const TAG5_EMPTY: u8 = 16;
+pub(crate) const TAG5_NOT_REDUCIBLE: u8 = 17;
+pub(crate) const TAG5_SPANNED: u8 = 18;
 
 #[cfg(test)]
 mod inc2_mode_tests {
@@ -597,7 +683,7 @@ mod inc2_mode_tests {
             (16383, 262143, 1),
         ] {
             let addr = Addr::new(seg, off);
-            let h = MettaValue::from_addr(addr, flags);
+            let h = MettaValue::from_addr(addr, flags, 7); // any valid TAG5; bijection test
             assert!(
                 !h.is_inline(),
                 "an index handle is a non-NaN (non-inline) value"
@@ -1135,6 +1221,19 @@ impl MettaValue {
             // handshake at a quiescent point — so the laundered &'static
             // outlives this borrow_mut guard.
             let out = unsafe { &*(&**boxed as *const MettaValueInner) };
+            // exp18 I1 tripwire (design v4.1): handle-tag/node-variant
+            // agreement, asserted on EVERY materialization — the 483-fixture
+            // DEBUG oracle + greenwall exercise it across the whole corpus.
+            // STRICT (no UNSET tolerance): totality holds at every mint.
+            #[cfg(debug_assertions)]
+            debug_assert!(
+                self.tag5() == inner_variant_code(out),
+                "TAG5/node disagreement: handle tag {} vs materialized variant {} \
+                 (raw {:#x}) — see handle-tag-design-2026-06-12.md I1",
+                self.tag5(),
+                inner_variant_code(out),
+                self.tagged
+            );
             out
         })
     }
@@ -2850,7 +2949,10 @@ impl MettaValueTrait for MettaValue {
         // handle; do NOT dereference. Slab mode is byte-identical (the deref below).
         if gc_mode_is_index() {
             let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(ptr as u32);
-            return MettaValue::from_addr(addr, 0); // flags=0 matches the slab from_inner path
+            // exp18: TAG5 rides the inner_ptr pack at payload [36:32].
+            let tag = (((ptr as u64) >> 32) & 0x1F) as u8;
+            debug_assert!(tag <= 18, "non-inner_ptr-packed payload leak (from_inner_ptr)");
+            return MettaValue::from_addr(addr, 0, tag); // flags=0 matches the slab from_inner path
         }
         // SAFETY: The pointer is slab-allocated with 'static lifetime (managed by GC).
         MettaValue::from_inner(&*ptr)

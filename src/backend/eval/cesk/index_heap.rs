@@ -55,7 +55,10 @@ use crate::backend::eval::cesk::index_node::{ByteRef, ChildRef, Node, SpanRef};
 use crate::backend::eval::cesk::store::Store;
 use crate::backend::models::gc_allocator::hash_cons_key;
 use crate::backend::models::metta_value::{
-    is_variable_str, MettaValueInner, ValueView, FLAG_HAS_VARIABLES,
+    is_variable_str, MettaValueInner, ValueView, FLAG_HAS_VARIABLES, TAG5_ATOM,
+    TAG5_CONJUNCTION, TAG5_ERROR, TAG5_FLOAT, TAG5_LAZY, TAG5_LONG, TAG5_MEMO,
+    TAG5_NOT_REDUCIBLE, TAG5_QUOTED, TAG5_SEXPR, TAG5_SPACE, TAG5_SPANNED, TAG5_STATE,
+    TAG5_STRING, TAG5_TYPE,
 };
 use crate::backend::models::{MemoHandle, MettaValue, MettaValueFactory, SpaceHandle};
 use crate::ir::Span;
@@ -489,7 +492,7 @@ impl IndexHeap {
         // Miss (or hash collision → overwrite, matching the slab table's
         // last-writer-wins-per-key best-effort behavior).
         let addr = self.alloc_sexpr(items);
-        let v = MettaValue::from_addr(addr, 0); // ground ⇒ no FLAG_HAS_VARIABLES
+        let v = MettaValue::from_addr(addr, 0, TAG5_SEXPR); // ground ⇒ no FLAG_HAS_VARIABLES
         if self.hash_cons.len() < 8192 {
             self.hash_cons.insert(key, v);
         }
@@ -1642,7 +1645,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
     fn atom(&self, s: &str) -> MettaValue {
         let flags = flag_vars(is_variable_str(s));
         let addr = alloc_with_reuse_pressure(|h| h.alloc_atom(s), |h| h.alloc_atom_concurrent(s));
-        MettaValue::from_addr(addr, flags)
+        MettaValue::from_addr(addr, flags, TAG5_ATOM)
     }
 
     fn bool(&self, b: bool) -> MettaValue {
@@ -1657,7 +1660,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_fixed(Node::Long(n)),
             |h| h.alloc_fixed_concurrent(Node::Long(n)),
         );
-        MettaValue::from_addr(addr, 0)
+        MettaValue::from_addr(addr, 0, TAG5_LONG)
     }
 
     fn float(&self, f: f64) -> MettaValue {
@@ -1665,13 +1668,13 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_fixed(Node::Float(f)),
             |h| h.alloc_fixed_concurrent(Node::Float(f)),
         );
-        MettaValue::from_addr(addr, 0)
+        MettaValue::from_addr(addr, 0, TAG5_FLOAT)
     }
 
     fn string(&self, s: &str) -> MettaValue {
         let addr =
             alloc_with_reuse_pressure(|h| h.alloc_string(s), |h| h.alloc_string_concurrent(s));
-        MettaValue::from_addr(addr, 0)
+        MettaValue::from_addr(addr, 0, TAG5_STRING)
     }
 
     fn sexpr(&self, items: Vec<MettaValue>) -> MettaValue {
@@ -1710,7 +1713,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_sexpr(items),
             |h| h.alloc_sexpr_concurrent(items),
         );
-        MettaValue::from_addr(addr, FLAG_HAS_VARIABLES)
+        MettaValue::from_addr(addr, FLAG_HAS_VARIABLES, TAG5_SEXPR)
     }
 
     fn error(&self, offending: MettaValue, detail: MettaValue) -> MettaValue {
@@ -1719,7 +1722,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_fixed(Node::Error(offending, detail)),
             |h| h.alloc_fixed_concurrent(Node::Error(offending, detail)),
         );
-        MettaValue::from_addr(addr, flags)
+        MettaValue::from_addr(addr, flags, TAG5_ERROR)
     }
 
     fn type_value(&self, inner: MettaValue) -> MettaValue {
@@ -1728,7 +1731,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_fixed(Node::Type(inner)),
             |h| h.alloc_fixed_concurrent(Node::Type(inner)),
         );
-        MettaValue::from_addr(addr, flags)
+        MettaValue::from_addr(addr, flags, TAG5_TYPE)
     }
 
     fn conjunction(&self, goals: Vec<MettaValue>) -> MettaValue {
@@ -1741,7 +1744,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_conjunction(goals),
             |h| h.alloc_conjunction_concurrent(goals),
         );
-        MettaValue::from_addr(addr, flags)
+        MettaValue::from_addr(addr, flags, TAG5_CONJUNCTION)
     }
 
     fn space(&self, handle: SpaceHandle) -> MettaValue {
@@ -1749,7 +1752,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             .write()
             .expect("index heap")
             .alloc_space(handle);
-        MettaValue::from_addr(addr, 0)
+        MettaValue::from_addr(addr, 0, TAG5_SPACE)
     }
 
     fn state(&self, id: u64) -> MettaValue {
@@ -1757,7 +1760,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_fixed(Node::State(id)),
             |h| h.alloc_fixed_concurrent(Node::State(id)),
         );
-        MettaValue::from_addr(addr, 0)
+        MettaValue::from_addr(addr, 0, TAG5_STATE)
     }
 
     fn unit(&self) -> MettaValue {
@@ -1769,7 +1772,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             .write()
             .expect("index heap")
             .alloc_memo(handle);
-        MettaValue::from_addr(addr, 0)
+        MettaValue::from_addr(addr, 0, TAG5_MEMO)
     }
 
     fn empty(&self) -> MettaValue {
@@ -1785,7 +1788,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
                 .write()
                 .expect("index heap")
                 .alloc_fixed(Node::NotReducible);
-            MettaValue::from_addr(addr, 0)
+            MettaValue::from_addr(addr, 0, TAG5_NOT_REDUCIBLE)
         })
     }
 
@@ -1795,7 +1798,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_fixed(Node::Quoted(inner)),
             |h| h.alloc_fixed_concurrent(Node::Quoted(inner)),
         );
-        MettaValue::from_addr(addr, flags)
+        MettaValue::from_addr(addr, flags, TAG5_QUOTED)
     }
 
     fn lazy(&self, inner: MettaValue) -> MettaValue {
@@ -1807,7 +1810,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_fixed(Node::Lazy(inner)),
             |h| h.alloc_fixed_concurrent(Node::Lazy(inner)),
         );
-        MettaValue::from_addr(addr, flags)
+        MettaValue::from_addr(addr, flags, TAG5_LAZY)
     }
 
     fn spanned(&self, value: MettaValue, span: crate::ir::Span) -> MettaValue {
@@ -1816,7 +1819,7 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
             |h| h.alloc_spanned(value, span),
             |h| h.alloc_spanned_concurrent(value, span),
         );
-        MettaValue::from_addr(addr, flags)
+        MettaValue::from_addr(addr, flags, TAG5_SPANNED)
     }
 
     fn deserialize(&self, bytes: &[u8]) -> Result<(MettaValue, usize), String> {
@@ -3576,8 +3579,8 @@ mod tests {
         // Two leaf atoms; reference them from a SExpr as index handles.
         let l1 = heap.alloc_atom("a");
         let l2 = heap.alloc_atom("b");
-        let h1 = MettaValue::from_addr(l1, 0);
-        let h2 = MettaValue::from_addr(l2, 0);
+        let h1 = MettaValue::from_addr(l1, 0, TAG5_ATOM);
+        let h2 = MettaValue::from_addr(l2, 0, TAG5_ATOM);
         let sx = heap.alloc_sexpr(&[h1, h2]);
         let orphan = heap.alloc_atom("orphan");
 
@@ -3603,7 +3606,7 @@ mod tests {
         let orphan = heap.alloc_atom("space-orphan");
 
         let mut module_space = crate::backend::modules::ModuleSpace::new();
-        module_space.add_atom(MettaValue::from_addr(child, 0));
+        module_space.add_atom(MettaValue::from_addr(child, 0, TAG5_ATOM));
         let handle = SpaceHandle::for_module(
             crate::backend::modules::ModId::new(10_001),
             "mark-space".to_string(),
@@ -3652,7 +3655,7 @@ mod tests {
 
         module_space
             .write()
-            .add_atom(MettaValue::from_addr(child, 0));
+            .add_atom(MettaValue::from_addr(child, 0, TAG5_ATOM));
         let newly = heap.mark_young(&[space]);
         assert_eq!(
             newly, 1,
@@ -3681,7 +3684,7 @@ mod tests {
         let _mode = enter_index_mode_for_test();
         let mut heap = IndexHeap::with_segment_capacity(4);
         let child = heap.alloc_atom("old-child");
-        let parent = heap.alloc_sexpr(&[MettaValue::from_addr(child, 0)]);
+        let parent = heap.alloc_sexpr(&[MettaValue::from_addr(child, 0, TAG5_ATOM)]);
         let _f1 = heap.alloc_atom("fill-a");
         let _f2 = heap.alloc_atom("fill-b"); // seg 0 full
         let _young = heap.alloc_atom("young-opens-seg1"); // cur_seg -> 1
@@ -4118,7 +4121,7 @@ mod tests {
         let live = {
             let mut heap = global_index_heap().write().expect("index heap write lock");
             let live_addr = heap.alloc_fixed(Node::Float(42.0));
-            MettaValue::from_addr(live_addr, 0)
+            MettaValue::from_addr(live_addr, 0, TAG5_FLOAT)
         };
         let roots = vec![live];
 

@@ -759,8 +759,24 @@ impl<'a, V: MettaValueTrait + Clone> Iterator for RuleGroupIter<'a, V> {
 /// in `eval/mod.rs:895` (`expression_involves_impure_rules`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PerHeadAtomIndex {
-    /// `(interned_head, interned_atom) → refcount-of-rules`.
-    counts: HashMap<(&'static str, &'static str), u32>,
+    /// `interned_head → (interned_atom → refcount-of-rules)`.
+    ///
+    /// Experiment #17 (callgrind-exact F1 lever, 2026-06-12): this was a flat
+    /// `HashMap<(&'static str, &'static str), u32>`, and `contains` interned
+    /// BOTH query strings via `global_allocator().alloc_str` on every call —
+    /// purely to construct the tuple key (tuples have no `Borrow` path from
+    /// `(&'static str, &'static str)` to `(&str, &str)`). On PLN Robot
+    /// FANOUT=0 the impure/cut dispatch gate drove ~30M lookups → ~60M
+    /// alloc_str calls = 18.46% of program Ir (alloc_data byte copies +
+    /// intern hashing), measured EXACTLY by callgrind at HEAD 3cb5b166
+    /// (docs/cesk-gc/f1-profile-post309-2026-06-11.md). INDEX mode paid a
+    /// full byte copy per call (index atoms live in the index interner, so
+    /// the slab intern always MISSED); slab mode mostly hit — an
+    /// index-vs-slab asymmetry feeding the F1 gap. The nested shape makes
+    /// both levels queryable by `&str` via `Borrow<str>` — zero interning,
+    /// zero allocation per lookup, byte-identical membership semantics
+    /// (string-equality, as documented above).
+    counts: HashMap<&'static str, HashMap<&'static str, u32>>,
 }
 
 impl PerHeadAtomIndex {
@@ -770,13 +786,13 @@ impl PerHeadAtomIndex {
     }
 
     /// O(1) membership: is there any registered rule for `head` whose
-    /// RHS contains an atom named `atom`?
+    /// RHS contains an atom named `atom`? Intern-free: both levels are
+    /// `Borrow<str>` lookups (experiment #17 — see the field doc).
     #[inline]
     pub fn contains(&self, head: &str, atom: &str) -> bool {
-        use crate::backend::models::gc_allocator::global_allocator;
-        let h: &'static str = global_allocator().alloc_str(head);
-        let a: &'static str = global_allocator().alloc_str(atom);
-        self.counts.contains_key(&(h, a))
+        self.counts
+            .get(head)
+            .is_some_and(|atoms| atoms.contains_key(atom))
     }
 
     /// Bump refcount for each unique `atom` appearing anywhere in
@@ -784,8 +800,12 @@ impl PerHeadAtomIndex {
     pub fn note_rule_added<V: MettaValueTrait>(&mut self, head: &'static str, rhs: &V) {
         let mut atoms: HashSet<&'static str> = HashSet::new();
         collect_static_atoms(rhs, &mut atoms);
+        if atoms.is_empty() {
+            return;
+        }
+        let per_head = self.counts.entry(head).or_default();
         for atom in atoms {
-            *self.counts.entry((head, atom)).or_insert(0) += 1;
+            *per_head.entry(atom).or_insert(0) += 1;
         }
     }
 
@@ -796,13 +816,17 @@ impl PerHeadAtomIndex {
     pub fn note_rule_removed<V: MettaValueTrait>(&mut self, head: &'static str, rhs: &V) {
         let mut atoms: HashSet<&'static str> = HashSet::new();
         collect_static_atoms(rhs, &mut atoms);
-        for atom in atoms {
-            let key = (head, atom);
-            if let Some(c) = self.counts.get_mut(&key) {
-                *c -= 1;
-                if *c == 0 {
-                    self.counts.remove(&key);
+        if let Some(per_head) = self.counts.get_mut(head) {
+            for atom in atoms {
+                if let Some(c) = per_head.get_mut(atom) {
+                    *c -= 1;
+                    if *c == 0 {
+                        per_head.remove(atom);
+                    }
                 }
+            }
+            if per_head.is_empty() {
+                self.counts.remove(head);
             }
         }
     }
@@ -810,7 +834,7 @@ impl PerHeadAtomIndex {
     /// Test-only inspection: total tracked (head, atom) pairs.
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.counts.len()
+        self.counts.values().map(|per_head| per_head.len()).sum()
     }
 }
 

@@ -22,10 +22,12 @@
 #              cp target/release/mettatron "$OUT/mtt-treat"   (built --features index-gc)
 #            or rebuild: systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 --quiet \
 #              cargo build --release --bin mettatron --features index-gc
-#   control: git worktree add --detach /tmp/exp15-ctrl <HEAD-sha>; then in it:
+#   control: git worktree add --detach ../exp15-ctrl <HEAD-sha>; then in it:
 #              systemd-run ... cargo +nightly build --release --bin mettatron --features index-gc
-#            (worktrees do NOT inherit the rustup dir override — use +nightly
-#             explicitly; see memory: worktree builds need `cargo +nightly`)
+#            The worktree MUST be a SIBLING of the repo (NOT /tmp): Cargo.toml
+#            path-deps are relative (../MORK, ../f1r3node-rust, ../PathMap) and
+#            only resolve from a sibling. Worktrees also do NOT inherit the
+#            rustup dir override — use `cargo +nightly` explicitly.
 set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"

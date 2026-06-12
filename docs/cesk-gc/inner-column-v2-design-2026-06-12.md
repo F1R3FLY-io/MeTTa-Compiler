@@ -86,39 +86,41 @@ mmverify fresh-thread shadow cost class (208k threads × zero setup).
 
 - **R1-F2 (CRITICAL): the reuse-rewrite protocol** — specified below; the
   v1 seed's "rewritten at re-intern" described nonexistent machinery.
-- R1-F5: Space/Memo entries store **ids**; `as_space`/`as_memo` lazily
-  Arc-clone from the side table (cold paths; lifecycle decoupled).
-- R1-F3: publication ordering — a column write BEFORE the node-segment
-  `publish` Release is covered for any reader that Acquire-observes the
-  node; no new fencing.
+- R1-F5 (superseded by v3-F1): Space/Memo tags are served from the
+  never-freed id-keyed Inner store; their column cells are never written;
+  `as_space`'s `&SpaceHandle` signature is preserved.
+- R1-F3 (superseded by v3-F2): POST-publish column writes; visibility
+  rides the handle's escape channels (the v3-F3 stated invariant).
 - R1-F4: `INNER_SHADOW` + `INNER_SHADOW_EPOCH` + `clear_inner_shadow` +
   `ensure_inner_shadow_epoch_current` + the eval-cache epoch handshake
   for the shadow are DELETED in full (the launder fn and SideColumn gen
   machinery stay).
 
-## The reuse-rewrite protocol (R1-F2 resolution — Option A, per-entry generation)
+## The reuse-rewrite protocol (v3 form — POD cells, no generation, post-publish)
 
-Storage: a per-segment column co-owned by the node segment (the
-`SideColumn` discipline, index_heap.rs ~3000-3280, IS the template):
-`entries: Vec<MaybeUninit<(u32 /*gen*/, MettaValueInner)>>` with the same
-never-move/publish-len rules.
+Storage: per-segment `entries: Vec<MaybeUninit<MettaValueInner>>` (~32B
+POD cells — only Copy-payload variants are ever written, v3-F1; the
+consumerless per-entry generation is DELETED, v3-F8), reachable through
+the STATIC out-of-RwLock `COLUMN_DIR` (v3-F3) maintained at
+`ensure_side_seg` and segment release.
 
-Write points (exactly the node-slot write points, enumerated by R1):
-1. **Fresh bump** (`try_bump_in`/concurrent publish): construct the
-   `MettaValueInner` from the node + side data (all inputs address-stable
-   at this moment — R1-F1), write `(gen=0, inner)` at the slot's column
-   cell, THEN publish the node (Release covers the column write).
-2. **Slot reuse** (`write_reused`, index_arena.rs:710-722): bump the
-   cell's gen, overwrite the inner, THEN return the Addr to the (single)
-   allocating caller; cross-thread visibility rides the value's own
-   escape (same argument as the node bits themselves).
-3. **Sweep/segment-release**: entries die with the slot/segment — column
-   cells are dropped where node slots are freed (the SideColumn deferred-
-   reclaim generation check rejects stale snapshots, identical mechanism).
+Write points (v3-F2 enumeration):
+1. **Fresh alloc** (`try_bump_in` / `alloc_bump` / `IndexArena::alloc`'s
+   internal reuse): the factory writes the column cell AFTER the alloc
+   returns and BEFORE the handle escapes (post-publish is safe: the only
+   column reader is handle-mediated).
+2. **Slot reuse** (`write_reused`): plain overwrite-then-escape — the
+   exclusive-guard release + the handle's escape channel order the write
+   for every consumer (the R2 visibility trace; no pre-Release escape
+   exists).
+3. **Sweep/segment-release**: nothing per slot (POD); segment release
+   frees wholesale — the B1 word-parallel sweep loops are untouched.
 
-Read (`inner_ref_index` v2): `addr → segment dir → column cell → launder
+Read (`inner_ref_index` v2): `addr → COLUMN_DIR[seg] → cell → launder
 &'static Inner` — two loads, no TLS, no RefCell, no epoch, no lock,
-SHARED. The DEBUG I1 tripwire (tag-vs-variant) moves onto this read.
+SHARED; tag5 ∈ {SPACE, MEMO} branches to the id-keyed store instead.
+DEBUG oracle: NODE-GROUNDED payload-identity assert on every read +
+the forced-reuse fixture (v3-F4).
 
 ## The PARALLEL microbench gate (pre-committed before exp21 registration)
 

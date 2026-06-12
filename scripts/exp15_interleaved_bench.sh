@@ -55,7 +55,9 @@ echo "governor(cpu8)=$GOV"
 { echo "head=$(git -C "$REPO" rev-parse HEAD)"; git -C "$REPO" status --short;
   sha256sum "$CTRL" "$TREAT"; date; } > "$OUT/interleaved_provenance.txt"
 
-ext_load() { pgrep -c -f 'rustc --crate-name' 2>/dev/null || echo 0; }
+# pgrep -c prints the count (including 0) itself but exits 1 on no-match —
+# `|| echo 0` would print a SECOND line and corrupt $(...) captures.
+ext_load() { pgrep -c -f 'rustc --crate-name' 2>/dev/null || true; }
 
 # one_run <binary> -> echoes wall seconds; nonzero rc aborts the experiment.
 one_run() {
@@ -93,8 +95,12 @@ python3 - "$CSV" <<'PY'
 import csv, sys, math
 ctrl, treat, loads = [], [], []
 for row in csv.DictReader(open(sys.argv[1])):
+    # Skip malformed rows defensively (a historical ext_load double-echo
+    # produced stray one-field lines; samples themselves are unaffected).
+    if not row.get("arm") or not row.get("wall_s"):
+        continue
     (ctrl if row["arm"] == "control" else treat).append(float(row["wall_s"]))
-    loads.append(int(row["ext_rustc"]))
+    loads.append(int(row["ext_rustc"] or 0))
 n1, n2 = len(ctrl), len(treat)
 m1 = sum(ctrl)/n1; m2 = sum(treat)/n2
 v1 = sum((x-m1)**2 for x in ctrl)/(n1-1); v2 = sum((x-m2)**2 for x in treat)/(n2-1)

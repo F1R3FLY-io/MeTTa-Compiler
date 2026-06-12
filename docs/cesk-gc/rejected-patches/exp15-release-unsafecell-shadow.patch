@@ -1,0 +1,103 @@
+diff --git a/src/backend/models/metta_value.rs b/src/backend/models/metta_value.rs
+index 22f82946..660c4552 100644
+--- a/src/backend/models/metta_value.rs
++++ b/src/backend/models/metta_value.rs
+@@ -881,6 +881,34 @@ pub(crate) fn is_inline_singleton_inner_ptr(ptr: *const MettaValueInner) -> bool
+ /// One [`INNER_SHADOW`] page: 512 slots × 8 B = one 4 KiB OS page. Slots hold
+ /// the materialized box for `raw = (page_idx << SHADOW_PAGE_BITS) | slot_idx`.
+ type ShadowPage = [Option<Box<MettaValueInner>>; SHADOW_PAGE_SLOTS];
++
++/// Experiment #15: the shadow directory's cell type — `RefCell` in DEBUG
++/// (borrow-checked tripwire, exercised by the conformance DEBUG oracle),
++/// `UnsafeCell` in RELEASE (drops the borrow-flag RMW pair from the hottest
++/// access path). See the `INNER_SHADOW` doc + [`with_shadow`].
++#[cfg(debug_assertions)]
++type ShadowDir = std::cell::RefCell<Vec<Option<Box<ShadowPage>>>>;
++#[cfg(not(debug_assertions))]
++type ShadowDir = std::cell::UnsafeCell<Vec<Option<Box<ShadowPage>>>>;
++
++/// Sole access path to [`INNER_SHADOW`] (both cfg variants).
++#[cfg(debug_assertions)]
++#[inline]
++fn with_shadow<R>(f: impl FnOnce(&mut Vec<Option<Box<ShadowPage>>>) -> R) -> R {
++    INNER_SHADOW.with(|c| f(&mut c.borrow_mut()))
++}
++/// SAFETY (release variant): `INNER_SHADOW` is thread-local — no concurrent
++/// access exists by construction — and the closure bodies passed here never
++/// re-enter `with_shadow` (the only nested call on this path,
++/// `IndexHeap::materialize_inner`, is audited non-reentrant: it reads arena
++/// nodes and Arc-clones space/memo handles, never touching `inner_ref_index`).
++/// The DEBUG build keeps the `RefCell` variant in every DEBUG-oracle gate, so
++/// any future violation of that audit panics there before it can ship.
++#[cfg(not(debug_assertions))]
++#[inline]
++fn with_shadow<R>(f: impl FnOnce(&mut Vec<Option<Box<ShadowPage>>>) -> R) -> R {
++    INNER_SHADOW.with(|c| f(unsafe { &mut *c.get() }))
++}
+ const SHADOW_PAGE_BITS: usize = 9;
+ const SHADOW_PAGE_SLOTS: usize = 1 << SHADOW_PAGE_BITS;
+ 
+@@ -917,8 +945,17 @@ thread_local! {
+     /// pages a fresh thread allocates only the pages it actually touches
+     /// (typically a few — ~KBs), while a long-lived thread still gets O(1)
+     /// direct indexing over the dense id space.
+-    static INNER_SHADOW: std::cell::RefCell<Vec<Option<Box<ShadowPage>>>> =
+-        std::cell::RefCell::new(Vec::new());
++    /// Experiment #15: cfg-split cell. DEBUG keeps `RefCell` — the borrow-
++    /// checked variant runs in every DEBUG-oracle gate (483 fixtures, forced
++    /// cycles), so any future reentrancy/aliasing on this path panics there (a
++    /// permanent tripwire). RELEASE uses `UnsafeCell`: the directory is
++    /// thread-local (single-threaded by construction) and its only nested-call
++    /// path (`materialize_inner` on a miss) is audited non-reentrant (node
++    /// reads + `SpaceHandle`/`MemoHandle` Arc clones; it never calls back into
++    /// `inner_ref_index`), so the RefCell borrow-flag RMW pair on EVERY value
++    /// access (perf annotate: the hottest instructions of the top symbol) is
++    /// pure overhead. All access goes through [`with_shadow`].
++    static INNER_SHADOW: ShadowDir = ShadowDir::new(Vec::new());
+ 
+     /// GC sweep epoch observed by this thread's index-mode materialization cache.
+     ///
+@@ -950,8 +987,8 @@ pub(crate) fn clear_inner_shadow() {
+     // Drop every allocated page (freeing its materialized boxes — no retention
+     // across cycles) but KEEP the directory length, so re-population re-allocates
+     // only the pages actually touched again. O(allocated pages + occupied slots).
+-    INNER_SHADOW.with(|c| {
+-        for page in c.borrow_mut().iter_mut() {
++    with_shadow(|dir| {
++        for page in dir.iter_mut() {
+             *page = None;
+         }
+     });
+@@ -965,8 +1002,8 @@ fn ensure_inner_shadow_epoch_current() {
+     let current_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
+     INNER_SHADOW_EPOCH.with(|epoch| {
+         if epoch.get() != current_epoch {
+-            INNER_SHADOW.with(|c| {
+-                for page in c.borrow_mut().iter_mut() {
++            with_shadow(|dir| {
++                for page in dir.iter_mut() {
+                     *page = None;
+                 }
+             });
+@@ -978,9 +1015,8 @@ fn ensure_inner_shadow_epoch_current() {
+ /// Test-only: number of distinct Addrs currently materialized in the shadow cache.
+ #[cfg(test)]
+ pub(crate) fn inner_shadow_len() -> usize {
+-    INNER_SHADOW.with(|c| {
+-        c.borrow()
+-            .iter()
++    with_shadow(|dir| {
++        dir.iter()
+             .flatten()
+             .map(|page| page.iter().filter(|slot| slot.is_some()).count())
+             .sum()
+@@ -1093,8 +1129,7 @@ impl MettaValue {
+     fn inner_ref_index(&self) -> &'static MettaValueInner {
+         let raw = (self.tagged >> 4) as u32;
+         ensure_inner_shadow_epoch_current();
+-        INNER_SHADOW.with(|c| {
+-            let mut dir = c.borrow_mut();
++        with_shadow(|dir| {
+             let page_idx = (raw as usize) >> SHADOW_PAGE_BITS;
+             let slot_idx = (raw as usize) & (SHADOW_PAGE_SLOTS - 1);
+             if page_idx >= dir.len() {

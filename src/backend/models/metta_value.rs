@@ -917,6 +917,20 @@ thread_local! {
     /// pages a fresh thread allocates only the pages it actually touches
     /// (typically a few — ~KBs), while a long-lived thread still gets O(1)
     /// direct indexing over the dense id space.
+    ///
+    /// REJECTED-alternative note (experiment #15, 2026-06-11): a cfg-split cell
+    /// (debug: `RefCell` tripwire, release: `UnsafeCell` via a `with_shadow`
+    /// chokepoint) to drop the borrow-flag RMW pair that `perf annotate`
+    /// attributed ~41% of `inner_ref_index`'s hottest instructions to. The
+    /// interleaved 51-round Welch A/B (Toothbrush default env, pre-registered
+    /// amendment `e26c894b`) REJECTED it: one-tailed p=0.159, Cohen's d=0.199
+    /// (locked bar: p<0.05 AND d>=0.5); on quiet rounds the delta was +0.44%
+    /// (noise). Lesson: the dec/cmp borrow bookkeeping executes in the shadow
+    /// of the page-chase loads (memory-level parallelism) — instruction-level
+    /// attribution inside a function does not imply wall-clock criticality.
+    /// Patch archived at docs/cesk-gc/rejected-patches/
+    /// exp15-release-unsafecell-shadow.patch; do not re-attempt without a
+    /// profile showing the loads no longer dominate.
     static INNER_SHADOW: std::cell::RefCell<Vec<Option<Box<ShadowPage>>>> =
         std::cell::RefCell::new(Vec::new());
 

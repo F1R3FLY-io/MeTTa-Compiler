@@ -1764,6 +1764,22 @@ impl MettaValue {
         if self.is_inline() {
             return None;
         }
+        // exp18 TAG5 fast path (design v4.1): register-only negative dispatch.
+        // Spanned falls through (accessor-transparent); the payload variant
+        // falls through to materialize. The DEBUG oracle (R2-F2) couples a
+        // fast-negative to materialization agreement — the direction the
+        // inner_ref_index tripwire cannot see.
+        #[cfg(feature = "index-gc")]
+        if gc_mode_is_index() {
+            let tag = self.tag5();
+            if tag != TAG5_ATOM && tag != TAG5_SPANNED {
+                debug_assert!(
+                    !matches!(self.inner_ref(), MettaValueInner::Atom(_) | MettaValueInner::Spanned(..)),
+                    "TAG5 fast-negative disagrees with materialization (as_atom)"
+                );
+                return None;
+            }
+        }
         match self.inner_ref() {
             MettaValueInner::Atom(s) => Some(s),
             MettaValueInner::Spanned(v, _) => v.as_atom(),
@@ -1855,6 +1871,22 @@ impl MettaValue {
         if self.is_inline() {
             return None;
         }
+        // exp18 TAG5 fast path (design v4.1): register-only negative dispatch.
+        // Spanned falls through (accessor-transparent); the payload variant
+        // falls through to materialize. The DEBUG oracle (R2-F2) couples a
+        // fast-negative to materialization agreement — the direction the
+        // inner_ref_index tripwire cannot see.
+        #[cfg(feature = "index-gc")]
+        if gc_mode_is_index() {
+            let tag = self.tag5();
+            if tag != TAG5_SEXPR && tag != TAG5_SPANNED {
+                debug_assert!(
+                    !matches!(self.inner_ref(), MettaValueInner::SExpr(_) | MettaValueInner::Spanned(..)),
+                    "TAG5 fast-negative disagrees with materialization (as_sexpr)"
+                );
+                return None;
+            }
+        }
         match self.inner_ref() {
             MettaValueInner::SExpr(items) => Some(items),
             MettaValueInner::Spanned(v, _) => v.as_sexpr(),
@@ -1875,6 +1907,22 @@ impl MettaValue {
     pub fn as_error(&self) -> Option<(MettaValue, MettaValue)> {
         if self.is_inline() {
             return None;
+        }
+        // exp18 TAG5 fast path (design v4.1): register-only negative dispatch.
+        // Spanned falls through (accessor-transparent); the payload variant
+        // falls through to materialize. The DEBUG oracle (R2-F2) couples a
+        // fast-negative to materialization agreement — the direction the
+        // inner_ref_index tripwire cannot see.
+        #[cfg(feature = "index-gc")]
+        if gc_mode_is_index() {
+            let tag = self.tag5();
+            if tag != TAG5_ERROR && tag != TAG5_SPANNED {
+                debug_assert!(
+                    !matches!(self.inner_ref(), MettaValueInner::Error(..) | MettaValueInner::Spanned(..)),
+                    "TAG5 fast-negative disagrees with materialization (as_error)"
+                );
+                return None;
+            }
         }
         match self.inner_ref() {
             MettaValueInner::Error(offending, details) => Some((*offending, *details)),
@@ -1901,6 +1949,22 @@ impl MettaValue {
     pub fn as_conjunction(&self) -> Option<&[MettaValue]> {
         if self.is_inline() {
             return None;
+        }
+        // exp18 TAG5 fast path (design v4.1): register-only negative dispatch.
+        // Spanned falls through (accessor-transparent); the payload variant
+        // falls through to materialize. The DEBUG oracle (R2-F2) couples a
+        // fast-negative to materialization agreement — the direction the
+        // inner_ref_index tripwire cannot see.
+        #[cfg(feature = "index-gc")]
+        if gc_mode_is_index() {
+            let tag = self.tag5();
+            if tag != TAG5_CONJUNCTION && tag != TAG5_SPANNED {
+                debug_assert!(
+                    !matches!(self.inner_ref(), MettaValueInner::Conjunction(_) | MettaValueInner::Spanned(..)),
+                    "TAG5 fast-negative disagrees with materialization (as_conjunction)"
+                );
+                return None;
+            }
         }
         match self.inner_ref() {
             MettaValueInner::Conjunction(goals) => Some(goals),
@@ -1966,6 +2030,22 @@ impl MettaValue {
     pub fn as_quoted_ref(&self) -> Option<&MettaValue> {
         if self.is_inline() {
             return None;
+        }
+        // exp18 TAG5 fast path (design v4.1): register-only negative dispatch.
+        // Spanned falls through (accessor-transparent); the payload variant
+        // falls through to materialize. The DEBUG oracle (R2-F2) couples a
+        // fast-negative to materialization agreement — the direction the
+        // inner_ref_index tripwire cannot see.
+        #[cfg(feature = "index-gc")]
+        if gc_mode_is_index() {
+            let tag = self.tag5();
+            if tag != TAG5_QUOTED && tag != TAG5_SPANNED {
+                debug_assert!(
+                    !matches!(self.inner_ref(), MettaValueInner::Quoted(_) | MettaValueInner::Spanned(..)),
+                    "TAG5 fast-negative disagrees with materialization (as_quoted_ref)"
+                );
+                return None;
+            }
         }
         match self.inner_ref() {
             MettaValueInner::Quoted(inner) => Some(inner),
@@ -3109,6 +3189,22 @@ impl MettaValueTrait for MettaValue {
         if self.is_inline() {
             return None;
         }
+        // exp18 TAG5 fast path (design v4.1): register-only negative dispatch.
+        // Spanned falls through (accessor-transparent); the payload variant
+        // falls through to materialize. The DEBUG oracle (R2-F2) couples a
+        // fast-negative to materialization agreement — the direction the
+        // inner_ref_index tripwire cannot see.
+        #[cfg(feature = "index-gc")]
+        if gc_mode_is_index() {
+            let tag = self.tag5();
+            if tag != TAG5_ERROR && tag != TAG5_SPANNED {
+                debug_assert!(
+                    !matches!(self.inner_ref(), MettaValueInner::Error(..) | MettaValueInner::Spanned(..)),
+                    "TAG5 fast-negative disagrees with materialization (trait as_error)"
+                );
+                return None;
+            }
+        }
         match self.inner_ref() {
             MettaValueInner::Error(offending, details) => Some((offending, details)),
             MettaValueInner::Spanned(v, _) => <MettaValue as MettaValueTrait>::as_error(v),
@@ -3294,6 +3390,22 @@ impl MettaValueTrait for MettaValue {
     fn get_head_symbol(&self) -> Option<&str> {
         if self.is_inline() {
             return None;
+        }
+        // exp18 TAG5 fast path (design v4.1): register-only negative dispatch.
+        // Spanned falls through (accessor-transparent); the payload variant
+        // falls through to materialize. The DEBUG oracle (R2-F2) couples a
+        // fast-negative to materialization agreement — the direction the
+        // inner_ref_index tripwire cannot see.
+        #[cfg(feature = "index-gc")]
+        if gc_mode_is_index() {
+            let tag = self.tag5();
+            if tag != TAG5_ATOM && tag != TAG5_SEXPR && tag != TAG5_SPANNED {
+                debug_assert!(
+                    !matches!(self.inner_ref(), MettaValueInner::Atom(_) | MettaValueInner::SExpr(_) | MettaValueInner::Spanned(..)),
+                    "TAG5 fast-negative disagrees with materialization (get_head_symbol)"
+                );
+                return None;
+            }
         }
         // Helper to check if an atom is a space reference (not a variable)
         fn is_space_ref(s: &str) -> bool {

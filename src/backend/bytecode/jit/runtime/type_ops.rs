@@ -170,7 +170,16 @@ pub unsafe extern "C" fn jit_runtime_check_type(
             }
             TAG_PTR => {
                 let ptr = (type_atom & PAYLOAD_MASK) as *const MettaValueInner;
-                if !ptr.is_null() {
+                // exp18: in index mode the payload is an inner_ptr-packed
+                // handle (TAG5<<32 | Addr) — NOT a dereferenceable pointer.
+                // The old deref read garbage-at-addr (silently wrong pre-#18;
+                // the TAG5 bits made it FAULT). Reconstruct via the tag-aware
+                // trait unpack and read the atom on the VALUE.
+                if crate::backend::models::metta_value::gc_mode_is_index() {
+                    crate::backend::models::MettaValueTrait::as_atom(
+                        &<MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(ptr),
+                    )
+                } else if !ptr.is_null() {
                     if let MettaValueInner::Atom(s) = &*ptr {
                         Some(*s)
                     } else {
@@ -246,7 +255,16 @@ pub unsafe extern "C" fn jit_runtime_assert_type(
             }
             TAG_PTR => {
                 let ptr = (type_atom & PAYLOAD_MASK) as *const MettaValueInner;
-                if !ptr.is_null() {
+                // exp18: in index mode the payload is an inner_ptr-packed
+                // handle (TAG5<<32 | Addr) — NOT a dereferenceable pointer.
+                // The old deref read garbage-at-addr (silently wrong pre-#18;
+                // the TAG5 bits made it FAULT). Reconstruct via the tag-aware
+                // trait unpack and read the atom on the VALUE.
+                if crate::backend::models::metta_value::gc_mode_is_index() {
+                    crate::backend::models::MettaValueTrait::as_atom(
+                        &<MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(ptr),
+                    )
+                } else if !ptr.is_null() {
                     if let MettaValueInner::Atom(s) = &*ptr {
                         Some(*s)
                     } else {
@@ -336,7 +354,15 @@ where
             // Since we can't know the concrete type at compile time for the pointer,
             // we fall back to checking if it's a MettaValue pointer
             let ptr = (val & PAYLOAD_MASK) as *const MettaValueInner;
-            if ptr.is_null() {
+            // exp18: index-mode payloads are inner_ptr-packed handles, not
+            // pointers — the deref below read garbage-at-addr (silently wrong
+            // type names pre-#18; the TAG5 bits at payload [36:32] made it
+            // FAULT). Reconstruct via the tag-aware trait unpack and classify
+            // on the VALUE (type_name() is Spanned/Lazy-correct and uses the
+            // same vocabulary).
+            if crate::backend::models::metta_value::gc_mode_is_index() {
+                V::from_inner_ptr(ptr).type_name()
+            } else if ptr.is_null() {
                 TYPE_NAME_UNKNOWN
             } else {
                 match &*ptr {
@@ -428,6 +454,12 @@ unsafe fn get_type_name(val: u64) -> &'static str {
         TAG_PTR => {
             // TAG_PTR payload is *const MettaValueInner (slab-allocated)
             let ptr = (val & PAYLOAD_MASK) as *const MettaValueInner;
+            // exp18: index-mode payloads are handles, not pointers — see
+            // get_type_generic. Classify on the reconstructed VALUE.
+            if crate::backend::models::metta_value::gc_mode_is_index() {
+                return <MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(ptr)
+                    .type_name();
+            }
             if ptr.is_null() {
                 return TYPE_NAME_UNKNOWN;
             }

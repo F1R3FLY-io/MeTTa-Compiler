@@ -134,6 +134,31 @@ $actual"
   fi
 }
 
+# Scheduler/cron formal obligations added with the threading-model proof lane.
+assert_count "src/backend/priority_scheduler.rs" "self.refresh_scores(&mut heap);" "3"
+assert_count "src/backend/priority_scheduler.rs" "other.task.sequence.cmp(&self.task.sequence)" "1"
+assert_count "src/backend/scheduler/classification.rs" "self.l2_entries.insert(insert_at, entry);" "1"
+assert_count "src/backend/scheduler/classification.rs" "if *other_start as usize >= insert_at {" "1"
+assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS" "];" "\"random-int\""
+assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS" "];" "\"random-float\""
+line_no "src/backend/scheduler/classification.rs" "\"random-int\"," >/dev/null
+line_no "src/backend/scheduler/classification.rs" "\"random-float\"," >/dev/null
+assert_before \
+  "src/backend/models/task_scheduler.rs" \
+  "if dispatch.stop_requested.load(AtomicOrdering::Acquire) {" \
+  ".compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)"
+assert_after_before \
+  "src/backend/models/task_scheduler.rs" \
+  "match result" \
+  ".stop_requested" \
+  ".in_flight"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerPriorityFairness.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
+assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"
+
 # A5 structural-root architecture: the dynamic root registry and raw frame-chain
 # discovery path must remain slab-only. The index collector reads roots from the
 # reified CESK machine plus narrow driver transport channels.

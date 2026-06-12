@@ -531,7 +531,9 @@ impl Ord for ScoredTask {
             .score
             .partial_cmp(&self.score)
             .unwrap_or(Ordering::Equal)
-            .then_with(|| self.task.sequence.cmp(&other.task.sequence))
+            // BinaryHeap pops the greatest item; for equal scores, the lower
+            // sequence number is older and must be considered greater.
+            .then_with(|| other.task.sequence.cmp(&self.task.sequence))
     }
 }
 
@@ -585,6 +587,20 @@ impl PriorityQueue {
         self.not_empty.notify_one();
     }
 
+    fn refresh_scores(&self, heap: &mut BinaryHeap<ScoredTask>) {
+        if heap.len() <= 1 {
+            return;
+        }
+
+        *heap = heap
+            .drain()
+            .map(|mut scored| {
+                scored.score = scored.task.score(&self.runtime_tracker, &self.config);
+                scored
+            })
+            .collect();
+    }
+
     /// Pop the highest-priority task (blocking).
     ///
     /// Blocks until a task is available or shutdown is signaled.
@@ -599,6 +615,7 @@ impl PriorityQueue {
                 return None;
             }
         }
+        self.refresh_scores(&mut heap);
         heap.pop().map(|st| st.task)
     }
 
@@ -619,12 +636,14 @@ impl PriorityQueue {
                 return None;
             }
         }
+        self.refresh_scores(&mut heap);
         heap.pop().map(|st| st.task)
     }
 
     /// Pop without blocking (try).
     pub fn try_pop(&self) -> Option<PriorityTask> {
         let mut heap = self.heap.lock();
+        self.refresh_scores(&mut heap);
         heap.pop().map(|st| st.task)
     }
 
@@ -810,6 +829,66 @@ mod tests {
 
         let result = queue.pop_timeout(&shutdown, Duration::from_millis(100));
         assert!(result.is_some(), "Should pop an available task");
+    }
+
+    #[test]
+    fn test_priority_queue_recomputes_age_before_pop() {
+        let tracker = Arc::new(RuntimeTracker::new());
+        let config = SchedulerConfig {
+            runtime_weight: 0.0,
+            decay_rate: 10_000.0,
+            max_queue_size: 128,
+        };
+        let queue = PriorityQueue::new(Arc::clone(&tracker), config);
+
+        queue.push(PriorityTask::new(
+            Box::new(|| {}),
+            100,
+            TaskTypeId::Generic,
+            0,
+        ));
+        thread::sleep(Duration::from_millis(20));
+        queue.push(PriorityTask::new(
+            Box::new(|| {}),
+            0,
+            TaskTypeId::Generic,
+            1,
+        ));
+
+        let first = queue.try_pop().expect("queue should contain first task");
+        assert_eq!(
+            first.sequence, 0,
+            "older queued task should age into priority before pop"
+        );
+    }
+
+    #[test]
+    fn test_priority_queue_equal_scores_are_fifo() {
+        let tracker = Arc::new(RuntimeTracker::new());
+        let config = SchedulerConfig {
+            runtime_weight: 0.0,
+            decay_rate: 0.0,
+            max_queue_size: 128,
+        };
+        let queue = PriorityQueue::new(Arc::clone(&tracker), config);
+
+        queue.push(PriorityTask::new(
+            Box::new(|| {}),
+            5,
+            TaskTypeId::Generic,
+            0,
+        ));
+        queue.push(PriorityTask::new(
+            Box::new(|| {}),
+            5,
+            TaskTypeId::Generic,
+            1,
+        ));
+
+        let first = queue.try_pop().expect("queue should contain first task");
+        let second = queue.try_pop().expect("queue should contain second task");
+        assert_eq!(first.sequence, 0);
+        assert_eq!(second.sequence, 1);
     }
 
     #[test]

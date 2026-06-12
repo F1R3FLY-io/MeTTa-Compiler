@@ -190,6 +190,8 @@ pub(crate) struct CronDispatchState {
     shared_task: Mutex<Box<dyn FnMut() -> bool + Send>>,
     /// In-flight guard: prevents overlapping executions of the same recurring task.
     in_flight: AtomicBool,
+    /// Set by a worker when the recurring closure returns false or panics.
+    stop_requested: AtomicBool,
 }
 
 // ============================================================================
@@ -562,8 +564,17 @@ impl CronStateMachine {
                 Arc::new(CronDispatchState {
                     shared_task: Mutex::new(task.task),
                     in_flight: AtomicBool::new(false),
+                    stop_requested: AtomicBool::new(false),
                 })
             });
+
+            if dispatch.stop_requested.load(AtomicOrdering::Acquire) {
+                trace!(
+                    task_name = task.metadata.name(),
+                    "Recurring task stop observed by cron thread"
+                );
+                return;
+            }
 
             // Check in-flight guard — skip if still running
             if dispatch
@@ -596,20 +607,28 @@ impl CronStateMachine {
                         (guard)()
                     }));
 
-                    // Clear in-flight flag
-                    dispatch_for_worker
-                        .in_flight
-                        .store(false, AtomicOrdering::Release);
-
                     match result {
                         Ok(true) => {} // Will be re-queued by cron thread
                         Ok(false) => {
+                            dispatch_for_worker
+                                .stop_requested
+                                .store(true, AtomicOrdering::Release);
                             trace!(task_name, "Recurring task returned false — stopping");
                         }
                         Err(e) => {
+                            dispatch_for_worker
+                                .stop_requested
+                                .store(true, AtomicOrdering::Release);
                             error!(task_name, panic = ?e, "Worker pool task panicked");
                         }
                     }
+
+                    // Clear in-flight after publishing the stop bit, so the
+                    // cron thread cannot observe an idle recurring task without
+                    // also observing the terminal result.
+                    dispatch_for_worker
+                        .in_flight
+                        .store(false, AtomicOrdering::Release);
                 },
                 TaskTypeId::Generic,
                 priority_levels::LOW,
@@ -1075,6 +1094,38 @@ mod tests {
 
         handle.request_shutdown();
         thread.join().expect("Cron thread panicked");
+
+        let count = counter.load(Ordering::Relaxed);
+        assert_eq!(count, 3, "Expected exactly 3 executions, got {}", count);
+    }
+
+    /// Test that pooled recurring tasks observe the same stop-on-false
+    /// semantics as inline recurring tasks.
+    #[test]
+    fn test_pooled_recurring_task_stops_on_false() {
+        let terminating = Arc::new(AtomicBool::new(false));
+        let pool = Arc::new(WorkPool::with_threads_initial(1, 2, 1));
+        let (handle, thread, ready_rx) = spawn_cron_with_pool(
+            Arc::clone(&terminating),
+            10,
+            "pooled-recurring-stop-test",
+            Arc::clone(&pool),
+        );
+        ready_rx.recv().expect("cron thread failed to start");
+
+        let counter = Arc::new(StdAtomicU64::new(0));
+        let c = Arc::clone(&counter);
+
+        handle.schedule_recurring(0, 20, "pooled-limited-counter", move || {
+            let count = c.fetch_add(1, Ordering::Relaxed) + 1;
+            count < 3
+        });
+
+        thread::sleep(Duration::from_millis(250));
+
+        handle.request_shutdown();
+        thread.join().expect("Cron thread panicked");
+        pool.shutdown_and_join();
 
         let count = counter.load(Ordering::Relaxed);
         assert_eq!(count, 3, "Expected exactly 3 executions, got {}", count);

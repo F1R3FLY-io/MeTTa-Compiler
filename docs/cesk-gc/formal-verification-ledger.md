@@ -621,6 +621,26 @@ can replace the full-major final sweep.
 - `tla/HashConsSweepRetain.tla`: checks the Addr-valued hash-cons retain obligation. Major sweep dropping unmarked
   entries and minor sweep retaining only old or marked-young entries preserve `NoReturnedFreed`; retaining a dead major
   entry or a dead young minor entry admits a later hash-cons hit returning a freed address.
+- `formal/rocq/gc/SchedulerPriorityFairness.v` and `tla/PriorityQueueAging.tla`: prove and model-check the
+  priority-queue fairness obligation exposed by the scheduler audit. Dequeue must recompute age-adjusted scores before
+  selecting work, and equal scores must break ties FIFO by sequence number. The positive TLC config preserves
+  `OldPopsAfterAging`; the stale-score discriminator violates it by popping the younger high-base-priority task after
+  age should have made the older task runnable first.
+- `formal/rocq/gc/SchedulerClassificationLookup.v` and `tla/SchedulerClassificationLookup.tla`: prove and
+  model-check the L1/L2 classifier-table insertion obligation used by MeTTa instruction reordering. Inserting a new
+  head into a class must extend that class's contiguous L2 range and shift later L1 starts; failing to shift later
+  starts violates range disjointness. This pins the lookup structure that separates pure parallelizable heads from
+  state-mutating heads before the scheduler maximizes parallelism.
+- `formal/rocq/gc/CronRecurringDispatch.v` and `tla/CronRecurringDispatch.tla`: prove and model-check pooled cron
+  recurring-dispatch control. A recurring task that returns `false` or panics must set a durable stop flag before
+  clearing `in_flight`, so the next due tick drops the recurrence instead of redispatching it. The model also proves
+  in-flight recurring work is not overlapped, preserving thread-pool admission boundaries around cron work.
+- 2026-06-12 scheduler/threading formal increment: `scripts/verify_cesk_gc_formal.sh` passed proof hygiene, TLC
+  hygiene, source coupling, 90 mandatory Rocq files, and the full positive/negative TLC discriminator suite. Focused
+  runtime gates passed under `systemd-run` caps: `cargo test --lib priority_queue`, `cargo test --lib
+  interleaved_table`, `cargo test --lib random_heads`, and `cargo test --lib pooled_recurring_task_stops_on_false`.
+  The slab release gate `cargo nextest run --release` then ran 4400 tests with 4400 passed. All checks were run with
+  memory caps and no swap, preserving the project heavy-op mandate.
 
 ## Source coupling
 

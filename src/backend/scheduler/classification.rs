@@ -77,6 +77,12 @@ const STATE_MUTATING_HEADS: &[&str] = &[
     "add-observer!",
     "snapshot!",
     "partition-space",
+    // Random operations advance or create generator state; reordering them can
+    // change observed values even when the expression shape is otherwise pure.
+    "new-random-generator",
+    "set-random-seed",
+    "random-int",
+    "random-float",
 ];
 
 const IO_HEADS: &[&str] = &[
@@ -122,6 +128,10 @@ const IMPURE_HEADS: &[&str] = &[
     "add-observer!",
     "snapshot!",
     "partition-space",
+    "new-random-generator",
+    "set-random-seed",
+    "random-int",
+    "random-float",
 ];
 
 /// Known pure head symbols (control flow and data manipulation).
@@ -161,8 +171,6 @@ const PURE_HEADS: &[&str] = &[
     "tuple-count",
     "tuple-concat",
     "flip",
-    "random-int",
-    "random-float",
     "id",
     "sort-strings",
 ];
@@ -437,7 +445,7 @@ impl SchedulerAutomaton {
         Self {
             l1_table: vec![None; L1_TABLE_SIZE],
             l2_entries: Vec::new(),
-            l2_counts: Vec::new(),
+            l2_counts: vec![0; L1_TABLE_SIZE],
             transduction_table: Self::default_transduction_table(),
             weight_emas: DashMap::new(),
             epoch: AtomicU64::new(0),
@@ -696,6 +704,10 @@ impl SchedulerAutomaton {
             cost_class,
         };
 
+        if self.l2_counts.len() < L1_TABLE_SIZE {
+            self.l2_counts.resize(L1_TABLE_SIZE, 0);
+        }
+
         if let Some(start) = self.l1_table[l1_idx] {
             // Append to existing L2 entries
             let start = start as usize;
@@ -711,18 +723,27 @@ impl SchedulerAutomaton {
                     return;
                 }
             }
-            // Append new entry (may not be contiguous — rebuild needed for production)
-            self.l2_entries.push(entry);
+            // Insert at the end of this head's contiguous L2 range. Later
+            // ranges shift right by one slot, preserving the lookup invariant
+            // l2_entries[start..start+count] for every occupied L1 slot.
+            let insert_at = start + count;
+            self.l2_entries.insert(insert_at, entry);
             self.l2_counts[l1_idx] += 1;
+            for (idx, maybe_start) in self.l1_table.iter_mut().enumerate() {
+                if idx == l1_idx {
+                    continue;
+                }
+                if let Some(other_start) = maybe_start {
+                    if *other_start as usize >= insert_at {
+                        *other_start += 1;
+                    }
+                }
+            }
         } else {
             // First entry for this head hash
             let start = self.l2_entries.len() as u32;
             self.l1_table[l1_idx] = Some(start);
             self.l2_entries.push(entry);
-            // Ensure l2_counts is large enough
-            if self.l2_counts.len() <= l1_idx {
-                self.l2_counts.resize(l1_idx + 1, 0);
-            }
             self.l2_counts[l1_idx] = 1;
         }
     }
@@ -864,6 +885,55 @@ mod tests {
         // Direct L2 lookup simulation
         let l1_idx = head_hash as usize;
         assert!(automaton.l1_table[l1_idx].is_some());
+    }
+
+    #[test]
+    fn test_interleaved_table_insert_keeps_l2_ranges_contiguous() {
+        let mut automaton = SchedulerAutomaton::new();
+        let head_a = "formal-a";
+        let head_b = "formal-b";
+        let hash_a = TaskDescriptor::hash_head_symbol(head_a);
+        let hash_b = TaskDescriptor::hash_head_symbol(head_b);
+
+        automaton.insert_classification(hash_a, 1, 0, 0, CostClass::RecursiveBounded);
+        automaton.insert_classification(hash_b, 1, 0, 0, CostClass::ImpureSequential);
+        automaton.insert_classification(hash_a, 2, 0, 0, CostClass::ParallelPure);
+
+        let expr_a_2 = MettaValue::SExpr(vec![
+            MettaValue::Atom(head_a),
+            MettaValue::Long(1),
+            MettaValue::Long(2),
+        ]);
+        let expr_b_1 = MettaValue::SExpr(vec![MettaValue::Atom(head_b), MettaValue::Long(1)]);
+
+        assert_eq!(automaton.classify(&expr_a_2), CostClass::ParallelPure);
+        assert_eq!(automaton.classify(&expr_b_1), CostClass::ImpureSequential);
+    }
+
+    #[test]
+    fn test_random_heads_are_sequential_and_non_memoizable() {
+        let automaton = SchedulerAutomaton::new();
+        for head in [
+            "new-random-generator",
+            "set-random-seed",
+            "random-int",
+            "random-float",
+        ] {
+            let class = automaton.classify_heuristic(head, 3, 0);
+            let action = automaton.transduce(class);
+            assert_eq!(class, CostClass::ImpureSequential, "{head}");
+            assert_eq!(action.parallelism_degree, 1, "{head}");
+            assert!(!action.memoizable, "{head}");
+        }
+
+        let expr = MettaValue::SExpr(vec![
+            MettaValue::Atom("random-int"),
+            MettaValue::Atom("&rng"),
+            MettaValue::Long(0),
+            MettaValue::Long(10),
+        ]);
+        assert_eq!(automaton.classify(&expr), CostClass::ImpureSequential);
+        assert!(body_blocks_parallel_dispatch(&expr, 8));
     }
 
     #[test]

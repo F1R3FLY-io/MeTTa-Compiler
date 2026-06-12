@@ -182,6 +182,9 @@ run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/SchedulerGcBoundary.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutProgress.v"
+run_rocq "formal/rocq/gc/SchedulerPriorityFairness.v"
+run_rocq "formal/rocq/gc/SchedulerClassificationLookup.v"
+run_rocq "formal/rocq/gc/CronRecurringDispatch.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
 run_rocq "formal/rocq/gc/DepthZeroSafepoint.v"
@@ -209,6 +212,19 @@ run_rocq "formal/rocq/gc/SATBSubmodelClosure.v"
 run_rocq "formal/rocq/gc/CESKCollectorSafety.v"
 
 run_source_coupling
+
+run_tlc "priority_queue_aging_refresh" "PriorityQueueAging.tla" "MC_PriorityQueueAging_refresh.cfg" \
+  pass ""
+run_tlc "priority_queue_aging_stale" "PriorityQueueAging.tla" "MC_PriorityQueueAging_stale.cfg" \
+  fail "Invariant OldPopsAfterAging is violated"
+run_tlc "scheduler_classification_lookup_shift" "SchedulerClassificationLookup.tla" "MC_SchedulerClassificationLookup_shift.cfg" \
+  pass ""
+run_tlc "scheduler_classification_lookup_no_shift" "SchedulerClassificationLookup.tla" "MC_SchedulerClassificationLookup_no_shift.cfg" \
+  fail "Invariant RangesDisjoint is violated"
+run_tlc "cron_recurring_dispatch_stop" "CronRecurringDispatch.tla" "MC_CronRecurringDispatch_stop.cfg" \
+  pass ""
+run_tlc "cron_recurring_dispatch_no_stop" "CronRecurringDispatch.tla" "MC_CronRecurringDispatch_no_stop.cfg" \
+  fail "Invariant StopPreventsRedispatch is violated"
 
 run_tlc "rfl_freebit" "MC_StoreCentricGC_RFL.tla" "MC_RFL_freebit.cfg" \
   pass ""

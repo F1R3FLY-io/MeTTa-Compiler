@@ -605,6 +605,29 @@ impl MettaValue {
     pub(crate) fn tag5(&self) -> u8 {
         ((self.tagged >> TAG5_SHIFT) & 0x1F) as u8
     }
+
+    /// BENCH-ONLY (`mtt-hitpath-bench`, the exp19 gate): the raw arena id,
+    /// or `None` for an inline scalar. Thin pub shim over the crate-private
+    /// [`as_arena_addr`](Self::as_arena_addr).
+    #[cfg(feature = "index-gc")]
+    #[inline(always)]
+    pub fn as_arena_addr_raw_for_bench(&self) -> Option<u32> {
+        self.as_arena_addr().map(|a| a.raw())
+    }
+
+    /// BENCH-ONLY (`mtt-hitpath-bench`): materialize this heap handle's
+    /// `MettaValueInner` once — the column mock's build step. Panics on an
+    /// inline scalar (the bench filters those via the raw-id shim).
+    #[cfg(feature = "index-gc")]
+    pub fn materialize_inner_for_bench(&self) -> MettaValueInner {
+        let addr = self
+            .as_arena_addr()
+            .expect("bench materialize requires a heap handle");
+        crate::backend::eval::cesk::index_heap::global_index_heap()
+            .read()
+            .expect("index heap poisoned")
+            .materialize_inner(addr)
+    }
 }
 
 /// TAG5 code of a materialized `MettaValueInner` — the SAME canonical table

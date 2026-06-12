@@ -37,6 +37,12 @@ path = "src/bin/mtt_conformance.rs"
 name = "petta-conformance"
 path = "src/bin/petta_conformance.rs"
 
+# Isolated hit-path microbenchmark (the exp19 registration gate — shadow
+# hit path vs a mocked arena-coresident Inner column; index builds only).
+[[bin]]
+name = "mtt-hitpath-bench"
+path = "src/bin/mtt_hitpath_bench.rs"
+
 [[bench]]
 name = "rule_matching"
 harness = false

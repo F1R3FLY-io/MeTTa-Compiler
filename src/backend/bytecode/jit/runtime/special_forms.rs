@@ -181,7 +181,7 @@ pub unsafe extern "C" fn jit_runtime_eval_case(
     //
     // Returns the index of the matching case, or -1 if no match
 
-    let ctx_ref = match ctx.as_ref() {
+    let ctx_ref = match ctx.as_mut() {
         Some(c) => c,
         None => return box_long(-1),
     };
@@ -203,6 +203,10 @@ pub unsafe extern "C" fn jit_runtime_eval_case(
             if let Some(bindings) = pattern_match(pattern, &value_metta) {
                 // Match found - install bindings if we have binding frames
                 if !ctx_ref.binding_frames.is_null() && ctx_ref.binding_frames_count > 0 {
+                    for (name, _val) in bindings.iter() {
+                        ctx_ref.remember_binding_name(hash_string(name), name);
+                    }
+
                     // Get current frame
                     let frame_idx = ctx_ref.binding_frames_count - 1;
                     let frame = &mut *ctx_ref.binding_frames.add(frame_idx);

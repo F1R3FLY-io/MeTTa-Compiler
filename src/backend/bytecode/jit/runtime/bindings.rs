@@ -166,6 +166,7 @@ pub unsafe extern "C" fn jit_runtime_store_binding(
 
     // Z.A.3: name_idx is the full 64-bit FNV-1a hash now (no truncation).
     let jit_value = JitValue::from_raw(value);
+    ctx_ref.remember_binding_name_from_constant_index(name_idx);
 
     // Get the current (innermost) frame
     let frame = &mut *ctx_ref.binding_frames.add(ctx_ref.binding_frames_count - 1);

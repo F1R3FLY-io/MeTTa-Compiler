@@ -393,6 +393,14 @@ pub struct JitContext {
     /// only at `call_depth == 0 && !interpret_mode`. Mirror of the
     /// `depth` argument used by `processing/ops.rs::process_single_combination_generic`.
     pub call_depth: u32,
+
+    /// Runtime-owned names for binding-frame identifiers.
+    ///
+    /// Binding-frame entries are kept as compact numeric ids for JIT FFI
+    /// compatibility. Runtime code records the corresponding variable name
+    /// here when it creates an entry so substitution collection can rebuild a
+    /// `Bindings` map without scanning transient rule snapshots.
+    pub binding_name_table: HashMap<u64, String>,
 }
 
 impl JitContext {
@@ -481,6 +489,7 @@ impl JitContext {
             // interpret_mode by JIT runtime mode handlers.
             bang_body: false,
             call_depth: 0,
+            binding_name_table: HashMap::new(),
         }
     }
 
@@ -571,6 +580,7 @@ impl JitContext {
             // interpret_mode by JIT runtime mode handlers.
             bang_body: false,
             call_depth: 0,
+            binding_name_table: HashMap::new(),
         }
     }
 
@@ -948,6 +958,40 @@ impl JitContext {
     #[inline]
     pub fn has_type_registry(&self) -> bool {
         !self.type_registry_ptr.is_null()
+    }
+
+    /// Record the source variable name for a binding-frame identifier.
+    #[inline]
+    pub fn remember_binding_name(&mut self, name_idx: u64, name: &str) {
+        self.binding_name_table
+            .entry(name_idx)
+            .or_insert_with(|| name.to_owned());
+    }
+
+    /// If `name_idx` is a constant-pool index for an atom, record that name.
+    ///
+    /// Store/load opcodes pass constant-pool indexes, while rule-dispatch
+    /// paths pass hashed names. This helper covers the opcode path without
+    /// changing the existing numeric binding convention.
+    ///
+    /// # Safety
+    /// `self.constants` must be valid for `self.constants_len` entries when it
+    /// is non-null, matching the `JitContext` construction contract.
+    #[inline]
+    pub unsafe fn remember_binding_name_from_constant_index(&mut self, name_idx: u64) {
+        if self.constants.is_null() || name_idx >= self.constants_len as u64 {
+            return;
+        }
+        let constant = &*self.constants.add(name_idx as usize);
+        if let Some(name) = constant.as_atom() {
+            self.remember_binding_name(name_idx, name);
+        }
+    }
+
+    /// Look up the variable name associated with a binding-frame identifier.
+    #[inline]
+    pub fn binding_name(&self, name_idx: u64) -> Option<&str> {
+        self.binding_name_table.get(&name_idx).map(String::as_str)
     }
 
     // -------------------------------------------------------------------------

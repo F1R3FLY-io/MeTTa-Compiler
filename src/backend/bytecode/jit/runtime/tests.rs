@@ -51,7 +51,7 @@ mod tests {
         jit_runtime_match_arity, jit_runtime_match_head, jit_runtime_pattern_match,
         jit_runtime_pattern_match_bind, jit_runtime_unify, jit_runtime_unify_bind,
     };
-    use super::super::rule_dispatch::hash_string;
+    use super::super::rule_dispatch::{collect_bindings_from_ctx, hash_string};
     use super::super::sexpr_ops::{
         jit_runtime_get_arity, jit_runtime_get_head, jit_runtime_get_tail, jit_runtime_push_empty,
     };
@@ -2066,6 +2066,37 @@ mod tests {
         let loaded = unsafe { jit_runtime_load_binding(&mut ctx, 0, 0) };
         let jv = JitValue::from_raw(loaded);
         assert_eq!(jv.as_long(), 42);
+    }
+
+    #[test]
+    fn test_collect_bindings_uses_context_name_table() {
+        let constants: Vec<MettaValue> = vec![MettaValue::sym("$x")];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
+        let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
+
+        let mut ctx = unsafe {
+            JitContext::new(
+                stack.as_mut_ptr(),
+                stack.len(),
+                constants.as_ptr(),
+                constants.len(),
+            )
+        };
+        ctx.binding_frames = binding_frames.as_mut_ptr();
+        ctx.binding_frames_cap = binding_frames.len();
+
+        let push_result = unsafe { jit_runtime_push_binding_frame(&mut ctx) };
+        assert_eq!(push_result, 0, "push binding frame should succeed");
+
+        let value = JitValue::from_long(7).to_bits();
+        let store_result = unsafe { jit_runtime_store_binding(&mut ctx, 0, value, 0) };
+        assert_eq!(store_result, 0, "store binding should succeed");
+
+        let bindings = unsafe { collect_bindings_from_ctx(&mut ctx) };
+        let bound = bindings
+            .get("$x")
+            .expect("stored binding name should be recovered");
+        assert_eq!(bound.as_long(), Some(7));
     }
 
     #[test]

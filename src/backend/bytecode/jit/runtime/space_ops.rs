@@ -612,7 +612,7 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
         }
 
         // Apply this alternative's bindings to the forked snapshot
-        apply_bindings_to_saved(saved_bindings, &bindings);
+        apply_bindings_to_saved(ctx_ref, saved_bindings, &bindings);
 
         // Pre-instantiate the result for this alternative
         let alt_result = instantiate_template_impl(&template_metta, &bindings);
@@ -636,7 +636,11 @@ pub unsafe extern "C" fn jit_runtime_space_match_nondet(
 ///
 /// This stores the bindings from a match operation into the saved frames
 /// so they're available when the alternative is taken during backtracking.
-unsafe fn apply_bindings_to_saved(saved: *mut JitSavedBindings, bindings: &[(String, MettaValue)]) {
+unsafe fn apply_bindings_to_saved(
+    ctx_ref: &mut JitContext,
+    saved: *mut JitSavedBindings,
+    bindings: &[(String, MettaValue)],
+) {
     let saved_ref = match saved.as_mut() {
         Some(s) => s,
         None => return,
@@ -644,6 +648,20 @@ unsafe fn apply_bindings_to_saved(saved: *mut JitSavedBindings, bindings: &[(Str
 
     if saved_ref.is_empty() || bindings.is_empty() {
         return;
+    }
+
+    for (name, _value) in bindings {
+        let name_hash: u64 = {
+            const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+            const FNV_PRIME: u64 = 0x100000001b3;
+            let mut hash = FNV_OFFSET;
+            for byte in name.bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash
+        };
+        ctx_ref.remember_binding_name(name_hash, name);
     }
 
     // Get the current (last) frame to apply bindings to

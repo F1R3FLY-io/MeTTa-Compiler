@@ -179,11 +179,15 @@ pub unsafe extern "C" fn jit_runtime_try_rule(ctx: *mut JitContext, rule_idx: u6
     {
         // Push a new binding frame for this rule
         let frame_ptr = ctx_ref.binding_frames.add(ctx_ref.binding_frames_count);
-        let frame = &mut *frame_ptr;
 
         // Count bindings
         let binding_count = rule.bindings.iter().count();
         if binding_count > 0 {
+            for (name, _value) in rule.bindings.iter() {
+                ctx_ref.remember_binding_name(hash_string(name), name);
+            }
+
+            let frame = &mut *frame_ptr;
             // Allocate entries for this frame
             let layout = std::alloc::Layout::array::<JitBindingEntry>(binding_count)
                 .expect("Layout calculation failed");
@@ -204,6 +208,7 @@ pub unsafe extern "C" fn jit_runtime_try_rule(ctx: *mut JitContext, rule_idx: u6
                 frame.entries_count += 1;
             }
         } else {
+            let frame = &mut *frame_ptr;
             frame.entries = std::ptr::null_mut();
             frame.entries_cap = 0;
             frame.entries_count = 0;
@@ -400,12 +405,9 @@ pub(crate) unsafe fn collect_bindings_from_ctx(ctx: *mut JitContext) -> Bindings
             // Convert JitValue back to MettaValue
             let value = entry.value.to_metta();
 
-            // We need to recover the variable name from the hash
-            // For now, we'll use the current_rules to find the original names
-            // This is a workaround - ideally we'd store the actual names
-            if let Some(name) = find_binding_name_by_hash(ctx, entry.name_idx as u64) {
+            if let Some(name) = ctx_ref.binding_name(entry.name_idx) {
                 // Only insert if not already present (inner scope shadows outer)
-                if bindings.get(&name).is_none() {
+                if bindings.get(name).is_none() {
                     bindings.insert(name, value);
                 }
             }
@@ -414,33 +416,6 @@ pub(crate) unsafe fn collect_bindings_from_ctx(ctx: *mut JitContext) -> Bindings
 
     bindings
 }
-
-/// Find binding name by hash from the current rules' bindings
-///
-/// This is a helper to recover variable names from their hashes.
-/// It searches through the current rules' bindings to find matching names.
-unsafe fn find_binding_name_by_hash(ctx: *mut JitContext, name_hash: u64) -> Option<&'static str> {
-    let ctx_ref = ctx.as_ref()?;
-
-    if ctx_ref.current_rules.is_null() {
-        return None;
-    }
-
-    let rules = &*(ctx_ref.current_rules as *const Vec<CompiledRule>);
-
-    // Search through all rules' bindings for a matching name hash
-    for rule in rules.iter() {
-        // Use SmartBindings::iter() to get an iterator
-        for (name, _value) in rule.bindings.iter() {
-            if hash_string(name) as u32 == name_hash as u32 {
-                return Some(name);
-            }
-        }
-    }
-
-    None
-}
-
 /// Define a new rule in the environment
 ///
 /// Stack: [pattern, body] -> [Unit]

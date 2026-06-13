@@ -1,8 +1,9 @@
-(** * Prelude: Shared Axioms, Parameter Ranges, and Utility Lemmas
+(** * Prelude: Explicit Model Inputs and Utility Lemmas
 
     This module defines the system parameters for the WorkPool memory-aware
-    scaling model based on the Universal Scalability Law (USL). All parameters
-    are axiomatized as positive reals with physically justified range constraints.
+    scaling model based on the Universal Scalability Law (USL). The range
+    evidence is carried by an explicit record, so importing this module adds no
+    trusted global declarations.
 
     The model captures:
     - T₁: single-thread throughput (evals/s)
@@ -16,28 +17,25 @@ From Coquelicot Require Import Coquelicot.
 Open Scope R_scope.
 
 (* ================================================================= *)
-(** ** System Parameters *)
+(** ** System Inputs *)
 (* ================================================================= *)
 
-(** Single-thread throughput (evals/s). Must be positive. *)
-Parameter T1 : R.
-Axiom T1_pos : T1 > 0.
-
-(** Serial fraction: proportion of work that cannot be parallelized.
-    Strictly between 0 and 1 (pure serial or pure parallel are degenerate). *)
-Parameter sigma : R.
-Axiom sigma_pos : 0 < sigma.
-Axiom sigma_lt_1 : sigma < 1.
-
-(** Coherence/contention penalty coefficient. Strictly positive.
-    In the USL model, κ captures the cost of maintaining cache coherence
-    across N processors, which grows as O(N²). *)
-Parameter kappa : R.
-Axiom kappa_pos : kappa > 0.
-
-(** Task arrival rate (evals/s). Strictly positive. *)
-Parameter lambda : R.
-Axiom lambda_pos : lambda > 0.
+(** Physical WorkPool model inputs plus their range evidence. *)
+Record WorkPoolParams : Type := {
+  (** Single-thread throughput (evals/s). Must be positive. *)
+  T1 : R;
+  (** Serial fraction: proportion of work that cannot be parallelized. *)
+  sigma : R;
+  (** Coherence/contention penalty coefficient. *)
+  kappa : R;
+  (** Task arrival rate (evals/s). *)
+  lambda : R;
+  T1_pos : T1 > 0;
+  sigma_pos : 0 < sigma;
+  sigma_lt_1 : sigma < 1;
+  kappa_pos : kappa > 0;
+  lambda_pos : lambda > 0
+}.
 
 (* ================================================================= *)
 (** ** Derived Constants *)
@@ -65,17 +63,19 @@ Definition ema_gain : R := ema_alpha / (1 - ema_alpha).
 (** ** Utility Lemmas *)
 (* ================================================================= *)
 
-Lemma sigma_range : 0 < sigma < 1.
-Proof. split; [exact sigma_pos | exact sigma_lt_1]. Qed.
+Lemma sigma_range : forall p : WorkPoolParams, 0 < sigma p < 1.
+Proof. intro p. split; [exact (sigma_pos p) | exact (sigma_lt_1 p)]. Qed.
 
-Lemma one_minus_sigma_pos : 1 - sigma > 0.
-Proof. pose proof sigma_lt_1. lra. Qed.
+Lemma one_minus_sigma_pos : forall p : WorkPoolParams, 1 - sigma p > 0.
+Proof. intro p. pose proof (sigma_lt_1 p). lra. Qed.
 
-Lemma one_minus_sigma_over_kappa_pos : (1 - sigma) / kappa > 0.
+Lemma one_minus_sigma_over_kappa_pos :
+  forall p : WorkPoolParams, (1 - sigma p) / kappa p > 0.
 Proof.
+  intro p.
   apply Rdiv_lt_0_compat.
-  - pose proof sigma_lt_1. lra.
-  - exact kappa_pos.
+  - pose proof (sigma_lt_1 p). lra.
+  - exact (kappa_pos p).
 Qed.
 
 Lemma ema_alpha_pos : ema_alpha > 0.

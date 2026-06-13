@@ -32,18 +32,23 @@ J(N) = −w_tp · T(N) + w_qd · Q(N) + w_mp · M(N) + w_rss · R(N)
 **Rocq definition** (`objective`):
 
 ```coq
-Definition objective (N : R) : R :=
-  - w_tp * USL_throughput N + w_qd * Q N + w_mp * M N + w_rss * Rp N.
+Definition objective (p : WorkPoolParams) (s : WorkPoolSignals p) (N : R) : R :=
+  - w_tp * USL_throughput p N
+  + w_qd * Q p s N
+  + w_mp * M p s N
+  + w_rss * Rp p s N.
 ```
 
-## Signal Axioms
+## Signal Contracts
 
-Each signal is axiomatized with range constraints and monotonicity properties
-that reflect the physical system.
+Each signal is packaged in `WorkPoolSignals` with range constraints and
+monotonicity properties that reflect the physical system. The Rocq theorems are
+parametric over that record, so these properties are theorem inputs rather than
+trusted global declarations.
 
 ### Memory Pressure M(N)
 
-| Axiom | Rocq Name | Statement |
+| Contract Field | Rocq Name | Statement |
 |-------|-----------|-----------|
 | Non-negativity | `M_nonneg` | ∀N: M(N) ≥ 0 |
 | Upper bound | `M_upper` | ∀N: M(N) ≤ 3 |
@@ -56,7 +61,7 @@ driving higher pressure. The Rust implementation `slab_pressure()` returns
 
 ### RSS Pressure R(N)
 
-| Axiom | Rocq Name | Statement |
+| Contract Field | Rocq Name | Statement |
 |-------|-----------|-----------|
 | Non-negativity | `Rp_nonneg` | ∀N: R(N) ≥ 0 |
 | Upper bound | `Rp_upper` | ∀N: R(N) ≤ 3 |
@@ -68,7 +73,7 @@ clamped to [0, 3]. The Rust implementation `rss_pressure()` uses
 
 ### Queue Depth Q(N)
 
-| Axiom | Rocq Name | Statement |
+| Contract Field | Rocq Name | Statement |
 |-------|-----------|-----------|
 | Non-negativity | `Q_nonneg` | ∀N: Q(N) ≥ 0 |
 | Vanishing | `Q_zero_when_sufficient` | T(N) ≥ λ → Q(N) = 0 |
@@ -187,10 +192,10 @@ decision. The system remains at the optimum.
 | `w_qd` | Definition | 1/2 |
 | `w_mp` | Definition | 5 |
 | `w_rss` | Definition | 8 |
-| `M`, `Rp`, `Q` | Parameters | Pressure and queue signals |
-| `M_nonneg`, `M_upper`, `M_nondecreasing` | Axioms | Memory pressure properties |
-| `Rp_nonneg`, `Rp_upper`, `Rp_nondecreasing` | Axioms | RSS pressure properties |
-| `Q_nonneg`, `Q_zero_when_sufficient`, `Q_decreasing_below_peak` | Axioms | Queue depth properties |
+| `WorkPoolSignals` | Record | Pressure and queue signals plus proof fields |
+| `M_nonneg`, `M_upper`, `M_nondecreasing` | Fields | Memory pressure properties |
+| `Rp_nonneg`, `Rp_upper`, `Rp_nondecreasing` | Fields | RSS pressure properties |
+| `Q_nonneg`, `Q_zero_when_sufficient`, `Q_decreasing_below_peak` | Fields | Queue depth properties |
 | `objective` | Definition | J(N) = −w_tp·T + w_qd·Q + w_mp·M + w_rss·R |
 | `obj_delta` | Definition | ΔJ = J(N+1) − J(N) |
 | `obj_delta_expand` | Lemma | ΔJ decomposition into four terms |

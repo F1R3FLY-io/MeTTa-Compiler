@@ -22,16 +22,6 @@ Open Scope R_scope.
 (** ** Optimal Thread Count *)
 (* ================================================================= *)
 
-(** The optimal thread count (memory-constrained). *)
-Parameter N_opt : nat.
-
-(** N_opt ≥ 1. *)
-Axiom N_opt_pos : (N_opt >= 1)%nat.
-
-(* ================================================================= *)
-(** ** Control Signal *)
-(* ================================================================= *)
-
 Inductive control : Set :=
   | Park    (* n → n − 1 *)
   | Hold    (* n → n *)
@@ -57,15 +47,15 @@ Definition next_state (n : nat) (u : control) : nat :=
 (* ================================================================= *)
 
 (** V(n) = (INR n − INR N_opt)² / 2. *)
-Definition V (n : nat) : R :=
+Definition V (N_opt n : nat) : R :=
   let x := INR n - INR N_opt in x * x / 2.
 
-Lemma V_zero : V N_opt = 0.
-Proof. unfold V. lra. Qed.
+Lemma V_zero : forall N_opt : nat, V N_opt N_opt = 0.
+Proof. intro N_opt. unfold V. lra. Qed.
 
-Lemma V_pos_def : forall n, n <> N_opt -> V n > 0.
+Lemma V_pos_def : forall N_opt n, n <> N_opt -> V N_opt n > 0.
 Proof.
-  intros n Hneq.
+  intros N_opt n Hneq.
   unfold V.
   assert (Hne : INR n <> INR N_opt).
   { intro Heq. apply Hneq. apply INR_eq. exact Heq. }
@@ -82,10 +72,11 @@ Qed.
 
 (** When n > N_opt (and n ≥ 2), parking reduces V. *)
 Theorem lyapunov_decrease_overprovisioned : forall n : nat,
+  forall N_opt : nat,
   (n > N_opt)%nat -> (n >= 2)%nat ->
-  V (n - 1)%nat < V n.
+  V N_opt (n - 1)%nat < V N_opt n.
 Proof.
-  intros n Hn_gt Hn_ge2.
+  intros n N_opt Hn_gt Hn_ge2.
   unfold V.
   assert (Hsub : INR (n - 1) = INR n - 1).
   { rewrite minus_INR; [simpl; lra | lia]. }
@@ -107,10 +98,11 @@ Qed.
 
 (** When n < N_opt, unparking reduces V. *)
 Theorem lyapunov_decrease_underprovisioned : forall n : nat,
+  forall N_opt : nat,
   (n < N_opt)%nat ->
-  V (n + 1)%nat < V n.
+  V N_opt (n + 1)%nat < V N_opt n.
 Proof.
-  intros n Hn_lt.
+  intros n N_opt Hn_lt.
   unfold V.
   rewrite plus_INR. simpl.
   (* Normalize addition order for set binding *)
@@ -129,7 +121,8 @@ Qed.
 (* ================================================================= *)
 
 Theorem lyapunov_stable_at_optimum :
-  V (next_state N_opt Hold) = V N_opt.
+  forall N_opt : nat,
+  V N_opt (next_state N_opt Hold) = V N_opt N_opt.
 Proof. simpl. reflexivity. Qed.
 
 (* ================================================================= *)
@@ -139,38 +132,39 @@ Proof. simpl. reflexivity. Qed.
 Definition nat_dist (a b : nat) : nat :=
   if (a <=? b)%nat then (b - a)%nat else (a - b)%nat.
 
-Lemma nat_dist_park : forall n,
+Lemma nat_dist_park : forall N_opt n,
   (n > N_opt)%nat -> (n >= 2)%nat ->
   nat_dist (n - 1) N_opt = (nat_dist n N_opt - 1)%nat.
 Proof.
-  intros n Hgt Hge.
+  intros N_opt n Hgt Hge.
   unfold nat_dist.
   destruct (Nat.leb_spec (n - 1) N_opt);
   destruct (Nat.leb_spec n N_opt); lia.
 Qed.
 
-Lemma nat_dist_unpark : forall n,
+Lemma nat_dist_unpark : forall N_opt n,
   (n < N_opt)%nat ->
   nat_dist (n + 1) N_opt = (nat_dist n N_opt - 1)%nat.
 Proof.
-  intros n Hlt.
+  intros N_opt n Hlt.
   unfold nat_dist.
   destruct (Nat.leb_spec (n + 1) N_opt);
   destruct (Nat.leb_spec n N_opt); lia.
 Qed.
 
-Lemma nat_dist_zero : forall n, nat_dist n N_opt = 0%nat <-> n = N_opt.
+Lemma nat_dist_zero : forall N_opt n,
+  nat_dist n N_opt = 0%nat <-> n = N_opt.
 Proof.
-  intros n. unfold nat_dist.
+  intros N_opt n. unfold nat_dist.
   destruct (Nat.leb_spec n N_opt); lia.
 Qed.
 
 (** Convergence takes at most nat_dist(n₀, N_opt) effective steps. *)
-Theorem convergence_steps : forall n0 : nat,
+Theorem convergence_steps : forall N_opt n0 : nat,
   (n0 >= 1)%nat ->
   (nat_dist n0 N_opt <= nat_dist n0 N_opt)%nat.
 Proof. intros. lia. Qed.
 
 (** Worst-case ticks = distance × cooldown_period. *)
-Definition worst_case_ticks (n0 : nat) : nat :=
+Definition worst_case_ticks (N_opt n0 : nat) : nat :=
   nat_dist n0 N_opt * cooldown_period.

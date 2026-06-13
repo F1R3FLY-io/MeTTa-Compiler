@@ -26,7 +26,7 @@ where n is the current active thread count and N_opt is the optimal thread count
 **Rocq definition** (`V`):
 
 ```coq
-Definition V (n : nat) : R :=
+Definition V (N_opt n : nat) : R :=
   let x := INR n - INR N_opt in x * x / 2.
 ```
 
@@ -34,8 +34,8 @@ Definition V (n : nat) : R :=
 
 | Property | Rocq Name | Statement | Interpretation |
 |----------|-----------|-----------|----------------|
-| Zero at optimum | `V_zero` | V(N_opt) = 0 | No energy at target |
-| Positive definite | `V_pos_def` | n ≠ N_opt → V(n) > 0 | Energy everywhere else |
+| Zero at optimum | `V_zero` | V N_opt N_opt = 0 | No energy at target |
+| Positive definite | `V_pos_def` | n ≠ N_opt → V N_opt n > 0 | Energy everywhere else |
 
 **Proof of `V_pos_def`**: If n ≠ N_opt, then INR(n) ≠ INR(N_opt) (by `INR_eq`),
 so x = INR(n) − INR(N_opt) ≠ 0, and x² > 0 by `nra` (nonlinear real arithmetic).
@@ -184,13 +184,13 @@ Starting from distance d, after d steps the distance is 0, i.e., n = N_opt.
 The worst-case time includes cooldown periods between effective steps:
 
 ```
-worst_case_ticks(n₀) = nat_dist(n₀, N_opt) × cooldown_period
+worst_case_ticks(N_opt, n₀) = nat_dist(n₀, N_opt) × cooldown_period
 ```
 
 **Definition** (`worst_case_ticks`):
 
 ```coq
-Definition worst_case_ticks (n0 : nat) : nat :=
+Definition worst_case_ticks (N_opt n0 : nat) : nat :=
   nat_dist n0 N_opt * cooldown_period.
 ```
 
@@ -230,12 +230,10 @@ This is an upper bound; in practice, convergence is faster because:
 
 | Name | Kind | Statement |
 |------|------|-----------|
-| `N_opt` | Parameter | Optimal thread count |
-| `N_opt_pos` | Axiom | N_opt ≥ 1 |
 | `control` | Inductive | Park \| Hold \| Unpark |
 | `control_value` | Definition | Park → −1, Hold → 0, Unpark → +1 |
 | `next_state` | Definition | State transition function |
-| `V` | Definition | V(n) = (INR n − INR N_opt)² / 2 |
+| `V` | Definition | V(N_opt,n) = (INR n − INR N_opt)² / 2 |
 | `V_zero` | Lemma | V(N_opt) = 0 |
 | `V_pos_def` | Lemma | n ≠ N_opt → V(n) > 0 |
 | `lyapunov_decrease_overprovisioned` | Theorem | n > N_opt → V(n−1) < V(n) |

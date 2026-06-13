@@ -177,6 +177,15 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "work_pool_stability/theories/Prelude.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "work_pool_stability/theories/USL.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "work_pool_stability/theories/ObjectiveFunction.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "work_pool_stability/theories/LyapunovConvergence.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "work_pool_stability/theories/WeightDominance.v" "1"
+assert_count "scripts/verify_cesk_gc_proof_hygiene.sh" "formal/rocq/work_pool_stability/theories" "1"
+line_no "formal/rocq/work_pool_stability/theories/Prelude.v" "Record WorkPoolParams" >/dev/null
+line_no "formal/rocq/work_pool_stability/theories/ObjectiveFunction.v" "Record WorkPoolSignals" >/dev/null
+line_no "formal/rocq/work_pool_stability/theories/LyapunovConvergence.v" "Definition V (N_opt n : nat)" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"

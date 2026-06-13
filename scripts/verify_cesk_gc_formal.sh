@@ -38,6 +38,17 @@ run_rocq() {
   )
 }
 
+run_workpool_rocq() {
+  local file="$1"
+  echo "### Rocq WorkPoolStability: $file"
+  (
+    cd "$REPO"
+    systemd-run --user --scope \
+      -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=200% --quiet \
+      rocq c -q -Q formal/rocq/work_pool_stability/theories WorkPoolStability "$file"
+  )
+}
+
 run_source_coupling() {
   echo "### Source coupling: CESK GC"
   bash "$REPO/scripts/verify_cesk_gc_source_coupling.sh"
@@ -106,6 +117,12 @@ run_proof_hygiene
 run_tlc_hygiene
 
 run_lean_mirrors
+
+run_workpool_rocq "formal/rocq/work_pool_stability/theories/Prelude.v"
+run_workpool_rocq "formal/rocq/work_pool_stability/theories/USL.v"
+run_workpool_rocq "formal/rocq/work_pool_stability/theories/ObjectiveFunction.v"
+run_workpool_rocq "formal/rocq/work_pool_stability/theories/LyapunovConvergence.v"
+run_workpool_rocq "formal/rocq/work_pool_stability/theories/WeightDominance.v"
 
 run_rocq "formal/rocq/gc/FreeList.v"
 run_rocq "formal/rocq/gc/YoungMark.v"

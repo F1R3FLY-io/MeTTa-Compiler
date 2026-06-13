@@ -20,8 +20,8 @@ Formal verification in Rocq (Coq) provides machine-checked guarantees that:
 
 ```
 ┌──────────────────┐
-│    Prelude.v      │  Parameters: T₁, σ, κ, λ
-│   (Axioms)        │  Constants: α, threshold, cooldown
+│    Prelude.v      │  WorkPoolParams record: T₁, σ, κ, λ
+│ (proof fields)    │  Constants: α, threshold, cooldown
 └────────┬─────────┘
          │
     ┌────┴─────────────────────┐
@@ -47,7 +47,7 @@ Formal verification in Rocq (Coq) provides machine-checked guarantees that:
 
 | File | What it proves | Key theorems |
 |------|----------------|--------------|
-| `Prelude.v` | Parameter ranges, utility lemmas | `sigma_range`, `ema_gain_pos`, `ema_gain_value` |
+| `Prelude.v` | Explicit model-input record, range evidence, utility lemmas | `WorkPoolParams`, `sigma_range`, `ema_gain_pos`, `ema_gain_value` |
 | `USL.v` | USL throughput model, peak, monotonicity | `USL_peak`, `USL_increasing`, `USL_decreasing`, `USL_peak_unique` |
 | `ObjectiveFunction.v` | 4-term objective, gradient theorems | `obj_scale_down_past_peak`, `obj_scale_up_below_peak`, `obj_hold_at_optimum` |
 | `LyapunovConvergence.v` | Lyapunov stability + convergence bound | `lyapunov_decrease_overprovisioned`, `lyapunov_decrease_underprovisioned`, `convergence_steps` |

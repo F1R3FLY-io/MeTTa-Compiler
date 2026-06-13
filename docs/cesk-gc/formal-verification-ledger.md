@@ -963,6 +963,17 @@ facts the proofs rely on:
   `debug_tripwire_rejects_unwritten_cell` captures the instrumentation precondition; source coupling
   pins write-before-mark, mark-before-read, and reset-on-release.
 
+- WorkPoolStability assumption-free conversion (`formal/rocq/work_pool_stability/theories/*.v`) —
+  removes the WorkPool scaling proof package's trusted global declarations from the threading/model
+  verification lane. `Prelude.v` now exposes `WorkPoolParams`, a proof-carrying record for USL inputs
+  (`T1`, `sigma`, `kappa`, `lambda`) and their range evidence; `USL.v` is parametric over that record;
+  `ObjectiveFunction.v` introduces `WorkPoolSignals`, a proof-carrying record for slab pressure, RSS
+  pressure, and queue-depth signal contracts; and `LyapunovConvergence.v` takes `N_opt` as an explicit
+  theorem argument. `WeightDominance.v` remains concrete and assumption-free. The formal harness now
+  compiles all five WorkPool Rocq files, and proof hygiene scans them for `Admitted`/`admit`/`Axiom`/
+  `Parameter`/`Conjecture`/`Abort` alongside the CESK GC proofs. Source coupling pins the harness entries
+  plus the `WorkPoolParams`, `WorkPoolSignals`, and explicit-`N_opt` Lyapunov shapes.
+
 ## Harness
 
 Run:
@@ -980,10 +991,10 @@ script-specific subdirectory) while preserving caller overrides such as `LOG_DIR
 chooses that.
 
 Before compiling proofs, `scripts/verify_cesk_gc_proof_hygiene.sh` rejects Rocq proof shortcuts (`Admitted`, `admit`,
-`Axiom`, `Parameter`, `Conjecture`, `Abort`) in the mandatory CESK GC proof directory and verifies every
-`formal/rocq/gc/*.v` file is enumerated by the formal harness. If supplemental Lean mirrors exist, the same hygiene
-pass scans them for Lean proof shortcuts (`sorry`, `admit`, `axiom`, `constant`, `opaque`, `unsafe`) without making
-them part of the mandatory gate.
+`Axiom`, `Parameter`, `Conjecture`, `Abort`) in the mandatory CESK GC proof directory and the WorkPool stability
+proof directory, then verifies every `formal/rocq/gc/*.v` and `formal/rocq/work_pool_stability/theories/*.v` file is
+enumerated by the formal harness. If supplemental Lean mirrors exist, the same hygiene pass scans them for Lean proof
+shortcuts (`sorry`, `admit`, `axiom`, `constant`, `opaque`, `unsafe`) without making them part of the mandatory gate.
 
 The formal harness also runs `scripts/verify_cesk_gc_tlc_hygiene.sh` before compiling proofs. That check parses every
 `run_tlc` entry, verifies labels/configs are unique, requires every referenced TLA+ module and config to exist, requires

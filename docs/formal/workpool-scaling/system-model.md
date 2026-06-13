@@ -17,7 +17,7 @@ For WorkPool scaling, the USL provides two critical pieces of information:
 The hill climber uses these properties to decide whether adding or removing a
 thread is beneficial.
 
-## Parameters
+## Model Inputs
 
 | Symbol | Rocq Name | Rust Name | Range | Physical Meaning |
 |--------|-----------|-----------|-------|------------------|
@@ -31,20 +31,27 @@ at runtime through the EMA-smoothed throughput signal. σ and κ are implicit --
 they manifest through the shape of the throughput curve that the hill climber
 discovers empirically.
 
-### Parameter Axioms (Prelude.v)
+### Proof-Carrying Input Record (Prelude.v)
 
-```
-Axiom T1_pos    : T1 > 0.
-Axiom sigma_pos : 0 < sigma.
-Axiom sigma_lt_1: sigma < 1.
-Axiom kappa_pos : kappa > 0.
-Axiom lambda_pos: lambda > 0.
+```coq
+Record WorkPoolParams : Type := {
+  T1 : R;
+  sigma : R;
+  kappa : R;
+  lambda : R;
+  T1_pos : T1 > 0;
+  sigma_pos : 0 < sigma;
+  sigma_lt_1 : sigma < 1;
+  kappa_pos : kappa > 0;
+  lambda_pos : lambda > 0
+}.
 ```
 
-These are physically justified: throughput and arrival rate must be positive, the
-serial fraction must be strictly between 0 and 1 (pure serial or pure parallel are
-degenerate cases), and the coherence penalty must be positive (zero coherence cost
-would make USL reduce to Amdahl's Law).
+The proofs are parametric over this record. Throughput and arrival rate must be
+positive, the serial fraction must be strictly between 0 and 1 (pure serial or
+pure parallel are degenerate cases), and the coherence penalty must be positive
+(zero coherence cost would make USL reduce to Amdahl's Law). Those facts are
+passed as fields rather than installed as trusted global declarations.
 
 ## USL Throughput Formula
 

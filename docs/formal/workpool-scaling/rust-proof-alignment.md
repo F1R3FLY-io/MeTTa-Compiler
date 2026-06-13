@@ -24,11 +24,14 @@ in IEEE 754, so there is no floating-point representation gap for these constant
 
 ## Objective Function Alignment
 
-### Rocq Definition (ObjectiveFunction.v:97-98)
+### Rocq Definition (ObjectiveFunction.v)
 
 ```coq
-Definition objective (N : R) : R :=
-  - w_tp * USL_throughput N + w_qd * Q N + w_mp * M N + w_rss * Rp N.
+Definition objective (p : WorkPoolParams) (s : WorkPoolSignals p) (N : R) : R :=
+  - w_tp * USL_throughput p N
+  + w_qd * Q p s N
+  + w_mp * M p s N
+  + w_rss * Rp p s N.
 ```
 
 ### Rust Computation (work_pool.rs:766-769)
@@ -45,22 +48,22 @@ version uses EMA-smoothed signals rather than instantaneous values, which is a
 strictly conservative approximation (EMA dampens transients, making the hill
 climber less reactive but more stable).
 
-## Pressure Signal Axiom Satisfaction
+## Pressure Signal Contract Satisfaction
 
-### M(N) ∈ [0, 3] (Axioms: `M_nonneg`, `M_upper`)
+### M(N) ∈ [0, 3] (fields: `M_nonneg`, `M_upper`)
 
 **Rust**: `slab_pressure()` at work_pool.rs:610-612 returns
 `backpressure_level() as f64`. The backpressure level is an integer in {0, 1, 2, 3}
 (4-level graduated throttling from gc_allocator.rs), so the cast to `f64`
 produces values in {0.0, 1.0, 2.0, 3.0} ⊂ [0, 3].
 
-### R(N) ∈ [0, 3] (Axioms: `Rp_nonneg`, `Rp_upper`)
+### R(N) ∈ [0, 3] (fields: `Rp_nonneg`, `Rp_upper`)
 
 **Rust**: `rss_pressure()` at work_pool.rs:634-635 computes
 `((ratio - 0.5) * 4.0).clamp(0.0, 3.0)`. The `.clamp()` call explicitly
-enforces the [0, 3] range, satisfying both axioms.
+enforces the [0, 3] range, satisfying both proof fields.
 
-### Monotonicity (Axioms: `M_nondecreasing`, `Rp_nondecreasing`)
+### Monotonicity (fields: `M_nondecreasing`, `Rp_nondecreasing`)
 
 More active threads produce more allocations, driving higher slab pressure. More
 active threads consume more stack and heap memory, driving higher RSS. While the
@@ -195,7 +198,7 @@ The Rust implementation faithfully instantiates the formally verified model:
 
 1. **Constants match exactly** (no floating-point representation gap)
 2. **Objective formula is structurally identical** (four terms, same signs)
-3. **Signal axioms are satisfied** by construction (clamp, integer cast)
+3. **Signal contracts are satisfied** by construction (clamp, integer cast)
 4. **Scaling decisions align** with gradient theorems (direction reversal on worsening)
 5. **Emergency override is provably safe** (C2 bound at bp=2)
 6. **Convergence behavior matches** Lyapunov model (±1 perturbation + cooldown)

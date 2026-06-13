@@ -21,7 +21,9 @@
     `committed = live + pending`, committed side storage is bounded by the live
     high-water plus the reclaims appended since the last quiescence drain;
     [forced_drain_reduces_committed_to_live] shows the forced major reduces committed
-    storage back to exactly the live high-water. NON-VACUITY
+    storage back to exactly the live high-water. The trigger law is an explicit
+    model contract premise on the trigger theorems, not a section-level
+    hypothesis. NON-VACUITY
     [without_pending_trigger_side_grows_unbounded] exhibits the pre-266d19d
     rendezvous-only world, where — with no forced drain — `pending` accumulates past
     any bound. No admits/axioms. *)
@@ -105,19 +107,34 @@ Section BoundedSideReclaimProgress.
   Qed.
 
   (* The forced-drain law (`pending_side_major`): a quiescence point reached with
-     pending > 0 PERFORMS a quiescence drain to the next state. *)
-  Variable Quiescent : SideState -> Prop.
-  Variable step_to : SideState -> SideState.
-  Hypothesis PendingSideTriggerForces :
+     pending > 0 PERFORMS a quiescence drain to the next state.  It is modeled as
+     an explicit contract for the trigger function rather than a global proof
+     assumption, so every theorem that uses it names the obligation it consumes. *)
+  Definition PendingSideTriggerForces
+      (Quiescent : SideState -> Prop)
+      (step_to : SideState -> SideState) : Prop :=
     forall s, Quiescent s -> pending s > 0 -> QuiescenceDrain s (step_to s).
 
-  (* THEOREM 3 — the trigger forces a drain that empties pending. *)
-  Theorem pending_side_trigger_forces_drain :
-    forall s, Quiescent s -> pending s > 0 -> pending (step_to s) = 0.
+  (* THEOREM 3 — the trigger forces the full quiescence drain relation. *)
+  Theorem pending_side_trigger_forces_quiescence_drain :
+    forall Quiescent step_to s,
+      PendingSideTriggerForces Quiescent step_to ->
+      Quiescent s -> pending s > 0 -> QuiescenceDrain s (step_to s).
   Proof.
-    intros s Hq Hpos.
+    intros Quiescent step_to s Htrigger Hq Hpos.
+    apply Htrigger; assumption.
+  Qed.
+
+  (* THEOREM 3b — consequently, the trigger empties pending. *)
+  Theorem pending_side_trigger_forces_drain :
+    forall Quiescent step_to s,
+      PendingSideTriggerForces Quiescent step_to ->
+      Quiescent s -> pending s > 0 -> pending (step_to s) = 0.
+  Proof.
+    intros Quiescent step_to s Htrigger Hq Hpos.
     apply (quiescence_drain_empties_pending s (step_to s)).
-    apply PendingSideTriggerForces; assumption.
+    apply (pending_side_trigger_forces_quiescence_drain
+             Quiescent step_to s Htrigger Hq Hpos).
   Qed.
 
   (* MAIN BOUNDED PROGRESS — under the committed invariant, committed side storage is
@@ -133,13 +150,27 @@ Section BoundedSideReclaimProgress.
   (* The bounded-progress PAYOFF — after the forced major at a quiescence point with
      pending > 0, committed side storage DECREASES to exactly the live high-water. *)
   Theorem forced_drain_reduces_committed_to_live :
-    forall s,
+    forall Quiescent step_to s,
+      PendingSideTriggerForces Quiescent step_to ->
       Quiescent s -> pending s > 0 ->
       committed_side (step_to s) = live_side s.
   Proof.
-    intros s Hq Hpos.
-    destruct (PendingSideTriggerForces s Hq Hpos) as [_ [Hc _]].
+    intros Quiescent step_to s Htrigger Hq Hpos.
+    destruct (Htrigger s Hq Hpos) as [_ [Hc _]].
     exact Hc.
+  Qed.
+
+  (* The same forced drain re-establishes committed = live + pending for the next
+     state; since pending is zero, this is the post-major compacted invariant. *)
+  Theorem forced_drain_reestablishes_committed_invariant :
+    forall Quiescent step_to s,
+      PendingSideTriggerForces Quiescent step_to ->
+      Quiescent s -> pending s > 0 ->
+      CommittedInvariant (step_to s).
+  Proof.
+    intros Quiescent step_to s Htrigger Hq Hpos.
+    apply (quiescence_drain_committed_equals_live s (step_to s)).
+    apply Htrigger; assumption.
   Qed.
 
   (* NON-VACUITY — WITHOUT the forced-drain trigger (the pre-266d19d rendezvous-only

@@ -836,6 +836,12 @@ impl<N: Copy> IndexArena<N> {
     /// Number of segments currently published (including released ones, which
     /// retain their directory cell so addresses stay stable).
     #[inline]
+    /// Per-segment slot capacity (exp46: the inner column sizes its segments
+    /// to match the node arena's).
+    pub(crate) fn segment_capacity(&self) -> usize {
+        self.segment_capacity
+    }
+
     pub fn segment_count(&self) -> usize {
         self.seg_count.load(Ordering::Acquire)
     }

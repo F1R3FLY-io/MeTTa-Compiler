@@ -338,6 +338,12 @@ impl IndexHeap {
             unsafe {
                 (*self.sides[next].get()).write(arenas);
             }
+            // exp46: grow the shared Inner column in lockstep (published before
+            // sides_count, hence before any node in this segment can allocate).
+            crate::backend::eval::cesk::inner_column::ensure_column_seg(
+                next,
+                self.arena.segment_capacity(),
+            );
             self.sides_count.store(next + 1, Ordering::Release); // publish the cell
             next += 1;
         }
@@ -492,6 +498,7 @@ impl IndexHeap {
         // Miss (or hash collision → overwrite, matching the slab table's
         // last-writer-wins-per-key best-effort behavior).
         let addr = self.alloc_sexpr(items);
+        self.populate_column(addr); // exp46 (miss path)
         let v = MettaValue::from_addr(addr, 0, TAG5_SEXPR); // ground ⇒ no FLAG_HAS_VARIABLES
         if self.hash_cons.len() < 8192 {
             self.hash_cons.insert(key, v);
@@ -924,6 +931,33 @@ impl IndexHeap {
         }
     }
 
+    /// exp46: build + publish `addr`'s shared column entry (post-alloc,
+    /// pre-escape — the v3-F2 contract; the caller holds whichever heap guard
+    /// it allocated under, or owns the slot exclusively). Space/Memo nodes
+    /// are SKIPPED (v3-F1: served from the append-only id store; their
+    /// `materialize_inner` would Arc-clone — never stored in POD cells).
+    #[inline]
+    pub(crate) fn populate_column(&self, addr: Addr) {
+        // Self-ensure: the CONCURRENT bump path can open a node segment
+        // without routing through ensure_side_seg (pure-fixed nodes carry no
+        // side data), so the column segment may not be published yet. The
+        // fast path is one Acquire load (the inc2-gate SEGV lesson: two
+        // concurrent env tests crashed on an unpublished directory cell).
+        crate::backend::eval::cesk::inner_column::ensure_column_seg(
+            addr.segment(),
+            self.arena.segment_capacity(),
+        );
+        match self.get(addr) {
+            Node::Space(_) | Node::Memo(_) => {}
+            _ => unsafe {
+                crate::backend::eval::cesk::inner_column::column_write(
+                    addr,
+                    self.materialize_inner(addr),
+                );
+            },
+        }
+    }
+
     // ── Collection ─────────────────────────────────────────────────────────
 
     /// Append every arena edge leaving `addr`.
@@ -1209,8 +1243,12 @@ impl IndexHeap {
             // cell's `Box<SegmentSideArenas>` aliases nothing; published cells only.)
             let sides = &mut self.sides;
             let sides_count = self.sides_count.load(std::sync::atomic::Ordering::Acquire);
+            let column_cap = self.arena.segment_capacity(); // exp46 (read before the borrow)
             self.arena.sweep_with(
                 |seg| {
+                    // exp46: co-release the segment's shared column (POD —
+                    // wholesale; fully-dead segment ⇒ no reader can reach it).
+                    crate::backend::eval::cesk::inner_column::column_release_seg(seg, column_cap);
                     if seg < sides_count {
                         // SAFETY: `seg < sides_count` ⇒ cell `seg` published (its
                         // `Box<SegmentSideArenas>` initialized); `&mut self.sides`
@@ -1404,8 +1442,12 @@ impl IndexHeap {
             // by `sweep_young_with`.
             let sides = &mut self.sides;
             let sides_count = self.sides_count.load(std::sync::atomic::Ordering::Acquire);
+            let column_cap = self.arena.segment_capacity(); // exp46 (read before the borrow)
             self.arena.sweep_young_with(
                 |seg| {
+                    // exp46: co-release the segment's shared column (POD —
+                    // wholesale; fully-dead segment ⇒ no reader can reach it).
+                    crate::backend::eval::cesk::inner_column::column_release_seg(seg, column_cap);
                     if seg < sides_count {
                         // SAFETY: `seg < sides_count` ⇒ cell `seg` published;
                         // `&mut self.sides` exclusive (quiescence). `assume_init_mut()`
@@ -1630,15 +1672,23 @@ where
     // costlier than the futex contention saved (~22% of the profile). Do not
     // re-attempt writer demotion; the contention must be attacked on the READER
     // side (shadow-miss materialization rate / lock-free published-node reads).
+    // exp46 increment 2: every routed mint populates the shared Inner column
+    // under the guard it already holds (post-alloc, pre-escape — v3-F2).
     if let Ok(mut h) = global_index_heap().try_write() {
-        return exclusive(&mut h);
+        let addr = exclusive(&mut h);
+        h.populate_column(addr);
+        return addr;
     }
     if current_segment_reuse_pressure() {
         let mut h = global_index_heap().write().expect("index heap");
-        return exclusive(&mut h);
+        let addr = exclusive(&mut h);
+        h.populate_column(addr);
+        return addr;
     }
     let h = global_index_heap().read().expect("index heap");
-    concurrent(&h)
+    let addr = concurrent(&h);
+    h.populate_column(addr);
+    addr
 }
 
 impl MettaValueFactory<MettaValue> for IndexFactory {
@@ -1784,10 +1834,9 @@ impl MettaValueFactory<MettaValue> for IndexFactory {
         // Overrides the trait default, which incorrectly returns atom("NotReducible").
         static INDEX_NOT_REDUCIBLE: OnceLock<MettaValue> = OnceLock::new();
         *INDEX_NOT_REDUCIBLE.get_or_init(|| {
-            let addr = global_index_heap()
-                .write()
-                .expect("index heap")
-                .alloc_fixed(Node::NotReducible);
+            let mut h = global_index_heap().write().expect("index heap");
+            let addr = h.alloc_fixed(Node::NotReducible);
+            h.populate_column(addr); // exp46
             MettaValue::from_addr(addr, 0, TAG5_NOT_REDUCIBLE)
         })
     }

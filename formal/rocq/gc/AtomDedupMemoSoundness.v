@@ -87,16 +87,24 @@ Section MemoModel.
   Variable Key' : Type.
   Variable recode : Key -> Key'.
   Variable f' : Key' -> Guard -> Resid -> Value.
-  Hypothesis recode_faithful : forall k g r, f k g r = f' (recode k) g r.
+  Definition RecodeFaithful : Prop :=
+    forall k g r, f k g r = f' (recode k) g r.
 
   Theorem key_recode_preserves_residual_dependence :
+    RecodeFaithful ->
     residual_independent <->
     (forall (k : Key) (g : Guard) (r1 r2 : Resid),
         f' (recode k) g r1 = f' (recode k) g r2).
   Proof.
+    intro Hrecode_faithful.
+    unfold RecodeFaithful in Hrecode_faithful.
     split; intros H k g r1 r2.
-    - rewrite <- !recode_faithful. apply H.
-    - rewrite !recode_faithful. apply H.
+    - rewrite <- (Hrecode_faithful k g r1).
+      rewrite <- (Hrecode_faithful k g r2).
+      apply H.
+    - rewrite (Hrecode_faithful k g r1).
+      rewrite (Hrecode_faithful k g r2).
+      apply H.
   Qed.
 End MemoModel.
 
@@ -114,16 +122,21 @@ Section ExtendedGuardFix.
      guard tokens imply equal metadata. In the source this is: RULE_EPOCH (the
      guard) is bumped on every edit that can change `OperatorCacheEntry`
      (rule add/remove AND every other metadata-affecting environment edit). *)
-  Hypothesis guard_captures_residual :
+  Definition GuardCapturesResidual : Prop :=
     forall (k : Key) (r1 r2 : Resid), g_ext r1 = g_ext r2 -> f k r1 = f k r2.
 
   (* THEOREM: under that obligation, every cache HIT (which requires the stored
      and current extended-guard tokens to be equal) returns the correct current
      value — soundness restored regardless of the key form or atom dedup. *)
   Theorem extended_guard_makes_hits_sound :
+    GuardCapturesResidual ->
     forall (k : Key) (r_fill r_now : Resid),
       g_ext r_fill = g_ext r_now -> f k r_fill = f k r_now.
-  Proof. intros k r_fill r_now Hg. apply (guard_captures_residual k r_fill r_now Hg). Qed.
+  Proof.
+    intros Hguard_captures_residual k r_fill r_now Hg.
+    unfold GuardCapturesResidual in Hguard_captures_residual.
+    apply (Hguard_captures_residual k r_fill r_now Hg).
+  Qed.
 End ExtendedGuardFix.
 
 (* ===== Non-vacuity: a hidden residual dependency yields a STALE hit ======= *)
@@ -201,18 +214,24 @@ End ConsumerEquivalence.
 Section ConflictingConsumers.
   Variable Cached : Type.
   Variables need1 need2 : Cached.            (* the value each consumer requires *)
-  Hypothesis distinct : need1 <> need2.
+  Definition DistinctRequirements : Prop := need1 <> need2.
   Variable sound_for1 sound_for2 : Cached -> Prop.
-  Hypothesis iff1 : forall c, sound_for1 c <-> c = need1.
-  Hypothesis iff2 : forall c, sound_for2 c <-> c = need2.
+  Definition Consumer1RequiresNeed : Prop :=
+    forall c, sound_for1 c <-> c = need1.
+  Definition Consumer2RequiresNeed : Prop :=
+    forall c, sound_for2 c <-> c = need2.
 
   (* No single cached value satisfies both conflicting consumers. *)
   Theorem no_shared_value_for_conflicting_consumers :
+    DistinctRequirements -> Consumer1RequiresNeed -> Consumer2RequiresNeed ->
     ~ exists c, sound_for1 c /\ sound_for2 c.
   Proof.
-    intros [c [H1 H2]].
-    apply iff1 in H1. apply iff2 in H2.
-    apply distinct. rewrite <- H1. exact H2.
+    intros Hdistinct Hiff1 Hiff2 [c [H1 H2]].
+    unfold DistinctRequirements in Hdistinct.
+    unfold Consumer1RequiresNeed in Hiff1.
+    unfold Consumer2RequiresNeed in Hiff2.
+    apply Hiff1 in H1. apply Hiff2 in H2.
+    apply Hdistinct. rewrite <- H1. exact H2.
   Qed.
 End ConflictingConsumers.
 
@@ -238,7 +257,7 @@ Section InlineFreshening.
      FREE variables; on a GROUND result (none) it is the identity, so the inline
      step and the dispatch step AGREE. This couples to: freshening touches only
      unbound rule variables. *)
-  Hypothesis agree_on_ground :
+  Definition GroundFresheningAgrees : Prop :=
     forall r, free_vars r = 0 -> inline_step r = dispatch_step r.
 
   (* THEOREM: the inline equals dispatch EXACTLY when the (bound) result is
@@ -248,8 +267,9 @@ Section InlineFreshening.
      try_deferred, bail to the trampoline when `result.has_variables_fast()`
      (free vars remain), letting the trampoline freshen. *)
   Theorem inline_sound_under_ground_gate :
+    GroundFresheningAgrees ->
     forall r, free_vars r = 0 -> inline_step r = dispatch_step r.
-  Proof. exact agree_on_ground. Qed.
+  Proof. intro Hagree_on_ground. exact Hagree_on_ground. Qed.
 
   (* NON-VACUITY: when free variables remain, the inline (RAW names) and dispatch
      (freshened names) can diverge — the variable-capture-across-chain-steps the

@@ -1138,12 +1138,22 @@ line_no "formal/rocq/gc/UnifiedChoicePointRestore.v" "unified_choice_point_root_
 # (`head.as_ptr()`), so index mode must lazily clear it when gc_sweep_epoch
 # advances on a different thread. Explicit cache clears also synchronize the
 # local epoch to avoid a redundant clear on the same epoch.
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/AtomDedupMemoSoundness.v\"" >/dev/null
+line_no "formal/rocq/gc/AtomDedupMemoSoundness.v" "RecodeFaithful" >/dev/null
+line_no "formal/rocq/gc/AtomDedupMemoSoundness.v" "GuardCapturesResidual" >/dev/null
+line_no "formal/rocq/gc/AtomDedupMemoSoundness.v" "DistinctRequirements" >/dev/null
+line_no "formal/rocq/gc/AtomDedupMemoSoundness.v" "Consumer1RequiresNeed" >/dev/null
+line_no "formal/rocq/gc/AtomDedupMemoSoundness.v" "Consumer2RequiresNeed" >/dev/null
+line_no "formal/rocq/gc/AtomDedupMemoSoundness.v" "GroundFresheningAgrees" >/dev/null
 assert_before "src/backend/eval/trampoline/dispatch_hints.rs" "static OPERATOR_CACHE_GC_EPOCH:" "fn ensure_operator_cache_gc_epoch_current()"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "fn ensure_operator_cache_gc_epoch_current()" "gc_sweep_epoch()" "OPERATOR_CACHE.with"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "fn ensure_operator_cache_gc_epoch_current()" "cache_cell.borrow_mut().clear();" "e.set(current);"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn operator_cache_get" "ensure_operator_cache_gc_epoch_current();" "let current_epoch = RULE_EPOCH.load(Ordering::Acquire);"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "pub fn clear_operator_cache()" "cache_cell.borrow_mut().clear();" "OPERATOR_CACHE_GC_EPOCH.with"
 assert_after_before "src/backend/eval/trampoline/dispatch_hints.rs" "Keep explicit clears coherent with the lazy sweep-epoch guard." "gc_sweep_epoch()" "});"
+assert_after_before "src/backend/environment/rule_management.rs" "The proof requires the cached value to EQUAL each consumer's" "rule_index.get_candidates(head, arity, None).collect()" "operator_cache_put("
+assert_after_before "src/backend/eval/trampoline/engine.rs" "this inline binds the RAW rule RHS" "if result.has_variables_fast() {" "Some(result)"
+assert_after_before "src/backend/eval/trampoline/engine.rs" "the former free-variable deferral here" "if rhs_template.has_variables_fast() {" "if is_normal_form_bounded(&rhs_template, env, 2)"
 
 # E2/index-cache epoch source coupling: a reclaiming index sweep must bump the
 # process-wide sweep epoch, and every worker-local cache that can stale-hit on a

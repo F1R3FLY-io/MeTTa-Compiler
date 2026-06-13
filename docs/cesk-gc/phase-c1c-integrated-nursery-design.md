@@ -20,7 +20,8 @@ FIRING + MEMORY-BOUNDING while preserving that no-remembered-set collector shape
 `alloc(&mut)` reuses YOUNG free slots only (skips/discards old); `mark_young` (conservative traversal,
 young mark bits only, so old `SpaceHandle` containers can still expose young contents); `young_alloc_bytes`
 odometer (reset at `promote_young`); minor-primary driver; the
-`YOUNG_MIN_BYTES` switch is DELETED. `MAJOR_CADENCE=16`, `YOUNG_BUDGET=2 MiB (≈¼ segment)`.
+`YOUNG_MIN_BYTES` switch is DELETED. `MAJOR_CADENCE=16`, default `YOUNG_BUDGET=2 MiB (≈¼ segment)`.
+`METTATRON_INDEX_GC_YOUNG_BYTES` may tune that nursery size for measured runs; it is not a minor on/off switch.
 
 ## CHANGE #1 — Variable-length free-list reuse (the core allocator↔GC coupling; hardest)
 Today `Node::SExpr(ChildRef{idx})` etc. carry a segment-relative u32 into `sides[seg].{children,strings,

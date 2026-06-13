@@ -2146,18 +2146,19 @@ pub mod index_gc {
     /// NOT a minor on/off switch.
     const DEFAULT_MIN_THRESHOLD: usize = 8 * 1024 * 1024;
 
-    /// C1.c: the nursery budget — a MINOR fires when `young_alloc_bytes` (bytes of
+    /// C1.c: default nursery budget — a MINOR fires when `young_alloc_bytes` (bytes of
     /// young node-slab allocated since the last promotion) exceeds this. A principled
-    /// CONSTANT (NOT an on/off switch — minors are ALWAYS on; this only sizes the
-    /// nursery), ≈ 1/4 of a segment's node-slab capacity (a segment is
-    /// `1<<18` slots ≈ 8 MiB). Rationale: (a) < `DEFAULT_MIN_THRESHOLD` (the major
-    /// floor) so a minor fires BEFORE a major on multi-segment workloads
-    /// (minor-primary); (b) < one segment so a minor's young generation stays within
-    /// the active bump segment ⇒ its reclaimed slots stay young and are reused (no
+    /// default (NOT an on/off switch — minors are ALWAYS on; this only sizes the
+    /// nursery), ≈ 1/4 of a segment's node-slab capacity (a segment is `1<<18` slots
+    /// ≈ 8 MiB). Rationale: (a) < `DEFAULT_MIN_THRESHOLD` (the major floor) so a
+    /// minor fires BEFORE a major on multi-segment workloads (minor-primary); (b) <
+    /// one segment so a minor's young generation stays within the active bump
+    /// segment ⇒ its reclaimed slots stay young and are reused (no
     /// promotion-stranding); (c) tied to the substrate's segment granularity, not a
     /// magic number. Minors thus fire NATURALLY on any workload allocating more than
     /// ~1/4 segment of transient young between safepoints — exercised by tests with
-    /// no force-switch.
+    /// no force-switch. `METTATRON_INDEX_GC_YOUNG_BYTES` may raise/lower the nursery
+    /// size for measurement, but it does not disable minors.
     const YOUNG_BUDGET: usize = 2 * 1024 * 1024;
 
     /// Cached `METTATRON_INDEX_GC_MIN_BYTES` (parsed once).
@@ -2170,6 +2171,21 @@ pub mod index_gc {
                 .and_then(|s| s.parse::<usize>().ok())
                 .filter(|&n| n > 0)
                 .unwrap_or(DEFAULT_MIN_THRESHOLD)
+        })
+    }
+
+    /// Cached `METTATRON_INDEX_GC_YOUNG_BYTES` (parsed once). Positive values
+    /// tune the nursery trigger; invalid/missing values keep the proof-backed
+    /// default above.
+    fn young_budget() -> usize {
+        use std::sync::OnceLock;
+        static YOUNG: OnceLock<usize> = OnceLock::new();
+        *YOUNG.get_or_init(|| {
+            std::env::var("METTATRON_INDEX_GC_YOUNG_BYTES")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or(YOUNG_BUDGET)
         })
     }
 
@@ -2203,7 +2219,7 @@ pub mod index_gc {
     /// the driver prefers the cheap young-only minor over a coincident major for one cycle).
     #[inline]
     fn index_backpressure_level(young_alloc: usize) -> u8 {
-        let b = YOUNG_BUDGET;
+        let b = young_budget();
         if young_alloc >= 2 * b {
             3
         } else if young_alloc * 2 >= 3 * b {
@@ -2291,7 +2307,8 @@ pub mod index_gc {
         // clause (`> max_bytes()`). The MINOR is `young_alloc` past the budget OR the
         // Increment C (CHANGE #2) backpressure signal (`nursery_pending` — a segment opened
         // since the last promotion, the slab `request_gc` analogue).
-        young_alloc > YOUNG_BUDGET
+        let young_budget = young_budget();
+        young_alloc > young_budget
             || nursery_pending
             || pending_side_reclaims > 0
             || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
@@ -2436,7 +2453,8 @@ pub mod index_gc {
         // clause (`> max_bytes()`). The MINOR is `young_alloc` past the budget OR the
         // Increment C (CHANGE #2) backpressure signal (`nursery_pending` — a segment opened
         // since the last promotion, the slab `request_gc` analogue).
-        young_alloc > YOUNG_BUDGET
+        let young_budget = young_budget();
+        young_alloc > young_budget
             || nursery_pending
             || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
             || committed > max_bytes()
@@ -2466,7 +2484,8 @@ pub mod index_gc {
                 heap.nursery_full_pending(),
             )
         };
-        young_alloc > YOUNG_BUDGET
+        let young_budget = young_budget();
+        young_alloc > young_budget
             || nursery_pending
             || old_live > WATERMARK.load(Ordering::Relaxed).max(min_threshold())
             || committed > max_bytes()
@@ -2696,7 +2715,8 @@ pub mod index_gc {
         let major_due = live_major || cap_major || cadence_major || pending_side_major;
         // Increment C (CHANGE #2): the MINOR is `young_alloc` past the budget OR the
         // backpressure signal (`nursery_pending` — a segment opened since the last promotion).
-        let minor_due = young_alloc > YOUNG_BUDGET || nursery_pending;
+        let young_budget = young_budget();
+        let minor_due = young_alloc > young_budget || nursery_pending;
         if !major_due && !minor_due {
             return false;
         }

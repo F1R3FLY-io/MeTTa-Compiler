@@ -77,7 +77,7 @@ can replace the full-major final sweep.
   rendezvous gate.
 - `formal/rocq/gc/YoungAllocationOdometer.v`: proves the C1.c young-allocation odometer obligation. Reused young
   slots and fresh bump allocations advance the odometer by a positive node-size quantum, promotion resets it, and
-  crossing the budget entails the minor trigger.
+  crossing any positive young budget entails the minor trigger.
 - `formal/rocq/gc/MajorMinorScheduler.v`: proves the C1.c major/minor scheduler obligation. Cap-forced and
   cadence-forced majors cannot be deferred by acute young pressure; below level-3 young pressure a due major runs; and
   any deferred major is therefore a live-growth major under a level-3 minor trigger.
@@ -553,9 +553,10 @@ can replace the full-major final sweep.
 - `tla/NurseryBackpressure.tla`: checks the C1.c nursery-backpressure trigger. Opening a subsequent segment sets
   `nursery_full_pending`, the driver folds that pending flag into `minor_due`, and promotion clears the stale trigger;
   disabling the signal, the fold, or the clear violates the named discriminator invariant.
-- `tla/YoungAllocationOdometer.tla`: checks the C1.c young-allocation odometer. Production accounting counts reused
-  young slots and fresh bump allocation and resets on promotion; omitting reuse count, bump count, or reset violates
-  the corresponding invariant.
+- `tla/YoungAllocationOdometer.tla`: checks the C1.c young-allocation odometer over a finite positive budget domain
+  chosen once at init, matching the runtime `METTATRON_INDEX_GC_YOUNG_BYTES`/default `OnceLock` budget. Production
+  accounting counts reused young slots and fresh bump allocation and resets on promotion; omitting reuse count, bump
+  count, or reset violates the corresponding invariant.
 - `tla/MajorMinorScheduler.tla`: checks the C1.c scheduler choice. Production guards pass; allowing live-major
   deferral below level 3, allowing cap-major deferral, or allowing cadence-major deferral violates the corresponding
   scheduler invariant.
@@ -862,10 +863,11 @@ facts the proofs rely on:
 - C1 young-allocation odometer source order is pinned: the only three `young_alloc_bytes` increments are
   `write_reused`, `alloc_bump`, and `try_bump_in`, each by `size_of::<N>()`, and `promote_young` resets the odometer
   before clearing `nursery_full_pending`.
-- C1 scheduler source order pins the bounded level-3 major/minor inversion: level 3 means at least `2 * YOUNG_BUDGET`
-  young pressure, `minor_due` is computed before the no-due return, `do_major` may suppress a due live-growth major
-  only when `level == 3 && minor_due && !cap_major && !cadence_major`, and the cadence counter resets on major but
-  increments on minor.
+- C1 scheduler source order pins the bounded level-3 major/minor inversion: level 3 means at least twice the effective
+  young budget (`young_budget()`/default `YOUNG_BUDGET`) in young pressure, `minor_due` is computed before the no-due
+  return, `do_major` may suppress a due live-growth major only when
+  `level == 3 && minor_due && !cap_major && !cadence_major`, and the cadence counter resets on major but increments on
+  minor.
 - B.5 cap-floor source order is pinned in both full-major paths: the cap predicate uses
   `max_bytes().max(CAP_FLOOR)`, a cap-triggered major that releases no segment stores current `committed` into
   `CAP_FLOOR`, and a segment-releasing major clears `CAP_FLOOR` to zero.

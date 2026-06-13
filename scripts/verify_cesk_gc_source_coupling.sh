@@ -407,6 +407,7 @@ line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/InnerColum
 line_no "formal/rocq/gc/InnerColumnReadRefinement.v" "space_memo_reads_id_store" >/dev/null
 line_no "formal/rocq/gc/InnerColumnReadRefinement.v" "pod_rewrite_before_escape_prevents_stale_read" >/dev/null
 line_no "formal/rocq/gc/InnerColumnReadRefinement.v" "missing_pod_rewrite_has_stale_counterexample" >/dev/null
+line_no "formal/rocq/gc/InnerColumnReadRefinement.v" "debug_tripwire_rejects_unwritten_cell" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"inner_column_read_refinement_all\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"inner_column_read_refinement_no_rewrite\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"inner_column_read_refinement_space_memo_column\"" >/dev/null
@@ -1008,6 +1009,12 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn populat
 assert_count_between "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" "impl MettaValueFactory<MettaValue> for IndexFactory" "h.populate_column(addr);" "3"
 assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "fn intern_node" "heap.populate_column(addr);" "Ok(addr)"
 assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "pub(crate) fn clear_all_worker_thread_local_caches()" "fn clear_worker_caches_on_resume()" "clear_inner_shadow"
+assert_after_before "src/backend/eval/cesk/inner_column.rs" "struct ColumnSeg" "cells: Box<[UnsafeCell<MaybeUninit<MettaValueInner>>]>" "written: Box<[std::sync::atomic::AtomicBool]>"
+assert_after_before "src/backend/eval/cesk/inner_column.rs" "pub(crate) fn ensure_column_seg" "AtomicBool::new(false)" "ColumnSeg {"
+assert_after_before "src/backend/eval/cesk/inner_column.rs" "pub(crate) unsafe fn column_write" "(*seg_ref.cells[addr.offset() as usize].get()).write(inner);" "store(true, Ordering::Release);"
+assert_after_before "src/backend/eval/cesk/inner_column.rs" "pub(crate) unsafe fn column_read" "seg_ref.written[addr.offset() as usize].load(Ordering::Acquire)" "(*seg_ref.cells[addr.offset() as usize].get()).assume_init_ref()"
+assert_after_before "src/backend/eval/cesk/inner_column.rs" "pub(crate) fn column_release_seg" "cell.cells = cells.into_boxed_slice();" "w.store(false, Ordering::Release);"
+line_no "src/backend/eval/cesk/inner_column.rs" "column_read_of_unwritten_cell_trips_debug_tripwire" >/dev/null
 
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "gc_sweep_epoch()" "HASH_CONS_EPOCH.with"
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "clear_hash_cons_table_local();" "epoch.set(current_epoch);"

@@ -31,6 +31,10 @@ Inductive CellVersion : Type :=
 | OldCell : CellVersion
 | NewCell : CellVersion.
 
+Inductive DebugMark : Type :=
+| Unwritten : DebugMark
+| Written : DebugMark.
+
 Definition is_space_memo (v : Variant) : bool :=
   match v with
   | VSpace | VMemo => true
@@ -101,6 +105,23 @@ Proof.
   split; [reflexivity |].
   split; [reflexivity |].
   unfold no_stale_read, read_source, is_space_memo.
+  discriminate.
+Qed.
+
+Definition debug_read_precondition (m : DebugMark) : Prop :=
+  m = Written.
+
+Theorem debug_mark_after_write_allows_read :
+  debug_read_precondition Written.
+Proof.
+  unfold debug_read_precondition.
+  reflexivity.
+Qed.
+
+Theorem debug_tripwire_rejects_unwritten_cell :
+  ~ debug_read_precondition Unwritten.
+Proof.
+  unfold debug_read_precondition.
   discriminate.
 Qed.
 

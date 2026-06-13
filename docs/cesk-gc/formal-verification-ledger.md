@@ -957,7 +957,11 @@ facts the proofs rely on:
   reads `inner_column::column_read(addr)` without heap-lock/TLS materialization, the Space/Memo arm
   calls `prebuilt_space_memo_inner(addr)`, all routed factory paths plus continuation-slice restore
   call `populate_column` post-alloc/pre-escape, and the retired `INNER_SHADOW` functions are absent
-  from `metta_value.rs`.
+  from `metta_value.rs`. Follow-up debug instrumentation adds a `written` mark to each column cell in
+  debug builds: `column_write` marks after the payload write, `column_read` checks the mark before
+  `assume_init_ref`, and segment release resets marks. Rocq theorem
+  `debug_tripwire_rejects_unwritten_cell` captures the instrumentation precondition; source coupling
+  pins write-before-mark, mark-before-read, and reset-on-release.
 
 ## Harness
 

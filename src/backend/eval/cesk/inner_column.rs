@@ -19,7 +19,12 @@
 //!   nothing and segment release frees wholesale (the B1 sweep loops are
 //!   untouched).
 //! - Entry writes happen POST-publish (v3-F2): the factory writes the cell
-//!   after the node alloc returns and BEFORE the handle escapes. Soundness:
+//!   after the node alloc returns and BEFORE the handle escapes. Write
+//!   points: the `alloc_with_reuse_pressure` chokepoint (all three arms),
+//!   `intern_ground_sexpr`'s miss path, the `not_reducible` mint, and the E4
+//!   restore mints (`continuation_slice::intern_node` — found as an
+//!   increment-2 coverage gap: restore bypasses the factory chokepoint).
+//!   Soundness:
 //!   the ONLY column reader is handle-mediated (`inner_ref_index` v2) — no
 //!   scanner walks column cells by published length, and a handle that has
 //!   not escaped cannot be read. Cross-thread visibility rides the handle's
@@ -41,6 +46,16 @@ use crate::backend::models::MettaValueInner;
 /// (post-publish, pre-escape) and read lock-free by every worker.
 struct ColumnSeg {
     cells: Box<[UnsafeCell<MaybeUninit<MettaValueInner>>]>,
+    /// DEBUG missing-write tripwire (R2-parallel constraint): reading a
+    /// `MaybeUninit` cell that a buggy mint path never wrote would be UB
+    /// BEFORE the node-grounded oracle could fire — so the oracle alone
+    /// cannot catch the missing-write bug class (the class of the E4
+    /// restore-mint gap). In debug builds every `column_write` marks its
+    /// cell (Release) and every `column_read` asserts the mark (Acquire)
+    /// BEFORE `assume_init_ref`, turning the whole DEBUG corpus into a
+    /// deterministic missing-write detector. Compiled out in release.
+    #[cfg(debug_assertions)]
+    written: Box<[std::sync::atomic::AtomicBool]>,
 }
 
 // SAFETY: the cell-write/handle-escape protocol (module doc) guarantees no
@@ -68,8 +83,7 @@ static COLUMN_DIR_LOCK: Mutex<()> = Mutex::new(());
 #[inline]
 fn dir() -> &'static ColumnDir {
     COLUMN_DIR.get_or_init(|| {
-        let mut v: Vec<UnsafeCell<MaybeUninit<Box<ColumnSeg>>>> =
-            Vec::with_capacity(MAX_SEGMENTS);
+        let mut v: Vec<UnsafeCell<MaybeUninit<Box<ColumnSeg>>>> = Vec::with_capacity(MAX_SEGMENTS);
         v.resize_with(MAX_SEGMENTS, || UnsafeCell::new(MaybeUninit::uninit()));
         ColumnDir {
             cells: v.into_boxed_slice(),
@@ -92,11 +106,18 @@ pub(crate) fn ensure_column_seg(seg: usize, capacity: usize) {
     }
     assert!(seg < MAX_SEGMENTS, "column directory exhausted");
     while next <= seg {
-        let mut cells: Vec<UnsafeCell<MaybeUninit<MettaValueInner>>> =
-            Vec::with_capacity(capacity);
+        let mut cells: Vec<UnsafeCell<MaybeUninit<MettaValueInner>>> = Vec::with_capacity(capacity);
         cells.resize_with(capacity, || UnsafeCell::new(MaybeUninit::uninit()));
+        #[cfg(debug_assertions)]
+        let written = {
+            let mut w: Vec<std::sync::atomic::AtomicBool> = Vec::with_capacity(capacity);
+            w.resize_with(capacity, || std::sync::atomic::AtomicBool::new(false));
+            w.into_boxed_slice()
+        };
         let boxed = Box::new(ColumnSeg {
             cells: cells.into_boxed_slice(),
+            #[cfg(debug_assertions)]
+            written,
         });
         // SAFETY: cell `next` is unpublished (next == COLUMN_SEG_COUNT) and we
         // hold the growth lock — exactly-once initialization.
@@ -118,10 +139,7 @@ pub(crate) fn ensure_column_seg(seg: usize, capacity: usize) {
 #[inline]
 pub(crate) unsafe fn column_write(addr: Addr, inner: MettaValueInner) {
     debug_assert!(
-        !matches!(
-            inner,
-            MettaValueInner::Space(_) | MettaValueInner::Memo(_)
-        ),
+        !matches!(inner, MettaValueInner::Space(_) | MettaValueInner::Memo(_)),
         "Space/Memo are served from the id store, never the column (v3-F1)"
     );
     let seg = addr.segment() as usize;
@@ -135,6 +153,11 @@ pub(crate) unsafe fn column_write(addr: Addr, inner: MettaValueInner) {
     // exclusively ours per the function contract.
     let seg_ref = &*(*d.cells[seg].get()).assume_init_ref();
     (*seg_ref.cells[addr.offset() as usize].get()).write(inner);
+    // DEBUG tripwire: mark AFTER the payload write (Release) — the reader's
+    // Acquire on this mark then also orders the payload for the debug
+    // protocol's read.
+    #[cfg(debug_assertions)]
+    seg_ref.written[addr.offset() as usize].store(true, Ordering::Release);
 }
 
 /// The lock-free two-load read: `addr → COLUMN_DIR[seg] → cell` (v3.1).
@@ -154,6 +177,17 @@ pub(crate) unsafe fn column_read(addr: Addr) -> &'static MettaValueInner {
     );
     let d = dir();
     let seg_ref = &*(*d.cells[seg].get()).assume_init_ref();
+    // DEBUG missing-write tripwire: assert BEFORE touching the MaybeUninit —
+    // a mint path that never wrote its cell trips HERE (deterministically),
+    // not as UB inside the oracle's comparison.
+    #[cfg(debug_assertions)]
+    assert!(
+        seg_ref.written[addr.offset() as usize].load(Ordering::Acquire),
+        "column_read of an unwritten column cell at seg {seg} offset {} — \
+         a mint path escaped a handle without populate_column (the E4 \
+         restore-gap bug class)",
+        addr.offset()
+    );
     (*seg_ref.cells[addr.offset() as usize].get()).assume_init_ref()
 }
 
@@ -173,15 +207,26 @@ pub(crate) fn column_release_seg(seg: usize, capacity: usize) {
     // ready for the slot indices' reuse after re-interning.
     unsafe {
         let cell = &mut *(*d.cells[seg].get()).assume_init_mut();
-        let mut cells: Vec<UnsafeCell<MaybeUninit<MettaValueInner>>> =
-            Vec::with_capacity(capacity);
+        let mut cells: Vec<UnsafeCell<MaybeUninit<MettaValueInner>>> = Vec::with_capacity(capacity);
         cells.resize_with(capacity, || UnsafeCell::new(MaybeUninit::uninit()));
         cell.cells = cells.into_boxed_slice();
+        // DEBUG tripwire: the fresh cells are uninit — reset their marks so a
+        // post-release read without a re-intern write trips the assert.
+        #[cfg(debug_assertions)]
+        for w in cell.written.iter() {
+            w.store(false, Ordering::Release);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    //! These tests mutate the PROCESS-GLOBAL column directory (publishing
+    //! small-capacity segments). They are safe under nextest's
+    //! process-per-test execution — the repo's gate runner — but a
+    //! shared-process `cargo test --lib` run interleaving them with real
+    //! factory mints could see capacity-mismatched segments. Keep them
+    //! nextest-run (as every committed gate already does).
     use super::*;
 
     #[test]
@@ -199,6 +244,21 @@ mod tests {
             // overwrite-at-reuse is a plain POD overwrite
             column_write(a, MettaValueInner::Bool(true));
             assert!(matches!(column_read(a), MettaValueInner::Bool(true)));
+        }
+    }
+
+    /// The R2-parallel missing-write tripwire: reading a never-written cell
+    /// must trip the debug assert (NOT reach the `MaybeUninit` read). Debug
+    /// builds only — release compiles the tripwire out, so the read would be
+    /// real UB there (which is exactly why the tripwire exists).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unwritten column cell")]
+    fn column_read_of_unwritten_cell_trips_debug_tripwire() {
+        ensure_column_seg(3, 32);
+        let never_written = Addr::new(3, 9);
+        unsafe {
+            let _ = column_read(never_written);
         }
     }
 

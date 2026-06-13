@@ -503,6 +503,14 @@ line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"gc_driver_channel_protocol
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"gc_driver_channel_protocol_no_request_sender\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"gc_driver_channel_protocol_no_reply\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"gc_driver_channel_protocol_orphan_reply\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/StructChannelPairing.v\"" >/dev/null
+line_no "formal/rocq/gc/StructChannelPairing.v" "struct_channel_pairing_safe" >/dev/null
+line_no "formal/rocq/gc/StructChannelPairing.v" "private_wrapper_without_constructor_cannot_wait" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"struct_channel_pairing_paired\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"struct_channel_pairing_no_sender\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"struct_channel_pairing_no_worker_clone\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"struct_channel_pairing_no_response_receiver\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"struct_channel_pairing_no_ready_sender\"" >/dev/null
 line_no "scripts/verify_cesk_gc_all.sh" "normalize_determinism_output()" >/dev/null
 line_no "scripts/verify_cesk_gc_all.sh" 's/\$__fr_[0-9]+_/\$__fr_E_/g' >/dev/null
 line_no "scripts/verify_cesk_gc_all.sh" "normalize_determinism_output | sort | sha256sum" >/dev/null
@@ -531,6 +539,46 @@ line_no "tla/InnerColumnReadRefinement.tla" "SpaceMemoUsesIdStore ==" >/dev/null
 line_no "tla/InnerColumnReadRefinement.tla" "PODUsesColumn ==" >/dev/null
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "request_gc();" "tx.send(GcDriverRequest::CollectRendezvous)"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "None => crate::backend::models::gc_allocator::resume_workers()" "fn spawn_gc_driver"
+
+# pgmcp channel-field audit closure. These pins bind the generic
+# StructChannelPairing proof/model to the field-sensitive Rust facts that the
+# indexer intentionally over-approximates: every stored/worker receiver has a
+# constructor-created sender, every worker response sender has a caller-visible
+# receiver, the cron ready receiver has a one-shot sender, and the legacy
+# ResultReceiver wrapper is dormant because it is never constructed.
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let (high_tx, high_rx) = crossbeam_channel::unbounded::<GcWorkItem>();" "let (low_tx, low_rx) = crossbeam_channel::unbounded::<GcWorkItem>();"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let (low_tx, low_rx) = crossbeam_channel::unbounded::<GcWorkItem>();" "let (response_tx, response_rx) = crossbeam_channel::unbounded::<GcResponse>();"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let high_rx = high_rx.clone();" "let low_rx = low_rx.clone();"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let low_rx = low_rx.clone();" "let response_tx = response_tx.clone();"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let response_tx = response_tx.clone();" "gc_pool_worker_loop(id, high_rx, low_rx, response_tx, shutdown, park);"
+assert_after_before "src/backend/models/gc_pool.rs" "debug!(min_workers, max_workers, \"AdaptiveGcPool started\");" "high_tx," "high_rx,"
+assert_after_before "src/backend/models/gc_pool.rs" "debug!(min_workers, max_workers, \"AdaptiveGcPool started\");" "low_tx," "low_rx,"
+assert_after_before "src/backend/models/gc_pool.rs" "debug!(min_workers, max_workers, \"AdaptiveGcPool started\");" "response_tx," "response_rx,"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn submit_high" "self.high_tx.send(item)" "}"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn submit_low" "self.low_tx.send(item)" "}"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn try_recv_response" "self.response_rx.try_recv().ok()" "}"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn recv_response_blocking" "self.response_rx.recv().ok()" "}"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn check_and_respawn_workers" "let high_rx = self.high_rx.clone();" "let low_rx = self.low_rx.clone();"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn check_and_respawn_workers" "let low_rx = self.low_rx.clone();" "let response_tx = self.response_tx.clone();"
+assert_after_before "src/backend/models/gc_pool.rs" "pub fn check_and_respawn_workers" "let response_tx = self.response_tx.clone();" "gc_pool_worker_loop(id, high_rx, low_rx, response_tx, shutdown, park);"
+assert_after_before "src/backend/models/gc_pool.rs" "fn gc_pool_worker_loop" "high_rx: Receiver<GcWorkItem>," "match high_rx.try_recv()"
+assert_after_before "src/backend/models/gc_pool.rs" "fn gc_pool_worker_loop" "low_rx: Receiver<GcWorkItem>," "low_rx.recv_timeout(LOW_CHANNEL_TIMEOUT)"
+assert_after_before "src/backend/models/gc_pool.rs" "fn gc_pool_worker_loop" "response_tx: Sender<GcResponse>," "response_tx.send(response)"
+
+assert_after_before "src/backend/models/task_scheduler.rs" "fn spawn_cron_with_interval_name_and_pool" "let (task_tx, task_rx) = unbounded::<ScheduledTask>();" "let (ready_tx, ready_rx) = unbounded::<()>();"
+assert_after_before "src/backend/models/task_scheduler.rs" "fn spawn_cron_with_interval_name_and_pool" "let (ready_tx, ready_rx) = unbounded::<()>();" "let thread_handle = thread::Builder::new()"
+assert_after_before "src/backend/models/task_scheduler.rs" "fn spawn_cron_with_interval_name_and_pool" "let mut sm = CronStateMachine::new(" "task_rx,"
+assert_after_before "src/backend/models/task_scheduler.rs" "let mut sm = CronStateMachine::new(" "task_rx," "Some(ready_tx),"
+assert_after_before "src/backend/models/task_scheduler.rs" "let handle = CronHandle {" "task_tx," "terminating,"
+assert_after_before "src/backend/models/task_scheduler.rs" "let handle = CronHandle {" "task_tx," "(handle, thread_handle, ready_rx)"
+assert_after_before "src/backend/models/task_scheduler.rs" "pub fn run(&mut self)" "if let Some(tx) = self.ready_tx.take()" "let _ = tx.send(());"
+assert_after_before "src/backend/models/task_scheduler.rs" "fn poll_check_events" "self.task_rx.try_recv()" "CronEvent::TaskReceived"
+assert_after_before "src/backend/models/task_scheduler.rs" "fn poll_drain_channel" "self.task_rx.try_recv()" "CronEvent::TaskReceived"
+assert_after_before "src/backend/models/task_scheduler.rs" "pub fn schedule_at" "self.task_tx.send(scheduled_task).is_ok()" "pub fn schedule_after"
+
+line_no "src/backend/priority_scheduler.rs" "pub struct ResultReceiver<T>" >/dev/null
+line_no "src/backend/priority_scheduler.rs" "receiver: Receiver<T>," >/dev/null
+assert_zero "src/backend/priority_scheduler.rs" "ResultReceiver {"
 
 # The R-FL no-recycle/swept-slot diagnostic was a one-off discriminator. The
 # live proof obligation is the persistent free-bit invariant below, so the

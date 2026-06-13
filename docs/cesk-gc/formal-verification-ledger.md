@@ -1036,6 +1036,19 @@ facts the proofs rely on:
   `systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=600% --quiet bash
   scripts/verify_cesk_gc_formal.sh` at the implementation increment.
 
+- Struct channel pairing (`formal/rocq/gc/StructChannelPairing.v`,
+  `tla/StructChannelPairing.tla`, 2026-06-13) — discharges the field-insensitive
+  pgmcp channel audit findings for struct-stored endpoints in `gc_pool`,
+  `task_scheduler`, and the dormant `priority_scheduler::ResultReceiver`
+  wrapper. Rocq proves that a used receiver implies a constructor-created pair
+  plus stored sender/receiver, worker receives imply a cloned receiver, worker
+  response sends imply a caller-visible response receiver, ready waits imply the
+  ready sender/receiver/signal path, and an unconstructed private wrapper cannot
+  wait. TLC runs one positive model plus four negative discriminators for missing
+  sender, missing worker clone, missing response receiver, and missing ready
+  sender. Source coupling pins the concrete Rust constructor, clone, send, recv,
+  and return sites, plus the absence of `ResultReceiver` construction.
+
 ## Harness
 
 Run:

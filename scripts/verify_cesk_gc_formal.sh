@@ -204,6 +204,7 @@ run_rocq "formal/rocq/gc/WorkPoolOverflowCap.v"
 run_rocq "formal/rocq/gc/WorkPoolLifecycle.v"
 run_rocq "formal/rocq/gc/CounterFlushExclusion.v"
 run_rocq "formal/rocq/gc/GcDriverChannelProtocol.v"
+run_rocq "formal/rocq/gc/StructChannelPairing.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
 run_rocq "formal/rocq/gc/DepthZeroSafepoint.v"
@@ -276,6 +277,16 @@ run_tlc "gc_driver_channel_protocol_no_reply" "GcDriverChannelProtocol.tla" "MC_
   fail "Invariant ResponseWaitHasProducer is violated"
 run_tlc "gc_driver_channel_protocol_orphan_reply" "GcDriverChannelProtocol.tla" "MC_GcDriverChannelProtocol_orphan_reply.cfg" \
   fail "Invariant NoOrphanReplySend is violated"
+run_tlc "struct_channel_pairing_paired" "StructChannelPairing.tla" "MC_StructChannelPairing_paired.cfg" \
+  pass ""
+run_tlc "struct_channel_pairing_no_sender" "StructChannelPairing.tla" "MC_StructChannelPairing_no_sender.cfg" \
+  fail "Invariant StoredReceiveHasProducer is violated"
+run_tlc "struct_channel_pairing_no_worker_clone" "StructChannelPairing.tla" "MC_StructChannelPairing_no_worker_clone.cfg" \
+  fail "Invariant WorkerReceiveHasProducer is violated"
+run_tlc "struct_channel_pairing_no_response_receiver" "StructChannelPairing.tla" "MC_StructChannelPairing_no_response_receiver.cfg" \
+  fail "Invariant ResponseSendHasReceiver is violated"
+run_tlc "struct_channel_pairing_no_ready_sender" "StructChannelPairing.tla" "MC_StructChannelPairing_no_ready_sender.cfg" \
+  fail "Invariant ReadyWaitHasSignal is violated"
 
 run_tlc "rfl_freebit" "MC_StoreCentricGC_RFL.tla" "MC_RFL_freebit.cfg" \
   pass ""

@@ -203,6 +203,7 @@ run_rocq "formal/rocq/gc/CronRecurringDispatch.v"
 run_rocq "formal/rocq/gc/WorkPoolOverflowCap.v"
 run_rocq "formal/rocq/gc/WorkPoolLifecycle.v"
 run_rocq "formal/rocq/gc/CounterFlushExclusion.v"
+run_rocq "formal/rocq/gc/GcDriverChannelProtocol.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
 run_rocq "formal/rocq/gc/DepthZeroSafepoint.v"
@@ -267,6 +268,14 @@ run_tlc "counter_flush_locked" "CounterFlushExclusion.tla" "MC_CounterFlushExclu
   pass ""
 run_tlc "counter_flush_unlocked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_unlocked.cfg" \
   fail "Invariant NoCounterSyncFreeOverlap is violated"
+run_tlc "gc_driver_channel_protocol_paired" "GcDriverChannelProtocol.tla" "MC_GcDriverChannelProtocol_paired.cfg" \
+  pass ""
+run_tlc "gc_driver_channel_protocol_no_request_sender" "GcDriverChannelProtocol.tla" "MC_GcDriverChannelProtocol_no_request_sender.cfg" \
+  fail "Invariant RequestReceiveHasProducer is violated"
+run_tlc "gc_driver_channel_protocol_no_reply" "GcDriverChannelProtocol.tla" "MC_GcDriverChannelProtocol_no_reply.cfg" \
+  fail "Invariant ResponseWaitHasProducer is violated"
+run_tlc "gc_driver_channel_protocol_orphan_reply" "GcDriverChannelProtocol.tla" "MC_GcDriverChannelProtocol_orphan_reply.cfg" \
+  fail "Invariant NoOrphanReplySend is violated"
 
 run_tlc "rfl_freebit" "MC_StoreCentricGC_RFL.tla" "MC_RFL_freebit.cfg" \
   pass ""

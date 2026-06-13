@@ -457,7 +457,10 @@ assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn gc_driver_main" "Gc
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "GcDriverRequest::Collect(roots, resp_tx)" "let ran = std::panic::catch_unwind" "let _ = resp_tx.send(GcDriverDone(ran));"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "GcDriverRequest::Collect(roots, resp_tx)" "let _ = resp_tx.send(GcDriverDone(ran));" "GcDriverRequest::CollectRendezvous"
 assert_zero_between "src/backend/eval/cesk/gc_driver.rs" "GcDriverRequest::Collect(roots, resp_tx)" "GcDriverRequest::CollectRendezvous" "return"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn spawn_gc_driver" "let (request_tx, request_rx) = mpsc::channel::<GcDriverRequest>();" ".spawn(move || gc_driver_main(request_rx))"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn spawn_gc_driver" "let (request_tx, request_rx) = mpsc::channel::<GcDriverRequest>();" "request_tx: Mutex::new(request_tx)"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking" "let (resp_tx, resp_rx) = mpsc::channel::<GcDriverDone>();" "tx.send(GcDriverRequest::Collect(roots, resp_tx))"
+assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking" "let (resp_tx, resp_rx) = mpsc::channel::<GcDriverDone>();" "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking" "Ok(()) => {}" "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn try_drive_blocking" "Err(mpsc::SendError(GcDriverRequest::Collect(roots, _))) => return Err(roots)," "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))"
 assert_zero_between "src/backend/eval/cesk/gc_driver.rs" "Ok(resp_rx.recv().map(|d| d.0).unwrap_or(false))" "pub(crate) fn collect_quiescence" "return Err"
@@ -494,6 +497,23 @@ line_no "formal/rocq/gc/E1SatbStwDriverProgress.v" "panic_or_closed_final_sweep_
 line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/ConcurrentReusePressureProgress.v\"" >/dev/null
 line_no "formal/rocq/gc/ConcurrentReusePressureProgress.v" "try_write_loss_with_reuse_pressure_chooses_exclusive" >/dev/null
 line_no "formal/rocq/gc/ConcurrentReusePressureProgress.v" "pressure_path_reuses_without_weakening_concurrent_safety" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/GcDriverChannelProtocol.v\"" >/dev/null
+line_no "formal/rocq/gc/GcDriverChannelProtocol.v" "gc_driver_channel_protocol_safe" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"gc_driver_channel_protocol_paired\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"gc_driver_channel_protocol_no_request_sender\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"gc_driver_channel_protocol_no_reply\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"gc_driver_channel_protocol_orphan_reply\"" >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" "normalize_determinism_output()" >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" 's/\$__fr_[0-9]+_/\$__fr_E_/g' >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" "normalize_determinism_output | sort | sha256sum" >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" 'DETERM_MEM_MAX="${DETERM_MEM_MAX:-24G}"' >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" 'DETERM_MIN_BYTES="${DETERM_MIN_BYTES:-131072}"' >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" "run_with_scope()" >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" '-p "MemoryMax=$mem"' >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" "-p MemorySwapMax=0" >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" 'timeout --signal=TERM --kill-after=10s "$timeout_secs" "$@"' >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" 'run_with_scope "$DETERM_MEM_MAX" "$DETERM_CPU_QUOTA" "$DETERM_TIMEOUT_SECS"' >/dev/null
+line_no "scripts/verify_cesk_gc_all.sh" 'METTATRON_INDEX_GC_MIN_BYTES="$DETERM_MIN_BYTES"' >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/QuiescentSideIndexReuse.v\"" >/dev/null
 line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "reusable_index_implies_quiescent_full_consumed" >/dev/null
 line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "free_then_push_reuses_without_bump" >/dev/null

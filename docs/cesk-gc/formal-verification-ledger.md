@@ -316,6 +316,19 @@ can replace the full-major final sweep.
   mutator no longer owns those roots; failed sends still return the roots for inline fallback. It also proves the
   channel-liveness obligation from the static channel audit: a successful `Collect` handoff carries a per-request
   response sender and the driver attempts a reply after catching the collection result.
+- `formal/rocq/gc/GcDriverChannelProtocol.v` plus `tla/GcDriverChannelProtocol.tla`: discharges the target-scope pgmcp
+  channel audit findings for `gc_driver`. The proof/model split the channel obligation from root ownership: the
+  spawn-created request sender is paired with the driver receiver; a successful synchronous `Collect` carries a
+  per-request response sender while the caller owns and waits on the paired receiver; the driver attempts that reply
+  after handling `Collect`; and fire-and-forget requests (`CollectRendezvous`, `Shutdown`) create no response wait.
+  TLC discriminators cover missing request sender, missing reply attempt, and orphan reply send variants.
+- `scripts/verify_cesk_gc_all.sh` determinism gate: hashes Robot FANOUT=8 output after sorting and alpha-normalizing
+  generated `$__fr_<epoch>_` prefixes to `$__fr_E_`. The whole-wall DETERM failure on 2026-06-13 showed multiple raw
+  hashes whose normalized outputs were byte-identical; the epoch number is a per-invocation freshening artifact from
+  parallel rule matching, not semantic content. Source-coupling pins the normalizer before the hash. Runtime replays
+  now run through `systemd-run` with `MemoryMax`, `MemorySwapMax=0`, CPU quota, and timeout caps, and force
+  `METTATRON_INDEX_GC_MIN_BYTES=131072` so the index collector is non-vacuous during the replay. An oversized Robot
+  replay must fail the gate instead of consuming host memory unboundedly.
 - `formal/rocq/gc/DedicatedSingleRegime.v`: proves the E1 dedicated-thread single-regime rule. With the dedicated
   collector enabled, default/session/parallel/cron legacy producers are suppressed, so any request in that regime must
   be paired with a dedicated driver request.

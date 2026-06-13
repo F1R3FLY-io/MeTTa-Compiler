@@ -152,12 +152,34 @@ assert_after_before \
   "match result" \
   ".stop_requested" \
   ".in_flight"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "fn overflow_spawn_quota" \
+  "requested.min(max_overflow.saturating_sub(live_overflow))" \
+  "}"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "pub fn spawn_overflow" \
+  "let live_overflow = self.overflow_count.load(Ordering::Acquire);" \
+  "let spawn_count = overflow_spawn_quota(count, live_overflow, self.max_overflow());"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "pub fn spawn_overflow" \
+  "if spawn_count == 0 {" \
+  "return;"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "pub fn spawn_overflow" \
+  "for i in 0..spawn_count {" \
+  "self.overflow_count.fetch_add(1, Ordering::Relaxed);"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerPriorityFairness.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"
+assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 
 # A5 structural-root architecture: the dynamic root registry and raw frame-chain
 # discovery path must remain slab-only. The index collector reads roots from the

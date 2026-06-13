@@ -945,6 +945,12 @@ impl WorkPool {
     }
 }
 
+/// Compute how many overflow workers may be spawned without exceeding the cap.
+#[inline]
+fn overflow_spawn_quota(requested: usize, live_overflow: usize, max_overflow: usize) -> usize {
+    requested.min(max_overflow.saturating_sub(live_overflow))
+}
+
 // ============================================================================
 // Overflow Pool Methods
 // ============================================================================
@@ -976,9 +982,21 @@ impl WorkPool {
     /// management. They self-drain after 1s of idleness.
     pub fn spawn_overflow(&self, count: usize) {
         let mut overflow = self.overflow_workers.lock();
+        let live_overflow = self.overflow_count.load(Ordering::Acquire);
+        let spawn_count = overflow_spawn_quota(count, live_overflow, self.max_overflow());
+        if spawn_count == 0 {
+            trace!(
+                requested = count,
+                live_overflow,
+                max_overflow = self.max_overflow(),
+                "WorkPool: overflow spawn skipped at cap"
+            );
+            return;
+        }
+
         let base_id = self.max_threads + overflow.len();
 
-        for i in 0..count {
+        for i in 0..spawn_count {
             let queue = Arc::clone(&self.queue);
             let runtime_tracker = Arc::clone(&self.runtime_tracker);
             let global_shutdown = Arc::clone(&self.shutdown);
@@ -1022,7 +1040,7 @@ impl WorkPool {
         }
 
         trace!(
-            spawned = count,
+            spawned = spawn_count,
             total_overflow = self.overflow_count.load(Ordering::Relaxed),
             "WorkPool: spawned overflow workers"
         );
@@ -3363,17 +3381,22 @@ mod tests {
         pool.spawn_overflow(2); // max_overflow = 2 for max_threads = 2
         assert_eq!(pool.overflow_count(), 2);
 
-        // The compensatory logic should cap at max_overflow, but let's
-        // verify spawn_overflow itself works and the count is correct.
+        // spawn_overflow itself enforces the cap, not only the monitor call site.
         pool.spawn_overflow(1);
-        // overflow_count is 3 because spawn_overflow doesn't enforce the cap
-        // itself — the cap is enforced in the compensatory logic via
-        // `max_overflow.saturating_sub(overflow)`.
-        assert_eq!(pool.overflow_count(), 3);
+        assert_eq!(pool.overflow_count(), 2);
 
         // Clean up: drain all
         pool.drain_all_overflow();
         thread::sleep(Duration::from_millis(600));
         pool.reap_finished_overflow();
+    }
+
+    #[test]
+    fn test_overflow_spawn_quota_caps_requested() {
+        assert_eq!(overflow_spawn_quota(0, 0, 2), 0);
+        assert_eq!(overflow_spawn_quota(3, 0, 2), 2);
+        assert_eq!(overflow_spawn_quota(3, 1, 2), 1);
+        assert_eq!(overflow_spawn_quota(3, 2, 2), 0);
+        assert_eq!(overflow_spawn_quota(3, 5, 2), 0);
     }
 }

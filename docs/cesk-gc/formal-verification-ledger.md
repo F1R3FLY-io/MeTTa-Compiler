@@ -635,12 +635,22 @@ can replace the full-major final sweep.
   recurring-dispatch control. A recurring task that returns `false` or panics must set a durable stop flag before
   clearing `in_flight`, so the next due tick drops the recurrence instead of redispatching it. The model also proves
   in-flight recurring work is not overlapped, preserving thread-pool admission boundaries around cron work.
+- `formal/rocq/gc/WorkPoolOverflowCap.v` and `tla/WorkPoolOverflowCap.tla`: prove and model-check the adaptive
+  work-pool overflow cap. The live helper computes
+  `min(requested, max_overflow - live_overflow)`, so spawning overflow workers preserves
+  `live_overflow <= max_overflow`. The uncapped discriminator reproduces the old behavior where a direct
+  `spawn_overflow(1)` after reaching the cap lets `live` grow beyond `MaxOverflow`.
 - 2026-06-12 scheduler/threading formal increment: `scripts/verify_cesk_gc_formal.sh` passed proof hygiene, TLC
   hygiene, source coupling, 90 mandatory Rocq files, and the full positive/negative TLC discriminator suite. Focused
   runtime gates passed under `systemd-run` caps: `cargo test --lib priority_queue`, `cargo test --lib
   interleaved_table`, `cargo test --lib random_heads`, and `cargo test --lib pooled_recurring_task_stops_on_false`.
   The slab release gate `cargo nextest run --release` then ran 4400 tests with 4400 passed. All checks were run with
   memory caps and no swap, preserving the project heavy-op mandate.
+- 2026-06-12 WorkPool overflow-cap increment: `scripts/verify_cesk_gc_formal.sh` passed proof hygiene, TLC hygiene,
+  source coupling, 91 mandatory Rocq files, and 229 TLC configs after adding the overflow cap proof/model. Focused
+  gates passed under `systemd-run` caps: `rocq c ... WorkPoolOverflowCap.v`, capped/uncapped TLC runs for
+  `WorkPoolOverflowCap.tla`, `bash scripts/verify_cesk_gc_source_coupling.sh`, and `cargo test --lib overflow`.
+  The slab release gate `cargo nextest run --release` then ran 4401 tests with 4401 passed.
 
 ## Source coupling
 

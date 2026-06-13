@@ -2156,10 +2156,10 @@ pub mod index_gc {
     /// segment ⇒ its reclaimed slots stay young and are reused (no
     /// promotion-stranding); (c) tied to the substrate's segment granularity, not a
     /// magic number. Minors thus fire NATURALLY on any workload allocating more than
-    /// ~1/4 segment of transient young between safepoints — exercised by tests with
+    /// ~1/2 segment of transient young between safepoints — exercised by tests with
     /// no force-switch. `METTATRON_INDEX_GC_YOUNG_BYTES` may raise/lower the nursery
     /// size for measurement, but it does not disable minors.
-    const YOUNG_BUDGET: usize = 2 * 1024 * 1024;
+    const YOUNG_BUDGET: usize = 4 * 1024 * 1024;
 
     /// Cached `METTATRON_INDEX_GC_MIN_BYTES` (parsed once).
     fn min_threshold() -> usize {

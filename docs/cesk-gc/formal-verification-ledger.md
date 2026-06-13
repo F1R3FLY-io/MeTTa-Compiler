@@ -556,7 +556,11 @@ can replace the full-major final sweep.
 - `tla/YoungAllocationOdometer.tla`: checks the C1.c young-allocation odometer over a finite positive budget domain
   chosen once at init, matching the runtime `METTATRON_INDEX_GC_YOUNG_BYTES`/default `OnceLock` budget. Production
   accounting counts reused young slots and fresh bump allocation and resets on promotion; omitting reuse count, bump
-  count, or reset violates the corresponding invariant.
+  count, or reset violates the corresponding invariant. The paired Rocq theorem proves the arithmetic obligation for
+  every positive budget, so changing the cached runtime default preserves the proof shape. The default is 4 MiB as of
+  pgmcp experiment #64 (`5f469201`): 51 Robot FANOUT=0 samples per arm accepted the 4 MiB treatment over the former
+  2 MiB default (Welch p=1.54e-24, 95% CI for treatment-control [-349.68, -265.31] ms), after a GC-report diagnostic
+  confirmed non-vacuous collection.
 - `tla/MajorMinorScheduler.tla`: checks the C1.c scheduler choice. Production guards pass; allowing live-major
   deferral below level 3, allowing cap-major deferral, or allowing cadence-major deferral violates the corresponding
   scheduler invariant.

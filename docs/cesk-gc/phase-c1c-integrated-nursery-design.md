@@ -20,8 +20,11 @@ FIRING + MEMORY-BOUNDING while preserving that no-remembered-set collector shape
 `alloc(&mut)` reuses YOUNG free slots only (skips/discards old); `mark_young` (conservative traversal,
 young mark bits only, so old `SpaceHandle` containers can still expose young contents); `young_alloc_bytes`
 odometer (reset at `promote_young`); minor-primary driver; the
-`YOUNG_MIN_BYTES` switch is DELETED. `MAJOR_CADENCE=16`, default `YOUNG_BUDGET=2 MiB (≈¼ segment)`.
-`METTATRON_INDEX_GC_YOUNG_BYTES` may tune that nursery size for measured runs; it is not a minor on/off switch.
+`YOUNG_MIN_BYTES` switch is DELETED. `MAJOR_CADENCE=16`, default `YOUNG_BUDGET=4 MiB (≈½ segment)`.
+`METTATRON_INDEX_GC_YOUNG_BYTES` may tune that nursery size for measured runs; it is not a minor on/off switch. The
+4 MiB default was selected by pgmcp experiment #64 at `5f469201`: 51 Robot FANOUT=0 runs per arm showed 4 MiB at
+5378.79 ms mean versus the former 2 MiB default at 5686.28 ms mean, with non-vacuous GC reporting and only an
+~11 MiB hyperfine peak-RSS increase.
 
 ## CHANGE #1 — Variable-length free-list reuse (the core allocator↔GC coupling; hardest)
 Today `Node::SExpr(ChildRef{idx})` etc. carry a segment-relative u32 into `sides[seg].{children,strings,
@@ -67,9 +70,9 @@ allocation SIGNALS and the next safepoint collects:
 - `IndexArena.nursery_full_pending: AtomicBool` — set in `alloc_bump`/`bump_in` when about to
   `open_segment()` with an empty young free-list (= the nursery filled; the "about to grow" event the
   slab throttles). Cleared in `promote_young`.
-- `index_backpressure_level() -> u8` from `young_alloc/YOUNG_BUDGET` ratio (the index mirror of
+- `index_backpressure_level() -> u8` from `young_alloc/young_budget()` ratio (the index mirror of
   committed/threshold; same 1/2/3 ladder).
-- Level ≥ 1 ⇒ fold `nursery_full_pending || young_alloc > YOUNG_BUDGET` into `should_collect(_midloop)` +
+- Level ≥ 1 ⇒ fold `nursery_full_pending || young_alloc > young_budget()` into `should_collect(_midloop)` +
   `minor_due` (schedule a minor at the next safepoint, never synchronous).
 - Level == 3 ⇒ the driver PREFERS the minor over the major for one cycle (the nursery is the pressure
   source; a young-only minor is the cheap relief) — a bounded ≤every-other-cycle inversion; the major

@@ -1110,3 +1110,23 @@ with the end-to-end composition theorem `formal/rocq/gc/CESKCollectorSafety.v` (
 composes the local obligations; the wall re-checks every obligation's mechanized artifact and the
 runtime evidence on the live tree. First full run (label `capstone`, HEAD 8cfe9cdd):
 ALL 9 STAGES GREEN (logs `target/gc-logs/allwall_capstone.fTdf7jEl`).
+
+## Phase F1 Robot gate evidence (2026-06-13, `3b157137`)
+
+After the F1 harness was repaired to emit pgmcp-ready raw samples and to reject any statistically
+and materially worse index arm, the final Robot-only Phase F1 run at `3b157137` passed both the local
+harness and pgmcp experiment #6. Protocol: 51 measured reps per arm after 3 warmups, interleaved
+measurement order, `taskset 8-15`, `FANOUT=0`, and every measured invocation in a capped
+`systemd-run` scope (`MemoryMax=24G`, `MemorySwapMax=0`, `CPUQuota=800%`). Local harness output:
+`pln_robot_wall_ms` slab mean 5518.6 ms, index mean 5311.0 ms, index/slab 0.962x, ACCEPT;
+`pln_robot_peak_rss_mib` slab mean 620.1 MiB, index mean 414.2 MiB, index/slab 0.668x, ACCEPT.
+
+The raw samples were recorded into pgmcp experiment #6 under commit-specific arms
+`slab_3b157137_robot` and `index_3b157137_robot`. pgmcp's pre-registered Welch decision accepted
+the `pln_robot_wall_ms` hypothesis (p=7.2675e-17, Cohen's d=-2.0574, 95% CI for index-minus-slab
+[-247.4140, -167.8801] ms). This does not replace the whole-system wall; it closes the F1
+performance predicate that gates any later Phase F3 default flip. The source/proof side at the same
+commit was checked by `scripts/verify_cesk_gc_source_coupling.sh`,
+`scripts/verify_cesk_gc_proof_hygiene.sh`, `scripts/verify_cesk_gc_tlc_hygiene.sh`, the full
+`scripts/verify_cesk_gc_formal.sh` Rocq+TLC harness under a 16 GiB cap, and a capped
+`--features index-gc` release build.

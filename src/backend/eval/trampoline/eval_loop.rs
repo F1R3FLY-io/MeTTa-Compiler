@@ -301,8 +301,8 @@ pub(crate) fn clear_aba_sensitive_caches() {
 /// E1-FLIP Path B V4 — the COMPLETE per-worker-thread σ-cache clear for the
 /// DEDICATED concurrent collector. The dedicated GC thread runs the sweep on a
 /// SEPARATE thread, so the post-sweep thread-local invalidation it performs
-/// (`index_heap.rs:2119-2128`: `clear_aba_sensitive_caches` + `clear_inner_shadow`
-/// + `clear_eval_memo` + `clear_match_result_cache`) clears the GC THREAD's
+/// (`index_heap.rs:2119-2128`: `clear_aba_sensitive_caches` + `clear_eval_memo`
+/// + `clear_match_result_cache`) clears the GC THREAD's
 /// (empty) thread-locals — NOT the worker threads' caches, which still hold
 /// σ-`Addr`s keyed by content-hash / Addr. After the sweep reuses those slots the
 /// entries are STALE (a reused Addr serves the prior occupant's content), so a
@@ -321,7 +321,10 @@ pub(crate) fn clear_all_worker_thread_local_caches() {
     //     already make — kept here so this is the ONE complete clear.)
     clear_aba_sensitive_caches();
     // (ii) The value-bearing σ memos NOT in the ABA set — index_heap.rs:2122-2128 parity.
-    crate::backend::models::metta_value::clear_inner_shadow();
+    //      (exp46: the per-thread INNER_SHADOW that used to head this list is
+    //      DELETED — the shared Inner column needs no per-thread invalidation:
+    //      a reused slot's cell is REWRITTEN by `populate_column` before the
+    //      new handle escapes, so no thread can observe a stale inner.)
     crate::backend::eval::trampoline::dispatch_hints::clear_eval_memo();
     crate::backend::eval::trampoline::dispatch_hints::clear_match_result_cache();
     // (iii) The DIRTY-gated tabling/thunk value tables — near-zero cost when the
@@ -2238,9 +2241,9 @@ fn current_memo_tracked_key() -> u64 {
         None => 0,
         Some(tv) => {
             let mut h = 0xcbf29ce484222325u64; // FNV-1a offset basis
-            // `tv` now holds variable ATOMS; hash their NAME bytes so the memo
-            // key stays BYTE-IDENTICAL to the prior `&'static str` version
-            // (`as_atom()` yields exactly those name bytes).
+                                               // `tv` now holds variable ATOMS; hash their NAME bytes so the memo
+                                               // key stays BYTE-IDENTICAL to the prior `&'static str` version
+                                               // (`as_atom()` yields exactly those name bytes).
             for atom in tv.iter() {
                 if let Some(s) = atom.as_atom() {
                     for b in s.bytes() {
@@ -2502,7 +2505,11 @@ impl Drop for CompletionGuard {
         // Fires on normal return AND on panic-unwind ⇒ exactly-once decrement
         // per worker (the guard is constructed exactly once per closure, and no
         // manual `remaining.fetch_sub` remains in either worker).
-        if self.remaining.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {
+        if self
+            .remaining
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+        {
             let (lock, cvar) = &*self.done_pair;
             // POISON-RECOVER: a panic that poisoned `done` must still complete
             // the group (otherwise a poisoned mutex re-converts into a hang via
@@ -2788,7 +2795,9 @@ fn parallel_dispatch(
                 if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                     let dyn_env: Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
                         env.shared.clone();
-                    Some(crate::backend::models::gc_allocator::register_live_env(&dyn_env))
+                    Some(crate::backend::models::gc_allocator::register_live_env(
+                        &dyn_env,
+                    ))
                 } else {
                     None
                 }
@@ -2833,8 +2842,7 @@ fn parallel_dispatch(
                             // observed by the finisher's gen-gate → stale roots dropped,
                             // no over-count (§1.3 straggler exclusion). The `_guard`
                             // (entered above) is still held here, so depth > 0.
-                            let my_gen =
-                                crate::backend::models::gc_allocator::current_cycle_gen();
+                            let my_gen = crate::backend::models::gc_allocator::current_cycle_gen();
                             // Genuine-CESK self-read of the about-to-return result set:
                             // every value ∪ every binding value (the exact idiom
                             // `ParallelDispatchRootProvider::collect_roots` uses).
@@ -2978,10 +2986,12 @@ fn parallel_dispatch(
     // `RootProvider` are distinct traits on it.
     #[cfg(feature = "index-gc")]
     let live_dispatch = if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
-        Some(crate::backend::models::gc_allocator::register_live_dispatch(
-            &(Arc::clone(&root_provider)
-                as Arc<dyn crate::backend::models::gc_allocator::DispatchRoots>),
-        ))
+        Some(
+            crate::backend::models::gc_allocator::register_live_dispatch(
+                &(Arc::clone(&root_provider)
+                    as Arc<dyn crate::backend::models::gc_allocator::DispatchRoots>),
+            ),
+        )
     } else {
         None
     };
@@ -3168,7 +3178,9 @@ fn pump_parallel_wait(
             crate::backend::models::gc_allocator::drop_eval_guard_for_safepoint_full();
         crate::backend::models::gc_allocator::worker_park_and_root_in_cycle(&my_roots, my_gen);
         crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint_full(
-            &my_roots, saved_depth, my_gen,
+            &my_roots,
+            saved_depth,
+            my_gen,
         );
         // Addr-reuse ABA — MUST clear AFTER resume, mirroring
         // `worker_cooperative_safepoint` (:244). While this parent was parked the
@@ -3363,7 +3375,9 @@ fn pump_parallel_collapse_wait(
             crate::backend::models::gc_allocator::drop_eval_guard_for_safepoint_full();
         crate::backend::models::gc_allocator::worker_park_and_root_in_cycle(&my_roots, my_gen);
         crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint_full(
-            &my_roots, saved_depth, my_gen,
+            &my_roots,
+            saved_depth,
+            my_gen,
         );
         // Addr-reuse ABA — clear AFTER resume (see `pump_parallel_wait` for the
         // full rationale): a slot swept + bump-reused while this parent was parked
@@ -3605,7 +3619,9 @@ fn parallel_collapse_dispatch(
                 if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                     let dyn_env: Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
                         env.shared.clone();
-                    Some(crate::backend::models::gc_allocator::register_live_env(&dyn_env))
+                    Some(crate::backend::models::gc_allocator::register_live_env(
+                        &dyn_env,
+                    ))
                 } else {
                     None
                 }
@@ -3777,10 +3793,12 @@ fn parallel_collapse_dispatch(
     // empty → the class-2 hole unwalked).
     #[cfg(feature = "index-gc")]
     let live_dispatch = if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
-        Some(crate::backend::models::gc_allocator::register_live_dispatch(
-            &(Arc::clone(&root_provider)
-                as Arc<dyn crate::backend::models::gc_allocator::DispatchRoots>),
-        ))
+        Some(
+            crate::backend::models::gc_allocator::register_live_dispatch(
+                &(Arc::clone(&root_provider)
+                    as Arc<dyn crate::backend::models::gc_allocator::DispatchRoots>),
+            ),
+        )
     } else {
         None
     };
@@ -4263,7 +4281,10 @@ fn eval_trampoline_inner<C: EvalContext>(
     // are equally GC-walkable, so deferring a push's lowering by one tick is sound.
     let mut spine_persisted_len = 0usize;
     while let Some(work) = work_stack.pop() {
-        Continuation::persist_trampoline_fanout_spines_from(&mut continuations, spine_persisted_len);
+        Continuation::persist_trampoline_fanout_spines_from(
+            &mut continuations,
+            spine_persisted_len,
+        );
         spine_persisted_len = continuations.len();
         current_work_for_spine = Some(work.clone());
         let _published_current_work = current_work_for_spine.as_ref();
@@ -4608,9 +4629,8 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // E₀ is folded by `collect_machine_roots_live` and over-counted
                 // N× across workers but SOUND (dedup at the `as_arena_addr` mark
                 // projection — the D2.2 E₀-single-count optimisation comes later).
-                let mut my_roots: Vec<MettaValue> = Vec::with_capacity(
-                    work_stack.len() * 2 + continuations.len() * 4 + 64,
-                );
+                let mut my_roots: Vec<MettaValue> =
+                    Vec::with_capacity(work_stack.len() * 2 + continuations.len() * 4 + 64);
                 // ── E1-FLIP / CEX-1 (D1): site #1 — a LIVE trampoline activation with
                 //    in-scope S/C/K and an env0 handle. The ONE canonical
                 //    `collect_complete_thread_contribution(Trampoline{..})` publishes
@@ -4678,7 +4698,9 @@ fn eval_trampoline_inner<C: EvalContext>(
                 // E1-FLIP Path B V4: thread `&my_roots` (THIS park's reified machine)
                 // so the straddle re-park re-publishes it on every intervening cycle.
                 crate::backend::models::gc_allocator::reacquire_eval_guard_after_safepoint_full(
-                    &my_roots, saved_depth, my_gen,
+                    &my_roots,
+                    saved_depth,
+                    my_gen,
                 );
                 // L1-FLAW-1: after a possible sweep, a reused young Addr (a slot swept
                 // by the GC thread then re-bumped by a later alloc) would alias the
@@ -18822,10 +18844,10 @@ fn process_continuation<C: EvalContext>(
 // frame, the persistent E₀ env).
 #[cfg(all(test, feature = "index-gc"))]
 mod d2_1_rendezvous_integration_tests {
+    use crate::backend::environment::MettaEnvironment;
     use crate::backend::eval::cesk::operand_stack::OperandStack;
     use crate::backend::eval::cesk::roots::collect_machine_roots_live;
     use crate::backend::eval::trampoline::types::{empty_shared_bindings, Continuation, WorkItem};
-    use crate::backend::environment::MettaEnvironment;
     use crate::backend::models::gc_allocator;
     use crate::backend::models::{
         active_evaluator_count, global_factory, EvalGuard, MettaValue, MettaValueFactory,
@@ -18904,9 +18926,7 @@ mod d2_1_rendezvous_integration_tests {
                     let work_stack: Vec<WorkItem> = Vec::new();
                     let continuations: Vec<Continuation> = vec![Continuation::Done];
                     let deferred_shared_drops: Vec<
-                        Arc<
-                            crate::backend::environment::GenericEnvironmentShared<MettaValue>,
-                        >,
+                        Arc<crate::backend::environment::GenericEnvironmentShared<MettaValue>>,
                     > = Vec::new();
 
                     // Record this worker's control pointer for the requestor's
@@ -18922,9 +18942,8 @@ mod d2_1_rendezvous_integration_tests {
                     //   self-collect MY roots over MY registers (∪ deferred) →
                     //   leave the active set → publish + signal-parked + park →
                     //   rejoin the active set once the requestor clears GC_REQUESTED.
-                    let mut my_roots: Vec<MettaValue> = Vec::with_capacity(
-                        work_stack.len() * 2 + continuations.len() * 4 + 64,
-                    );
+                    let mut my_roots: Vec<MettaValue> =
+                        Vec::with_capacity(work_stack.len() * 2 + continuations.len() * 4 + 64);
                     collect_machine_roots_live(
                         &mut my_roots,
                         &operand_stack,

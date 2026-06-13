@@ -229,7 +229,6 @@ pub enum SerNode {
     Spanned(SlotRef, u32),
 }
 
-
 impl SerNode {
     /// Experiment #18: TAG5 derive-at-restore. SerNode mirrors `Node` in
     /// IDENTICAL declaration order, and this table MUST equal
@@ -390,7 +389,9 @@ pub fn capture_slice(
     }
 
     // Build the closure + emit each node, under the heap read lock.
-    let heap = global_index_heap().read().expect("global index heap poisoned");
+    let heap = global_index_heap()
+        .read()
+        .expect("global index heap poisoned");
     // reachable_closure is the non-bit-setting twin of `mark`; it visits children
     // through the SAME `child_addrs_for_mark` edge function the collector uses.
     let closure: Vec<Addr> = heap.reachable_closure(&seeds);
@@ -607,9 +608,7 @@ fn intern_node(
             let kids = resolve_all(&slice.children[*children_idx as usize], remap)?;
             heap.alloc_conjunction(&kids)
         }
-        SerNode::Error(a, b) => {
-            heap.alloc_fixed(Node::Error(a.resolve(remap)?, b.resolve(remap)?))
-        }
+        SerNode::Error(a, b) => heap.alloc_fixed(Node::Error(a.resolve(remap)?, b.resolve(remap)?)),
         SerNode::Type(a) => heap.alloc_fixed(Node::Type(a.resolve(remap)?)),
         SerNode::Quoted(a) => heap.alloc_fixed(Node::Quoted(a.resolve(remap)?)),
         SerNode::Lazy(a) => heap.alloc_fixed(Node::Lazy(a.resolve(remap)?)),
@@ -618,6 +617,12 @@ fn intern_node(
             heap.alloc_spanned(inner, slice.spans[*span_idx as usize].into())
         }
     };
+    // exp46: restore mints BYPASS the factory chokepoint (`alloc_with_reuse_
+    // pressure`), so they must populate the shared Inner column themselves —
+    // post-alloc, pre-escape (the handle is built from this Addr by `resolve`
+    // consumers only after we return). `populate_column` skips Space/Memo
+    // (id-store-served, v3-F1) and self-ensures the column segment.
+    heap.populate_column(addr);
     Ok(addr)
 }
 
@@ -696,7 +701,10 @@ mod tests {
         let restored = restore_slice(&slice).expect("restore must succeed");
         assert_eq!(restored.control.len(), 1);
         let after = view_to_string(restored.control[0]);
-        assert_eq!(before, after, "restored control value structurally identical");
+        assert_eq!(
+            before, after,
+            "restored control value structurally identical"
+        );
         assert_eq!(restored.depth, 7);
         assert_eq!(restored.total_reductions, 4242);
     }
@@ -845,13 +853,14 @@ mod tests {
         // A raw IndexHeap mark+sweep is an INTERNAL collection step; the production
         // cycle (`mark_sweep_if_over_watermark`, index_heap.rs ~2442) ALWAYS follows
         // the sweep with the Addr-keyed thread-local cache invalidation. Replicate it
-        // so a slot reused by restore no longer renders its prior occupant through the
-        // INNER_SHADOW reconstruction cache — exactly the consistent heap a real
-        // directive-boundary `restore_slice` sees. (Restore itself is correct: it
-        // rebuilds FRESH nodes — `view()` shows the right SExpr structure — this only
-        // refreshes the display/hash caches the raw primitive left stale.)
+        // so a slot reused by restore no longer renders its prior occupant through
+        // stale hash caches — exactly the consistent heap a real directive-boundary
+        // `restore_slice` sees. (Restore itself is correct: it rebuilds FRESH nodes —
+        // `view()` shows the right SExpr structure — this only refreshes the
+        // display/hash caches the raw primitive left stale. The shared Inner column
+        // needs no clear: reused cells are REWRITTEN by `populate_column` at the
+        // restore mint, before the new handle escapes.)
         crate::backend::eval::trampoline::eval_loop::clear_aba_sensitive_caches();
-        crate::backend::models::metta_value::clear_inner_shadow();
 
         // Now restore: this re-interns the slice into FRESH Addrs and rebuilds the
         // control root. Reading it must not dereference any freed source slot.

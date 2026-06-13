@@ -942,6 +942,23 @@ facts the proofs rely on:
   the same pins as the progress proof (idempotence `other => other`, `persist_from` suffix-lower,
   the loop-top persist + watermark-set, the Resume-arm clamp).
 
+- InnerColumnReadRefinement (`formal/rocq/gc/InnerColumnReadRefinement.v`,
+  `tla/InnerColumnReadRefinement.tla`) — exp46 formal retirement of the per-thread
+  `INNER_SHADOW` reader. Rocq proves the source refinement: `Space`/`Memo` handles route to the
+  append-only id store (`space_memo_reads_id_store`), every other variant routes to the shared
+  column (`non_space_memo_reads_shared_column`), and a POD column rewrite before handle escape is
+  sufficient to prevent stale reads (`pod_rewrite_before_escape_prevents_stale_read`). The explicit
+  counterexample `missing_pod_rewrite_has_stale_counterexample` witnesses why the rewrite is
+  load-bearing. TLC checks the same interleaving surface: `_all.cfg` passes with
+  `RewriteBeforeEscape=TRUE` and `UseIdStoreForSpaceMemo=TRUE`; `_no_rewrite.cfg` violates
+  `NoStaleRead` when a reused POD Addr can escape before its cell is rewritten; and
+  `_space_memo_column.cfg` violates `NoStaleRead` when Arc-backed Space/Memo are incorrectly routed
+  through the POD column. Source coupling pins the live implementation to the proof: `inner_ref_index`
+  reads `inner_column::column_read(addr)` without heap-lock/TLS materialization, the Space/Memo arm
+  calls `prebuilt_space_memo_inner(addr)`, all routed factory paths plus continuation-slice restore
+  call `populate_column` post-alloc/pre-escape, and the retired `INNER_SHADOW` functions are absent
+  from `metta_value.rs`.
+
 ## Harness
 
 Run:

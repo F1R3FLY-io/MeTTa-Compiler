@@ -589,9 +589,7 @@ impl MettaValue {
              variant code (got {tag}; see handle-tag-design-2026-06-12.md)"
         );
         MettaValue {
-            tagged: ((tag as usize) << TAG5_SHIFT)
-                | ((addr.raw() as usize) << 4)
-                | (flags & 0xF),
+            tagged: ((tag as usize) << TAG5_SHIFT) | ((addr.raw() as usize) << 4) | (flags & 0xF),
         }
     }
 
@@ -987,129 +985,6 @@ pub(crate) fn is_inline_singleton_inner_ptr(ptr: *const MettaValueInner) -> bool
         || std::ptr::eq(ptr, &INLINE_FALSE_INNER)
 }
 
-/// One [`INNER_SHADOW`] page: 512 slots × 8 B = one 4 KiB OS page. Slots hold
-/// the materialized box for `raw = (page_idx << SHADOW_PAGE_BITS) | slot_idx`.
-type ShadowPage = [Option<Box<MettaValueInner>>; SHADOW_PAGE_SLOTS];
-const SHADOW_PAGE_BITS: usize = 9;
-const SHADOW_PAGE_SLOTS: usize = 1 << SHADOW_PAGE_BITS;
-
-thread_local! {
-    /// Index-mode `inner_ref()` materialization cache (CRUX Step 2c): an arena
-    /// handle's payload is an `Addr`, not a `*const MettaValueInner`, so a slab
-    /// deref is invalid in Index mode. `inner_ref()` instead reads the `Node`
-    /// from the global index heap and materializes the slab-era `MettaValueInner`
-    /// here, returning a `&'static` to the boxed value.
-    ///
-    /// Keyed by `Addr.raw()` (NOT call count): the arena is **non-moving**, so a
-    /// handle's `Addr` is stable, and repeated `inner_ref()` on the same handle
-    /// reuses ONE box — bounding the cache by distinct live Addrs and giving a
-    /// **stable** materialized pointer per handle (so `from_inner` round-trips and
-    /// pointer-identity comparisons behave). The boxes' pointees are
-    /// address-stable across `Vec` growth (growth moves only the 8-byte
-    /// `Option<Box>` slots, never the Box targets), so a laundered `&'static`
-    /// stays valid until [`clear_inner_shadow`]. For Inc 2–4 (no live Index
-    /// sweep) it persists, bounded by the live heap; Inc 6 clears it on the sweep
-    /// epoch.
-    ///
-    /// Perf (F1): `Addr.raw()` is a DENSE bump-allocated id, so this is a
-    /// DIRECT-INDEXED two-level PAGED directory (page = raw >> 9, slot =
-    /// raw & 511), not a `HashMap` — `inner_ref_index` was the single hottest
-    /// symbol (~33% at FANOUT=0), dominated by the per-access cache lookup
-    /// during root scanning; a two-load array index removes the hash + probe +
-    /// entry machinery.
-    ///
-    /// WHY PAGED and not one flat `Vec` (the F1 mmverify lesson): the shadow is
-    /// THREAD-LOCAL and mmverify-style workloads spawn ~200k short-lived worker
-    /// threads (strace: 208k `clone3`), each starting EMPTY. A flat
-    /// `resize_with(max_raw_id)` made every fresh thread memset a multi-MB Vec
-    /// on its first high-id touch (25M page faults; 2.2x slab). With 4 KiB
-    /// pages a fresh thread allocates only the pages it actually touches
-    /// (typically a few — ~KBs), while a long-lived thread still gets O(1)
-    /// direct indexing over the dense id space.
-    ///
-    /// REJECTED-alternative note (experiment #15, 2026-06-11): a cfg-split cell
-    /// (debug: `RefCell` tripwire, release: `UnsafeCell` via a `with_shadow`
-    /// chokepoint) to drop the borrow-flag RMW pair that `perf annotate`
-    /// attributed ~41% of `inner_ref_index`'s hottest instructions to. The
-    /// interleaved 51-round Welch A/B (Toothbrush default env, pre-registered
-    /// amendment `e26c894b`) REJECTED it: one-tailed p=0.159, Cohen's d=0.199
-    /// (locked bar: p<0.05 AND d>=0.5); on quiet rounds the delta was +0.44%
-    /// (noise). Lesson: the dec/cmp borrow bookkeeping executes in the shadow
-    /// of the page-chase loads (memory-level parallelism) — instruction-level
-    /// attribution inside a function does not imply wall-clock criticality.
-    /// Patch archived at docs/cesk-gc/rejected-patches/
-    /// exp15-release-unsafecell-shadow.patch; do not re-attempt without a
-    /// profile showing the loads no longer dominate.
-    static INNER_SHADOW: std::cell::RefCell<Vec<Option<Box<ShadowPage>>>> =
-        std::cell::RefCell::new(Vec::new());
-
-    /// GC sweep epoch observed by this thread's index-mode materialization cache.
-    ///
-    /// A dedicated GC thread cannot clear another mutator's thread-local
-    /// `INNER_SHADOW`. Since shadow entries contain child `MettaValue` handles
-    /// copied from the indexed heap, every mutator must lazily discard entries
-    /// from an older sweep epoch before `inner_ref_index` can return one.
-    ///
-    /// VETOED-alternative note (experiment #14, 2026-06-11): moving this check
-    /// from per-access to enumerated safepoint/guard boundaries (EvalGuard
-    /// enter, reacquire, worker resume, requester post-cycle recv, + a debug
-    /// tripwire) measured -3.0% (accepted on the locked criterion, p=7e-5) but
-    /// was VETOED by the gate wall: stress_multidir FANOUT=8 ASAN SEGV in a
-    /// worker + sorted-content nondeterminism (3 hashes/10 runs) — a park/
-    /// resume edge the 6-boundary enumeration missed (and the FANOUT=0 debug
-    /// tripwire cannot see). The per-access check is correct-by-construction
-    /// LOCALLY; a boundary enumeration is a fragile global invariant that every
-    /// future park edge must remember to maintain. Do not re-attempt without a
-    /// machine-checked enumeration of ALL park/resume edges (patch preserved at
-    /// /tmp/exp14-vetoed-boundary-sync.patch; pgmcp experiment #14).
-    static INNER_SHADOW_EPOCH: Cell<u64> = const { Cell::new(0) };
-}
-
-/// Clear the index-mode `inner_ref()` materialization cache. Called at the Inc 6
-/// sweep epoch (and on a test mode-reset). No-op effect in Slab mode (the cache
-/// is only populated when `gc_mode_is_index()`).
-#[allow(dead_code)] // wired into the safepoint/sweep epoch in Inc 6; used by tests now
-pub(crate) fn clear_inner_shadow() {
-    // Drop every allocated page (freeing its materialized boxes — no retention
-    // across cycles) but KEEP the directory length, so re-population re-allocates
-    // only the pages actually touched again. O(allocated pages + occupied slots).
-    INNER_SHADOW.with(|c| {
-        for page in c.borrow_mut().iter_mut() {
-            *page = None;
-        }
-    });
-    INNER_SHADOW_EPOCH.with(|epoch| {
-        epoch.set(crate::backend::models::gc_allocator::gc_sweep_epoch());
-    });
-}
-
-#[inline]
-fn ensure_inner_shadow_epoch_current() {
-    let current_epoch = crate::backend::models::gc_allocator::gc_sweep_epoch();
-    INNER_SHADOW_EPOCH.with(|epoch| {
-        if epoch.get() != current_epoch {
-            INNER_SHADOW.with(|c| {
-                for page in c.borrow_mut().iter_mut() {
-                    *page = None;
-                }
-            });
-            epoch.set(current_epoch);
-        }
-    });
-}
-
-/// Test-only: number of distinct Addrs currently materialized in the shadow cache.
-#[cfg(test)]
-pub(crate) fn inner_shadow_len() -> usize {
-    INNER_SHADOW.with(|c| {
-        c.borrow()
-            .iter()
-            .flatten()
-            .map(|page| page.iter().filter(|slot| slot.is_some()).count())
-            .sum()
-    })
-}
-
 impl MettaValue {
     // ======================================================================
     // NaN-boxing inline discriminant and construction
@@ -1198,67 +1073,124 @@ impl MettaValue {
             return self.inner_ref_inline();
         }
         // Index-arena mode (CRUX Step 2c): the payload is an `Addr`, not a slab
-        // pointer — materialize the `MettaValueInner` from the heap (Addr-keyed
-        // shadow cache). Default Slab mode skips this perfectly-predicted branch,
-        // so the slab deref below is byte-identical.
+        // pointer — read the prebuilt `MettaValueInner` from the shared Inner
+        // column (exp46). Default Slab mode skips this perfectly-predicted
+        // branch, so the slab deref below is byte-identical.
         if gc_mode_is_index() {
             return self.inner_ref_index();
         }
         unsafe { &*((self.tagged & PTR_MASK) as *const MettaValueInner) }
     }
 
-    /// Index-mode materialization of `inner_ref()` (cold; see [`INNER_SHADOW`]).
-    /// Reads the `Node` at this handle's `Addr` and returns a `&'static`
-    /// `MettaValueInner` boxed in the Addr-keyed per-thread shadow cache. Does NOT
-    /// strip `Spanned` (matches the slab `inner_ref` contract).
-    #[cold]
-    #[inline(never)]
+    /// Index-mode `inner_ref()` (exp46 v2): read the arena-coresident SHARED
+    /// Inner column — two loads (`COLUMN_DIR[seg]` → cell), no TLS, no
+    /// `RefCell`, no epoch handshake, no lock. The cell was written by the
+    /// allocating thread at intern/slot-reuse BEFORE the handle escaped
+    /// (`inner_column` module doc; cross-thread visibility rides the handle's
+    /// own escape channel). `Space`/`Memo` payloads are `Arc`-backed
+    /// (non-POD) and are NEVER column-stored (v3-F1): those two TAG5 codes
+    /// branch to the heap's append-only prebuilt id store instead (cold —
+    /// spaces/memos are few and long-lived). Does NOT strip `Spanned`
+    /// (matches the slab `inner_ref` contract).
+    ///
+    /// Replaces the per-thread `INNER_SHADOW` paged cache, whose per-worker
+    /// re-materialization multiplied work N-fold under FANOUT (the 2.25×
+    /// parallel decomposition) — design:
+    /// docs/cesk-gc/inner-column-v2-design-2026-06-12.md. The shadow's own
+    /// optimization history (exp14 boundary-sync VETO, exp15 UnsafeCell
+    /// REJECT) is preserved in docs/cesk-gc/f1-profile-post309-2026-06-11.md
+    /// and docs/cesk-gc/rejected-patches/ — both notes are shadow-specific
+    /// and die with it.
+    #[inline]
     fn inner_ref_index(&self) -> &'static MettaValueInner {
         let raw = (self.tagged >> 4) as u32;
-        ensure_inner_shadow_epoch_current();
-        INNER_SHADOW.with(|c| {
-            let mut dir = c.borrow_mut();
-            let page_idx = (raw as usize) >> SHADOW_PAGE_BITS;
-            let slot_idx = (raw as usize) & (SHADOW_PAGE_SLOTS - 1);
-            if page_idx >= dir.len() {
-                // Directory growth is 8 B per page entry (≈ 2 KiB per MiB of id
-                // space) — trivial even for a fresh short-lived thread.
-                dir.resize_with(page_idx + 1, || None);
+        let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(raw);
+        if matches!(self.tag5(), TAG5_SPACE | TAG5_MEMO) {
+            return Self::space_memo_inner_index(addr);
+        }
+        // SAFETY: `self` is a live handle — collector soundness guarantees the
+        // column cell was written before this handle escaped, and a live
+        // handle precludes its segment's release (the I2 argument).
+        let out = unsafe { crate::backend::eval::cesk::inner_column::column_read(addr) };
+        #[cfg(debug_assertions)]
+        self.debug_assert_column_matches_node(addr, out);
+        out
+    }
+
+    /// Cold `Space`/`Memo` arm of [`inner_ref_index`] (exp46 v3-F1): launder
+    /// the prebuilt Inner from the heap's never-freed id store (the `view_at`
+    /// launder precedent — `Box` pointees are address-stable across table
+    /// growth and the tables have no removal path).
+    #[cold]
+    #[inline(never)]
+    fn space_memo_inner_index(
+        addr: crate::backend::eval::cesk::index_arena::Addr,
+    ) -> &'static MettaValueInner {
+        let heap = crate::backend::eval::cesk::index_heap::global_index_heap()
+            .read()
+            .expect("index heap poisoned");
+        let inner = heap.prebuilt_space_memo_inner(addr);
+        // SAFETY: see the doc comment — never-freed, address-stable Box target.
+        unsafe { &*(inner as *const MettaValueInner) }
+    }
+
+    /// exp46 F4: the NODE-GROUNDED column oracle, asserted on EVERY column
+    /// read in debug builds (the 483-fixture DEBUG conformance corpus + the
+    /// greenwall exercise it end-to-end). A fresh `materialize_inner` from
+    /// the Node must agree with the column cell: POINTER equality for
+    /// laundered payloads (same Node ⇒ same side-arena pointee — strictly
+    /// stronger than structural equality, and it catches same-variant
+    /// slot-reuse desync, which tag-only checking cannot see), value
+    /// equality for scalars/ids/handle bits. Also re-asserts the exp18 I1
+    /// handle-tag/variant agreement (totality at every mint; STRICT, no
+    /// UNSET tolerance — see handle-tag-design-2026-06-12.md I1).
+    #[cfg(debug_assertions)]
+    fn debug_assert_column_matches_node(
+        &self,
+        addr: crate::backend::eval::cesk::index_arena::Addr,
+        col: &MettaValueInner,
+    ) {
+        use MettaValueInner as I;
+        debug_assert!(
+            self.tag5() == inner_variant_code(col),
+            "TAG5/column disagreement: handle tag {} vs column variant {} (raw {:#x})",
+            self.tag5(),
+            inner_variant_code(col),
+            self.tagged
+        );
+        let fresh = crate::backend::eval::cesk::index_heap::global_index_heap()
+            .read()
+            .expect("index heap poisoned")
+            .materialize_inner(addr);
+        let agree = match (col, &fresh) {
+            (I::Atom(a), I::Atom(b)) | (I::String(a), I::String(b)) => std::ptr::eq(*a, *b),
+            (I::Bool(a), I::Bool(b)) => a == b,
+            (I::Long(a), I::Long(b)) => a == b,
+            (I::Float(a), I::Float(b)) => a.to_bits() == b.to_bits(),
+            (I::SExpr(a), I::SExpr(b)) | (I::Conjunction(a), I::Conjunction(b)) => {
+                std::ptr::eq(*a, *b)
             }
-            // First touch of this 4 KiB page on this thread: allocate it. A
-            // fresh worker thread pays only for the pages it actually touches.
-            let page = dir[page_idx]
-                .get_or_insert_with(|| Box::new([const { None }; SHADOW_PAGE_SLOTS]));
-            let boxed = page[slot_idx].get_or_insert_with(|| {
-                let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(raw);
-                Box::new(
-                    crate::backend::eval::cesk::index_heap::global_index_heap()
-                        .read()
-                        .expect("index heap poisoned")
-                        .materialize_inner(addr),
-                )
-            });
-            // SAFETY: the box's pointee is address-stable (directory/page growth
-            // relocates only the 8-byte Box slots, never the Box targets), and a
-            // slot's box is dropped only by clear_inner_shadow()/the sweep-epoch
-            // handshake at a quiescent point — so the laundered &'static
-            // outlives this borrow_mut guard.
-            let out = unsafe { &*(&**boxed as *const MettaValueInner) };
-            // exp18 I1 tripwire (design v4.1): handle-tag/node-variant
-            // agreement, asserted on EVERY materialization — the 483-fixture
-            // DEBUG oracle + greenwall exercise it across the whole corpus.
-            // STRICT (no UNSET tolerance): totality holds at every mint.
-            #[cfg(debug_assertions)]
-            debug_assert!(
-                self.tag5() == inner_variant_code(out),
-                "TAG5/node disagreement: handle tag {} vs materialized variant {} \
-                 (raw {:#x}) — see handle-tag-design-2026-06-12.md I1",
-                self.tag5(),
-                inner_variant_code(out),
-                self.tagged
-            );
-            out
-        })
+            (I::Error(a1, d1), I::Error(a2, d2)) => {
+                a1.tagged == a2.tagged && d1.tagged == d2.tagged
+            }
+            (I::Type(a), I::Type(b)) | (I::Quoted(a), I::Quoted(b)) | (I::Lazy(a), I::Lazy(b)) => {
+                a.tagged == b.tagged
+            }
+            (I::State(a), I::State(b)) => a == b,
+            (I::Unit, I::Unit) | (I::Empty, I::Empty) | (I::NotReducible, I::NotReducible) => true,
+            (I::Spanned(a, s1), I::Spanned(b, s2)) => {
+                a.tagged == b.tagged && std::ptr::eq(*s1, *s2)
+            }
+            // Space/Memo never reach the column (id-store-served, v3-F1);
+            // any other pairing is a variant mismatch.
+            _ => false,
+        };
+        debug_assert!(
+            agree,
+            "column/node payload desync at raw {:#x} (tag {}) — exp46 F4 oracle",
+            self.tagged,
+            self.tag5()
+        );
     }
 
     /// Slow path for `inner_ref()` on inline NaN-boxed values.
@@ -1797,7 +1729,10 @@ impl MettaValue {
             let tag = self.tag5();
             if tag != TAG5_ATOM && tag != TAG5_SPANNED {
                 debug_assert!(
-                    !matches!(self.inner_ref(), MettaValueInner::Atom(_) | MettaValueInner::Spanned(..)),
+                    !matches!(
+                        self.inner_ref(),
+                        MettaValueInner::Atom(_) | MettaValueInner::Spanned(..)
+                    ),
                     "TAG5 fast-negative disagrees with materialization (as_atom)"
                 );
                 return None;
@@ -1904,7 +1839,10 @@ impl MettaValue {
             let tag = self.tag5();
             if tag != TAG5_SEXPR && tag != TAG5_SPANNED {
                 debug_assert!(
-                    !matches!(self.inner_ref(), MettaValueInner::SExpr(_) | MettaValueInner::Spanned(..)),
+                    !matches!(
+                        self.inner_ref(),
+                        MettaValueInner::SExpr(_) | MettaValueInner::Spanned(..)
+                    ),
                     "TAG5 fast-negative disagrees with materialization (as_sexpr)"
                 );
                 return None;
@@ -1941,7 +1879,10 @@ impl MettaValue {
             let tag = self.tag5();
             if tag != TAG5_ERROR && tag != TAG5_SPANNED {
                 debug_assert!(
-                    !matches!(self.inner_ref(), MettaValueInner::Error(..) | MettaValueInner::Spanned(..)),
+                    !matches!(
+                        self.inner_ref(),
+                        MettaValueInner::Error(..) | MettaValueInner::Spanned(..)
+                    ),
                     "TAG5 fast-negative disagrees with materialization (as_error)"
                 );
                 return None;
@@ -1983,7 +1924,10 @@ impl MettaValue {
             let tag = self.tag5();
             if tag != TAG5_CONJUNCTION && tag != TAG5_SPANNED {
                 debug_assert!(
-                    !matches!(self.inner_ref(), MettaValueInner::Conjunction(_) | MettaValueInner::Spanned(..)),
+                    !matches!(
+                        self.inner_ref(),
+                        MettaValueInner::Conjunction(_) | MettaValueInner::Spanned(..)
+                    ),
                     "TAG5 fast-negative disagrees with materialization (as_conjunction)"
                 );
                 return None;
@@ -2064,7 +2008,10 @@ impl MettaValue {
             let tag = self.tag5();
             if tag != TAG5_QUOTED && tag != TAG5_SPANNED {
                 debug_assert!(
-                    !matches!(self.inner_ref(), MettaValueInner::Quoted(_) | MettaValueInner::Spanned(..)),
+                    !matches!(
+                        self.inner_ref(),
+                        MettaValueInner::Quoted(_) | MettaValueInner::Spanned(..)
+                    ),
                     "TAG5 fast-negative disagrees with materialization (as_quoted_ref)"
                 );
                 return None;
@@ -3054,7 +3001,10 @@ impl MettaValueTrait for MettaValue {
             let addr = crate::backend::eval::cesk::index_arena::Addr::from_raw(ptr as u32);
             // exp18: TAG5 rides the inner_ptr pack at payload [36:32].
             let tag = (((ptr as u64) >> 32) & 0x1F) as u8;
-            debug_assert!(tag <= 18, "non-inner_ptr-packed payload leak (from_inner_ptr)");
+            debug_assert!(
+                tag <= 18,
+                "non-inner_ptr-packed payload leak (from_inner_ptr)"
+            );
             // exp19: flags are CONSERVATIVELY forced (R4-F2: the >>4 pack destroys
             // them) — flag=1 never breaks anything (routes to var/safe paths and
             // disables the collect_variables prune for this subtree only).
@@ -3225,7 +3175,10 @@ impl MettaValueTrait for MettaValue {
             let tag = self.tag5();
             if tag != TAG5_ERROR && tag != TAG5_SPANNED {
                 debug_assert!(
-                    !matches!(self.inner_ref(), MettaValueInner::Error(..) | MettaValueInner::Spanned(..)),
+                    !matches!(
+                        self.inner_ref(),
+                        MettaValueInner::Error(..) | MettaValueInner::Spanned(..)
+                    ),
                     "TAG5 fast-negative disagrees with materialization (trait as_error)"
                 );
                 return None;
@@ -3427,7 +3380,12 @@ impl MettaValueTrait for MettaValue {
             let tag = self.tag5();
             if tag != TAG5_ATOM && tag != TAG5_SEXPR && tag != TAG5_SPANNED {
                 debug_assert!(
-                    !matches!(self.inner_ref(), MettaValueInner::Atom(_) | MettaValueInner::SExpr(_) | MettaValueInner::Spanned(..)),
+                    !matches!(
+                        self.inner_ref(),
+                        MettaValueInner::Atom(_)
+                            | MettaValueInner::SExpr(_)
+                            | MettaValueInner::Spanned(..)
+                    ),
                     "TAG5 fast-negative disagrees with materialization (get_head_symbol)"
                 );
                 return None;

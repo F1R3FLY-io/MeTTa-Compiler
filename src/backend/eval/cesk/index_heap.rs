@@ -55,10 +55,9 @@ use crate::backend::eval::cesk::index_node::{ByteRef, ChildRef, Node, SpanRef};
 use crate::backend::eval::cesk::store::Store;
 use crate::backend::models::gc_allocator::hash_cons_key;
 use crate::backend::models::metta_value::{
-    is_variable_str, MettaValueInner, ValueView, FLAG_HAS_VARIABLES, TAG5_ATOM,
-    TAG5_CONJUNCTION, TAG5_ERROR, TAG5_FLOAT, TAG5_LAZY, TAG5_LONG, TAG5_MEMO,
-    TAG5_NOT_REDUCIBLE, TAG5_QUOTED, TAG5_SEXPR, TAG5_SPACE, TAG5_SPANNED, TAG5_STATE,
-    TAG5_STRING, TAG5_TYPE,
+    is_variable_str, MettaValueInner, ValueView, FLAG_HAS_VARIABLES, TAG5_ATOM, TAG5_CONJUNCTION,
+    TAG5_ERROR, TAG5_FLOAT, TAG5_LAZY, TAG5_LONG, TAG5_MEMO, TAG5_NOT_REDUCIBLE, TAG5_QUOTED,
+    TAG5_SEXPR, TAG5_SPACE, TAG5_SPANNED, TAG5_STATE, TAG5_STRING, TAG5_TYPE,
 };
 use crate::backend::models::{MemoHandle, MettaValue, MettaValueFactory, SpaceHandle};
 use crate::ir::Span;
@@ -227,6 +226,17 @@ pub struct IndexHeap {
     space_table: Vec<SpaceHandle>,
     /// `Arc`-backed `Memo` handles, indexed by `Node::Memo(id)`.
     memo_table: Vec<MemoHandle>,
+    /// exp46 (v3-F1): prebuilt `MettaValueInner::Space` per space id — the
+    /// `inner_ref_index` v2 branch target for `TAG5_SPACE` handles. `Space`/
+    /// `Memo` payloads are `Arc`-backed (non-POD), so they are NEVER written
+    /// to the shared Inner column; this append-only, never-freed store serves
+    /// a stable `&MettaValueInner` instead (the `view_at` launder precedent:
+    /// `Box` pointees are address-stable across `Vec` growth, and like
+    /// `space_table` there is no removal path). Spaces/memos are few,
+    /// long-lived, and cold — no hot profile shows them.
+    space_inner_table: Vec<Box<MettaValueInner>>,
+    /// exp46 (v3-F1): prebuilt `MettaValueInner::Memo` per memo id.
+    memo_inner_table: Vec<Box<MettaValueInner>>,
     /// Ground-SExpr hash-cons table (CRUX Step 4): content hash of children's
     /// `tagged` bits → the canonical interned handle. Mirrors the slab's
     /// thread-local table (`gc_allocator.rs`) exactly — ground-SExpr-only, the
@@ -239,8 +249,11 @@ pub struct IndexHeap {
     // Keyed on `hash_cons_key` (already a well-distributed u64), so the default
     // SipHash would re-hash an existing hash — use the identity build-hasher
     // (perf F1: the index access/alloc path spent ~10% in SipHash on handle keys).
-    hash_cons:
-        std::collections::HashMap<u64, MettaValue, crate::backend::hash_utils::IdentityU64BuildHasher>,
+    hash_cons: std::collections::HashMap<
+        u64,
+        MettaValue,
+        crate::backend::hash_utils::IdentityU64BuildHasher,
+    >,
 }
 
 impl Default for IndexHeap {
@@ -279,6 +292,8 @@ impl IndexHeap {
             pending_side_reclaims: Vec::new(),
             space_table: Vec::new(),
             memo_table: Vec::new(),
+            space_inner_table: Vec::new(),
+            memo_inner_table: Vec::new(),
             hash_cons: std::collections::HashMap::with_hasher(
                 crate::backend::hash_utils::IdentityU64BuildHasher,
             ),
@@ -410,6 +425,9 @@ impl IndexHeap {
     /// Register a `Space` handle and allocate its node (id → side table).
     pub fn alloc_space(&mut self, handle: SpaceHandle) -> Addr {
         let id = self.space_table.len() as u64;
+        // exp46 (v3-F1): prebuild the id-store Inner the column will never hold.
+        self.space_inner_table
+            .push(Box::new(MettaValueInner::Space(handle.clone())));
         self.space_table.push(handle);
         self.alloc_fixed(Node::Space(id))
     }
@@ -417,6 +435,8 @@ impl IndexHeap {
     /// Register a `Memo` handle and allocate its node.
     pub fn alloc_memo(&mut self, handle: MemoHandle) -> Addr {
         let id = self.memo_table.len() as u64;
+        self.memo_inner_table
+            .push(Box::new(MettaValueInner::Memo(handle.clone())));
         self.memo_table.push(handle);
         self.alloc_fixed(Node::Memo(id))
     }
@@ -838,6 +858,26 @@ impl IndexHeap {
         &self.memo_table[id as usize]
     }
 
+    /// The prebuilt `MettaValueInner` for a `Node::Space(id)`/`Node::Memo(id)`
+    /// — the `inner_ref_index` v2 Space/Memo branch (exp46, v3-F1). These two
+    /// variants' payloads are `Arc`-backed (non-POD) and are NEVER written to
+    /// the shared Inner column; this append-only, never-freed id store serves
+    /// them instead. The returned reference's pointee is a `Box` target that
+    /// is address-stable across table growth and never freed — laundering it
+    /// to `&'static` is sound for exactly the reasons `space_handle`'s
+    /// `view_at` launder is.
+    pub(crate) fn prebuilt_space_memo_inner(&self, addr: Addr) -> &MettaValueInner {
+        match self.arena.get(addr) {
+            Node::Space(id) => &self.space_inner_table[*id as usize],
+            Node::Memo(id) => &self.memo_inner_table[*id as usize],
+            other => unreachable!(
+                "prebuilt_space_memo_inner on non-Space/Memo node (variant_code {}) — \
+                 TAG5 branch desync",
+                other.variant_code()
+            ),
+        }
+    }
+
     /// Decode the value at `addr` into a [`ValueView`], stripping `Spanned`
     /// layers — the index-mode body of [`MettaValue::view()`]. Composite arms
     /// borrow `&'static` side-arena / handle-table data via [`launder`] (sound
@@ -1119,15 +1159,21 @@ impl IndexHeap {
             Node::Memo(id) => SerNode::Memo(id),
             Node::SExpr(_) => {
                 let idx = children.len() as u32;
-                let kids: Vec<SlotRef> =
-                    self.children(addr).iter().map(|c| SlotRef::from_value(*c)).collect();
+                let kids: Vec<SlotRef> = self
+                    .children(addr)
+                    .iter()
+                    .map(|c| SlotRef::from_value(*c))
+                    .collect();
                 children.push(kids);
                 SerNode::SExpr { children_idx: idx }
             }
             Node::Conjunction(_) => {
                 let idx = children.len() as u32;
-                let kids: Vec<SlotRef> =
-                    self.children(addr).iter().map(|c| SlotRef::from_value(*c)).collect();
+                let kids: Vec<SlotRef> = self
+                    .children(addr)
+                    .iter()
+                    .map(|c| SlotRef::from_value(*c))
+                    .collect();
                 children.push(kids);
                 SerNode::Conjunction { children_idx: idx }
             }
@@ -1938,7 +1984,7 @@ impl Store<MettaValue> for IndexHeapStore {
 // ============================================================================
 pub mod index_gc {
     use super::global_index_heap;
-    use crate::backend::models::metta_value::{clear_inner_shadow, gc_mode_is_index};
+    use crate::backend::models::metta_value::gc_mode_is_index;
     use crate::backend::models::{active_evaluator_count, worker_ever_spawned, MettaValue};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::RwLock;
@@ -2574,7 +2620,10 @@ pub mod index_gc {
 
         crate::backend::models::gc_allocator::bump_gc_sweep_epoch();
         crate::backend::eval::trampoline::eval_loop::clear_aba_sensitive_caches();
-        clear_inner_shadow();
+        // exp46: the shared Inner column needs NO invalidation here — a reused
+        // slot's cell is REWRITTEN by `populate_column` before the new handle
+        // escapes (write-point 2), and between sweep and reuse no live handle
+        // names the Addr, so no reader can observe the stale cell.
         crate::backend::eval::trampoline::dispatch_hints::clear_eval_memo();
         crate::backend::eval::trampoline::dispatch_hints::clear_match_result_cache();
 
@@ -2739,11 +2788,6 @@ pub mod index_gc {
             (heap.live_bytes(), heap.old_live_bytes(), stats, did_major)
         };
 
-        // Drop this thread's stale `MettaValueInner` materialization cache: a swept
-        // (young or whole-heap) segment's `Addr`s are now invalid/reusable, so any
-        // cached inner keyed by such an Addr must go — required after BOTH a minor
-        // (a reused young Addr) and a major. This thread is the only one with a
-        // populated INNER_SHADOW in the single-threaded regime.
         // C1.c #1: when this collection reused an `Addr` for new content, every
         // Addr-keyed / content-hash-keyed cache that could still hold the PRIOR
         // occupant's entry must be invalidated — else a later lookup (set-op hashing,
@@ -2772,9 +2816,10 @@ pub mod index_gc {
         // thread's local epoch to the post-bump value (no redundant re-clear there).
         crate::backend::models::gc_allocator::bump_gc_sweep_epoch();
         crate::backend::eval::trampoline::eval_loop::clear_aba_sensitive_caches();
-        // Index-only: the laundered-`MettaValueInner` shadow keyed by `Addr` (a reused
-        // Addr invalidates any cached inner). Not part of the slab ABA set.
-        clear_inner_shadow();
+        // exp46: the per-thread INNER_SHADOW this site used to clear is DELETED —
+        // the shared Inner column is rewritten at slot reuse (`populate_column`,
+        // write-point 2) before the new handle escapes, so Addr reuse cannot
+        // serve a stale inner. (Not part of the slab ABA set either way.)
         // EVAL_MEMO + MATCH_RESULT_CACHE are NOT in the slab ABA set — there they are
         // query-generation-protected under the deterministic-GC invariant, which index
         // Addr-reuse ACROSS DIRECTIVES violates (no `query_gen` bump between directives
@@ -3796,7 +3841,11 @@ mod tests {
             "NoStaleOldMark: the stale old mark is cleared by the rendezvous minor"
         );
         assert_eq!(heap.str_slice(old_atom), "old-stale", "old slot untouched");
-        assert_eq!(heap.str_slice(young_live), "young-live", "live young survives");
+        assert_eq!(
+            heap.str_slice(young_live),
+            "young-live",
+            "live young survives"
+        );
         assert!(
             stats.reclaimed_to_free_list >= 1,
             "the unreachable young orphan is reclaimed"
@@ -4368,14 +4417,11 @@ mod tests {
         // CRUX Step 2c+3a: the typed accessors, inner_ref/inner/inner_raw, and
         // inner_ptr all work in Index mode without per-accessor edits — they
         // funnel through the now-mode-aware inner_ref() (Addr-keyed materialization).
-        use crate::backend::models::metta_value::{
-            clear_inner_shadow, inner_shadow_len, MettaValueInner,
-        };
+        use crate::backend::models::metta_value::MettaValueInner;
         use crate::backend::models::metta_value_trait::MettaValueTrait; // hash_value
         use crate::backend::models::MettaValueFactory;
         use crate::ir::{Position, Span};
         let _mode = enter_index_mode_for_test();
-        clear_inner_shadow();
         let f = IndexFactory;
 
         // ── typed accessors (is_X / as_X) ────────────────────────────────────
@@ -4432,12 +4478,12 @@ mod tests {
             matches!(sp.inner(), MettaValueInner::Atom(x) if *x == "y"),
             "inner strips Spanned"
         );
-        // Addr-keyed cache → a stable inner_ref pointer for the same handle.
+        // exp46: the shared Inner column → a stable per-Addr inner_ref pointer.
         let p1 = a.inner_ref() as *const MettaValueInner;
         let p2 = a.inner_ref() as *const MettaValueInner;
         assert_eq!(
             p1, p2,
-            "inner_ref is a stable per-Addr pointer (Addr-keyed cache)"
+            "inner_ref is a stable per-Addr pointer (shared Inner column)"
         );
 
         // ── inner_ptr key (Step 3a) ──────────────────────────────────────────
@@ -4486,50 +4532,49 @@ mod tests {
         assert_eq!(sp.spans(), vec![&span]);
         assert!(sp.peel_span().0.as_atom() == Some("y") && sp.peel_span().1 == Some(&span));
 
-        // ── shadow cache is bounded + clearable ──────────────────────────────
-        assert!(
-            inner_shadow_len() > 0,
-            "materialization populated the shadow cache"
-        );
-        clear_inner_shadow();
-        assert_eq!(
-            inner_shadow_len(),
-            0,
-            "clear_inner_shadow empties the cache"
-        );
-
         reset_gc_mode_slab();
     }
 
+    /// exp46: the defining v2 property the per-thread INNER_SHADOW could not
+    /// have — ONE shared column cell per Addr, so `inner_ref` returns the
+    /// IDENTICAL pointer on every thread (the shadow returned a per-thread
+    /// re-materialized box; that re-materialization multiplied work N-fold
+    /// under FANOUT — the 2.25x parallel decomposition this lever attacks).
+    /// Also: no epoch handshake — a sweep-epoch bump does NOT invalidate the
+    /// cell (reuse REWRITES it before the new handle escapes instead).
     #[test]
-    fn inner_shadow_is_cleared_lazily_after_sweep_epoch_bump() {
+    fn inner_column_pointer_is_shared_across_threads_and_epoch_stable() {
         use crate::backend::models::gc_allocator::bump_gc_sweep_epoch;
-        use crate::backend::models::metta_value::{clear_inner_shadow, inner_shadow_len};
+        use crate::backend::models::metta_value::MettaValueInner;
         use crate::backend::models::MettaValueFactory;
 
         let _mode = enter_index_mode_for_test();
-        clear_inner_shadow();
         let f = IndexFactory;
 
-        let a = f.atom("inner-shadow-epoch-a");
-        let b = f.atom("inner-shadow-epoch-b");
-        let _ = a.inner_ref();
-        let _ = b.inner_ref();
+        let a = f.atom("inner-column-shared-a");
+        let here = a.inner_ref() as *const MettaValueInner as usize;
+        let there = std::thread::spawn(move || {
+            // The handle crosses via the spawn closure (an escape channel —
+            // the v3-F2 visibility argument); the read takes no lock.
+            a.inner_ref() as *const MettaValueInner as usize
+        })
+        .join()
+        .expect("column reader thread");
         assert_eq!(
-            inner_shadow_len(),
-            2,
-            "test setup should materialize two cached index inners"
+            here, there,
+            "the Inner column is SHARED: same Addr => same cell pointer on every thread"
         );
 
+        // No epoch handshake: a sweep-epoch bump leaves the cell readable and
+        // address-stable (the shadow's lazy clear is deleted with it).
         bump_gc_sweep_epoch();
-        let _ = a.inner_ref();
-        assert_eq!(
-            inner_shadow_len(),
-            1,
-            "inner_ref_index must clear stale shadow entries before returning after an epoch bump"
+        let again = a.inner_ref() as *const MettaValueInner as usize;
+        assert_eq!(here, again, "column cell survives sweep-epoch bumps");
+        assert!(
+            matches!(a.inner_ref(), MettaValueInner::Atom(s) if *s == "inner-column-shared-a"),
+            "cell content intact after epoch bump"
         );
 
-        clear_inner_shadow();
         reset_gc_mode_slab();
     }
 

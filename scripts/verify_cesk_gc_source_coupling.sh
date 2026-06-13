@@ -403,6 +403,16 @@ line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/QuiescentS
 line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "reusable_index_implies_quiescent_full_consumed" >/dev/null
 line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "free_then_push_reuses_without_bump" >/dev/null
 line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "reusable_pressure_excludes_bump_path" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/InnerColumnReadRefinement.v\"" >/dev/null
+line_no "formal/rocq/gc/InnerColumnReadRefinement.v" "space_memo_reads_id_store" >/dev/null
+line_no "formal/rocq/gc/InnerColumnReadRefinement.v" "pod_rewrite_before_escape_prevents_stale_read" >/dev/null
+line_no "formal/rocq/gc/InnerColumnReadRefinement.v" "missing_pod_rewrite_has_stale_counterexample" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"inner_column_read_refinement_all\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"inner_column_read_refinement_no_rewrite\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"inner_column_read_refinement_space_memo_column\"" >/dev/null
+line_no "tla/InnerColumnReadRefinement.tla" "NoStaleRead ==" >/dev/null
+line_no "tla/InnerColumnReadRefinement.tla" "SpaceMemoUsesIdStore ==" >/dev/null
+line_no "tla/InnerColumnReadRefinement.tla" "PODUsesColumn ==" >/dev/null
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "request_gc();" "tx.send(GcDriverRequest::CollectRendezvous)"
 assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_concurrent_collection()" "None => crate::backend::models::gc_allocator::resume_workers()" "fn spawn_gc_driver"
 
@@ -589,10 +599,10 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn child_addrs_for_ma
 # if live envs and parallel fan-outs are registered for their lifetimes and the
 # registry walkers delegate to the structural root readers.
 assert_count "src/backend/eval/mod.rs" "register_live_env(" "1"
-assert_count "src/backend/eval/trampoline/eval_loop.rs" "register_live_env(&dyn_env)" "2"
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "register_live_env(" "2"
 assert_after_before "src/backend/eval/mod.rs" "let _live_env_handle = {" "register_live_env(" "let r = eval_inner(value, env, state);"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Register THIS worker's branch env" "register_live_env(&dyn_env)" "eval_trampoline_with_carrying(branch_expr, env"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "THIS collapse worker's env" "register_live_env(&dyn_env)" "eval_trampoline_with_carrying("
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Register THIS worker's branch env" "register_live_env(" "eval_trampoline_with_carrying(branch_expr, env"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "THIS collapse worker's env" "register_live_env(" "eval_trampoline_with_carrying("
 assert_after_before "src/backend/environment/core.rs" "impl crate::backend::models::gc_allocator::EnvRoots for GenericEnvironmentShared<MettaValue>" "self.collect_roots_into(out);" "#[cfg(not(feature = \"index-gc\"))]"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_env_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_env_roots(out);"
 assert_zero "src/backend/models/gc_allocator.rs" "DEAD until E1-FLIP Path B V4"
@@ -641,8 +651,8 @@ assert_after_before "src/backend/models/gc_allocator.rs" "pub fn snapshot_live_d
 # guard, the sole executable decrement is in that guard's Drop, and the parent
 # waits observe completion by the remaining counter reaching zero.
 assert_count "src/backend/eval/trampoline/eval_loop.rs" "let _completion = CompletionGuard {" "2"
-assert_count "src/backend/eval/trampoline/eval_loop.rs" "if self.remaining.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1 {" "1"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "impl Drop for CompletionGuard" "self.remaining.fetch_sub(1, std::sync::atomic::Ordering::AcqRel)" "cvar.notify_one();"
+assert_count "src/backend/eval/trampoline/eval_loop.rs" ".fetch_sub(1, std::sync::atomic::Ordering::AcqRel)" "1"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "impl Drop for CompletionGuard" ".fetch_sub(1, std::sync::atomic::Ordering::AcqRel)" "cvar.notify_one();"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_dispatch(" "let closure = move || {" "let _completion = CompletionGuard {"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_dispatch(" "let _completion = CompletionGuard {" "PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_dispatch(" "let _completion = CompletionGuard {" "let _guard = EvalGuard::enter();"
@@ -913,7 +923,7 @@ assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn into_trampoli
 assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn resolve_trampoline_fanout_spine(self) -> Self" "let addr = handle.take();" ".remove(addr)"
 assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn resolve_trampoline_fanout_spine(self) -> Self" ".remove(addr)" "expect(\"trampoline fan-out continuation address missing from spine store\")"
 assert_after_before "src/backend/eval/trampoline/types.rs" "pub fn persist_trampoline_fanout_spines_from(stack: &mut [Self], from: usize)" "std::mem::replace(cont, Self::Done)" "raw.into_trampoline_fanout_spine()"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "while let Some(work) = work_stack.pop() {" "Continuation::persist_trampoline_fanout_spines_from(&mut continuations, spine_persisted_len);" "current_work_for_spine = Some(work.clone());"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "while let Some(work) = work_stack.pop() {" "Continuation::persist_trampoline_fanout_spines_from(" "current_work_for_spine = Some(work.clone());"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn process_continuation<C: EvalContext>(" "let cont = cont.resolve_trampoline_fanout_spine();" "match cont {"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Continuation::TrampolineFanoutSpine { .. } =>" "unreachable!(\"trampoline fan-out spine handles are resolved before execution\")" "Continuation::CollectSExpr"
 assert_after_before "src/backend/eval/trampoline/types.rs" "Self::TrampolineFanoutSpine { handle } =>" ".get(handle.addr())" ".collect_values(out);"
@@ -967,22 +977,37 @@ assert_after_before "src/backend/models/metta_value.rs" "fn ensure_value_hash_ca
 assert_after_before "src/backend/models/metta_value.rs" "fn ensure_value_hash_cache_epoch_current()" "VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());" "epoch.set(current_epoch);"
 assert_after_before "src/backend/models/metta_value.rs" "pub fn clear_value_hash_cache()" "VALUE_HASH_CACHE.with(|c| c.borrow_mut().clear());" "VALUE_HASH_CACHE_EPOCH.with"
 assert_after_before "src/backend/models/metta_value.rs" "fn hash_value(&self) -> u64" "ensure_value_hash_cache_epoch_current();" "VALUE_HASH_CACHE.with"
-assert_before "src/backend/models/metta_value.rs" "static INNER_SHADOW_EPOCH:" "fn ensure_inner_shadow_epoch_current()"
-# Experiment #15 was rejected and reverted: the production shadow remains the
-# RefCell-backed paged directory. The source coupling now pins the accepted
-# shape directly and guards against reintroducing the rejected with_shadow /
-# release-UnsafeCell chokepoint without a new proof+benchmark gate.
+# exp46: the production index-mode `inner_ref` reader is the shared Inner
+# column, not the retired per-thread INNER_SHADOW. Pin both halves of the
+# replacement:
+#   * POD variants read `inner_column::column_read(addr)` with no heap lock or
+#     thread-local epoch handshake.
+#   * Space/Memo are non-POD and therefore read the append-only id store.
 assert_zero "src/backend/models/metta_value.rs" "fn with_shadow"
 assert_zero "src/backend/models/metta_value.rs" "UnsafeCell<Vec<Option<Box<ShadowPage>>>>"
-assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "gc_sweep_epoch()" "INNER_SHADOW_EPOCH.with"
-assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "INNER_SHADOW_EPOCH.with" "INNER_SHADOW.with"
-# Paged shadow (6aea1af0): the epoch handshake invalidates by DROPPING every
-# allocated page (freeing the materialized boxes) before publishing the epoch —
-# the page-drop loop is the paged equivalent of the former wholesale .clear().
-assert_after_before "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current()" "*page = None;" "epoch.set(current_epoch);"
-assert_after_before "src/backend/models/metta_value.rs" "pub(crate) fn clear_inner_shadow()" "*page = None;" "INNER_SHADOW_EPOCH.with"
-assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "ensure_inner_shadow_epoch_current();" "INNER_SHADOW.with"
-assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "INNER_SHADOW.with" "materialize_inner(addr)"
+assert_zero "src/backend/models/metta_value.rs" "static INNER_SHADOW"
+assert_zero "src/backend/models/metta_value.rs" "static INNER_SHADOW_EPOCH"
+assert_zero "src/backend/models/metta_value.rs" "pub(crate) fn clear_inner_shadow"
+assert_zero "src/backend/models/metta_value.rs" "fn ensure_inner_shadow_epoch_current"
+assert_zero "src/backend/models/metta_value.rs" "pub(crate) fn inner_shadow_len"
+assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "Addr::from_raw(raw)" "matches!(self.tag5(), TAG5_SPACE | TAG5_MEMO)"
+assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "matches!(self.tag5(), TAG5_SPACE | TAG5_MEMO)" "Self::space_memo_inner_index(addr)"
+assert_after_before "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "inner_column::column_read(addr)" "self.debug_assert_column_matches_node(addr, out)"
+assert_zero_between "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "fn space_memo_inner_index" "global_index_heap()"
+assert_zero_between "src/backend/models/metta_value.rs" "fn inner_ref_index(&self)" "fn space_memo_inner_index" "materialize_inner(addr)"
+assert_after_before "src/backend/models/metta_value.rs" "fn space_memo_inner_index" "global_index_heap()" "prebuilt_space_memo_inner(addr)"
+assert_after_before "src/backend/models/metta_value.rs" "fn debug_assert_column_matches_node" "materialize_inner(addr)" "let agree = match"
+
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_space(&mut self" "Box::new(MettaValueInner::Space(handle.clone()))" "self.space_table.push(handle);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_space(&mut self" "self.space_table.push(handle);" "self.alloc_fixed(Node::Space(id))"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_memo(&mut self" "Box::new(MettaValueInner::Memo(handle.clone()))" "self.memo_table.push(handle);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_memo(&mut self" "self.memo_table.push(handle);" "self.alloc_fixed(Node::Memo(id))"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn prebuilt_space_memo_inner" "Node::Space(id)" "Node::Memo(id)"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn populate_column" "ensure_column_seg" "match self.get(addr)"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn populate_column" "Node::Space(_) | Node::Memo(_) => {}" "inner_column::column_write"
+assert_count_between "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" "impl MettaValueFactory<MettaValue> for IndexFactory" "h.populate_column(addr);" "3"
+assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "fn intern_node" "heap.populate_column(addr);" "Ok(addr)"
+assert_zero_between "src/backend/eval/trampoline/eval_loop.rs" "pub(crate) fn clear_all_worker_thread_local_caches()" "fn clear_worker_caches_on_resume()" "clear_inner_shadow"
 
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "gc_sweep_epoch()" "HASH_CONS_EPOCH.with"
 assert_after_before "src/backend/models/gc_allocator.rs" "fn ensure_hash_cons_epoch_current()" "clear_hash_cons_table_local();" "epoch.set(current_epoch);"
@@ -1166,8 +1191,8 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.drop_or_free_pending_side_reclaims_after_full_mark();" "(heap.sweep(), true)"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "should_drain_side_reclaims(phase, true)" "heap.free_pending_side_reclaims();"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "should_drain_side_reclaims(phase, did_major)" "heap.free_pending_side_reclaims();"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.free_pending_side_reclaims();" "clear_inner_shadow();"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.free_pending_side_reclaims();" "clear_inner_shadow();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub(crate) fn sweep_after_concurrent_mark" "heap.free_pending_side_reclaims();" "crate::backend::models::gc_allocator::bump_gc_sweep_epoch();"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.free_pending_side_reclaims();" "crate::backend::models::gc_allocator::bump_gc_sweep_epoch();"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn should_collect() -> bool" "heap.pending_side_reclaim_count()" "pending_side_reclaims > 0"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "heap.pending_side_reclaim_count()" "let pending_side_major = phase == \"quiescence\" && pending_side_reclaims > 0;"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn mark_sweep_if_over_watermark" "let pending_side_major = phase == \"quiescence\" && pending_side_reclaims > 0;" "let major_due = live_major || cap_major || cadence_major || pending_side_major;"
@@ -1467,8 +1492,8 @@ assert_immediate_cfg_before "src/backend/models/gc_allocator.rs" "pub(crate) fn 
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn into_trampoline_fanout_spine" "store.borrow_mut().alloc(cont)" "other => other,"
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn resolve_trampoline_fanout_spine" ".remove(addr)" "other => other,"
 assert_after_before "src/backend/eval/trampoline/types.rs" "fn persist_trampoline_fanout_spines_from" "std::mem::replace(cont, Self::Done)" "into_trampoline_fanout_spine()"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline loop" "while let Some(work) = work_stack.pop()" "Continuation::persist_trampoline_fanout_spines_from(&mut continuations, spine_persisted_len);"
-assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline loop" "Continuation::persist_trampoline_fanout_spines_from(&mut continuations, spine_persisted_len);" "spine_persisted_len = continuations.len();"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline loop" "while let Some(work) = work_stack.pop()" "Continuation::persist_trampoline_fanout_spines_from("
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Main trampoline loop" "Continuation::persist_trampoline_fanout_spines_from(" "spine_persisted_len = continuations.len();"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "WorkItem::Resume { result } =>" "continuations.pop().expect" "spine_persisted_len = spine_persisted_len.min(continuations.len());"
 
 # ── E4 serializable continuations (formal/rocq/gc/SerializableContinuationSlice.v

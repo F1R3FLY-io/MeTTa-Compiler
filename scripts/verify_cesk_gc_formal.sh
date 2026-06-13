@@ -167,6 +167,7 @@ run_rocq "formal/rocq/gc/IncrementalSpinePersistEquivalence.v"
 run_rocq "formal/rocq/gc/SerializableContinuationSlice.v"
 run_rocq "formal/rocq/gc/IndexArenaPublication.v"
 run_rocq "formal/rocq/gc/SideArenaPublication.v"
+run_rocq "formal/rocq/gc/InnerColumnReadRefinement.v"
 run_rocq "formal/rocq/gc/ConcurrentBumpFreshOnly.v"
 run_rocq "formal/rocq/gc/ConcurrentReusePressureProgress.v"
 run_rocq "formal/rocq/gc/IndexAllocatorRefinement.v"
@@ -368,6 +369,12 @@ run_tlc "side_arena_publication_entry_before_chunk" "MC_SideArenaPublication.tla
   fail "Invariant PublishedEntryReady is violated"
 run_tlc "side_arena_publication_publish_before_write" "MC_SideArenaPublication.tla" "MC_SideArenaPublication_publish_before_write.cfg" \
   fail "Invariant PublishedEntryReady is violated"
+run_tlc "inner_column_read_refinement_all" "InnerColumnReadRefinement.tla" "MC_InnerColumnReadRefinement_all.cfg" \
+  pass ""
+run_tlc "inner_column_read_refinement_no_rewrite" "InnerColumnReadRefinement.tla" "MC_InnerColumnReadRefinement_no_rewrite.cfg" \
+  fail "Invariant NoStaleRead is violated"
+run_tlc "inner_column_read_refinement_space_memo_column" "InnerColumnReadRefinement.tla" "MC_InnerColumnReadRefinement_space_memo_column.cfg" \
+  fail "Invariant NoStaleRead is violated"
 run_tlc "side_arena_colocation_colocated" "MC_SideArenaCoLocation.tla" "MC_SideArenaCoLocation_colocated.cfg" \
   pass ""
 run_tlc "side_arena_colocation_wrong_segment" "MC_SideArenaCoLocation.tla" "MC_SideArenaCoLocation_wrong_segment.cfg" \

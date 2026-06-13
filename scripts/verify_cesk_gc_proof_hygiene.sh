@@ -45,6 +45,11 @@ if [[ "${#rocq_files[@]}" -eq 0 ]]; then
   exit 1
 fi
 
+if [[ "${#lean_files[@]}" -eq 0 ]]; then
+  echo "proof hygiene: expected Lean GC proof mirror files" >&2
+  exit 1
+fi
+
 if [[ "${#workpool_rocq_files[@]}" -eq 0 ]]; then
   echo "proof hygiene: expected Rocq WorkPool stability proof files" >&2
   exit 1
@@ -72,4 +77,4 @@ if [[ "$failures" -ne 0 ]]; then
   exit 1
 fi
 
-echo "CESK GC proof-hygiene checks passed (${#rocq_files[@]} GC Rocq mandatory, ${#workpool_rocq_files[@]} WorkPool Rocq mandatory, ${#lean_files[@]} supplemental Lean scanned)"
+echo "CESK GC proof-hygiene checks passed (${#rocq_files[@]} GC Rocq mandatory, ${#workpool_rocq_files[@]} WorkPool Rocq mandatory, ${#lean_files[@]} Lean mandatory)"

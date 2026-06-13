@@ -974,6 +974,12 @@ facts the proofs rely on:
   `Parameter`/`Conjecture`/`Abort` alongside the CESK GC proofs. Source coupling pins the harness entries
   plus the `WorkPoolParams`, `WorkPoolSignals`, and explicit-`N_opt` Lyapunov shapes.
 
+- Mandatory Lean mirror compilation (`formal/lean/gc/*.lean`) — closes the remaining proof-harness
+  opt-in gap. The 36 Lean GC mirrors were already scanned for Lean proof shortcuts; they now compile
+  unconditionally in `scripts/verify_cesk_gc_formal.sh`, and proof hygiene fails if the mirror set is
+  missing. Source coupling pins the default harness to the `formal/lean/gc` scan and rejects the old
+  `RUN_LEAN_MIRRORS` opt-in gate.
+
 ## Harness
 
 Run:
@@ -983,8 +989,8 @@ bash scripts/verify_cesk_gc_formal.sh
 ```
 
 The harness derives paths from its own location, uses `target/tlc-formal-small` for small TLC logs/metadata by
-default, runs Rocq under `systemd-run`, skips supplemental Lean mirrors unless `RUN_LEAN_MIRRORS=1` is set, and
-includes the small TLC positive/negative discriminators. The adjacent GC
+default, runs Rocq under `systemd-run`, compiles the Lean GC mirrors by default, and includes the small TLC
+positive/negative discriminators. The adjacent GC
 gate scripts likewise default log/build scratch to repo-derived `target/...` directories (`target/gc-logs` or a
 script-specific subdirectory) while preserving caller overrides such as `LOG_DIR`, `LOG_ROOT`, `SCRATCH_ROOT`,
 `OUT`, `P`, `PGO_DIR`, and `CARGO_TARGET_DIR`; large gates must not spill into `/tmp` unless the caller explicitly
@@ -993,8 +999,8 @@ chooses that.
 Before compiling proofs, `scripts/verify_cesk_gc_proof_hygiene.sh` rejects Rocq proof shortcuts (`Admitted`, `admit`,
 `Axiom`, `Parameter`, `Conjecture`, `Abort`) in the mandatory CESK GC proof directory and the WorkPool stability
 proof directory, then verifies every `formal/rocq/gc/*.v` and `formal/rocq/work_pool_stability/theories/*.v` file is
-enumerated by the formal harness. If supplemental Lean mirrors exist, the same hygiene pass scans them for Lean proof
-shortcuts (`sorry`, `admit`, `axiom`, `constant`, `opaque`, `unsafe`) without making them part of the mandatory gate.
+enumerated by the formal harness. It also requires the Lean GC mirror set to exist and scans it for Lean proof
+shortcuts (`sorry`, `admit`, `axiom`, `constant`, `opaque`, `unsafe`) before the formal harness compiles those mirrors.
 
 The formal harness also runs `scripts/verify_cesk_gc_tlc_hygiene.sh` before compiling proofs. That check parses every
 `run_tlc` entry, verifies labels/configs are unique, requires every referenced TLA+ module and config to exist, requires

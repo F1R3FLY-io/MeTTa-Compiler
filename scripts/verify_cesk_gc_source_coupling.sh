@@ -177,6 +177,9 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
+assert_zero "scripts/verify_cesk_gc_formal.sh" "RUN_LEAN_MIRRORS"
+line_no "scripts/verify_cesk_gc_formal.sh" 'find "$REPO/formal/lean/gc"' >/dev/null
+line_no "scripts/verify_cesk_gc_proof_hygiene.sh" "expected Lean GC proof mirror files" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "work_pool_stability/theories/Prelude.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "work_pool_stability/theories/USL.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "work_pool_stability/theories/ObjectiveFunction.v" "1"

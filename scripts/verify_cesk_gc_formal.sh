@@ -15,11 +15,6 @@ run_lean() {
 }
 
 run_lean_mirrors() {
-  if [[ "${RUN_LEAN_MIRRORS:-0}" != "1" ]]; then
-    echo "### Lean mirrors: skipped (set RUN_LEAN_MIRRORS=1 to run supplemental mirrors)"
-    return 0
-  fi
-
   local file rel
   while IFS= read -r file; do
     rel="${file#$REPO/}"

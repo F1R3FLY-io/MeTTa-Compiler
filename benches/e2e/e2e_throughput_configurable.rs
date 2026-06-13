@@ -32,35 +32,34 @@
 //! # Run multiple samples
 //! cargo bench --bench e2e_throughput_configurable -- --duration 60 --samples fib,pattern_matching_stress,metta_programming_stress
 //!
-//! # Run samples for extended period
-//! cargo bench --bench e2e_throughput_configurable -- --duration 300 --samples fib,knowledge_graph
+//! # Run selected modes only
+//! cargo bench --bench e2e_throughput_configurable -- --modes sequential,parallel --parallel-workers 1,4,all
 //!
-//! # Run with samply
-//! samply record target/release/deps/e2e_throughput_configurable-* -- --duration 10 --samples knowledge_graph
+//! # Run a profiler-friendly single-mode sample with samply
+//! cargo bench --no-run --bench e2e_throughput_configurable
+//! samply record target/release/deps/e2e_throughput_configurable-* -- --duration 10 --warmup 0 --samples knowledge_graph --modes sequential
 //!
 //! # Show help
 //! cargo bench --bench e2e_throughput_configurable -- --help
 //! ```
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use mettatron::config::{configure_eval, get_eval_config, EvalConfig};
-use mettatron::{compile, new_env, run_state, MettaState};
+use mettatron::config::{EvalConfig, configure_eval, get_eval_config};
+use mettatron::{MettaState, compile, new_env, run_state};
 
-// TODO -> need more comprehensive set of MeTTa programs
 const SAMPLES: &[(&str, &str)] = &[
-    ("fib", include_str!("../metta_samples/fib.metta")),
     (
-        "knowledge_graph",
-        include_str!("../metta_samples/knowledge_graph.metta"),
+        "backward_chaining",
+        include_str!("../metta_samples/backward_chaining.metta"),
     ),
     (
-        "pattern_matching_stress",
-        include_str!("../metta_samples/pattern_matching_stress.metta"),
+        "cartesian_product_stress",
+        include_str!("../metta_samples/cartesian_product_stress.metta"),
     ),
     (
         "concurrent_space_operations",
@@ -70,6 +69,19 @@ const SAMPLES: &[(&str, &str)] = &[
         "constraint_search_simple",
         include_str!("../metta_samples/constraint_search_simple.metta"),
     ),
+    ("fib", include_str!("../metta_samples/fib.metta")),
+    (
+        "grounded_tco_stress",
+        include_str!("../metta_samples/grounded_tco_stress.metta"),
+    ),
+    (
+        "knowledge_graph",
+        include_str!("../metta_samples/knowledge_graph.metta"),
+    ),
+    (
+        "lazy_eager_comparison",
+        include_str!("../metta_samples/lazy_eager_comparison.metta"),
+    ),
     (
         "metta_programming_stress",
         include_str!("../metta_samples/metta_programming_stress.metta"),
@@ -78,9 +90,24 @@ const SAMPLES: &[(&str, &str)] = &[
         "multi_space_reasoning",
         include_str!("../metta_samples/multi_space_reasoning.metta"),
     ),
+    (
+        "pattern_matching_stress",
+        include_str!("../metta_samples/pattern_matching_stress.metta"),
+    ),
+    (
+        "tco_deep_recursion",
+        include_str!("../metta_samples/tco_deep_recursion.metta"),
+    ),
+    (
+        "trampoline_stress",
+        include_str!("../metta_samples/trampoline_stress.metta"),
+    ),
+    (
+        "type_heavy_program",
+        include_str!("../metta_samples/type_heavy_program.metta"),
+    ),
 ];
 
-// TODO -> should has configurable setup for running with samply
 #[derive(Parser, Debug)]
 #[command(name = "e2e_throughput_configurable")]
 #[command(about = "MeTTaTron throughput benchmarks", long_about = None)]
@@ -97,10 +124,29 @@ struct Args {
     warmup: u64,
 
     /// List of sample names to benchmark
-    /// Available: fib, knowledge_graph, pattern_matching_stress, concurrent_space_operations,
-    /// constraint_search_simple, metta_programming_stress, multi_space_reasoning
+    /// Use --list-samples to print the current catalog.
     #[arg(short, long, value_delimiter = ',', default_value = "knowledge_graph")]
     samples: Vec<String>,
+
+    /// Benchmark modes to run: sequential, parallel, async
+    #[arg(
+        long,
+        value_delimiter = ',',
+        default_value = "sequential,parallel,async"
+    )]
+    modes: Vec<String>,
+
+    /// Worker counts for parallel mode. Use "all" for available CPU count.
+    #[arg(long, value_delimiter = ',', default_value = "4,all")]
+    parallel_workers: Vec<String>,
+
+    /// Async task concurrency. Defaults to available CPU count when omitted or 0.
+    #[arg(long, default_value_t = 0)]
+    async_concurrency: usize,
+
+    /// List available samples and exit.
+    #[arg(long)]
+    list_samples: bool,
 
     /// Ignored trailing args from cargo bench
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -118,6 +164,66 @@ struct ThroughputReport {
     error_rate_percent: f64,
     average_latency_ms: f64,
     test_duration: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenchmarkMode {
+    Sequential,
+    Parallel,
+    Async,
+}
+
+fn parse_modes(names: &[String]) -> Result<Vec<BenchmarkMode>, String> {
+    let mut modes = Vec::new();
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let mode = match name {
+            "sequential" => BenchmarkMode::Sequential,
+            "parallel" => BenchmarkMode::Parallel,
+            "async" => BenchmarkMode::Async,
+            other => {
+                return Err(format!(
+                    "unknown mode '{other}'. Available modes: sequential, parallel, async"
+                ));
+            }
+        };
+        if !modes.contains(&mode) {
+            modes.push(mode);
+        }
+    }
+    if modes.is_empty() {
+        return Err("at least one benchmark mode is required".to_string());
+    }
+    Ok(modes)
+}
+
+fn parse_parallel_workers(specs: &[String], num_cpus: usize) -> Result<Vec<usize>, String> {
+    let mut workers = Vec::new();
+    for spec in specs {
+        let spec = spec.trim();
+        if spec.is_empty() {
+            continue;
+        }
+        let count = if spec == "all" {
+            num_cpus
+        } else {
+            spec.parse::<usize>()
+                .map_err(|_| format!("invalid parallel worker count '{spec}'"))?
+        };
+        if count == 0 {
+            return Err("parallel worker count must be greater than zero".to_string());
+        }
+        if !workers.contains(&count) {
+            workers.push(count);
+        }
+    }
+    if workers.is_empty() {
+        return Err("at least one parallel worker count is required".to_string());
+    }
+    Ok(workers)
 }
 
 fn evaluate_full_program(source: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -415,6 +521,13 @@ fn print_report(report: &ThroughputReport) {
 fn main() {
     let args = Args::parse();
 
+    if args.list_samples {
+        for (name, _) in SAMPLES {
+            println!("{}", name);
+        }
+        return;
+    }
+
     configure_eval(EvalConfig::cpu_optimized());
 
     let config = get_eval_config();
@@ -424,6 +537,20 @@ fn main() {
 
     let test_duration = Duration::from_secs(args.duration);
     let warmup_duration = Duration::from_secs(args.warmup);
+    let modes = parse_modes(&args.modes).unwrap_or_else(|err| {
+        eprintln!("Error: {err}");
+        std::process::exit(2);
+    });
+    let parallel_workers =
+        parse_parallel_workers(&args.parallel_workers, num_cpus).unwrap_or_else(|err| {
+            eprintln!("Error: {err}");
+            std::process::exit(2);
+        });
+    let async_concurrency = if args.async_concurrency == 0 {
+        num_cpus
+    } else {
+        args.async_concurrency
+    };
 
     // Filter samples based on CLI args
     let samples_to_run: Vec<_> = SAMPLES
@@ -448,6 +575,31 @@ fn main() {
     println!("Test duration per mode: {}s", test_duration.as_secs());
     println!("Warm-up duration per mode: {}s", warmup_duration.as_secs());
     println!(
+        "Modes: {}",
+        modes
+            .iter()
+            .map(|mode| match mode {
+                BenchmarkMode::Sequential => "sequential",
+                BenchmarkMode::Parallel => "parallel",
+                BenchmarkMode::Async => "async",
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if modes.contains(&BenchmarkMode::Parallel) {
+        println!(
+            "Parallel workers: {}",
+            parallel_workers
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if modes.contains(&BenchmarkMode::Async) {
+        println!("Async concurrency: {}", async_concurrency);
+    }
+    println!(
         "Samples: {}",
         samples_to_run
             .iter()
@@ -462,27 +614,27 @@ fn main() {
         println!("\n==== ==== ==== Benchmarking: {} ==== ==== ====", name);
 
         // Sequential mode
-        warmup_sequential(source, warmup_duration);
-        let seq = measure_sequential(name, source, test_duration);
-        print_report(&seq);
-        reports.push(seq);
+        if modes.contains(&BenchmarkMode::Sequential) {
+            warmup_sequential(source, warmup_duration);
+            let seq = measure_sequential(name, source, test_duration);
+            print_report(&seq);
+            reports.push(seq);
+        }
 
-        // Parallel mode (4 workers)
-        warmup_parallel(source, warmup_duration, 4);
-        let par4 = measure_parallel(name, source, test_duration, 4);
-        print_report(&par4);
-        reports.push(par4);
+        if modes.contains(&BenchmarkMode::Parallel) {
+            for workers in &parallel_workers {
+                warmup_parallel(source, warmup_duration, *workers);
+                let report = measure_parallel(name, source, test_duration, *workers);
+                print_report(&report);
+                reports.push(report);
+            }
+        }
 
-        // Parallel mode (all CPUs)
-        warmup_parallel(source, warmup_duration, num_cpus);
-        let par_full = measure_parallel(name, source, test_duration, num_cpus);
-        print_report(&par_full);
-        reports.push(par_full);
-
-        // Async mode
-        warmup_async(source, warmup_duration, num_cpus);
-        let async_report = measure_async(name, source, test_duration, num_cpus);
-        print_report(&async_report);
-        reports.push(async_report);
+        if modes.contains(&BenchmarkMode::Async) {
+            warmup_async(source, warmup_duration, async_concurrency);
+            let async_report = measure_async(name, source, test_duration, async_concurrency);
+            print_report(&async_report);
+            reports.push(async_report);
+        }
     }
 }

@@ -637,6 +637,12 @@ can replace the full-major final sweep.
   all-independent tasks may use one full-width wave. The cyclic same-wave discriminator violates
   `SameWaveIndependent`, which drove the Rust fallback change: malformed task indices/dependencies and cyclic
   unresolved suffixes now degrade to sequential waves instead of claiming parallelism that the proof rejects.
+- `formal/rocq/gc/SchedulerDynamicEvalGate.v` and `tla/SchedulerDynamicEvalGate.tla`: prove and model-check the
+  dynamic-evaluation parallel-dispatch obligation. Dynamic heads (`eval`, `!`, `evalc`) can execute code supplied by a
+  variable or user expression, so absence of a visible mutating head is not enough to admit the no-budget parallel
+  path. The fixed TLC config preserves `NoDynamicEvalParallelBypass`; the missing-gate discriminator violates it,
+  matching the source correction that removes dynamic eval from known-pure classification and makes the scheduler's
+  parallel-dispatch blocker reject dynamic-eval bodies before strict I/O filtering.
 - `formal/rocq/gc/CronRecurringDispatch.v` and `tla/CronRecurringDispatch.tla`: prove and model-check pooled cron
   recurring-dispatch control. A recurring task that returns `false` or panics must set a durable stop flag before
   clearing `in_flight`, so the next due tick drops the recurrence instead of redispatching it. The model also proves
@@ -676,6 +682,14 @@ can replace the full-major final sweep.
   longer violates its same-wave independence contract. The full capped formal harness then passed with 94 mandatory GC
   Rocq files, 5 WorkPool Rocq files, 36 mandatory Lean mirrors, 237 TLC configs, and source coupling. The slab release
   gate `cargo nextest run --release` passed 4406/4406 tests.
+- 2026-06-12 Dynamic-eval dispatch gate increment: focused gates passed under `systemd-run` caps:
+  `rocq c ... SchedulerDynamicEvalGate.v`, the fixed dynamic-eval TLC config, the missing-gate negative discriminator
+  which violates `NoDynamicEvalParallelBypass`, `cargo test --lib dynamic_eval`, `cargo test --lib branch_analysis`,
+  proof hygiene, TLC hygiene, and source coupling. The source correction is proof-driven: dynamic evaluation heads are
+  no longer classified as known-pure, are marked impure/sequential for branch analysis, and block the scheduler's
+  no-budget parallel-dispatch path even when a hidden mutating head is carried through a variable expression. The full
+  capped formal harness then passed with 95 mandatory GC Rocq files, 5 WorkPool Rocq files, 36 mandatory Lean mirrors,
+  239 TLC configs, and source coupling. The slab release gate `cargo nextest run --release` passed 4408/4408 tests.
 
 ## Source coupling
 

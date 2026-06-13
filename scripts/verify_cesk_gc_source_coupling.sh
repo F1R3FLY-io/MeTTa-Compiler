@@ -141,8 +141,23 @@ assert_count "src/backend/scheduler/classification.rs" "self.l2_entries.insert(i
 assert_count "src/backend/scheduler/classification.rs" "if *other_start as usize >= insert_at {" "1"
 assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS" "];" "\"random-int\""
 assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS" "];" "\"random-float\""
+assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS" "];" "\"eval\""
 line_no "src/backend/scheduler/classification.rs" "\"random-int\"," >/dev/null
 line_no "src/backend/scheduler/classification.rs" "\"random-float\"," >/dev/null
+line_no "src/backend/scheduler/classification.rs" "const DYNAMIC_EVAL_HEADS: &[&str] = &[\"eval\", \"!\", \"evalc\"];" >/dev/null
+assert_after_before \
+  "src/backend/scheduler/classification.rs" \
+  "pub fn body_blocks_parallel_dispatch" \
+  "if body_contains_state_mutation(body, max_depth) {" \
+  "if body_contains_dynamic_eval(body, max_depth) {"
+assert_after_before \
+  "src/backend/scheduler/classification.rs" \
+  "pub fn body_blocks_parallel_dispatch" \
+  "if body_contains_dynamic_eval(body, max_depth) {" \
+  "if strict_print_order() && body_contains_io(body, max_depth) {"
+assert_zero_between "src/backend/eval/cesk/branch_analysis.rs" "fn is_known_pure_head" "fn is_known_impure_head" "\"eval\""
+assert_zero_between "src/backend/eval/cesk/branch_analysis.rs" "fn is_known_pure_head" "fn is_known_impure_head" "\"!\""
+line_no "src/backend/eval/cesk/branch_analysis.rs" "| \"!\" | \"eval\" | \"evalc\"" >/dev/null
 assert_after_before \
   "src/backend/scheduler/wavefront.rs" \
   "pub fn compute_wavefront" \
@@ -196,6 +211,7 @@ assert_after_before \
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerPriorityFairness.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
@@ -214,6 +230,7 @@ line_no "formal/rocq/work_pool_stability/theories/LyapunovConvergence.v" "Defini
 assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "3"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.tla" "2"

@@ -95,7 +95,7 @@ fn is_known_pure_head(name: &str) -> bool {
         // Control flow
         | "if" | "case" | "switch" | "let" | "let*" | "chain"
         // Evaluation
-        | "!" | "eval" | "quote" | "unquote" | "return"
+        | "quote" | "unquote" | "return"
         // Pattern matching
         | "match" | "unify" | "match-or"
         // List operations. NOTE: `cons`/`decons` are user-defined data
@@ -140,6 +140,9 @@ fn is_known_impure_head(name: &str) -> bool {
         | "import!" | "git-import!" | "register-module!" | "bind!"
         // Explicit side-effect marker
         | "nop"
+        // Dynamic evaluation can execute code carried by variables or user
+        // expressions, so it is not budget-free parallelism safe.
+        | "!" | "eval" | "evalc"
         // Atom space operations (mutating)
         | "get-atoms"
         // Memo mutation
@@ -386,5 +389,13 @@ mod tests {
             f().long(42),
         ]);
         assert_eq!(analyze_branch_purity(&expr), BranchPurity::Impure);
+    }
+
+    #[test]
+    fn test_dynamic_eval_is_impure() {
+        for head in ["!", "eval", "evalc"] {
+            let expr = f().sexpr(vec![f().atom(head), f().atom("$code")]);
+            assert_eq!(analyze_branch_purity(&expr), BranchPurity::Impure, "{head}");
+        }
     }
 }

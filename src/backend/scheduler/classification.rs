@@ -85,6 +85,12 @@ const STATE_MUTATING_HEADS: &[&str] = &[
     "random-float",
 ];
 
+/// Dynamic evaluation heads execute code supplied by their operand. A syntactic
+/// walk cannot prove that operand state-independent when it is variable- or
+/// user-expression-shaped, so these heads conservatively block the no-budget
+/// parallel-dispatch path.
+const DYNAMIC_EVAL_HEADS: &[&str] = &["eval", "!", "evalc"];
+
 const IO_HEADS: &[&str] = &[
     "println!",
     "print!",
@@ -132,6 +138,9 @@ const IMPURE_HEADS: &[&str] = &[
     "set-random-seed",
     "random-int",
     "random-float",
+    "eval",
+    "!",
+    "evalc",
 ];
 
 /// Known pure head symbols (control flow and data manipulation).
@@ -142,7 +151,6 @@ const PURE_HEADS: &[&str] = &[
     "let",
     "let*",
     "quote",
-    "eval",
     "chain",
     "cons-atom",
     "decons-atom",
@@ -200,6 +208,12 @@ fn is_state_mutating_head(head: &str) -> bool {
 #[inline]
 fn is_io_head(head: &str) -> bool {
     IO_HEADS.iter().any(|&op| op == head)
+}
+
+/// Check if a head symbol dynamically evaluates its operand as code.
+#[inline]
+fn is_dynamic_eval_head(head: &str) -> bool {
+    DYNAMIC_EVAL_HEADS.iter().any(|&op| op == head)
 }
 
 /// Check if a head symbol is known to be pure.
@@ -284,6 +298,28 @@ pub fn body_contains_state_mutation(body: &MettaValue, max_depth: u32) -> bool {
     false
 }
 
+/// Dynamic evaluation can hide state mutation behind variables or user code.
+/// Treat it as a parallel-dispatch blocker even when no concrete mutating head
+/// appears in the inspected syntax.
+pub fn body_contains_dynamic_eval(body: &MettaValue, max_depth: u32) -> bool {
+    if max_depth == 0 {
+        return false;
+    }
+    if let Some(items) = body.as_sexpr() {
+        if let Some(head) = items.first().and_then(|v| v.as_atom()) {
+            if is_dynamic_eval_head(head) {
+                return true;
+            }
+        }
+        for child in items {
+            if body_contains_dynamic_eval(child, max_depth - 1) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Phase 10.D (2026-05-17): I/O-head detector for the strict-print
 /// order opt-in.
 pub fn body_contains_io(body: &MettaValue, max_depth: u32) -> bool {
@@ -318,6 +354,9 @@ pub fn body_contains_io(body: &MettaValue, max_depth: u32) -> bool {
 /// per process via `OnceLock`.
 pub fn body_blocks_parallel_dispatch(body: &MettaValue, max_depth: u32) -> bool {
     if body_contains_state_mutation(body, max_depth) {
+        return true;
+    }
+    if body_contains_dynamic_eval(body, max_depth) {
         return true;
     }
     if strict_print_order() && body_contains_io(body, max_depth) {
@@ -934,6 +973,24 @@ mod tests {
         ]);
         assert_eq!(automaton.classify(&expr), CostClass::ImpureSequential);
         assert!(body_blocks_parallel_dispatch(&expr, 8));
+    }
+
+    #[test]
+    fn test_dynamic_eval_heads_block_parallel_dispatch() {
+        fn automaton_class_for_head(head: &'static str) -> CostClass {
+            let automaton = SchedulerAutomaton::new();
+            let expr = MettaValue::SExpr(vec![MettaValue::Atom(head), MettaValue::Atom("$code")]);
+            automaton.classify(&expr)
+        }
+
+        for head in ["eval", "!", "evalc"] {
+            let expr = MettaValue::SExpr(vec![MettaValue::Atom(head), MettaValue::Atom("$code")]);
+            assert!(body_contains_dynamic_eval(&expr, 8), "{head}");
+            assert!(body_blocks_parallel_dispatch(&expr, 8), "{head}");
+
+            let class = automaton_class_for_head(head);
+            assert_eq!(class, CostClass::ImpureSequential, "{head}");
+        }
     }
 
     #[test]

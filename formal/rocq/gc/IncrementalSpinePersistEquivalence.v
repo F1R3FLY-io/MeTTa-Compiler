@@ -23,7 +23,7 @@
       * [lower] = Continuation::into_trampoline_fanout_spine (types.rs ~2202): it
         maps a re-enterable fan-out frame to a stored-spine handle and is the
         identity (`other => other`) on an already-lowered or non-fan-out frame —
-        hence IDEMPOTENT ([lower_idem]).
+        hence IDEMPOTENT ([LowerIdempotent]).
       * [persist_from s from] = persist_trampoline_fanout_spines_from(stack, from)
         (types.rs ~2254): `let from = from.min(len);` then each slot `c` in
         `stack[from..]` is replaced by `lower c` — leaves the prefix `[0,from)`
@@ -63,7 +63,8 @@ Section IncrementalSpinePersistModel.
   (* IDEMPOTENCE of the lowering: lowering an already-lowered / non-fan-out frame
      is a no-op — exactly the `other => other` arm of into_trampoline_fanout_spine
      on a TrampolineFanoutSpine (or any non-fan-out) frame. *)
-  Hypothesis lower_idem : forall f, lower (lower f) = lower f.
+  Definition LowerIdempotent : Prop :=
+    forall f, lower (lower f) = lower f.
 
   (* A frame is "lowered" when it is a fixpoint of [lower] (already a spine
      handle, or a non-fan-out frame the lowering leaves alone). *)
@@ -120,11 +121,13 @@ Section IncrementalSpinePersistModel.
   Qed.
 
   (* Every frame [lower] produces is lowered (idempotence). *)
-  Lemma forall_lowered_map : forall l, Forall lowered (map lower l).
+  Lemma forall_lowered_map : LowerIdempotent -> forall l, Forall lowered (map lower l).
   Proof.
+    intro Hlower_idem.
+    unfold LowerIdempotent in Hlower_idem.
     induction l as [| x xs IH]; simpl.
     - constructor.
-    - constructor; [unfold lowered; apply lower_idem | exact IH].
+    - constructor; [unfold lowered; apply Hlower_idem | exact IH].
   Qed.
 
   (* On an already-lowered list, [map lower] is the identity. *)
@@ -163,11 +166,12 @@ Section IncrementalSpinePersistModel.
 
   (* After a persist whose prefix was lowered, the WHOLE stack is lowered. *)
   Theorem persist_from_all_lowered : forall s from,
+    LowerIdempotent ->
     Forall lowered (firstn from s) ->
     Forall lowered (persist_from s from).
   Proof.
-    intros s from Hpre. rewrite (incremental_eq_full s from Hpre).
-    apply forall_lowered_map.
+    intros s from Hlower_idem Hpre. rewrite (incremental_eq_full s from Hpre).
+    apply forall_lowered_map. exact Hlower_idem.
   Qed.
 
   (* ===== The trampoline loop as a state machine over (stack, watermark) ===== *)
@@ -202,24 +206,24 @@ Section IncrementalSpinePersistModel.
 
   (* After a loop-top persist the stack is FULLY lowered and the watermark sits
      at its end. *)
-  Lemma loop_top_post : forall s wm, Inv (s, wm) ->
+  Lemma loop_top_post : LowerIdempotent -> forall s wm, Inv (s, wm) ->
     loop_top (s, wm) = (persist_full s, length s) /\ Forall lowered (persist_full s).
   Proof.
-    intros s wm [Hle Hpre]. simpl in *.
+    intros Hlower_idem s wm [Hle Hpre]. simpl in *.
     assert (Hpf : persist_from s wm = persist_full s)
       by (apply incremental_eq_full; exact Hpre).
     unfold loop_top; simpl. rewrite Hpf.
     split.
     - f_equal. unfold persist_full. apply len_map_lower.
-    - apply forall_lowered_map.
+    - apply forall_lowered_map. exact Hlower_idem.
   Qed.
 
   (* The invariant is preserved by a loop top followed by either a push or a
      clamped pop. *)
-  Theorem inv_preserved : forall st o, Inv st -> Inv (step st o).
+  Theorem inv_preserved : LowerIdempotent -> forall st o, Inv st -> Inv (step st o).
   Proof.
-    intros [s wm] o HInv.
-    destruct (loop_top_post s wm HInv) as [Hlt Hall].
+    intros Hlower_idem [s wm] o HInv.
+    destruct (loop_top_post Hlower_idem s wm HInv) as [Hlt Hall].
     assert (Hlen : length (persist_full s) = length s)
       by (unfold persist_full; apply len_map_lower).
     destruct o as [r |].
@@ -237,11 +241,12 @@ Section IncrementalSpinePersistModel.
   Qed.
 
   (* Hence the invariant holds along any sequence of loop iterations. *)
-  Lemma inv_fold : forall ops st, Inv st -> Inv (fold_left step ops st).
+  Lemma inv_fold : LowerIdempotent -> forall ops st, Inv st -> Inv (fold_left step ops st).
   Proof.
+    intros Hlower_idem.
     induction ops as [| o os IH]; intros st HInv; simpl.
     - exact HInv.
-    - apply IH, inv_preserved, HInv.
+    - apply IH, inv_preserved; assumption.
   Qed.
 
   Definition init (s0 : list Frame) : list Frame * nat := (s0, 0).
@@ -249,19 +254,19 @@ Section IncrementalSpinePersistModel.
   Lemma inv_init : forall s0, Inv (init s0).
   Proof. intro s0. unfold Inv, init; simpl. split; [lia | constructor]. Qed.
 
-  Theorem reachable_inv : forall ops s0, Inv (fold_left step ops (init s0)).
-  Proof. intros ops s0. apply inv_fold, inv_init. Qed.
+  Theorem reachable_inv : LowerIdempotent -> forall ops s0, Inv (fold_left step ops (init s0)).
+  Proof. intros Hlower_idem ops s0. apply inv_fold; [exact Hlower_idem | apply inv_init]. Qed.
 
   (* MAIN: at EVERY loop top of EVERY reachable execution, the incremental persist
      equals the whole-stack persist it replaced — observational equivalence, so
      the fix changes only COST, never the lowered K-stack state. *)
-  Theorem incremental_eq_full_at_every_loop_top : forall ops s0,
+  Theorem incremental_eq_full_at_every_loop_top : LowerIdempotent -> forall ops s0,
     persist_from (fst (fold_left step ops (init s0)))
                  (snd (fold_left step ops (init s0)))
     = persist_full (fst (fold_left step ops (init s0))).
   Proof.
-    intros ops s0.
-    destruct (reachable_inv ops s0) as [_ Hpre].
+    intros Hlower_idem ops s0.
+    destruct (reachable_inv Hlower_idem ops s0) as [_ Hpre].
     apply incremental_eq_full. exact Hpre.
   Qed.
 

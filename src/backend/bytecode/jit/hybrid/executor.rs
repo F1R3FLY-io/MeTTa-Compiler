@@ -377,6 +377,8 @@ impl HybridExecutor {
             Ok(mut compiler) => {
                 match compiler.compile(chunk) {
                     Ok(code_ptr) => {
+                        let native_code =
+                            unsafe { super::super::tiered::native_fn_from_ptr(code_ptr) };
                         self.stats.jit_compilations += 1;
 
                         // Store in chunk's profile
@@ -386,7 +388,7 @@ impl HybridExecutor {
 
                         // Cache for future use
                         let entry = super::super::tiered::CacheEntry {
-                            native_code: code_ptr,
+                            native_code,
                             code_size: 0, // Size tracking not implemented yet
                             profile: self.tiered_compiler.get_or_create_profile(chunk),
                             tier,

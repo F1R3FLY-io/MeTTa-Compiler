@@ -1049,6 +1049,17 @@ facts the proofs rely on:
   sender. Source coupling pins the concrete Rust constructor, clone, send, recv,
   and return sites, plus the absence of `ResultReceiver` construction.
 
+- JIT cache-entry thread safety (`formal/rocq/gc/JitCacheEntryThreadSafety.v`,
+  2026-06-13) — closes the pgmcp Send/Sync audit finding on
+  `bytecode::jit::tiered::CacheEntry`. The runtime fix removes manual
+  `unsafe impl Send/Sync for CacheEntry` by replacing the raw cached native-code
+  data pointer with a typed `NativeCodeFn`; Rust now derives the cache entry's
+  Send/Sync status from the function pointer, integer fields, atomic
+  `Arc<JitProfile>`, tier enum, and `Instant` under the `RwLock<HashMap<...>>`.
+  Source coupling pins the typed field, the two compile-site conversions, the
+  absence of the manual impls, and the removal of a non-runtime scanner test
+  fixture string that pgmcp had correctly flagged as text.
+
 ## Harness
 
 Run:

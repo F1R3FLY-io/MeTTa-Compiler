@@ -511,6 +511,9 @@ line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"struct_channel_pairing_no_
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"struct_channel_pairing_no_worker_clone\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"struct_channel_pairing_no_response_receiver\"" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_tlc \"struct_channel_pairing_no_ready_sender\"" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/JitCacheEntryThreadSafety.v\"" >/dev/null
+line_no "formal/rocq/gc/JitCacheEntryThreadSafety.v" "field_autotraits_make_cache_entry_thread_safe" >/dev/null
+line_no "formal/rocq/gc/JitCacheEntryThreadSafety.v" "manual_impl_reintroduction_breaks_gate" >/dev/null
 line_no "scripts/verify_cesk_gc_all.sh" "normalize_determinism_output()" >/dev/null
 line_no "scripts/verify_cesk_gc_all.sh" 's/\$__fr_[0-9]+_/\$__fr_E_/g' >/dev/null
 line_no "scripts/verify_cesk_gc_all.sh" "normalize_determinism_output | sort | sha256sum" >/dev/null
@@ -579,6 +582,19 @@ assert_after_before "src/backend/models/task_scheduler.rs" "pub fn schedule_at" 
 line_no "src/backend/priority_scheduler.rs" "pub struct ResultReceiver<T>" >/dev/null
 line_no "src/backend/priority_scheduler.rs" "receiver: Receiver<T>," >/dev/null
 assert_zero "src/backend/priority_scheduler.rs" "ResultReceiver {"
+
+# pgmcp Send/Sync audit closure for runtime JIT cache entries. CacheEntry no
+# longer carries a raw data pointer that requires manual unsafe Send/Sync impls;
+# it stores the emitted target as a typed native-code function pointer, and Rust
+# derives the thread-safety of the entry from its fields behind the RwLock.
+line_no "src/backend/bytecode/jit/tiered.rs" "pub type NativeCodeFn = unsafe extern \"C\" fn(*mut super::JitContext) -> i64;" >/dev/null
+line_no "src/backend/bytecode/jit/tiered.rs" "pub native_code: NativeCodeFn," >/dev/null
+assert_zero "src/backend/bytecode/jit/tiered.rs" "unsafe impl Send for CacheEntry"
+assert_zero "src/backend/bytecode/jit/tiered.rs" "unsafe impl Sync for CacheEntry"
+assert_after_before "src/backend/bytecode/jit/tiered.rs" "fn maybe_compile" "let native_code = unsafe { native_fn_from_ptr(code_ptr) };" "native_code,"
+assert_after_before "src/backend/bytecode/jit/hybrid/executor.rs" "match compiler.compile(chunk)" "let native_code =" "native_code,"
+line_no "src/backend/bytecode/jit/hybrid/executor.rs" "unsafe { super::super::tiered::native_fn_from_ptr(code_ptr) };" >/dev/null
+assert_zero "tools/gc-root-audit/src/scanner.rs" "unsafe impl Send for GcSnapshot"
 
 # The R-FL no-recycle/swept-slot diagnostic was a one-off discriminator. The
 # live proof obligation is the persistent free-bit invariant below, so the

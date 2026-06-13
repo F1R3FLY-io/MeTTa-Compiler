@@ -123,10 +123,23 @@ impl ChunkId {
     }
 }
 
+/// Typed native-code entry point emitted by the JIT compiler.
+pub type NativeCodeFn = unsafe extern "C" fn(*mut super::JitContext) -> i64;
+
+#[inline]
+pub(super) unsafe fn native_fn_from_ptr(ptr: *const ()) -> NativeCodeFn {
+    unsafe { std::mem::transmute::<*const (), NativeCodeFn>(ptr) }
+}
+
+#[inline]
+fn native_fn_to_ptr(native_code: NativeCodeFn) -> *const () {
+    native_code as *const ()
+}
+
 /// Entry in the JIT cache containing compiled native code
 pub struct CacheEntry {
     /// The compiled native code function pointer
-    pub native_code: *const (),
+    pub native_code: NativeCodeFn,
 
     /// Size of the compiled code in bytes
     pub code_size: usize,
@@ -140,11 +153,6 @@ pub struct CacheEntry {
     /// Last access time (for LRU eviction)
     pub last_access: std::time::Instant,
 }
-
-// Safety: CacheEntry is Send because the native code pointer is a function pointer
-// that can be safely sent between threads. The JitProfile is thread-safe via atomics.
-unsafe impl Send for CacheEntry {}
-unsafe impl Sync for CacheEntry {}
 
 /// Thread-safe JIT cache for compiled native code
 ///
@@ -189,7 +197,7 @@ impl JitCache {
         let mut entries = self.entries.write();
         if let Some(entry) = entries.get_mut(id) {
             entry.last_access = std::time::Instant::now();
-            Some(entry.native_code)
+            Some(native_fn_to_ptr(entry.native_code))
         } else {
             None
         }
@@ -486,6 +494,8 @@ impl TieredCompiler {
 
         match compile_result {
             Ok(code_ptr) => {
+                let native_code = unsafe { native_fn_from_ptr(code_ptr) };
+
                 // Get code size (estimate based on chunk size)
                 let code_size = chunk.code().len() * 8; // Rough estimate
 
@@ -497,7 +507,7 @@ impl TieredCompiler {
                 // Store in cache
                 let id = ChunkId::from_chunk(chunk);
                 let entry = CacheEntry {
-                    native_code: code_ptr,
+                    native_code,
                     code_size,
                     profile: profile.clone(),
                     tier,
@@ -580,6 +590,10 @@ mod tests {
     use crate::backend::bytecode::chunk::ChunkBuilder;
     use crate::backend::bytecode::opcodes::Opcode;
 
+    unsafe extern "C" fn test_native_code(_: *mut super::super::JitContext) -> i64 {
+        0
+    }
+
     #[test]
     fn test_tier_from_count() {
         assert_eq!(Tier::from_count(0), Tier::Interpreter);
@@ -649,7 +663,7 @@ mod tests {
 
         let id = ChunkId::from_raw(12345);
         let entry = CacheEntry {
-            native_code: std::ptr::null(),
+            native_code: test_native_code,
             code_size: 100,
             profile: Arc::new(JitProfile::new()),
             tier: Tier::JitStage1,
@@ -673,7 +687,7 @@ mod tests {
         for i in 0..3 {
             let id = ChunkId::from_raw(i);
             let entry = CacheEntry {
-                native_code: std::ptr::null(),
+                native_code: test_native_code,
                 code_size: 100,
                 profile: Arc::new(JitProfile::new()),
                 tier: Tier::JitStage1,

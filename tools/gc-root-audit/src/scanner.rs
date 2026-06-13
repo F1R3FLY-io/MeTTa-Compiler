@@ -2329,7 +2329,7 @@ mod tests {
                 epoch: u64,
             }
 
-            unsafe impl Send for GcSnapshot {}
+            // Thread-trait impl omitted; this fixture only checks opaque data access.
         "#;
         let file = syn::parse_file(code).expect("test code should parse");
         let mut direct_holders = HashMap::new();

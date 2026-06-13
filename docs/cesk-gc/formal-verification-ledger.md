@@ -1008,6 +1008,21 @@ facts the proofs rely on:
   missing. Source coupling pins the default harness to the `formal/lean/gc` scan and rejects the old
   `RUN_LEAN_MIRRORS` opt-in gate.
 
+- WorkPool lifecycle accounting (`formal/rocq/gc/WorkPoolLifecycle.v`,
+  `tla/WorkPoolLifecycle.tla`, 2026-06-13) — discharges the active-count/parking/respawn
+  obligation for `WorkPool` and `AdaptiveGcPool`. Rocq proves that pool aggregate accounting is
+  driven exactly by successful worker-state transitions: repeated `try_unpark` or `try_park` calls
+  are idempotent, parking preserves the capacity invariant only when the active count decrements,
+  and respawning a previously parked replacement as unparked must increment the active count. TLC
+  runs the matching fixed model plus two negative discriminators: the old separate-check double
+  unpark shape violates `CapacityConsistent`, and the old respawn-without-increment shape violates
+  the same invariant. The source fix adds transition-returning `WorkerPark::{try_park,try_unpark}`,
+  serializes scale operations with pool-level `scale_lock`s, updates respawn accounting from the
+  transition result, and replaces overflow-worker raw pointer counter sharing with `Arc<AtomicUsize>`.
+  Source coupling pins the proof/model harness entries and the implementation shapes. Verified by
+  `systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=600% --quiet bash
+  scripts/verify_cesk_gc_formal.sh` at the implementation increment.
+
 ## Harness
 
 Run:

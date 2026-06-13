@@ -350,6 +350,11 @@ pub struct WorkPool {
     /// Number of currently active (non-parked) workers.
     active_count: AtomicUsize,
 
+    /// Serializes worker park/unpark/respawn transitions with active-count
+    /// accounting. The worker-local parked flag is protected by `WorkerPark`;
+    /// this lock makes the pool-level aggregate update one logical transition.
+    scale_lock: Mutex<()>,
+
     /// Target number of initially active (non-parked) workers.
     initial_active: usize,
 
@@ -373,7 +378,7 @@ pub struct WorkPool {
     overflow_workers: Mutex<Vec<OverflowWorker>>,
 
     /// Current overflow thread count (atomically updated for lock-free reads).
-    overflow_count: AtomicUsize,
+    overflow_count: Arc<AtomicUsize>,
 }
 
 impl WorkPool {
@@ -447,13 +452,14 @@ impl WorkPool {
             worker_parks,
             shutdown,
             active_count: AtomicUsize::new(initial_active),
+            scale_lock: Mutex::new(()),
             initial_active,
             min_threads,
             max_threads,
             sequence: AtomicU64::new(0),
             worker_cpu_states,
             overflow_workers: Mutex::new(Vec::new()),
-            overflow_count: AtomicUsize::new(0),
+            overflow_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -754,9 +760,9 @@ impl WorkPool {
     /// Finds the first parked worker and unparks it. Returns true if a worker
     /// was unparked.
     pub fn unpark_one(&self) -> bool {
+        let _scale = self.scale_lock.lock();
         for park in &self.worker_parks {
-            if park.is_parked() {
-                park.unpark();
+            if park.try_unpark() {
                 self.active_count.fetch_add(1, Ordering::Relaxed);
                 return true;
             }
@@ -769,13 +775,13 @@ impl WorkPool {
     /// Scans worker parks from lowest index, unparking each parked worker
     /// until `n` have been unparked or no parked workers remain.
     pub fn unpark_n(&self, n: usize) -> usize {
+        let _scale = self.scale_lock.lock();
         let mut unparked = 0;
         for park in &self.worker_parks {
             if unparked >= n {
                 break;
             }
-            if park.is_parked() {
-                park.unpark();
+            if park.try_unpark() {
                 self.active_count.fetch_add(1, Ordering::Relaxed);
                 unparked += 1;
             }
@@ -788,6 +794,7 @@ impl WorkPool {
     /// Finds the last active worker and parks it. Returns true if a worker
     /// was parked. Does not park below `min_threads`.
     pub fn park_one(&self) -> bool {
+        let _scale = self.scale_lock.lock();
         let active = self.active_count.load(Ordering::Relaxed);
         if active <= self.min_threads {
             return false;
@@ -795,8 +802,7 @@ impl WorkPool {
 
         // Park from the end (highest index = most recently added)
         for park in self.worker_parks.iter().rev() {
-            if !park.is_parked() {
-                park.park();
+            if park.try_park() {
                 self.active_count.fetch_sub(1, Ordering::Relaxed);
                 return true;
             }
@@ -810,6 +816,7 @@ impl WorkPool {
     /// until `n` have been parked, `min_threads` is reached, or no active
     /// workers remain.
     pub fn park_n(&self, n: usize) -> usize {
+        let _scale = self.scale_lock.lock();
         let mut parked = 0;
         for park in self.worker_parks.iter().rev() {
             if parked >= n {
@@ -819,8 +826,7 @@ impl WorkPool {
             if active <= self.min_threads {
                 break;
             }
-            if !park.is_parked() {
-                park.park();
+            if park.try_park() {
                 self.active_count.fetch_sub(1, Ordering::Relaxed);
                 parked += 1;
             }
@@ -879,7 +885,10 @@ impl WorkPool {
 
             // Respawn with the same shared state
             let park = Arc::clone(&self.worker_parks[id]);
-            park.unpark(); // Ensure new worker starts unparked
+            let _scale = self.scale_lock.lock();
+            if park.try_unpark() {
+                self.active_count.fetch_add(1, Ordering::Relaxed);
+            }
             let queue = Arc::clone(&self.queue);
             let runtime_tracker = Arc::clone(&self.runtime_tracker);
             let shutdown = Arc::clone(&self.shutdown);
@@ -1002,16 +1011,10 @@ impl WorkPool {
             let global_shutdown = Arc::clone(&self.shutdown);
             let self_shutdown = Arc::new(AtomicBool::new(false));
             let cpu_state = Arc::new(WorkerCpuState::new());
-            let overflow_count = &self.overflow_count as *const AtomicUsize as usize;
+            let overflow_count = Arc::clone(&self.overflow_count);
             let self_shutdown_clone = Arc::clone(&self_shutdown);
             let cpu_state_clone = Arc::clone(&cpu_state);
             let worker_id = base_id + i;
-
-            // SAFETY: overflow_count points to a field of the WorkPool behind
-            // GLOBAL_EVAL_POOL (LazyLock, 'static lifetime). The AtomicUsize
-            // outlives any overflow worker thread. For test pools, Drop joins
-            // all overflow threads before the pool is freed.
-            let overflow_count_ref = unsafe { &*(overflow_count as *const AtomicUsize) };
 
             let handle = thread::Builder::new()
                 .name(format!("work-pool-overflow-{}", worker_id))
@@ -1025,7 +1028,7 @@ impl WorkPool {
                         global_shutdown,
                         self_shutdown_clone,
                         cpu_state_clone,
-                        overflow_count_ref,
+                        overflow_count,
                     );
                 })
                 .expect("failed to spawn overflow worker thread");
@@ -1137,7 +1140,7 @@ fn overflow_worker_loop(
     shutdown: Arc<AtomicBool>,
     self_shutdown: Arc<AtomicBool>,
     cpu_state: Arc<WorkerCpuState>,
-    overflow_count: &AtomicUsize,
+    overflow_count: Arc<AtomicUsize>,
 ) {
     // Publish initial CPU state at startup.
     cpu_state.publish_initial();
@@ -3001,6 +3004,22 @@ mod tests {
         let pool = WorkPool::with_threads_initial(1, 4, 100);
         assert_eq!(pool.initial_active(), 4);
         assert_eq!(pool.active_workers(), 4);
+    }
+
+    #[test]
+    fn test_active_count_tracks_successful_park_transitions() {
+        let pool = WorkPool::with_threads_initial(2, 4, 2);
+        assert_eq!(pool.active_workers(), 2);
+
+        assert_eq!(pool.unpark_n(10), 2);
+        assert_eq!(pool.active_workers(), 4);
+        assert_eq!(pool.unpark_n(10), 0);
+        assert_eq!(pool.active_workers(), 4);
+
+        assert_eq!(pool.park_n(10), 2);
+        assert_eq!(pool.active_workers(), 2);
+        assert_eq!(pool.park_n(10), 0);
+        assert_eq!(pool.active_workers(), 2);
     }
 
     // ===================================================================

@@ -371,17 +371,43 @@ impl WorkerPark {
     ///
     /// Sets the parked flag. The worker will notice on its next check.
     pub fn park(&self) {
+        let _ = self.try_park();
+    }
+
+    /// Park the worker only if it was not already parked.
+    ///
+    /// Returns `true` exactly when this call changes the worker state from
+    /// active to parked. Pool active-count accounting must be driven by this
+    /// transition result, not by a separate pre-check.
+    pub fn try_park(&self) -> bool {
         let mut parked = self.parked.lock();
+        if *parked {
+            return false;
+        }
         *parked = true;
+        true
     }
 
     /// Unpark the worker (called by the scaling monitor).
     ///
     /// Clears the parked flag and notifies the worker.
     pub fn unpark(&self) {
+        let _ = self.try_unpark();
+    }
+
+    /// Unpark the worker only if it was parked.
+    ///
+    /// Returns `true` exactly when this call changes the worker state from
+    /// parked to active. Pool active-count accounting must be driven by this
+    /// transition result, not by a separate pre-check.
+    pub fn try_unpark(&self) -> bool {
         let mut parked = self.parked.lock();
+        if !*parked {
+            return false;
+        }
         *parked = false;
         self.condvar.notify_one();
+        true
     }
 
     /// Check if the worker should park, and if so, block until unparked.
@@ -705,6 +731,28 @@ mod tests {
         assert!(wp.is_parked());
 
         wp.unpark();
+        assert!(!wp.is_parked());
+    }
+
+    #[test]
+    fn test_worker_park_transition_results_are_idempotent() {
+        let wp = WorkerPark::new(false);
+
+        assert!(wp.try_park(), "active -> parked should report a transition");
+        assert!(
+            !wp.try_park(),
+            "parked -> parked must not report a transition"
+        );
+        assert!(wp.is_parked());
+
+        assert!(
+            wp.try_unpark(),
+            "parked -> active should report a transition"
+        );
+        assert!(
+            !wp.try_unpark(),
+            "active -> active must not report a transition"
+        );
         assert!(!wp.is_parked());
     }
 

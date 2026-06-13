@@ -208,12 +208,54 @@ assert_after_before \
   "pub fn spawn_overflow" \
   "for i in 0..spawn_count {" \
   "self.overflow_count.fetch_add(1, Ordering::Relaxed);"
+line_no "src/backend/models/adaptive_pool.rs" "pub fn try_park(&self) -> bool" >/dev/null
+line_no "src/backend/models/adaptive_pool.rs" "pub fn try_unpark(&self) -> bool" >/dev/null
+line_no "src/backend/models/work_pool.rs" "scale_lock: Mutex<()>," >/dev/null
+line_no "src/backend/models/gc_pool.rs" "scale_lock: parking_lot::Mutex<()>," >/dev/null
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "pub fn unpark_n" \
+  "let _scale = self.scale_lock.lock();" \
+  "if park.try_unpark() {"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "pub fn park_n" \
+  "let _scale = self.scale_lock.lock();" \
+  "if park.try_park() {"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "pub fn check_and_respawn_workers" \
+  "let _scale = self.scale_lock.lock();" \
+  "if park.try_unpark() {"
+assert_after_before \
+  "src/backend/models/gc_pool.rs" \
+  "pub fn unpark_n" \
+  "let _scale = self.scale_lock.lock();" \
+  "if park.try_unpark() {"
+assert_after_before \
+  "src/backend/models/gc_pool.rs" \
+  "pub fn park_n" \
+  "let _scale = self.scale_lock.lock();" \
+  "if park.try_park() {"
+assert_after_before \
+  "src/backend/models/gc_pool.rs" \
+  "pub fn check_and_respawn_workers" \
+  "let _scale = self.scale_lock.lock();" \
+  "if park.try_unpark() {"
+assert_zero_between "src/backend/models/work_pool.rs" "pub fn spawn_overflow" "let handle = thread::Builder" "as *const AtomicUsize"
+line_no "src/backend/models/work_pool.rs" "let overflow_count = Arc::clone(&self.overflow_count);" >/dev/null
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "fn overflow_worker_loop" \
+  "overflow_count: Arc<AtomicUsize>," \
+  "overflow_count.fetch_sub(1, Ordering::Relaxed);"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerPriorityFairness.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
 assert_zero "scripts/verify_cesk_gc_formal.sh" "RUN_LEAN_MIRRORS"
 line_no "scripts/verify_cesk_gc_formal.sh" 'find "$REPO/formal/lean/gc"' >/dev/null
@@ -233,6 +275,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.t
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
+assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.tla" "2"
 
 # Cron counter-sync / GC free-phase exclusion. Periodic sync may read live

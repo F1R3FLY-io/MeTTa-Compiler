@@ -116,6 +116,11 @@ pub struct AdaptiveGcPool {
     /// Number of currently active (non-parked) workers.
     active_count: AtomicUsize,
 
+    /// Serializes worker park/unpark/respawn transitions with active-count
+    /// accounting. The worker-local parked flag is protected by `WorkerPark`;
+    /// this lock makes the pool-level aggregate update one logical transition.
+    scale_lock: parking_lot::Mutex<()>,
+
     /// Minimum workers (never park below this).
     min_workers: usize,
 
@@ -182,6 +187,7 @@ impl AdaptiveGcPool {
             worker_parks,
             shutdown,
             active_count: AtomicUsize::new(min_workers),
+            scale_lock: parking_lot::Mutex::new(()),
             min_workers,
             max_workers,
             #[cfg(feature = "track-stats")]
@@ -238,9 +244,9 @@ impl AdaptiveGcPool {
 
     /// Unpark one worker (called by the GC scaling monitor).
     pub fn unpark_one(&self) -> bool {
+        let _scale = self.scale_lock.lock();
         for park in &self.worker_parks {
-            if park.is_parked() {
-                park.unpark();
+            if park.try_unpark() {
                 self.active_count.fetch_add(1, Ordering::Relaxed);
                 return true;
             }
@@ -250,13 +256,13 @@ impl AdaptiveGcPool {
 
     /// Unpark up to `n` workers. Returns the number actually unparked.
     pub fn unpark_n(&self, n: usize) -> usize {
+        let _scale = self.scale_lock.lock();
         let mut unparked = 0;
         for park in &self.worker_parks {
             if unparked >= n {
                 break;
             }
-            if park.is_parked() {
-                park.unpark();
+            if park.try_unpark() {
                 self.active_count.fetch_add(1, Ordering::Relaxed);
                 unparked += 1;
             }
@@ -267,14 +273,14 @@ impl AdaptiveGcPool {
     /// Park one worker (called by the GC scaling monitor).
     /// Does not park below `min_workers`.
     pub fn park_one(&self) -> bool {
+        let _scale = self.scale_lock.lock();
         let active = self.active_count.load(Ordering::Relaxed);
         if active <= self.min_workers {
             return false;
         }
 
         for park in self.worker_parks.iter().rev() {
-            if !park.is_parked() {
-                park.park();
+            if park.try_park() {
                 self.active_count.fetch_sub(1, Ordering::Relaxed);
                 return true;
             }
@@ -285,6 +291,7 @@ impl AdaptiveGcPool {
     /// Park up to `n` workers. Returns the number actually parked.
     /// Does not park below `min_workers`.
     pub fn park_n(&self, n: usize) -> usize {
+        let _scale = self.scale_lock.lock();
         let mut parked = 0;
         for park in self.worker_parks.iter().rev() {
             if parked >= n {
@@ -294,8 +301,7 @@ impl AdaptiveGcPool {
             if active <= self.min_workers {
                 break;
             }
-            if !park.is_parked() {
-                park.park();
+            if park.try_park() {
                 self.active_count.fetch_sub(1, Ordering::Relaxed);
                 parked += 1;
             }
@@ -344,7 +350,10 @@ impl AdaptiveGcPool {
 
             // Respawn with cloned shared state
             let park = Arc::clone(&self.worker_parks[id]);
-            park.unpark(); // Ensure new worker starts unparked
+            let _scale = self.scale_lock.lock();
+            if park.try_unpark() {
+                self.active_count.fetch_add(1, Ordering::Relaxed);
+            }
             let high_rx = self.high_rx.clone();
             let low_rx = self.low_rx.clone();
             let response_tx = self.response_tx.clone();
@@ -844,6 +853,24 @@ mod tests {
             assert!(pool.park_one());
         }
         assert!(!pool.park_one());
+
+        pool.shutdown();
+    }
+
+    #[test]
+    fn test_gc_pool_active_count_tracks_successful_park_transitions() {
+        let pool = AdaptiveGcPool::with_workers(2, 4);
+        assert_eq!(pool.active_workers(), 2);
+
+        assert_eq!(pool.unpark_n(10), 2);
+        assert_eq!(pool.active_workers(), 4);
+        assert_eq!(pool.unpark_n(10), 0);
+        assert_eq!(pool.active_workers(), 4);
+
+        assert_eq!(pool.park_n(10), 2);
+        assert_eq!(pool.active_workers(), 2);
+        assert_eq!(pool.park_n(10), 0);
+        assert_eq!(pool.active_workers(), 2);
 
         pool.shutdown();
     }

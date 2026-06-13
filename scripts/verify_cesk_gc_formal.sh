@@ -201,6 +201,7 @@ run_rocq "formal/rocq/gc/SchedulerPriorityFairness.v"
 run_rocq "formal/rocq/gc/SchedulerClassificationLookup.v"
 run_rocq "formal/rocq/gc/CronRecurringDispatch.v"
 run_rocq "formal/rocq/gc/WorkPoolOverflowCap.v"
+run_rocq "formal/rocq/gc/WorkPoolLifecycle.v"
 run_rocq "formal/rocq/gc/CounterFlushExclusion.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
@@ -256,6 +257,12 @@ run_tlc "work_pool_overflow_capped" "WorkPoolOverflowCap.tla" "MC_WorkPoolOverfl
   pass ""
 run_tlc "work_pool_overflow_uncapped" "WorkPoolOverflowCap.tla" "MC_WorkPoolOverflowCap_uncapped.cfg" \
   fail "Invariant LiveWithinCap is violated"
+run_tlc "work_pool_lifecycle_fixed" "WorkPoolLifecycle.tla" "MC_WorkPoolLifecycle_fixed.cfg" \
+  pass ""
+run_tlc "work_pool_lifecycle_double_unpark_bug" "WorkPoolLifecycle.tla" "MC_WorkPoolLifecycle_double_unpark_bug.cfg" \
+  fail "Invariant CapacityConsistent is violated"
+run_tlc "work_pool_lifecycle_respawn_bug" "WorkPoolLifecycle.tla" "MC_WorkPoolLifecycle_respawn_bug.cfg" \
+  fail "Invariant CapacityConsistent is violated"
 run_tlc "counter_flush_locked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_locked.cfg" \
   pass ""
 run_tlc "counter_flush_unlocked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_unlocked.cfg" \

@@ -2381,8 +2381,9 @@ const SPECIFICITY_W_REPEAT_VAR: u32 = 1;
 /// Stack-safe via explicit work-stack (no recursion).
 pub(crate) fn lhs_specificity<V: MettaValueTrait + Clone>(lhs: &V) -> u32 {
     let mut total: u32 = 0;
-    // Stack-allocated seen-var set; falls back to heap if patterns get huge.
-    let mut seen_vars: smallvec::SmallVec<[&'static str; 8]> = smallvec::SmallVec::new();
+    // Stack-allocated seen-var set; owns names because the work-stack holds
+    // cloned values whose atom borrows do not survive the current loop iteration.
+    let mut seen_vars: smallvec::SmallVec<[String; 8]> = smallvec::SmallVec::new();
     // Work-stack of (value-as-erased-pointer, depth). Using indices into
     // a Vec keeps lifetimes simple while still being iterative.
     let mut stack: smallvec::SmallVec<[(V, u32); 16]> = smallvec::SmallVec::new();
@@ -2410,17 +2411,10 @@ pub(crate) fn lhs_specificity<V: MettaValueTrait + Clone>(lhs: &V) -> u32 {
                         && name != "&kb"
                         && name != "&stack"));
             if is_var {
-                // Use a static-str hack: SmallVec stores the &'static str only
-                // for comparison; we don't keep references past this iteration.
-                // SAFETY: `name` is a &str with the same lifetime as `val`'s
-                // backing slab string; it lives at least until the end of this
-                // function. Transmuting to 'static is a known borrow-checker
-                // workaround used elsewhere in the codebase.
-                let name_static: &'static str = unsafe { std::mem::transmute(name) };
-                if seen_vars.contains(&name_static) {
+                if seen_vars.iter().any(|seen| seen.as_str() == name) {
                     total = total.saturating_add(SPECIFICITY_W_REPEAT_VAR);
                 } else {
-                    seen_vars.push(name_static);
+                    seen_vars.push(name.to_owned());
                 }
             } else if name != "_" {
                 // Constructor or head atom — concrete constraint at this depth.
@@ -2448,6 +2442,44 @@ pub(crate) fn lhs_specificity<V: MettaValueTrait + Clone>(lhs: &V) -> u32 {
     }
 
     total
+}
+
+#[cfg(test)]
+mod lhs_specificity_tests {
+    use super::lhs_specificity;
+    use crate::backend::models::MettaValue;
+
+    fn atom(name: &str) -> MettaValue {
+        MettaValue::Atom(name.to_owned())
+    }
+
+    fn sexpr(items: Vec<MettaValue>) -> MettaValue {
+        MettaValue::SExpr(items)
+    }
+
+    #[test]
+    fn repeated_vars_raise_specificity_without_static_borrows() {
+        let repeated = sexpr(vec![atom("f"), atom("$x"), atom("$x")]);
+        let distinct = sexpr(vec![atom("f"), atom("$x"), atom("$y")]);
+
+        assert_eq!(lhs_specificity(&repeated), lhs_specificity(&distinct) + 1);
+    }
+
+    #[test]
+    fn namespace_vars_repeat_but_special_spaces_are_constructors() {
+        let namespace_repeat = sexpr(vec![atom("f"), atom("&tmp"), atom("&tmp")]);
+        let namespace_distinct = sexpr(vec![atom("f"), atom("&tmp"), atom("&other")]);
+        let self_repeat = sexpr(vec![atom("f"), atom("&self"), atom("&self")]);
+
+        assert_eq!(
+            lhs_specificity(&namespace_repeat),
+            lhs_specificity(&namespace_distinct) + 1
+        );
+        assert_eq!(
+            lhs_specificity(&self_repeat),
+            lhs_specificity(&namespace_distinct) + (2 * 2000)
+        );
+    }
 }
 
 // ============================================================================

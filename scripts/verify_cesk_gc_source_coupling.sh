@@ -1779,7 +1779,7 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn alloc_atom_con
 
 # (3) the node variant carries an honest &'static str (NOT a freeable ByteRef), and
 # NO atom anywhere binds a byte side-index (the Node::Atom(br) pattern is gone) —
-# this is the source form of the proof's `interned_not_sideboxed` hypothesis.
+# this is the source form of the proof's `InternedNotSideboxed` contract.
 assert_count "src/backend/eval/cesk/index_node.rs" "Atom(&'static str)" "1"
 assert_zero "src/backend/eval/cesk/index_heap.rs" "Node::Atom(br)"
 
@@ -1795,8 +1795,8 @@ assert_count "src/backend/eval/freshening.rs" "crate::backend::symbol::intern_st
 # (6) the proof is wired into the harness and its load-bearing names cannot drift.
 line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/InternedAtomNeverFreed.v\"" >/dev/null
 line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "interned_atom_bytes_never_released" >/dev/null
-line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "interned_not_sideboxed" >/dev/null
-line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "release_only_sideboxed" >/dev/null
+line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "InternedNotSideboxed" >/dev/null
+line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "ReleaseOnlySideboxed" >/dev/null
 line_no "formal/rocq/gc/InternedAtomNeverFreed.v" "pre_fix_sidebox_atom_releasable" >/dev/null
 
 # ---- F1 SATB-young lever (rendezvous young-cycle routing + ClearOldMarks) ----

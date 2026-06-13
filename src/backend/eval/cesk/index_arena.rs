@@ -1572,7 +1572,8 @@ mod tests {
         // segment opens (idx>0 — the nursery grew), and cleared by `promote_young` (the
         // index analogue of the slab's `BackpressureEventuallyRelaxes`). NOTE: this fires
         // here only because the test uses a tiny 2-slot segment; in PRODUCTION a segment is
-        // 8 MiB > YOUNG_BUDGET (2 MiB), so `young_alloc > YOUNG_BUDGET` triggers the minor
+        // 8 MiB > the index heap's default young budget, so
+        // `young_alloc > YOUNG_BUDGET` triggers the minor
         // BEFORE a 2nd segment opens — the signal is subsumed there (it is the slab-faithful
         // integration channel for the small-segment / high-budget path; the substantive
         // runtime coupling is the driver's level-3 minor-preference, which is independent).

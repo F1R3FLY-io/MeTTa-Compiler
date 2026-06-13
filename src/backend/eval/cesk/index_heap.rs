@@ -2189,6 +2189,11 @@ pub mod index_gc {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn young_budget_for_test() -> usize {
+        young_budget()
+    }
+
     /// Increment B (CHANGE #3): default ABSOLUTE committed ceiling (bytes) — the hard cap
     /// above which a MAJOR is forced regardless of `old_live`. Bounds RSS even on a
     /// pathological workload whose old gen never grows (so the live-based trigger never
@@ -4231,7 +4236,7 @@ mod tests {
     #[test]
     fn rendezvous_forced_churn_reuses_free_list_without_duplicates() {
         let _mode = enter_index_mode_for_test();
-        let target_young_bytes = 3 * 1024 * 1024;
+        let target_young_bytes = index_gc::young_budget_for_test() + 1024 * 1024;
         let nodes_to_force_minor = target_young_bytes / std::mem::size_of::<Node>().max(1) + 1;
         let first_dead_count = nodes_to_force_minor + nodes_to_force_minor / 2;
 

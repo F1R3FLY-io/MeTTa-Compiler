@@ -1,10 +1,10 @@
 ; R-FL forced-GC oracle fixture (deterministic free-list-duplicate exerciser).
 ;
-; PURPOSE. Conformance fixtures do ZERO GC cycles (per-fixture young allocation
-; stays under YOUNG_BUDGET = 2 MiB), so they never exercise `sweep_range`'s
+; PURPOSE. Ordinary conformance fixtures do ZERO GC cycles (per-fixture young allocation
+; stays under the runtime young budget), so they never exercise `sweep_range`'s
 ; free-list push. This fixture deliberately allocates+discards MANY MiB of
 ; transient young S-expressions in a sequential loop so that:
-;   • young_alloc_bytes crosses YOUNG_BUDGET (2 MiB) MANY times  → many MINORS;
+;   • young_alloc_bytes crosses the young budget MANY times      → many MINORS;
 ;   • with a low METTATRON_INDEX_GC_MIN_BYTES the major floor is crossed too, and
 ;     after MAJOR_CADENCE (16) minors a MAJOR fires                → major→minor
 ;     AND minor→minor sweep sequences.
@@ -61,7 +61,7 @@
 
 ; 12000 iterations × depth 220 ≈ 2.6M transient (s ...) cells + the +/- machinery
 ; + 12000 accumulator rebuilds. At ~24 B/node this is tens of MiB of young churn
-; ⇒ young_alloc crosses YOUNG_BUDGET (2 MiB) many times (many minors), and with a
+; ⇒ young_alloc crosses the runtime young budget many times (many minors), and with a
 ; low MIN_BYTES the major floor + MAJOR_CADENCE=16 are crossed ⇒ major→minor and
 ; minor→minor sequences both occur, both re-sweeping the partially-live current
 ; segment.

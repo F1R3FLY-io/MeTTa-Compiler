@@ -1,7 +1,18 @@
 # Arena-coresident Inner column v2 — the parallel-arm lever (exp21 candidate)
 
-Status: **v3 — R2-parallel folded (1 BLOCKER + 4 MAJOR resolved below;
-verdict was NOT-CONVERGED; one confirming pass R3-parallel gates exp21).**
+Status: **CONVERGED at v3.1 (R3-parallel NET-SUBTRACTIVE) — exp21
+registered.** R3 verified all six attack surfaces with source evidence:
+(1) POD cells — every column-stored variant is Copy-payload; (2) the
+never-freed Space/Memo store mirrors the EXISTING append-only
+`space_table`/`memo_table` (no removal path exists today — no new leak
+class); (3) NO mark/sweep/collect path reads inners — the post-publish
+window is scanner-unreadable, and unescaped handles cannot be called;
+(4) COLUMN_DIR copies the arena's own never-realloc `MAX_SEGMENTS`
+directory + `seg_count` Acquire discipline (index_arena.rs:484-487);
+(5) cross-consistency clean post-v3.1; (6) all exp21 protocol rigs
+exist. CAVEAT: R3 was conducted INLINE (the subagent weekly limit) — a
+fresh-agent re-confirmation is cheap insurance when capacity resets,
+but every point above is source-grounded.
 The parallel gate PASSED (86.7% aggregate-CPU win at N=8, `929040a5`;
 R2's fidelity audit erodes the floor only to ~84% ≫ the 30% bar). Supersedes the v1 seed (REJECTED for the sequential arm by the
 exp19 gate: single-threaded per-call 3.02 vs 3.39 ns — the column lost) —

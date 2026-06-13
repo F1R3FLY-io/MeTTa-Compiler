@@ -40,60 +40,77 @@ Section TrackedVarSideRetentionModel.
   Variable Root  : Addr -> Prop.
   Variable Edge  : Addr -> Addr -> Prop.
   Variable Reach : Addr -> Prop.
-  Hypothesis reach_root : forall a, Root a -> Reach a.
-  Hypothesis reach_step : forall a b, Reach a -> Edge a b -> Reach b.
+  Definition ReachRoot : Prop :=
+    forall a, Root a -> Reach a.
+  Definition ReachStep : Prop :=
+    forall a b, Reach a -> Edge a b -> Reach b.
 
   (* The global-anchor root family (collect_global_anchors): every anchor is a
      root of the mark. *)
   Variable GlobalAnchor : Addr -> Prop.
-  Hypothesis anchor_is_root : forall a, GlobalAnchor a -> Root a.
+  Definition AnchorIsRoot : Prop :=
+    forall a, GlobalAnchor a -> Root a.
 
   (* THE FIX, source-coupled: a held tracked-variable atom is a global anchor —
      i.e. collect_binding_capture_roots is wired into collect_global_anchors so
      the binding-capture stack contributes to the root set on every mark. *)
   Variable BindingCaptureRoot : Addr -> Prop.
-  Hypothesis binding_capture_is_anchor :
+  Definition BindingCaptureIsAnchor : Prop :=
     forall a, BindingCaptureRoot a -> GlobalAnchor a.
 
   (* The atom -> string-side-Box ownership edge (Node::Atom(ByteRef) -> its
      SideColumn<str> entry), part of the structural Edge relation. *)
   Variable SideBox : Addr -> Addr -> Prop.
-  Hypothesis sidebox_is_edge : forall a s, SideBox a s -> Edge a s.
+  Definition SideBoxIsEdge : Prop :=
+    forall a s, SideBox a s -> Edge a s.
 
   (* The sweep / segment-release law (mark completeness): a side-Box (or segment)
      is released only when it is UNREACHABLE. *)
   Variable Released : Addr -> Prop.
-  Hypothesis sweep_releases_only_unreachable :
+  Definition SweepReleasesOnlyUnreachable : Prop :=
     forall s, Released s -> ~ Reach s.
 
   (* A held tracked-variable atom is reachable (its source atom is in σ|_Reachable
      via the binding-capture anchor wiring). *)
   Lemma tracked_var_atom_reachable :
+    ReachRoot -> AnchorIsRoot -> BindingCaptureIsAnchor ->
     forall a, BindingCaptureRoot a -> Reach a.
   Proof.
-    intros a Hbcr.
-    apply reach_root. apply anchor_is_root. apply binding_capture_is_anchor. exact Hbcr.
+    intros Hreach_root Hanchor_root Hcapture_anchor a Hbcr.
+    unfold ReachRoot in Hreach_root.
+    unfold AnchorIsRoot in Hanchor_root.
+    unfold BindingCaptureIsAnchor in Hcapture_anchor.
+    apply Hreach_root. apply Hanchor_root. apply Hcapture_anchor. exact Hbcr.
   Qed.
 
   (* Its string side-Box is therefore reachable too (one Edge step). *)
   Lemma tracked_var_side_box_reachable :
-    forall a s, BindingCaptureRoot a -> SideBox a s -> Reach s.
+    ReachRoot -> ReachStep -> AnchorIsRoot -> BindingCaptureIsAnchor ->
+    SideBoxIsEdge -> forall a s, BindingCaptureRoot a -> SideBox a s -> Reach s.
   Proof.
-    intros a s Hbcr Hbox.
-    apply (reach_step a s).
-    - apply tracked_var_atom_reachable. exact Hbcr.
-    - apply sidebox_is_edge. exact Hbox.
+    intros Hreach_root Hreach_step Hanchor_root Hcapture_anchor Hside_edge
+      a s Hbcr Hbox.
+    unfold ReachStep in Hreach_step.
+    unfold SideBoxIsEdge in Hside_edge.
+    apply (Hreach_step a s).
+    - apply tracked_var_atom_reachable; assumption.
+    - apply Hside_edge. exact Hbox.
   Qed.
 
   (* MAIN: a held tracked variable's string side-Box is NEVER released — so the
      laundered `&str` read can never dangle. Contrapositive of the sweep law on
      the reachable side-Box. *)
   Theorem tracked_var_side_box_retained :
+    ReachRoot -> ReachStep -> AnchorIsRoot -> BindingCaptureIsAnchor ->
+    SideBoxIsEdge -> SweepReleasesOnlyUnreachable ->
     forall a s, BindingCaptureRoot a -> SideBox a s -> ~ Released s.
   Proof.
-    intros a s Hbcr Hbox Hrel.
-    apply (sweep_releases_only_unreachable s Hrel).
-    apply (tracked_var_side_box_reachable a s Hbcr Hbox).
+    intros Hreach_root Hreach_step Hanchor_root Hcapture_anchor Hside_edge
+      Hsweep_releases_only_unreachable a s Hbcr Hbox Hrel.
+    unfold SweepReleasesOnlyUnreachable in Hsweep_releases_only_unreachable.
+    apply (Hsweep_releases_only_unreachable s Hrel).
+    apply (tracked_var_side_box_reachable Hreach_root Hreach_step Hanchor_root
+      Hcapture_anchor Hside_edge a s Hbcr Hbox).
   Qed.
 End TrackedVarSideRetentionModel.
 

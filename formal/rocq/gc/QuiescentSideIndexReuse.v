@@ -202,7 +202,8 @@ End QuiescentSideIndexReuseModel.
     each interned at a DISTINCT generation (push bumps it), and proves the guard
     never frees a live occupant. (Generations are idealized as [nat]: the source
     [u32] would only alias after 2^32 reuses of ONE cell — unreachable in any run
-    — so [gen_injective] is the sound abstraction of the strictly-monotone bump.) *)
+    — so [GenerationInjective] is the sound abstraction of the strictly-monotone
+    bump.) *)
 
 Section GenerationGuardSafety.
   (* An occupant = one [push]'s tenant of a fixed side cell. *)
@@ -212,7 +213,7 @@ Section GenerationGuardSafety.
      generation, so it is strictly monotone across the cell's tenancy — hence
      [gen_of] is injective on this cell. *)
   Variable gen_of : Occupant -> nat.
-  Hypothesis gen_injective :
+  Definition GenerationInjective : Prop :=
     forall o1 o2, gen_of o1 = gen_of o2 -> o1 = o2.
 
   (* Whether an occupant is a LIVE node (reachable / marked by the collector). *)
@@ -233,19 +234,21 @@ Section GenerationGuardSafety.
      ([gen_of o = gen_of current]), injectivity forces [o = current], so the
      current occupant IS that dead owner — not live. *)
   Theorem gen_guard_never_frees_live :
-    forall o, ~ live o -> GuardDrops o -> ~ live current.
+    GenerationInjective -> forall o, ~ live o -> GuardDrops o -> ~ live current.
   Proof.
-    intros o Hdead Hguard. unfold GuardDrops in Hguard.
-    rewrite <- (gen_injective o current Hguard). exact Hdead.
+    intros Hgen_injective o Hdead Hguard.
+    unfold GenerationInjective in Hgen_injective.
+    unfold GuardDrops in Hguard.
+    rewrite <- (Hgen_injective o current Hguard). exact Hdead.
   Qed.
 
   (* Contrapositive: while the cell's current occupant is LIVE, NO dead-owner
      snapshot can free it — the guard never fires for it. *)
   Theorem live_current_survives_stale_free :
-    forall o, ~ live o -> live current -> ~ GuardDrops o.
+    GenerationInjective -> forall o, ~ live o -> live current -> ~ GuardDrops o.
   Proof.
-    intros o Hdead Hlive Hguard.
-    exact (gen_guard_never_frees_live o Hdead Hguard Hlive).
+    intros Hgen_injective o Hdead Hlive Hguard.
+    exact (gen_guard_never_frees_live Hgen_injective o Hdead Hguard Hlive).
   Qed.
 
   (* The reuse case is exactly a generation mismatch: an index reused since the

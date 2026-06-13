@@ -529,6 +529,7 @@ line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/QuiescentS
 line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "reusable_index_implies_quiescent_full_consumed" >/dev/null
 line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "free_then_push_reuses_without_bump" >/dev/null
 line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "reusable_pressure_excludes_bump_path" >/dev/null
+line_no "formal/rocq/gc/QuiescentSideIndexReuse.v" "GenerationInjective" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "run_rocq \"formal/rocq/gc/InnerColumnReadRefinement.v\"" >/dev/null
 line_no "formal/rocq/gc/InnerColumnReadRefinement.v" "space_memo_reads_id_store" >/dev/null
 line_no "formal/rocq/gc/InnerColumnReadRefinement.v" "pod_rewrite_before_escape_prevents_stale_read" >/dev/null
@@ -685,7 +686,7 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "if did_major {" "MINO
 # snapshot never frees a live cell. Pins: the three node refs carry the generation; push
 # stamps a fresh (strictly-increasing ⇒ injective) generation; the reclaim snapshot
 # captures the ref's generation; free drops ONLY on a matching generation (the GuardDrops
-# predicate / gen_injective premise the proof rests on).
+# predicate / GenerationInjective contract the proof rests on).
 assert_after_before "src/backend/eval/cesk/index_node.rs" "pub struct ChildRef {" "pub idx: u32," "pub gen: u32,"
 assert_after_before "src/backend/eval/cesk/index_node.rs" "pub struct ByteRef {" "pub idx: u32," "pub gen: u32,"
 assert_after_before "src/backend/eval/cesk/index_node.rs" "pub struct SpanRef {" "pub idx: u32," "pub gen: u32,"

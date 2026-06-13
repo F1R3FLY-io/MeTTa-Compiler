@@ -640,6 +640,10 @@ can replace the full-major final sweep.
   `min(requested, max_overflow - live_overflow)`, so spawning overflow workers preserves
   `live_overflow <= max_overflow`. The uncapped discriminator reproduces the old behavior where a direct
   `spawn_overflow(1)` after reaching the cap lets `live` grow beyond `MaxOverflow`.
+- `formal/rocq/gc/CounterFlushExclusion.v` and `tla/CounterFlushExclusion.tla`: prove and model-check the
+  cron counter-sync / GC free-phase exclusion. Periodic counter sync may scan live value slots while GC response
+  processing and session release may free slots; the shared `COUNTER_FLUSH_LOCK` makes the sync scanner and GC
+  freer mutually exclusive. The unlocked TLC discriminator violates `NoCounterSyncFreeOverlap`.
 - 2026-06-12 scheduler/threading formal increment: `scripts/verify_cesk_gc_formal.sh` passed proof hygiene, TLC
   hygiene, source coupling, 90 mandatory Rocq files, and the full positive/negative TLC discriminator suite. Focused
   runtime gates passed under `systemd-run` caps: `cargo test --lib priority_queue`, `cargo test --lib
@@ -651,6 +655,13 @@ can replace the full-major final sweep.
   gates passed under `systemd-run` caps: `rocq c ... WorkPoolOverflowCap.v`, capped/uncapped TLC runs for
   `WorkPoolOverflowCap.tla`, `bash scripts/verify_cesk_gc_source_coupling.sh`, and `cargo test --lib overflow`.
   The slab release gate `cargo nextest run --release` then ran 4401 tests with 4401 passed.
+- 2026-06-12 CounterFlush exclusion increment: focused gates passed under `systemd-run` caps:
+  `rocq c ... CounterFlushExclusion.v`, `CounterFlushExclusion.tla` locked positive TLC, and the unlocked negative
+  discriminator which violates `NoCounterSyncFreeOverlap`. Source coupling was also updated for the committed
+  inner-column allocation shape: the reuse-pressure branch must still take the write lock before `exclusive(&mut h)`,
+  populate the shared column, and only then return the address. The full real-worktree formal wall then passed:
+  proof hygiene found 92 mandatory Rocq files, TLC hygiene found 231 TLC configs, source coupling passed, and
+  `scripts/verify_cesk_gc_formal.sh` completed successfully.
 
 ## Source coupling
 

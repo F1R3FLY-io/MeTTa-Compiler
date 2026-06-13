@@ -176,10 +176,48 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerPriorityFairness.v" "1
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
+assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.tla" "2"
+
+# Cron counter-sync / GC free-phase exclusion. Periodic sync may read live
+# value slots and materialize MettaValue handles for tiered-cache accounting.
+# GC response processing and session release may free those same slots, so all
+# free/classification paths must take COUNTER_FLUSH_LOCK before freeing or
+# computing the surviving set.
+assert_after_before \
+  "src/backend/models/gc_cron.rs" \
+  "fn execute_counter_sync" \
+  "if is_gc_in_progress() {" \
+  "let _flush_guard = COUNTER_FLUSH_LOCK.lock();"
+assert_after_before \
+  "src/backend/models/gc_cron.rs" \
+  "let _flush_guard = COUNTER_FLUSH_LOCK.lock();" \
+  "if is_gc_in_progress() {" \
+  "let allocator = global_allocator();"
+assert_after_before \
+  "src/backend/models/gc_allocator.rs" \
+  "pub fn process_gc_response" \
+  "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
+  "let (safepoint_live, env_roots_complete) = trace_safepoint_live_set();"
+assert_after_before \
+  "src/backend/models/gc_allocator.rs" \
+  "pub fn process_gc_response" \
+  "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
+  "// === Phase 3: Free value slots"
+assert_after_before \
+  "src/backend/models/gc_pool.rs" \
+  "fn execute_session_release" \
+  "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
+  "let alloc = global_allocator();"
+assert_after_before \
+  "src/backend/models/gc_allocator.rs" \
+  "pub fn release_session(&self, context_id: u32)" \
+  "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
+  "let surviving = self.trace_surviving_set();"
 
 # A5 structural-root architecture: the dynamic root registry and raw frame-chain
 # discovery path must remain slab-only. The index collector reads roots from the
@@ -1079,8 +1117,10 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn current_segment_re
 line_no "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" >/dev/null
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" "global_index_heap().try_write()" "current_segment_reuse_pressure()"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" "current_segment_reuse_pressure()" "global_index_heap().write().expect(\"index heap\")"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "if current_segment_reuse_pressure() {" "global_index_heap().write().expect(\"index heap\")" "return exclusive(&mut h);"
-assert_after_before "src/backend/eval/cesk/index_heap.rs" "if current_segment_reuse_pressure() {" "return exclusive(&mut h);" "global_index_heap().read().expect(\"index heap\")"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "if current_segment_reuse_pressure() {" "global_index_heap().write().expect(\"index heap\")" "let addr = exclusive(&mut h);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "if current_segment_reuse_pressure() {" "let addr = exclusive(&mut h);" "h.populate_column(addr);"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "if current_segment_reuse_pressure() {" "h.populate_column(addr);" "return addr;"
+assert_after_before "src/backend/eval/cesk/index_heap.rs" "if current_segment_reuse_pressure() {" "return addr;" "global_index_heap().read().expect(\"index heap\")"
 assert_after_before "src/backend/eval/cesk/index_heap.rs" "fn alloc_with_reuse_pressure" "global_index_heap().read().expect(\"index heap\")" "concurrent(&h)"
 assert_zero_between "src/backend/eval/cesk/index_heap.rs" "fn current_segment_reuse_pressure() -> bool" "impl MettaValueFactory<MettaValue> for IndexFactory" "std::env::var"
 assert_zero_between "src/backend/eval/cesk/index_heap.rs" "fn current_segment_reuse_pressure() -> bool" "impl MettaValueFactory<MettaValue> for IndexFactory" "METTATRON_"

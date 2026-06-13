@@ -186,6 +186,7 @@ run_rocq "formal/rocq/gc/SchedulerPriorityFairness.v"
 run_rocq "formal/rocq/gc/SchedulerClassificationLookup.v"
 run_rocq "formal/rocq/gc/CronRecurringDispatch.v"
 run_rocq "formal/rocq/gc/WorkPoolOverflowCap.v"
+run_rocq "formal/rocq/gc/CounterFlushExclusion.v"
 run_rocq "formal/rocq/gc/DedicatedHandoff.v"
 run_rocq "formal/rocq/gc/DedicatedSingleRegime.v"
 run_rocq "formal/rocq/gc/DepthZeroSafepoint.v"
@@ -230,6 +231,10 @@ run_tlc "work_pool_overflow_capped" "WorkPoolOverflowCap.tla" "MC_WorkPoolOverfl
   pass ""
 run_tlc "work_pool_overflow_uncapped" "WorkPoolOverflowCap.tla" "MC_WorkPoolOverflowCap_uncapped.cfg" \
   fail "Invariant LiveWithinCap is violated"
+run_tlc "counter_flush_locked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_locked.cfg" \
+  pass ""
+run_tlc "counter_flush_unlocked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_unlocked.cfg" \
+  fail "Invariant NoCounterSyncFreeOverlap is violated"
 
 run_tlc "rfl_freebit" "MC_StoreCentricGC_RFL.tla" "MC_RFL_freebit.cfg" \
   pass ""

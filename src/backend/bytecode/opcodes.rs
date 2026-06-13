@@ -244,7 +244,7 @@ pub enum Opcode {
     NewState = 0x48,
     /// Get current value from state cell: [state_handle] -> [value]
     GetState = 0x49,
-    /// Change state cell value: [state_handle, new_value] -> [old_value]
+    /// Change state cell value: [state_handle, new_value] -> [state_handle]
     ChangeState = 0x4A,
 
     // === Control Flow (0x50-0x6F) ===
@@ -1495,13 +1495,13 @@ mod tests {
     fn test_invalid_opcode() {
         // Test that gaps in the opcode space return None
         assert!(Opcode::from_byte(0x10).is_none()); // Gap between compiled unification and value creation
-                                                    // 0x26 = Msort, 0x27 = StructUniqueAtom, 0x28-0x2C = native special-form
-                                                    // opcodes (Unify4, MatchExternal, MatchExternalOr, CollapseBindBegin,
-                                                    // CollapseBindEnd). 0x2D-0x2E = HE runner-mode directives
-                                                    // (EnterInterpretMode, ExitInterpretMode — S1 TOPLEVEL 2026-05-13).
-                                                    // 0x2F = SuperposeBind (S5: HE-bisimilar nondet fan-out).
-                                                    // No free slots remain in 0x28-0x2F.
-                                                    // 0x2F is now SuperposeBind (S5).
+        // 0x26 = Msort, 0x27 = StructUniqueAtom, 0x28-0x2C = native special-form
+        // opcodes (Unify4, MatchExternal, MatchExternalOr, CollapseBindBegin,
+        // CollapseBindEnd). 0x2D-0x2E = HE runner-mode directives
+        // (EnterInterpretMode, ExitInterpretMode — S1 TOPLEVEL 2026-05-13).
+        // 0x2F = SuperposeBind (S5: HE-bisimilar nondet fan-out).
+        // No free slots remain in 0x28-0x2F.
+        // 0x2F is now SuperposeBind (S5).
         assert!(Opcode::from_byte(0x2F).is_some());
     }
 

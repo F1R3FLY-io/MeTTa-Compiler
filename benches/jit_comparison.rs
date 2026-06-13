@@ -5,12 +5,12 @@
 //! - Tier 1: Bytecode VM
 //! - Tier 2: Cranelift JIT (Stage 1 primitives + Stage 2 runtime calls)
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use mettatron::backend::bytecode::{compile as compile_bytecode, BytecodeVM};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use mettatron::backend::MettaValue;
+use mettatron::backend::bytecode::{BytecodeVM, compile as compile_bytecode};
 use mettatron::backend::compile::compile;
 use mettatron::backend::eval::eval;
 use mettatron::backend::eval::trampoline::new_env;
-use mettatron::backend::MettaValue;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,7 +66,7 @@ fn eval_bytecode_precompiled(
 /// Execute JIT-compiled code directly
 #[cfg(feature = "jit")]
 unsafe fn exec_jit_code(code_ptr: *const (), constants: &[MettaValue]) -> i64 {
-    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
     let mut ctx = JitContext::new(stack.as_mut_ptr(), 64, constants.as_ptr(), constants.len());
 
     let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 = std::mem::transmute(code_ptr);

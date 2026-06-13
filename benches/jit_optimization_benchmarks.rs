@@ -15,11 +15,11 @@
 // taskset -c 0-17 cargo bench --bench jit_optimization_benchmarks --features jit -- --baseline baseline_pre_opt
 
 use criterion::{
-    black_box, criterion_group, criterion_main, measurement::WallTime, BenchmarkGroup, BenchmarkId,
-    Criterion, Throughput,
+    BenchmarkGroup, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
+    measurement::WallTime,
 };
-use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
 use mettatron::backend::MettaValue;
+use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -105,7 +105,7 @@ fn bench_call_dispatch_grounded(c: &mut Criterion) {
             let mut compiler = JitCompiler::new().expect("Failed to create compiler");
             if let Ok(code_ptr) = compiler.compile(&chunk) {
                 let constants = chunk.constants();
-                let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+                let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
                 b.iter(|| {
                     let mut ctx = unsafe {
@@ -155,7 +155,7 @@ fn bench_call_dispatch_chain(c: &mut Criterion) {
                 let mut compiler = JitCompiler::new().expect("Failed to create compiler");
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
-                    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
+                    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 256];
 
                     b.iter(|| {
                         let mut ctx = unsafe {
@@ -208,7 +208,7 @@ fn bench_call_dispatch_user_rules(c: &mut Criterion) {
                 let mut compiler = JitCompiler::new().expect("Failed to create compiler");
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
-                    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+                    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
                     b.iter(|| {
                         let mut ctx = unsafe {
@@ -367,7 +367,7 @@ fn bench_pattern_match_simple(c: &mut Criterion) {
             let mut compiler = JitCompiler::new().expect("Failed to create compiler");
             if let Ok(code_ptr) = compiler.compile(&chunk) {
                 let constants = chunk.constants();
-                let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+                let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
                 b.iter(|| {
                     let mut ctx = unsafe {
@@ -397,7 +397,7 @@ fn bench_pattern_match_simple(c: &mut Criterion) {
         let mut compiler = JitCompiler::new().expect("Failed to create compiler");
         if let Ok(code_ptr) = compiler.compile(&chunk) {
             let constants = chunk.constants();
-            let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+            let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
             let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
             b.iter(|| {
@@ -435,7 +435,7 @@ fn bench_pattern_match_simple(c: &mut Criterion) {
         let mut compiler = JitCompiler::new().expect("Failed to create compiler");
         if let Ok(code_ptr) = compiler.compile(&chunk) {
             let constants = chunk.constants();
-            let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+            let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
             let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
             b.iter(|| {
@@ -487,7 +487,7 @@ fn bench_pattern_match_complex(c: &mut Criterion) {
             let mut compiler = JitCompiler::new().expect("Failed to create compiler");
             if let Ok(code_ptr) = compiler.compile(&chunk) {
                 let constants = chunk.constants();
-                let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+                let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
                 let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
                 b.iter(|| {
@@ -610,7 +610,7 @@ fn bench_binding_lookup_depth(c: &mut Criterion) {
             let mut compiler = JitCompiler::new().expect("Failed to create compiler");
             if let Ok(code_ptr) = compiler.compile(&chunk) {
                 let constants = chunk.constants();
-                let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+                let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
                 let mut binding_frames: Vec<JitBindingFrame> =
                     vec![JitBindingFrame::default(); depth.max(8) + 4];
 
@@ -658,7 +658,7 @@ fn bench_binding_lookup_width(c: &mut Criterion) {
             let mut compiler = JitCompiler::new().expect("Failed to create compiler");
             if let Ok(code_ptr) = compiler.compile(&chunk) {
                 let constants = chunk.constants();
-                let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
+                let mut stack: Vec<JitValue> = vec![JitValue::unit(); 256];
                 let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
                 b.iter(|| {
@@ -712,7 +712,7 @@ fn bench_binding_lookup_repeated(c: &mut Criterion) {
             let mut compiler = JitCompiler::new().expect("Failed to create compiler");
             if let Ok(code_ptr) = compiler.compile(&chunk) {
                 let constants = chunk.constants();
-                let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
+                let mut stack: Vec<JitValue> = vec![JitValue::unit(); 256];
                 let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
                 b.iter(|| {
@@ -846,10 +846,9 @@ fn bench_state_operations(c: &mut Criterion) {
             |b, &count| {
                 let chunk = Arc::new(create_state_ops_chunk(count, 0));
                 b.iter(|| {
-                    let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_config_and_env(
+                    let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_env(
                         Arc::clone(&chunk),
-                        mettatron::backend::bytecode::vm::VmConfig::default(),
-                        Environment::default(),
+                        MettaEnvironment::default(),
                     );
                     black_box(vm.run())
                 })
@@ -861,8 +860,8 @@ fn bench_state_operations(c: &mut Criterion) {
             let mut compiler = JitCompiler::new().expect("Failed to create compiler");
             if let Ok(code_ptr) = compiler.compile(&chunk) {
                 let constants = chunk.constants();
-                let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
-                let mut env = Environment::default();
+                let mut stack: Vec<JitValue> = vec![JitValue::unit(); 256];
+                let mut env = MettaEnvironment::default();
 
                 b.iter(|| {
                     let mut ctx = unsafe {
@@ -872,7 +871,7 @@ fn bench_state_operations(c: &mut Criterion) {
                             constants.as_ptr(),
                             constants.len(),
                         );
-                        ctx.env_ptr = &mut env as *mut Environment as *mut ();
+                        ctx.env_ptr = &mut env as *mut MettaEnvironment as *mut ();
                         ctx
                     };
 
@@ -895,10 +894,9 @@ fn bench_state_operations(c: &mut Criterion) {
             |b, &repeats| {
                 let chunk = Arc::new(create_state_ops_chunk(1, repeats));
                 b.iter(|| {
-                    let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_config_and_env(
+                    let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_env(
                         Arc::clone(&chunk),
-                        mettatron::backend::bytecode::vm::VmConfig::default(),
-                        Environment::default(),
+                        MettaEnvironment::default(),
                     );
                     black_box(vm.run())
                 })
@@ -913,8 +911,8 @@ fn bench_state_operations(c: &mut Criterion) {
                 let mut compiler = JitCompiler::new().expect("Failed to create compiler");
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
-                    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
-                    let mut env = Environment::default();
+                    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 256];
+                    let mut env = MettaEnvironment::default();
 
                     b.iter(|| {
                         let mut ctx = unsafe {
@@ -924,7 +922,7 @@ fn bench_state_operations(c: &mut Criterion) {
                                 constants.as_ptr(),
                                 constants.len(),
                             );
-                            ctx.env_ptr = &mut env as *mut Environment as *mut ();
+                            ctx.env_ptr = &mut env as *mut MettaEnvironment as *mut ();
                             ctx
                         };
 
@@ -948,10 +946,9 @@ fn bench_state_operations(c: &mut Criterion) {
             |b, &changes| {
                 let chunk = Arc::new(create_state_change_chunk(changes));
                 b.iter(|| {
-                    let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_config_and_env(
+                    let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_env(
                         Arc::clone(&chunk),
-                        mettatron::backend::bytecode::vm::VmConfig::default(),
-                        Environment::default(),
+                        MettaEnvironment::default(),
                     );
                     black_box(vm.run())
                 })
@@ -966,8 +963,8 @@ fn bench_state_operations(c: &mut Criterion) {
                 let mut compiler = JitCompiler::new().expect("Failed to create compiler");
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
-                    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
-                    let mut env = Environment::default();
+                    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 256];
+                    let mut env = MettaEnvironment::default();
 
                     b.iter(|| {
                         let mut ctx = unsafe {
@@ -977,7 +974,7 @@ fn bench_state_operations(c: &mut Criterion) {
                                 constants.as_ptr(),
                                 constants.len(),
                             );
-                            ctx.env_ptr = &mut env as *mut Environment as *mut ();
+                            ctx.env_ptr = &mut env as *mut MettaEnvironment as *mut ();
                             ctx
                         };
 
@@ -991,63 +988,48 @@ fn bench_state_operations(c: &mut Criterion) {
         );
     }
 
-    // Mixed workload (mmverify-like)
-    // NOTE: Temporarily disabled due to SIGILL during criterion warmup
-    // The underlying VM works correctly (verified via test_mixed_chunk example)
-    // TODO: Investigate criterion interaction causing SIGILL
-    /*
     for ops in [10, 50, 100].iter() {
         group.throughput(Throughput::Elements(*ops as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("mixed_bytecode", ops),
-            ops,
-            |b, &ops| {
-                let chunk = Arc::new(create_state_mixed_chunk(ops));
+        group.bench_with_input(BenchmarkId::new("mixed_bytecode", ops), ops, |b, &ops| {
+            let chunk = Arc::new(create_state_mixed_chunk(ops));
+            b.iter(|| {
+                let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_env(
+                    Arc::clone(&chunk),
+                    MettaEnvironment::default(),
+                );
+                black_box(vm.run())
+            })
+        });
+
+        group.bench_with_input(BenchmarkId::new("mixed_jit", ops), ops, |b, &ops| {
+            let chunk = create_state_mixed_chunk(ops);
+            let mut compiler = JitCompiler::new().expect("Failed to create compiler");
+            if let Ok(code_ptr) = compiler.compile(&chunk) {
+                let constants = chunk.constants();
+                let mut stack: Vec<JitValue> = vec![JitValue::unit(); 256];
+                let mut env = MettaEnvironment::default();
+
                 b.iter(|| {
-                    let mut vm = mettatron::backend::bytecode::vm::BytecodeVM::with_config_and_env(
-                        Arc::clone(&chunk),
-                        mettatron::backend::bytecode::vm::VmConfig::default(),
-                        Environment::default(),
-                    );
-                    black_box(vm.run())
+                    let mut ctx = unsafe {
+                        let mut ctx = JitContext::new(
+                            stack.as_mut_ptr(),
+                            256,
+                            constants.as_ptr(),
+                            constants.len(),
+                        );
+                        ctx.env_ptr = &mut env as *mut MettaEnvironment as *mut ();
+                        ctx
+                    };
+
+                    let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
+                        unsafe { std::mem::transmute(code_ptr) };
+                    let result = unsafe { native_fn(&mut ctx as *mut JitContext) };
+                    black_box(result)
                 })
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("mixed_jit", ops),
-            ops,
-            |b, &ops| {
-                let chunk = create_state_mixed_chunk(ops);
-                let mut compiler = JitCompiler::new().expect("Failed to create compiler");
-                if let Ok(code_ptr) = compiler.compile(&chunk) {
-                    let constants = chunk.constants();
-                    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
-                    let mut env = Environment::default();
-
-                    b.iter(|| {
-                        let mut ctx = unsafe {
-                            let mut ctx = JitContext::new(
-                                stack.as_mut_ptr(),
-                                256,
-                                constants.as_ptr(),
-                                constants.len(),
-                            );
-                            ctx.env_ptr = &mut env as *mut Environment as *mut ();
-                            ctx
-                        };
-
-                        let native_fn: unsafe extern "C" fn(*mut JitContext) -> i64 =
-                            unsafe { std::mem::transmute(code_ptr) };
-                        let result = unsafe { native_fn(&mut ctx as *mut JitContext) };
-                        black_box(result)
-                    })
-                }
-            },
-        );
+            }
+        });
     }
-    */
 
     group.finish();
 }
@@ -1466,7 +1448,7 @@ fn bench_pattern_match_variables(c: &mut Criterion) {
                 let mut compiler = JitCompiler::new().expect("Failed to create compiler");
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
-                    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+                    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
                     let mut binding_frames: Vec<JitBindingFrame> =
                         vec![JitBindingFrame::default(); 8];
 
@@ -1518,7 +1500,7 @@ fn bench_pattern_match_variables(c: &mut Criterion) {
                 let mut compiler = JitCompiler::new().expect("Failed to create compiler");
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
-                    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
+                    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 256];
                     let mut binding_frames: Vec<JitBindingFrame> =
                         vec![JitBindingFrame::default(); 8];
 
@@ -1570,7 +1552,7 @@ fn bench_pattern_match_variables(c: &mut Criterion) {
                 let mut compiler = JitCompiler::new().expect("Failed to create compiler");
                 if let Ok(code_ptr) = compiler.compile(&chunk) {
                     let constants = chunk.constants();
-                    let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+                    let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
                     let mut binding_frames: Vec<JitBindingFrame> =
                         vec![JitBindingFrame::default(); 8];
 

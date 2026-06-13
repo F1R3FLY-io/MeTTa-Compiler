@@ -273,6 +273,10 @@ trace-format = { path = "trace-format", optional = true }
 default = ["interning", "async", "symbol-interning"]
 async = ["tokio"]
 interning = []
+# Enables benchmark/example entry points that exercise the always-built
+# Cranelift JIT directly. Kept out of default so normal slab gates remain
+# byte-identical unless a JIT benchmark explicitly opts in.
+jit = []
 # Rholang integration: enables pathmap_par_integration and rholang_integration modules
 # Requires the models crate (f1r3node) to compile
 rholang = ["dep:models"]

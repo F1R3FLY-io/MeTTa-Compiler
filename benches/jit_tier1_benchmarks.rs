@@ -9,9 +9,9 @@
 // Run with CPU affinity (per CLAUDE.md):
 // taskset -c 0-17 cargo bench --bench jit_tier1_benchmarks --features jit
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use mettatron::backend::MettaValue;
+use mettatron::backend::bytecode::{BytecodeChunk, ChunkBuilder, Opcode};
 use std::sync::Arc;
 
 #[cfg(feature = "jit")]
@@ -178,7 +178,7 @@ fn bench_binding_operations(c: &mut Criterion) {
         let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
         let constants = chunk.constants();
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         b.iter(|| {
@@ -223,7 +223,7 @@ fn bench_pattern_matching(c: &mut Criterion) {
         let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
         let constants = chunk.constants();
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
         b.iter(|| {
             let mut ctx = unsafe {
@@ -252,7 +252,7 @@ fn bench_pattern_matching(c: &mut Criterion) {
         let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
         let constants = chunk.constants();
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
         let mut binding_frames: Vec<JitBindingFrame> = vec![JitBindingFrame::default(); 8];
 
         b.iter(|| {
@@ -302,7 +302,7 @@ fn bench_call_operations(c: &mut Criterion) {
             let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
             let constants = chunk.constants();
-            let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+            let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
             b.iter(|| {
                 let mut ctx = unsafe {
@@ -351,7 +351,7 @@ fn bench_hot_paths_if_chain(c: &mut Criterion) {
                 let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
                 let constants = chunk.constants();
-                let mut stack: Vec<JitValue> = vec![JitValue::nil(); 256];
+                let mut stack: Vec<JitValue> = vec![JitValue::unit(); 256];
 
                 b.iter(|| {
                     let mut ctx = unsafe {
@@ -428,7 +428,7 @@ fn bench_arithmetic(c: &mut Criterion) {
         let code_ptr = compiler.compile(&chunk).expect("Compilation failed");
 
         let constants = chunk.constants();
-        let mut stack: Vec<JitValue> = vec![JitValue::nil(); 64];
+        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
 
         b.iter(|| {
             let mut ctx = unsafe {

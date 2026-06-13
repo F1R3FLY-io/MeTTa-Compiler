@@ -4385,43 +4385,59 @@ fn eval_trampoline_inner<C: EvalContext>(
             // truth for the structural root formula. The auxiliary roots collected
             // below (frame chain, caches, deferred envs) are the discovery
             // apparatus Phase A4/A5 replace with structural E₀ + VM-leaf reads.
-            root_set.collect_all(&machine_operand_stack, &work, &work_stack, &continuations);
-
-            // Collect roots from all caller frames in the thread-local chain.
-            // This protects values held by callers of nested trampolines
-            // (e.g., compiled expressions in eval_include_generic).
             //
-            // A5.1: SLAB-ONLY. In the index build the spine/VM/ExprVec roots are
-            // carried structurally by the K-spine (read by NEW = collect_machine_roots
-            // at the collection site below), so this frame_chain contribution to the
-            // oracle's OLD `root_set` is cfg-walled out in lock-step — OLD shrinks,
-            // NEW unchanged, OLD ⊆ NEW ∪ KEPT preserved. SAFE: the real index collector
-            // reads NEW (`midloop_roots`), not `root_set` (verified at the
-            // `should_collect_midloop()` flip below) — so this drops no live root.
-            #[cfg(not(feature = "index-gc"))]
+            // F1 Robot wall regression fix: in release index-gc this discovered
+            // `root_set` is no longer consumed. `perform_safepoint` is disabled by
+            // `dedicated_gc_enabled()`, the slab nursery is skipped in index mode,
+            // and actual index cycles build `midloop_roots` below from the structural
+            // CESK reader, which includes `collect_global_anchors` (eval/match,
+            // subgoal, thunk, binding-capture, K-spine). Keep this block for the
+            // slab build and for the debug index machine-equivalence oracle, but do
+            // not walk the subgoal/thunk caches every 4096 ticks in release index.
+            #[cfg(any(not(feature = "index-gc"), debug_assertions))]
             {
-                let concrete_roots = root_set.as_mut_vec();
-                crate::backend::eval::frame_chain::collect_frame_chain_roots(concrete_roots);
-            }
-            // Collect GC roots from the eval memo cache. Cached MettaValue
-            // pointers must survive the mark-sweep cycle.
-            {
-                let concrete_roots = root_set.as_mut_vec();
-                collect_eval_memo_roots(concrete_roots);
-                collect_match_result_roots(concrete_roots);
-                crate::backend::eval::cesk::tabling::collect_subgoal_roots(concrete_roots);
-                crate::backend::eval::cesk::thunk::collect_thunk_roots(concrete_roots);
+                root_set.collect_all(&machine_operand_stack, &work, &work_stack, &continuations);
 
-                // Collect GC roots from deferred environment drops.
-                // These environments' MettaValues must be visible to the GC
-                // so it doesn't sweep values only reachable through them.
-                // A5.3: call the inherent structural reader `collect_roots_into`
-                // (kept unconditional) directly — byte-identical to the
-                // `RootProvider::collect_roots` it delegated to, and the
-                // `RootProvider` impl for E₀ is now slab-only (cfg-walled).
-                for deferred_env in &deferred_shared_drops {
-                    deferred_env.as_ref().collect_roots_into(concrete_roots);
+                // Collect roots from all caller frames in the thread-local chain.
+                // This protects values held by callers of nested trampolines
+                // (e.g., compiled expressions in eval_include_generic).
+                //
+                // A5.1: SLAB-ONLY. In the index build the spine/VM/ExprVec roots are
+                // carried structurally by the K-spine (read by NEW = collect_machine_roots
+                // at the collection site below), so this frame_chain contribution to the
+                // oracle's OLD `root_set` is cfg-walled out in lock-step — OLD shrinks,
+                // NEW unchanged, OLD ⊆ NEW ∪ KEPT preserved. SAFE: the real index collector
+                // reads NEW (`midloop_roots`), not `root_set` (verified at the
+                // `should_collect_midloop()` flip below) — so this drops no live root.
+                #[cfg(not(feature = "index-gc"))]
+                {
+                    let concrete_roots = root_set.as_mut_vec();
+                    crate::backend::eval::frame_chain::collect_frame_chain_roots(concrete_roots);
                 }
+                // Collect GC roots from the eval memo cache. Cached MettaValue
+                // pointers must survive the mark-sweep cycle.
+                {
+                    let concrete_roots = root_set.as_mut_vec();
+                    collect_eval_memo_roots(concrete_roots);
+                    collect_match_result_roots(concrete_roots);
+                    crate::backend::eval::cesk::tabling::collect_subgoal_roots(concrete_roots);
+                    crate::backend::eval::cesk::thunk::collect_thunk_roots(concrete_roots);
+
+                    // Collect GC roots from deferred environment drops.
+                    // These environments' MettaValues must be visible to the GC
+                    // so it doesn't sweep values only reachable through them.
+                    // A5.3: call the inherent structural reader `collect_roots_into`
+                    // (kept unconditional) directly — byte-identical to the
+                    // `RootProvider::collect_roots` it delegated to, and the
+                    // `RootProvider` impl for E₀ is now slab-only (cfg-walled).
+                    for deferred_env in &deferred_shared_drops {
+                        deferred_env.as_ref().collect_roots_into(concrete_roots);
+                    }
+                }
+            }
+            #[cfg(all(feature = "index-gc", not(debug_assertions)))]
+            {
+                root_set.clear();
             }
 
             // ── A4.3 machine-equivalence oracle (debug-only; index-gc only) ──

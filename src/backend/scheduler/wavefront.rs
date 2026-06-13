@@ -127,6 +127,18 @@ pub fn compute_wavefront(tasks: &[WavefrontTask]) -> WavefrontSchedule {
         };
     }
 
+    let well_formed_indices = tasks
+        .iter()
+        .enumerate()
+        .all(|(expected, task)| task.index == expected);
+    let well_formed_dependencies = tasks
+        .iter()
+        .all(|task| task.dependencies.iter().all(|&dep| dep < n));
+
+    if !well_formed_indices || !well_formed_dependencies {
+        return sequential_chain(n);
+    }
+
     // Fast path: check if all tasks are independent (no dependencies)
     let all_independent = tasks.iter().all(|t| t.dependencies.is_empty());
     if all_independent {
@@ -180,11 +192,13 @@ pub fn compute_wavefront(tasks: &[WavefrontTask]) -> WavefrontSchedule {
     }
 
     // If not all tasks were processed, there's a dependency cycle.
-    // Include remaining tasks in a final wave (conservative: run them all).
+    // Keep the unresolved suffix sequential. A cycle cannot satisfy the
+    // same-wave independence contract, so the safe fallback gives up
+    // parallelism instead of claiming an invalid final wave.
     if processed < n {
         let remaining: Vec<usize> = (0..n).filter(|&i| in_degree[i] > 0).collect();
-        if !remaining.is_empty() {
-            waves.push(remaining);
+        for task_idx in remaining {
+            waves.push(vec![task_idx]);
         }
     }
 
@@ -309,5 +323,41 @@ mod tests {
         assert_eq!(schedule.waves[0].len(), 2);
         assert_eq!(schedule.waves[1].len(), 1);
         assert_eq!(schedule.waves[2].len(), 2);
+    }
+
+    #[test]
+    fn test_cycle_falls_back_to_sequential_suffix() {
+        let tasks = vec![
+            WavefrontTask::dependent(0, CostClass::SymbolicCheap, vec![1]),
+            WavefrontTask::dependent(1, CostClass::SymbolicCheap, vec![0]),
+        ];
+
+        let schedule = compute_wavefront(&tasks);
+        assert!(schedule.is_fully_sequential());
+        assert_eq!(schedule.waves, vec![vec![0], vec![1]]);
+    }
+
+    #[test]
+    fn test_invalid_dependency_falls_back_to_sequential() {
+        let tasks = vec![
+            WavefrontTask::independent(0, CostClass::SymbolicCheap),
+            WavefrontTask::dependent(1, CostClass::SymbolicCheap, vec![7]),
+        ];
+
+        let schedule = compute_wavefront(&tasks);
+        assert!(schedule.is_fully_sequential());
+        assert_eq!(schedule.waves, vec![vec![0], vec![1]]);
+    }
+
+    #[test]
+    fn test_non_positional_index_falls_back_to_sequential() {
+        let tasks = vec![
+            WavefrontTask::independent(0, CostClass::SymbolicCheap),
+            WavefrontTask::independent(99, CostClass::SymbolicCheap),
+        ];
+
+        let schedule = compute_wavefront(&tasks);
+        assert!(schedule.is_fully_sequential());
+        assert_eq!(schedule.waves, vec![vec![0], vec![1]]);
     }
 }

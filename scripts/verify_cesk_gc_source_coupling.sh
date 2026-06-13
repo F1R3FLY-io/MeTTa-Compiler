@@ -143,6 +143,27 @@ assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS"
 assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS" "];" "\"random-float\""
 line_no "src/backend/scheduler/classification.rs" "\"random-int\"," >/dev/null
 line_no "src/backend/scheduler/classification.rs" "\"random-float\"," >/dev/null
+assert_after_before \
+  "src/backend/scheduler/wavefront.rs" \
+  "pub fn compute_wavefront" \
+  "let well_formed_indices = tasks" \
+  "let all_independent = tasks.iter().all(|t| t.dependencies.is_empty());"
+assert_after_before \
+  "src/backend/scheduler/wavefront.rs" \
+  "pub fn compute_wavefront" \
+  "if !well_formed_indices || !well_formed_dependencies {" \
+  "let all_independent = tasks.iter().all(|t| t.dependencies.is_empty());"
+assert_after_before \
+  "src/backend/scheduler/wavefront.rs" \
+  "if !well_formed_indices || !well_formed_dependencies {" \
+  "return sequential_chain(n);" \
+  "}"
+assert_after_before \
+  "src/backend/scheduler/wavefront.rs" \
+  "If not all tasks were processed, there's a dependency cycle." \
+  "for task_idx in remaining {" \
+  "}"
+line_no "src/backend/scheduler/wavefront.rs" "waves.push(vec![task_idx]);" >/dev/null
 assert_before \
   "src/backend/models/task_scheduler.rs" \
   "if dispatch.stop_requested.load(AtomicOrdering::Acquire) {" \
@@ -174,6 +195,7 @@ assert_after_before \
   "self.overflow_count.fetch_add(1, Ordering::Relaxed);"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerPriorityFairness.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
@@ -191,6 +213,7 @@ line_no "formal/rocq/work_pool_stability/theories/ObjectiveFunction.v" "Record W
 line_no "formal/rocq/work_pool_stability/theories/LyapunovConvergence.v" "Definition V (N_opt n : nat)" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.tla" "2"

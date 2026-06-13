@@ -631,6 +631,12 @@ can replace the full-major final sweep.
   head into a class must extend that class's contiguous L2 range and shift later L1 starts; failing to shift later
   starts violates range disjointness. This pins the lookup structure that separates pure parallelizable heads from
   state-mutating heads before the scheduler maximizes parallelism.
+- `formal/rocq/gc/SchedulerWavefrontParallelism.v` and `tla/SchedulerWavefrontParallelism.tla`: prove and
+  model-check the wavefront instruction-reordering obligation. A task may share a wave only when all dependency edges
+  point to earlier waves; a ready set whose dependencies are already in prior waves can be batched maximally; and
+  all-independent tasks may use one full-width wave. The cyclic same-wave discriminator violates
+  `SameWaveIndependent`, which drove the Rust fallback change: malformed task indices/dependencies and cyclic
+  unresolved suffixes now degrade to sequential waves instead of claiming parallelism that the proof rejects.
 - `formal/rocq/gc/CronRecurringDispatch.v` and `tla/CronRecurringDispatch.tla`: prove and model-check pooled cron
   recurring-dispatch control. A recurring task that returns `false` or panics must set a durable stop flag before
   clearing `in_flight`, so the next due tick drops the recurrence instead of redispatching it. The model also proves
@@ -662,6 +668,14 @@ can replace the full-major final sweep.
   populate the shared column, and only then return the address. The full real-worktree formal wall then passed:
   proof hygiene found 92 mandatory Rocq files, TLC hygiene found 231 TLC configs, source coupling passed, and
   `scripts/verify_cesk_gc_formal.sh` completed successfully.
+- 2026-06-12 Wavefront parallelism increment: focused gates passed under `systemd-run` caps:
+  `rocq c ... SchedulerWavefrontParallelism.v`, TLC diamond and all-independent positive configs, the cyclic
+  same-wave negative discriminator, `cargo test --lib scheduler::wavefront`, proof hygiene, TLC hygiene, and source
+  coupling. The source correction is proof-driven: valid DAGs keep Kahn level grouping and full independent hot-path
+  parallelism, while malformed inputs and cyclic unresolved suffixes fall back to sequential waves so the scheduler no
+  longer violates its same-wave independence contract. The full capped formal harness then passed with 94 mandatory GC
+  Rocq files, 5 WorkPool Rocq files, 36 mandatory Lean mirrors, 237 TLC configs, and source coupling. The slab release
+  gate `cargo nextest run --release` passed 4406/4406 tests.
 
 ## Source coupling
 

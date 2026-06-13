@@ -195,6 +195,7 @@ run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/SchedulerGcBoundary.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutProgress.v"
+run_rocq "formal/rocq/gc/SchedulerWavefrontParallelism.v"
 run_rocq "formal/rocq/gc/SchedulerPriorityFairness.v"
 run_rocq "formal/rocq/gc/SchedulerClassificationLookup.v"
 run_rocq "formal/rocq/gc/CronRecurringDispatch.v"
@@ -236,6 +237,12 @@ run_tlc "scheduler_classification_lookup_shift" "SchedulerClassificationLookup.t
   pass ""
 run_tlc "scheduler_classification_lookup_no_shift" "SchedulerClassificationLookup.tla" "MC_SchedulerClassificationLookup_no_shift.cfg" \
   fail "Invariant RangesDisjoint is violated"
+run_tlc "scheduler_wavefront_diamond" "SchedulerWavefrontParallelism.tla" "MC_SchedulerWavefrontParallelism_diamond.cfg" \
+  pass ""
+run_tlc "scheduler_wavefront_independent" "SchedulerWavefrontParallelism.tla" "MC_SchedulerWavefrontParallelism_independent.cfg" \
+  pass ""
+run_tlc "scheduler_wavefront_cycle_same_wave" "SchedulerWavefrontParallelism.tla" "MC_SchedulerWavefrontParallelism_cycle.cfg" \
+  fail "The invariant of SameWaveIndependent is equal to FALSE"
 run_tlc "cron_recurring_dispatch_stop" "CronRecurringDispatch.tla" "MC_CronRecurringDispatch_stop.cfg" \
   pass ""
 run_tlc "cron_recurring_dispatch_no_stop" "CronRecurringDispatch.tla" "MC_CronRecurringDispatch_no_stop.cfg" \

@@ -25,30 +25,40 @@ Section RequestReassertModel.
      - [Closes]    — the cycle reaches its end-bump + resume. *)
   Variable Open Requested Stamped Closes : Prop.
 
-  (* The fix: opening re-asserts the request. *)
-  Hypothesis open_reasserts : Open -> Requested.
+  (* The fix: opening re-asserts the request.  Model each external obligation as
+     an explicit contract premise rather than a section-level proof assumption. *)
+  Definition OpenReasserts : Prop := Open -> Requested.
+
   (* Safepoint progress (mutators run and reach safepoints — the scheduler
      liveness proven by SchedulerFanoutProgress): a visible request during an
      open cycle gets every occupied slot stamped. *)
-  Hypothesis requested_stamps : Open -> Requested -> Stamped.
+  Definition RequestedStamps : Prop := Open -> Requested -> Stamped.
+
   (* Driver progress (E1SatbStwDriverProgress): a stamped witness set lets the
      wait return, and the cycle body unconditionally closes. *)
-  Hypothesis stamped_closes : Open -> Stamped -> Closes.
+  Definition StampedCloses : Prop := Open -> Stamped -> Closes.
 
   (* LIVENESS COROLLARY: under the re-assert, every opened cycle closes —
      witness starvation is unreachable. (TLC: EveryCycleCloses in the
      reassert config; the lost config deadlocks at the starved-open state.) *)
-  Theorem every_open_cycle_closes : Open -> Closes.
+  Theorem every_open_cycle_closes :
+    OpenReasserts -> RequestedStamps -> StampedCloses -> Open -> Closes.
   Proof.
-    intro Hopen.
-    apply (stamped_closes Hopen).
-    apply (requested_stamps Hopen).
-    apply (open_reasserts Hopen).
+    intros Hreassert Hstamps Hcloses Hopen.
+    unfold OpenReasserts in Hreassert.
+    unfold RequestedStamps in Hstamps.
+    unfold StampedCloses in Hcloses.
+    apply (Hcloses Hopen).
+    apply (Hstamps Hopen).
+    apply (Hreassert Hopen).
   Qed.
 
   (* THE RESTORED INVARIANT (TLC: OpenImpliesRequested). *)
-  Theorem open_implies_requested : Open -> Requested.
-  Proof. exact open_reasserts. Qed.
+  Theorem open_implies_requested : OpenReasserts -> Open -> Requested.
+  Proof.
+    intros Hreassert.
+    exact Hreassert.
+  Qed.
 
   (* NON-VACUITY (the bug, without the re-assert): an open cycle with the
      flag cleared admits a model where no stamp ever happens and the cycle

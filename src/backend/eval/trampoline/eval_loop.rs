@@ -16304,12 +16304,10 @@ fn process_continuation<C: EvalContext>(
                 // Auto-bind `&name` atoms; transparent for already-resolved Space values.
                 let resolved_handle = resolve_space_or_autobind(first, &mut result_env, ctx);
                 if let Some(handle) = resolved_handle.as_ref() {
-                    // X.6 followup: for `&self` / module spaces, query the
-                    // environment's atom space (where add-atom &self routes
-                    // its writes per ProcessAddAtomSpace handler). The
-                    // SpaceHandle itself is a stub for these — its own
-                    // storage is empty. For external named spaces
-                    // (`(new-space)` results), use handle.collapse_generic.
+                    // For `&self` / module spaces, query the environment atom
+                    // storage where ProcessAddAtomSpace routes registry-visible
+                    // writes. Named spaces from `(new-space)` own their atoms in
+                    // the SpaceHandle, so enumerate those through the handle.
                     let atoms: Vec<MettaValue> =
                         if handle.is_module_space() || handle.name == "self" {
                             result_env.get_all_atoms()

@@ -146,21 +146,31 @@ def main(argv: list[str]) -> int:
         p = welch_p_treatment_greater(item.slab, item.index)
         d = cohen_d(item.slab, item.index)
         significant = p < ALPHA
-        material = ratio > (1.0 + TOLERANCE)
-        item_reject = item.metric.endswith("_wall_ms") and significant and material
+        worse = ratio > 1.0
+        large_effect = d >= 0.8
+        if item.metric.endswith("_wall_ms"):
+            material = ratio > (1.0 + TOLERANCE)
+            budget_breach = item.metric.startswith("pln_robot_") and index_mean > 12_000.0
+        else:
+            material = ratio > 1.25
+            budget_breach = (index_mean - slab_mean) > 8192.0
+        item_reject = significant and worse and (large_effect or material or budget_breach)
         reject = reject or item_reject
         if item.unit == "ms":
             slab_text, index_text = fmt_ms(slab_mean), fmt_ms(index_mean)
         else:
             slab_text, index_text = f"{slab_mean:.1f}MiB", f"{index_mean:.1f}MiB"
-        verdict = "REJECT" if item_reject else ("ACCEPT*" if significant and ratio > 1.0 else "ACCEPT")
+        verdict = "REJECT" if item_reject else ("ACCEPT*" if significant and worse else "ACCEPT")
         print(
             f"{item.workload:<{width}}  {item.metric:<12}  {slab_text:>12}  {index_text:>12}  "
             f"{ratio:>8.3f}x  {p:>10.4g}  {d:>8.3f}  {verdict}"
         )
 
     print("-" * (width + 83))
-    print(f"ALPHA={ALPHA}  TOLERANCE={TOLERANCE:.0%}  (ACCEPT* = worse but within tolerance/noise)")
+    print(
+        f"ALPHA={ALPHA}  WALL_TOLERANCE={TOLERANCE:.0%}  "
+        "(REJECT = significant and worse with d>=0.8, tolerance breach, or budget breach)"
+    )
     print(f"\nEXPERIMENT VERDICT: {'REJECT -- index regresses materially' if reject else 'ACCEPT -- index is perf-ready to default'}")
 
     payload_path = Path(argv[0]).resolve().parent / "f1_pgmcp_measurements.json"

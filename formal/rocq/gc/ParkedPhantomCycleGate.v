@@ -32,35 +32,47 @@ Section ParkedPhantomCycleGateModel.
      - [Resumes]   — the worker eventually exits the wait. *)
   Variable Open Pending Park Phantom Resumes : Prop.
 
-  (* The gate as implemented: parking requires a REAL cycle. *)
-  Hypothesis park_requires_real : Park -> Open \/ Pending.
+  (* The gate as implemented: parking requires a REAL cycle.  Each external
+     obligation is an explicit contract premise, not a section-level proof
+     assumption. *)
+  Definition ParkRequiresReal : Prop := Park -> Open \/ Pending.
+
   (* A phantom generation is, by definition, neither open nor pending. *)
-  Hypothesis phantom_not_real : Phantom -> ~ (Open \/ Pending).
+  Definition PhantomNotReal : Prop := Phantom -> ~ (Open \/ Pending).
+
   (* Driver progress (proven elsewhere — E1SatbStwDriverProgress /
      PostCycleEvaluatorProgress): every OPEN cycle closes (its end-bump wakes
      and releases the parker), and every PENDING request opens then closes. *)
-  Hypothesis open_cycle_closes    : Open -> Park -> Resumes.
-  Hypothesis pending_cycle_closes : Pending -> Park -> Resumes.
+  Definition OpenCycleCloses : Prop := Open -> Park -> Resumes.
+  Definition PendingCycleCloses : Prop := Pending -> Park -> Resumes.
 
   (* THE LIVENESS COROLLARY: under the gate, every park resumes — the
      stranded-forever state is unreachable. (TLC: ParkedEventuallyResumes
      holds in the gated config; the ungated config deadlocks at the
      phantom-parked state.) *)
-  Theorem gated_park_always_resumes : Park -> Resumes.
+  Theorem gated_park_always_resumes :
+    ParkRequiresReal -> OpenCycleCloses -> PendingCycleCloses ->
+    Park -> Resumes.
   Proof.
-    intro Hpark.
-    destruct (park_requires_real Hpark) as [Hopen | Hpending].
-    - exact (open_cycle_closes Hopen Hpark).
-    - exact (pending_cycle_closes Hpending Hpark).
+    intros Hreal Hopen_closes Hpending_closes Hpark.
+    unfold ParkRequiresReal in Hreal.
+    unfold OpenCycleCloses in Hopen_closes.
+    unfold PendingCycleCloses in Hpending_closes.
+    destruct (Hreal Hpark) as [Hopen | Hpending].
+    - exact (Hopen_closes Hopen Hpark).
+    - exact (Hpending_closes Hpending Hpark).
   Qed.
 
   (* THE SAFETY COROLLARY: a phantom can never park (hence never pre-bump the
      parked count of an unrequested cycle — the masked-parker missed-root
      hazard is closed by construction). (TLC: NoPhantomCountBump.) *)
-  Theorem phantom_never_parks : Phantom -> ~ Park.
+  Theorem phantom_never_parks :
+    ParkRequiresReal -> PhantomNotReal -> Phantom -> ~ Park.
   Proof.
-    intros Hphantom Hpark.
-    exact (phantom_not_real Hphantom (park_requires_real Hpark)).
+    intros Hreal Hphantom_not_real Hphantom Hpark.
+    unfold ParkRequiresReal in Hreal.
+    unfold PhantomNotReal in Hphantom_not_real.
+    exact (Hphantom_not_real Hphantom (Hreal Hpark)).
   Qed.
 
   (* NON-VACUITY (the bug, ungated): if parking needs only the straggler

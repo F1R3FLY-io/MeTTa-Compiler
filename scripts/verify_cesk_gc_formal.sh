@@ -161,6 +161,7 @@ run_rocq "formal/rocq/gc/RequestReassertAtOpen.v"
 # StartedCycleGate via Require Import; the -Q loadpath above resolves the siblings).
 run_rocq "formal/rocq/gc/PostCycleEvaluatorProgress.v"
 run_rocq "formal/rocq/gc/CollapseCompletion.v"
+run_rocq "formal/rocq/gc/BindingProjection.v"
 run_rocq "formal/rocq/gc/WorkerAdmission.v"
 run_rocq "formal/rocq/gc/ThreadContribution.v"
 run_rocq "formal/rocq/gc/FrameEnvRoots.v"
@@ -321,6 +322,14 @@ run_tlc "collapse_bug" "CollapseCompletion.tla" "CollapseCompletion_bug.cfg" \
   fail "Temporal properties were violated"
 run_tlc "collapse_slot_bug" "CollapseCompletion.tla" "CollapseCompletion_slot_bug.cfg" \
   fail "Invariant NoSilentSuccessfulDrop is violated"
+run_tlc "binding_projection_tracked" "BindingProjection.tla" "MC_BindingProjection_tracked.cfg" \
+  pass ""
+run_tlc "binding_projection_no_context" "BindingProjection.tla" "MC_BindingProjection_no_context.cfg" \
+  pass ""
+run_tlc "binding_projection_missing_closure" "BindingProjection.tla" "MC_BindingProjection_missing_closure.cfg" \
+  fail "Invariant Inv is violated"
+run_tlc "binding_projection_no_projection" "BindingProjection.tla" "MC_BindingProjection_no_projection.cfg" \
+  fail "Invariant Inv is violated"
 run_tlc "trampoline_fanout_spine_progress_faithful" "TrampolineFanoutSpineProgress.tla" "TrampolineFanoutSpineProgress_faithful.cfg" \
   pass ""
 run_tlc "trampoline_fanout_spine_progress_reset" "TrampolineFanoutSpineProgress.tla" "TrampolineFanoutSpineProgress_reset.cfg" \

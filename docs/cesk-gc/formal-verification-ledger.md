@@ -67,9 +67,29 @@ change; a debug FANOUT=8 `Robot.metta` smoke that hit the pre-existing `ProcessR
 returned `(Error ParallelDispatchMissingResults (WaitForParallel 4))` instead of a silent empty result; the capped
 release FANOUT=8 `Robot.metta` smoke produced the expected frisbee+orange detections with `INDEX_GC_CYCLES_RUN=54`
 and `INDEX_GC_MIDLOOP_CYCLES=0`.
+The follow-up proof obligation is `ProcessRuleMatches` binding-sidecar projection. A capped debug Robot repro on
+2026-06-14 (`systemd-run --user --scope`, `MemoryMax=12G`, `MemorySwapMax=0`, `CPUQuota=400%`) showed worker panics
+at `eval_loop.rs:9397` with 1039/1043 freshened binding keys; the prior no-silent-drop correction correctly converted
+those panics into `(Error ParallelDispatchMissingResults (WaitForParallel 4))`. A diagnostic rerun showed
+`tracked_vars_hint_len=0`, so the failure was an over-eager debug assertion at a boundary with no tracked/consumer
+liveness context, not a failed projection. The corrected invariant is conditional: a tracked branch-result boundary
+must retain every result/tracked live key and any bound freshened dependency reachable from those visible values while
+dropping stale freshened rule-epoch keys, but a no-context boundary deliberately preserves the full sidecar and defers
+projection to a later consumer because fold/progn continuations may use bindings not syntactically live in the
+immediate value. This is modeled by `formal/rocq/gc/BindingProjection.v` and `tla/BindingProjection.tla`; TLC checks
+both the positive tracked projection and the positive no-context deferral, and rejects both missing-closure and
+tracked-no-projection variants. Source coupling pins the Rust projection before the freshened-key canary in both eager
+and lazy `ProcessRuleMatches` paths and pins the canary/release warning behind `tracked_vars_hint.is_some()`. The
+capped debug Robot replay after the conditional canary produced the expected frisbee+orange detections with no
+`ParallelDispatchMissingResults`.
 
 ## Checked obligations
 
+- `formal/rocq/gc/BindingProjection.v` and `tla/BindingProjection.tla`: prove and model-check the conditional
+  branch-result binding projection obligation. With tracked/consumer context, projection is a narrowing of the original
+  sidecar; it retains all live keys, retains bound freshened dependencies reachable from visible values, drops stale
+  freshened keys at tracked boundaries, and rejects a projection that would leave a visible binding dangling on a
+  dropped bound freshened key. With no context, projection is explicitly deferred and the full sidecar is preserved.
 - `formal/rocq/gc/FreeList.v` and `formal/lean/gc/FreeList.lean`: the R-FL free-list lifecycle preserves
   `free_bit(addr) set <=> addr is on free_list` and free-list `NoDup` across push, pop, major drain, and
   released-segment drain.

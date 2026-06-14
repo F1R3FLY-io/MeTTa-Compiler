@@ -257,6 +257,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "BindingProjection.v" "1"
 assert_zero "scripts/verify_cesk_gc_formal.sh" "RUN_LEAN_MIRRORS"
 line_no "scripts/verify_cesk_gc_formal.sh" 'find "$REPO/formal/lean/gc"' >/dev/null
 line_no "scripts/verify_cesk_gc_proof_hygiene.sh" "expected Lean GC proof mirror files" >/dev/null
@@ -277,6 +278,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.tla" "2"
+assert_count "scripts/verify_cesk_gc_formal.sh" "BindingProjection.tla" "4"
 
 # Cron counter-sync / GC free-phase exclusion. Periodic sync may read live
 # value slots and materialize MettaValue handles for tiered-cache accounting.
@@ -841,6 +843,14 @@ assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_coll
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_collapse_dispatch(" "let _completion = CompletionGuard {" "PARALLEL_BRANCH_DEPTH.with(|d| d.set(child_depth));"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_collapse_dispatch(" "let _completion = CompletionGuard {" "let _guard = EvalGuard::enter();"
 assert_count "src/backend/eval/trampoline/eval_loop.rs" "handle.remaining.load(Ordering::Acquire) == 0 || handle.cancel_token.is_satisfied();" "2"
+
+# Binding projection coupling: BindingProjection.v/TLA applies only if tracked
+# ProcessRuleMatches paths project the composed sidecar before the freshened-key
+# canary, and the lazy-rule path mirrors the same tracked-boundary projection.
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Layer A.2: when a caller supplied an explicit" "project_bindings_for_consumer_generic" "let freshened_count = composed"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Memory bound: when a tracked/consumer liveness" "if tracked_vars_hint.is_some() {" "debug_assert!("
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "tracked_vars_hint.is_some() && freshened_count >= 512" "1"
+assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Same A.2 projection as ProcessRuleMatches" "project_bindings_for_consumer_generic" "(v, c)"
 
 # E1 worker admission coupling: the WorkerAdmission proof/TLA model only applies
 # if the driver closes admission before its participant snapshot, ordinary

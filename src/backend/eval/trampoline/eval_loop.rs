@@ -9332,18 +9332,49 @@ fn process_continuation<C: EvalContext>(
                                 factory,
                             );
                         crate::backend::eval::bindings::apply_chain_generic(&mut composed, factory);
-                        // Layer A: projection moved to sidecar encoding in
-                        // ProcessCollapseEvalResults so user-named bindings (e.g.
-                        // $who=a) survive the entire pipeline and get projected
-                        // only at the observation point — matching HE's
-                        // Bindings::resolve() semantics (interpreter.rs:624).
-                        // let projected = match &tracked_vars_hint {
-                        //     Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
-                        //         &composed,
-                        //         tv.as_slice(),
-                        //     ),
-                        //     None => composed,
-                        // };
+                        #[cfg(debug_assertions)]
+                        let before_projection_freshened = composed
+                            .iter()
+                            .filter(|(k, _)| k.starts_with("$__fr_"))
+                            .count();
+                        #[cfg(debug_assertions)]
+                        let mut projection_status = "no-tracked-vars";
+                        // Layer A.2: when a caller supplied an explicit
+                        // binding-retention context (collapse-bind / worker
+                        // shadow frame), project at the branch-result boundary
+                        // before the sidecar becomes a parent-visible branch
+                        // result. The projector keeps variables reachable from
+                        // the result value plus the tracked caller variables,
+                        // and refuses projections that would leave a
+                        // caller-visible binding dangling on a bound freshened
+                        // key. With no tracked context we preserve the
+                        // historical no-trim path: fold/progn fan-outs can
+                        // carry solution bindings that are not syntactically
+                        // live in the immediate value, and those callers
+                        // already project at their own consumer boundary.
+                        if let Some(tv) = tracked_vars_hint.as_deref() {
+                            let tracked_names: SmallVec<[&str; 4]> =
+                                tv.iter().filter_map(|a| a.as_atom()).collect();
+                            if let Some(projected) =
+                                crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+                                    &composed,
+                                    &[&v],
+                                    Some(tracked_names.as_slice()),
+                                    factory,
+                                )
+                            {
+                                composed = projected;
+                                #[cfg(debug_assertions)]
+                                {
+                                    projection_status = "applied";
+                                }
+                            } else {
+                                #[cfg(debug_assertions)]
+                                {
+                                    projection_status = "rejected";
+                                }
+                            }
+                        }
 
                         // Removed (2026-05-06): the "Fix 4 mmverify hang plan,
                         // defense-in-depth" trim that called
@@ -9379,30 +9410,36 @@ fn process_continuation<C: EvalContext>(
                         // rejection on inconsistent bindings; HE has no
                         // analogous trim. This restoration matches HE.
                         //
-                        // Memory bound: Fix 1 caps freshened-binding count at
-                        // per-rule var count (small constant). Debug-build
-                        // canary below catches regression; release-build
-                        // companion canary (once-per-process, threshold 512)
-                        // surfaces the same class in stripped release builds
-                        // where the debug_assert is compiled out — caught
-                        // the original asymmetry regression that motivated
-                        // Phase 7 (see comment at
-                        // `parallel_collapse_dispatch` worker, `:2107`).
+                        // Memory bound: when a tracked/consumer liveness
+                        // context is present, projection must cap retained
+                        // freshened bindings to a small live closure. With no
+                        // such context, this is intentionally the historical
+                        // no-trim path above; asserting here is unsound (the
+                        // fold/progn continuation may consume sidecar keys not
+                        // syntactically live in `v`). Those untracked sidecars
+                        // are checked at their eventual consumer/export
+                        // boundary instead of panicking a worker mid-trampoline.
                         #[cfg(debug_assertions)]
                         {
                             let freshened_count = composed
                                 .iter()
                                 .filter(|(k, _)| k.starts_with("$__fr_"))
                                 .count();
-                            debug_assert!(
-                                freshened_count < 1024,
-                                "ProcessRuleMatches compose produced {} freshened-binding keys; \
-                             possible Fix 1 regression. Investigate \
-                             enumerate_rules_via_unification. \
-                             (See Phase 7 — parallel_collapse_dispatch \
-                             CacheRootRefreshGuard asymmetry at eval_loop.rs:2107.)",
-                                freshened_count
-                            );
+                            if tracked_vars_hint.is_some() {
+                                debug_assert!(
+                                    freshened_count < 1024,
+                                    "ProcessRuleMatches compose produced {} freshened-binding keys; \
+                                 before_projection={} projection_status={} tracked_vars_hint_len={}; \
+                                 possible Fix 1 regression. Investigate \
+                                 enumerate_rules_via_unification. \
+                                 (See Phase 7 — parallel_collapse_dispatch \
+                                 CacheRootRefreshGuard asymmetry at eval_loop.rs:2107.)",
+                                    freshened_count,
+                                    before_projection_freshened,
+                                    projection_status,
+                                    tracked_vars_hint.as_ref().map(|tv| tv.len()).unwrap_or(0)
+                                );
+                            }
                         }
                         #[cfg(not(debug_assertions))]
                         {
@@ -9412,7 +9449,7 @@ fn process_continuation<C: EvalContext>(
                                 .iter()
                                 .filter(|(k, _)| k.starts_with("$__fr_"))
                                 .count();
-                            if freshened_count >= 512 {
+                            if tracked_vars_hint.is_some() && freshened_count >= 512 {
                                 WARN_ONCE.call_once(|| {
                                     tracing::warn!(
                                         freshened_count,
@@ -9707,36 +9744,43 @@ fn process_continuation<C: EvalContext>(
             // Stage 1c: COMPOSE_MATCH composition for each sub-eval result,
             // mirroring ProcessRuleMatches (A.2). Empty bindings fast path
             // preserves zero-overhead for non-collapse-bind evaluations.
-            let composed: SmallVec<[BoundValue; 2]> =
-                if current_branch_bindings.is_empty() && tracked_vars_hint.is_none() {
-                    eval_results
-                } else {
-                    let factory = ctx.factory();
-                    eval_results
-                        .into_iter()
-                        .map(|(v, child_b)| {
-                            let mut c = crate::backend::eval::bindings::compose_outer_inner_generic(
-                                &*current_branch_bindings,
-                                &child_b,
-                                factory,
-                            );
-                            crate::backend::eval::bindings::apply_chain_generic(&mut c, factory);
-                            // Layer A: projection moved to sidecar encoding — see
-                            // ProcessCollapseEvalResults. Preserve user-named
-                            // bindings through the pipeline; only the observation
-                            // point projects to the tracked set (HE Bindings::resolve
-                            // semantics).
-                            // let projected = match &tracked_vars_hint {
-                            //     Some(tv) => crate::backend::eval::bindings::project_bindings_generic(
-                            //         &c,
-                            //         tv.as_slice(),
-                            //     ),
-                            //     None => c,
-                            // };
-                            (v, c)
-                        })
-                        .collect()
-                };
+            let composed: SmallVec<[BoundValue; 2]> = if current_branch_bindings.is_empty()
+                && tracked_vars_hint.is_none()
+            {
+                eval_results
+            } else {
+                let factory = ctx.factory();
+                eval_results
+                    .into_iter()
+                    .map(|(v, child_b)| {
+                        let mut c = crate::backend::eval::bindings::compose_outer_inner_generic(
+                            &*current_branch_bindings,
+                            &child_b,
+                            factory,
+                        );
+                        crate::backend::eval::bindings::apply_chain_generic(&mut c, factory);
+                        // Same A.2 projection as ProcessRuleMatches: only
+                        // tracked contexts project here; untracked lazy
+                        // demand keeps the full sidecar until its consumer
+                        // boundary.
+                        if let Some(tv) = tracked_vars_hint.as_deref() {
+                            let tracked_names: SmallVec<[&str; 4]> =
+                                tv.iter().filter_map(|a| a.as_atom()).collect();
+                            if let Some(projected) =
+                                crate::backend::eval::bindings::project_bindings_for_consumer_generic(
+                                    &c,
+                                    &[&v],
+                                    Some(tracked_names.as_slice()),
+                                    factory,
+                                )
+                            {
+                                c = projected;
+                            }
+                        }
+                        (v, c)
+                    })
+                    .collect()
+            };
 
             // Record results from the just-evaluated branch
             for val in composed.iter() {

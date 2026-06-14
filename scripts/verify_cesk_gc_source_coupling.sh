@@ -137,6 +137,17 @@ $actual"
 # Scheduler/cron formal obligations added with the threading-model proof lane.
 assert_count "src/backend/priority_scheduler.rs" "self.refresh_scores(&mut heap);" "3"
 assert_count "src/backend/priority_scheduler.rs" "other.task.sequence.cmp(&self.task.sequence)" "1"
+assert_after_before \
+  "src/backend/scheduler/classification.rs" \
+  "fn default_transduction_table()" \
+  "super::transducer::build_default_transduction_table()" \
+  "}"
+assert_after_before \
+  "src/backend/scheduler/transducer.rs" \
+  "pub fn transduce_with_branches" \
+  "let safe_max_parallel = max_parallel.max(1);" \
+  "action.parallelism_degree = branch_count.min(safe_max_parallel);"
+line_no "src/backend/scheduler/transducer.rs" "fn test_transduce_with_zero_cap_stays_sequential_nonzero()" >/dev/null
 assert_count "src/backend/scheduler/classification.rs" "self.l2_entries.insert(insert_at, entry);" "1"
 assert_count "src/backend/scheduler/classification.rs" "if *other_start as usize >= insert_at {" "1"
 assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS" "];" "\"random-int\""

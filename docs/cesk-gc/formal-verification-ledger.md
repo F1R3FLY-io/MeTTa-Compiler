@@ -345,6 +345,12 @@ capped debug Robot replay after the conditional canary produced the expected fri
   trigger backstop, posted-driver or SATB-abort-to-STW fallback, generation-based resume, participant contribution,
   and completion-guard premises, every active parked worker is resumed and the parent wait cannot be stranded by a
   missing worker completion drop. The temporal eventuality/discriminator layer remains the paired TLC suite.
+- `formal/rocq/gc/SchedulerTransducerParallelism.v` and `tla/SchedulerTransducerParallelism.tla`: prove and
+  model-check the WFST transducer parallelism contract used by the evaluator's `parallelism_degree > 1` gate. The
+  default table never constructs degree 0; only branch-parallel classes can cross the default fanout gate; branch-aware
+  transduction uses every available branch before the cap and respects the cap; and a zero cap degrades to sequential
+  degree 1 instead of an invalid degree 0. TLC rejects both the old zero-cap shape and an underutilized-before-cap
+  shape.
 - `formal/rocq/gc/DedicatedHandoff.v`: proves the E1 dedicated-thread handoff ownership rule. Once a root vector has
   been successfully sent to the GC thread, response-channel failure cannot justify an inline fallback because the
   mutator no longer owns those roots; failed sends still return the roots for inline fallback. It also proves the

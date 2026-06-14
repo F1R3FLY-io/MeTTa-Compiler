@@ -12,11 +12,15 @@
 //! | GroundCheap        | 0        | 1           | Any      | false |
 //! | GroundArith        | 0        | 1           | Any      | true  |
 //! | SymbolicCheap      | 2        | 1           | Sticky   | true  |
-//! | SymbolicModerate   | 5        | branch_count| Any      | false |
+//! | SymbolicModerate   | 5        | 4           | Any      | false |
 //! | RecursiveBounded   | 8        | 1           | Sticky   | true  |
 //! | RecursiveUnbounded | 10       | 1           | Sticky   | false |
-//! | ParallelPure       | 3        | max_parallel| Any      | true  |
+//! | ParallelPure       | 3        | 8           | Any      | true  |
 //! | ImpureSequential   | 5        | 1           | Sticky   | false |
+//!
+//! `transduce_with_branches` can override the static degree for branch-aware
+//! classes, but it still preserves the `SchedulingAction` invariant that degree
+//! 1 means sequential and no action has degree 0.
 
 use super::cost_class::{AffinityHint, CostClass, SchedulingAction};
 
@@ -52,7 +56,9 @@ pub fn build_default_transduction_table() -> [SchedulingAction; CostClass::COUNT
 /// Transduce a CostClass into a SchedulingAction with dynamic parallelism override.
 ///
 /// When `branch_count > 1` and the class is `SymbolicModerate` or `ParallelPure`,
-/// the parallelism degree is set to `min(branch_count, max_parallel)`.
+/// the parallelism degree is set to `min(branch_count, max(max_parallel, 1))`.
+/// A zero cap therefore disables fanout by returning degree 1 rather than
+/// constructing an invalid degree-0 action.
 #[inline]
 pub fn transduce_with_branches(
     table: &[SchedulingAction; CostClass::COUNT],
@@ -64,7 +70,8 @@ pub fn transduce_with_branches(
     match class {
         CostClass::SymbolicModerate | CostClass::ParallelPure => {
             if branch_count > 1 {
-                action.parallelism_degree = branch_count.min(max_parallel);
+                let safe_max_parallel = max_parallel.max(1);
+                action.parallelism_degree = branch_count.min(safe_max_parallel);
             }
         }
         _ => {}
@@ -117,6 +124,17 @@ mod tests {
 
         // GroundCheap ignores branch count
         let action = transduce_with_branches(&table, CostClass::GroundCheap, 10, 8);
+        assert_eq!(action.parallelism_degree, 1);
+    }
+
+    #[test]
+    fn test_transduce_with_zero_cap_stays_sequential_nonzero() {
+        let table = build_default_transduction_table();
+
+        let action = transduce_with_branches(&table, CostClass::SymbolicModerate, 6, 0);
+        assert_eq!(action.parallelism_degree, 1);
+
+        let action = transduce_with_branches(&table, CostClass::ParallelPure, 6, 0);
         assert_eq!(action.parallelism_degree, 1);
     }
 }

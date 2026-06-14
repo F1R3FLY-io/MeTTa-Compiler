@@ -18,9 +18,7 @@ use dashmap::DashMap;
 use crate::backend::models::adaptive_pool::Ema;
 use crate::backend::models::metta_value::{MettaValue, ValueView};
 
-use super::cost_class::{
-    descriptor_flags, AffinityHint, CostClass, SchedulingAction, TaskDescriptor,
-};
+use super::cost_class::{descriptor_flags, CostClass, SchedulingAction, TaskDescriptor};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Known head symbol sets for heuristic classification
@@ -494,35 +492,10 @@ impl SchedulerAutomaton {
 
     /// Default transduction table mapping CostClass → SchedulingAction.
     ///
-    /// | CostClass         | Priority | ParDegree | Affinity | Memo  |
-    /// |--------------------|----------|-----------|----------|-------|
-    /// | GroundCheap        | 0        | 1         | Any      | false |
-    /// | GroundArith        | 0        | 1         | Any      | true  |
-    /// | SymbolicCheap      | 2        | 1         | Sticky   | true  |
-    /// | SymbolicModerate   | 5        | 4         | Any      | false |
-    /// | RecursiveBounded   | 8        | 1         | Sticky   | true  |
-    /// | RecursiveUnbounded | 10       | 1         | Sticky   | false |
-    /// | ParallelPure       | 3        | 8         | Any      | true  |
-    /// | ImpureSequential   | 5        | 1         | Sticky   | false |
+    /// Keep the classifier's live table pinned to the WFST transducer module,
+    /// so formal/source-coupling checks have one canonical table to audit.
     fn default_transduction_table() -> [SchedulingAction; CostClass::COUNT] {
-        [
-            // GroundCheap: immediate, single-threaded
-            SchedulingAction::new(0, 1, AffinityHint::Any, false),
-            // GroundArith: immediate, memoizable
-            SchedulingAction::new(0, 1, AffinityHint::Any, true),
-            // SymbolicCheap: low priority, sticky for cache locality
-            SchedulingAction::new(2, 1, AffinityHint::Sticky, true),
-            // SymbolicModerate: normal priority, fan out to 4 workers
-            SchedulingAction::new(5, 4, AffinityHint::Any, false),
-            // RecursiveBounded: higher priority (finish recursive chains), sticky
-            SchedulingAction::new(8, 1, AffinityHint::Sticky, true),
-            // RecursiveUnbounded: deprioritized (may diverge), sticky
-            SchedulingAction::new(10, 1, AffinityHint::Sticky, false),
-            // ParallelPure: moderate priority, high parallelism
-            SchedulingAction::new(3, 8, AffinityHint::Any, true),
-            // ImpureSequential: normal priority, sequential, sticky
-            SchedulingAction::new(5, 1, AffinityHint::Sticky, false),
-        ]
+        super::transducer::build_default_transduction_table()
     }
 
     // ── Classification (Layer 1) ─────────────────────────────────────────
@@ -857,6 +830,7 @@ pub fn install_scheduler(automaton: SchedulerAutomaton) -> Result<(), SchedulerA
 
 #[cfg(test)]
 mod tests {
+    use super::super::cost_class::AffinityHint;
     use super::*;
 
     #[test]
@@ -880,6 +854,14 @@ mod tests {
         let parallel = automaton.transduce(CostClass::ParallelPure);
         assert!(parallel.parallelism_degree > 1);
         assert!(parallel.memoizable);
+    }
+
+    #[test]
+    fn test_classifier_uses_canonical_transducer_table() {
+        assert_eq!(
+            SchedulerAutomaton::default_transduction_table(),
+            super::super::transducer::build_default_transduction_table()
+        );
     }
 
     #[test]

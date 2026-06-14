@@ -197,6 +197,7 @@ run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/SchedulerGcBoundary.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutProgress.v"
 run_rocq "formal/rocq/gc/SchedulerWavefrontParallelism.v"
+run_rocq "formal/rocq/gc/SchedulerTransducerParallelism.v"
 run_rocq "formal/rocq/gc/SchedulerDynamicEvalGate.v"
 run_rocq "formal/rocq/gc/SchedulerPriorityFairness.v"
 run_rocq "formal/rocq/gc/SchedulerClassificationLookup.v"
@@ -251,6 +252,12 @@ run_tlc "scheduler_wavefront_cycle_same_wave" "SchedulerWavefrontParallelism.tla
   fail "The invariant of SameWaveIndependent is equal to FALSE"
 run_tlc "scheduler_wavefront_deferred_ready" "SchedulerWavefrontParallelism.tla" "MC_SchedulerWavefrontParallelism_deferred.cfg" \
   fail "The invariant of NoReadyTaskDeferred is equal to FALSE"
+run_tlc "scheduler_transducer_zero_cap" "SchedulerTransducerParallelism.tla" "MC_SchedulerTransducerParallelism_zero_cap.cfg" \
+  pass ""
+run_tlc "scheduler_transducer_zero_cap_bug" "SchedulerTransducerParallelism.tla" "MC_SchedulerTransducerParallelism_zero_cap_bug.cfg" \
+  fail "The invariant of NonZeroDegree is equal to FALSE"
+run_tlc "scheduler_transducer_underutilized" "SchedulerTransducerParallelism.tla" "MC_SchedulerTransducerParallelism_underutilized.cfg" \
+  fail "The invariant of MaximalBeforeCap is equal to FALSE"
 run_tlc "scheduler_dynamic_eval_gate_fixed" "SchedulerDynamicEvalGate.tla" "MC_SchedulerDynamicEvalGate_fixed.cfg" \
   pass ""
 run_tlc "scheduler_dynamic_eval_gate_missing" "SchedulerDynamicEvalGate.tla" "MC_SchedulerDynamicEvalGate_missing.cfg" \

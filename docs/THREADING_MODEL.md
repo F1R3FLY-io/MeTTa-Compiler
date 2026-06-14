@@ -245,6 +245,9 @@ The formal lane covers the main scheduler obligations:
 - `SchedulerFanoutAdmissionCompleteness.v` and
   `SchedulerFanoutAdmissionCompleteness.tla` prove the requested degree is
   admitted when the runtime gates allow it.
+- `CollapseFanoutAdmissionCompleteness.v` and
+  `CollapseFanoutAdmissionCompleteness.tla` prove the same input-completeness
+  contract for `collapse` and `collapse-bind`.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -282,6 +285,64 @@ The source-coupling check pins the corresponding Kahn-loop facts:
 - Dependents whose in-degree falls to zero are pushed into the next wave.
 - Malformed task indices/dependencies and cyclic unresolved suffixes degrade to
   sequential waves.
+
+The transducer/fanout admission contract is:
+
+```text
+WFST degree == 1
+  -> branch set stays sequential
+WFST degree > 1
+  -> branch set may try purity/depth/pool/budget gates
+branch count <= safe cap
+  -> branch-aware transduction uses every available branch
+max_parallel == 0
+  -> degree degrades to sequential 1, never invalid 0
+admitted branch fanout
+  -> every branch slot is represented in the dispatched range
+admitted collapse fanout
+  -> every collapse item is represented in the dispatched range
+```
+
+This contract is checked by:
+
+- `formal/rocq/gc/SchedulerTransducerParallelism.v`
+- `tla/SchedulerTransducerParallelism.tla`
+- `tla/MC_SchedulerTransducerParallelism_zero_cap.cfg`
+- `tla/MC_SchedulerTransducerParallelism_zero_cap_bug.cfg`
+- `tla/MC_SchedulerTransducerParallelism_underutilized.cfg`
+- `formal/rocq/gc/SchedulerFanoutAdmissionCompleteness.v`
+- `tla/SchedulerFanoutAdmissionCompleteness.tla`
+- `tla/MC_SchedulerFanoutAdmissionCompleteness_all.cfg`
+- `tla/MC_SchedulerFanoutAdmissionCompleteness_partial.cfg`
+- `tla/MC_SchedulerFanoutAdmissionCompleteness_missing_degree.cfg`
+- `formal/rocq/gc/CollapseFanoutAdmissionCompleteness.v`
+- `tla/CollapseFanoutAdmissionCompleteness.tla`
+- `tla/MC_CollapseFanoutAdmissionCompleteness_all.cfg`
+- `tla/MC_CollapseFanoutAdmissionCompleteness_partial.cfg`
+- `tla/MC_CollapseFanoutAdmissionCompleteness_missing_threshold.cfg`
+
+The transducer positive model preserves nonzero degree and maximal-before-cap
+use of available branch parallelism. Its zero-cap negative violates
+`NonZeroDegree`; its underutilized negative violates `MaximalBeforeCap`. The
+branch fanout positive model preserves `CompleteAdmittedFanout`; the partial
+spawn and missing-degree negatives violate `CompleteAdmittedFanout` and
+`DegreeGateRequired`. The collapse fanout positive model preserves
+`CompleteAdmittedCollapse`; the partial spawn and missing-threshold negatives
+violate `CompleteAdmittedCollapse` and `ThresholdGateRequired`.
+
+The source-coupling check pins the corresponding implementation facts:
+
+- `transduce_with_branches()` computes `safe_max_parallel = max_parallel.max(1)`
+  and then uses `branch_count.min(safe_max_parallel)`.
+- `SchedulingAction::parallelism_degree` is documented as an admission degree.
+- Branch fanout budget requests use every extra branch:
+  `(branch_count - 1)`.
+- `parallel_dispatch()` allocates result and completion slots for the full
+  branch count before iterating every branch slot.
+- Collapse fanout threshold is documented as an admission threshold, not a spawn
+  cap.
+- `parallel_collapse_dispatch()` allocates result and completion slots for the
+  full item count before iterating every collapse item.
 
 ## Cron Manager
 

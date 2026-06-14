@@ -690,6 +690,16 @@ assert_after_before \
   "match result" \
   ".stop_requested" \
   ".in_flight"
+line_no "formal/rocq/gc/CronStartupDelivery.v" "Definition startup_delivery_safe" >/dev/null
+line_no "formal/rocq/gc/CronStartupDelivery.v" "Theorem complete_startup_delivers_submitted_task" >/dev/null
+line_no "formal/rocq/gc/CronStartupDelivery.v" "Theorem submitted_after_ready_requires_returned_handle" >/dev/null
+line_no "formal/rocq/gc/CronStartupDelivery.v" "Theorem submitted_after_ready_requires_ready_signal" >/dev/null
+line_no "formal/rocq/gc/CronStartupDelivery.v" "Theorem missing_poll_path_exposes_delivery_gap" >/dev/null
+line_no "tla/CronStartupDelivery.tla" "ReadyWaitCompletes ==" >/dev/null
+line_no "tla/CronStartupDelivery.tla" "ScheduleAfterReadyHasHandle ==" >/dev/null
+line_no "tla/CronStartupDelivery.tla" "NoStartupTaskLost ==" >/dev/null
+line_no "tla/CronStartupDelivery.tla" "SubmittedTaskEventuallyObserved ==" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/CronStartupDelivery.v"' >/dev/null
 assert_after_before \
   "src/backend/models/work_pool.rs" \
   "fn overflow_spawn_quota" \
@@ -825,6 +835,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitIsFunctionPointerDecode.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.v" "1"
@@ -856,6 +867,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.tla" "
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitIsFunctionPointerDecode.tla" "5"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
+assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "6"
@@ -1247,6 +1259,7 @@ assert_after_before "src/backend/models/task_scheduler.rs" "let mut sm = CronSta
 assert_after_before "src/backend/models/task_scheduler.rs" "let handle = CronHandle {" "task_tx," "terminating,"
 assert_after_before "src/backend/models/task_scheduler.rs" "let handle = CronHandle {" "task_tx," "(handle, thread_handle, ready_rx)"
 assert_after_before "src/backend/models/task_scheduler.rs" "pub fn run(&mut self)" "if let Some(tx) = self.ready_tx.take()" "let _ = tx.send(());"
+assert_after_before "src/backend/models/task_scheduler.rs" "pub fn run(&mut self)" "let _ = tx.send(());" "while self.state != CronState::Terminated"
 assert_after_before "src/backend/models/task_scheduler.rs" "fn poll_check_events" "self.task_rx.try_recv()" "CronEvent::TaskReceived"
 assert_after_before "src/backend/models/task_scheduler.rs" "fn poll_drain_channel" "self.task_rx.try_recv()" "CronEvent::TaskReceived"
 assert_after_before "src/backend/models/task_scheduler.rs" "pub fn schedule_at" "self.task_tx.send(scheduled_task).is_ok()" "pub fn schedule_after"

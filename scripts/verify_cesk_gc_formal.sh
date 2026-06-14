@@ -209,6 +209,7 @@ run_rocq "formal/rocq/gc/SchedulerDynamicEvalGate.v"
 run_rocq "formal/rocq/gc/SchedulerPriorityFairness.v"
 run_rocq "formal/rocq/gc/SchedulerClassificationLookup.v"
 run_rocq "formal/rocq/gc/CronRecurringDispatch.v"
+run_rocq "formal/rocq/gc/CronStartupDelivery.v"
 run_rocq "formal/rocq/gc/WorkPoolOverflowCap.v"
 run_rocq "formal/rocq/gc/WorkPoolLifecycle.v"
 run_rocq "formal/rocq/gc/WorkPoolStartupDrain.v"
@@ -349,6 +350,14 @@ run_tlc "cron_recurring_dispatch_no_stop" "CronRecurringDispatch.tla" "MC_CronRe
   fail "Invariant StopPreventsRedispatch is violated"
 run_tlc "cron_recurring_dispatch_no_claim" "CronRecurringDispatch.tla" "MC_CronRecurringDispatch_no_claim.cfg" \
   fail "Invariant NoOverlapDispatch is violated"
+run_tlc "cron_startup_delivery_all" "CronStartupDelivery.tla" "MC_CronStartupDelivery_all.cfg" \
+  pass ""
+run_tlc "cron_startup_delivery_no_ready_signal" "CronStartupDelivery.tla" "MC_CronStartupDelivery_no_ready_signal.cfg" \
+  fail "Invariant ReadyWaitCompletes is violated"
+run_tlc "cron_startup_delivery_no_handle_sender" "CronStartupDelivery.tla" "MC_CronStartupDelivery_no_handle_sender.cfg" \
+  fail "The invariant of ScheduleAfterReadyHasHandle is equal to FALSE"
+run_tlc "cron_startup_delivery_no_poll_path" "CronStartupDelivery.tla" "MC_CronStartupDelivery_no_poll_path.cfg" \
+  fail "Invariant NoStartupTaskLost is violated"
 run_tlc "work_pool_overflow_capped" "WorkPoolOverflowCap.tla" "MC_WorkPoolOverflowCap_capped.cfg" \
   pass ""
 run_tlc "work_pool_overflow_uncapped" "WorkPoolOverflowCap.tla" "MC_WorkPoolOverflowCap_uncapped.cfg" \

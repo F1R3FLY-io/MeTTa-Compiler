@@ -1246,6 +1246,15 @@ facts the proofs rely on:
   TLC positives preserve the decode policy; negative discriminators reject an
   index build that slab-dereferences a TAG_PTR payload and any non-pointer path
   that performs a dereference.
+- Cron startup delivery (`formal/rocq/gc/CronStartupDelivery.v`,
+  `tla/CronStartupDelivery.tla`, 2026-06-14) — proves the cron ready-channel
+  startup contract beyond generic endpoint pairing: after the caller observes
+  the returned ready receiver, a task submitted through the returned
+  `CronHandle` is reachable by the cron event loop only if the ready signal is
+  sent from inside `CronStateMachine::run()` and the event loop polls the task
+  channel in `CheckEvents` or `DrainChannel`. TLC accepts the complete startup
+  path and rejects missing ready signal, missing handle sender, and missing
+  poll-path variants.
 
 ## Harness
 

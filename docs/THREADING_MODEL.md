@@ -471,6 +471,12 @@ The formal lane covers this with:
 - `tla/MC_CronRecurringDispatch_stop.cfg`
 - `tla/MC_CronRecurringDispatch_no_stop.cfg`
 - `tla/MC_CronRecurringDispatch_no_claim.cfg`
+- `formal/rocq/gc/CronStartupDelivery.v`
+- `tla/CronStartupDelivery.tla`
+- `tla/MC_CronStartupDelivery_all.cfg`
+- `tla/MC_CronStartupDelivery_no_ready_signal.cfg`
+- `tla/MC_CronStartupDelivery_no_handle_sender.cfg`
+- `tla/MC_CronStartupDelivery_no_poll_path.cfg`
 
 The positive model preserves both non-overlap and stop-before-redispatch. The
 no-stop negative model violates `StopPreventsRedispatch`, matching a worker that
@@ -478,12 +484,24 @@ clears `in_flight` without first publishing terminal state. The no-claim
 negative model violates `NoOverlapDispatch`, matching a due placeholder that
 submits a second worker before the first recurring worker finishes.
 
+The startup-delivery model proves the ready-channel contract beyond endpoint
+pairing. A task submitted through the returned `CronHandle` after the caller
+observes the returned ready receiver is reachable by the event loop only if the
+ready signal is sent from inside `CronStateMachine::run()` and the task channel
+is polled by `CheckEvents` or `DrainChannel`. TLC rejects missing ready signal,
+missing returned handle sender, and missing poll-path variants.
+
 The source-coupling check pins the corresponding implementation facts:
 
 - `dispatch_to_pool()` checks `stop_requested` before claiming work.
 - The `compare_exchange(false, true, ...)` claim occurs before `pool.spawn_eval`.
 - The failed-claim path requeues only and returns before any worker submission.
 - Worker completion updates `stop_requested` before clearing `in_flight`.
+- `spawn_cron_with_interval_name_and_pool()` creates the task and ready
+  channels before spawning the cron thread, moves the receiver and ready sender
+  into `CronStateMachine::new`, returns the handle sender and ready receiver,
+  sends ready inside `run()` before the state-machine loop, and polls the task
+  channel in both `CheckEvents` and `DrainChannel`.
 
 ## CESK And GC Interaction
 

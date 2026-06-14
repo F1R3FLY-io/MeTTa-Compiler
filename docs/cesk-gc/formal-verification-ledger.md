@@ -685,10 +685,12 @@ capped debug Robot replay after the conditional canary produced the expected fri
   state-mutating heads before the scheduler maximizes parallelism.
 - `formal/rocq/gc/SchedulerWavefrontParallelism.v` and `tla/SchedulerWavefrontParallelism.tla`: prove and
   model-check the wavefront instruction-reordering obligation. A task may share a wave only when all dependency edges
-  point to earlier waves; a ready set whose dependencies are already in prior waves can be batched maximally; and
-  all-independent tasks may use one full-width wave. The cyclic same-wave discriminator violates
-  `SameWaveIndependent`, which drove the Rust fallback change: malformed task indices/dependencies and cyclic
-  unresolved suffixes now degrade to sequential waves instead of claiming parallelism that the proof rejects.
+  point to earlier waves; a ready task whose dependencies are already in prior waves and that has not already run must
+  be placed in the current wave rather than deferred; and all-independent tasks may use one full-width wave. The cyclic
+  same-wave discriminator violates `SameWaveIndependent`, while the deferred-ready discriminator preserves dependency
+  safety but violates `NoReadyTaskDeferred`. These checks pin both sides of the Rust Kahn loop: malformed
+  task indices/dependencies and cyclic unresolved suffixes degrade to sequential waves, while valid DAGs enumerate every
+  initially-ready task and every newly-ready dependent into the earliest possible wave.
 - `formal/rocq/gc/SchedulerDynamicEvalGate.v` and `tla/SchedulerDynamicEvalGate.tla`: prove and model-check the
   dynamic-evaluation parallel-dispatch obligation. Dynamic heads (`eval`, `!`, `evalc`) can execute code supplied by a
   variable or user expression, so absence of a visible mutating head is not enough to admit the no-budget parallel
@@ -734,6 +736,13 @@ capped debug Robot replay after the conditional canary produced the expected fri
   longer violates its same-wave independence contract. The full capped formal harness then passed with 94 mandatory GC
   Rocq files, 5 WorkPool Rocq files, 36 mandatory Lean mirrors, 237 TLC configs, and source coupling. The slab release
   gate `cargo nextest run --release` passed 4406/4406 tests.
+- 2026-06-14 Wavefront maximality tightening: `SchedulerWavefrontParallelism.v` now includes the
+  `maximal_ready_wave_no_deferred_task` and `maximal_ready_set_can_share_wave` obligations, and
+  `SchedulerWavefrontParallelism.tla` now includes a `DeferReady` model variant that keeps dependency order and
+  same-wave independence but leaves a ready diamond branch out of its earliest wave. The regular formal harness runs
+  that variant as `scheduler_wavefront_deferred_ready` and expects `NoReadyTaskDeferred` to fail; source coupling pins
+  the initial in-degree-zero scan and the `in_degree == 0` dependent insertion that realize the maximal ready-set
+  property in Rust.
 - 2026-06-12 Dynamic-eval dispatch gate increment: focused gates passed under `systemd-run` caps:
   `rocq c ... SchedulerDynamicEvalGate.v`, the fixed dynamic-eval TLC config, the missing-gate negative discriminator
   which violates `NoDynamicEvalParallelBypass`, `cargo test --lib dynamic_eval`, `cargo test --lib branch_analysis`,

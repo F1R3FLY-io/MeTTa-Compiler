@@ -249,6 +249,8 @@ run_tlc "scheduler_wavefront_independent" "SchedulerWavefrontParallelism.tla" "M
   pass ""
 run_tlc "scheduler_wavefront_cycle_same_wave" "SchedulerWavefrontParallelism.tla" "MC_SchedulerWavefrontParallelism_cycle.cfg" \
   fail "The invariant of SameWaveIndependent is equal to FALSE"
+run_tlc "scheduler_wavefront_deferred_ready" "SchedulerWavefrontParallelism.tla" "MC_SchedulerWavefrontParallelism_deferred.cfg" \
+  fail "The invariant of NoReadyTaskDeferred is equal to FALSE"
 run_tlc "scheduler_dynamic_eval_gate_fixed" "SchedulerDynamicEvalGate.tla" "MC_SchedulerDynamicEvalGate_fixed.cfg" \
   pass ""
 run_tlc "scheduler_dynamic_eval_gate_missing" "SchedulerDynamicEvalGate.tla" "MC_SchedulerDynamicEvalGate_missing.cfg" \

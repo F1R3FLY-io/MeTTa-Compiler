@@ -179,6 +179,26 @@ assert_after_before \
   "for task_idx in remaining {" \
   "}"
 line_no "src/backend/scheduler/wavefront.rs" "waves.push(vec![task_idx]);" >/dev/null
+assert_after_before \
+  "src/backend/scheduler/wavefront.rs" \
+  "Find initial ready tasks (in-degree = 0)" \
+  "for (i, &deg) in in_degree.iter().enumerate() {" \
+  "let mut processed = 0;"
+assert_after_before \
+  "src/backend/scheduler/wavefront.rs" \
+  "for (i, &deg) in in_degree.iter().enumerate() {" \
+  "if deg == 0 {" \
+  "current_wave.push(i);"
+assert_after_before \
+  "src/backend/scheduler/wavefront.rs" \
+  "for &dependent in &dependents[task_idx] {" \
+  "in_degree[dependent] -= 1;" \
+  "if in_degree[dependent] == 0 {"
+assert_after_before \
+  "src/backend/scheduler/wavefront.rs" \
+  "if in_degree[dependent] == 0 {" \
+  "next_wave.push(dependent);" \
+  "}"
 assert_before \
   "src/backend/models/task_scheduler.rs" \
   "if dispatch.stop_requested.load(AtomicOrdering::Acquire) {" \
@@ -272,7 +292,7 @@ line_no "formal/rocq/work_pool_stability/theories/ObjectiveFunction.v" "Record W
 line_no "formal/rocq/work_pool_stability/theories/LyapunovConvergence.v" "Definition V (N_opt n : nat)" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
-assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "3"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"

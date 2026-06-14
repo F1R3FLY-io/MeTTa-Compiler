@@ -3,7 +3,9 @@
     A wavefront schedule may batch tasks only when every dependency edge points
     to a strictly earlier wave.  This file captures the proof obligation used by
     the Rust scheduler: if all dependencies of a ready set are already in prior
-    waves, every task in that ready set can share the next wave; if a cycle is
+    waves, every task in that ready set can share the next wave.  The maximal
+    batching obligation additionally says that a ready task not already assigned
+    to an earlier wave must not be deferred past the current wave.  If a cycle is
     collapsed into one wave, the independence claim is false.
 *)
 
@@ -48,6 +50,23 @@ Section WavefrontModel.
   Definition no_dependencies (depends_on : Task -> Task -> Prop) : Prop :=
     forall left right, ~ depends_on left right.
 
+  Definition wave_maximal_for_ready
+      (wave : Task -> nat)
+      (depends_on : Task -> Task -> Prop)
+      (k : nat) : Prop :=
+    forall task,
+      task_ready_for_wave wave depends_on k task ->
+      wave task <= k.
+
+  Definition current_wave_ready_set
+      (wave : Task -> nat)
+      (depends_on : Task -> Task -> Prop)
+      (k : nat)
+      (ready : Task -> Prop) : Prop :=
+    forall task,
+      ready task <->
+      task_ready_for_wave wave depends_on k task /\ ~ wave task < k.
+
   Theorem dependencies_before_implies_same_wave_independent :
     forall wave depends_on,
       dependencies_before wave depends_on ->
@@ -72,6 +91,39 @@ Section WavefrontModel.
     specialize (Hready_before right Hright left Hedge).
     rewrite (Hwave_eq left Hleft) in Hready_before.
     lia.
+  Qed.
+
+  Theorem maximal_ready_wave_no_deferred_task :
+    forall wave depends_on k task,
+      wave_maximal_for_ready wave depends_on k ->
+      task_ready_for_wave wave depends_on k task ->
+      ~ wave task < k ->
+      wave task = k.
+  Proof.
+    intros wave depends_on k task Hmaximal Hready Hnot_prior.
+    specialize (Hmaximal task Hready).
+    lia.
+  Qed.
+
+  Theorem maximal_ready_set_can_share_wave :
+    forall wave depends_on ready k,
+      wave_maximal_for_ready wave depends_on k ->
+      current_wave_ready_set wave depends_on k ready ->
+      ready_set_independent ready depends_on.
+  Proof.
+    intros wave depends_on ready k Hmaximal Hready_exact.
+    apply (ready_set_can_share_wave wave depends_on ready k).
+    - intros task Hready_member.
+      destruct (Hready_exact task) as [Hready_to _].
+      destruct (Hready_to Hready_member) as [Hready_for_wave _].
+      exact Hready_for_wave.
+    - intros task Hready_member.
+      destruct (Hready_exact task) as [Hready_to _].
+      destruct (Hready_to Hready_member) as [Hready_for_wave Hnot_prior].
+      apply (maximal_ready_wave_no_deferred_task wave depends_on k task).
+      + exact Hmaximal.
+      + exact Hready_for_wave.
+      + exact Hnot_prior.
   Qed.
 
   Theorem no_dependencies_single_wave_contract :

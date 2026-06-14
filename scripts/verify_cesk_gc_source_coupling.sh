@@ -299,6 +299,13 @@ line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Theorem guarded_arena_addr_ma
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Theorem legacy_slab_has_no_arena_addr" >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Theorem valid_emitted_addr_requires_index_store" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/ArenaAddrDecodeErasure.v"' >/dev/null
+line_no "formal/rocq/gc/InnerPtrDecodeErasure.v" "Require Import DefaultStoreSelection." >/dev/null
+line_no "formal/rocq/gc/InnerPtrDecodeErasure.v" "Definition guarded_inner_ptr" >/dev/null
+line_no "formal/rocq/gc/InnerPtrDecodeErasure.v" "Definition cfg_split_inner_ptr" >/dev/null
+line_no "formal/rocq/gc/InnerPtrDecodeErasure.v" "Theorem guarded_inner_ptr_matches_cfg_split" >/dev/null
+line_no "formal/rocq/gc/InnerPtrDecodeErasure.v" "Theorem legacy_slab_heap_uses_slab_ptr" >/dev/null
+line_no "formal/rocq/gc/InnerPtrDecodeErasure.v" "Theorem valid_index_key_result_requires_index_store_for_heap" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/InnerPtrDecodeErasure.v"' >/dev/null
 assert_after_before \
   "formal/rocq/gc/RuntimeModeErasure.v" \
   "Definition runtime_effective_store" \
@@ -334,6 +341,25 @@ assert_zero_between \
   "pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {" \
   "pub(crate) fn addr_flags(&self) -> usize {" \
   "gc_mode_is_index()"
+assert_immediate_cfg_before \
+  "src/backend/models/metta_value.rs" \
+  "pub fn inner_ptr(&self) -> *const MettaValueInner {" \
+  "#[cfg(feature = \"index-gc\")]"
+assert_immediate_cfg_before_after \
+  "src/backend/models/metta_value.rs" \
+  "(INDEX_KEY_TAG | (self.tagged >> 4)) as *const MettaValueInner" \
+  "pub fn inner_ptr(&self) -> *const MettaValueInner {" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_zero_between \
+  "src/backend/models/metta_value.rs" \
+  "pub fn inner_ptr(&self) -> *const MettaValueInner {" \
+  "Type checking and inspection methods" \
+  "gc_mode_is_index()"
+assert_after_before \
+  "src/backend/models/metta_value.rs" \
+  "pub fn inner_ptr(&self) -> *const MettaValueInner {" \
+  "INDEX_KEY_TAG" \
+  "disjoint from any real"
 line_no "formal/rocq/gc/CfgGuardErasure.v" "Require Import DefaultStoreSelection." >/dev/null
 line_no "formal/rocq/gc/CfgGuardErasure.v" "Definition cfg_guarded_effect" >/dev/null
 line_no "formal/rocq/gc/CfgGuardErasure.v" "Theorem cfg_guard_erasure_preserves_effect" >/dev/null

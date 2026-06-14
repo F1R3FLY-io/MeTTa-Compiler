@@ -1419,6 +1419,7 @@ impl MettaValue {
     /// Returns the pointer to the **outermost** MettaValueInner (which may be Spanned).
     /// This is correct for GC marking, which needs to track the actual slab slot.
     /// For inline NaN-boxed values, returns null (no slab slot to mark).
+    #[cfg(feature = "index-gc")]
     #[inline]
     pub fn inner_ptr(&self) -> *const MettaValueInner {
         if self.is_inline() {
@@ -1432,9 +1433,20 @@ impl MettaValue {
         // ground-cache). `INDEX_KEY_TAG` (bit 48, above the 32-bit Addr payload)
         // keeps the key non-null even for `Addr(0)` and disjoint from any real
         // low-48-bit slab pointer. Stable because the arena is non-moving.
-        if gc_mode_is_index() {
-            const INDEX_KEY_TAG: usize = 1 << 48;
-            return (INDEX_KEY_TAG | (self.tagged >> 4)) as *const MettaValueInner;
+        const INDEX_KEY_TAG: usize = 1 << 48;
+        (INDEX_KEY_TAG | (self.tagged >> 4)) as *const MettaValueInner
+    }
+
+    /// Get a raw pointer to the inner value (used by GC for slot identification).
+    ///
+    /// Returns the pointer to the **outermost** MettaValueInner (which may be Spanned).
+    /// This is correct for GC marking, which needs to track the actual slab slot.
+    /// For inline NaN-boxed values, returns null (no slab slot to mark).
+    #[cfg(not(feature = "index-gc"))]
+    #[inline]
+    pub fn inner_ptr(&self) -> *const MettaValueInner {
+        if self.is_inline() {
+            return std::ptr::null();
         }
         (self.tagged & PTR_MASK) as *const MettaValueInner
     }

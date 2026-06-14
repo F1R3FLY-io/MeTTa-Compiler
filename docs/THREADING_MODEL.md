@@ -269,6 +269,10 @@ The formal lane covers the main scheduler obligations:
 - `CollapseFanoutAdmissionCompleteness.v` and
   `CollapseFanoutAdmissionCompleteness.tla` prove the same input-completeness
   contract for `collapse` and `collapse-bind`.
+- `ThreadingEndToEndInterleaving.v` and
+  `ThreadingEndToEndInterleaving.tla` compose scheduler dependency waves,
+  direct-fanout maximality, active-worker GC roots, closed worker admission, and
+  recurring-cron in-flight claims into one small interleaving envelope.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -518,6 +522,22 @@ The boundary is modeled by:
 - `tla/MC_SchedulerGcBoundary_missing_worker.cfg`
 - `tla/MC_SchedulerGcBoundary_missing_dispatch.cfg`
 - `tla/MC_SchedulerGcBoundary_missing_batch.cfg`
+
+The composed end-to-end envelope is modeled by:
+
+- `formal/rocq/gc/ThreadingEndToEndInterleaving.v`
+- `tla/ThreadingEndToEndInterleaving.tla`
+- `tla/MC_ThreadingEndToEndInterleaving_safe.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_independent.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_missing_dependency.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_open_admission.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg`
+
+The positive dependency-bearing and independent configs preserve
+`EndToEndSafe`. The negative configs violate it when dependency edges are
+omitted, active worker roots are omitted, worker admission stays open across the
+root snapshot, or recurring cron dispatch submits without claiming `in_flight`.
 - `tla/MC_SchedulerGcBoundary_admission_open.cfg`
 - `formal/rocq/gc/SchedulerSpawnLatch.v`
 - `tla/SchedulerSpawnLatch.tla`

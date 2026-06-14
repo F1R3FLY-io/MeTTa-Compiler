@@ -213,6 +213,7 @@ run_rocq "formal/rocq/gc/WorkPoolOverflowCap.v"
 run_rocq "formal/rocq/gc/WorkPoolLifecycle.v"
 run_rocq "formal/rocq/gc/WorkPoolStartupDrain.v"
 run_rocq "formal/rocq/gc/WorkPoolPanicIsolation.v"
+run_rocq "formal/rocq/gc/ThreadingEndToEndInterleaving.v"
 run_rocq "formal/rocq/gc/CounterFlushExclusion.v"
 run_rocq "formal/rocq/gc/GcDriverChannelProtocol.v"
 run_rocq "formal/rocq/gc/StructChannelPairing.v"
@@ -350,6 +351,18 @@ run_tlc "work_pool_panic_no_inner" "WorkPoolPanicIsolation.tla" "WorkPoolPanicIs
   fail "Invariant TaskPanicPublishesHeartbeat is violated"
 run_tlc "work_pool_panic_no_outer" "WorkPoolPanicIsolation.tla" "WorkPoolPanicIsolation_no_outer.cfg" \
   fail "Temporal properties were violated"
+run_tlc "threading_end_to_end_safe" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_safe.cfg" \
+  pass ""
+run_tlc "threading_end_to_end_independent" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_independent.cfg" \
+  pass ""
+run_tlc "threading_end_to_end_missing_dependency" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_dependency.cfg" \
+  fail "Invariant EndToEndSafe is violated"
+run_tlc "threading_end_to_end_missing_worker_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg" \
+  fail "Invariant EndToEndSafe is violated"
+run_tlc "threading_end_to_end_open_admission" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_open_admission.cfg" \
+  fail "Invariant EndToEndSafe is violated"
+run_tlc "threading_end_to_end_unclaimed_cron" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg" \
+  fail "Invariant EndToEndSafe is violated"
 run_tlc "counter_flush_locked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_locked.cfg" \
   pass ""
 run_tlc "counter_flush_unlocked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_unlocked.cfg" \

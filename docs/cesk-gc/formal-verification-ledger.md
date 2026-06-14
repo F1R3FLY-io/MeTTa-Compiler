@@ -1223,6 +1223,15 @@ facts the proofs rely on:
   spawn-latch-before-worker handoff, and active worker structural-root
   publication.
 
+- Threading end-to-end interleaving envelope (`formal/rocq/gc/ThreadingEndToEndInterleaving.v`,
+  `tla/ThreadingEndToEndInterleaving.tla`, 2026-06-14) — composes scheduler
+  dependency waves, direct fanout, active-worker root publication, closed worker
+  admission, sweep, and recurring-cron dispatch into one TLC state machine.
+  Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
+  Negative discriminators violate it for missing dependency edges, missing
+  active-worker roots, open admission across a root snapshot, and unclaimed
+  recurring cron dispatch.
+
 ## Harness
 
 Run:

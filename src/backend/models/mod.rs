@@ -3,6 +3,7 @@ pub mod bindings;
 pub mod gc_allocator;
 pub mod gc_cron;
 pub mod gc_pool;
+#[cfg(not(feature = "index-gc"))]
 pub mod gc_thread;
 pub mod generic_bindings;
 pub mod memo_handle;

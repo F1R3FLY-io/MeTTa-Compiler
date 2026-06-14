@@ -2537,7 +2537,7 @@ pub fn global_factory() -> crate::backend::models::ActiveFactory {
 // ============================================================================
 
 // GLOBAL_GC_THREAD removed — replaced by AdaptiveGcPool (gc_pool.rs).
-// GcThread is still available for direct use in tests.
+// The old single GcThread module is retained only in the legacy slab opt-out.
 
 /// Flag set by the cron manager or allocation pressure to request a GC cycle.
 /// Checked by `maybe_gc()` in the trampoline loop (every 256 iterations).

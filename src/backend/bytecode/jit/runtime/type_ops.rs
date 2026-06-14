@@ -68,7 +68,7 @@ static TYPE_NAME_UNKNOWN: &str = "Unknown";
 /// - TAG_ATOM → "Symbol" (or "Variable" if starts with $)
 /// - TAG_VAR → "Variable"
 ///
-/// Uses the slab allocator (via GcFactory) for all value creation.
+/// Uses the active factory selected by the compiled GC store for value creation.
 ///
 /// # Safety
 /// For pointer payloads, the referenced value must be valid.
@@ -177,7 +177,9 @@ pub unsafe extern "C" fn jit_runtime_check_type(
                 // trait unpack and read the atom on the VALUE.
                 if crate::backend::models::metta_value::gc_mode_is_index() {
                     crate::backend::models::MettaValueTrait::as_atom(
-                        &<MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(ptr),
+                        &<MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(
+                            ptr,
+                        ),
                     )
                 } else if !ptr.is_null() {
                     if let MettaValueInner::Atom(s) = &*ptr {
@@ -262,7 +264,9 @@ pub unsafe extern "C" fn jit_runtime_assert_type(
                 // trait unpack and read the atom on the VALUE.
                 if crate::backend::models::metta_value::gc_mode_is_index() {
                     crate::backend::models::MettaValueTrait::as_atom(
-                        &<MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(ptr),
+                        &<MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(
+                            ptr,
+                        ),
                     )
                 } else if !ptr.is_null() {
                     if let MettaValueInner::Atom(s) = &*ptr {
@@ -457,8 +461,10 @@ unsafe fn get_type_name(val: u64) -> &'static str {
             // exp18: index-mode payloads are handles, not pointers — see
             // get_type_generic. Classify on the reconstructed VALUE.
             if crate::backend::models::metta_value::gc_mode_is_index() {
-                return <MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(ptr)
-                    .type_name();
+                return <MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(
+                    ptr,
+                )
+                .type_name();
             }
             if ptr.is_null() {
                 return TYPE_NAME_UNKNOWN;
@@ -502,10 +508,21 @@ unsafe fn get_type_name(val: u64) -> &'static str {
 /// `val` must be a valid NaN-boxed JIT value.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_is_function(_ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
+    // formal/rocq/gc/JitIsFunctionPointerDecode.v: TAG_PTR payloads are
+    // store-shaped. Index payloads are arena handles and must be reconstructed;
+    // legacy slab payloads may be dereferenced as slab pointers.
     let tag = val & TAG_MASK;
     let is_fn = if tag == TAG_PTR {
         let ptr = (val & PAYLOAD_MASK) as *const MettaValueInner;
-        if !ptr.is_null() {
+        if crate::backend::models::metta_value::gc_mode_is_index() {
+            let value =
+                <MettaValue as crate::backend::models::MettaValueTrait>::from_inner_ptr(ptr);
+            value
+                .as_sexpr()
+                .and_then(|items| items.first())
+                .and_then(|v| v.as_atom())
+                == Some("->")
+        } else if !ptr.is_null() {
             match &*ptr {
                 MettaValueInner::SExpr(items) => {
                     items.first().and_then(|v| v.as_atom()) == Some("->")
@@ -525,4 +542,40 @@ pub unsafe extern "C" fn jit_runtime_is_function(_ctx: *mut JitContext, val: u64
         false
     };
     TAG_BOOL | (is_fn as u64)
+}
+
+#[cfg(all(test, feature = "index-gc"))]
+mod index_is_function_tests {
+    use super::*;
+    use crate::backend::eval::cesk::index_heap::IndexFactory;
+
+    #[test]
+    fn is_function_decodes_index_tag_ptr_without_slab_deref() {
+        let factory = IndexFactory;
+        let arrow = factory.sexpr(vec![
+            factory.atom("->"),
+            factory.atom("A"),
+            factory.atom("B"),
+        ]);
+        let bits = value_to_jit_generic(&arrow).to_bits();
+
+        let result = unsafe { jit_runtime_is_function(std::ptr::null_mut(), bits, 0) };
+
+        assert_eq!(result, TAG_BOOL | 1);
+    }
+
+    #[test]
+    fn is_function_rejects_index_non_arrow_sexpr() {
+        let factory = IndexFactory;
+        let value = factory.sexpr(vec![
+            factory.atom("Pair"),
+            factory.atom("A"),
+            factory.atom("B"),
+        ]);
+        let bits = value_to_jit_generic(&value).to_bits();
+
+        let result = unsafe { jit_runtime_is_function(std::ptr::null_mut(), bits, 0) };
+
+        assert_eq!(result, TAG_BOOL);
+    }
 }

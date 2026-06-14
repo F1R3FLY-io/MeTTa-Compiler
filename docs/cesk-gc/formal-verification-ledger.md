@@ -1238,6 +1238,14 @@ facts the proofs rely on:
   not allocate. TLC positives preserve the selection invariants; negative
   discriminators reject both an index build that boxes through the slab and an
   index build that still compiles a slab fallback after the index branch.
+- JIT `is-function` TAG_PTR decode (`formal/rocq/gc/JitIsFunctionPointerDecode.v`,
+  `tla/JitIsFunctionPointerDecode.tla`, 2026-06-14) — proves heap inspection is
+  selected by the compiled store: index builds reconstruct TAG_PTR payloads as
+  arena handles before structural classification, legacy slab builds may
+  dereference slab pointers, and non-pointer values perform no heap inspection.
+  TLC positives preserve the decode policy; negative discriminators reject an
+  index build that slab-dereferences a TAG_PTR payload and any non-pointer path
+  that performs a dereference.
 
 ## Harness
 

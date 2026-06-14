@@ -303,6 +303,17 @@ line_no "tla/JitValueCreationStoreSelection.tla" "FactoryMatchesCompiledStore ==
 line_no "tla/JitValueCreationStoreSelection.tla" "NoSlabFactoryInIndex ==" >/dev/null
 line_no "tla/JitValueCreationStoreSelection.tla" "NoArenaPtrStoreSelectionInIndex ==" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/JitValueCreationStoreSelection.v"' >/dev/null
+line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Require Import DefaultStoreSelection." >/dev/null
+line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Definition cfg_split_is_function_inspection" >/dev/null
+line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Definition slab_deref_is_function_inspection" >/dev/null
+line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Theorem cfg_split_pointer_inspection_matches_valid_store" >/dev/null
+line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Theorem emitted_slab_deref_requires_slab_store" >/dev/null
+line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Theorem index_pointer_never_dereferences_slab" >/dev/null
+line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Theorem slab_deref_shape_violates_default_index" >/dev/null
+line_no "tla/JitIsFunctionPointerDecode.tla" "PointerInspectionMatchesStore ==" >/dev/null
+line_no "tla/JitIsFunctionPointerDecode.tla" "NoSlabDerefInIndex ==" >/dev/null
+line_no "tla/JitIsFunctionPointerDecode.tla" "SlabDerefRequiresSlabPointer ==" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/JitIsFunctionPointerDecode.v"' >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Require Import DefaultStoreSelection." >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Definition guarded_arena_addr" >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Definition cfg_split_arena_addr" >/dev/null
@@ -354,6 +365,17 @@ assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "cons_atom_gene
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_list_generic::<MettaValue, GcFactory>"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_quote_generic::<MettaValue, GcFactory>"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "Uses the slab allocator (via GcFactory)"
+line_no "src/backend/bytecode/jit/runtime/type_ops.rs" "formal/rocq/gc/JitIsFunctionPointerDecode.v" >/dev/null
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/type_ops.rs" \
+  "pub unsafe extern \"C\" fn jit_runtime_is_function" \
+  "if crate::backend::models::metta_value::gc_mode_is_index() {" \
+  "match &*ptr"
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/type_ops.rs" \
+  "if crate::backend::models::metta_value::gc_mode_is_index() {" \
+  "from_inner_ptr(" \
+  "match &*ptr"
 assert_after_before \
   "src/backend/models/metta_value.rs" \
   "pub(crate) fn gc_mode_is_index() -> bool" \
@@ -800,6 +822,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.v" "1
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitIsFunctionPointerDecode.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
@@ -830,6 +853,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.tla" 
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.tla" "5"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitIsFunctionPointerDecode.tla" "5"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"

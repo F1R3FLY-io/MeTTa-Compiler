@@ -228,6 +228,7 @@ run_rocq "formal/rocq/gc/E1SatbStwDriverProgress.v"
 run_rocq "formal/rocq/gc/DefaultStoreSelection.v"
 run_rocq "formal/rocq/gc/JitValueCreationStoreSelection.v"
 run_rocq "formal/rocq/gc/JitLongBoxStoreSelection.v"
+run_rocq "formal/rocq/gc/JitIsFunctionPointerDecode.v"
 run_rocq "formal/rocq/gc/ArenaAddrDecodeErasure.v"
 run_rocq "formal/rocq/gc/CfgGuardErasure.v"
 run_rocq "formal/rocq/gc/InnerPtrDecodeErasure.v"
@@ -316,6 +317,16 @@ run_tlc "jit_long_box_index_slab_allocator_bug" "JitLongBoxStoreSelection.tla" "
   fail "The invariant of OverflowAllocatorMatchesCompiledStore is equal to FALSE"
 run_tlc "jit_long_box_index_fallback_compiled_bug" "JitLongBoxStoreSelection.tla" "MC_JitLongBoxStoreSelection_index_fallback_compiled_bug.cfg" \
   fail "The invariant of NoSlabFallbackCompiledInIndex is equal to FALSE"
+run_tlc "jit_is_function_index_ptr_correct" "JitIsFunctionPointerDecode.tla" "MC_JitIsFunctionPointerDecode_index_ptr_correct.cfg" \
+  pass ""
+run_tlc "jit_is_function_index_nonptr_correct" "JitIsFunctionPointerDecode.tla" "MC_JitIsFunctionPointerDecode_index_nonptr_correct.cfg" \
+  pass ""
+run_tlc "jit_is_function_legacy_slab_ptr_correct" "JitIsFunctionPointerDecode.tla" "MC_JitIsFunctionPointerDecode_legacy_slab_ptr_correct.cfg" \
+  pass ""
+run_tlc "jit_is_function_index_slab_deref_bug" "JitIsFunctionPointerDecode.tla" "MC_JitIsFunctionPointerDecode_index_slab_deref_bug.cfg" \
+  fail "The invariant of PointerInspectionMatchesStore is equal to FALSE"
+run_tlc "jit_is_function_nonptr_deref_bug" "JitIsFunctionPointerDecode.tla" "MC_JitIsFunctionPointerDecode_nonptr_deref_bug.cfg" \
+  fail "The invariant of NonPointerNoInspect is equal to FALSE"
 run_tlc "scheduler_direct_fanout_wavefront_independent" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_independent.cfg" \
   pass ""
 run_tlc "scheduler_direct_fanout_wavefront_dependent_missing_gate" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_dependent_missing_gate.cfg" \

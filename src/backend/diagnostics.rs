@@ -882,10 +882,11 @@ pub fn print_tier_stats() {
 /// Print thread pool statistics to stderr.
 ///
 /// Shows worker counts, queue depths, and throughput metrics for all
-/// thread pool subsystems (WorkPool, GcPool).
+/// thread pool subsystems (WorkPool and the legacy slab GcPool when compiled).
 /// Requires the `track-stats` feature.
 #[cfg(feature = "track-stats")]
 pub fn print_pool_stats() {
+    #[cfg(not(feature = "index-gc"))]
     use crate::backend::models::gc_pool::global_gc_pool;
     use crate::backend::models::work_pool::{
         global_compile_pool, global_eval_pool, work_eval_count,
@@ -936,20 +937,23 @@ pub fn print_pool_stats() {
     eprintln!();
 
     // ── GC Pool ──
-    let gp = global_gc_pool();
-    let gp_min = gp.min_workers();
-    let gp_max = gp.max_workers();
-    let gp_active = gp.active_workers();
-    let gp_parked = gp_max.saturating_sub(gp_active);
-    let gp_releases = gp.session_release_count();
+    #[cfg(not(feature = "index-gc"))]
+    {
+        let gp = global_gc_pool();
+        let gp_min = gp.min_workers();
+        let gp_max = gp.max_workers();
+        let gp_active = gp.active_workers();
+        let gp_parked = gp_max.saturating_sub(gp_active);
+        let gp_releases = gp.session_release_count();
 
-    eprintln!("── GC Pool (Mark-Sweep + Session Release) ─────────────────────");
-    eprintln!("  min_workers:        {:>12}", gp_min);
-    eprintln!("  max_workers:        {:>12}", gp_max);
-    eprintln!("  active_workers:     {:>12}", gp_active);
-    eprintln!("  parked_workers:     {:>12}", gp_parked);
-    eprintln!("  session_releases:   {:>12}", gp_releases);
-    eprintln!();
+        eprintln!("── GC Pool (Mark-Sweep + Session Release) ─────────────────────");
+        eprintln!("  min_workers:        {:>12}", gp_min);
+        eprintln!("  max_workers:        {:>12}", gp_max);
+        eprintln!("  active_workers:     {:>12}", gp_active);
+        eprintln!("  parked_workers:     {:>12}", gp_parked);
+        eprintln!("  session_releases:   {:>12}", gp_releases);
+        eprintln!();
+    }
 
     // ── Cron Pool ──
     use crate::backend::models::gc_cron::cron_work_pool;

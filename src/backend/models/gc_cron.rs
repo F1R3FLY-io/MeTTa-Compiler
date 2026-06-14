@@ -17,10 +17,13 @@ use std::sync::{Arc, OnceLock};
 
 use std::time::{Duration, Instant};
 
+#[cfg(not(feature = "index-gc"))]
 use super::adaptive_pool::{Ema, HillClimber, ScaleAction};
+#[cfg(not(feature = "index-gc"))]
 use super::gc_allocator::gc_values_freed_total;
 #[cfg(not(feature = "index-gc"))]
 use super::gc_allocator::{maybe_async_gc, request_gc};
+#[cfg(not(feature = "index-gc"))]
 use super::gc_pool::global_gc_pool;
 use super::task_scheduler::TaskSchedulerSingleton;
 use super::work_pool::WorkPool;
@@ -84,12 +87,15 @@ pub fn cron_work_pool() -> Arc<WorkPool> {
 // --- GC Pool Hill Climbing Constants ---
 
 /// EMA smoothing factor for GC alloc/free rate ratio (half-life ~3.1 samples = ~310ms).
+#[cfg(not(feature = "index-gc"))]
 const GC_EMA_ALPHA: f64 = 0.2;
 
 /// Cooldown period for GC hill climber (7 ticks = ~700ms settling time).
+#[cfg(not(feature = "index-gc"))]
 const GC_COOLDOWN_PERIOD: u32 = 7;
 
 /// Minimum improvement required for GC hill climber to accept a perturbation.
+#[cfg(not(feature = "index-gc"))]
 const GC_IMPROVEMENT_THRESHOLD: f64 = 0.05;
 
 // ============================================================================
@@ -107,12 +113,15 @@ struct MonitorState {
     /// must not be escalated (would cause permanent throttling).
     prev_reachable_counter: u64,
     /// Previous GC freed count for delta computation.
+    #[cfg(not(feature = "index-gc"))]
     prev_freed_count: u64,
     /// EMA of the alloc/free rate ratio.
     /// Ratio > 1.0 means allocation outpaces GC → need more workers.
     /// Ratio < 1.0 means GC is keeping up → may reduce workers.
+    #[cfg(not(feature = "index-gc"))]
     ema_alloc_free_ratio: Ema,
     /// Hill climber for GC pool adaptive sizing.
+    #[cfg(not(feature = "index-gc"))]
     gc_climber: HillClimber,
 }
 
@@ -121,31 +130,41 @@ impl MonitorState {
     ///
     /// Production code reads from `global_gc_pool()` and passes values.
     /// Tests pass hardcoded values without initializing the global pool.
-    fn with_params(min_workers: usize, max_workers: usize, active_workers: usize) -> Self {
+    fn with_params(_min_workers: usize, _max_workers: usize, _active_workers: usize) -> Self {
         Self {
             prev_alloc_count: 0,
             prev_poll_time: Instant::now(),
             prev_reachable_counter: 0,
+            #[cfg(not(feature = "index-gc"))]
             prev_freed_count: 0,
+            #[cfg(not(feature = "index-gc"))]
             ema_alloc_free_ratio: Ema::new(GC_EMA_ALPHA),
+            #[cfg(not(feature = "index-gc"))]
             gc_climber: HillClimber::new(
                 GC_COOLDOWN_PERIOD,
                 GC_IMPROVEMENT_THRESHOLD,
-                min_workers,
-                max_workers,
-                active_workers,
+                _min_workers,
+                _max_workers,
+                _active_workers,
             ),
         }
     }
 
     /// Create a new MonitorState from the global GC pool.
     fn new() -> Self {
-        let pool = global_gc_pool();
-        Self::with_params(
-            pool.min_workers(),
-            pool.max_workers(),
-            pool.active_workers(),
-        )
+        #[cfg(not(feature = "index-gc"))]
+        {
+            let pool = global_gc_pool();
+            Self::with_params(
+                pool.min_workers(),
+                pool.max_workers(),
+                pool.active_workers(),
+            )
+        }
+        #[cfg(feature = "index-gc")]
+        {
+            Self::with_params(0, 0, 0)
+        }
     }
 }
 
@@ -209,6 +228,7 @@ pub fn spawn_gc_cron(
     let alloc_clone = Arc::clone(&alloc_count);
     let threshold_clone = Arc::clone(&gc_threshold);
     let mut monitor = MonitorState::new();
+    #[cfg(not(feature = "index-gc"))]
     let gc_pool = global_gc_pool();
 
     // Initial delay matches the interval so the first poll has a meaningful
@@ -218,12 +238,20 @@ pub fn spawn_gc_cron(
         MONITOR_INTERVAL_MS,
         "memory-monitor",
         move || {
+            #[cfg(not(feature = "index-gc"))]
             execute_memory_monitor(
                 &committed_clone,
                 &alloc_clone,
                 &threshold_clone,
                 &mut monitor,
                 gc_pool,
+            );
+            #[cfg(feature = "index-gc")]
+            execute_memory_monitor(
+                &committed_clone,
+                &alloc_clone,
+                &threshold_clone,
+                &mut monitor,
             );
             true // always reschedule
         },
@@ -262,7 +290,7 @@ fn execute_memory_monitor(
     alloc_count: &AtomicU64,
     gc_threshold: &AtomicUsize,
     monitor: &mut MonitorState,
-    gc_pool: &super::gc_pool::AdaptiveGcPool,
+    #[cfg(not(feature = "index-gc"))] gc_pool: &super::gc_pool::AdaptiveGcPool,
 ) -> bool {
     let now = Instant::now();
     let current_alloc_count = alloc_count.load(AtomicOrdering::Relaxed);
@@ -334,53 +362,61 @@ fn execute_memory_monitor(
     // races on the global GC_REQUESTED flag).
     let result = should_gc;
 
-    // --- GC Pool Hill Climbing ---
-    // Compute alloc rate and free rate, then feed the alloc/free ratio
-    // (clamped to [0, 10]) into the EMA → HillClimber for adaptive sizing.
-    if elapsed.as_nanos() > 0 {
-        let elapsed_secs = elapsed.as_secs_f64();
-        let alloc_delta = current_alloc_count.saturating_sub(monitor.prev_alloc_count);
-        let alloc_rate = alloc_delta as f64 / elapsed_secs;
+    // F4/GcPoolErasure: adaptive GC-pool hill climbing is a legacy slab effect.
+    // The monitor decision above remains common; pool scaling is slab-only.
+    #[cfg(not(feature = "index-gc"))]
+    {
+        // --- GC Pool Hill Climbing ---
+        // Compute alloc rate and free rate, then feed the alloc/free ratio
+        // (clamped to [0, 10]) into the EMA → HillClimber for adaptive sizing.
+        if elapsed.as_nanos() > 0 {
+            let elapsed_secs = elapsed.as_secs_f64();
+            let alloc_delta = current_alloc_count.saturating_sub(monitor.prev_alloc_count);
+            let alloc_rate = alloc_delta as f64 / elapsed_secs;
 
-        let current_freed = gc_values_freed_total();
-        let freed_delta = current_freed.saturating_sub(monitor.prev_freed_count);
-        let free_rate = freed_delta as f64 / elapsed_secs;
-        monitor.prev_freed_count = current_freed;
+            let current_freed = gc_values_freed_total();
+            let freed_delta = current_freed.saturating_sub(monitor.prev_freed_count);
+            let free_rate = freed_delta as f64 / elapsed_secs;
+            monitor.prev_freed_count = current_freed;
 
-        // Compute ratio (alloc / free). Guard against division by zero:
-        // if free_rate == 0 but alloc_rate > 0, ratio = 10 (max pressure).
-        // if both are 0, ratio = 1.0 (neutral — no scaling action needed).
-        let ratio = if free_rate > 0.0 {
-            (alloc_rate / free_rate).min(10.0)
-        } else if alloc_rate > 0.0 {
-            10.0 // GC not freeing but allocation happening → max pressure
-        } else {
-            1.0 // Idle — neutral
-        };
+            // Compute ratio (alloc / free). Guard against division by zero:
+            // if free_rate == 0 but alloc_rate > 0, ratio = 10 (max pressure).
+            // if both are 0, ratio = 1.0 (neutral — no scaling action needed).
+            let ratio = if free_rate > 0.0 {
+                (alloc_rate / free_rate).min(10.0)
+            } else if alloc_rate > 0.0 {
+                10.0 // GC not freeing but allocation happening → max pressure
+            } else {
+                1.0 // Idle — neutral
+            };
 
-        // Feed ratio as objective to hill climber (higher ratio = worse,
-        // hill climber minimizes objective).
-        let smoothed = monitor.ema_alloc_free_ratio.update(ratio);
-        let decision = monitor.gc_climber.step(smoothed);
+            // Feed ratio as objective to hill climber (higher ratio = worse,
+            // hill climber minimizes objective).
+            let smoothed = monitor.ema_alloc_free_ratio.update(ratio);
+            let decision = monitor.gc_climber.step(smoothed);
 
-        match decision.action {
-            ScaleAction::Unpark => {
-                gc_pool.unpark_n(decision.count);
+            match decision.action {
+                ScaleAction::Unpark => {
+                    gc_pool.unpark_n(decision.count);
+                }
+                ScaleAction::Park => {
+                    gc_pool.park_n(decision.count);
+                }
+                ScaleAction::Hold => {}
             }
-            ScaleAction::Park => {
-                gc_pool.park_n(decision.count);
-            }
-            ScaleAction::Hold => {}
         }
     }
 
     monitor.prev_alloc_count = current_alloc_count;
     monitor.prev_poll_time = now;
 
-    // Check for and respawn dead GC workers
-    let respawned = gc_pool.check_and_respawn_workers();
-    if respawned > 0 {
-        tracing::warn!(respawned, "GC memory monitor: respawned dead GC workers");
+    // Check for and respawn dead GC workers in the legacy slab pool.
+    #[cfg(not(feature = "index-gc"))]
+    {
+        let respawned = gc_pool.check_and_respawn_workers();
+        if respawned > 0 {
+            tracing::warn!(respawned, "GC memory monitor: respawned dead GC workers");
+        }
     }
 
     result
@@ -511,11 +547,32 @@ fn execute_counter_sync() {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(feature = "index-gc"))]
     use super::super::gc_pool::AdaptiveGcPool;
     use super::*;
     use std::sync::atomic::Ordering;
     use std::thread;
     use std::time::Duration;
+
+    fn execute_memory_monitor_for_test(
+        committed_bytes: &AtomicUsize,
+        alloc_count: &AtomicU64,
+        gc_threshold: &AtomicUsize,
+        monitor: &mut MonitorState,
+    ) -> bool {
+        #[cfg(not(feature = "index-gc"))]
+        {
+            let pool = AdaptiveGcPool::with_workers(1, 2);
+            let result =
+                execute_memory_monitor(committed_bytes, alloc_count, gc_threshold, monitor, &pool);
+            pool.shutdown();
+            result
+        }
+        #[cfg(feature = "index-gc")]
+        {
+            execute_memory_monitor(committed_bytes, alloc_count, gc_threshold, monitor)
+        }
+    }
 
     // ========================================================================
     // GC-specific integration tests
@@ -603,10 +660,9 @@ mod tests {
         let committed = AtomicUsize::new(0);
         let gc_threshold = AtomicUsize::new(1024 * 1024 * 1024); // 1 GB — won't trigger
         let mut monitor = MonitorState::with_params(1, 2, 1);
-        let pool = AdaptiveGcPool::with_workers(1, 2);
 
         // First poll: set baseline
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+        execute_memory_monitor_for_test(&committed, &alloc_count, &gc_threshold, &mut monitor);
 
         // Simulate time passing and allocations
         monitor.prev_poll_time = Instant::now() - Duration::from_millis(100);
@@ -614,10 +670,9 @@ mod tests {
 
         // Second poll: rate = 50k / 0.1s = 500k/s > threshold
         let triggered =
-            execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+            execute_memory_monitor_for_test(&committed, &alloc_count, &gc_threshold, &mut monitor);
 
         assert!(triggered, "should request GC at 500k allocs/s");
-        pool.shutdown();
     }
 
     /// Unit test: low rate does NOT trigger GC.
@@ -627,10 +682,9 @@ mod tests {
         let committed = AtomicUsize::new(0);
         let gc_threshold = AtomicUsize::new(1024 * 1024 * 1024); // 1 GB — won't trigger
         let mut monitor = MonitorState::with_params(1, 2, 1);
-        let pool = AdaptiveGcPool::with_workers(1, 2);
 
         // First poll: set baseline
-        execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+        execute_memory_monitor_for_test(&committed, &alloc_count, &gc_threshold, &mut monitor);
 
         // Simulate time passing and low allocations
         monitor.prev_poll_time = Instant::now() - Duration::from_millis(100);
@@ -638,10 +692,9 @@ mod tests {
 
         // Second poll — assert on return value instead of global flag (race-free)
         let triggered =
-            execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+            execute_memory_monitor_for_test(&committed, &alloc_count, &gc_threshold, &mut monitor);
 
         assert!(!triggered, "should NOT request GC at 1000 allocs/s");
-        pool.shutdown();
     }
 
     /// Unit test: committed bytes >= threshold triggers GC.
@@ -651,17 +704,15 @@ mod tests {
         let committed = AtomicUsize::new(8 * 1024 * 1024); // 8 MB committed
         let gc_threshold = AtomicUsize::new(4 * 1024 * 1024); // 4 MB threshold
         let mut monitor = MonitorState::with_params(1, 2, 1);
-        let pool = AdaptiveGcPool::with_workers(1, 2);
 
         // First poll: committed (8 MB) >= gc_threshold (4 MB) should trigger
         let triggered =
-            execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+            execute_memory_monitor_for_test(&committed, &alloc_count, &gc_threshold, &mut monitor);
 
         assert!(
             triggered,
             "should request GC when committed bytes exceed threshold"
         );
-        pool.shutdown();
     }
 
     /// Unit test: committed bytes < threshold does NOT trigger GC.
@@ -671,17 +722,15 @@ mod tests {
         let committed = AtomicUsize::new(2 * 1024 * 1024); // 2 MB committed
         let gc_threshold = AtomicUsize::new(4 * 1024 * 1024); // 4 MB threshold
         let mut monitor = MonitorState::with_params(1, 2, 1);
-        let pool = AdaptiveGcPool::with_workers(1, 2);
 
         // committed (2 MB) < gc_threshold (4 MB) should NOT trigger
         let triggered =
-            execute_memory_monitor(&committed, &alloc_count, &gc_threshold, &mut monitor, &pool);
+            execute_memory_monitor_for_test(&committed, &alloc_count, &gc_threshold, &mut monitor);
 
         assert!(
             !triggered,
             "should NOT request GC when committed bytes below threshold"
         );
-        pool.shutdown();
     }
 
     /// Test that the cron pool singleton initializes with expected parameters.

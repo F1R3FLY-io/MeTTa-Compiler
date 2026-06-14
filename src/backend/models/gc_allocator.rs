@@ -50,7 +50,9 @@ use std::sync::{Arc, OnceLock};
 #[cfg(not(feature = "index-gc"))]
 use std::sync::Weak;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(feature = "index-gc"))]
+use std::time::Instant;
 
 use parking_lot::{Condvar, Mutex, RwLock};
 use portable_atomic::AtomicU128;
@@ -130,6 +132,7 @@ const SLOT_ALIGN: usize = 16;
 const MIN_GC_THRESHOLD: usize = 4 * 1024 * 1024;
 
 /// GC growth factor — next threshold = live_bytes * GROWTH_FACTOR.
+#[cfg(not(feature = "index-gc"))]
 const GC_GROWTH_FACTOR: f64 = 2.0;
 
 /// Null sentinel for Treiber stack (no free slots).
@@ -2729,20 +2732,31 @@ fn enqueue_session_release(context_id: u32) {
     if context_id == 0 {
         return; // Never release persistent values
     }
-    // Inc 4 (store-centric GC): under index mode the evaluator allocates into the
-    // index store σ, not the slab — the slab session holds no eval values, and the
-    // slab collector MUST NOT trace index-mode roots (`inner_ptr()` returns
-    // INDEX_KEY_TAG-tagged keys, not slab pointers — tracing them as pointers
-    // faults). The index store's own collector is Inc 6; until then GC is inert in
-    // index mode (the heap grows monotonically — fine for validation).
-    if crate::backend::models::metta_value::gc_mode_is_index() {
+
+    // F4/GcPoolErasure: the adaptive GC pool is the legacy slab executor. Under
+    // index-gc, session release is handled by the CESK/index regime and must not
+    // initialize or submit work to the slab pool.
+    #[cfg(feature = "index-gc")]
+    {
         return;
     }
 
-    let pool = super::gc_pool::global_gc_pool();
-    pool.submit_low(super::gc_pool::GcWorkItem::SessionRelease {
-        context_ids: vec![context_id],
-    });
+    #[cfg(not(feature = "index-gc"))]
+    {
+        // Inc 4 (store-centric GC): under index mode the evaluator allocates into the
+        // index store σ, not the slab — the slab session holds no eval values, and the
+        // slab collector MUST NOT trace index-mode roots (`inner_ptr()` returns
+        // INDEX_KEY_TAG-tagged keys, not slab pointers — tracing them as pointers
+        // faults). The compile-time wall above keeps this path slab-only.
+        if crate::backend::models::metta_value::gc_mode_is_index() {
+            return;
+        }
+
+        let pool = super::gc_pool::global_gc_pool();
+        pool.submit_low(super::gc_pool::GcWorkItem::SessionRelease {
+            context_ids: vec![context_id],
+        });
+    }
 }
 
 /// Release all values allocated during a session, except those reachable from roots.
@@ -4909,6 +4923,7 @@ pub fn gc_cycle_in_flight() -> bool {
 /// same slot again. The caller must re-check `gc_cycle_in_flight()` after
 /// acquiring `GcInProgressGuard`, because another thread may start a cycle
 /// between this wait and the guard acquisition.
+#[cfg(not(feature = "index-gc"))]
 pub(super) fn wait_for_gc_cycle_idle(timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
 
@@ -5005,7 +5020,9 @@ static GC_REACHABLE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Mutex + Condvar pair for Tier 2 backpressure blocking.
 /// Replaces 1ms polling loop with instant wakeup when GC cycle completes.
 /// Notified from `maybe_process_gc_response()` after clearing `GC_CYCLE_IN_FLIGHT`.
+#[cfg(not(feature = "index-gc"))]
 static GC_CYCLE_MUTEX: Mutex<()> = Mutex::new(());
+#[cfg(not(feature = "index-gc"))]
 static GC_CYCLE_CONDVAR: Condvar = Condvar::new();
 
 /// Maximum backpressure level. At this level, Tier 2 blocks until GC completes.
@@ -5383,73 +5400,84 @@ pub fn maybe_process_gc_response() -> bool {
     // Lazily spawn the GC cron manager (idempotent via OnceLock)
     let _ = global_gc_cron();
 
-    // Acquire GC_IN_PROGRESS for mutual exclusion with
-    // release_session_with_surviving() on GC pool worker threads.
-    // Both paths free/poison value slots — concurrent execution is a
-    // TOCTOU race on slot epoch/content (FlyingRaven ASAN finding).
-    //
-    // try_enter() is non-blocking: if session release holds the guard,
-    // we skip — the response stays on the channel for the next call.
-    // Must acquire BEFORE try_recv_response() so we don't consume a
-    // response we can't safely process.
-    let _gc_guard = match GcInProgressGuard::try_enter() {
-        Some(guard) => guard,
-        None => return false,
-    };
+    // F4/GcPoolErasure: the response channel belongs to the legacy slab GC pool.
+    // The index collector does not receive responses from that pool, but keeping
+    // cron initialization above preserves counter-sync scheduling.
+    #[cfg(feature = "index-gc")]
+    {
+        return false;
+    }
 
-    let pool = super::gc_pool::global_gc_pool();
-    let alloc = global_allocator();
+    #[cfg(not(feature = "index-gc"))]
+    {
+        // Acquire GC_IN_PROGRESS for mutual exclusion with
+        // release_session_with_surviving() on GC pool worker threads.
+        // Both paths free/poison value slots — concurrent execution is a
+        // TOCTOU race on slot epoch/content (FlyingRaven ASAN finding).
+        //
+        // try_enter() is non-blocking: if session release holds the guard,
+        // we skip — the response stays on the channel for the next call.
+        // Must acquire BEFORE try_recv_response() so we don't consume a
+        // response we can't safely process.
+        let _gc_guard = match GcInProgressGuard::try_enter() {
+            Some(guard) => guard,
+            None => return false,
+        };
 
-    match pool.try_recv_response() {
-        Some(response) => {
-            alloc.process_gc_response(&response);
-            // Page release is handled inside process_gc_response() (Phase 5).
+        let pool = super::gc_pool::global_gc_pool();
+        let alloc = global_allocator();
 
-            // Adaptive threshold: floor at committed bytes to prevent perpetual GC cycling.
-            // Without the committed floor, slab fragmentation (pages with live values can't
-            // be decommitted) causes committed >> live_bytes × GROWTH_FACTOR, making
-            // committed/threshold >> 1.0 → bp_level=3 permanently → perpetual GC requests.
-            // Flooring at committed ensures ratio ≤ 1.0 post-GC; GC only re-triggers
-            // when NEW allocations push committed above the threshold.
-            let live_based = (response.live_bytes as f64 * GC_GROWTH_FACTOR) as usize;
-            let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
-            let new_threshold = live_based.max(committed).max(MIN_GC_THRESHOLD);
-            alloc.set_gc_threshold(new_threshold);
+        match pool.try_recv_response() {
+            Some(response) => {
+                alloc.process_gc_response(&response);
+                // Page release is handled inside process_gc_response() (Phase 5).
 
-            // Clear in-flight flag — aligns with TLA+ `hasGcResponse' = FALSE`
-            // in ProcessGcResponse. A new GC cycle can now be triggered.
-            GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
+                // Adaptive threshold: floor at committed bytes to prevent perpetual GC cycling.
+                // Without the committed floor, slab fragmentation (pages with live values can't
+                // be decommitted) causes committed >> live_bytes × GROWTH_FACTOR, making
+                // committed/threshold >> 1.0 → bp_level=3 permanently → perpetual GC requests.
+                // Flooring at committed ensures ratio ≤ 1.0 post-GC; GC only re-triggers
+                // when NEW allocations push committed above the threshold.
+                let live_based = (response.live_bytes as f64 * GC_GROWTH_FACTOR) as usize;
+                let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
+                let new_threshold = live_based.max(committed).max(MIN_GC_THRESHOLD);
+                alloc.set_gc_threshold(new_threshold);
 
-            // Wake any thread blocked in apply_backpressure_tier2().
-            // Must notify AFTER clearing GC_CYCLE_IN_FLIGHT so the woken thread
-            // sees the updated flag when it re-checks the while condition.
-            GC_CYCLE_CONDVAR.notify_all();
+                // Clear in-flight flag — aligns with TLA+ `hasGcResponse' = FALSE`
+                // in ProcessGcResponse. A new GC cycle can now be triggered.
+                GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
 
-            // Immediate backpressure feedback — don't wait for next cron poll (100ms).
-            // Re-evaluate backpressure level based on current committed/threshold ratio.
-            // Models TLA+ ProcessGcResponse: backpressureLevel' = max(bp - 1, 0).
-            let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
-            let threshold = alloc.gc_threshold_atomic().load(Ordering::Relaxed);
-            let new_level = if threshold > 0 {
-                if committed >= threshold * 2 {
-                    3
-                } else if committed >= threshold * 3 / 2 {
-                    2
-                } else if committed >= threshold {
-                    1
+                // Wake any thread blocked in apply_backpressure_tier2().
+                // Must notify AFTER clearing GC_CYCLE_IN_FLIGHT so the woken thread
+                // sees the updated flag when it re-checks the while condition.
+                GC_CYCLE_CONDVAR.notify_all();
+
+                // Immediate backpressure feedback — don't wait for next cron poll (100ms).
+                // Re-evaluate backpressure level based on current committed/threshold ratio.
+                // Models TLA+ ProcessGcResponse: backpressureLevel' = max(bp - 1, 0).
+                let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
+                let threshold = alloc.gc_threshold_atomic().load(Ordering::Relaxed);
+                let new_level = if threshold > 0 {
+                    if committed >= threshold * 2 {
+                        3
+                    } else if committed >= threshold * 3 / 2 {
+                        2
+                    } else if committed >= threshold {
+                        1
+                    } else {
+                        0
+                    }
                 } else {
                     0
-                }
-            } else {
-                0
-            };
-            set_backpressure_level(new_level);
+                };
+                set_backpressure_level(new_level);
 
-            return true;
+                return true;
+            }
+            None => {}
         }
-        None => {}
+        false
     }
-    false
 }
 
 // ============================================================================

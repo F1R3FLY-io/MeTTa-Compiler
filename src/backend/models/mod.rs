@@ -2,6 +2,7 @@ pub mod adaptive_pool;
 pub mod bindings;
 pub mod gc_allocator;
 pub mod gc_cron;
+#[cfg(not(feature = "index-gc"))]
 pub mod gc_pool;
 #[cfg(not(feature = "index-gc"))]
 pub mod gc_thread;

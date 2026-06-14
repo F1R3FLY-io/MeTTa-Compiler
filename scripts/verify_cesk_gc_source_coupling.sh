@@ -859,6 +859,75 @@ line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/CronProduce
 line_no "formal/rocq/gc/GcPoolErasure.v" "Theorem default_index_erases_legacy_pool_effects" >/dev/null
 line_no "formal/rocq/gc/GcPoolErasure.v" "Theorem emitted_pool_effect_requires_slab" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/GcPoolErasure.v"' >/dev/null
+assert_immediate_cfg_before \
+  "src/backend/models/mod.rs" \
+  "pub mod gc_pool;" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_immediate_cfg_before \
+  "src/backend/models/work_pool.rs" \
+  "let _ = super::gc_pool::global_gc_pool();" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_immediate_cfg_before \
+  "src/backend/models/gc_cron.rs" \
+  "use super::gc_pool::global_gc_pool;" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_immediate_cfg_before_after \
+  "src/backend/models/gc_cron.rs" \
+  "fn new() -> Self" \
+  "let pool = global_gc_pool();" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_immediate_cfg_before \
+  "src/backend/models/gc_cron.rs" \
+  "let gc_pool = global_gc_pool();" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+line_no "src/backend/models/gc_cron.rs" "#[cfg(not(feature = \"index-gc\"))] gc_pool: &super::gc_pool::AdaptiveGcPool," >/dev/null
+assert_after_before \
+  "src/backend/models/gc_cron.rs" \
+  "F4/GcPoolErasure: adaptive GC-pool hill climbing is a legacy slab effect." \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "gc_pool.unpark_n(decision.count);"
+assert_immediate_cfg_before \
+  "src/backend/models/gc_cron.rs" \
+  "let respawned = gc_pool.check_and_respawn_workers();" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_immediate_cfg_before_after \
+  "src/backend/models/gc_cron.rs" \
+  "mod tests" \
+  "use super::super::gc_pool::AdaptiveGcPool;" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_immediate_cfg_before_after \
+  "src/backend/models/gc_cron.rs" \
+  "fn execute_memory_monitor_for_test" \
+  "let pool = AdaptiveGcPool::with_workers(1, 2);" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_after_before \
+  "src/backend/models/gc_allocator.rs" \
+  "fn enqueue_session_release" \
+  "#[cfg(feature = \"index-gc\")]" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_after_before \
+  "src/backend/models/gc_allocator.rs" \
+  "fn enqueue_session_release" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "let pool = super::gc_pool::global_gc_pool();"
+assert_after_before \
+  "src/backend/models/gc_allocator.rs" \
+  "pub fn maybe_process_gc_response" \
+  "#[cfg(feature = \"index-gc\")]" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_after_before \
+  "src/backend/models/gc_allocator.rs" \
+  "pub fn maybe_process_gc_response" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "let pool = super::gc_pool::global_gc_pool();"
+assert_immediate_cfg_before \
+  "src/backend/diagnostics.rs" \
+  "use crate::backend::models::gc_pool::global_gc_pool;" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_immediate_cfg_before \
+  "src/backend/diagnostics.rs" \
+  "let gp = global_gc_pool();" \
+  "#[cfg(not(feature = \"index-gc\"))]"
 assert_zero "src/backend/models/gc_allocator.rs" "METTATRON_INDEX_GC_PARALLEL"
 assert_zero "src/backend/models/gc_allocator.rs" "pub(crate) fn rendezvous_enabled"
 assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_PARALLEL"

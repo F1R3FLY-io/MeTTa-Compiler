@@ -1,6 +1,6 @@
 //! MeTTaTron Configuration Module
 //!
-//! Provides configuration options for tuning the async runtime and parallel evaluation behavior.
+//! Provides configuration options for async integration and parallel evaluation behavior.
 
 use std::sync::OnceLock;
 use std::thread;
@@ -14,46 +14,52 @@ static EVAL_CONFIG: OnceLock<EvalConfig> = OnceLock::new();
 ///
 /// # Threading Model
 ///
-/// MeTTaTron uses Tokio's async runtime with two thread pools:
+/// MeTTaTron coordinates two execution resources:
 ///
-/// 1. **Async Executor Threads** (managed by Tokio)
-///    - Handles async coordination, I/O operations, and scheduling
-///    - Default: Number of CPU cores
-///    - Used by: Rholang operations, async control flow
+/// 1. **Rholang Async Runtime**
+///    - Handles async coordination and I/O.
+///    - Owned by the embedding Rholang runtime.
+///    - Tuned with `apply_to_runtime_builder()` when the caller builds Tokio.
 ///
-/// 2. **Blocking Thread Pool** (managed by Tokio)
-///    - Handles CPU-intensive MeTTa evaluation work
-///    - Default: 512 threads (dynamically scaled)
-///    - Used by: MeTTa expression evaluation via `spawn_blocking`
-///    - Configurable via `max_blocking_threads`
+/// 2. **Unified WorkPool**
+///    - Handles CPU-intensive MeTTa evaluation work.
+///    - Uses a priority queue and adaptive worker scaling.
+///    - Retains eval tasks submitted during startup and drains them once workers
+///      are started on first global-pool access.
 ///
 /// # Resource Coordination
 ///
-/// Both thread pools are managed by the **same Tokio runtime instance**:
+/// Rholang calls into `run_state_async()`, which batches independent evals and
+/// submits them to the global eval WorkPool. The async caller waits for the
+/// scatter-gather result while WorkPool workers run `eval_trampoline()`.
 ///
 /// ```text
-/// Rholang (Tokio Runtime)
+/// Rholang async runtime
 ///   │
-///   ├─► Async Executor Threads
-///   │   └─► I/O operations, async coordination
-///   │
-///   └─► Blocking Thread Pool
-///       └─► MeTTa evaluation (CPU-intensive)
+///   └─► run_state_async()
+///       └─► global eval WorkPool
+///           ├─► priority queue
+///           ├─► adaptive eval workers
+///           └─► eval_trampoline()
 /// ```
 ///
 /// When Rholang calls MeTTa:
-/// 1. Rholang runs on async executor threads
-/// 2. Calls `run_state_async()` via `block_in_place()` + `block_on()`
-/// 3. `run_state_async()` spawns parallel evaluations using `spawn_blocking()`
-/// 4. Each evaluation runs on the blocking thread pool
-/// 5. Results are coordinated back through the async runtime
+/// 1. Rholang remains responsible for async coordination.
+/// 2. `run_state_async()` batches consecutive independent eval expressions.
+/// 3. Each batch item is submitted to the WorkPool with eval priority.
+/// 4. WorkPool workers execute CPU-bound evaluation and publish results.
+/// 5. Results are gathered in original program order.
 ///
 /// # Why This Design?
 ///
-/// - **Prevents Executor Starvation**: CPU-intensive MeTTa evaluation doesn't block I/O
-/// - **Single Runtime**: All threads managed by Rholang's Tokio runtime
-/// - **Work Stealing**: Tokio's scheduler balances load across cores
-/// - **Scalability**: Blocking pool scales based on workload
+/// - **Prevents Executor Starvation**: CPU-intensive MeTTa evaluation does not
+///   block async I/O threads.
+/// - **Priority Scheduling**: Eval, compile, and maintenance work have explicit
+///   priorities instead of relying on a generic blocking queue.
+/// - **Startup Safety**: The WorkPool startup-drain proof covers tasks submitted
+///   before worker threads are ready.
+/// - **Scalability**: Worker count adapts to throughput, queue depth, and memory
+///   pressure.
 ///
 /// # Example
 ///
@@ -68,11 +74,15 @@ static EVAL_CONFIG: OnceLock<EvalConfig> = OnceLock::new();
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct EvalConfig {
-    /// Maximum number of threads in Tokio's blocking thread pool
+    /// Compatibility cap for Tokio's blocking thread pool when this crate
+    /// constructs a runtime builder.
     ///
-    /// This controls how many MeTTa expressions can be evaluated in parallel.
+    /// MeTTa eval parallelism is controlled by the global WorkPool thread
+    /// configuration. This field is retained for callers that still use
+    /// `apply_to_runtime_builder()` to tune non-eval blocking callbacks owned by
+    /// their Tokio runtime.
     ///
-    /// **Default**: 512 (Tokio's default)
+    /// **Default**: 512 (Tokio's default blocking cap)
     ///
     /// **Tuning Guidelines**:
     /// - For CPU-bound workloads: Set to `num_cpus * 2` to `num_cpus * 4`
@@ -80,7 +90,7 @@ pub struct EvalConfig {
     /// - For memory-constrained systems: Reduce to `num_cpus * 1` to `num_cpus * 2`
     /// - For high-throughput systems: Increase up to 1024 or higher
     ///
-    /// **Note**: Tokio dynamically scales the pool, so this is a maximum, not a fixed size.
+    /// **Note**: This is a Tokio runtime cap, not the WorkPool worker count.
     pub max_blocking_threads: usize,
 
     /// Hint for batch size when parallelizing consecutive eval expressions
@@ -102,7 +112,7 @@ pub struct EvalConfig {
 impl Default for EvalConfig {
     fn default() -> Self {
         EvalConfig {
-            max_blocking_threads: 512, // Tokio's default
+            max_blocking_threads: 512, // Tokio's default blocking cap
             batch_size_hint: 32,
         }
     }
@@ -111,8 +121,8 @@ impl Default for EvalConfig {
 impl EvalConfig {
     /// Create a new configuration with recommended settings for CPU-bound workloads
     ///
-    /// Sets `max_blocking_threads` to `num_cpus * 2` for optimal CPU utilization
-    /// without excessive context switching.
+    /// Sets the Tokio blocking cap to `num_cpus * 2` for callers that still use
+    /// runtime-builder integration.
     pub fn cpu_optimized() -> Self {
         let num_cpus = thread::available_parallelism()
             .map(|n| n.get())

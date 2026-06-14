@@ -385,7 +385,7 @@ impl WorkPool {
     /// Create a work pool using environment variable configuration.
     ///
     /// Allocates structures only — no OS threads are spawned. Use
-    /// `start_async_init()` (global singleton) or `spawn_all_workers()`
+    /// `start_init()` (global singleton) or `spawn_all_workers()`
     /// (tests) to actually start workers.
     pub fn new() -> Self {
         let (min_threads, max_threads) = get_work_thread_config();
@@ -1399,7 +1399,7 @@ fn work_pool_worker_loop(
 ///
 /// Handles eval tasks only. Compile tasks are routed to `GLOBAL_COMPILE_POOL`.
 /// `LazyLock::new(WorkPool::new)` calls `allocate()` only — no OS threads
-/// are spawned. Workers are started asynchronously via `start_async_init()`.
+/// are spawned. Workers are started by `start_init()` on first global access.
 static GLOBAL_EVAL_POOL: LazyLock<WorkPool> = LazyLock::new(WorkPool::new);
 
 /// Global async init guard — ensures `spawn_all_workers()` runs exactly once.
@@ -1421,8 +1421,8 @@ impl WorkPool {
 
 /// Get the global eval pool (for evaluation tasks).
 ///
-/// On first access, lazily initializes the pool (allocation only), kicks off
-/// async background worker spawning, and starts the scaling monitor.
+/// On first access, lazily initializes the pool (allocation only), starts all
+/// workers exactly once, and starts the scaling monitor.
 pub fn global_eval_pool() -> &'static WorkPool {
     let pool = &*GLOBAL_EVAL_POOL;
     pool.start_init();
@@ -1470,8 +1470,8 @@ pub fn global_compile_pool() -> &'static WorkPool {
 
 /// Eagerly initialize all global thread pools at application startup.
 ///
-/// Forces initialization of the eval pool (with async background worker
-/// spawning), compile pool, GC pool, and scaling monitor. Call from `main()`
+/// Forces initialization of the eval pool workers, compile pool, GC pool, and
+/// scaling monitor. Call from `main()`
 /// before any evaluation to start workers warming up during arg parsing.
 ///
 /// This is optional — all pools self-initialize on first access via
@@ -1479,7 +1479,7 @@ pub fn global_compile_pool() -> &'static WorkPool {
 /// so the Rholang integration entry point also triggers initialization.
 /// Calling this from `main()` just starts it sooner.
 pub fn init_thread_pools() {
-    let _ = global_eval_pool(); // Triggers LazyLock + start_async_init + scaling monitor
+    let _ = global_eval_pool(); // Triggers LazyLock + start_init + scaling monitor
     let _ = global_compile_pool(); // Triggers LazyLock for compile pool
     let _ = super::gc_pool::global_gc_pool(); // Triggers OnceLock for GC pool
 }

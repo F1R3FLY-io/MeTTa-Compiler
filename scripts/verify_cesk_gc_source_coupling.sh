@@ -309,6 +309,32 @@ assert_after_before \
   "pub fn spawn_overflow" \
   "for i in 0..spawn_count {" \
   "self.overflow_count.fetch_add(1, Ordering::Relaxed);"
+assert_after_before \
+  "src/backend/priority_scheduler.rs" \
+  "pub fn push(&self, task: PriorityTask)" \
+  "heap.push(ScoredTask { task, score });" \
+  "self.not_empty.notify_one();"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "pub fn spawn_eval<F>" \
+  "self.queue.push(task);" \
+  "#[cfg(feature = \"trace\")]"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "fn start_init(&'static self)" \
+  "WORK_POOL_INIT.get_or_init(|| {" \
+  "self.spawn_all_workers();"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "pub fn global_eval_pool()" \
+  "pool.start_init();" \
+  "start_work_scaling_monitor();"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "fn work_pool_worker_loop(" \
+  "park.wait_if_parked_timeout(Duration::from_secs(5));" \
+  "match queue.pop_timeout(&shutdown, Duration::from_millis(500)) {"
+line_no "src/backend/models/work_pool.rs" "fn test_async_init_tasks_drain()" >/dev/null
 line_no "src/backend/models/adaptive_pool.rs" "pub fn try_park(&self) -> bool" >/dev/null
 line_no "src/backend/models/adaptive_pool.rs" "pub fn try_unpark(&self) -> bool" >/dev/null
 line_no "src/backend/models/work_pool.rs" "scale_lock: Mutex<()>," >/dev/null

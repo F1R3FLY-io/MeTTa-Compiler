@@ -208,6 +208,7 @@ run_rocq "formal/rocq/gc/SchedulerClassificationLookup.v"
 run_rocq "formal/rocq/gc/CronRecurringDispatch.v"
 run_rocq "formal/rocq/gc/WorkPoolOverflowCap.v"
 run_rocq "formal/rocq/gc/WorkPoolLifecycle.v"
+run_rocq "formal/rocq/gc/WorkPoolStartupDrain.v"
 run_rocq "formal/rocq/gc/CounterFlushExclusion.v"
 run_rocq "formal/rocq/gc/GcDriverChannelProtocol.v"
 run_rocq "formal/rocq/gc/StructChannelPairing.v"
@@ -294,6 +295,12 @@ run_tlc "work_pool_lifecycle_double_unpark_bug" "WorkPoolLifecycle.tla" "MC_Work
   fail "Invariant CapacityConsistent is violated"
 run_tlc "work_pool_lifecycle_respawn_bug" "WorkPoolLifecycle.tla" "MC_WorkPoolLifecycle_respawn_bug.cfg" \
   fail "Invariant CapacityConsistent is violated"
+run_tlc "work_pool_startup_drain_all" "WorkPoolStartupDrain.tla" "WorkPoolStartupDrain_all.cfg" \
+  pass ""
+run_tlc "work_pool_startup_drain_no_start" "WorkPoolStartupDrain.tla" "WorkPoolStartupDrain_no_start.cfg" \
+  fail "Temporal properties were violated"
+run_tlc "work_pool_startup_drain_lossy_enqueue" "WorkPoolStartupDrain.tla" "WorkPoolStartupDrain_lossy_enqueue.cfg" \
+  fail "Invariant AllSubmittedComplete is violated"
 run_tlc "counter_flush_locked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_locked.cfg" \
   pass ""
 run_tlc "counter_flush_unlocked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_unlocked.cfg" \

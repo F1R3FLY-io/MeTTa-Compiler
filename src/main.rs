@@ -1168,8 +1168,8 @@ fn main() {
     mettatron::backend::interrupt::install_signal_handler();
     timings.mark("signal_handlers");
 
-    // Eagerly initialize thread pools — workers spawn asynchronously in background.
-    // Pools also self-initialize on first access, so this just starts it sooner.
+    // Eagerly initialize thread pools. Pools also self-initialize on first
+    // access, so this just starts the WorkPool workers sooner.
     mettatron::init_thread_pools();
     timings.mark("thread_pools");
 

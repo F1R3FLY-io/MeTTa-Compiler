@@ -1124,6 +1124,18 @@ facts the proofs rely on:
   `systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=600% --quiet bash
   scripts/verify_cesk_gc_formal.sh` at the implementation increment.
 
+- WorkPool startup drain (`formal/rocq/gc/WorkPoolStartupDrain.v`,
+  `tla/WorkPoolStartupDrain.tla`, 2026-06-14) — discharges the first-access/startup-window
+  obligation for eval tasks submitted before workers are available. Rocq proves retained pre-start
+  eval tasks drain after workers start, that zero started workers make no drain progress, and that
+  lossy pre-start enqueue prevents full completion. TLC runs the matching fixed model plus two
+  negative discriminators: no worker start violates the eventual-drain property, and lossy enqueue
+  violates `AllSubmittedComplete`. Source coupling pins enqueue-before-notify, non-lossy
+  `spawn_eval` queue insertion, `start_init()` worker startup under `WORK_POOL_INIT`,
+  `global_eval_pool()` startup before monitor start, and worker-loop wait-then-pop order. The public
+  threading documentation now reflects the verified WorkPool path rather than the removed
+  Tokio-blocking eval narrative.
+
 - Struct channel pairing (`formal/rocq/gc/StructChannelPairing.v`,
   `tla/StructChannelPairing.tla`, 2026-06-13) — discharges the field-insensitive
   pgmcp channel audit findings for struct-stored endpoints in `gc_pool`,

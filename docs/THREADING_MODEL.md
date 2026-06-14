@@ -1,435 +1,244 @@
 # MeTTaTron Threading Model
 
-This document explains how MeTTaTron coordinates with Rholang's async runtime for parallel expression evaluation.
+This document describes the current MeTTaTron threading path used by Rholang
+integration and parallel MeTTa evaluation. It is tied to the formal proof lane in
+`formal/rocq/gc/` and `tla/`; when the implementation changes, the proof,
+source-coupling checks, and this document must move together.
 
 ## Overview
 
-MeTTaTron uses **Tokio's async runtime** with a two-pool threading model to achieve parallelism while maintaining MeTTa's semantic guarantees:
+MeTTaTron separates async coordination from CPU-bound MeTTa evaluation:
 
-1. **Async Executor Threads** - For I/O and async coordination
-2. **Blocking Thread Pool** - For CPU-intensive MeTTa evaluation
+1. Rholang owns the async runtime and calls into MeTTa through synchronous or
+   async integration entry points.
+2. MeTTaTron batches independent eval expressions in `run_state_async()`.
+3. CPU-bound eval work is submitted to the global eval `WorkPool`.
+4. WorkPool workers execute `eval_trampoline()` and publish results through a
+   scatter-gather barrier.
+5. CESK/index-GC safety is maintained with structural roots, `EvalGuard`,
+   worker-spawn latches, and persistent result-root handles where results cross
+   non-participant async boundaries.
 
-Both pools are managed by the **same Tokio runtime instance** used by Rholang, ensuring optimal resource coordination.
+The current eval path does not use Tokio `spawn_blocking` for MeTTa eval tasks.
+The live CPU-bound path is the unified WorkPool in
+`src/backend/models/work_pool.rs`.
 
-## Architecture
+## Runtime Shape
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Rholang Tokio Runtime                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ┌───────────────────────┐      ┌──────────────────────────┐   │
-│  │  Async Executor Pool  │      │  Blocking Thread Pool    │   │
-│  │  (I/O + Coordination) │      │  (CPU-Intensive Work)    │   │
-│  ├───────────────────────┤      ├──────────────────────────┤   │
-│  │ • Rholang operations  │      │ • MeTTa evaluation       │   │
-│  │ • Async coordination  │      │ • Pattern matching       │   │
-│  │ • Task scheduling     │      │ • Grounded functions     │   │
-│  │ • I/O multiplexing    │      │ • Rule application       │   │
-│  │                       │      │                          │   │
-│  │ Default: num_cpus     │      │ Default: 512 (dynamic)   │   │
-│  │ (Fixed by Tokio)      │      │ (Configurable)           │   │
-│  └───────────────────────┘      └──────────────────────────┘   │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Execution Flow
-
-When Rholang calls MeTTa for evaluation:
-
-```
-1. Rholang Method Call (.run() on PathMap)
-   │
-   │ [Sync context on Rholang executor thread]
-   │
-   ├─► tokio::task::block_in_place(|| {
-   │       │
-   │       │ [Tells Tokio: "I'm about to block, move me off executor"]
-   │       │
-   │       └─► tokio::runtime::Handle::current().block_on(async {
-   │               │
-   │               │ [Runs async code synchronously in blocking context]
-   │               │
-   │               └─► run_state_async(accumulated, compiled).await
-   │                       │
-   │                       │ [Batches consecutive eval expressions]
-   │                       │
-   │                       ├─► For each batch:
-   │                       │   │
-   │                       │   ├─► tokio::task::spawn_blocking(|| {
-   │                       │   │       │
-   │                       │   │       │ [Moves to blocking thread pool]
-   │                       │   │       │
-   │                       │   │       └─► eval(expr, env)
-   │                       │   │               │
-   │                       │   │               └─► CPU-intensive pattern matching
-   │                       │   │   })
-   │                       │   │
-   │                       │   └─► await all batch results
-   │                       │
-   │                       └─► Return MettaState
-   │           })
-   │   })
-   │
-   └─► Return to Rholang
+```text
+Rholang async runtime
+  |
+  +-- run_state_async()
+      |
+      +-- batch consecutive independent eval expressions
+      |
+      +-- global eval WorkPool
+          |
+          +-- PriorityQueue
+          |   +-- age-refreshed scoring
+          |   +-- FIFO tie-break by sequence
+          |   +-- condition-variable wakeup after enqueue
+          |
+          +-- WorkPool workers
+              +-- EvalGuard::enter()
+              +-- eval_trampoline()
+              +-- result publication
 ```
 
-## Key Design Decisions
+The WorkPool is allocated lazily through `GLOBAL_EVAL_POOL`. Allocation creates
+the priority queue, worker park records, CPU-state records, and empty worker
+slots. `global_eval_pool()` then calls `start_init()`, which runs
+`spawn_all_workers()` exactly once before returning the pool reference. This
+first-access startup rule is source-coupled in
+`scripts/verify_cesk_gc_source_coupling.sh`.
 
-### 1. Why `spawn_blocking` Instead of `spawn`?
+## Startup-Drain Contract
 
-**`spawn_blocking`** is used because:
+The WorkPool must preserve eval tasks submitted during the startup window:
 
-- ✅ **CPU-Intensive Work**: MeTTa evaluation is compute-bound, not I/O-bound
-- ✅ **Prevents Executor Starvation**: Doesn't block async executor threads
-- ✅ **Dedicated Thread Pool**: Separate pool scales independently
-- ✅ **Tokio's Recommendation**: For synchronous, CPU-intensive operations
-
-Using regular `spawn` would require making `eval()` async, which provides no benefit since the work is CPU-bound.
-
-### 2. Why `block_in_place` + `block_on`?
-
-This combination is required because:
-
-- **Rholang's `.run()` method is synchronous** - Can't be made async without major refactoring
-- **`block_in_place`** - Tells Tokio to move the current task off the executor
-- **`block_on`** - Runs async code synchronously within the blocking context
-
-Alternative considered: Making Rholang's method async would require:
-- Changing Rholang's interpreter to async (major refactoring)
-- Propagating async through all method calls
-- More complex control flow
-
-Current approach provides parallelism without requiring Rholang changes.
-
-### 3. Single Runtime vs. Multiple Runtimes
-
-**Single Runtime** (current approach):
-
-- ✅ All threads coordinated by one Tokio instance
-- ✅ Efficient work-stealing across pools
-- ✅ Lower overhead
-- ✅ Shared thread pool resources
-
-**Multiple Runtimes** (not used):
-
-- ❌ Higher overhead (multiple schedulers)
-- ❌ No work-stealing between runtimes
-- ❌ Potential resource contention
-- ❌ More complex configuration
-
-## Performance Characteristics
-
-### Thread Pool Sizing
-
-#### Async Executor Pool
-- **Fixed by Tokio**: Typically `num_cpus` threads
-- **Not configurable** in MeTTaTron (Rholang controls this)
-- **Purpose**: Coordinate async operations, not CPU work
-
-#### Blocking Thread Pool
-- **Default**: 512 threads (Tokio default)
-- **Configurable**: Via `EvalConfig::max_blocking_threads`
-- **Dynamic Scaling**: Tokio spawns threads as needed up to max
-- **Purpose**: Parallel MeTTa evaluation
-
-### Recommended Settings
-
-**CPU-Optimized** (default for most workloads):
-```rust
-EvalConfig::cpu_optimized()  // max_blocking_threads = num_cpus * 2
+```text
+submit task before workers are ready
+  -> task is retained in PriorityQueue
+  -> workers start
+  -> workers pop retained tasks
+  -> every retained eval task completes or reports its own panic path
 ```
 
-**Memory-Constrained**:
-```rust
-EvalConfig::memory_optimized()  // max_blocking_threads = num_cpus
-```
+This is formally modeled by:
 
-**High-Throughput**:
-```rust
-EvalConfig::throughput_optimized()  // max_blocking_threads = 1024
-```
+- `formal/rocq/gc/WorkPoolStartupDrain.v`
+- `tla/WorkPoolStartupDrain.tla`
+- `tla/WorkPoolStartupDrain_all.cfg`
+- `tla/WorkPoolStartupDrain_no_start.cfg`
+- `tla/WorkPoolStartupDrain_lossy_enqueue.cfg`
 
-### Scalability Analysis
+The positive model proves retained startup tasks drain after workers start. The
+negative no-start model violates the eventual-drain property. The negative
+lossy-enqueue model violates `AllSubmittedComplete`.
 
-#### Single Expression
-```
-Overhead: ~10-20μs (spawn_blocking + context switch)
-Benefit: None (sequential anyway)
-Recommendation: Use sync run_state() if only 1 expression
-```
+The source-coupling check pins the corresponding implementation facts:
 
-#### Multiple Independent Expressions (Ideal Case)
-```
-Expressions: N eval expressions
-Parallelism: min(N, max_blocking_threads)
-Speedup: Near-linear up to num_cpus
-Example: 10 expressions @ 100ms each = ~100ms total (10x speedup)
-```
+- `PriorityQueue::push()` pushes before `notify_one()`.
+- `WorkPool::spawn_eval()` enqueues eval tasks without a drop/backpressure path.
+- `WorkPool::start_init()` calls `spawn_all_workers()` under `WORK_POOL_INIT`.
+- `global_eval_pool()` calls `start_init()` before the scaling monitor starts.
+- `work_pool_worker_loop()` waits for unpark and then pops from the queue.
+- `test_async_init_tasks_drain()` remains present as an implementation smoke
+  test for the abstract proof.
 
-#### Mixed Rules and Evals
-```
-Batching: Consecutive evals batched until rule definition
-Synchronization: Rule definitions force batch completion
-Overhead: Batch coordination ~50-100μs per batch
-```
+## Parallel Eval Batching
 
-#### Nested Evaluations
-```
-Pattern: Rule calls another rule
-Threads: Each blocking thread can spawn more blocking tasks
-Depth: Limited by max_blocking_threads
-```
+`src/rholang_integration.rs` batches consecutive independent eval expressions.
+Rule definitions and ground facts force synchronization points because they may
+change the environment used by later evals.
 
-## Resource Management
+For each batch item:
 
-### Thread Stack Size
-- **Default**: Platform-dependent (typically 2MB on Linux)
-- **Configurable**: Via Tokio runtime builder
-- **Considerations**: Deep recursion in MeTTa may require larger stacks
+1. `evaluate_batch_parallel_arena()` clones the environment needed by the item.
+2. It submits a WorkPool eval task with `TaskTypeId::Eval(0)` and normal
+   priority.
+3. The worker enters `EvalGuard`.
+4. The worker runs `eval_trampoline()`.
+5. The worker stores its `BatchOutcome` in its preallocated result slot.
+6. A `BatchCompletionGuard` decrements the shared completion counter on every
+   exit path, including panic unwind.
+7. The caller waits on the completion condvar and then drains every slot.
 
-### Memory Overhead
-```
-Per Thread: ~2-4MB (stack + metadata)
-Max Overhead: max_blocking_threads * 4MB
-Example: 512 threads = ~2GB maximum
-Note: Threads created lazily, not all at once
-```
+The batch-completion obligation is modeled by:
 
-### Context Switching
-```
-Frequency: On each spawn_blocking call
-Cost: ~1-10μs depending on system
-Amortization: Batching reduces context switches
-```
+- `formal/rocq/gc/RholangBatchCompletion.v`
+- `tla/RholangBatchCompletion.tla`
 
-## Configuration Examples
+The negative panic model shows that a tail-position decrement can strand the
+parent if `eval_trampoline()` panics before the decrement. The live source
+therefore uses the RAII completion guard.
 
-### Application Initialization (Recommended)
+## Scheduler Parallelism
 
-```rust
-use mettatron::config::{EvalConfig, configure_eval};
+The scheduler maximizes safe parallelism through a staged analysis pipeline:
 
-fn main() {
-    // Configure before any async operations
-    configure_eval(EvalConfig::cpu_optimized());
+1. Classification marks known pure, impure, and dynamic-eval heads.
+2. The WFST transducer maps cost classes and descriptors to scheduling actions.
+3. Wavefront construction groups independent tasks into earliest legal waves.
+4. Fanout admission uses the transducer degree and runtime budget gates.
+5. Queue pressure and depth quota prevent over-parallelization.
 
-    // Start your Rholang runtime
-    // ...
-}
-```
+The formal lane covers the main scheduler obligations:
 
-### Custom Tokio Runtime
+- `SchedulerClassificationLookup.v` and `SchedulerClassificationLookup.tla`
+  keep insertion into the classification tables index-safe and ensure
+  state-mutating heads are not treated as known pure.
+- `SchedulerDynamicEvalGate.v` and `SchedulerDynamicEvalGate.tla` keep dynamic
+  eval forms out of static-pure parallel classes.
+- `SchedulerWavefrontParallelism.v` and `SchedulerWavefrontParallelism.tla`
+  prove same-wave independence and earliest-ready admission.
+- `SchedulerTransducerParallelism.v` and
+  `SchedulerTransducerParallelism.tla` prove zero-cap safety and prevent
+  underutilized branch-parallel actions.
+- `SchedulerFanoutAdmissionCompleteness.v` and
+  `SchedulerFanoutAdmissionCompleteness.tla` prove the requested degree is
+  admitted when the runtime gates allow it.
 
-```rust
-use mettatron::config::{EvalConfig, apply_to_runtime_builder};
-use tokio::runtime::Builder;
+These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
-let config = EvalConfig {
-    max_blocking_threads: 256,
-    batch_size_hint: 64,
-};
+## Cron Manager
 
-let runtime = apply_to_runtime_builder(
-    Builder::new_multi_thread(),
-    config
-)
-.worker_threads(8)  // Async executor threads
-.enable_all()
-.build()
-.unwrap();
+The cron manager is implemented by `src/backend/models/task_scheduler.rs`. It
+uses a thread-local priority queue for due tasks and dispatches pooled work to
+the WorkPool when appropriate.
 
-// Use runtime for Rholang
-runtime.block_on(async {
-    // Your Rholang code
-});
-```
+Recurring pooled tasks are protected by an `in_flight` flag:
 
-### Environment-Based Configuration
+1. The cron thread claims `in_flight` before submitting pooled work.
+2. If the recurring task is due while `in_flight` is already true, the cron
+   thread requeues only the placeholder and does not dispatch overlap work.
+3. The worker clears `in_flight` on normal, stop, or panic paths.
 
-```rust
-use mettatron::config::{EvalConfig, configure_eval};
-use std::env;
+The formal lane covers this with:
 
-fn init_config() {
-    let config = match env::var("METTA_PROFILE").as_deref() {
-        Ok("cpu") => EvalConfig::cpu_optimized(),
-        Ok("memory") => EvalConfig::memory_optimized(),
-        Ok("throughput") => EvalConfig::throughput_optimized(),
-        _ => EvalConfig::default(),
-    };
+- `formal/rocq/gc/CronRecurringDispatch.v`
+- `tla/CronRecurringDispatch.tla`
 
-    configure_eval(config);
-}
-```
+The negative no-claim model violates non-overlap.
 
-## Debugging and Monitoring
+## CESK And GC Interaction
 
-### Enable Tokio Console (Development)
+The index-GC architecture is structural-root based. WorkPool and scheduler code
+must not reintroduce a root registry or a cross-thread thread-local discovery
+side channel.
 
-```rust
-// In Cargo.toml
-[dependencies]
-console-subscriber = "0.2"
+The relevant runtime rules are:
 
-// In main.rs
-fn main() {
-    console_subscriber::init();
-    // ... rest of initialization
-}
-```
+- Per-worker roots come from that worker's reified machine state.
+- `EvalGuard` marks active evaluator participation.
+- Worker-spawn latches close non-rendezvous mid-loop collection once parallel
+  workers can observe the heap.
+- Batch outputs that cross the async gather boundary carry persistent
+  safepoint-root handles until the caller copies them into `MettaState.output`.
+- Dispatch/collapse fanout uses registered dispatch roots for live branches and
+  result slots.
 
-Run with:
-```bash
-RUSTFLAGS="--cfg tokio_unstable" cargo run
-```
+The scheduler/thread-pool/GC boundary is modeled by:
 
-### Thread Pool Metrics
+- `SchedulerGcBoundary.v` and `SchedulerGcBoundary.tla`
+- `SchedulerSpawnLatch.v` and `SchedulerSpawnLatch.tla`
+- `BatchHandoff.v` and `BatchHandoff.tla`
+- `DriverRootUnion.v` and `DriverRootUnion.tla`
+- `CESKCollectorSafety.v`
 
-```rust
-// Log thread pool statistics
-let handle = tokio::runtime::Handle::current();
-println!("Active blocking threads: {}", handle.metrics().num_blocking_threads());
-```
+The source-coupling script pins these proof obligations to the implementation.
 
-### Performance Profiling
+## Configuration
+
+WorkPool worker counts are controlled by environment variables read by
+`get_work_thread_config()`:
+
+- `METTATRON_MIN_WORK_THREADS`: minimum active workers, default `1`.
+- `METTATRON_MAX_WORK_THREADS`: maximum core workers, default `num_cpus * 2`.
+
+The WorkPool may also spawn bounded overflow workers when the queue is pressured
+and core workers are blocked. Overflow spawning is separately capped and modeled
+by `WorkPoolOverflowCap.v` and `WorkPoolOverflowCap.tla`.
+
+`EvalConfig::max_blocking_threads` is retained for callers that use
+`apply_to_runtime_builder()` to configure a Tokio runtime builder. It is not the
+WorkPool eval-worker cap.
+
+## Verification Commands
+
+Focused startup-drain checks:
 
 ```bash
-# CPU profiling with perf
-perf record -g ./your_rholang_app
-perf report
-
-# Thread activity
-perf record -e sched:sched_switch -g ./your_rholang_app
+systemd-run --user --scope -p MemoryMax=4G -p MemorySwapMax=0 -p CPUQuota=200% --quiet \
+  rocq c -q -Q formal/rocq/gc "" formal/rocq/gc/WorkPoolStartupDrain.v
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=200% --quiet \
+  tlc -config tla/WorkPoolStartupDrain_all.cfg tla/WorkPoolStartupDrain.tla
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=200% --quiet \
+  tlc -config tla/WorkPoolStartupDrain_no_start.cfg tla/WorkPoolStartupDrain.tla
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=200% --quiet \
+  tlc -config tla/WorkPoolStartupDrain_lossy_enqueue.cfg tla/WorkPoolStartupDrain.tla
 ```
 
-## Common Patterns
+Full formal gate:
 
-### Pattern 1: Batch Evaluation
-
-**Problem**: Many independent expressions to evaluate
-
-```metta
-!(+ 1 2)
-!(* 3 4)
-!(- 10 5)
-!(/ 20 4)
-```
-
-**Solution**: All batched and parallelized automatically
-```
-Threads: 4 parallel evaluations
-Time: ~max(expr_times) instead of sum(expr_times)
-```
-
-### Pattern 2: Rule Chaining
-
-**Problem**: Rules that call other rules
-
-```metta
-(= (double $x) (* $x 2))
-(= (quadruple $x) (double (double $x)))
-!(quadruple 10)
-```
-
-**Solution**: Sequential rule definitions, parallel final eval
-```
-Step 1: Define double (sequential)
-Step 2: Define quadruple (sequential)
-Step 3: Evaluate quadruple (can spawn blocking tasks for nested calls)
-```
-
-### Pattern 3: Mixed Workload
-
-**Problem**: Alternating rules and evals
-
-```metta
-(= (inc $x) (+ $x 1))
-!(inc 5)
-(= (dec $x) (- $x 1))
-!(dec 10)
-```
-
-**Solution**: Batches with synchronization points
-```
-Batch 1: []
-Sync: Define inc
-Batch 2: [!(inc 5)]
-Sync: Define dec
-Batch 3: [!(dec 10)]
-```
-
-## Troubleshooting
-
-### Issue: High Memory Usage
-
-**Symptoms**: Memory grows with concurrent evaluations
-
-**Diagnosis**:
 ```bash
-# Check max blocking threads
-RUST_LOG=debug ./your_app | grep "blocking_threads"
+systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=600% --quiet \
+  bash scripts/verify_cesk_gc_formal.sh
 ```
 
-**Solution**:
-```rust
-// Reduce max blocking threads
-configure_eval(EvalConfig::memory_optimized());
-```
+The full harness also caps each TLC subprocess internally.
 
-### Issue: Poor Parallelism
+## Source Map
 
-**Symptoms**: Multiple evals not speeding up
-
-**Diagnosis**:
-1. Check if expressions are separated by rule definitions
-2. Verify max_blocking_threads > number of expressions
-3. Profile to ensure work is CPU-bound
-
-**Solution**:
-```rust
-// Increase max threads if needed
-configure_eval(EvalConfig {
-    max_blocking_threads: 1024,
-    batch_size_hint: 128,
-});
-```
-
-### Issue: Context Switch Overhead
-
-**Symptoms**: Small expressions slower in parallel
-
-**Diagnosis**: spawn_blocking overhead dominates for fast expressions
-
-**Solution**:
-1. Use sync `run_state()` for single/few expressions
-2. Increase batch_size_hint to amortize overhead
-3. Profile to measure actual expression time
-
-## Future Improvements
-
-### Potential Optimizations
-
-1. **Adaptive Batching**: Dynamically adjust batch size based on expression complexity
-2. **Work Stealing**: Allow blocking threads to steal work from batch queue
-3. **Thread Affinity**: Pin threads to cores for better cache locality
-4. **NUMA Awareness**: Consider NUMA topology on multi-socket systems
-
-### Considered but Not Implemented
-
-1. **Green Threads**: Would require async `eval()`, no clear benefit for CPU-bound work
-2. **Thread Pool per PathMap**: Higher overhead, complexity without clear benefit
-3. **Priority Queues**: MeTTa semantics require deterministic ordering
-
-## References
-
-- [Tokio Documentation - CPU-Bound Tasks](https://tokio.rs/tokio/topics/bridging)
-- [Tokio Runtime Configuration](https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html)
-- [Async Rust Performance](https://tokio.rs/tokio/topics/performance)
-
-## See Also
-
-- `src/config.rs` - Configuration implementation
-- `src/rholang_integration.rs` - Async evaluation implementation
-- `examples/threading_demo.rs` - Threading model examples (TODO)
+- `src/backend/models/work_pool.rs`: global eval WorkPool, worker startup,
+  priority enqueue, scaling, overflow workers.
+- `src/backend/priority_scheduler.rs`: priority queue ordering, score refresh,
+  and condition-variable wakeups.
+- `src/backend/models/task_scheduler.rs`: cron scheduler and pooled recurring
+  dispatch.
+- `src/rholang_integration.rs`: async Rholang batch evaluation and batch result
+  handoff.
+- `src/backend/scheduler/`: classification, transducer, wavefront, and
+  admission logic.
+- `docs/cesk-gc/formal-verification-ledger.md`: current proof ledger and
+  verification history.

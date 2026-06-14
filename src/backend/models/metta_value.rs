@@ -1697,7 +1697,7 @@ impl MettaValue {
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
         #[cfg(feature = "index-gc")]
-        if gc_mode_is_index() {
+        {
             let tag = self.tag5();
             if tag != TAG5_ATOM && tag != TAG5_SPANNED {
                 debug_assert!(
@@ -1807,7 +1807,7 @@ impl MettaValue {
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
         #[cfg(feature = "index-gc")]
-        if gc_mode_is_index() {
+        {
             let tag = self.tag5();
             if tag != TAG5_SEXPR && tag != TAG5_SPANNED {
                 debug_assert!(
@@ -1847,7 +1847,7 @@ impl MettaValue {
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
         #[cfg(feature = "index-gc")]
-        if gc_mode_is_index() {
+        {
             let tag = self.tag5();
             if tag != TAG5_ERROR && tag != TAG5_SPANNED {
                 debug_assert!(
@@ -1892,7 +1892,7 @@ impl MettaValue {
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
         #[cfg(feature = "index-gc")]
-        if gc_mode_is_index() {
+        {
             let tag = self.tag5();
             if tag != TAG5_CONJUNCTION && tag != TAG5_SPANNED {
                 debug_assert!(
@@ -1976,7 +1976,7 @@ impl MettaValue {
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
         #[cfg(feature = "index-gc")]
-        if gc_mode_is_index() {
+        {
             let tag = self.tag5();
             if tag != TAG5_QUOTED && tag != TAG5_SPANNED {
                 debug_assert!(
@@ -3143,7 +3143,7 @@ impl MettaValueTrait for MettaValue {
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
         #[cfg(feature = "index-gc")]
-        if gc_mode_is_index() {
+        {
             let tag = self.tag5();
             if tag != TAG5_ERROR && tag != TAG5_SPANNED {
                 debug_assert!(
@@ -3348,7 +3348,7 @@ impl MettaValueTrait for MettaValue {
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
         #[cfg(feature = "index-gc")]
-        if gc_mode_is_index() {
+        {
             let tag = self.tag5();
             if tag != TAG5_ATOM && tag != TAG5_SEXPR && tag != TAG5_SPANNED {
                 debug_assert!(

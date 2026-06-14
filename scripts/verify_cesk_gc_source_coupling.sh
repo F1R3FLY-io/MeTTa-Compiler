@@ -313,6 +313,16 @@ assert_after_before \
   "pub(crate) fn gc_mode_is_index() -> bool" \
   "cfg!(feature = \"index-gc\")" \
   "}"
+line_no "formal/rocq/gc/CfgGuardErasure.v" "Require Import DefaultStoreSelection." >/dev/null
+line_no "formal/rocq/gc/CfgGuardErasure.v" "Definition cfg_guarded_effect" >/dev/null
+line_no "formal/rocq/gc/CfgGuardErasure.v" "Theorem cfg_guard_erasure_preserves_effect" >/dev/null
+line_no "formal/rocq/gc/CfgGuardErasure.v" "Theorem valid_emitted_erased_cfg_effect_requires_index_store" >/dev/null
+line_no "formal/rocq/gc/CfgGuardErasure.v" "Theorem cfg_guard_erasure_preserves_branch_result" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/CfgGuardErasure.v"' >/dev/null
+if rg -n -U '#\[cfg\(feature = "index-gc"\)\][[:space:]]*\n[[:space:]]*if gc_mode_is_index\(\)' \
+    "$REPO/src/backend/models/metta_value.rs" >/dev/null; then
+  fail "metta_value.rs reintroduced a cfg-gated redundant gc_mode_is_index() guard; see CfgGuardErasure.v"
+fi
 assert_regex_zero \
   "src" \
   "set_gc_mode_index|reset_gc_mode_slab|static GC_MODE|GC_MODE\\.(load|store)"

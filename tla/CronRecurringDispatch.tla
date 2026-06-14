@@ -6,50 +6,80 @@
 (* before clearing in_flight. FALSE models the old behavior: false/panic is *)
 (* logged but no terminal state is visible to the cron thread, so the next  *)
 (* due placeholder dispatches again.                                        *)
+(* ClaimBeforeDispatch = TRUE models the cron thread setting inFlight before*)
+(* submitting pooled recurring work. FALSE models a missing claim, allowing *)
+(* a second due placeholder to dispatch overlapping work.                   *)
 (***************************************************************************)
 EXTENDS Naturals
 
-CONSTANT PublishStopBeforeIdle
+CONSTANT PublishStopBeforeIdle, ClaimBeforeDispatch
 
-VARIABLES phase, inFlight, stopRequested, dispatchedAgain
+VARIABLES phase, inFlight, stopRequested, dispatchedAgain, dispatchCount, overlapped
 
-vars == <<phase, inFlight, stopRequested, dispatchedAgain>>
+vars == <<phase, inFlight, stopRequested, dispatchedAgain, dispatchCount, overlapped>>
 
 TypeOK ==
-    /\ phase \in {"workerRunning", "due", "done"}
+    /\ phase \in {"firstDue", "workerRunning", "workerReturns", "finalDue", "done"}
     /\ inFlight \in BOOLEAN
     /\ stopRequested \in BOOLEAN
     /\ dispatchedAgain \in BOOLEAN
+    /\ ClaimBeforeDispatch \in BOOLEAN
+    /\ dispatchCount \in Nat
+    /\ overlapped \in BOOLEAN
 
 Init ==
-    /\ phase = "workerRunning"
-    /\ inFlight = TRUE
+    /\ phase = "firstDue"
+    /\ inFlight = FALSE
     /\ stopRequested = FALSE
     /\ dispatchedAgain = FALSE
+    /\ dispatchCount = 0
+    /\ overlapped = FALSE
+
+FirstCronDue ==
+    /\ phase = "firstDue"
+    /\ phase' = "workerRunning"
+    /\ inFlight' = ClaimBeforeDispatch
+    /\ dispatchCount' = 1
+    /\ UNCHANGED <<stopRequested, dispatchedAgain, overlapped>>
+
+SecondCronDueBeforeWorkerCompletes ==
+    /\ phase = "workerRunning"
+    /\ phase' = "workerReturns"
+    /\ IF inFlight
+       THEN /\ dispatchCount' = dispatchCount
+            /\ overlapped' = FALSE
+       ELSE /\ dispatchCount' = dispatchCount + 1
+            /\ overlapped' = TRUE
+    /\ UNCHANGED <<inFlight, stopRequested, dispatchedAgain>>
 
 WorkerReturnsFalse ==
-    /\ phase = "workerRunning"
-    /\ phase' = "due"
+    /\ phase = "workerReturns"
+    /\ phase' = "finalDue"
     /\ stopRequested' = IF PublishStopBeforeIdle THEN TRUE ELSE FALSE
     /\ inFlight' = FALSE
-    /\ UNCHANGED dispatchedAgain
+    /\ UNCHANGED <<dispatchedAgain, dispatchCount, overlapped>>
 
-CronDue ==
-    /\ phase = "due"
+FinalCronDue ==
+    /\ phase = "finalDue"
     /\ phase' = "done"
     /\ dispatchedAgain' = ~stopRequested
-    /\ UNCHANGED <<inFlight, stopRequested>>
+    /\ UNCHANGED <<inFlight, stopRequested, dispatchCount, overlapped>>
 
 Done ==
     /\ phase = "done"
     /\ UNCHANGED vars
 
 Next ==
+    \/ FirstCronDue
+    \/ SecondCronDueBeforeWorkerCompletes
     \/ WorkerReturnsFalse
-    \/ CronDue
+    \/ FinalCronDue
     \/ Done
 
 Spec == Init /\ [][Next]_vars
+
+NoOverlapDispatch ==
+    ~overlapped
 
 StopPreventsRedispatch ==
     phase = "done" => ~dispatchedAgain

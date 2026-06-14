@@ -205,6 +205,21 @@ assert_before \
   ".compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)"
 assert_after_before \
   "src/backend/models/task_scheduler.rs" \
+  "fn dispatch_to_pool" \
+  ".compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)" \
+  "pool.spawn_eval("
+assert_after_before \
+  "src/backend/models/task_scheduler.rs" \
+  ".compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)" \
+  "self.queue.push(requeued);" \
+  "return;"
+assert_after_before \
+  "src/backend/models/task_scheduler.rs" \
+  ".compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)" \
+  "return;" \
+  "pool.spawn_eval("
+assert_after_before \
+  "src/backend/models/task_scheduler.rs" \
   "match result" \
   ".stop_requested" \
   ".in_flight"
@@ -294,7 +309,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
-assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "2"
+assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.tla" "2"

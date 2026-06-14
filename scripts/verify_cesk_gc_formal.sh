@@ -259,6 +259,8 @@ run_tlc "cron_recurring_dispatch_stop" "CronRecurringDispatch.tla" "MC_CronRecur
   pass ""
 run_tlc "cron_recurring_dispatch_no_stop" "CronRecurringDispatch.tla" "MC_CronRecurringDispatch_no_stop.cfg" \
   fail "Invariant StopPreventsRedispatch is violated"
+run_tlc "cron_recurring_dispatch_no_claim" "CronRecurringDispatch.tla" "MC_CronRecurringDispatch_no_claim.cfg" \
+  fail "Invariant NoOverlapDispatch is violated"
 run_tlc "work_pool_overflow_capped" "WorkPoolOverflowCap.tla" "MC_WorkPoolOverflowCap_capped.cfg" \
   pass ""
 run_tlc "work_pool_overflow_uncapped" "WorkPoolOverflowCap.tla" "MC_WorkPoolOverflowCap_uncapped.cfg" \

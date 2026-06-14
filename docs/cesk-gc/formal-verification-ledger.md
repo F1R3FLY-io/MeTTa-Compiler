@@ -700,7 +700,10 @@ capped debug Robot replay after the conditional canary produced the expected fri
 - `formal/rocq/gc/CronRecurringDispatch.v` and `tla/CronRecurringDispatch.tla`: prove and model-check pooled cron
   recurring-dispatch control. A recurring task that returns `false` or panics must set a durable stop flag before
   clearing `in_flight`, so the next due tick drops the recurrence instead of redispatching it. The model also proves
-  in-flight recurring work is not overlapped, preserving thread-pool admission boundaries around cron work.
+  the cron thread must claim `in_flight` before submitting pooled work; a due placeholder that observes an already
+  claimed recurring task must requeue only and return without spawning a second worker. The no-stop discriminator
+  violates `StopPreventsRedispatch`; the no-claim discriminator preserves stop-before-idle but violates
+  `NoOverlapDispatch`.
 - `formal/rocq/gc/WorkPoolOverflowCap.v` and `tla/WorkPoolOverflowCap.tla`: prove and model-check the adaptive
   work-pool overflow cap. The live helper computes
   `min(requested, max_overflow - live_overflow)`, so spawning overflow workers preserves
@@ -751,6 +754,12 @@ capped debug Robot replay after the conditional canary produced the expected fri
   no-budget parallel-dispatch path even when a hidden mutating head is carried through a variable expression. The full
   capped formal harness then passed with 95 mandatory GC Rocq files, 5 WorkPool Rocq files, 36 mandatory Lean mirrors,
   239 TLC configs, and source coupling. The slab release gate `cargo nextest run --release` passed 4408/4408 tests.
+- 2026-06-14 Cron pooled-recurring overlap tightening: `CronRecurringDispatch.v` now proves that dispatch claiming sets
+  `in_flight`, a due tick after that claim requeues without dispatch, and a missing claim can dispatch again.
+  `CronRecurringDispatch.tla` now models two due ticks before worker completion; the regular formal harness runs
+  `cron_recurring_dispatch_no_claim` and expects `NoOverlapDispatch` to fail. Source coupling pins the
+  `compare_exchange(false, true, ...)` claim before `pool.spawn_eval`, and pins the failed-CAS path to push the
+  placeholder back into the cron queue and return before any worker submission.
 
 ## Source coupling
 

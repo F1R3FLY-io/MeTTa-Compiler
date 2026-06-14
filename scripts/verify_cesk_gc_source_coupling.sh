@@ -307,6 +307,15 @@ assert_after_before \
   "Theorem accepted_request_erasure_preserves_evaluation" \
   "runtime_effective_store features request = Some selected" \
   "eval_with_store selected = eval_with_store active."
+line_no "src/backend/models/metta_value.rs" "formal/rocq/gc/RuntimeModeErasure.v" >/dev/null
+assert_after_before \
+  "src/backend/models/metta_value.rs" \
+  "pub(crate) fn gc_mode_is_index() -> bool" \
+  "cfg!(feature = \"index-gc\")" \
+  "}"
+assert_regex_zero \
+  "src/backend" \
+  "set_gc_mode_index|reset_gc_mode_slab|static GC_MODE|GC_MODE\\.(load|store)"
 assert_after_before \
   "src/backend/models/mod.rs" \
   "pub fn assert_gc_request" \

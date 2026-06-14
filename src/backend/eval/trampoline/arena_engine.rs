@@ -355,8 +355,7 @@ mod tests {
     /// reader stayed a superset across the whole run. This keeps the reader honest
     /// in CI after A5 deletes the discovery apparatus.
     ///
-    /// `GC_MODE` static-inits to index under the feature, so `gc_mode_is_index()`
-    /// is true here automatically (no `set_gc_mode_index()` needed).
+    /// `gc_mode_is_index()` is true by construction under `feature = "index-gc"`.
     #[test]
     #[cfg(all(debug_assertions, feature = "index-gc"))]
     fn a4_3_oracle_holds_across_safepoint() {

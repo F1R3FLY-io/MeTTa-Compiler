@@ -28,11 +28,10 @@
 //!
 //! This replaces the runtime `gc_mode_is_index()` gate inside `maybe_push_frame`
 //! with a COMPILE-TIME `#[cfg(feature = "index-gc")]` split. Sound because:
-//! production never flips `GC_MODE` (only `#[cfg(test)]` modules call
-//! `set_gc_mode_index` / `reset_gc_mode_slab`), and under `feature = "index-gc"`
-//! the value factory is the compile-time `IndexFactory` and `GC_MODE`
-//! static-inits to index — so the slab `frame_chain` path is statically
-//! unreachable in the index build.
+//! runtime `--gc` / `MTT_GC` requests are assertions rather than mode switches,
+//! and under `feature = "index-gc"` the value factory is the compile-time
+//! `IndexFactory` — so the slab `frame_chain` path is statically unreachable in
+//! the index build.
 //!
 //! A5.0 adds this helper but does not yet wire the 11 call sites
 //! (modules.rs ×2 + testing_ops.rs ×9); A5.2 wired those and removed the

@@ -985,9 +985,7 @@ mod index_dump_coupling_tests {
     /// present the legacy slab "Slab Pages" counters as the authoritative GC state.
     #[test]
     fn index_mode_dump_reports_index_heap_not_slab_pages() {
-        // An `index-gc` build runs index mode by default; assert it explicitly so the test
-        // is robust to ordering with any test that touches the mode flag.
-        crate::backend::models::metta_value::set_gc_mode_index();
+        // An `index-gc` build runs index mode by construction.
         // Ensure the global index heap is initialized so the telemetry path is exercised.
         let _ = crate::backend::eval::cesk::index_heap::global_index_heap();
 

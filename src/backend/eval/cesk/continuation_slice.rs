@@ -659,13 +659,10 @@ pub fn restore_from_bytes(buf: &[u8]) -> Result<RestoredSuspension, SliceError> 
 mod tests {
     use super::*;
     use crate::backend::eval::cesk::index_heap::global_index_heap;
-    use crate::backend::models::metta_value::set_gc_mode_index;
     use crate::backend::models::{MettaValueFactory, ValueView};
 
-    /// Build a small heap value via the index factory; mode is set to index for
-    /// the whole test process (nextest isolates each test).
+    /// Build a small heap value via the index factory.
     fn idx() -> crate::backend::eval::cesk::index_heap::IndexFactory {
-        set_gc_mode_index();
         crate::backend::eval::cesk::index_heap::IndexFactory
     }
 

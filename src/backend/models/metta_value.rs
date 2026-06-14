@@ -496,42 +496,15 @@ pub(crate) fn is_variable_str(s: &str) -> bool {
 }
 
 // ==========================================================================
-// Inc 2: value-decode mode (index-arena vs slab). Default Slab — byte-identical.
+// F4: value-decode store is selected at compile time.
 // ==========================================================================
 
-/// Process-global value-decode mode, set ONCE at startup before any value is
-/// created. `0` (Slab, default) keeps the baseline byte-identical; `1` (Index)
-/// reinterprets a heap handle's non-NaN payload as an arena
-/// [`Addr`](crate::backend::eval::cesk::index_arena::Addr). Inc 2 leaves this at
-/// Slab and only adds the (never-taken-by-default) Index arms; the `--gc=index`
-/// flip is Inc 3/4.
-// Inc 4: under `--features index-gc` the evaluator's `global_factory()` allocates
-// into the index store σ, so the decode must default to Index mode to match (the
-// value model is selected at COMPILE time; this static is the runtime-readable
-// reflection of that, set once at process start). Default build inits to Slab (0).
-static GC_MODE: std::sync::atomic::AtomicU8 =
-    std::sync::atomic::AtomicU8::new(if cfg!(feature = "index-gc") { 1 } else { 0 });
-
-/// `true` iff the process is in index-arena value mode. A relaxed load of a
-/// write-once, cache-resident static — one perfectly-predicted branch on the hot
-/// path (the flag never changes after startup), so the Slab path is effectively
-/// unchanged.
+/// `true` iff this binary was compiled with the CESK index-arena value store.
+/// Runtime `--gc` / `MTT_GC` requests are assertions over this fixed store, not
+/// mode switches; see `formal/rocq/gc/RuntimeModeErasure.v`.
 #[inline(always)]
 pub(crate) fn gc_mode_is_index() -> bool {
-    GC_MODE.load(std::sync::atomic::Ordering::Relaxed) != 0
-}
-
-/// Switch the process to index-arena value mode. MUST be called at startup
-/// before any `MettaValue` is constructed (Inc 3 `--gc=index` startup / tests).
-pub fn set_gc_mode_index() {
-    GC_MODE.store(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Reset to Slab mode (test-only; the mode is a process-global write-once in
-/// production, but `nextest` isolates each test in its own process).
-#[cfg(test)]
-pub(crate) fn reset_gc_mode_slab() {
-    GC_MODE.store(0, std::sync::atomic::Ordering::Relaxed);
+    cfg!(feature = "index-gc")
 }
 
 impl MettaValue {
@@ -720,8 +693,8 @@ mod inc2_mode_tests {
 
     // (cfg-gate) Asserts the legacy slab decode mode is Slab and that a slab
     // heap value carries no arena Addr. In the default `index-gc` build the
-    // process starts in Index mode (`GC_MODE == 1`) and `global_factory()`
-    // yields index handles, so this slab-mode invariant is false by design.
+    // compiled store is Index and `global_factory()` yields index handles, so
+    // this slab-mode invariant is false by design.
     #[cfg(not(feature = "index-gc"))]
     #[test]
     fn legacy_slab_mode_has_no_arena_addr() {

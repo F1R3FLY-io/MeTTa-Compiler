@@ -3555,60 +3555,30 @@ impl<T: ?Sized> Drop for SideColumn<T> {
 unsafe impl<T: ?Sized + Send> Send for SideColumn<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for SideColumn<T> {}
 
-// Shared by the test submodules that flip the PROCESS-GLOBAL gc-mode flag
-// (`mod tests` and `mod tsan_concurrent_factory`, both file-root siblings). Both
-// MUST serialize on the SAME lock — a per-module lock would not prevent a
-// cross-module race (one module flipping to slab while another's INDEX_KEY_TAG
-// value is live → use-after-free in `MettaValue::is_atom`, ASAN-confirmed under
-// parallel `cargo test`; `nextest` isolates per-process so it never raced). The
-// real slab reset is deferred to the guard's Drop (which runs AFTER the test's
-// index values drop, since the guard is bound as the first local) and is robust to
-// a missing reset / a panic (RAII + poison recovery). `#[cfg(test)]` here is a
-// superset of `tsan_concurrent_factory`'s cfg, so these exist whenever it compiles;
-// `pub(super)` so both children pick them up via their `use super::*;`.
+// Shared by the test submodules that exercise index-mode handles (`mod tests`
+// and `mod tsan_concurrent_factory`, both file-root siblings). F4 selects index
+// mode by the `index-gc` feature, so tests no longer mutate process-global GC
+// mode. The guard remains because these tests also share global index-heap state
+// and must serialize while values with index handles are live.
 #[cfg(test)]
-pub(super) use crate::backend::models::metta_value::{
-    reset_gc_mode_slab as real_reset_gc_mode_slab, set_gc_mode_index as real_set_gc_mode_index,
-};
-#[cfg(test)]
-static GC_MODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-// pub(crate) (was pub(super)): cross-module index-mode tests (the exp18 JIT
-// fence round-trip in jit/types/value.rs) must serialize on this SAME
-// process-wide mode lock — a second lock elsewhere would reintroduce the
-// cross-module mode-flip race documented above.
+static INDEX_MODE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 pub(crate) struct IndexModeTestGuard {
-    #[allow(dead_code)] // held for RAII: Drop resets the mode + releases the lock
+    #[allow(dead_code)] // held for RAII: releases the shared index-test lock last
     lock: std::sync::MutexGuard<'static, ()>,
-}
-#[cfg(test)]
-impl Drop for IndexModeTestGuard {
-    fn drop(&mut self) {
-        // Reset to slab UNDER the lock (the `lock` field drops after this body),
-        // AFTER the test's index-mode values/heaps have dropped (this guard is
-        // bound first, so it drops last).
-        real_reset_gc_mode_slab();
-    }
 }
 #[cfg(test)]
 #[must_use = "bind as `let _mode = enter_index_mode_for_test();` to hold the lock for the test"]
 pub(crate) fn enter_index_mode_for_test() -> IndexModeTestGuard {
-    let lock = GC_MODE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    real_set_gc_mode_index();
+    let lock = INDEX_MODE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
     IndexModeTestGuard { lock }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The gc-mode serialization lock + the `enter_index_mode_for_test` RAII guard
-    // live at the file-root module (above) so `mod tsan_concurrent_factory` shares
-    // the SAME lock; both submodules pick them up via `use super::*;`. Only the
-    // no-op `reset_gc_mode_slab` shadow stays module-local (only `mod tests` makes
-    // those calls; the real slab reset is deferred to the guard's Drop).
-    /// No-op shadow: the real slab reset is deferred to `IndexModeTestGuard::drop`.
-    #[allow(dead_code)]
-    fn reset_gc_mode_slab() {}
 
     struct RendezvousWitnessTestGuard;
 
@@ -3715,7 +3685,6 @@ mod tests {
         // sx still resolves its children after sweep.
         assert_eq!(heap.children(sx).len(), 2);
         let _ = orphan;
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -3743,7 +3712,6 @@ mod tests {
         );
         assert_eq!(heap.str_slice(child), "space-child");
         let _ = orphan;
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -3788,7 +3756,6 @@ mod tests {
         );
         assert_eq!(heap.str_slice(child), "young-space-child");
         let _ = orphan;
-        reset_gc_mode_slab();
     }
 
     // ---- F1 SATB-young lever: the stale-old-mark discriminator + the fix ----
@@ -3832,7 +3799,6 @@ mod tests {
             heap.arena.is_marked(child),
             "after clear_old_marks the full mark descends and marks the live child"
         );
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -3877,7 +3843,6 @@ mod tests {
             "the unreachable young orphan is reclaimed"
         );
         let _ = young_orphan;
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -3899,7 +3864,6 @@ mod tests {
         // The live string is intact and the current segment's side-arena is kept.
         assert_eq!(heap.str_slice(live), "live");
         assert!(live_seg != 0, "live value is not in the released segment 0");
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -3924,7 +3888,6 @@ mod tests {
         );
         // live_bytes reflects only the surviving high-water node slots.
         assert!(heap.live_bytes() > 0, "the live string still counts");
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -3956,7 +3919,6 @@ mod tests {
             "replacement",
             "draining the old side snapshot must not free the replacement's side slot"
         );
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -3980,7 +3942,6 @@ mod tests {
             !heap.has_current_free_slot(),
             "the exclusive reuse path consumed the current-segment slot"
         );
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4047,7 +4008,6 @@ mod tests {
         );
         assert_eq!(heap.str_slice(replacement), "replacement");
         assert_eq!(heap.str_slice(live), "live-root");
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4078,7 +4038,6 @@ mod tests {
         assert_eq!(replacement, dead, "the single free-list entry is reusable");
         heap.free_pending_side_reclaims();
         assert_eq!(heap.str_slice(replacement), "replacement");
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4109,7 +4068,6 @@ mod tests {
         assert_eq!(replacement, dead, "the single free-list entry is reusable");
         heap.free_pending_side_reclaims();
         assert_eq!(heap.children(replacement).len(), 2);
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4135,7 +4093,6 @@ mod tests {
             1,
             "a full mark that proves the owner live must not free its children slot"
         );
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4209,7 +4166,6 @@ mod tests {
             1,
             "the co-resident live node's side payload is unaffected"
         );
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4231,7 +4187,6 @@ mod tests {
             !index_gc::gate_open_midloop(),
             "midloop gate must be closed once a worker has ever been spawned"
         );
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4276,12 +4231,11 @@ mod tests {
             minors_after > minors_before,
             "forced dedicated gate must include a minor rendezvous cycle: before={minors_before}, after={minors_after}"
         );
-
-        reset_gc_mode_slab();
     }
 
     #[test]
     fn global_index_heap_initializes() {
+        let _mode = enter_index_mode_for_test();
         // Smoke: the global heap is constructible and allocates.
         let mut guard = global_index_heap().write().expect("lock");
         let a = guard.alloc_string("global");
@@ -4354,8 +4308,6 @@ mod tests {
             store.alloc_count() > before,
             "store.factory() allocates into the heap"
         );
-
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4434,8 +4386,6 @@ mod tests {
             matches!(sp2.view(), ValueView::Atom(s) if s == "inner"),
             "view() strips nested Spanned layers"
         );
-
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4557,8 +4507,6 @@ mod tests {
         assert_eq!(sp.span(), Some(&span));
         assert_eq!(sp.spans(), vec![&span]);
         assert!(sp.peel_span().0.as_atom() == Some("y") && sp.peel_span().1 == Some(&span));
-
-        reset_gc_mode_slab();
     }
 
     /// exp46: the defining v2 property the per-thread INNER_SHADOW could not
@@ -4600,8 +4548,6 @@ mod tests {
             matches!(a.inner_ref(), MettaValueInner::Atom(s) if *s == "inner-column-shared-a"),
             "cell content intact after epoch bump"
         );
-
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4652,8 +4598,6 @@ mod tests {
         // …but it still carries the variable flag and is structurally equal.
         assert_eq!(v1.tagged & 0xF, FLAG_HAS_VARIABLES);
         assert_eq!(v1, v2, "non-hash-consed SExprs remain structurally equal");
-
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4708,8 +4652,6 @@ mod tests {
             "dead content re-interns to CORRECT (3,4) content — entry dropped + \
              re-allocated, not a dangling hit on the reclaimed (now-(5,6)) slot"
         );
-
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4750,8 +4692,6 @@ mod tests {
                 && kids[1].tagged == items[1].tagged,
             "the revived value must not be clobbered by a later allocation"
         );
-
-        reset_gc_mode_slab();
     }
 
     #[test]
@@ -4782,8 +4722,6 @@ mod tests {
                 && kids[1].tagged == items[1].tagged,
             "missing-side stale entry must be a miss that rebuilds the children slot"
         );
-
-        reset_gc_mode_slab();
     }
 
     // C1.c #1 cache-invalidation regression guard: the failure mode (a reused Addr
@@ -4828,7 +4766,6 @@ mod tests {
         // A non-Spanned value is returned unchanged.
         let plain = f.atom("y");
         assert_eq!(plain.strip_spans().as_atom(), Some("y"));
-        reset_gc_mode_slab();
     }
 
     // ── D-TLAB-1.0: `SideColumn<T>` single-threaded unit tests ──────────────

@@ -533,10 +533,8 @@ mod tests {
     fn collect_jit_value_into_index_reconstructs_handle() {
         use crate::backend::bytecode::jit::runtime::helpers::metta_to_jit;
         use crate::backend::eval::cesk::index_heap::IndexFactory;
-        use crate::backend::models::metta_value::{reset_gc_mode_slab, set_gc_mode_index};
         use crate::backend::models::MettaValueFactory;
 
-        set_gc_mode_index();
         let f = IndexFactory;
         // A heap value (ground SExpr) packs to TAG_PTR carrying its Addr bits.
         let v = f.sexpr(vec![f.atom("foo"), f.long(7)]);
@@ -555,7 +553,5 @@ mod tests {
         out.clear();
         unsafe { collect_jit_value_into(metta_to_jit(&f.long(42)), &mut out) };
         assert!(out.is_empty(), "inline scalar is not a GC root");
-
-        reset_gc_mode_slab();
     }
 }

@@ -189,7 +189,6 @@ impl ArenaNode for Node {
 mod tests {
     use super::*;
     use crate::backend::eval::cesk::index_arena::Addr;
-    use crate::backend::models::metta_value::{reset_gc_mode_slab, set_gc_mode_index};
 
     #[test]
     fn node_is_copy_and_compact() {
@@ -208,9 +207,7 @@ mod tests {
     #[test]
     fn child_addrs_enumerates_inline_handle_children() {
         // `child_addrs` decodes child handles via `as_arena_addr`, which yields
-        // an Addr only in Index mode. Flip the process-global mode for this test
-        // (nextest isolates each test in its own process) and restore it after.
-        set_gc_mode_index();
+        // an Addr in an index-gc build.
         let a = Addr::new(1, 2);
         let b = Addr::new(3, 4);
         let ha = MettaValue::from_addr(a, 0, 1); // synthetic: any valid TAG5 (child_addrs ignores tags)
@@ -252,7 +249,5 @@ mod tests {
             out.is_empty(),
             "SExpr/Conjunction (resolved by IndexHeap) and leaves push no addresses"
         );
-
-        reset_gc_mode_slab();
     }
 }

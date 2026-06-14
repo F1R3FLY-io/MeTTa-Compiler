@@ -3828,6 +3828,8 @@ fn parallel_collapse_dispatch(
 /// Minimum number of collapse results to trigger parallel evaluation.
 /// Below this threshold, the sequential `ProcessCollapseEvalResults` path
 /// is cheaper due to lower overhead (no Arc, no Mutex, no condvar).
+/// This is an admission threshold, not a spawn cap: once admitted,
+/// `parallel_collapse_dispatch` represents every collapse result item.
 ///
 /// Phase 10.G (2026-05-17): default lowered 16 → 8. PLN's inner Derive
 /// step typically produces 4–12 collapse results; the old threshold of

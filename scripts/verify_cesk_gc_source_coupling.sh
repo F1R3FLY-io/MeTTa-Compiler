@@ -178,6 +178,31 @@ assert_after_before \
   "fn parallel_dispatch(" \
   "let remaining = Arc::new(std::sync::atomic::AtomicU32::new(num_branches as u32));" \
   "for (slot, (branch_expr, branch_bindings)) in branches.iter().enumerate() {"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "Minimum number of collapse results" \
+  "This is an admission threshold, not a spawn cap" \
+  "fn parallel_collapse_threshold()"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let par_budget = if n_results >= parallel_collapse_threshold()" \
+  "try_acquire_budget((n_results - 1) as u32, current_depth)" \
+  "} else {"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let par_budget = if expr_results.len() >= parallel_collapse_threshold()" \
+  "try_acquire_budget((expr_results.len() - 1) as u32, current_depth)" \
+  "} else {"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "fn parallel_collapse_dispatch(" \
+  "let num_items = items.len();" \
+  "let results: ParallelEvalResults = Arc::new(Mutex::new(vec![None; num_items]));"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "fn parallel_collapse_dispatch(" \
+  "let remaining = Arc::new(std::sync::atomic::AtomicU32::new(num_items as u32));" \
+  "for (slot, (item_expr, item_bindings)) in items.iter().enumerate() {"
 assert_count "src/backend/scheduler/classification.rs" "self.l2_entries.insert(insert_at, entry);" "1"
 assert_count "src/backend/scheduler/classification.rs" "if *other_start as usize >= insert_at {" "1"
 assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS" "];" "\"random-int\""

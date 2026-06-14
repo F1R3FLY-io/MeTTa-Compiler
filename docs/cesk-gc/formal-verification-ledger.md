@@ -351,6 +351,12 @@ capped debug Robot replay after the conditional canary produced the expected fri
   not a partial-spawn cap. Once admitted, stack-safe fanout represents every branch slot; the fixed work pool,
   queue-pressure gate, per-depth quota, completion guard, and cancellation protocol bound execution. TLC rejects both
   degree-capped partial fanout (which drops required branches) and admission with the degree gate removed.
+- `formal/rocq/gc/CollapseFanoutAdmissionCompleteness.v` and
+  `tla/CollapseFanoutAdmissionCompleteness.tla`: prove and model-check the matching input-completeness contract for
+  `collapse` and `collapse-bind`. The collapse threshold is an admission threshold, not a spawn cap; once admitted,
+  `parallel_collapse_dispatch` represents every collapse result item. This complements `CollapseCompletion.v`, which
+  proves successful completion cannot silently omit a spawned result slot. TLC rejects both threshold-capped partial
+  collapse fanout and admission with the threshold gate removed.
 - `formal/rocq/gc/SchedulerTransducerParallelism.v` and `tla/SchedulerTransducerParallelism.tla`: prove and
   model-check the WFST transducer parallelism contract used by the evaluator's `parallelism_degree > 1` gate. The
   default table never constructs degree 0; only branch-parallel classes can cross the default fanout gate; branch-aware

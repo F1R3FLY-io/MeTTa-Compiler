@@ -345,6 +345,12 @@ capped debug Robot replay after the conditional canary produced the expected fri
   trigger backstop, posted-driver or SATB-abort-to-STW fallback, generation-based resume, participant contribution,
   and completion-guard premises, every active parked worker is resumed and the parent wait cannot be stranded by a
   missing worker completion drop. The temporal eventuality/discriminator layer remains the paired TLC suite.
+- `formal/rocq/gc/SchedulerFanoutAdmissionCompleteness.v` and
+  `tla/SchedulerFanoutAdmissionCompleteness.tla`: prove and model-check the live fanout admission contract. The WFST
+  `parallelism_degree` is an admission gate (`1` sequential, `>1` eligible for the purity/depth/pool/budget gates),
+  not a partial-spawn cap. Once admitted, stack-safe fanout represents every branch slot; the fixed work pool,
+  queue-pressure gate, per-depth quota, completion guard, and cancellation protocol bound execution. TLC rejects both
+  degree-capped partial fanout (which drops required branches) and admission with the degree gate removed.
 - `formal/rocq/gc/SchedulerTransducerParallelism.v` and `tla/SchedulerTransducerParallelism.tla`: prove and
   model-check the WFST transducer parallelism contract used by the evaluator's `parallelism_degree > 1` gate. The
   default table never constructs degree 0; only branch-parallel classes can cross the default fanout gate; branch-aware

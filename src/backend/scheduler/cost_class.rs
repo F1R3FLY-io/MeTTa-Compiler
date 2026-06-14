@@ -274,8 +274,10 @@ pub enum AffinityHint {
 pub struct SchedulingAction {
     /// Priority class (0 = highest/interactive, 50 = lowest/batch).
     pub priority_class: u8,
-    /// How many parallel workers to allocate for this expression's branches.
-    /// 1 = sequential, >1 = fan out to this many workers.
+    /// Admission degree for branch fanout.
+    /// 1 = sequential; >1 allows the evaluator to try the purity/depth/pool/
+    /// budget gates. Once admitted, stack-safe dispatch still represents every
+    /// branch; the fixed work pool and queue-pressure gates bound execution.
     pub parallelism_degree: u8,
     /// Worker affinity hint.
     pub affinity_hint: AffinityHint,

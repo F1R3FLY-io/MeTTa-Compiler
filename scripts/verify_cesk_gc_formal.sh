@@ -196,6 +196,7 @@ run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/SchedulerGcBoundary.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutProgress.v"
+run_rocq "formal/rocq/gc/SchedulerFanoutAdmissionCompleteness.v"
 run_rocq "formal/rocq/gc/SchedulerWavefrontParallelism.v"
 run_rocq "formal/rocq/gc/SchedulerTransducerParallelism.v"
 run_rocq "formal/rocq/gc/SchedulerDynamicEvalGate.v"
@@ -258,6 +259,12 @@ run_tlc "scheduler_transducer_zero_cap_bug" "SchedulerTransducerParallelism.tla"
   fail "The invariant of NonZeroDegree is equal to FALSE"
 run_tlc "scheduler_transducer_underutilized" "SchedulerTransducerParallelism.tla" "MC_SchedulerTransducerParallelism_underutilized.cfg" \
   fail "The invariant of MaximalBeforeCap is equal to FALSE"
+run_tlc "scheduler_fanout_admission_all" "SchedulerFanoutAdmissionCompleteness.tla" "MC_SchedulerFanoutAdmissionCompleteness_all.cfg" \
+  pass ""
+run_tlc "scheduler_fanout_admission_partial" "SchedulerFanoutAdmissionCompleteness.tla" "MC_SchedulerFanoutAdmissionCompleteness_partial.cfg" \
+  fail "The invariant of CompleteAdmittedFanout is equal to FALSE"
+run_tlc "scheduler_fanout_admission_missing_degree" "SchedulerFanoutAdmissionCompleteness.tla" "MC_SchedulerFanoutAdmissionCompleteness_missing_degree.cfg" \
+  fail "The invariant of DegreeGateRequired is equal to FALSE"
 run_tlc "scheduler_dynamic_eval_gate_fixed" "SchedulerDynamicEvalGate.tla" "MC_SchedulerDynamicEvalGate_fixed.cfg" \
   pass ""
 run_tlc "scheduler_dynamic_eval_gate_missing" "SchedulerDynamicEvalGate.tla" "MC_SchedulerDynamicEvalGate_missing.cfg" \

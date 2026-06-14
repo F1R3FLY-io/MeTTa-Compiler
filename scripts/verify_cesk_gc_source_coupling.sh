@@ -148,6 +148,36 @@ assert_after_before \
   "let safe_max_parallel = max_parallel.max(1);" \
   "action.parallelism_degree = branch_count.min(safe_max_parallel);"
 line_no "src/backend/scheduler/transducer.rs" "fn test_transduce_with_zero_cap_stays_sequential_nonzero()" >/dev/null
+assert_after_before \
+  "src/backend/scheduler/cost_class.rs" \
+  "pub struct SchedulingAction" \
+  "Admission degree for branch fanout." \
+  "pub parallelism_degree: u8,"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let budget = if cut_barrier == 0" \
+  "try_acquire_budget((matches.len() - 1) as u32, current_depth)" \
+  "} else {"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let par_budget = if wfst_allows" \
+  "try_acquire_budget((alternatives.len() - 1) as u32, current_depth)" \
+  "} else {"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let par_budget = if wfst_allows_match" \
+  "try_acquire_budget((instantiated_bodies.len() - 1) as u32, current_depth)" \
+  "} else {"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "fn parallel_dispatch(" \
+  "let num_branches = branches.len();" \
+  "let results: ParallelEvalResults = Arc::new(Mutex::new(vec![None; num_branches]));"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "fn parallel_dispatch(" \
+  "let remaining = Arc::new(std::sync::atomic::AtomicU32::new(num_branches as u32));" \
+  "for (slot, (branch_expr, branch_bindings)) in branches.iter().enumerate() {"
 assert_count "src/backend/scheduler/classification.rs" "self.l2_entries.insert(insert_at, entry);" "1"
 assert_count "src/backend/scheduler/classification.rs" "if *other_start as usize >= insert_at {" "1"
 assert_zero_between "src/backend/scheduler/classification.rs" "const PURE_HEADS" "];" "\"random-int\""

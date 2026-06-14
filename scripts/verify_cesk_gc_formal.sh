@@ -396,6 +396,12 @@ run_tlc "threading_end_to_end_unclaimed_cron" "ThreadingEndToEndInterleaving.tla
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_startup_no_poll" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_startup_no_poll.cfg" \
   fail "Invariant NoCronStartupTaskLost is violated"
+run_tlc "threading_end_to_end_work_pool_lossy_enqueue" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_work_pool_lossy_enqueue.cfg" \
+  fail "Invariant WorkPoolAllSubmittedComplete is violated"
+run_tlc "threading_end_to_end_work_pool_no_inner_catch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_work_pool_no_inner_catch.cfg" \
+  fail "Invariant WorkPoolTaskPanicPublishesHeartbeat is violated"
+run_tlc "threading_end_to_end_work_pool_no_outer_catch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_work_pool_no_outer_catch.cfg" \
+  fail "Invariant WorkPoolWorkerAliveAfterHandled is violated"
 run_tlc "counter_flush_locked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_locked.cfg" \
   pass ""
 run_tlc "counter_flush_unlocked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_unlocked.cfg" \

@@ -20,7 +20,13 @@ CONSTANTS
     ReadySentInsideCronRun,
     ScheduleCronTaskAfterReady,
     CronCheckEventsPolls,
-    CronDrainChannelPolls
+    CronDrainChannelPolls,
+    WorkPoolStartupSubmissions,
+    WorkPoolStartWorkers,
+    WorkPoolLossyEnqueue,
+    WorkPoolFirstFailure,
+    WorkPoolInnerCatch,
+    WorkPoolOuterCatch
 
 TASKS == {"producer", "consumer"}
 
@@ -43,7 +49,18 @@ VARIABLES
     cronReadyObserved,
     cronStartupTaskSubmitted,
     cronStartupTaskObserved,
-    cronStartupTaskLost
+    cronStartupTaskLost,
+    workPoolSubmitted,
+    workPoolQueue,
+    workPoolCompleted,
+    workPoolWorkersStarted,
+    workPoolStartupPhase,
+    workPoolPanicPhase,
+    workPoolWorkerAlive,
+    workPoolFirstHandled,
+    workPoolSecondCompleted,
+    workPoolRuntimeRecorded,
+    workPoolCpuPublished
 
 baseVars ==
     <<phase, wave, running, completed, consumerBeforeProducer,
@@ -54,7 +71,17 @@ startupVars ==
     <<startupPhase, cronReadyObserved, cronStartupTaskSubmitted,
       cronStartupTaskObserved, cronStartupTaskLost>>
 
-vars == <<baseVars, startupVars>>
+workPoolStartupVars ==
+    <<workPoolSubmitted, workPoolQueue, workPoolCompleted,
+      workPoolWorkersStarted, workPoolStartupPhase>>
+
+workPoolPanicVars ==
+    <<workPoolPanicPhase, workPoolWorkerAlive, workPoolFirstHandled,
+      workPoolSecondCompleted, workPoolRuntimeRecorded, workPoolCpuPublished>>
+
+workPoolVars == <<workPoolStartupVars, workPoolPanicVars>>
+
+vars == <<baseVars, startupVars, workPoolVars>>
 
 BooleanConstantsOK ==
     /\ HasDependency \in BOOLEAN
@@ -71,9 +98,15 @@ BooleanConstantsOK ==
     /\ ScheduleCronTaskAfterReady \in BOOLEAN
     /\ CronCheckEventsPolls \in BOOLEAN
     /\ CronDrainChannelPolls \in BOOLEAN
+    /\ WorkPoolStartWorkers \in BOOLEAN
+    /\ WorkPoolLossyEnqueue \in BOOLEAN
+    /\ WorkPoolInnerCatch \in BOOLEAN
+    /\ WorkPoolOuterCatch \in BOOLEAN
 
 TypeOK ==
     /\ BooleanConstantsOK
+    /\ WorkPoolStartupSubmissions \in Nat
+    /\ WorkPoolFirstFailure \in {"task", "accounting"}
     /\ phase \in {"init", "scheduled", "running", "done"}
     /\ wave \in [TASKS -> Nat]
     /\ running \subseteq TASKS
@@ -93,6 +126,17 @@ TypeOK ==
     /\ cronStartupTaskSubmitted \in BOOLEAN
     /\ cronStartupTaskObserved \in BOOLEAN
     /\ cronStartupTaskLost \in BOOLEAN
+    /\ workPoolSubmitted \in 0..WorkPoolStartupSubmissions
+    /\ workPoolQueue \in 0..WorkPoolStartupSubmissions
+    /\ workPoolCompleted \in 0..WorkPoolStartupSubmissions
+    /\ workPoolWorkersStarted \in BOOLEAN
+    /\ workPoolStartupPhase \in {"submit", "drain", "done", "stuck"}
+    /\ workPoolPanicPhase \in {"first", "second", "done", "dead"}
+    /\ workPoolWorkerAlive \in BOOLEAN
+    /\ workPoolFirstHandled \in BOOLEAN
+    /\ workPoolSecondCompleted \in BOOLEAN
+    /\ workPoolRuntimeRecorded \in BOOLEAN
+    /\ workPoolCpuPublished \in BOOLEAN
 
 EdgeComplete ==
     /\ (HasDependency => DependencyEdgeEncoded)
@@ -121,6 +165,17 @@ Init ==
     /\ cronStartupTaskSubmitted = FALSE
     /\ cronStartupTaskObserved = FALSE
     /\ cronStartupTaskLost = FALSE
+    /\ workPoolSubmitted = 0
+    /\ workPoolQueue = 0
+    /\ workPoolCompleted = 0
+    /\ workPoolWorkersStarted = FALSE
+    /\ workPoolStartupPhase = "submit"
+    /\ workPoolPanicPhase = "first"
+    /\ workPoolWorkerAlive = TRUE
+    /\ workPoolFirstHandled = FALSE
+    /\ workPoolSecondCompleted = FALSE
+    /\ workPoolRuntimeRecorded = FALSE
+    /\ workPoolCpuPublished = FALSE
 
 Schedule ==
     /\ phase = "init"
@@ -230,6 +285,7 @@ CronStartupRun ==
     /\ startupPhase' = "ready"
     /\ cronReadyObserved' = (ReturnCronReadyReceiver /\ ReadySentInsideCronRun)
     /\ UNCHANGED baseVars
+    /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronStartupTaskSubmitted, cronStartupTaskObserved,
                   cronStartupTaskLost>>
 
@@ -239,6 +295,7 @@ CronStartupSubmitAfterReady ==
     /\ cronStartupTaskSubmitted' =
         (ScheduleCronTaskAfterReady /\ cronReadyObserved /\ ReturnCronHandleSender)
     /\ UNCHANGED baseVars
+    /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskObserved,
                   cronStartupTaskLost>>
 
@@ -249,6 +306,7 @@ CronStartupPollCheckEvents ==
     /\ startupPhase' = "observed"
     /\ cronStartupTaskObserved' = TRUE
     /\ UNCHANGED baseVars
+    /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
                   cronStartupTaskLost>>
 
@@ -259,6 +317,7 @@ CronStartupPollDrainChannel ==
     /\ startupPhase' = "observed"
     /\ cronStartupTaskObserved' = TRUE
     /\ UNCHANGED baseVars
+    /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
                   cronStartupTaskLost>>
 
@@ -268,6 +327,7 @@ CronStartupNoSubmittedTask ==
     /\ startupPhase' = "observed"
     /\ cronStartupTaskObserved' = FALSE
     /\ UNCHANGED baseVars
+    /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
                   cronStartupTaskLost>>
 
@@ -278,8 +338,126 @@ CronStartupLoseWithoutPollPath ==
     /\ startupPhase' = "lost"
     /\ cronStartupTaskLost' = TRUE
     /\ UNCHANGED baseVars
+    /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
                   cronStartupTaskObserved>>
+
+WorkPoolSubmit ==
+    /\ workPoolStartupPhase = "submit"
+    /\ workPoolSubmitted < WorkPoolStartupSubmissions
+    /\ workPoolSubmitted' = workPoolSubmitted + 1
+    /\ workPoolQueue' =
+        IF WorkPoolLossyEnqueue /\
+           workPoolSubmitted + 1 = WorkPoolStartupSubmissions
+        THEN workPoolQueue
+        ELSE workPoolQueue + 1
+    /\ workPoolCompleted' = workPoolCompleted
+    /\ workPoolWorkersStarted' = workPoolWorkersStarted
+    /\ workPoolStartupPhase' = workPoolStartupPhase
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolPanicVars
+
+WorkPoolStart ==
+    /\ workPoolStartupPhase = "submit"
+    /\ workPoolSubmitted = WorkPoolStartupSubmissions
+    /\ workPoolSubmitted' = workPoolSubmitted
+    /\ workPoolQueue' = workPoolQueue
+    /\ workPoolCompleted' = workPoolCompleted
+    /\ workPoolWorkersStarted' = WorkPoolStartWorkers
+    /\ workPoolStartupPhase' = "drain"
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolPanicVars
+
+WorkPoolDrain ==
+    /\ workPoolStartupPhase = "drain"
+    /\ workPoolWorkersStarted
+    /\ workPoolQueue > 0
+    /\ workPoolSubmitted' = workPoolSubmitted
+    /\ workPoolQueue' = workPoolQueue - 1
+    /\ workPoolCompleted' = workPoolCompleted + 1
+    /\ workPoolWorkersStarted' = workPoolWorkersStarted
+    /\ workPoolStartupPhase' = workPoolStartupPhase
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolPanicVars
+
+WorkPoolFinish ==
+    /\ workPoolStartupPhase = "drain"
+    /\ workPoolWorkersStarted
+    /\ workPoolQueue = 0
+    /\ workPoolSubmitted' = workPoolSubmitted
+    /\ workPoolQueue' = workPoolQueue
+    /\ workPoolCompleted' = workPoolCompleted
+    /\ workPoolWorkersStarted' = workPoolWorkersStarted
+    /\ workPoolStartupPhase' = "done"
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolPanicVars
+
+WorkPoolStuck ==
+    /\ workPoolStartupPhase = "drain"
+    /\ ~workPoolWorkersStarted
+    /\ workPoolQueue > 0
+    /\ workPoolSubmitted' = workPoolSubmitted
+    /\ workPoolQueue' = workPoolQueue
+    /\ workPoolCompleted' = workPoolCompleted
+    /\ workPoolWorkersStarted' = workPoolWorkersStarted
+    /\ workPoolStartupPhase' = "stuck"
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolPanicVars
+
+WorkPoolRunFirstTaskPanic ==
+    /\ workPoolPanicPhase = "first"
+    /\ WorkPoolFirstFailure = "task"
+    /\ workPoolFirstHandled' = TRUE
+    /\ workPoolSecondCompleted' = workPoolSecondCompleted
+    /\ workPoolRuntimeRecorded' = FALSE
+    /\ IF WorkPoolInnerCatch
+       THEN /\ workPoolWorkerAlive' = TRUE
+            /\ workPoolCpuPublished' = TRUE
+            /\ workPoolPanicPhase' = "second"
+       ELSE IF WorkPoolOuterCatch
+            THEN /\ workPoolWorkerAlive' = TRUE
+                 /\ workPoolCpuPublished' = FALSE
+                 /\ workPoolPanicPhase' = "second"
+            ELSE /\ workPoolWorkerAlive' = FALSE
+                 /\ workPoolCpuPublished' = FALSE
+                 /\ workPoolPanicPhase' = "dead"
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolStartupVars
+
+WorkPoolRunFirstAccountingPanic ==
+    /\ workPoolPanicPhase = "first"
+    /\ WorkPoolFirstFailure = "accounting"
+    /\ workPoolFirstHandled' = TRUE
+    /\ workPoolSecondCompleted' = workPoolSecondCompleted
+    /\ workPoolRuntimeRecorded' = FALSE
+    /\ workPoolCpuPublished' = FALSE
+    /\ IF WorkPoolOuterCatch
+       THEN /\ workPoolWorkerAlive' = TRUE
+            /\ workPoolPanicPhase' = "second"
+       ELSE /\ workPoolWorkerAlive' = FALSE
+            /\ workPoolPanicPhase' = "dead"
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolStartupVars
+
+WorkPoolRunSecond ==
+    /\ workPoolPanicPhase = "second"
+    /\ workPoolWorkerAlive
+    /\ workPoolPanicPhase' = "done"
+    /\ workPoolWorkerAlive' = workPoolWorkerAlive
+    /\ workPoolFirstHandled' = workPoolFirstHandled
+    /\ workPoolSecondCompleted' = TRUE
+    /\ workPoolRuntimeRecorded' = workPoolRuntimeRecorded
+    /\ workPoolCpuPublished' = TRUE
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolStartupVars
 
 Done ==
     /\ phase = "done"
@@ -303,13 +481,21 @@ ThreadingNext ==
     \/ Done
 
 Next ==
-    \/ (ThreadingNext /\ UNCHANGED startupVars)
+    \/ (ThreadingNext /\ UNCHANGED startupVars /\ UNCHANGED workPoolVars)
     \/ CronStartupRun
     \/ CronStartupSubmitAfterReady
     \/ CronStartupPollCheckEvents
     \/ CronStartupPollDrainChannel
     \/ CronStartupNoSubmittedTask
     \/ CronStartupLoseWithoutPollPath
+    \/ WorkPoolSubmit
+    \/ WorkPoolStart
+    \/ WorkPoolDrain
+    \/ WorkPoolFinish
+    \/ WorkPoolStuck
+    \/ WorkPoolRunFirstTaskPanic
+    \/ WorkPoolRunFirstAccountingPanic
+    \/ WorkPoolRunSecond
     \/ Idle
 
 Spec ==
@@ -321,6 +507,14 @@ Spec ==
     /\ WF_vars(CronStartupPollDrainChannel)
     /\ WF_vars(CronStartupNoSubmittedTask)
     /\ WF_vars(CronStartupLoseWithoutPollPath)
+    /\ WF_vars(WorkPoolSubmit)
+    /\ WF_vars(WorkPoolStart)
+    /\ WF_vars(WorkPoolDrain)
+    /\ WF_vars(WorkPoolFinish)
+    /\ WF_vars(WorkPoolStuck)
+    /\ WF_vars(WorkPoolRunFirstTaskPanic)
+    /\ WF_vars(WorkPoolRunFirstAccountingPanic)
+    /\ WF_vars(WorkPoolRunSecond)
 
 NoConsumerBeforeProducer ==
     ~consumerBeforeProducer
@@ -357,6 +551,34 @@ NoCronStartupTaskLost ==
 CronStartupSubmittedEventuallyObserved ==
     [](cronStartupTaskSubmitted => <>cronStartupTaskObserved)
 
+WorkPoolNoDropBeforeStart ==
+    (~WorkPoolLossyEnqueue /\ workPoolStartupPhase = "submit") =>
+      workPoolQueue = workPoolSubmitted
+
+WorkPoolAllSubmittedComplete ==
+    workPoolStartupPhase = "done" =>
+      workPoolCompleted = WorkPoolStartupSubmissions
+
+WorkPoolNoRuntimeRecordForTaskPanic ==
+    /\ workPoolFirstHandled
+    /\ WorkPoolFirstFailure = "task"
+    => ~workPoolRuntimeRecorded
+
+WorkPoolTaskPanicPublishesHeartbeat ==
+    /\ workPoolFirstHandled
+    /\ WorkPoolFirstFailure = "task"
+    => workPoolCpuPublished
+
+WorkPoolWorkerAliveAfterHandled ==
+    workPoolFirstHandled => workPoolWorkerAlive
+
+WorkPoolStartupEventuallyDrained ==
+    <>(workPoolStartupPhase = "done" /\
+       workPoolCompleted = WorkPoolStartupSubmissions)
+
+WorkPoolSecondEventuallyCompleted ==
+    <>workPoolSecondCompleted
+
 EndToEndSafe ==
     /\ NoConsumerBeforeProducer
     /\ NoSameWaveEffectConflict
@@ -368,5 +590,10 @@ EndToEndSafe ==
     /\ CronStartupScheduleAfterReadyHasHandle
     /\ CronStartupSubmittedReachable
     /\ NoCronStartupTaskLost
+    /\ WorkPoolNoDropBeforeStart
+    /\ WorkPoolAllSubmittedComplete
+    /\ WorkPoolNoRuntimeRecordForTaskPanic
+    /\ WorkPoolTaskPanicPublishesHeartbeat
+    /\ WorkPoolWorkerAliveAfterHandled
 
 =============================================================================

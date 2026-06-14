@@ -275,7 +275,11 @@ The formal lane covers the main scheduler obligations:
   recurring-cron in-flight claims into one small interleaving envelope.  The
   envelope also includes cron startup delivery, so a task submitted through the
   returned handle after the ready receiver observes startup is rejected if the
-  cron event loop has no `CheckEvents` or `DrainChannel` polling path.
+  cron event loop has no `CheckEvents` or `DrainChannel` polling path.  The same
+  envelope composes WorkPool startup drain and panic isolation: startup
+  submissions must be retained until workers drain them, task panics must
+  publish the heartbeat path, and accounting panics must not kill the worker
+  needed for subsequent queued work.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -555,6 +559,9 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_open_admission.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_startup_no_poll.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_work_pool_lossy_enqueue.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_work_pool_no_inner_catch.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_work_pool_no_outer_catch.cfg`
 
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`. The negative configs violate it when dependency edges are

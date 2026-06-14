@@ -195,6 +195,7 @@ run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
 run_rocq "formal/rocq/gc/SchedulerGcBoundary.v"
+run_rocq "formal/rocq/gc/SchedulerSpawnLatch.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutProgress.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutAdmissionCompleteness.v"
 run_rocq "formal/rocq/gc/CollapseFanoutAdmissionCompleteness.v"
@@ -539,6 +540,12 @@ run_tlc "scheduler_gc_boundary_missing_batch" "MC_SchedulerGcBoundary.tla" "MC_S
   fail "Invariant SchedulerBoundaryComplete is violated"
 run_tlc "scheduler_gc_boundary_admission_open" "MC_SchedulerGcBoundary.tla" "MC_SchedulerGcBoundary_admission_open.cfg" \
   fail "Invariant SchedulerBoundaryComplete is violated"
+run_tlc "scheduler_spawn_latch_all" "SchedulerSpawnLatch.tla" "MC_SchedulerSpawnLatch_all.cfg" \
+  pass ""
+run_tlc "scheduler_spawn_latch_spawn_before_latch" "SchedulerSpawnLatch.tla" "MC_SchedulerSpawnLatch_spawn_before_latch.cfg" \
+  fail "Invariant NoWorkerWithMidloopGateOpen is violated"
+run_tlc "scheduler_spawn_latch_missing_latch" "SchedulerSpawnLatch.tla" "MC_SchedulerSpawnLatch_missing_latch.cfg" \
+  fail "Invariant NoWorkerWithMidloopGateOpen is violated"
 run_tlc "dedicated_handoff_skip" "MC_DedicatedHandoff.tla" "MC_DedicatedHandoff_skip.cfg" \
   pass ""
 run_tlc "dedicated_handoff_empty_inline" "MC_DedicatedHandoff.tla" "MC_DedicatedHandoff_empty_inline.cfg" \

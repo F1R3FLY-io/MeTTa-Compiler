@@ -19,17 +19,42 @@
 use super::helpers::{jit_to_value_generic, value_to_jit_generic};
 use super::stack_ops::jit_runtime_load_constant;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_MASK, TAG_PTR, TAG_UNIT};
-use crate::backend::models::{
-    GcFactory, MettaValue, MettaValueFactory, MettaValueTrait, SlabAllocator,
-};
+use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
+// `GcFactory`/`SlabAllocator` are only the legacy slab opt-out path.  The
+// index-gc build must use `active_factory()` and ignore the JIT arena pointer
+// as a store selector (formal/rocq/gc/JitValueCreationStoreSelection.v).
+#[cfg(not(feature = "index-gc"))]
+use crate::backend::models::{GcFactory, SlabAllocator};
 
 // =============================================================================
 // Phase 2a: Value Creation Runtime (MakeSExpr, ConsAtom)
 // =============================================================================
 
+#[cfg(not(feature = "index-gc"))]
+#[inline]
+unsafe fn value_creation_factory(ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {
+    let arena_ptr = if !ctx.is_null() {
+        (*ctx).arena_ptr()
+    } else {
+        std::ptr::null()
+    };
+    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
+        &*(arena_ptr as *const SlabAllocator)
+    } else {
+        crate::backend::models::global_allocator()
+    };
+    GcFactory::new(alloc)
+}
+
+#[cfg(feature = "index-gc")]
+#[inline]
+unsafe fn value_creation_factory(_ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {
+    crate::backend::models::active_factory()
+}
+
 /// Create an S-expression from an array of NaN-boxed values.
 ///
-/// Uses the slab allocator (via GcFactory) for all value creation.
+/// Uses the active factory selected by the compiled GC store.
 ///
 /// # Arguments
 /// * `ctx` - JIT context (provides arena/allocator pointer)
@@ -50,23 +75,18 @@ pub unsafe extern "C" fn jit_runtime_make_sexpr(
     count: u64,
     _ip: u64,
 ) -> u64 {
-    let arena_ptr = if !ctx.is_null() {
-        (*ctx).arena_ptr()
-    } else {
-        std::ptr::null()
-    };
-    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
-        &*(arena_ptr as *const SlabAllocator)
-    } else {
-        crate::backend::models::global_allocator()
-    };
-    let factory = GcFactory::new(alloc);
-    make_sexpr_generic::<MettaValue, GcFactory>(values_ptr, count as usize, &factory).to_bits()
+    let factory = value_creation_factory(ctx);
+    make_sexpr_generic::<MettaValue, crate::backend::models::ActiveFactory>(
+        values_ptr,
+        count as usize,
+        &factory,
+    )
+    .to_bits()
 }
 
 /// Prepend a value to an S-expression (cons operation).
 ///
-/// Uses the slab allocator (via GcFactory) for all value creation.
+/// Uses the active factory selected by the compiled GC store.
 ///
 /// # Arguments
 /// * `ctx` - JIT context (provides arena/allocator pointer)
@@ -86,18 +106,9 @@ pub unsafe extern "C" fn jit_runtime_cons_atom(
     tail: u64,
     _ip: u64,
 ) -> u64 {
-    let arena_ptr = if !ctx.is_null() {
-        (*ctx).arena_ptr()
-    } else {
-        std::ptr::null()
-    };
-    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
-        &*(arena_ptr as *const SlabAllocator)
-    } else {
-        crate::backend::models::global_allocator()
-    };
-    let factory = GcFactory::new(alloc);
-    cons_atom_generic::<MettaValue, GcFactory>(head, tail, &factory).to_bits()
+    let factory = value_creation_factory(ctx);
+    cons_atom_generic::<MettaValue, crate::backend::models::ActiveFactory>(head, tail, &factory)
+        .to_bits()
 }
 
 // =============================================================================
@@ -122,7 +133,7 @@ pub unsafe extern "C" fn jit_runtime_push_uri(ctx: *const JitContext, index: u64
 /// Create a proper MeTTa list from an array of NaN-boxed values.
 ///
 /// Builds a linked list using the (Cons elem rest) structure.
-/// Uses the slab allocator (via GcFactory) for all value creation.
+/// Uses the active factory selected by the compiled GC store.
 ///
 /// # Arguments
 /// * `ctx` - JIT context (provides arena/allocator pointer)
@@ -143,24 +154,19 @@ pub unsafe extern "C" fn jit_runtime_make_list(
     count: u64,
     _ip: u64,
 ) -> u64 {
-    let arena_ptr = if !ctx.is_null() {
-        (*ctx).arena_ptr()
-    } else {
-        std::ptr::null()
-    };
-    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
-        &*(arena_ptr as *const SlabAllocator)
-    } else {
-        crate::backend::models::global_allocator()
-    };
-    let factory = GcFactory::new(alloc);
-    make_list_generic::<MettaValue, GcFactory>(values_ptr, count as usize, &factory).to_bits()
+    let factory = value_creation_factory(ctx);
+    make_list_generic::<MettaValue, crate::backend::models::ActiveFactory>(
+        values_ptr,
+        count as usize,
+        &factory,
+    )
+    .to_bits()
 }
 
 /// Wrap a value in a quote expression.
 ///
 /// Creates (quote value) S-expression to prevent evaluation.
-/// Uses the slab allocator (via GcFactory) for all value creation.
+/// Uses the active factory selected by the compiled GC store.
 ///
 /// # Arguments
 /// * `ctx` - JIT context (provides arena/allocator pointer)
@@ -174,18 +180,8 @@ pub unsafe extern "C" fn jit_runtime_make_list(
 /// * val must be a valid NaN-boxed value
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_make_quote(ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
-    let arena_ptr = if !ctx.is_null() {
-        (*ctx).arena_ptr()
-    } else {
-        std::ptr::null()
-    };
-    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
-        &*(arena_ptr as *const SlabAllocator)
-    } else {
-        crate::backend::models::global_allocator()
-    };
-    let factory = GcFactory::new(alloc);
-    make_quote_generic::<MettaValue, GcFactory>(val, &factory).to_bits()
+    let factory = value_creation_factory(ctx);
+    make_quote_generic::<MettaValue, crate::backend::models::ActiveFactory>(val, &factory).to_bits()
 }
 
 // =============================================================================

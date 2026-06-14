@@ -292,6 +292,17 @@ line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem accepted_request_erasure_
 line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem default_index_rejects_slab_request" >/dev/null
 line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem legacy_slab_rejects_index_request" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/RuntimeModeErasure.v"' >/dev/null
+line_no "formal/rocq/gc/JitValueCreationStoreSelection.v" "Require Import DefaultStoreSelection." >/dev/null
+line_no "formal/rocq/gc/JitValueCreationStoreSelection.v" "Definition cfg_split_value_creation_selection" >/dev/null
+line_no "formal/rocq/gc/JitValueCreationStoreSelection.v" "Definition unconditional_slab_value_creation_selection" >/dev/null
+line_no "formal/rocq/gc/JitValueCreationStoreSelection.v" "Theorem cfg_split_selection_matches_valid_store" >/dev/null
+line_no "formal/rocq/gc/JitValueCreationStoreSelection.v" "Theorem emitted_slab_factory_requires_slab_store" >/dev/null
+line_no "formal/rocq/gc/JitValueCreationStoreSelection.v" "Theorem index_selection_never_uses_runtime_arena_pointer" >/dev/null
+line_no "formal/rocq/gc/JitValueCreationStoreSelection.v" "Theorem unconditional_slab_mismatches_default_index" >/dev/null
+line_no "tla/JitValueCreationStoreSelection.tla" "FactoryMatchesCompiledStore ==" >/dev/null
+line_no "tla/JitValueCreationStoreSelection.tla" "NoSlabFactoryInIndex ==" >/dev/null
+line_no "tla/JitValueCreationStoreSelection.tla" "NoArenaPtrStoreSelectionInIndex ==" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/JitValueCreationStoreSelection.v"' >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Require Import DefaultStoreSelection." >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Definition guarded_arena_addr" >/dev/null
 line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Definition cfg_split_arena_addr" >/dev/null
@@ -322,6 +333,27 @@ assert_after_before \
   "runtime_effective_store features request = Some selected" \
   "eval_with_store selected = eval_with_store active."
 line_no "src/backend/models/metta_value.rs" "formal/rocq/gc/RuntimeModeErasure.v" >/dev/null
+line_no "src/backend/bytecode/jit/runtime/value_creation.rs" "formal/rocq/gc/JitValueCreationStoreSelection.v" >/dev/null
+assert_immediate_cfg_before \
+  "src/backend/bytecode/jit/runtime/value_creation.rs" \
+  "use crate::backend::models::{GcFactory, SlabAllocator};" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_immediate_cfg_before \
+  "src/backend/bytecode/jit/runtime/value_creation.rs" \
+  "unsafe fn value_creation_factory(ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_immediate_cfg_before \
+  "src/backend/bytecode/jit/runtime/value_creation.rs" \
+  "unsafe fn value_creation_factory(_ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {" \
+  "#[cfg(feature = \"index-gc\")]"
+line_no "src/backend/bytecode/jit/runtime/value_creation.rs" "crate::backend::models::active_factory()" >/dev/null
+assert_count "src/backend/bytecode/jit/runtime/value_creation.rs" "value_creation_factory(ctx)" "4"
+assert_count "src/backend/bytecode/jit/runtime/value_creation.rs" "GcFactory::new(alloc)" "1"
+assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_sexpr_generic::<MettaValue, GcFactory>"
+assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "cons_atom_generic::<MettaValue, GcFactory>"
+assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_list_generic::<MettaValue, GcFactory>"
+assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_quote_generic::<MettaValue, GcFactory>"
+assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "Uses the slab allocator (via GcFactory)"
 assert_after_before \
   "src/backend/models/metta_value.rs" \
   "pub(crate) fn gc_mode_is_index() -> bool" \
@@ -743,6 +775,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.v
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictCompleteness.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
@@ -770,6 +803,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.t
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictCompleteness.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.tla" "3"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"

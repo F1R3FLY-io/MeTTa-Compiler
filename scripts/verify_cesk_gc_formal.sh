@@ -225,6 +225,7 @@ run_rocq "formal/rocq/gc/ConcurrentTriggerBackstop.v"
 run_rocq "formal/rocq/gc/E1DefaultConcurrentFlip.v"
 run_rocq "formal/rocq/gc/E1SatbStwDriverProgress.v"
 run_rocq "formal/rocq/gc/DefaultStoreSelection.v"
+run_rocq "formal/rocq/gc/JitValueCreationStoreSelection.v"
 run_rocq "formal/rocq/gc/ArenaAddrDecodeErasure.v"
 run_rocq "formal/rocq/gc/CfgGuardErasure.v"
 run_rocq "formal/rocq/gc/InnerPtrDecodeErasure.v"
@@ -295,6 +296,14 @@ run_tlc "scheduler_active_fanout_missing_budget" "SchedulerActiveFanoutGate.tla"
   fail "The invariant of NoDispatchWithoutBudgetGate is equal to FALSE"
 run_tlc "scheduler_active_fanout_partial_dispatch" "SchedulerActiveFanoutGate.tla" "MC_SchedulerActiveFanoutGate_partial_dispatch.cfg" \
   fail "The invariant of CompleteDispatch is equal to FALSE"
+run_tlc "jit_value_creation_index_correct" "JitValueCreationStoreSelection.tla" "MC_JitValueCreationStoreSelection_index_correct.cfg" \
+  pass ""
+run_tlc "jit_value_creation_index_slab_bug" "JitValueCreationStoreSelection.tla" "MC_JitValueCreationStoreSelection_index_slab_bug.cfg" \
+  fail "The invariant of FactoryMatchesCompiledStore is equal to FALSE"
+run_tlc "jit_value_creation_index_arena_bug" "JitValueCreationStoreSelection.tla" "MC_JitValueCreationStoreSelection_index_arena_bug.cfg" \
+  fail "The invariant of NoArenaPtrStoreSelectionInIndex is equal to FALSE"
+run_tlc "jit_value_creation_legacy_slab_correct" "JitValueCreationStoreSelection.tla" "MC_JitValueCreationStoreSelection_legacy_slab_correct.cfg" \
+  pass ""
 run_tlc "scheduler_direct_fanout_wavefront_independent" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_independent.cfg" \
   pass ""
 run_tlc "scheduler_direct_fanout_wavefront_dependent_missing_gate" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_dependent_missing_gate.cfg" \

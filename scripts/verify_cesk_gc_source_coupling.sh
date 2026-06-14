@@ -694,6 +694,15 @@ assert_after_before \
 # A5 structural-root architecture: the dynamic root registry and raw frame-chain
 # discovery path must remain slab-only. The index collector reads roots from the
 # reified CESK machine plus narrow driver transport channels.
+line_no "formal/rocq/gc/RootDiscoveryErasure.v" "Require Import DefaultStoreSelection." >/dev/null
+line_no "formal/rocq/gc/RootDiscoveryErasure.v" "Require Import RegistryIsolation." >/dev/null
+line_no "formal/rocq/gc/RootDiscoveryErasure.v" "Definition legacy_discovery_effect" >/dev/null
+line_no "formal/rocq/gc/RootDiscoveryErasure.v" "Theorem default_index_erases_legacy_discovery_effects" >/dev/null
+line_no "formal/rocq/gc/RootDiscoveryErasure.v" "Theorem explicit_index_erases_legacy_discovery_effects" >/dev/null
+line_no "formal/rocq/gc/RootDiscoveryErasure.v" "Theorem emitted_discovery_effect_requires_slab" >/dev/null
+line_no "formal/rocq/gc/RootDiscoveryErasure.v" "Theorem legacy_only_value_not_index_collector_root" >/dev/null
+line_no "formal/rocq/gc/RootDiscoveryErasure.v" "Theorem future_touch_survives_without_legacy_discovery" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/RootDiscoveryErasure.v"' >/dev/null
 assert_zero "src/backend/eval/cesk/index_arena.rs" "not yet wired"
 assert_zero "src/backend/eval/cesk/index_heap.rs" "not yet wired"
 assert_zero "src/backend/eval/cesk/index_node.rs" "not yet wired"

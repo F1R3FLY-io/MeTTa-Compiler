@@ -15844,20 +15844,43 @@ fn process_continuation<C: EvalContext>(
 
                 let mut merged = base_results;
                 let guard = handle.results.lock().expect("results mutex poisoned");
-                // E1-FLIP ③ (red-team C3): tripwire — if `done_now` fired via the cancel
-                // disjunct (remaining != 0) while a slot is still `None`, a parked
-                // worker's branch would be silently dropped (a valid-but-wrong subset).
-                // The enclosing `collapse` shadows demand to `All`, so the cancel
-                // disjunct is inert for collapse (remaining==0 when done) — this asserts
-                // that invariant and catches any future non-`All` demand reaching here.
-                // Debug-only (release-inert).
-                debug_assert!(
-                    handle.remaining.load(Ordering::Acquire) == 0
-                        || guard.iter().all(|s| s.is_some()),
-                    "WaitForParallel(dispatch) done via cancel-disjunct with an unstored \
-                     (parked-worker) slot — a branch would be dropped. remaining={}",
-                    handle.remaining.load(Ordering::Acquire),
-                );
+                let remaining_now = handle.remaining.load(Ordering::Acquire);
+                let cancellation_satisfied = handle.cancel_token.is_satisfied();
+                let require_all_slots =
+                    handle.cancel_token.demand().is_all() || !cancellation_satisfied;
+                if require_all_slots && remaining_now != 0 {
+                    let err = ctx.factory().error(
+                        ctx.factory().atom("ParallelDispatchIncomplete"),
+                        ctx.factory().sexpr(vec![
+                            ctx.factory().atom("WaitForParallel"),
+                            ctx.factory().long(remaining_now as i64),
+                        ]),
+                    );
+                    drop(guard);
+                    let _ = outer_carrying;
+                    let _ = stable_branches_snapshot;
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(err)], env),
+                    });
+                    return;
+                }
+                let missing_slots = guard.iter().filter(|slot| slot.is_none()).count();
+                if require_all_slots && missing_slots != 0 {
+                    let err = ctx.factory().error(
+                        ctx.factory().atom("ParallelDispatchMissingResults"),
+                        ctx.factory().sexpr(vec![
+                            ctx.factory().atom("WaitForParallel"),
+                            ctx.factory().long(missing_slots as i64),
+                        ]),
+                    );
+                    drop(guard);
+                    let _ = outer_carrying;
+                    let _ = stable_branches_snapshot;
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(err)], env),
+                    });
+                    return;
+                }
                 for slot in guard.iter() {
                     if let Some(slot_results) = slot.as_ref() {
                         match merge_mode {
@@ -15980,22 +16003,47 @@ fn process_continuation<C: EvalContext>(
                 release_budget(budget_acquired, caller_depth);
 
                 // Drain results in slot order, filtering out empty values
-                // (matches parallel_collapse_eval merge semantics).
+                // (matches parallel_collapse_eval merge semantics). Release
+                // builds must not silently turn an incomplete/unstored worker
+                // slot into a valid-but-smaller collapse result: the formal
+                // CollapseCompletion obligation proves successful completion
+                // only after every required slot is stored.
                 let mut evaluated: Vec<BoundValue> = Vec::new();
                 let guard = handle.results.lock().expect("results mutex poisoned");
-                // E1-FLIP ③ (red-team C3): tripwire — if `done_now` fired via the cancel
-                // disjunct (remaining != 0) while a slot is still `None`, a parked
-                // worker's branch would be silently dropped (a valid-but-wrong subset).
-                // `collapse` evaluates under demand `All`, so the cancel disjunct is inert
-                // here (remaining==0 when done) — this asserts that invariant and catches
-                // any future non-`All` demand reaching the collapse merge. Debug-only.
-                debug_assert!(
-                    handle.remaining.load(Ordering::Acquire) == 0
-                        || guard.iter().all(|s| s.is_some()),
-                    "WaitForParallelCollapse done via cancel-disjunct with an unstored \
-                     (parked-worker) slot — a branch would be dropped. remaining={}",
-                    handle.remaining.load(Ordering::Acquire),
-                );
+                let remaining_now = handle.remaining.load(Ordering::Acquire);
+                if remaining_now != 0 {
+                    let err = ctx.factory().error(
+                        ctx.factory().atom("ParallelCollapseIncomplete"),
+                        ctx.factory().sexpr(vec![
+                            ctx.factory().atom("WaitForParallelCollapse"),
+                            ctx.factory().long(remaining_now as i64),
+                        ]),
+                    );
+                    drop(guard);
+                    let _ = outer_carrying;
+                    let _ = stable_items_snapshot;
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(err)], env),
+                    });
+                    return;
+                }
+                let missing_slots = guard.iter().filter(|slot| slot.is_none()).count();
+                if missing_slots != 0 {
+                    let err = ctx.factory().error(
+                        ctx.factory().atom("ParallelCollapseMissingResults"),
+                        ctx.factory().sexpr(vec![
+                            ctx.factory().atom("WaitForParallelCollapse"),
+                            ctx.factory().long(missing_slots as i64),
+                        ]),
+                    );
+                    drop(guard);
+                    let _ = outer_carrying;
+                    let _ = stable_items_snapshot;
+                    work_stack.push(WorkItem::Resume {
+                        result: (smallvec![bv(err)], env),
+                    });
+                    return;
+                }
                 for slot in guard.iter() {
                     if let Some(slot_results) = slot.as_ref() {
                         for bv_item in slot_results.iter() {

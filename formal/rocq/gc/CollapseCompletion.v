@@ -27,6 +27,11 @@ Section CollapseCompletionModel.
       (Spawned Dropped : Worker -> Prop) : Prop :=
     exists w, Spawned w /\ ~ Dropped w.
 
+  Definition SilentSuccessfulDrop
+      (Spawned SlotStored : Worker -> Prop)
+      (ParentSucceeded : Prop) : Prop :=
+    ParentSucceeded /\ exists w, Spawned w /\ ~ SlotStored w.
+
   Theorem guard_drop_covers_worker_exit :
     forall (Dropped : Worker -> Prop)
            (Exit : Worker -> ExitPath -> Prop),
@@ -101,6 +106,49 @@ Section CollapseCompletionModel.
     - exact Hobserved.
     - exact Hspawned.
     - exact Hpanic.
+  Qed.
+
+  Theorem strict_success_requires_all_slots_prevents_silent_drop :
+    forall (Spawned SlotStored : Worker -> Prop)
+           (ParentSucceeded : Prop),
+      (ParentSucceeded -> forall w, Spawned w -> SlotStored w) ->
+      ~ SilentSuccessfulDrop Spawned SlotStored ParentSucceeded.
+  Proof.
+    intros Spawned SlotStored ParentSucceeded Hstrict Hsilent.
+    destruct Hsilent as [Hsucceeded [w [Hspawned Hnot_stored]]].
+    apply Hnot_stored.
+    apply Hstrict.
+    - exact Hsucceeded.
+    - exact Hspawned.
+  Qed.
+
+  Theorem weak_success_with_missing_slot_witnesses_silent_drop :
+    forall (Spawned SlotStored : Worker -> Prop)
+           (ParentSucceeded : Prop)
+           (w : Worker),
+      ParentSucceeded ->
+      Spawned w ->
+      ~ SlotStored w ->
+      SilentSuccessfulDrop Spawned SlotStored ParentSucceeded.
+  Proof.
+    intros Spawned SlotStored ParentSucceeded w Hsucceeded Hspawned Hnot_stored.
+    split.
+    - exact Hsucceeded.
+    - exists w. split.
+      + exact Hspawned.
+      + exact Hnot_stored.
+  Qed.
+
+  Theorem missing_slot_forces_error_prevents_silent_success :
+    forall (Spawned SlotStored : Worker -> Prop)
+           (ParentSucceeded : Prop),
+      (forall w, Spawned w -> ~ SlotStored w -> ~ ParentSucceeded) ->
+      ~ SilentSuccessfulDrop Spawned SlotStored ParentSucceeded.
+  Proof.
+    intros Spawned SlotStored ParentSucceeded Hmissing_forces_error Hsilent.
+    destruct Hsilent as [Hsucceeded [w [Hspawned Hnot_stored]]].
+    apply (Hmissing_forces_error w Hspawned Hnot_stored).
+    exact Hsucceeded.
   Qed.
 End CollapseCompletionModel.
 

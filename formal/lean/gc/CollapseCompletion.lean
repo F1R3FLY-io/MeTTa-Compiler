@@ -25,6 +25,11 @@ def ParentWaitStranded
     (Spawned Dropped : Worker -> Prop) : Prop :=
   exists w, Spawned w ∧ Not (Dropped w)
 
+def SilentSuccessfulDrop
+    (Spawned SlotStored : Worker -> Prop)
+    (ParentSucceeded : Prop) : Prop :=
+  ParentSucceeded ∧ exists w, Spawned w ∧ Not (SlotStored w)
+
 theorem guard_drop_covers_worker_exit
     {Dropped : Worker -> Prop}
     {Exit : Worker -> ExitPath -> Prop}
@@ -92,5 +97,41 @@ theorem panic_skip_completion_can_strand_parent_observation
   intro observed
   have dropped : Dropped w := parentRequiresComplete observed spawned panicExit
   exact notDropped dropped
+
+theorem strict_success_requires_all_slots_prevents_silent_drop
+    {Spawned SlotStored : Worker -> Prop}
+    {ParentSucceeded : Prop}
+    (successRequiresSlots :
+      ParentSucceeded -> forall {w : Worker}, Spawned w -> SlotStored w) :
+    Not (SilentSuccessfulDrop Spawned SlotStored ParentSucceeded) := by
+  intro hsilent
+  cases hsilent with
+  | intro succeeded hmissing =>
+      cases hmissing with
+      | intro w hw =>
+          exact hw.right (successRequiresSlots succeeded hw.left)
+
+theorem weak_success_with_missing_slot_witnesses_silent_drop
+    {Spawned SlotStored : Worker -> Prop}
+    {ParentSucceeded : Prop}
+    {w : Worker}
+    (succeeded : ParentSucceeded)
+    (spawned : Spawned w)
+    (notStored : Not (SlotStored w)) :
+    SilentSuccessfulDrop Spawned SlotStored ParentSucceeded := by
+  exact And.intro succeeded (Exists.intro w (And.intro spawned notStored))
+
+theorem missing_slot_forces_error_prevents_silent_success
+    {Spawned SlotStored : Worker -> Prop}
+    {ParentSucceeded : Prop}
+    (missingForcesNoSuccess :
+      forall {w : Worker}, Spawned w -> Not (SlotStored w) -> Not ParentSucceeded) :
+    Not (SilentSuccessfulDrop Spawned SlotStored ParentSucceeded) := by
+  intro hsilent
+  cases hsilent with
+  | intro succeeded hmissing =>
+      cases hmissing with
+      | intro w hw =>
+          exact (missingForcesNoSuccess hw.left hw.right) succeeded
 
 end MeTTaTron.GC.CollapseCompletion

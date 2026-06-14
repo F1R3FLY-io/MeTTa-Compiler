@@ -319,6 +319,8 @@ run_tlc "collapse_fix" "CollapseCompletion.tla" "CollapseCompletion_fix.cfg" \
   pass ""
 run_tlc "collapse_bug" "CollapseCompletion.tla" "CollapseCompletion_bug.cfg" \
   fail "Temporal properties were violated"
+run_tlc "collapse_slot_bug" "CollapseCompletion.tla" "CollapseCompletion_slot_bug.cfg" \
+  fail "Invariant NoSilentSuccessfulDrop is violated"
 run_tlc "trampoline_fanout_spine_progress_faithful" "TrampolineFanoutSpineProgress.tla" "TrampolineFanoutSpineProgress_faithful.cfg" \
   pass ""
 run_tlc "trampoline_fanout_spine_progress_reset" "TrampolineFanoutSpineProgress.tla" "TrampolineFanoutSpineProgress_reset.cfg" \

@@ -55,6 +55,18 @@ currently sweeps as a full major only. The formal/source-coupling gate pins that
 contains a stale-old-mark discriminator: a young-only SATB final sweep violates `NoStaleOldMark` when an old SATB mark
 exists. A future young-only SATB path must therefore prove old SATB marks are absent or explicitly cleared before it
 can replace the full-major final sweep.
+On 2026-06-14, the parallel completion proof was strengthened from liveness-only to liveness plus no-silent-drop:
+after `WaitForParallel` or `WaitForParallelCollapse` observes completion for a required-complete group, successful
+output requires every spawned slot to have stored a result slot. A missing dispatch slot now returns
+`ParallelDispatchMissingResults`; a missing collapse slot returns `ParallelCollapseMissingResults`; an impossible
+required-complete completion with `remaining != 0` returns the matching `Parallel*Incomplete` error. These are error
+values, not valid smaller result sets. TLC now checks the positive rule and rejects the old successful-drop behavior
+with `CollapseCompletion_slot_bug.cfg`.
+Validation evidence from the same day: the capped full `scripts/verify_cesk_gc_formal.sh` harness passed after this
+change; a debug FANOUT=8 `Robot.metta` smoke that hit the pre-existing `ProcessRuleMatches` freshened-key canary now
+returned `(Error ParallelDispatchMissingResults (WaitForParallel 4))` instead of a silent empty result; the capped
+release FANOUT=8 `Robot.metta` smoke produced the expected frisbee+orange detections with `INDEX_GC_CYCLES_RUN=54`
+and `INDEX_GC_MIDLOOP_CYCLES=0`.
 
 ## Checked obligations
 
@@ -154,7 +166,9 @@ can replace the full-major final sweep.
   dispatch/collapse completion obligation. If every spawned worker exits and the RAII completion guard drops on both
   normal and panic-unwind exits, then the parent wait cannot be stranded by a skipped worker decrement; the companion
   theorem also captures the historical negative shape where a panic edge skips completion and parent observation is
-  impossible.
+  impossible. The same artifact now proves the release-mode no-silent-drop obligation: parent success must imply every
+  spawned required-complete dispatch/collapse result slot was stored, and any missing slot must force an error rather
+  than a successful subset.
 - `formal/rocq/gc/WorkerAdmission.v` and `formal/lean/gc/WorkerAdmission.lean`: prove the E1 worker-admission
   obligation. If collection admission is closed before the participant snapshot and no worker can join during the
   collection window, then every worker live at sweep was in the snapshot and is retained by ordinary mark/sweep.

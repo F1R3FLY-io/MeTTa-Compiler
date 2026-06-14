@@ -427,26 +427,93 @@ The index-GC architecture is structural-root based. WorkPool and scheduler code
 must not reintroduce a root registry or a cross-thread thread-local discovery
 side channel.
 
-The relevant runtime rules are:
+The scheduler/thread-pool/GC boundary contract is:
 
-- Per-worker roots come from that worker's reified machine state.
-- `EvalGuard` marks active evaluator participation.
-- Worker-spawn latches close non-rendezvous mid-loop collection once parallel
-  workers can observe the heap.
-- Batch outputs that cross the async gather boundary carry persistent
-  safepoint-root handles until the caller copies them into `MettaState.output`.
-- Dispatch/collapse fanout uses registered dispatch roots for live branches and
-  result slots.
+```text
+active eval worker
+  -> publishes structural roots from its own reified CESK machine registers
+live dispatch/collapse fanout
+  -> is represented by live-dispatch anchors for branch inputs and result slots
+async batch result not yet copied to output
+  -> is protected by a persistent safepoint/driver-C root handle
+driver collection root set
+  -> contains worker publications, safepoint roots, live env anchors,
+     and live dispatch anchors
+driver begins participant snapshot
+  -> closes worker admission before taking the snapshot
+eval worker handoff
+  -> stores the spawn latch before the worker can enter eval
+```
 
-The scheduler/thread-pool/GC boundary is modeled by:
+This contract forbids a collector from treating scheduler-held values as dead
+while any WorkPool, fanout, or async handoff path can still publish them. It
+also forbids a newly admitted worker from appearing after the driver has closed
+admission and before the collection snapshot is complete.
 
-- `SchedulerGcBoundary.v` and `SchedulerGcBoundary.tla`
-- `SchedulerSpawnLatch.v` and `SchedulerSpawnLatch.tla`
-- `BatchHandoff.v` and `BatchHandoff.tla`
-- `DriverRootUnion.v` and `DriverRootUnion.tla`
-- `CESKCollectorSafety.v`
+The boundary is modeled by:
 
-The source-coupling script pins these proof obligations to the implementation.
+- `formal/rocq/gc/SchedulerGcBoundary.v`
+- `tla/SchedulerGcBoundary.tla`
+- `tla/MC_SchedulerGcBoundary_all.cfg`
+- `tla/MC_SchedulerGcBoundary_missing_worker.cfg`
+- `tla/MC_SchedulerGcBoundary_missing_dispatch.cfg`
+- `tla/MC_SchedulerGcBoundary_missing_batch.cfg`
+- `tla/MC_SchedulerGcBoundary_admission_open.cfg`
+- `formal/rocq/gc/SchedulerSpawnLatch.v`
+- `tla/SchedulerSpawnLatch.tla`
+- `tla/MC_SchedulerSpawnLatch_all.cfg`
+- `tla/MC_SchedulerSpawnLatch_spawn_before_latch.cfg`
+- `tla/MC_SchedulerSpawnLatch_missing_latch.cfg`
+- `formal/rocq/gc/DriverRootUnion.v`
+- `tla/DriverRootUnion.tla`
+- `tla/MC_DriverRootUnion.tla`
+- `tla/MC_DriverRootUnion_all.cfg`
+- `tla/MC_DriverRootUnion_missing_env.cfg`
+- `tla/MC_DriverRootUnion_missing_dispatch.cfg`
+- `formal/rocq/gc/BatchHandoff.v`
+- `tla/BatchHandoff.tla`
+- `tla/MC_BatchHandoff_handle.cfg`
+- `tla/MC_BatchHandoff_no_handle.cfg`
+- `tla/MC_BatchHandoff_drop_before_copy.cfg`
+- `formal/rocq/gc/CESKCollectorSafety.v`
+
+The positive boundary model preserves `SchedulerBoundaryComplete`. Its missing
+worker, missing dispatch, missing batch, and admission-open discriminator models
+violate `SchedulerBoundaryComplete`, which means each root class and the closed
+admission gate are independently necessary.
+
+The driver-root-union model preserves `RootUnionComplete`. Its missing-env and
+missing-dispatch discriminator models violate `RootUnionComplete`, which means
+environment anchors and dispatch anchors are not optional implementation
+details.
+
+The batch-handoff model preserves `NoPublishedBatchResultFreed` when the async
+handoff carries a persistent handle until output copy. The no-handle and
+drop-before-copy discriminator models violate `NoPublishedBatchResultFreed`.
+
+The spawn-latch model preserves `NoWorkerWithMidloopGateOpen`. The
+spawn-before-latch and missing-latch discriminator models violate
+`NoWorkerWithMidloopGateOpen`, matching the forbidden execution where a worker
+can observe the heap before the non-rendezvous mid-loop collection gate is
+closed.
+
+The source-coupling script pins these proof obligations to the implementation:
+
+- Public eval and `eval_with_tier` register driver-C roots before entering the
+  eval guard.
+- Live environments are registered through `register_live_env()` and collected
+  by the environment root collectors.
+- Live dispatch/collapse fanouts are registered through `register_live_dispatch`
+  and collected by the dispatch anchor collectors.
+- `BatchOutcome` carries a `_root_handle: Option<SafepointRootHandle>`, result
+  vectors are registered before publication into gather slots, and the handle
+  rides through sort/drain until after output copy.
+- The driver closes worker admission before taking the participant snapshot.
+- `EvalGuard` backs out when `GC_IN_PROGRESS` is observed.
+- Dispatch and collapse workers wait for their dedicated rendezvous before
+  entering `EvalGuard`.
+- Every eval-worker handoff calls `note_worker_spawned()` before submitting the
+  worker to the pool.
 
 ## Configuration
 

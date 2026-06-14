@@ -314,8 +314,11 @@ assert_after_before \
   "cfg!(feature = \"index-gc\")" \
   "}"
 assert_regex_zero \
-  "src/backend" \
+  "src" \
   "set_gc_mode_index|reset_gc_mode_slab|static GC_MODE|GC_MODE\\.(load|store)"
+assert_regex_zero \
+  "src" \
+  "GC_MODE"
 assert_after_before \
   "src/backend/models/mod.rs" \
   "pub fn assert_gc_request" \

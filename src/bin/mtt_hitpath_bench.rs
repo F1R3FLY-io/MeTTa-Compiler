@@ -29,7 +29,7 @@ fn main() {
     use std::hint::black_box;
     use std::time::Instant;
 
-    // The index build starts in index mode (GC_MODE=1) — no flip needed.
+    // The index build selects the index store at compile time — no runtime flip.
     let f = mettatron::backend::models::global_factory();
 
     // ~1M mixed nodes: 50% atoms / 50% small ground sexprs — roughly the

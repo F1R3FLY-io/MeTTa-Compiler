@@ -280,6 +280,59 @@ assert_after_before \
   "eprintln!(\"[conformance] GC store = {active_store}\");"
 assert_count "src/bin/conformance_common.rs" "assert_gc_request(gc_request.as_deref())?" "1"
 
+# Phase F4 proof-first bridge deletion: RuntimeModeErasure.v is the checked
+# precondition for deleting the mutable runtime GC-mode bridge. Accepted runtime
+# requests must not select any store other than the compile-time active store;
+# mismatched concrete requests must hard-error before evaluation.
+line_no "formal/rocq/gc/RuntimeModeErasure.v" "Require Import DefaultStoreSelection." >/dev/null
+line_no "formal/rocq/gc/RuntimeModeErasure.v" "Definition runtime_effective_store" >/dev/null
+line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem runtime_request_cannot_switch_store" >/dev/null
+line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem runtime_erasure_complete" >/dev/null
+line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem accepted_request_erasure_preserves_evaluation" >/dev/null
+line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem default_index_rejects_slab_request" >/dev/null
+line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem legacy_slab_rejects_index_request" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/RuntimeModeErasure.v"' >/dev/null
+assert_after_before \
+  "formal/rocq/gc/RuntimeModeErasure.v" \
+  "Definition runtime_effective_store" \
+  "match active_store features with" \
+  "runtime_request_matches selected request"
+assert_after_before \
+  "formal/rocq/gc/RuntimeModeErasure.v" \
+  "Theorem runtime_request_cannot_switch_store" \
+  "active_store features = Some active" \
+  "selected = active."
+assert_after_before \
+  "formal/rocq/gc/RuntimeModeErasure.v" \
+  "Theorem accepted_request_erasure_preserves_evaluation" \
+  "runtime_effective_store features request = Some selected" \
+  "eval_with_store selected = eval_with_store active."
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "pub fn assert_gc_request" \
+  "let compiled = compiled_gc_store();" \
+  "Ok(compiled)"
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "match req.as_str() {" \
+  "\"\" | \"auto\" => {}" \
+  "\"slab\" | \"index\" => {"
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "match req.as_str() {" \
+  "r if r == compiled => {}" \
+  "\"slab\" | \"index\" => {"
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "\"slab\" | \"index\" => {" \
+  "return Err(format!(" \
+  "other => {"
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "other => {" \
+  "unknown --gc value" \
+  "Ok(compiled)"
+
 # Scheduler/cron formal obligations added with the threading-model proof lane.
 assert_count "src/backend/priority_scheduler.rs" "self.refresh_scores(&mut heap);" "3"
 assert_count "src/backend/priority_scheduler.rs" "other.task.sequence.cmp(&self.task.sequence)" "1"

@@ -209,6 +209,7 @@ run_rocq "formal/rocq/gc/CronRecurringDispatch.v"
 run_rocq "formal/rocq/gc/WorkPoolOverflowCap.v"
 run_rocq "formal/rocq/gc/WorkPoolLifecycle.v"
 run_rocq "formal/rocq/gc/WorkPoolStartupDrain.v"
+run_rocq "formal/rocq/gc/WorkPoolPanicIsolation.v"
 run_rocq "formal/rocq/gc/CounterFlushExclusion.v"
 run_rocq "formal/rocq/gc/GcDriverChannelProtocol.v"
 run_rocq "formal/rocq/gc/StructChannelPairing.v"
@@ -301,6 +302,14 @@ run_tlc "work_pool_startup_drain_no_start" "WorkPoolStartupDrain.tla" "WorkPoolS
   fail "Temporal properties were violated"
 run_tlc "work_pool_startup_drain_lossy_enqueue" "WorkPoolStartupDrain.tla" "WorkPoolStartupDrain_lossy_enqueue.cfg" \
   fail "Invariant AllSubmittedComplete is violated"
+run_tlc "work_pool_panic_task_caught" "WorkPoolPanicIsolation.tla" "WorkPoolPanicIsolation_task_caught.cfg" \
+  pass ""
+run_tlc "work_pool_panic_accounting_caught" "WorkPoolPanicIsolation.tla" "WorkPoolPanicIsolation_accounting_caught.cfg" \
+  pass ""
+run_tlc "work_pool_panic_no_inner" "WorkPoolPanicIsolation.tla" "WorkPoolPanicIsolation_no_inner.cfg" \
+  fail "Invariant TaskPanicPublishesHeartbeat is violated"
+run_tlc "work_pool_panic_no_outer" "WorkPoolPanicIsolation.tla" "WorkPoolPanicIsolation_no_outer.cfg" \
+  fail "Temporal properties were violated"
 run_tlc "counter_flush_locked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_locked.cfg" \
   pass ""
 run_tlc "counter_flush_unlocked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_unlocked.cfg" \

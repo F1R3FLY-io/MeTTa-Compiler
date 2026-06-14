@@ -86,6 +86,37 @@ The source-coupling check pins the corresponding implementation facts:
 - `test_async_init_tasks_drain()` remains present as an implementation smoke
   test for the abstract proof.
 
+## Panic-Isolation Contract
+
+WorkPool workers must keep draining the queue after a task panic or an internal
+accounting panic:
+
+```text
+queued task panics
+  -> PriorityTask::execute catches it
+  -> runtime is reported as zero
+  -> runtime/WFST accounting is skipped
+  -> worker heartbeat is still published
+  -> worker loops to the next queued task
+
+runtime tracking or WFST accounting panics
+  -> worker-loop outer catch handles it
+  -> worker loops to the next queued task
+```
+
+This is formally modeled by:
+
+- `formal/rocq/gc/WorkPoolPanicIsolation.v`
+- `tla/WorkPoolPanicIsolation.tla`
+- `tla/WorkPoolPanicIsolation_task_caught.cfg`
+- `tla/WorkPoolPanicIsolation_accounting_caught.cfg`
+- `tla/WorkPoolPanicIsolation_no_inner.cfg`
+- `tla/WorkPoolPanicIsolation_no_outer.cfg`
+
+The missing-inner-catch negative model violates
+`TaskPanicPublishesHeartbeat`. The missing-outer-catch negative model violates
+eventual completion of the next queued task.
+
 ## Parallel Eval Batching
 
 `src/rholang_integration.rs` batches consecutive independent eval expressions.

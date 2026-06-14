@@ -335,6 +335,43 @@ assert_after_before \
   "park.wait_if_parked_timeout(Duration::from_secs(5));" \
   "match queue.pop_timeout(&shutdown, Duration::from_millis(500)) {"
 line_no "src/backend/models/work_pool.rs" "fn test_async_init_tasks_drain()" >/dev/null
+assert_after_before \
+  "src/backend/priority_scheduler.rs" \
+  "pub fn execute(self) -> u64" \
+  "std::panic::catch_unwind(std::panic::AssertUnwindSafe(self.task))" \
+  "match result"
+assert_after_before \
+  "src/backend/priority_scheduler.rs" \
+  "Err(payload) =>" \
+  "\"PriorityTask panicked -- worker continues\"" \
+  "0"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "fn work_pool_worker_loop(" \
+  "let outer_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {" \
+  "let runtime_nanos = task.execute();"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "let runtime_nanos = task.execute();" \
+  "if runtime_nanos > 0 {" \
+  "runtime_tracker.record_runtime(task_type, runtime_nanos);"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "fn work_pool_worker_loop(" \
+  "if let Err(payload) = outer_result {" \
+  "\"work_pool_worker_loop: outer catch_unwind caught panic -- worker continues\""
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "fn overflow_worker_loop(" \
+  "let outer_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {" \
+  "let runtime_nanos = task.execute();"
+assert_after_before \
+  "src/backend/models/work_pool.rs" \
+  "fn overflow_worker_loop(" \
+  "if let Err(payload) = outer_result {" \
+  "\"overflow_worker_loop: catch_unwind caught panic -- worker continues\""
+line_no "src/backend/priority_scheduler.rs" "fn test_priority_task_execute_catches_panic()" >/dev/null
+line_no "src/backend/models/work_pool.rs" "fn test_work_pool_survives_panicking_task()" >/dev/null
 line_no "src/backend/models/adaptive_pool.rs" "pub fn try_park(&self) -> bool" >/dev/null
 line_no "src/backend/models/adaptive_pool.rs" "pub fn try_unpark(&self) -> bool" >/dev/null
 line_no "src/backend/models/work_pool.rs" "scale_lock: Mutex<()>," >/dev/null

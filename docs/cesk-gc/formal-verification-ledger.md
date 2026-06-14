@@ -1136,6 +1136,18 @@ facts the proofs rely on:
   threading documentation now reflects the verified WorkPool path rather than the removed
   Tokio-blocking eval narrative.
 
+- WorkPool panic isolation (`formal/rocq/gc/WorkPoolPanicIsolation.v`,
+  `tla/WorkPoolPanicIsolation.tla`, 2026-06-14) — discharges the worker-survival obligation for
+  panicking eval tasks and post-execute accounting failures. Rocq proves that the inner
+  `PriorityTask::execute` catch converts a task panic into zero runtime, skips runtime/WFST
+  accounting, publishes the worker heartbeat, and leaves the worker available for the next queued
+  task; it also proves the outer worker-loop catch keeps accounting/weight-update panics from
+  killing the worker. TLC runs two positive models plus two negative discriminators: missing the
+  inner catch violates `TaskPanicPublishesHeartbeat`, and missing the outer catch violates
+  eventual completion of the next queued task. Source coupling pins the inner `catch_unwind`, zero
+  runtime on panic, runtime-update gate, core/overflow outer catches, and the existing panic-survival
+  tests.
+
 - Struct channel pairing (`formal/rocq/gc/StructChannelPairing.v`,
   `tla/StructChannelPairing.tla`, 2026-06-13) — discharges the field-insensitive
   pgmcp channel audit findings for struct-stored endpoints in `gc_pool`,

@@ -252,6 +252,11 @@ The formal lane covers the main scheduler obligations:
   `SchedulerEffectConflictCompleteness.tla` prove that dependency-DAG grouping
   is same-wave conflict-free only when callers encode every data/effect conflict
   as a dependency edge.
+- `SchedulerDirectFanoutWavefrontRefinement.v` and
+  `SchedulerDirectFanoutWavefrontRefinement.tla` prove that production direct
+  rule-match fanout refines the wavefront model only for the all-independent
+  single-wave case; dependency-bearing DAGs require the general wavefront
+  builder.
 - `SchedulerTransducerParallelism.v` and
   `SchedulerTransducerParallelism.tla` prove zero-cap safety and prevent
   underutilized branch-parallel actions.
@@ -318,6 +323,10 @@ task is ready for wave k and not already assigned
   -> task is assigned to wave k, not deferred
 all tasks independent
   -> all tasks share wave 0
+production direct rule-match fanout
+  -> valid wavefront refinement only for the all-independent single-wave case
+dependency-bearing instruction DAG
+  -> must use complete dependency/effect edges before claiming wavefront reorder
 malformed dependency graph or unresolved cycle
   -> fallback is sequential, not one unsafe same-wave batch
 ```
@@ -335,6 +344,11 @@ This contract is checked by:
 - `tla/MC_SchedulerEffectConflictCompleteness_complete.cfg`
 - `tla/MC_SchedulerEffectConflictCompleteness_no_conflicts.cfg`
 - `tla/MC_SchedulerEffectConflictCompleteness_missing_edge.cfg`
+- `formal/rocq/gc/SchedulerDirectFanoutWavefrontRefinement.v`
+- `tla/SchedulerDirectFanoutWavefrontRefinement.tla`
+- `tla/MC_SchedulerDirectFanoutWavefrontRefinement_independent.cfg`
+- `tla/MC_SchedulerDirectFanoutWavefrontRefinement_dependent_missing_gate.cfg`
+- `tla/MC_SchedulerDirectFanoutWavefrontRefinement_partial_dispatch.cfg`
 
 The diamond and all-independent positive models preserve dependency safety and
 maximal ready-set admission. The cyclic same-wave negative model violates
@@ -342,10 +356,15 @@ maximal ready-set admission. The cyclic same-wave negative model violates
 safety but violates `NoReadyTaskDeferred`, which is the optimal-parallelism side
 of the proof. The effect-conflict positive models preserve same-wave conflict
 freedom when conflict edges are complete; the missing-edge negative model
-violates `ConflictEdgesCovered`.
+violates `ConflictEdgesCovered`. The direct-fanout refinement positive model
+preserves maximal single-wave dispatch for independent branch sets; the
+dependent-DAG negative violates `DirectOnlyForIndependentWavefront`, and the
+partial-dispatch negative violates `DirectMatchesWavefrontMaxParallelism`.
 
 The source-coupling check pins the corresponding Kahn-loop facts:
 
+- `wavefront.rs` states that production direct fanout implements only the
+  all-independent refinement without calling `compute_wavefront()`.
 - Initial in-degree-zero tasks are pushed into the current wave.
 - Dependents whose in-degree falls to zero are pushed into the next wave.
 - Malformed task indices/dependencies and cyclic unresolved suffixes degrade to

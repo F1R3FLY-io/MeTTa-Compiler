@@ -1,8 +1,7 @@
 //! Wavefront parallelism: dependency DAG and topological wave grouping.
 //!
-//! Replaces the rigid `[50%, 30%, 15%, 5%]` depth quota system with
-//! structure-aware wavefront scheduling. Tasks are grouped into waves
-//! based on their data dependencies:
+//! Provides structure-aware wavefront scheduling for dependency-aware task
+//! batches. Tasks are grouped into waves based on their data dependencies:
 //!
 //! - **Wave 0**: Tasks with no unresolved dependencies (ready immediately)
 //! - **Wave 1**: Tasks whose dependencies are all in Wave 0
@@ -13,9 +12,14 @@
 //! ## Common Cases
 //!
 //! - **Nondeterministic rule matches**: All branches are independent → single
-//!   wave → full parallelism. This is the 93.3% hot path.
+//!   wave → full parallelism. Production direct fanout implements this
+//!   all-independent refinement without calling `compute_wavefront`.
 //! - **`let*` chains**: Each binding depends on previous → N waves of 1 task.
 //! - **`if` branches**: then/else are independent (conditional on guard) → 2 waves.
+//!
+//! The general dependency-DAG scheduler is a verified library primitive. A
+//! dependency-bearing instruction DAG must call this module with complete
+//! dependency/effect-conflict edges before claiming wavefront reordering.
 //!
 //! ## Algorithm
 //!

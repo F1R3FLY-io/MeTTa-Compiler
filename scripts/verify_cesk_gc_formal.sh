@@ -203,6 +203,7 @@ run_rocq "formal/rocq/gc/SchedulerActiveFanoutGate.v"
 run_rocq "formal/rocq/gc/CollapseFanoutAdmissionCompleteness.v"
 run_rocq "formal/rocq/gc/SchedulerWavefrontParallelism.v"
 run_rocq "formal/rocq/gc/SchedulerEffectConflictCompleteness.v"
+run_rocq "formal/rocq/gc/SchedulerDirectFanoutWavefrontRefinement.v"
 run_rocq "formal/rocq/gc/SchedulerTransducerParallelism.v"
 run_rocq "formal/rocq/gc/SchedulerDynamicEvalGate.v"
 run_rocq "formal/rocq/gc/SchedulerPriorityFairness.v"
@@ -294,6 +295,12 @@ run_tlc "scheduler_active_fanout_missing_budget" "SchedulerActiveFanoutGate.tla"
   fail "The invariant of NoDispatchWithoutBudgetGate is equal to FALSE"
 run_tlc "scheduler_active_fanout_partial_dispatch" "SchedulerActiveFanoutGate.tla" "MC_SchedulerActiveFanoutGate_partial_dispatch.cfg" \
   fail "The invariant of CompleteDispatch is equal to FALSE"
+run_tlc "scheduler_direct_fanout_wavefront_independent" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_independent.cfg" \
+  pass ""
+run_tlc "scheduler_direct_fanout_wavefront_dependent_missing_gate" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_dependent_missing_gate.cfg" \
+  fail "The invariant of DirectOnlyForIndependentWavefront is equal to FALSE"
+run_tlc "scheduler_direct_fanout_wavefront_partial_dispatch" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_partial_dispatch.cfg" \
+  fail "The invariant of DirectMatchesWavefrontMaxParallelism is equal to FALSE"
 run_tlc "collapse_fanout_admission_all" "CollapseFanoutAdmissionCompleteness.tla" "MC_CollapseFanoutAdmissionCompleteness_all.cfg" \
   pass ""
 run_tlc "collapse_fanout_admission_partial" "CollapseFanoutAdmissionCompleteness.tla" "MC_CollapseFanoutAdmissionCompleteness_partial.cfg" \

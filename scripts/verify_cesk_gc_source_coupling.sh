@@ -535,6 +535,12 @@ line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_complete_di
 line_no "tla/SchedulerActiveFanoutGate.tla" "NoDispatchWithoutPurityGate ==" >/dev/null
 line_no "tla/SchedulerActiveFanoutGate.tla" "NoDispatchWithoutBudgetGate ==" >/dev/null
 line_no "tla/SchedulerActiveFanoutGate.tla" "CompleteDispatch ==" >/dev/null
+line_no "formal/rocq/gc/SchedulerDirectFanoutWavefrontRefinement.v" "Definition direct_fanout_refines_independent_wavefront" >/dev/null
+line_no "formal/rocq/gc/SchedulerDirectFanoutWavefrontRefinement.v" "Theorem independent_complete_direct_fanout_refines_single_wave" >/dev/null
+line_no "formal/rocq/gc/SchedulerDirectFanoutWavefrontRefinement.v" "Theorem dependent_dag_rejects_direct_single_wave_refinement" >/dev/null
+line_no "tla/SchedulerDirectFanoutWavefrontRefinement.tla" "DirectOnlyForIndependentWavefront ==" >/dev/null
+line_no "tla/SchedulerDirectFanoutWavefrontRefinement.tla" "DirectMatchesWavefrontMaxParallelism ==" >/dev/null
+line_no "tla/SchedulerDirectFanoutWavefrontRefinement.tla" "CompleteDirectDispatch ==" >/dev/null
 assert_after_before \
   "src/backend/scheduler/wavefront.rs" \
   "pub struct WavefrontTask" \
@@ -561,6 +567,8 @@ assert_after_before \
   "for task_idx in remaining {" \
   "}"
 line_no "src/backend/scheduler/wavefront.rs" "waves.push(vec![task_idx]);" >/dev/null
+line_no "src/backend/scheduler/wavefront.rs" "Production direct fanout implements this" >/dev/null
+line_no "src/backend/scheduler/wavefront.rs" "dependency-bearing instruction DAG must call this module" >/dev/null
 assert_after_before \
   "src/backend/scheduler/wavefront.rs" \
   "Find initial ready tasks (in-degree = 0)" \
@@ -734,6 +742,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictCompleteness.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
@@ -760,6 +769,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.t
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictCompleteness.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.tla" "4"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"

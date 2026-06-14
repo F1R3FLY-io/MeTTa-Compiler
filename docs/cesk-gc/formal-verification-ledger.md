@@ -732,6 +732,11 @@ capped debug Robot replay after the conditional canary produced the expected fri
   plus that conflict-edge coverage implies same-wave conflict freedom. The complete-conflict and no-conflict TLC
   configs pass, while the missing-edge discriminator keeps dependency order vacuously true but violates
   `ConflictEdgesCovered`, exposing exactly the latent bug class where a caller forgets to encode an effect conflict.
+- `formal/rocq/gc/SchedulerDirectFanoutWavefrontRefinement.v` and
+  `tla/SchedulerDirectFanoutWavefrontRefinement.tla`: prove and model-check the production/direct-fanout refinement of
+  the wavefront model. The active rule-match fanout path implements the all-independent single-wave case without
+  calling `compute_wavefront`; a dependency-bearing instruction DAG cannot be justified by direct fanout and must use
+  the general wavefront builder with complete dependency/effect-conflict edges.
 - `formal/rocq/gc/SchedulerDynamicEvalGate.v` and `tla/SchedulerDynamicEvalGate.tla`: prove and model-check the
   dynamic-evaluation parallel-dispatch obligation. Dynamic heads (`eval`, `!`, `evalc`) can execute code supplied by a
   variable or user expression, so absence of a visible mutating head is not enough to admit the no-budget parallel
@@ -799,6 +804,12 @@ capped debug Robot replay after the conditional canary produced the expected fri
   config plus missing-purity, missing-budget, and partial-dispatch negative discriminators. Source coupling pins the
   active `eval_loop.rs` rule-match path so `try_acquire_budget()` is reached only after the WFST/purity, depth, and
   active-worker gates and `parallel_dispatch()` is under `budget > 0`.
+- 2026-06-14 Direct-fanout/wavefront refinement increment: `SchedulerDirectFanoutWavefrontRefinement.v` proves that
+  production direct fanout refines the wavefront model only for the all-independent single-wave branch case, dispatches
+  every branch, and matches wavefront maximal parallelism. `SchedulerDirectFanoutWavefrontRefinement.tla` adds the
+  independent positive config plus dependent-DAG and partial-dispatch negative discriminators. Source coupling pins
+  `wavefront.rs` so it states the active production boundary: dependency-bearing instruction DAGs must call the
+  general wavefront builder with complete edges before claiming wavefront reordering.
 - 2026-06-12 Dynamic-eval dispatch gate increment: focused gates passed under `systemd-run` caps:
   `rocq c ... SchedulerDynamicEvalGate.v`, the fixed dynamic-eval TLC config, the missing-gate negative discriminator
   which violates `NoDynamicEvalParallelBypass`, `cargo test --lib dynamic_eval`, `cargo test --lib branch_analysis`,

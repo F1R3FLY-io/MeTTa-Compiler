@@ -4,8 +4,8 @@ This ledger tracks the mechanically checked proof artifacts for the CESK-based `
 the legacy slab mark-sweep collector.
 
 Rocq is the load-bearing proof assistant for this gate, paired with TLA+ model checking and source-coupling checks.
-Existing Lean files are supplemental mirrors only; the default formal harness does not require or maintain a second
-mandatory proof track.
+Existing Lean files are supplemental mirrors, but the default formal harness still compiles every tracked
+`formal/lean/gc/*.lean` mirror and proof hygiene rejects Lean proof shortcuts before the Rocq/TLA wall runs.
 
 ## Verified implementation boundary
 
@@ -1171,6 +1171,23 @@ facts the proofs rely on:
   Source coupling pins the typed field, the two compile-site conversions, the
   absence of the manual impls, and the removal of a non-runtime scanner test
   fixture string that pgmcp had correctly flagged as text.
+
+- Threading/scheduler/cron/GC proof wall (`a2a35d59`, 2026-06-14) — records the
+  committed proof-first audit for the end-to-end threading path. The checked
+  scope includes priority-queue fairness, WorkPool lifecycle/startup/panic
+  isolation, scheduler classification/dynamic-eval gating, wavefront
+  instruction reordering, transducer/fanout admission, pooled recurring cron
+  dispatch, Rholang batch completion/handoff, driver-root union, scheduler/GC
+  boundary roots, worker spawn latches, and the composing
+  `CESKCollectorSafety.v` theorem. The full formal harness passed on that
+  committed HEAD under `systemd-run --user --scope` with `MemoryMax=24G`,
+  `MemorySwapMax=0`, and `CPUQuota=600%`, ending with
+  `CESK GC formal checks passed`. Its preflight hygiene made 107 GC Rocq files,
+  5 WorkPool Rocq files, 36 Lean mirrors, and 280 TLC configs mandatory; source
+  coupling then tied the proof boundary to live env/dispatch anchors,
+  persistent batch handoff handles, closed worker admission,
+  spawn-latch-before-worker handoff, and active worker structural-root
+  publication.
 
 ## Harness
 

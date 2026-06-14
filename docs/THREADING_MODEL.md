@@ -248,6 +248,41 @@ The formal lane covers the main scheduler obligations:
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
+The wavefront reordering contract is:
+
+```text
+task can enter wave k
+  -> every dependency is in a wave < k
+task is ready for wave k and not already assigned
+  -> task is assigned to wave k, not deferred
+all tasks independent
+  -> all tasks share wave 0
+malformed dependency graph or unresolved cycle
+  -> fallback is sequential, not one unsafe same-wave batch
+```
+
+This contract is checked by:
+
+- `formal/rocq/gc/SchedulerWavefrontParallelism.v`
+- `tla/SchedulerWavefrontParallelism.tla`
+- `tla/MC_SchedulerWavefrontParallelism_diamond.cfg`
+- `tla/MC_SchedulerWavefrontParallelism_independent.cfg`
+- `tla/MC_SchedulerWavefrontParallelism_cycle.cfg`
+- `tla/MC_SchedulerWavefrontParallelism_deferred.cfg`
+
+The diamond and all-independent positive models preserve dependency safety and
+maximal ready-set admission. The cyclic same-wave negative model violates
+`SameWaveIndependent`. The deferred-ready negative model preserves dependency
+safety but violates `NoReadyTaskDeferred`, which is the optimal-parallelism side
+of the proof.
+
+The source-coupling check pins the corresponding Kahn-loop facts:
+
+- Initial in-degree-zero tasks are pushed into the current wave.
+- Dependents whose in-degree falls to zero are pushed into the next wave.
+- Malformed task indices/dependencies and cyclic unresolved suffixes degrade to
+  sequential waves.
+
 ## Cron Manager
 
 The cron manager is implemented by `src/backend/models/task_scheduler.rs`. It

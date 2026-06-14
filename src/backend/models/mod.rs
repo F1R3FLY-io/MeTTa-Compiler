@@ -73,16 +73,16 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 // default build is byte-identical (no cargo feature flag yet).
 
 /// The active value factory for the evaluator (Inc 4: the store-centric GC seam).
-/// The slab `GcFactory` by default; under `--features index-gc` the index-arena
-/// store's alloc interface `IndexFactory`. Compile-time store selection — NOT a
-/// runtime mode flag inside the factory.
+/// The slab `GcFactory` under `--no-default-features --features legacy-slab-gc`;
+/// default builds use the index-arena store's alloc interface `IndexFactory`.
+/// Compile-time store selection — NOT a runtime mode flag inside the factory.
 #[cfg(not(feature = "index-gc"))]
 pub type ActiveFactory = GcFactory;
 #[cfg(feature = "index-gc")]
 pub type ActiveFactory = crate::backend::eval::cesk::index_heap::IndexFactory;
 
-/// The active `Store` impl: `SlabStore` by default, `IndexHeapStore` (the store σ)
-/// under `--features index-gc`.
+/// The active `Store` impl: `IndexHeapStore` (the store σ) by default,
+/// `SlabStore` only under `--no-default-features --features legacy-slab-gc`.
 #[cfg(not(feature = "index-gc"))]
 pub type ActiveStore = crate::backend::eval::cesk::store::SlabStore;
 #[cfg(feature = "index-gc")]
@@ -98,8 +98,8 @@ pub fn active_factory() -> ActiveFactory {
 /// The GC value-store compiled into this binary. The store is **compile-time
 /// exclusive** (`ActiveStore`/`ActiveFactory` are `#[cfg]`-selected; the slab's
 /// `&'static`-ptr value payload and the index arena's `Addr` payload cannot
-/// coexist in one build), so this is fixed per build: `"index"` under
-/// `--features index-gc`, otherwise `"slab"`.
+/// coexist in one build), so this is fixed per build: `"index"` under the
+/// default/index-gc feature set, otherwise `"slab"` under the legacy slab opt-out.
 #[inline]
 pub fn compiled_gc_store() -> &'static str {
     if cfg!(feature = "index-gc") {
@@ -127,9 +127,9 @@ pub fn assert_gc_request(request: Option<&str>) -> Result<&'static str, String> 
             r if r == compiled => {}
             "slab" | "index" => {
                 let hint = if req == "index" {
-                    "rebuild with `--features index-gc`"
+                    "rebuild with default features (index-gc enabled)"
                 } else {
-                    "rebuild with default features (without `index-gc`)"
+                    "rebuild with `--no-default-features --features legacy-slab-gc`"
                 };
                 return Err(format!(
                     "--gc={req} requested, but this binary was compiled with the '{compiled}' \
@@ -153,7 +153,7 @@ mod gc_request_tests {
     /// F2 (the --gc/MTT_GC assert + reporter): the resolved request must match
     /// the compile-time store or hard-error BEFORE evaluation. These tests are
     /// cfg-agnostic — they derive expectations from `compiled_gc_store()`, so
-    /// they hold in both the slab (default) and `--features index-gc` builds.
+    /// they hold in both the default index build and the legacy slab opt-out.
     #[test]
     fn matching_request_passes_and_reports_the_compiled_store() {
         let compiled = compiled_gc_store();

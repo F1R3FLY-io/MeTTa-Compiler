@@ -134,6 +134,35 @@ $actual"
   fi
 }
 
+# Phase F3: Cargo feature selection realizes DefaultStoreSelection.v.
+line_no "Cargo.toml" "default = [\"interning\", \"async\", \"symbol-interning\", \"index-gc\"]" >/dev/null
+line_no "Cargo.toml" "legacy-slab-gc = [\"interning\", \"async\", \"symbol-interning\"]" >/dev/null
+assert_after_before \
+  "Cargo.toml" \
+  "[features]" \
+  "default = [\"interning\", \"async\", \"symbol-interning\", \"index-gc\"]" \
+  "async = [\"tokio\"]"
+assert_after_before \
+  "Cargo.toml" \
+  "index-gc = [\"dep:postcard\"]" \
+  "legacy-slab-gc = [\"interning\", \"async\", \"symbol-interning\"]" \
+  "trace = [\"dep:postcard\", \"dep:trace-format\"]"
+assert_after_before \
+  "src/lib.rs" \
+  "#![feature(cfg_sanitize)]" \
+  "#[cfg(all(feature = \"index-gc\", feature = \"legacy-slab-gc\"))]" \
+  "compile_error!("
+assert_after_before \
+  "src/lib.rs" \
+  "#[cfg(all(feature = \"index-gc\", feature = \"legacy-slab-gc\"))]" \
+  "features \`index-gc\` and \`legacy-slab-gc\` are mutually exclusive" \
+  "\`--no-default-features --features legacy-slab-gc\`"
+assert_after_before \
+  "src/lib.rs" \
+  "#[cfg(not(any(feature = \"index-gc\", feature = \"legacy-slab-gc\")))]" \
+  "select exactly one GC store feature" \
+  "pub mod backend;"
+
 # Phase F2: --gc/MTT_GC is an assertion/reporter for the compile-time store,
 # not a runtime switch. Pin the library predicate and both CLI entrypoints to the
 # same hard-error path so conformance cannot silently exercise the wrong store.
@@ -154,8 +183,8 @@ assert_after_before \
   "match req.as_str() {" \
   "\"\" | \"auto\" => {}" \
   "r if r == compiled => {}"
-line_no "src/backend/models/mod.rs" "rebuild with \`--features index-gc\`" >/dev/null
-line_no "src/backend/models/mod.rs" "rebuild with default features (without \`index-gc\`)" >/dev/null
+line_no "src/backend/models/mod.rs" "rebuild with default features (index-gc enabled)" >/dev/null
+line_no "src/backend/models/mod.rs" "rebuild with \`--no-default-features --features legacy-slab-gc\`" >/dev/null
 line_no "src/backend/models/mod.rs" "fn the_other_store_is_a_hard_error_with_a_rebuild_hint()" >/dev/null
 line_no "src/backend/models/mod.rs" "fn unknown_values_are_rejected_with_the_expected_set()" >/dev/null
 

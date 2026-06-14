@@ -270,7 +270,7 @@ postcard = { version = "1", features = ["alloc"], optional = true }
 trace-format = { path = "trace-format", optional = true }
 
 [features]
-default = ["interning", "async", "symbol-interning"]
+default = ["interning", "async", "symbol-interning", "index-gc"]
 async = ["tokio"]
 interning = []
 # Enables benchmark/example entry points that exercise the always-built
@@ -284,16 +284,14 @@ rholang = ["dep:models"]
 # Provides 5-10% improvement for rule-heavy workloads
 symbol-interning = ["lasso"]
 
-# Index-arena GC (store-centric CESK migration, Inc 4): routes the evaluator's
-# value factory + Store to the non-moving, index-addressed store σ instead of the
-# slab. Compile-time store selection — `global_factory()` returns `IndexFactory`
-# and `GC_MODE` inits to index. Default build stays on the slab (byte-identical).
-# A/B differential = build both (default vs --features index-gc) and diff via
-# scripts/ab_gc_diff.sh. The slab becomes `--features legacy-slab-gc` at Inc 7.
-# E4 (serializable continuations) checkpoints slices with postcard — already an
-# optional dep (used by `trace`); index-gc pulls it in. The default/slab build
-# does NOT enable index-gc, so it does not pull postcard and stays byte-identical.
+# Index-arena GC (store-centric CESK migration, Phase F3): routes the evaluator's
+# value factory + Store to the non-moving, index-addressed store instead of the
+# slab. Compile-time store selection: default builds use index-gc.
 index-gc = ["dep:postcard"]
+# Legacy slab opt-out for old-default comparison gates. Cargo features are
+# additive, so this is only valid with `--no-default-features`; src/lib.rs rejects
+# both-store and no-store feature selections.
+legacy-slab-gc = ["interning", "async", "symbol-interning"]
 
 # Evaluation trace: binary tracing of every rewrite, type check, error,
 # bailout, and tier transition with full source location provenance.

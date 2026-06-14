@@ -227,6 +227,7 @@ run_rocq "formal/rocq/gc/E1DefaultConcurrentFlip.v"
 run_rocq "formal/rocq/gc/E1SatbStwDriverProgress.v"
 run_rocq "formal/rocq/gc/DefaultStoreSelection.v"
 run_rocq "formal/rocq/gc/JitValueCreationStoreSelection.v"
+run_rocq "formal/rocq/gc/JitLongBoxStoreSelection.v"
 run_rocq "formal/rocq/gc/ArenaAddrDecodeErasure.v"
 run_rocq "formal/rocq/gc/CfgGuardErasure.v"
 run_rocq "formal/rocq/gc/InnerPtrDecodeErasure.v"
@@ -305,6 +306,16 @@ run_tlc "jit_value_creation_index_arena_bug" "JitValueCreationStoreSelection.tla
   fail "The invariant of NoArenaPtrStoreSelectionInIndex is equal to FALSE"
 run_tlc "jit_value_creation_legacy_slab_correct" "JitValueCreationStoreSelection.tla" "MC_JitValueCreationStoreSelection_legacy_slab_correct.cfg" \
   pass ""
+run_tlc "jit_long_box_index_overflow_correct" "JitLongBoxStoreSelection.tla" "MC_JitLongBoxStoreSelection_index_overflow_correct.cfg" \
+  pass ""
+run_tlc "jit_long_box_index_inline_correct" "JitLongBoxStoreSelection.tla" "MC_JitLongBoxStoreSelection_index_inline_correct.cfg" \
+  pass ""
+run_tlc "jit_long_box_legacy_slab_overflow_correct" "JitLongBoxStoreSelection.tla" "MC_JitLongBoxStoreSelection_legacy_slab_overflow_correct.cfg" \
+  pass ""
+run_tlc "jit_long_box_index_slab_allocator_bug" "JitLongBoxStoreSelection.tla" "MC_JitLongBoxStoreSelection_index_slab_allocator_bug.cfg" \
+  fail "The invariant of OverflowAllocatorMatchesCompiledStore is equal to FALSE"
+run_tlc "jit_long_box_index_fallback_compiled_bug" "JitLongBoxStoreSelection.tla" "MC_JitLongBoxStoreSelection_index_fallback_compiled_bug.cfg" \
+  fail "The invariant of NoSlabFallbackCompiledInIndex is equal to FALSE"
 run_tlc "scheduler_direct_fanout_wavefront_independent" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_independent.cfg" \
   pass ""
 run_tlc "scheduler_direct_fanout_wavefront_dependent_missing_gate" "SchedulerDirectFanoutWavefrontRefinement.tla" "MC_SchedulerDirectFanoutWavefrontRefinement_dependent_missing_gate.cfg" \

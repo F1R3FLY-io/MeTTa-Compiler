@@ -48,7 +48,7 @@ impl JitValue {
     ///
     /// Z.A.2 (2026-05-12): for values outside the inline 48-bit signed
     /// range `[INLINE_LONG_MIN, INLINE_LONG_MAX]`, the value is allocated
-    /// on the slab and returned as TAG_PTR. Eliminates silent truncation
+    /// in the active compiled store and returned as TAG_PTR. Eliminates silent truncation
     /// (former code did `(n as u64) & PAYLOAD_MASK` without bounds check,
     /// which corrupted Long arithmetic past 2^47).
     ///
@@ -61,25 +61,23 @@ impl JitValue {
         if let Some(inline) = Self::try_from_long_inline(n) {
             return inline;
         }
-        // Index fence (experiment #18, design v4.1 revision 4 — fixes a
-        // PRE-EXISTING latent bug): in index mode the slab alloc below would
-        // produce a REAL slab pointer whose low 32 bits every index-mode
-        // unpack (`ptr as u32`) misreads as an arena Addr — a garbage handle.
-        // Mint a genuine index heap Long via the factory and pack its
-        // `inner_ptr()` form (`INDEX_KEY_TAG | tagged >> 4`) — the ONLY
-        // payload shape index unpacks trust (and the shape that carries the
-        // TAG5 variant bits at payload [36:32]).
+        // Index fence: mint a genuine index heap Long via the factory and pack
+        // its `inner_ptr()` form (`INDEX_KEY_TAG | tagged >> 4`). This is the
+        // only TAG_PTR payload shape index-mode unpack trusts.
         #[cfg(feature = "index-gc")]
-        if crate::backend::models::metta_value::gc_mode_is_index() {
+        {
             use crate::backend::models::MettaValueFactory;
             let v = crate::backend::models::global_factory().long(n);
             return JitValue::from_inner_ptr(v.inner_ptr());
         }
-        // Heap fallback: allocate MettaValueInner::Long(n) on the slab
-        // and tag as PTR. The slab guarantees 'static lifetime.
-        let inner = crate::backend::models::gc_allocator::global_allocator()
-            .alloc_value(MettaValueInner::Long(n));
-        JitValue::from_inner_ptr(inner)
+        #[cfg(not(feature = "index-gc"))]
+        {
+            // Legacy slab fallback: allocate MettaValueInner::Long(n) on the
+            // slab and tag as PTR. The slab guarantees 'static lifetime.
+            let inner = crate::backend::models::gc_allocator::global_allocator()
+                .alloc_value(MettaValueInner::Long(n));
+            JitValue::from_inner_ptr(inner)
+        }
     }
 
     /// Maximum signed value representable as an inline 48-bit Long.

@@ -402,6 +402,29 @@ if rg -n -U '#\[cfg\(feature = "index-gc"\)\][[:space:]]*\n[[:space:]]*if gc_mod
     "$REPO/src/backend/models/metta_value.rs" >/dev/null; then
   fail "metta_value.rs reintroduced a cfg-gated redundant gc_mode_is_index() guard; see CfgGuardErasure.v"
 fi
+line_no "formal/rocq/gc/JitLongBoxStoreSelection.v" "Theorem default_index_overflow_uses_index_heap" >/dev/null
+line_no "formal/rocq/gc/JitLongBoxStoreSelection.v" "Theorem emitted_slab_overflow_requires_slab_store" >/dev/null
+line_no "formal/rocq/gc/JitLongBoxStoreSelection.v" "Theorem index_overflow_never_uses_legacy_slab" >/dev/null
+line_no "tla/JitLongBoxStoreSelection.tla" "NoSlabFallbackCompiledInIndex" >/dev/null
+assert_after_before \
+  "src/backend/bytecode/jit/types/value.rs" \
+  "pub fn from_long(n: i64) -> Self {" \
+  "#[cfg(feature = \"index-gc\")]" \
+  "global_factory().long(n)"
+assert_after_before \
+  "src/backend/bytecode/jit/types/value.rs" \
+  "global_factory().long(n)" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "global_allocator()"
+assert_zero_between \
+  "src/backend/bytecode/jit/types/value.rs" \
+  "pub fn from_long(n: i64) -> Self {" \
+  "pub const INLINE_LONG_MAX" \
+  "gc_mode_is_index()"
+if rg -n -U '#\[cfg\(feature = "index-gc"\)\][[:space:]]*\n[[:space:]]*if crate::backend::models::metta_value::gc_mode_is_index\(\)' \
+    "$REPO/src/backend/bytecode/jit/types/value.rs" >/dev/null; then
+  fail "JitValue::from_long reintroduced a cfg-gated runtime gc_mode_is_index guard; see JitLongBoxStoreSelection.v"
+fi
 assert_regex_zero \
   "src" \
   "set_gc_mode_index|reset_gc_mode_slab|static GC_MODE|GC_MODE\\.(load|store)"
@@ -776,6 +799,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictComplete
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
@@ -805,6 +829,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictComplete
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.tla" "4"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.tla" "5"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"

@@ -1231,6 +1231,13 @@ facts the proofs rely on:
   Negative discriminators violate it for missing dependency edges, missing
   active-worker roots, open admission across a root snapshot, and unclaimed
   recurring cron dispatch.
+- JIT Long boxing store selection (`formal/rocq/gc/JitLongBoxStoreSelection.v`,
+  `tla/JitLongBoxStoreSelection.tla`, 2026-06-14) — proves out-of-inline-range
+  JIT Long boxing selects the compiled store: index builds allocate through the
+  index factory, legacy slab builds keep the slab fallback, and inline Longs do
+  not allocate. TLC positives preserve the selection invariants; negative
+  discriminators reject both an index build that boxes through the slab and an
+  index build that still compiles a slab fallback after the index branch.
 
 ## Harness
 

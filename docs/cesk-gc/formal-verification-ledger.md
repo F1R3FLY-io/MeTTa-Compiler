@@ -721,6 +721,13 @@ capped debug Robot replay after the conditional canary produced the expected fri
   safety but violates `NoReadyTaskDeferred`. These checks pin both sides of the Rust Kahn loop: malformed
   task indices/dependencies and cyclic unresolved suffixes degrade to sequential waves, while valid DAGs enumerate every
   initially-ready task and every newly-ready dependent into the earliest possible wave.
+- `formal/rocq/gc/SchedulerEffectConflictCompleteness.v` and
+  `tla/SchedulerEffectConflictCompleteness.tla`: prove and model-check the dependency-construction precondition behind
+  wavefront instruction reordering. If two tasks conflict through effects, shared state, allocator/GC safepoints, or
+  other non-commuting behavior, the dependency relation must contain an edge in at least one direction; dependency order
+  plus that conflict-edge coverage implies same-wave conflict freedom. The complete-conflict and no-conflict TLC
+  configs pass, while the missing-edge discriminator keeps dependency order vacuously true but violates
+  `ConflictEdgesCovered`, exposing exactly the latent bug class where a caller forgets to encode an effect conflict.
 - `formal/rocq/gc/SchedulerDynamicEvalGate.v` and `tla/SchedulerDynamicEvalGate.tla`: prove and model-check the
   dynamic-evaluation parallel-dispatch obligation. Dynamic heads (`eval`, `!`, `evalc`) can execute code supplied by a
   variable or user expression, so absence of a visible mutating head is not enough to admit the no-budget parallel
@@ -776,6 +783,12 @@ capped debug Robot replay after the conditional canary produced the expected fri
   that variant as `scheduler_wavefront_deferred_ready` and expects `NoReadyTaskDeferred` to fail; source coupling pins
   the initial in-degree-zero scan and the `in_degree == 0` dependent insertion that realize the maximal ready-set
   property in Rust.
+- 2026-06-14 Effect-conflict completeness increment: `SchedulerEffectConflictCompleteness.v` now proves that
+  dependency order plus conflict-edge coverage implies same-wave conflict freedom, and that a same-wave conflict rejects
+  a complete dependency/order pair. `SchedulerEffectConflictCompleteness.tla` adds positive complete-conflict and
+  no-conflict hot-path configs plus a missing-edge negative discriminator that violates `ConflictEdgesCovered`. Source
+  coupling pins the `WavefrontTask.dependencies` contract: callers must include both data dependencies and
+  effect-conflict edges because `compute_wavefront` treats missing edges as safe commutativity evidence.
 - 2026-06-12 Dynamic-eval dispatch gate increment: focused gates passed under `systemd-run` caps:
   `rocq c ... SchedulerDynamicEvalGate.v`, the fixed dynamic-eval TLC config, the missing-gate negative discriminator
   which violates `NoDynamicEvalParallelBypass`, `cargo test --lib dynamic_eval`, `cargo test --lib branch_analysis`,

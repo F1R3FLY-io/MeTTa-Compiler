@@ -492,6 +492,17 @@ assert_after_before \
 assert_zero_between "src/backend/eval/cesk/branch_analysis.rs" "fn is_known_pure_head" "fn is_known_impure_head" "\"eval\""
 assert_zero_between "src/backend/eval/cesk/branch_analysis.rs" "fn is_known_pure_head" "fn is_known_impure_head" "\"!\""
 line_no "src/backend/eval/cesk/branch_analysis.rs" "| \"!\" | \"eval\" | \"evalc\"" >/dev/null
+line_no "formal/rocq/gc/SchedulerEffectConflictCompleteness.v" "Definition conflict_edges_covered" >/dev/null
+line_no "formal/rocq/gc/SchedulerEffectConflictCompleteness.v" "Definition same_wave_conflict_free" >/dev/null
+line_no "formal/rocq/gc/SchedulerEffectConflictCompleteness.v" "Theorem dependency_order_and_conflict_coverage_imply_same_wave_conflict_free" >/dev/null
+line_no "formal/rocq/gc/SchedulerEffectConflictCompleteness.v" "Theorem same_wave_conflict_rejects_complete_dependency_order" >/dev/null
+line_no "tla/SchedulerEffectConflictCompleteness.tla" "ConflictEdgesCovered ==" >/dev/null
+line_no "tla/SchedulerEffectConflictCompleteness.tla" "SameWaveConflictFree ==" >/dev/null
+assert_after_before \
+  "src/backend/scheduler/wavefront.rs" \
+  "pub struct WavefrontTask" \
+  "Callers must include data dependencies and effect-conflict edges." \
+  "pub dependencies: Vec<usize>,"
 assert_after_before \
   "src/backend/scheduler/wavefront.rs" \
   "pub fn compute_wavefront" \
@@ -684,6 +695,7 @@ assert_after_before \
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerPriorityFairness.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictCompleteness.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
@@ -705,6 +717,7 @@ line_no "formal/rocq/work_pool_stability/theories/LyapunovConvergence.v" "Defini
 assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "4"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictCompleteness.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"

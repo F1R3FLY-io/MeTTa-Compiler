@@ -201,6 +201,7 @@ run_rocq "formal/rocq/gc/SchedulerFanoutProgress.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutAdmissionCompleteness.v"
 run_rocq "formal/rocq/gc/CollapseFanoutAdmissionCompleteness.v"
 run_rocq "formal/rocq/gc/SchedulerWavefrontParallelism.v"
+run_rocq "formal/rocq/gc/SchedulerEffectConflictCompleteness.v"
 run_rocq "formal/rocq/gc/SchedulerTransducerParallelism.v"
 run_rocq "formal/rocq/gc/SchedulerDynamicEvalGate.v"
 run_rocq "formal/rocq/gc/SchedulerPriorityFairness.v"
@@ -266,6 +267,12 @@ run_tlc "scheduler_wavefront_cycle_same_wave" "SchedulerWavefrontParallelism.tla
   fail "The invariant of SameWaveIndependent is equal to FALSE"
 run_tlc "scheduler_wavefront_deferred_ready" "SchedulerWavefrontParallelism.tla" "MC_SchedulerWavefrontParallelism_deferred.cfg" \
   fail "The invariant of NoReadyTaskDeferred is equal to FALSE"
+run_tlc "scheduler_effect_conflict_complete" "SchedulerEffectConflictCompleteness.tla" "MC_SchedulerEffectConflictCompleteness_complete.cfg" \
+  pass ""
+run_tlc "scheduler_effect_conflict_no_conflicts" "SchedulerEffectConflictCompleteness.tla" "MC_SchedulerEffectConflictCompleteness_no_conflicts.cfg" \
+  pass ""
+run_tlc "scheduler_effect_conflict_missing_edge" "SchedulerEffectConflictCompleteness.tla" "MC_SchedulerEffectConflictCompleteness_missing_edge.cfg" \
+  fail "The invariant of ConflictEdgesCovered is equal to FALSE"
 run_tlc "scheduler_transducer_zero_cap" "SchedulerTransducerParallelism.tla" "MC_SchedulerTransducerParallelism_zero_cap.cfg" \
   pass ""
 run_tlc "scheduler_transducer_zero_cap_bug" "SchedulerTransducerParallelism.tla" "MC_SchedulerTransducerParallelism_zero_cap_bug.cfg" \

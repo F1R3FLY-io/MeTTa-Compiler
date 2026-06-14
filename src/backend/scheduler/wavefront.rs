@@ -36,6 +36,10 @@ pub struct WavefrontTask {
     /// Cost class from the tree automaton.
     pub cost_class: CostClass,
     /// Indices of tasks this task depends on.
+    ///
+    /// Callers must include data dependencies and effect-conflict edges. The
+    /// wavefront builder treats missing edges as proof that same-wave tasks can
+    /// commute safely.
     pub dependencies: Vec<usize>,
 }
 

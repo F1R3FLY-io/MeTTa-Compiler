@@ -13,6 +13,8 @@ CONSTANTS
     ConflictEdgeEncoded,
     DirectFanout,
     IncludeWorkerRoot,
+    IncludeDispatchRoot,
+    IncludeBatchRoot,
     CloseAdmission,
     ClaimCronBeforeDispatch,
     ReturnCronHandleSender,
@@ -39,6 +41,10 @@ VARIABLES
     conflictSameWave,
     rootsBuilt,
     workerRooted,
+    dispatchFanoutLive,
+    batchHandoffLive,
+    dispatchRooted,
+    batchRooted,
     lateWorkerLive,
     valueFreed,
     inFlight,
@@ -71,6 +77,9 @@ startupVars ==
     <<startupPhase, cronReadyObserved, cronStartupTaskSubmitted,
       cronStartupTaskObserved, cronStartupTaskLost>>
 
+gcBoundaryVars ==
+    <<dispatchFanoutLive, batchHandoffLive, dispatchRooted, batchRooted>>
+
 workPoolStartupVars ==
     <<workPoolSubmitted, workPoolQueue, workPoolCompleted,
       workPoolWorkersStarted, workPoolStartupPhase>>
@@ -81,7 +90,7 @@ workPoolPanicVars ==
 
 workPoolVars == <<workPoolStartupVars, workPoolPanicVars>>
 
-vars == <<baseVars, startupVars, workPoolVars>>
+vars == <<baseVars, gcBoundaryVars, startupVars, workPoolVars>>
 
 BooleanConstantsOK ==
     /\ HasDependency \in BOOLEAN
@@ -90,6 +99,8 @@ BooleanConstantsOK ==
     /\ ConflictEdgeEncoded \in BOOLEAN
     /\ DirectFanout \in BOOLEAN
     /\ IncludeWorkerRoot \in BOOLEAN
+    /\ IncludeDispatchRoot \in BOOLEAN
+    /\ IncludeBatchRoot \in BOOLEAN
     /\ CloseAdmission \in BOOLEAN
     /\ ClaimCronBeforeDispatch \in BOOLEAN
     /\ ReturnCronHandleSender \in BOOLEAN
@@ -115,6 +126,10 @@ TypeOK ==
     /\ conflictSameWave \in BOOLEAN
     /\ rootsBuilt \in BOOLEAN
     /\ workerRooted \in BOOLEAN
+    /\ dispatchFanoutLive \in BOOLEAN
+    /\ batchHandoffLive \in BOOLEAN
+    /\ dispatchRooted \in BOOLEAN
+    /\ batchRooted \in BOOLEAN
     /\ lateWorkerLive \in BOOLEAN
     /\ valueFreed \in BOOLEAN
     /\ inFlight \in BOOLEAN
@@ -154,6 +169,10 @@ Init ==
     /\ conflictSameWave = FALSE
     /\ rootsBuilt = FALSE
     /\ workerRooted = FALSE
+    /\ dispatchFanoutLive = TRUE
+    /\ batchHandoffLive = TRUE
+    /\ dispatchRooted = FALSE
+    /\ batchRooted = FALSE
     /\ lateWorkerLive = FALSE
     /\ valueFreed = FALSE
     /\ inFlight = FALSE
@@ -230,9 +249,12 @@ BuildRoots ==
     /\ ~rootsBuilt
     /\ rootsBuilt' = TRUE
     /\ workerRooted' = (IncludeWorkerRoot /\ running /= {})
+    /\ dispatchRooted' = IncludeDispatchRoot /\ dispatchFanoutLive
+    /\ batchRooted' = IncludeBatchRoot /\ batchHandoffLive
     /\ UNCHANGED <<phase, wave, running, completed, consumerBeforeProducer,
-                  conflictSameWave, lateWorkerLive, valueFreed, inFlight,
-                  cronWorkerRunning, cronOverlap, dispatchCount>>
+                  conflictSameWave, dispatchFanoutLive, batchHandoffLive,
+                  lateWorkerLive, valueFreed, inFlight, cronWorkerRunning,
+                  cronOverlap, dispatchCount>>
 
 AdmitLateWorker ==
     /\ rootsBuilt
@@ -240,16 +262,24 @@ AdmitLateWorker ==
     /\ ~lateWorkerLive
     /\ lateWorkerLive' = TRUE
     /\ UNCHANGED <<phase, wave, running, completed, consumerBeforeProducer,
-                  conflictSameWave, rootsBuilt, workerRooted, valueFreed,
-                  inFlight, cronWorkerRunning, cronOverlap, dispatchCount>>
+                  conflictSameWave, rootsBuilt, workerRooted,
+                  dispatchFanoutLive, batchHandoffLive, dispatchRooted,
+                  batchRooted, valueFreed, inFlight, cronWorkerRunning,
+                  cronOverlap, dispatchCount>>
 
 Sweep ==
     /\ rootsBuilt
     /\ valueFreed' =
-        (valueFreed \/ ((running /= {} /\ ~workerRooted) \/ lateWorkerLive))
+        (valueFreed \/
+         ((running /= {} /\ ~workerRooted) \/
+          (dispatchFanoutLive /\ ~dispatchRooted) \/
+          (batchHandoffLive /\ ~batchRooted) \/
+          lateWorkerLive))
     /\ UNCHANGED <<phase, wave, running, completed, consumerBeforeProducer,
                   conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
-                  inFlight, cronWorkerRunning, cronOverlap, dispatchCount>>
+                  dispatchFanoutLive, batchHandoffLive, dispatchRooted,
+                  batchRooted, inFlight, cronWorkerRunning, cronOverlap,
+                  dispatchCount>>
 
 CronFirstDue ==
     /\ dispatchCount = 0
@@ -285,6 +315,7 @@ CronStartupRun ==
     /\ startupPhase' = "ready"
     /\ cronReadyObserved' = (ReturnCronReadyReceiver /\ ReadySentInsideCronRun)
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronStartupTaskSubmitted, cronStartupTaskObserved,
                   cronStartupTaskLost>>
@@ -295,6 +326,7 @@ CronStartupSubmitAfterReady ==
     /\ cronStartupTaskSubmitted' =
         (ScheduleCronTaskAfterReady /\ cronReadyObserved /\ ReturnCronHandleSender)
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskObserved,
                   cronStartupTaskLost>>
@@ -306,6 +338,7 @@ CronStartupPollCheckEvents ==
     /\ startupPhase' = "observed"
     /\ cronStartupTaskObserved' = TRUE
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
                   cronStartupTaskLost>>
@@ -317,6 +350,7 @@ CronStartupPollDrainChannel ==
     /\ startupPhase' = "observed"
     /\ cronStartupTaskObserved' = TRUE
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
                   cronStartupTaskLost>>
@@ -327,6 +361,7 @@ CronStartupNoSubmittedTask ==
     /\ startupPhase' = "observed"
     /\ cronStartupTaskObserved' = FALSE
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
                   cronStartupTaskLost>>
@@ -338,6 +373,7 @@ CronStartupLoseWithoutPollPath ==
     /\ startupPhase' = "lost"
     /\ cronStartupTaskLost' = TRUE
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED workPoolVars
     /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
                   cronStartupTaskObserved>>
@@ -355,6 +391,7 @@ WorkPoolSubmit ==
     /\ workPoolWorkersStarted' = workPoolWorkersStarted
     /\ workPoolStartupPhase' = workPoolStartupPhase
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
 
@@ -367,6 +404,7 @@ WorkPoolStart ==
     /\ workPoolWorkersStarted' = WorkPoolStartWorkers
     /\ workPoolStartupPhase' = "drain"
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
 
@@ -380,6 +418,7 @@ WorkPoolDrain ==
     /\ workPoolWorkersStarted' = workPoolWorkersStarted
     /\ workPoolStartupPhase' = workPoolStartupPhase
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
 
@@ -393,6 +432,7 @@ WorkPoolFinish ==
     /\ workPoolWorkersStarted' = workPoolWorkersStarted
     /\ workPoolStartupPhase' = "done"
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
 
@@ -406,6 +446,7 @@ WorkPoolStuck ==
     /\ workPoolWorkersStarted' = workPoolWorkersStarted
     /\ workPoolStartupPhase' = "stuck"
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
 
@@ -427,6 +468,7 @@ WorkPoolRunFirstTaskPanic ==
                  /\ workPoolCpuPublished' = FALSE
                  /\ workPoolPanicPhase' = "dead"
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
 
@@ -443,6 +485,7 @@ WorkPoolRunFirstAccountingPanic ==
        ELSE /\ workPoolWorkerAlive' = FALSE
             /\ workPoolPanicPhase' = "dead"
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
 
@@ -456,6 +499,7 @@ WorkPoolRunSecond ==
     /\ workPoolRuntimeRecorded' = workPoolRuntimeRecorded
     /\ workPoolCpuPublished' = TRUE
     /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
 
@@ -466,18 +510,24 @@ Done ==
 Idle ==
     UNCHANGED vars
 
-ThreadingNext ==
+ThreadingNoGcNext ==
     \/ Schedule
     \/ StartProducer
     \/ StartConsumer
     \/ Complete("producer")
     \/ Complete("consumer")
-    \/ BuildRoots
-    \/ AdmitLateWorker
-    \/ Sweep
     \/ CronFirstDue
     \/ CronSecondDue
     \/ CronWorkerComplete
+
+GcBoundaryNext ==
+    \/ BuildRoots
+    \/ AdmitLateWorker
+    \/ Sweep
+
+ThreadingNext ==
+    \/ (ThreadingNoGcNext /\ UNCHANGED gcBoundaryVars)
+    \/ GcBoundaryNext
     \/ Done
 
 Next ==

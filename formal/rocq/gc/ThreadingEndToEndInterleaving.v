@@ -141,32 +141,61 @@ Section EndToEndModel.
   Qed.
 
   Definition sweep_frees_live_value
-      (active_worker_live worker_rooted late_worker_live : bool)
+      (active_worker_live worker_rooted
+       dispatch_live dispatch_rooted
+       batch_live batch_rooted
+       late_worker_live : bool)
       : bool :=
-    (active_worker_live && negb worker_rooted) || late_worker_live.
+    (active_worker_live && negb worker_rooted) ||
+    (dispatch_live && negb dispatch_rooted) ||
+    (batch_live && negb batch_rooted) ||
+    late_worker_live.
 
   Definition gc_window_safe
-      (active_worker_live worker_rooted late_worker_live : bool)
+      (active_worker_live worker_rooted
+       dispatch_live dispatch_rooted
+       batch_live batch_rooted
+       late_worker_live : bool)
       : Prop :=
-    sweep_frees_live_value active_worker_live worker_rooted late_worker_live =
-    false.
+    sweep_frees_live_value
+      active_worker_live worker_rooted
+      dispatch_live dispatch_rooted
+      batch_live batch_rooted
+      late_worker_live = false.
 
   Theorem rooted_closed_gc_window_safe :
-    forall active_worker_live,
-      gc_window_safe active_worker_live active_worker_live false.
+    forall active_worker_live dispatch_live batch_live,
+      gc_window_safe
+        active_worker_live active_worker_live
+        dispatch_live dispatch_live
+        batch_live batch_live
+        false.
   Proof.
-    intros []; reflexivity.
+    intros [] [] []; reflexivity.
   Qed.
 
   Theorem missing_active_worker_root_exposes_live_free :
-    sweep_frees_live_value true false false = true.
+    sweep_frees_live_value true false false false false false false = true.
+  Proof.
+    reflexivity.
+  Qed.
+
+  Theorem missing_dispatch_root_exposes_live_free :
+    sweep_frees_live_value false false true false false false false = true.
+  Proof.
+    reflexivity.
+  Qed.
+
+  Theorem missing_batch_root_exposes_live_free :
+    sweep_frees_live_value false false false false true false false = true.
   Proof.
     reflexivity.
   Qed.
 
   Theorem late_worker_after_snapshot_exposes_live_free :
     forall worker_rooted,
-      sweep_frees_live_value false worker_rooted true = true.
+      sweep_frees_live_value
+        false worker_rooted false false false false true = true.
   Proof.
     intros []; reflexivity.
   Qed.
@@ -300,13 +329,20 @@ Section EndToEndModel.
   Definition end_to_end_safe
       (w : Workload)
       (wave : WaveAssignment)
-      (active_worker_live worker_rooted late_worker_live : bool)
+      (active_worker_live worker_rooted
+       dispatch_live dispatch_rooted
+       batch_live batch_rooted
+       late_worker_live : bool)
       (cron_state : CronState)
       (cron_startup : StartupConfig)
       (work_pool : WorkPoolConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
-    gc_window_safe active_worker_live worker_rooted late_worker_live /\
+    gc_window_safe
+      active_worker_live worker_rooted
+      dispatch_live dispatch_rooted
+      batch_live batch_rooted
+      late_worker_live /\
     cron_no_overlap cron_state /\
     startup_delivery_safe cron_startup /\
     work_pool_envelope_safe work_pool.
@@ -319,6 +355,10 @@ Section EndToEndModel.
         wave
         active_worker_live
         active_worker_live
+        true
+        true
+        true
+        true
         false
         (cron_second_due (cron_first_due true))
         complete_startup
@@ -338,32 +378,104 @@ Section EndToEndModel.
   Qed.
 
   Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :
-    forall w wave active_worker_live worker_rooted late_worker_live cron_state,
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state,
       schedule_envelope_safe w wave ->
-      gc_window_safe active_worker_live worker_rooted late_worker_live ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
       cron_no_overlap cron_state ->
       ~ end_to_end_safe
           w
           wave
           active_worker_live
           worker_rooted
+          dispatch_live
+          dispatch_rooted
+          batch_live
+          batch_rooted
           late_worker_live
           cron_state
           missing_poll_path
           complete_work_pool.
   Proof.
-    intros w wave active_worker_live worker_rooted late_worker_live cron_state
-      Hschedule Hgc Hcron Hend.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
+      Hend.
     unfold end_to_end_safe in Hend.
     destruct Hend as [_ [_ [_ [Hstartup _]]]].
     exact (missing_poll_path_exposes_delivery_gap Hstartup).
   Qed.
 
+  Theorem missing_dispatch_root_exposes_end_to_end_gap :
+    forall w wave cron_state cron_startup work_pool,
+      schedule_envelope_safe w wave ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w
+          wave
+          false
+          false
+          true
+          false
+          false
+          false
+          false
+          cron_state
+          cron_startup
+          work_pool.
+  Proof.
+    intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
+      Hwork_pool Hend.
+    unfold end_to_end_safe, gc_window_safe, sweep_frees_live_value in Hend.
+    simpl in Hend.
+    destruct Hend as [_ [Hgc _]].
+    discriminate Hgc.
+  Qed.
+
+  Theorem missing_batch_root_exposes_end_to_end_gap :
+    forall w wave cron_state cron_startup work_pool,
+      schedule_envelope_safe w wave ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w
+          wave
+          false
+          false
+          false
+          false
+          true
+          false
+          false
+          cron_state
+          cron_startup
+          work_pool.
+  Proof.
+    intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
+      Hwork_pool Hend.
+    unfold end_to_end_safe, gc_window_safe, sweep_frees_live_value in Hend.
+    simpl in Hend.
+    destruct Hend as [_ [Hgc _]].
+    discriminate Hgc.
+  Qed.
+
   Theorem lossy_work_pool_startup_exposes_end_to_end_gap :
-    forall w wave active_worker_live worker_rooted late_worker_live
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
       cron_state cron_startup,
       schedule_envelope_safe w wave ->
-      gc_window_safe active_worker_live worker_rooted late_worker_live ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
       cron_no_overlap cron_state ->
       startup_delivery_safe cron_startup ->
       ~ end_to_end_safe
@@ -371,23 +483,33 @@ Section EndToEndModel.
           wave
           active_worker_live
           worker_rooted
+          dispatch_live
+          dispatch_rooted
+          batch_live
+          batch_rooted
           late_worker_live
           cron_state
           cron_startup
           lossy_work_pool_startup.
   Proof.
-    intros w wave active_worker_live worker_rooted late_worker_live cron_state
-      cron_startup Hschedule Hgc Hcron Hstartup Hend.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
+      Hgc Hcron Hstartup Hend.
     unfold end_to_end_safe in Hend.
     destruct Hend as [_ [_ [_ [_ Hwork_pool]]]].
     exact (lossy_work_pool_startup_exposes_envelope_gap Hwork_pool).
   Qed.
 
   Theorem missing_inner_task_panic_exposes_end_to_end_gap :
-    forall w wave active_worker_live worker_rooted late_worker_live
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
       cron_state cron_startup,
       schedule_envelope_safe w wave ->
-      gc_window_safe active_worker_live worker_rooted late_worker_live ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
       cron_no_overlap cron_state ->
       startup_delivery_safe cron_startup ->
       ~ end_to_end_safe
@@ -395,23 +517,33 @@ Section EndToEndModel.
           wave
           active_worker_live
           worker_rooted
+          dispatch_live
+          dispatch_rooted
+          batch_live
+          batch_rooted
           late_worker_live
           cron_state
           cron_startup
           task_panic_missing_inner_work_pool.
   Proof.
-    intros w wave active_worker_live worker_rooted late_worker_live cron_state
-      cron_startup Hschedule Hgc Hcron Hstartup Hend.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
+      Hgc Hcron Hstartup Hend.
     unfold end_to_end_safe in Hend.
     destruct Hend as [_ [_ [_ [_ Hwork_pool]]]].
     exact (missing_inner_task_panic_exposes_envelope_gap Hwork_pool).
   Qed.
 
   Theorem missing_outer_accounting_panic_exposes_end_to_end_gap :
-    forall w wave active_worker_live worker_rooted late_worker_live
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
       cron_state cron_startup,
       schedule_envelope_safe w wave ->
-      gc_window_safe active_worker_live worker_rooted late_worker_live ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
       cron_no_overlap cron_state ->
       startup_delivery_safe cron_startup ->
       ~ end_to_end_safe
@@ -419,13 +551,18 @@ Section EndToEndModel.
           wave
           active_worker_live
           worker_rooted
+          dispatch_live
+          dispatch_rooted
+          batch_live
+          batch_rooted
           late_worker_live
           cron_state
           cron_startup
           accounting_panic_missing_outer_work_pool.
   Proof.
-    intros w wave active_worker_live worker_rooted late_worker_live cron_state
-      cron_startup Hschedule Hgc Hcron Hstartup Hend.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
+      Hgc Hcron Hstartup Hend.
     unfold end_to_end_safe in Hend.
     destruct Hend as [_ [_ [_ [_ Hwork_pool]]]].
     exact (missing_outer_accounting_panic_exposes_envelope_gap Hwork_pool).

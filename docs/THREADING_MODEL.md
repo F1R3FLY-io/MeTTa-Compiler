@@ -279,7 +279,10 @@ The formal lane covers the main scheduler obligations:
   envelope composes WorkPool startup drain and panic isolation: startup
   submissions must be retained until workers drain them, task panics must
   publish the heartbeat path, and accounting panics must not kill the worker
-  needed for subsequent queued work.
+  needed for subsequent queued work.  It also composes the GC-facing scheduler
+  boundary for live-dispatch and async batch roots, so sweep rejects missing
+  dispatch or batch root publication the same way it rejects missing active
+  worker roots.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -556,6 +559,8 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_independent.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_dependency.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_missing_dispatch_root.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_missing_batch_root.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_open_admission.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_startup_no_poll.cfg`
@@ -565,8 +570,9 @@ The composed end-to-end envelope is modeled by:
 
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`. The negative configs violate it when dependency edges are
-omitted, active worker roots are omitted, worker admission stays open across the
-root snapshot, or recurring cron dispatch submits without claiming `in_flight`.
+omitted, active worker roots are omitted, dispatch or async batch roots are
+omitted, worker admission stays open across the root snapshot, or recurring
+cron dispatch submits without claiming `in_flight`.
 - `tla/MC_SchedulerGcBoundary_admission_open.cfg`
 - `formal/rocq/gc/SchedulerSpawnLatch.v`
 - `tla/SchedulerSpawnLatch.tla`

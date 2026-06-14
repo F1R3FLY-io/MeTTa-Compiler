@@ -390,6 +390,10 @@ run_tlc "threading_end_to_end_missing_dependency" "ThreadingEndToEndInterleaving
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_missing_worker_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg" \
   fail "Invariant EndToEndSafe is violated"
+run_tlc "threading_end_to_end_missing_dispatch_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_dispatch_root.cfg" \
+  fail "Invariant EndToEndSafe is violated"
+run_tlc "threading_end_to_end_missing_batch_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_batch_root.cfg" \
+  fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_open_admission" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_open_admission.cfg" \
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_unclaimed_cron" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg" \

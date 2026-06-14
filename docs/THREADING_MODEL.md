@@ -259,14 +259,31 @@ Recurring pooled tasks are protected by an `in_flight` flag:
 1. The cron thread claims `in_flight` before submitting pooled work.
 2. If the recurring task is due while `in_flight` is already true, the cron
    thread requeues only the placeholder and does not dispatch overlap work.
-3. The worker clears `in_flight` on normal, stop, or panic paths.
+3. If the worker returns `false` or panics, it stores the durable stop flag
+   before clearing `in_flight`.
+4. The worker clears `in_flight` on normal, stop, or panic paths.
+5. A later due tick drops a stopped recurring task instead of redispatching it.
 
 The formal lane covers this with:
 
 - `formal/rocq/gc/CronRecurringDispatch.v`
 - `tla/CronRecurringDispatch.tla`
+- `tla/MC_CronRecurringDispatch_stop.cfg`
+- `tla/MC_CronRecurringDispatch_no_stop.cfg`
+- `tla/MC_CronRecurringDispatch_no_claim.cfg`
 
-The negative no-claim model violates non-overlap.
+The positive model preserves both non-overlap and stop-before-redispatch. The
+no-stop negative model violates `StopPreventsRedispatch`, matching a worker that
+clears `in_flight` without first publishing terminal state. The no-claim
+negative model violates `NoOverlapDispatch`, matching a due placeholder that
+submits a second worker before the first recurring worker finishes.
+
+The source-coupling check pins the corresponding implementation facts:
+
+- `dispatch_to_pool()` checks `stop_requested` before claiming work.
+- The `compare_exchange(false, true, ...)` claim occurs before `pool.spawn_eval`.
+- The failed-claim path requeues only and returns before any worker submission.
+- Worker completion updates `stop_requested` before clearing `in_flight`.
 
 ## CESK And GC Interaction
 

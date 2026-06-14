@@ -1226,11 +1226,14 @@ facts the proofs rely on:
 - Threading end-to-end interleaving envelope (`formal/rocq/gc/ThreadingEndToEndInterleaving.v`,
   `tla/ThreadingEndToEndInterleaving.tla`, 2026-06-14) — composes scheduler
   dependency waves, direct fanout, active-worker root publication, closed worker
-  admission, sweep, and recurring-cron dispatch into one TLC state machine.
+  admission, sweep, recurring-cron dispatch, and cron startup delivery into one
+  TLC state machine.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, missing
   active-worker roots, open admission across a root snapshot, and unclaimed
-  recurring cron dispatch.
+  recurring cron dispatch.  The composed cron startup discriminator separately
+  rejects a submitted startup task when neither `CheckEvents` nor `DrainChannel`
+  polls the cron task channel.
 - JIT Long boxing store selection (`formal/rocq/gc/JitLongBoxStoreSelection.v`,
   `tla/JitLongBoxStoreSelection.tla`, 2026-06-14) — proves out-of-inline-range
   JIT Long boxing selects the compiled store: index builds allocate through the

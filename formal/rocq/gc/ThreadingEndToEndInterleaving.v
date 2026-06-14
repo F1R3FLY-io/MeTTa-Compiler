@@ -9,6 +9,9 @@
 
 From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Arith Lia.
+Require Import CronStartupDelivery.
+
+Import MeTTaTron_GC_CronStartupDelivery.
 
 Module MeTTaTron_GC_ThreadingEndToEndInterleaving.
 
@@ -199,10 +202,12 @@ Section EndToEndModel.
       (wave : WaveAssignment)
       (active_worker_live worker_rooted late_worker_live : bool)
       (cron_state : CronState)
+      (cron_startup : StartupConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe active_worker_live worker_rooted late_worker_live /\
-    cron_no_overlap cron_state.
+    cron_no_overlap cron_state /\
+    startup_delivery_safe cron_startup.
 
   Theorem checked_threading_envelope_is_end_to_end_safe :
     forall w wave active_worker_live,
@@ -213,7 +218,8 @@ Section EndToEndModel.
         active_worker_live
         active_worker_live
         false
-        (cron_second_due (cron_first_due true)).
+        (cron_second_due (cron_first_due true))
+        complete_startup.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -221,7 +227,30 @@ Section EndToEndModel.
     - exact Hschedule.
     - split.
       + apply rooted_closed_gc_window_safe.
-      + apply claimed_cron_dispatch_prevents_overlap.
+      + split.
+        * apply claimed_cron_dispatch_prevents_overlap.
+        * apply complete_startup_delivers_submitted_task.
+  Qed.
+
+  Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted late_worker_live cron_state,
+      schedule_envelope_safe w wave ->
+      gc_window_safe active_worker_live worker_rooted late_worker_live ->
+      cron_no_overlap cron_state ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          worker_rooted
+          late_worker_live
+          cron_state
+          missing_poll_path.
+  Proof.
+    intros w wave active_worker_live worker_rooted late_worker_live cron_state
+      Hschedule Hgc Hcron Hend.
+    unfold end_to_end_safe in Hend.
+    destruct Hend as [_ [_ [_ Hstartup]]].
+    exact (missing_poll_path_exposes_delivery_gap Hstartup).
   Qed.
 End EndToEndModel.
 

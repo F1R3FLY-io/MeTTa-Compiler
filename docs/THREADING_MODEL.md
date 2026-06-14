@@ -272,7 +272,10 @@ The formal lane covers the main scheduler obligations:
 - `ThreadingEndToEndInterleaving.v` and
   `ThreadingEndToEndInterleaving.tla` compose scheduler dependency waves,
   direct-fanout maximality, active-worker GC roots, closed worker admission, and
-  recurring-cron in-flight claims into one small interleaving envelope.
+  recurring-cron in-flight claims into one small interleaving envelope.  The
+  envelope also includes cron startup delivery, so a task submitted through the
+  returned handle after the ready receiver observes startup is rejected if the
+  cron event loop has no `CheckEvents` or `DrainChannel` polling path.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -551,6 +554,7 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_open_admission.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_startup_no_poll.cfg`
 
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`. The negative configs violate it when dependency edges are

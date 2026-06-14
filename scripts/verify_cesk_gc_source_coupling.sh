@@ -839,6 +839,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.v" "1"
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_cron_startup_poll_path_exposes_end_to_end_gap" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "BindingProjection.v" "1"
 assert_zero "scripts/verify_cesk_gc_formal.sh" "RUN_LEAN_MIRRORS"
@@ -870,7 +871,10 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "6"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "7"
+line_no "tla/ThreadingEndToEndInterleaving.tla" "CronStartupReadyWaitCompletes" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "NoCronStartupTaskLost" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_startup_no_poll" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "BindingProjection.tla" "4"
 

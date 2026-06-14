@@ -14,7 +14,13 @@ CONSTANTS
     DirectFanout,
     IncludeWorkerRoot,
     CloseAdmission,
-    ClaimCronBeforeDispatch
+    ClaimCronBeforeDispatch,
+    ReturnCronHandleSender,
+    ReturnCronReadyReceiver,
+    ReadySentInsideCronRun,
+    ScheduleCronTaskAfterReady,
+    CronCheckEventsPolls,
+    CronDrainChannelPolls
 
 TASKS == {"producer", "consumer"}
 
@@ -32,12 +38,23 @@ VARIABLES
     inFlight,
     cronWorkerRunning,
     cronOverlap,
-    dispatchCount
+    dispatchCount,
+    startupPhase,
+    cronReadyObserved,
+    cronStartupTaskSubmitted,
+    cronStartupTaskObserved,
+    cronStartupTaskLost
 
-vars ==
+baseVars ==
     <<phase, wave, running, completed, consumerBeforeProducer,
       conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
       valueFreed, inFlight, cronWorkerRunning, cronOverlap, dispatchCount>>
+
+startupVars ==
+    <<startupPhase, cronReadyObserved, cronStartupTaskSubmitted,
+      cronStartupTaskObserved, cronStartupTaskLost>>
+
+vars == <<baseVars, startupVars>>
 
 BooleanConstantsOK ==
     /\ HasDependency \in BOOLEAN
@@ -48,6 +65,12 @@ BooleanConstantsOK ==
     /\ IncludeWorkerRoot \in BOOLEAN
     /\ CloseAdmission \in BOOLEAN
     /\ ClaimCronBeforeDispatch \in BOOLEAN
+    /\ ReturnCronHandleSender \in BOOLEAN
+    /\ ReturnCronReadyReceiver \in BOOLEAN
+    /\ ReadySentInsideCronRun \in BOOLEAN
+    /\ ScheduleCronTaskAfterReady \in BOOLEAN
+    /\ CronCheckEventsPolls \in BOOLEAN
+    /\ CronDrainChannelPolls \in BOOLEAN
 
 TypeOK ==
     /\ BooleanConstantsOK
@@ -65,6 +88,11 @@ TypeOK ==
     /\ cronWorkerRunning \in BOOLEAN
     /\ cronOverlap \in BOOLEAN
     /\ dispatchCount \in Nat
+    /\ startupPhase \in {"spawned", "ready", "submitted", "observed", "lost"}
+    /\ cronReadyObserved \in BOOLEAN
+    /\ cronStartupTaskSubmitted \in BOOLEAN
+    /\ cronStartupTaskObserved \in BOOLEAN
+    /\ cronStartupTaskLost \in BOOLEAN
 
 EdgeComplete ==
     /\ (HasDependency => DependencyEdgeEncoded)
@@ -88,6 +116,11 @@ Init ==
     /\ cronWorkerRunning = FALSE
     /\ cronOverlap = FALSE
     /\ dispatchCount = 0
+    /\ startupPhase = "spawned"
+    /\ cronReadyObserved = FALSE
+    /\ cronStartupTaskSubmitted = FALSE
+    /\ cronStartupTaskObserved = FALSE
+    /\ cronStartupTaskLost = FALSE
 
 Schedule ==
     /\ phase = "init"
@@ -192,6 +225,62 @@ CronWorkerComplete ==
                   conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
                   valueFreed, cronOverlap, dispatchCount>>
 
+CronStartupRun ==
+    /\ startupPhase = "spawned"
+    /\ startupPhase' = "ready"
+    /\ cronReadyObserved' = (ReturnCronReadyReceiver /\ ReadySentInsideCronRun)
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED <<cronStartupTaskSubmitted, cronStartupTaskObserved,
+                  cronStartupTaskLost>>
+
+CronStartupSubmitAfterReady ==
+    /\ startupPhase = "ready"
+    /\ startupPhase' = "submitted"
+    /\ cronStartupTaskSubmitted' =
+        (ScheduleCronTaskAfterReady /\ cronReadyObserved /\ ReturnCronHandleSender)
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED <<cronReadyObserved, cronStartupTaskObserved,
+                  cronStartupTaskLost>>
+
+CronStartupPollCheckEvents ==
+    /\ startupPhase = "submitted"
+    /\ cronStartupTaskSubmitted
+    /\ CronCheckEventsPolls
+    /\ startupPhase' = "observed"
+    /\ cronStartupTaskObserved' = TRUE
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
+                  cronStartupTaskLost>>
+
+CronStartupPollDrainChannel ==
+    /\ startupPhase = "submitted"
+    /\ cronStartupTaskSubmitted
+    /\ CronDrainChannelPolls
+    /\ startupPhase' = "observed"
+    /\ cronStartupTaskObserved' = TRUE
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
+                  cronStartupTaskLost>>
+
+CronStartupNoSubmittedTask ==
+    /\ startupPhase = "submitted"
+    /\ ~cronStartupTaskSubmitted
+    /\ startupPhase' = "observed"
+    /\ cronStartupTaskObserved' = FALSE
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
+                  cronStartupTaskLost>>
+
+CronStartupLoseWithoutPollPath ==
+    /\ startupPhase = "submitted"
+    /\ cronStartupTaskSubmitted
+    /\ ~(CronCheckEventsPolls \/ CronDrainChannelPolls)
+    /\ startupPhase' = "lost"
+    /\ cronStartupTaskLost' = TRUE
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED <<cronReadyObserved, cronStartupTaskSubmitted,
+                  cronStartupTaskObserved>>
+
 Done ==
     /\ phase = "done"
     /\ UNCHANGED vars
@@ -199,7 +288,7 @@ Done ==
 Idle ==
     UNCHANGED vars
 
-Next ==
+ThreadingNext ==
     \/ Schedule
     \/ StartProducer
     \/ StartConsumer
@@ -212,9 +301,26 @@ Next ==
     \/ CronSecondDue
     \/ CronWorkerComplete
     \/ Done
+
+Next ==
+    \/ (ThreadingNext /\ UNCHANGED startupVars)
+    \/ CronStartupRun
+    \/ CronStartupSubmitAfterReady
+    \/ CronStartupPollCheckEvents
+    \/ CronStartupPollDrainChannel
+    \/ CronStartupNoSubmittedTask
+    \/ CronStartupLoseWithoutPollPath
     \/ Idle
 
-Spec == Init /\ [][Next]_vars
+Spec ==
+    /\ Init
+    /\ [][Next]_vars
+    /\ WF_vars(CronStartupRun)
+    /\ WF_vars(CronStartupSubmitAfterReady)
+    /\ WF_vars(CronStartupPollCheckEvents)
+    /\ WF_vars(CronStartupPollDrainChannel)
+    /\ WF_vars(CronStartupNoSubmittedTask)
+    /\ WF_vars(CronStartupLoseWithoutPollPath)
 
 NoConsumerBeforeProducer ==
     ~consumerBeforeProducer
@@ -235,6 +341,22 @@ NoLiveValueSwept ==
 NoOverlappingCronDispatch ==
     ~cronOverlap
 
+CronStartupReadyWaitCompletes ==
+    (startupPhase /= "spawned" /\ ScheduleCronTaskAfterReady) =>
+      cronReadyObserved
+
+CronStartupScheduleAfterReadyHasHandle ==
+    ScheduleCronTaskAfterReady => ReturnCronHandleSender
+
+CronStartupSubmittedReachable ==
+    cronStartupTaskSubmitted => ReturnCronHandleSender /\ cronReadyObserved
+
+NoCronStartupTaskLost ==
+    ~cronStartupTaskLost
+
+CronStartupSubmittedEventuallyObserved ==
+    [](cronStartupTaskSubmitted => <>cronStartupTaskObserved)
+
 EndToEndSafe ==
     /\ NoConsumerBeforeProducer
     /\ NoSameWaveEffectConflict
@@ -242,5 +364,9 @@ EndToEndSafe ==
     /\ MaximalIndependentParallelism
     /\ NoLiveValueSwept
     /\ NoOverlappingCronDispatch
+    /\ CronStartupReadyWaitCompletes
+    /\ CronStartupScheduleAfterReadyHasHandle
+    /\ CronStartupSubmittedReachable
+    /\ NoCronStartupTaskLost
 
 =============================================================================

@@ -394,6 +394,8 @@ run_tlc "threading_end_to_end_open_admission" "ThreadingEndToEndInterleaving.tla
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_unclaimed_cron" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg" \
   fail "Invariant EndToEndSafe is violated"
+run_tlc "threading_end_to_end_startup_no_poll" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_startup_no_poll.cfg" \
+  fail "Invariant NoCronStartupTaskLost is violated"
 run_tlc "counter_flush_locked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_locked.cfg" \
   pass ""
 run_tlc "counter_flush_unlocked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_unlocked.cfg" \

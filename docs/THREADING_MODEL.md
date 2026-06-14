@@ -258,6 +258,9 @@ The formal lane covers the main scheduler obligations:
 - `SchedulerFanoutAdmissionCompleteness.v` and
   `SchedulerFanoutAdmissionCompleteness.tla` prove the requested degree is
   admitted when the runtime gates allow it.
+- `SchedulerActiveFanoutGate.v` and `SchedulerActiveFanoutGate.tla` compose
+  the active production rule-match fanout gates: branch threshold, WFST degree,
+  purity/dynamic-eval blocking, depth, pool availability, and budget.
 - `CollapseFanoutAdmissionCompleteness.v` and
   `CollapseFanoutAdmissionCompleteness.tla` prove the same input-completeness
   contract for `collapse` and `collapse-bind`.
@@ -357,6 +360,8 @@ WFST degree == 1
   -> branch set stays sequential
 WFST degree > 1
   -> branch set may try purity/depth/pool/budget gates
+active rule-match fanout dispatch
+  -> branch threshold, WFST degree, purity, depth, pool, and budget gates pass
 branch count <= safe cap
   -> branch-aware transduction uses every available branch
 max_parallel == 0
@@ -379,6 +384,12 @@ This contract is checked by:
 - `tla/MC_SchedulerFanoutAdmissionCompleteness_all.cfg`
 - `tla/MC_SchedulerFanoutAdmissionCompleteness_partial.cfg`
 - `tla/MC_SchedulerFanoutAdmissionCompleteness_missing_degree.cfg`
+- `formal/rocq/gc/SchedulerActiveFanoutGate.v`
+- `tla/SchedulerActiveFanoutGate.tla`
+- `tla/MC_SchedulerActiveFanoutGate_all.cfg`
+- `tla/MC_SchedulerActiveFanoutGate_missing_purity.cfg`
+- `tla/MC_SchedulerActiveFanoutGate_missing_budget.cfg`
+- `tla/MC_SchedulerActiveFanoutGate_partial_dispatch.cfg`
 - `formal/rocq/gc/CollapseFanoutAdmissionCompleteness.v`
 - `tla/CollapseFanoutAdmissionCompleteness.tla`
 - `tla/MC_CollapseFanoutAdmissionCompleteness_all.cfg`
@@ -390,9 +401,13 @@ use of available branch parallelism. Its zero-cap negative violates
 `NonZeroDegree`; its underutilized negative violates `MaximalBeforeCap`. The
 branch fanout positive model preserves `CompleteAdmittedFanout`; the partial
 spawn and missing-degree negatives violate `CompleteAdmittedFanout` and
-`DegreeGateRequired`. The collapse fanout positive model preserves
-`CompleteAdmittedCollapse`; the partial spawn and missing-threshold negatives
-violate `CompleteAdmittedCollapse` and `ThresholdGateRequired`.
+`DegreeGateRequired`. The active fanout positive model preserves
+`CompleteDispatch`; the missing-purity, missing-budget, and partial-dispatch
+negatives violate `NoDispatchWithoutPurityGate`,
+`NoDispatchWithoutBudgetGate`, and `CompleteDispatch`. The collapse fanout
+positive model preserves `CompleteAdmittedCollapse`; the partial spawn and
+missing-threshold negatives violate `CompleteAdmittedCollapse` and
+`ThresholdGateRequired`.
 
 The source-coupling check pins the corresponding implementation facts:
 
@@ -401,6 +416,8 @@ The source-coupling check pins the corresponding implementation facts:
 - `SchedulingAction::parallelism_degree` is documented as an admission degree.
 - Branch fanout budget requests use every extra branch:
   `(branch_count - 1)`.
+- Active branch fanout reaches `try_acquire_budget()` only after the WFST
+  degree/purity gate, depth gate, and active-worker pool gate have passed.
 - `parallel_dispatch()` allocates result and completion slots for the full
   branch count before iterating every branch slot.
 - Collapse fanout threshold is documented as an admission threshold, not a spawn

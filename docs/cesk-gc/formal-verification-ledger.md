@@ -363,6 +363,10 @@ capped debug Robot replay after the conditional canary produced the expected fri
   not a partial-spawn cap. Once admitted, stack-safe fanout represents every branch slot; the fixed work pool,
   queue-pressure gate, per-depth quota, completion guard, and cancellation protocol bound execution. TLC rejects both
   degree-capped partial fanout (which drops required branches) and admission with the degree gate removed.
+- `formal/rocq/gc/SchedulerActiveFanoutGate.v` and `tla/SchedulerActiveFanoutGate.tla`: compose the production
+  rule-match fanout gates on the active direct-dispatch path. A dispatch implies the branch threshold, WFST degree,
+  purity/dynamic-eval, depth, active-worker pool, and budget gates; once dispatched, every admitted branch slot is
+  represented. TLC rejects missing-purity, missing-budget, and partial-dispatch variants.
 - `formal/rocq/gc/CollapseFanoutAdmissionCompleteness.v` and
   `tla/CollapseFanoutAdmissionCompleteness.tla`: prove and model-check the matching input-completeness contract for
   `collapse` and `collapse-bind`. The collapse threshold is an admission threshold, not a spawn cap; once admitted,
@@ -789,6 +793,12 @@ capped debug Robot replay after the conditional canary produced the expected fri
   no-conflict hot-path configs plus a missing-edge negative discriminator that violates `ConflictEdgesCovered`. Source
   coupling pins the `WavefrontTask.dependencies` contract: callers must include both data dependencies and
   effect-conflict edges because `compute_wavefront` treats missing edges as safe commutativity evidence.
+- 2026-06-14 Active fanout gate-composition increment: `SchedulerActiveFanoutGate.v` proves that active rule-match
+  fanout dispatch requires the branch threshold, WFST degree, purity/dynamic-eval, depth, pool, and budget gates, and
+  that complete dispatch represents every admitted slot. `SchedulerActiveFanoutGate.tla` adds a positive all-gates
+  config plus missing-purity, missing-budget, and partial-dispatch negative discriminators. Source coupling pins the
+  active `eval_loop.rs` rule-match path so `try_acquire_budget()` is reached only after the WFST/purity, depth, and
+  active-worker gates and `parallel_dispatch()` is under `budget > 0`.
 - 2026-06-12 Dynamic-eval dispatch gate increment: focused gates passed under `systemd-run` caps:
   `rocq c ... SchedulerDynamicEvalGate.v`, the fixed dynamic-eval TLC config, the missing-gate negative discriminator
   which violates `NoDynamicEvalParallelBypass`, `cargo test --lib dynamic_eval`, `cargo test --lib branch_analysis`,

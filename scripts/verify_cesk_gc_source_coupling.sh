@@ -424,8 +424,38 @@ assert_after_before \
 assert_after_before \
   "src/backend/eval/trampoline/eval_loop.rs" \
   "let budget = if cut_barrier == 0" \
+  "&& wfst_allows_parallel" \
+  "try_acquire_budget((matches.len() - 1) as u32, current_depth)"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let budget = if cut_barrier == 0" \
+  "&& current_depth < max_parallel_depth()" \
+  "try_acquire_budget((matches.len() - 1) as u32, current_depth)"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let budget = if cut_barrier == 0" \
+  "&& global_eval_pool().active_workers() > 0" \
+  "try_acquire_budget((matches.len() - 1) as u32, current_depth)"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let budget = if cut_barrier == 0" \
   "try_acquire_budget((matches.len() - 1) as u32, current_depth)" \
   "} else {"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let wfst_allows_parallel = if matches.len() >= min_parallel_branches() {" \
+  "let degree_ok = matches.iter().any" \
+  "let all_pure = matches.iter().all"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "let wfst_allows_parallel = if matches.len() >= min_parallel_branches() {" \
+  "let all_pure = matches.iter().all" \
+  "degree_ok && all_pure"
+assert_after_before \
+  "src/backend/eval/trampoline/eval_loop.rs" \
+  "if budget > 0 {" \
+  "let handle = parallel_dispatch(" \
+  "continuations.push(Continuation::WaitForParallel"
 assert_after_before \
   "src/backend/eval/trampoline/eval_loop.rs" \
   "let par_budget = if wfst_allows" \
@@ -498,6 +528,13 @@ line_no "formal/rocq/gc/SchedulerEffectConflictCompleteness.v" "Theorem dependen
 line_no "formal/rocq/gc/SchedulerEffectConflictCompleteness.v" "Theorem same_wave_conflict_rejects_complete_dependency_order" >/dev/null
 line_no "tla/SchedulerEffectConflictCompleteness.tla" "ConflictEdgesCovered ==" >/dev/null
 line_no "tla/SchedulerEffectConflictCompleteness.tla" "SameWaveConflictFree ==" >/dev/null
+line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Definition active_fanout_allowed" >/dev/null
+line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_fanout_requires_purity_gate" >/dev/null
+line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_fanout_requires_budget_gate" >/dev/null
+line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_complete_dispatch_represents_every_slot" >/dev/null
+line_no "tla/SchedulerActiveFanoutGate.tla" "NoDispatchWithoutPurityGate ==" >/dev/null
+line_no "tla/SchedulerActiveFanoutGate.tla" "NoDispatchWithoutBudgetGate ==" >/dev/null
+line_no "tla/SchedulerActiveFanoutGate.tla" "CompleteDispatch ==" >/dev/null
 assert_after_before \
   "src/backend/scheduler/wavefront.rs" \
   "pub struct WavefrontTask" \
@@ -696,6 +733,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerPriorityFairness.v" "1
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictCompleteness.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
@@ -721,6 +759,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictCompleteness.tla" "3"
+assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"

@@ -199,6 +199,7 @@ run_rocq "formal/rocq/gc/SchedulerGcBoundary.v"
 run_rocq "formal/rocq/gc/SchedulerSpawnLatch.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutProgress.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutAdmissionCompleteness.v"
+run_rocq "formal/rocq/gc/SchedulerActiveFanoutGate.v"
 run_rocq "formal/rocq/gc/CollapseFanoutAdmissionCompleteness.v"
 run_rocq "formal/rocq/gc/SchedulerWavefrontParallelism.v"
 run_rocq "formal/rocq/gc/SchedulerEffectConflictCompleteness.v"
@@ -285,6 +286,14 @@ run_tlc "scheduler_fanout_admission_partial" "SchedulerFanoutAdmissionCompletene
   fail "The invariant of CompleteAdmittedFanout is equal to FALSE"
 run_tlc "scheduler_fanout_admission_missing_degree" "SchedulerFanoutAdmissionCompleteness.tla" "MC_SchedulerFanoutAdmissionCompleteness_missing_degree.cfg" \
   fail "The invariant of DegreeGateRequired is equal to FALSE"
+run_tlc "scheduler_active_fanout_all" "SchedulerActiveFanoutGate.tla" "MC_SchedulerActiveFanoutGate_all.cfg" \
+  pass ""
+run_tlc "scheduler_active_fanout_missing_purity" "SchedulerActiveFanoutGate.tla" "MC_SchedulerActiveFanoutGate_missing_purity.cfg" \
+  fail "The invariant of NoDispatchWithoutPurityGate is equal to FALSE"
+run_tlc "scheduler_active_fanout_missing_budget" "SchedulerActiveFanoutGate.tla" "MC_SchedulerActiveFanoutGate_missing_budget.cfg" \
+  fail "The invariant of NoDispatchWithoutBudgetGate is equal to FALSE"
+run_tlc "scheduler_active_fanout_partial_dispatch" "SchedulerActiveFanoutGate.tla" "MC_SchedulerActiveFanoutGate_partial_dispatch.cfg" \
+  fail "The invariant of CompleteDispatch is equal to FALSE"
 run_tlc "collapse_fanout_admission_all" "CollapseFanoutAdmissionCompleteness.tla" "MC_CollapseFanoutAdmissionCompleteness_all.cfg" \
   pass ""
 run_tlc "collapse_fanout_admission_partial" "CollapseFanoutAdmissionCompleteness.tla" "MC_CollapseFanoutAdmissionCompleteness_partial.cfg" \

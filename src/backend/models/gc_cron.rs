@@ -18,7 +18,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::adaptive_pool::{Ema, HillClimber, ScaleAction};
-use super::gc_allocator::{gc_values_freed_total, maybe_async_gc, request_gc};
+use super::gc_allocator::gc_values_freed_total;
+#[cfg(not(feature = "index-gc"))]
+use super::gc_allocator::{maybe_async_gc, request_gc};
 use super::gc_pool::global_gc_pool;
 use super::task_scheduler::TaskSchedulerSingleton;
 use super::work_pool::WorkPool;
@@ -313,13 +315,12 @@ fn execute_memory_monitor(
     monitor.prev_reachable_counter = current_reachable;
     super::gc_allocator::set_backpressure_level(bp_level);
 
-    // E1-FLIP coordination fix (①c): under the dedicated GC thread the cron is a
-    // driver-less GC_REQUESTED producer (and `maybe_async_gc` a 2nd collector regime)
-    // that would strand parked rendezvous workers — the dedicated regime triggers
-    // collection via the worker-safepoint watermark (`request_concurrent_collection`),
-    // the SOLE producer under dedicated. Slab keeps the legacy cron path.
+    // F4/CronProducerErasure: the monitor decision remains common, but the legacy
+    // request_gc producer exists only in the slab opt-out. The index build's
+    // dedicated collector is driven by the safepoint watermark, not cron.
     // `should_gc` is still RETURNED below for the unit tests' TOCTOU check.
-    if should_gc && !super::gc_allocator::dedicated_gc_enabled() {
+    #[cfg(not(feature = "index-gc"))]
+    if should_gc {
         // Phase 9: set the flag AND immediately attempt async GC from the
         // cron thread. `maybe_async_gc` honors the purely-async mandate —
         // it does NOT require `ACTIVE_EVALUATORS == 0`, so it can fire

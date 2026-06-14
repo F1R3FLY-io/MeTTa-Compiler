@@ -11,7 +11,7 @@
 //!   ([`SuspendedActivation::ExprVec`](crate::backend::eval::cesk::k_spine::SuspendedActivation)).
 //!   The index collector reads roots structurally from the K-spine — no
 //!   `frame_chain`.
-//! - **slab (default)**: push ONLY the `frame_chain` frame
+//! - **legacy slab opt-out**: push ONLY the `frame_chain` frame
 //!   ([`EvalFrameGuard::push_vec`](crate::backend::eval::frame_chain::EvalFrameGuard)).
 //!   The slab collector walks the frame chain.
 //!

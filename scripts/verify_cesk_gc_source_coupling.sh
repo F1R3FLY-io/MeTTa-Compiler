@@ -163,6 +163,40 @@ assert_after_before \
   "select exactly one GC store feature" \
   "pub mod backend;"
 
+# Phase F3 live gates realize the same DefaultStoreSelection.v theorem: default
+# builds exercise index-gc; the slab comparison arm is only the explicit legacy
+# opt-out. This prevents verification scripts from silently comparing index
+# against itself after the default flip.
+assert_after_before \
+  "scripts/a5_greenwall.sh" \
+  "### 1 DEFAULT-INDEX nextest" \
+  'cargo nextest run --release' \
+  "### 2 LEGACY-SLAB nextest"
+line_no "scripts/a5_greenwall.sh" 'cargo nextest run --release "${LEGACY_SLAB_FEATURES[@]}"' >/dev/null
+line_no "scripts/a5_greenwall.sh" 'cargo build --release --bin mtt-conformance' >/dev/null
+assert_after_before \
+  "scripts/ab_gc_diff.sh" \
+  "--no-default-features --features legacy-slab-gc" \
+  '"$bin" --conformance-dir "$CONF_DIR" --gc "$label"' \
+  "diffing conformance pass/fail sets"
+line_no "scripts/ab_gc_diff.sh" 'cargo nextest run "${LEGACY_SLAB_FEATURES[@]}"' >/dev/null
+line_no "scripts/f1_welch_bench.sh" 'build_one index "$INDEX_BIN"' >/dev/null
+line_no "scripts/f1_welch_bench.sh" 'build_one slab  "$SLAB_BIN" --no-default-features --features legacy-slab-gc' >/dev/null
+assert_after_before \
+  "scripts/verify_cesk_gc_all.sh" \
+  "local out_index out_slab" \
+  "cargo build --release --bin mettatron" \
+  'cp target/release/mettatron "$LOG_DIR/mtt-index"'
+assert_after_before \
+  "scripts/verify_cesk_gc_all.sh" \
+  'cp target/release/mettatron "$LOG_DIR/mtt-index"' \
+  "cargo build --release --no-default-features --features legacy-slab-gc --bin mettatron" \
+  'cp target/release/mettatron "$LOG_DIR/mtt-slab"'
+line_no "scripts/drlock_gate.sh" 'cargo nextest run --release "${LEGACY_SLAB_FEATURES[@]}"' >/dev/null
+line_no "scripts/drlock_gate.sh" 'cargo nextest run --release' >/dev/null
+line_no "scripts/a5_asan_both.sh" 'build_asan --no-default-features --features legacy-slab-gc' >/dev/null
+line_no "scripts/f1_memory_effectiveness.sh" 'build_one slab  "$SLAB_BIN" --no-default-features --features legacy-slab-gc' >/dev/null
+
 # Phase F2: --gc/MTT_GC is an assertion/reporter for the compile-time store,
 # not a runtime switch. Pin the library predicate and both CLI entrypoints to the
 # same hard-error path so conformance cannot silently exercise the wrong store.

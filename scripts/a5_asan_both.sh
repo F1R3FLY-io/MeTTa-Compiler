@@ -25,7 +25,7 @@ LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
 mkdir -p "$LOG_ROOT"
 LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "a5_${SAFE_LABEL}_asan.XXXXXXXX")}"
 P="$LOG_DIR/a5_${SAFE_LABEL}_asan"
-build_asan() {  # $1... = extra cargo args (e.g. --features index-gc)
+build_asan() {  # $1... = extra cargo args (e.g. legacy-slab opt-out)
   systemd-run --user --scope -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=800% -p TasksMax=256 \
     env RUSTFLAGS="-Zsanitizer=address -C target-cpu=native" \
     cargo +nightly build -Zbuild-std --target x86_64-unknown-linux-gnu --bin mtt-conformance -j4 "$@"
@@ -35,16 +35,16 @@ echo "repo=$REPO"
 echo "conformance_dir=$CONF"
 echo "logs=$LOG_DIR"
 
-echo "### build SLAB ASAN bin"
-build_asan > "${P}_slab_build.log" 2>&1; echo "slab_build_rc=$?"; tail -2 "${P}_slab_build.log"
+echo "### build LEGACY-SLAB ASAN bin"
+build_asan --no-default-features --features legacy-slab-gc > "${P}_slab_build.log" 2>&1; echo "slab_build_rc=$?"; tail -2 "${P}_slab_build.log"
 echo "### SLAB conformance ASAN (full 483 — catches a dropped slab provider)"
 ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
   systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% \
   "$BIN" --conformance-dir "$CONF" --strict > "${P}_slab_conf.log" 2>&1
 echo "slab_conf_rc=$?"; grep -E "^Summary:" "${P}_slab_conf.log"
 
-echo "### build INDEX ASAN bin (--features index-gc; overwrites the bin)"
-build_asan --features index-gc > "${P}_index_build.log" 2>&1; echo "index_build_rc=$?"; tail -2 "${P}_index_build.log"
+echo "### build DEFAULT-INDEX ASAN bin (overwrites the bin)"
+build_asan > "${P}_index_build.log" 2>&1; echo "index_build_rc=$?"; tail -2 "${P}_index_build.log"
 echo "### INDEX M11-bisimilarity-pt ASAN (default mid-loop gate, oracle live)"
 METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MIN_BYTES=131072 METTATRON_INDEX_GC_REPORT=1 \
   ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \

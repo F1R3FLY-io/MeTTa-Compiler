@@ -116,20 +116,20 @@ run_with_scope() {
     timeout --signal=TERM --kill-after=10s "$timeout_secs" "$@"
 }
 
-# ── mmverify on both store binaries (greenwall leaves the INDEX release built;
-#    the slab arm rebuilds quickly thanks to the cache) ──────────────────────
+# ── mmverify on both store binaries (greenwall leaves the default-index release
+#    built; the legacy-slab arm rebuilds quickly thanks to the cache) ─────────
 run_mmverify_both() {
   set -e
   local out_index out_slab
   systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1600% --quiet \
-    cargo build --release --features index-gc --bin mettatron
+    cargo build --release --bin mettatron
   cp target/release/mettatron "$LOG_DIR/mtt-index"
   out_index="$(run_with_scope "$RUN_MEM_MAX" "$RUN_CPU_QUOTA" "$RUN_TIMEOUT_SECS" \
     "$LOG_DIR/mtt-index" examples/mmverify/demo0/verify_demo0.metta 2>&1)"
   out_index="$(printf '%s\n' "$out_index" | grep -c 'Correct proof!' || true)"
   [[ "$out_index" -ge 1 ]] || { echo "index mmverify did not print 'Correct proof!'"; exit 1; }
   systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1600% --quiet \
-    cargo build --release --bin mettatron
+    cargo build --release --no-default-features --features legacy-slab-gc --bin mettatron
   cp target/release/mettatron "$LOG_DIR/mtt-slab"
   out_slab="$(run_with_scope "$RUN_MEM_MAX" "$RUN_CPU_QUOTA" "$RUN_TIMEOUT_SECS" \
     "$LOG_DIR/mtt-slab" examples/mmverify/demo0/verify_demo0.metta 2>&1)"

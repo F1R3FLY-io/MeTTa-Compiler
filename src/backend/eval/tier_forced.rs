@@ -301,8 +301,9 @@ pub fn eval_with_tier(
     // here, so this is a true-quiescence reclaim point (mirrors `eval()`'s
     // post-EvalGuard hook). The complete root set is `collect_all_roots()`
     // UNIONED with the outcome's result values (held in the outcome, not yet in
-    // any RootProvider). Dead in the default (slab) build (gc_mode_is_index()
-    // const-folds to false). Gated on actual quiescence, not fanout dormancy.
+    // any RootProvider). Dead in the legacy slab opt-out build
+    // (`gc_mode_is_index()` const-folds to false). Gated on actual quiescence,
+    // not fanout dormancy.
     // Cheap pre-check (gate + watermark) avoids the `collect_all_roots()` walk on
     // every eval; only build the root set when a collection will actually fire.
     if crate::backend::eval::cesk::index_heap::index_gc::should_collect() {

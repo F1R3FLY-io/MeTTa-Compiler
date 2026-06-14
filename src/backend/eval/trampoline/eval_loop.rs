@@ -4124,8 +4124,8 @@ fn eval_trampoline_inner<C: EvalContext>(
     // once, mutated in place). The collector
     // ([`collect_trampoline_frame_roots`]) walks their CURRENT contents.
     //
-    // Gated on `gc_mode_is_index()`: in the default (slab) build no frame is
-    // pushed, so the slab frame-chain walk is byte-identical to before. The
+    // Gated on `gc_mode_is_index()`: in the legacy slab opt-out build no frame
+    // is pushed, so the slab frame-chain walk is byte-identical to before. The
     // `TrampolineFrameRoots` struct and guard are stack locals that drop at
     // function exit; the raw pointers they hold name in-scope `Vec`s.
     //
@@ -4594,10 +4594,11 @@ fn eval_trampoline_inner<C: EvalContext>(
             // (`active_evaluator_count() == 1`) — the trivially-true instance of
             // the proven `QuiescenceInvariant`, so it is safe by construction.
             //
-            // Dead in the default (slab) build: `gc_mode_is_index()` (the first
-            // conjunct of the gate, checked inside the cheap pre-check) const-
-            // folds to `false` when `index-gc` is off, so this whole block is a
-            // single perfectly-predicted false branch off the reduction hot path.
+            // Dead in the legacy slab opt-out build: `gc_mode_is_index()` (the
+            // first conjunct of the gate, checked inside the cheap pre-check)
+            // const-folds to `false` when `index-gc` is off, so this whole block
+            // is a single perfectly-predicted false branch off the reduction hot
+            // path.
             // Independent of `ctx.should_safepoint()`: the index GC's own
             // committed-bytes watermark drives the trigger (the slab `is_gc_
             // requested()`-gated safepoint dance below is a separate path).

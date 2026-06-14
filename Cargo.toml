@@ -274,7 +274,7 @@ default = ["interning", "async", "symbol-interning", "index-gc"]
 async = ["tokio"]
 interning = []
 # Enables benchmark/example entry points that exercise the always-built
-# Cranelift JIT directly. Kept out of default so normal slab gates remain
+# Cranelift JIT directly. Kept out of default so normal GC gates remain
 # byte-identical unless a JIT benchmark explicitly opts in.
 jit = []
 # Rholang integration: enables pathmap_par_integration and rholang_integration modules

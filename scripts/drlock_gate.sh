@@ -12,6 +12,7 @@ REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
 CONF_DIR="${CONFORMANCE_DIR:-$REPO_PARENT/mettatron-specification/conformance}"
 cd "$REPO"
 CAP=(systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 -p CPUQuota=1000%)
+LEGACY_SLAB_FEATURES=(--no-default-features --features legacy-slab-gc)
 SAFE_STEP="${STEP//[^A-Za-z0-9_.-]/_}"
 LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
 mkdir -p "$LOG_ROOT"
@@ -23,22 +24,22 @@ echo "logs=$LOG_DIR"
 
 case "$STEP" in
   nextest_slab)
-    echo "### SLAB nextest (expect 4343/0)"; date
-    "${CAP[@]}" cargo nextest run --release > "${P}_slab_nextest.log" 2>&1; echo "slab_rc=$?"
+    echo "### LEGACY-SLAB nextest (expect 4343/0)"; date
+    "${CAP[@]}" cargo nextest run --release "${LEGACY_SLAB_FEATURES[@]}" > "${P}_slab_nextest.log" 2>&1; echo "slab_rc=$?"
     grep -E "Summary|tests run|^ *FAIL|TIMEOUT|Starting" "${P}_slab_nextest.log" | tail -6
     ;;
   nextest_index)
-    echo "### INDEX nextest (expect ~4186/0)"; date
-    "${CAP[@]}" cargo nextest run --release --features index-gc > "${P}_index_nextest.log" 2>&1; echo "index_rc=$?"
+    echo "### DEFAULT-INDEX nextest (expect ~4186/0)"; date
+    "${CAP[@]}" cargo nextest run --release > "${P}_index_nextest.log" 2>&1; echo "index_rc=$?"
     grep -E "Summary|tests run|^ *FAIL|TIMEOUT|Starting" "${P}_index_nextest.log" | tail -6
     ;;
   conf_build)
-    echo "### INDEX conformance bin build (release)"; date
-    "${CAP[@]}" cargo build --release --features index-gc --bin mtt-conformance > "${P}_confbuild.log" 2>&1; echo "confbuild_rc=$?"
+    echo "### DEFAULT-INDEX conformance bin build (release)"; date
+    "${CAP[@]}" cargo build --release --bin mtt-conformance > "${P}_confbuild.log" 2>&1; echo "confbuild_rc=$?"
     tail -3 "${P}_confbuild.log"
     ;;
   conf_f0)
-    echo "### INDEX conformance FANOUT=0 (expect 483/0, cycles>0 via MAX_BYTES=1MiB)"; date
+    echo "### DEFAULT-INDEX conformance FANOUT=0 (expect 483/0, cycles>0 via MAX_BYTES=1MiB)"; date
     METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MAX_BYTES=1048576 METTATRON_INDEX_GC_REPORT=1 "${CAP[@]}" \
       "$REPO/target/release/mtt-conformance" --conformance-dir "$CONF_DIR" --strict > "${P}_conf_f0.log" 2>&1
     echo "conf_rc=$?"
@@ -52,8 +53,8 @@ case "$STEP" in
     echo "fails+errors: $(grep -cE ': (FAIL|ERROR)' "${P}_conf_f0.log")"
     ;;
   conf_oracle)
-    echo "### INDEX conformance DEBUG oracle (MAX_BYTES=1MiB; expect 0 panics, 483 pass)"; date
-    "${CAP[@]}" cargo build --features index-gc --bin mtt-conformance > "${P}_confbuild_debug.log" 2>&1; echo "confbuild_debug_rc=$?"
+    echo "### DEFAULT-INDEX conformance DEBUG oracle (MAX_BYTES=1MiB; expect 0 panics, 483 pass)"; date
+    "${CAP[@]}" cargo build --bin mtt-conformance > "${P}_confbuild_debug.log" 2>&1; echo "confbuild_debug_rc=$?"
     tail -2 "${P}_confbuild_debug.log"
     METTATRON_PARALLEL_FANOUT_DEPTH=0 METTATRON_INDEX_GC_MAX_BYTES=1048576 METTATRON_INDEX_GC_REPORT=1 "${CAP[@]}" \
       "$REPO/target/debug/mtt-conformance" --conformance-dir "$CONF_DIR" --strict > "${P}_conf_oracle.log" 2>&1

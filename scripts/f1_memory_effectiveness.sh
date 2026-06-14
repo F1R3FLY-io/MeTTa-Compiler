@@ -44,8 +44,8 @@ build_one() {
     || { echo "BUILD FAILED ($lbl)"; tail -5 "$OUT/build_${lbl}.log"; exit 1; }
   cp "$REPO/target/release/mettatron" "$dest"
 }
-build_one slab  "$SLAB_BIN"
-build_one index "$INDEX_BIN" --features index-gc
+build_one index "$INDEX_BIN"
+build_one slab  "$SLAB_BIN" --no-default-features --features legacy-slab-gc
 
 fixture() {
   case "$1" in

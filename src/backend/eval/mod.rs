@@ -12,9 +12,9 @@ pub(crate) mod expr_vec_frame;
 // index-gc build reads roots structurally from the reified K-spine / store and
 // has NO frame_chain module at all — every index-live `frame_chain::*` ref is
 // cfg-walled (A5.1/2/3 walled the spine/VM/ExprVec/provider sites; A5.6 walled
-// the remaining parallel/worker push + collect sites). The slab (default) build
-// compiles + uses frame_chain verbatim. F4 (a later step) physically deletes
-// the file once the slab build itself stops needing it.
+// the remaining parallel/worker push + collect sites). The legacy slab opt-out
+// build compiles + uses frame_chain verbatim. F4 (a later step) physically
+// deletes the file once the slab build itself stops needing it.
 #[cfg(not(feature = "index-gc"))]
 pub(crate) mod frame_chain;
 pub(crate) mod frame_label;
@@ -85,12 +85,13 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 
 /// The return type of the public [`eval`] entry point.
 ///
-/// In the **default (slab)** build this is EXACTLY [`EvalResult`] (the `(results, env)`
-/// 2-tuple) — the slab signature is UNCHANGED, so every existing slab caller (and the
-/// `examples/` + integration `tests/`, which are slab-only) compiles verbatim.
+/// In the **legacy slab opt-out** build this is EXACTLY [`EvalResult`] (the
+/// `(results, env)` 2-tuple) — the slab signature is UNCHANGED, so existing slab
+/// callers compile verbatim.
 ///
-/// In the **`index-gc`** build it gains a third element: an `Option<SafepointRootHandle>`
-/// carrying the E1-FLIP Path B V4 **B3 directive-exit leaving-park** handle. B3 registers
+/// In the **default `index-gc`** build it gains a third element: an
+/// `Option<SafepointRootHandle>` carrying the E1-FLIP Path B V4 **B3
+/// directive-exit leaving-park** handle. B3 registers
 /// the leaving root set (`reach(E₀) ∪ results`) into the gen-unconditional `SAFEPOINT_ROOTS`
 /// channel just before `eval()`'s `EvalGuard` drops, then stamps the witness
 /// (`note_reified_park`). The handle MUST RIDE to the caller (the F1 ride-to-caller pattern,
@@ -102,8 +103,9 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 ///
 /// Production callers therefore bind the third element to a NAMED local (NOT `_`) whose
 /// scope outlives result consumption; test callers (no concurrent GC under DEDICATED-off)
-/// use the `(results, env, ..)` rest-pattern, which is valid for BOTH the 2-tuple (slab)
-/// and the 3-tuple (index-gc) and harmlessly drops the always-`None` handle.
+/// use the `(results, env, ..)` rest-pattern, which is valid for BOTH the
+/// 2-tuple (legacy slab) and the 3-tuple (default index-gc) and harmlessly drops
+/// the always-`None` handle.
 #[cfg(not(feature = "index-gc"))]
 pub type EvalReturn = EvalResult;
 /// See [`EvalReturn`] (slab variant). The third element rides the B3 leaving-park handle.
@@ -394,8 +396,8 @@ pub fn eval(
     // UNIONED with the about-to-be-returned result values (held here in a Rust
     // local, not yet in any RootProvider).
     //
-    // Dead in the default (slab) build: `gc_mode_is_index()` const-folds to
-    // `false` when `index-gc` is off, so the slab path is byte-identical.
+    // Dead in the legacy slab opt-out build: `gc_mode_is_index()` const-folds
+    // to `false` when `index-gc` is off, so the slab path is byte-identical.
     // Cheap pre-check (gate + watermark) avoids the `collect_all_roots()` walk on
     // every eval; only build the root set when a collection will actually fire.
     if crate::backend::eval::cesk::index_heap::index_gc::should_collect() {

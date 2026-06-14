@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# F1 — Welch A/B benchmark: index+JIT (--features index-gc) vs slab+JIT (default).
+# F1 — Welch A/B benchmark: index+JIT (default) vs legacy slab+JIT
+# (--no-default-features --features legacy-slab-gc).
 #
 # THE MIGRATION GATE (experiment gc-substrate #6). Decides whether the CESK
 # index/generational collector is throughput-ready to become the default GC
@@ -52,8 +53,8 @@ build_one() {  # $1=label $2=dest [extra cargo args...]
   cp "$REPO/target/release/mettatron" "$dest"
   echo "  ok: $(grep -cE 'generated .* warning' "$OUT/build_${lbl}.log" >/dev/null && grep -oE 'mettatron.* generated [0-9]+ warning' "$OUT/build_${lbl}.log" | tail -1)"
 }
-build_one slab  "$SLAB_BIN"
-build_one index "$INDEX_BIN" --features index-gc
+build_one index "$INDEX_BIN"
+build_one slab  "$SLAB_BIN" --no-default-features --features legacy-slab-gc
 
 # Resolve workload name -> fixture path (skip missing).
 fixture() {

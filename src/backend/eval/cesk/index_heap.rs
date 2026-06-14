@@ -2545,8 +2545,9 @@ pub mod index_gc {
     /// allocation (which also takes `global_index_heap().write()`), so no `Addr`
     /// can be minted mid-collection. Returns `true` iff a cycle ran.
     pub fn run_collection_if_triggered(roots: &[MettaValue]) -> bool {
-        // Gate first — cheap, and keeps the default/slab build's call site dead
-        // (gc_mode_is_index() const-folds to false when the feature is off).
+        // Gate first — cheap, and keeps the legacy slab opt-out build's call
+        // site dead (gc_mode_is_index() const-folds to false when the feature
+        // is off).
         if !gate_open() {
             return false;
         }

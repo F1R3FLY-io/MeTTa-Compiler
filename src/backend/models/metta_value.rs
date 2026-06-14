@@ -718,15 +718,14 @@ mod inc2_mode_tests {
         }
     }
 
-    // (cfg-gate) Asserts the process default decode mode is Slab and that a
-    // slab heap value carries no arena Addr. Under `--features index-gc` the
+    // (cfg-gate) Asserts the legacy slab decode mode is Slab and that a slab
+    // heap value carries no arena Addr. In the default `index-gc` build the
     // process starts in Index mode (`GC_MODE == 1`) and `global_factory()`
-    // yields index handles, so this slab-mode invariant is false by design —
-    // run it only in the slab build.
+    // yields index handles, so this slab-mode invariant is false by design.
     #[cfg(not(feature = "index-gc"))]
     #[test]
-    fn default_mode_is_slab_and_has_no_arena_addr() {
-        assert!(!gc_mode_is_index(), "default value-decode mode is Slab");
+    fn legacy_slab_mode_has_no_arena_addr() {
+        assert!(!gc_mode_is_index(), "legacy slab value-decode mode is Slab");
         // A slab-allocated heap value is not an arena Addr in Slab mode.
         let v = crate::backend::models::global_factory().atom("x");
         assert_eq!(

@@ -194,6 +194,7 @@ run_rocq "formal/rocq/gc/HashConsSweepRetain.v"
 run_rocq "formal/rocq/gc/DriverRootUnion.v"
 run_rocq "formal/rocq/gc/DriverCPublication.v"
 run_rocq "formal/rocq/gc/BatchHandoff.v"
+run_rocq "formal/rocq/gc/RholangBatchCompletion.v"
 run_rocq "formal/rocq/gc/SchedulerGcBoundary.v"
 run_rocq "formal/rocq/gc/SchedulerSpawnLatch.v"
 run_rocq "formal/rocq/gc/SchedulerFanoutProgress.v"
@@ -530,6 +531,12 @@ run_tlc "batch_handoff_no_handle" "MC_BatchHandoff.tla" "MC_BatchHandoff_no_hand
   fail "Invariant NoPublishedBatchResultFreed is violated"
 run_tlc "batch_handoff_drop_before_copy" "MC_BatchHandoff.tla" "MC_BatchHandoff_drop_before_copy.cfg" \
   fail "Invariant NoPublishedBatchResultFreed is violated"
+run_tlc "rholang_batch_completion_guarded" "RholangBatchCompletion.tla" "RholangBatchCompletion_guarded.cfg" \
+  pass ""
+run_tlc "rholang_batch_completion_panic_bug" "RholangBatchCompletion.tla" "RholangBatchCompletion_panic_bug.cfg" \
+  fail "Temporal properties were violated"
+run_tlc "rholang_batch_completion_slot_bug" "RholangBatchCompletion.tla" "RholangBatchCompletion_slot_bug.cfg" \
+  fail "Invariant NoSilentBatchSuccess is violated"
 run_tlc "scheduler_gc_boundary_all" "MC_SchedulerGcBoundary.tla" "MC_SchedulerGcBoundary_all.cfg" \
   pass ""
 run_tlc "scheduler_gc_boundary_missing_worker" "MC_SchedulerGcBoundary.tla" "MC_SchedulerGcBoundary_missing_worker.cfg" \

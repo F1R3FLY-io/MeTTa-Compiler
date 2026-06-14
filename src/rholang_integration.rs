@@ -615,6 +615,28 @@ struct BatchOutcome {
     _root_handle: Option<crate::backend::models::SafepointRootHandle>,
 }
 
+#[cfg(feature = "async")]
+struct BatchCompletionGuard {
+    remaining: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    done_pair: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+#[cfg(feature = "async")]
+impl Drop for BatchCompletionGuard {
+    fn drop(&mut self) {
+        if self
+            .remaining
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+        {
+            let (lock, cvar) = &*self.done_pair;
+            let mut done = lock.lock().expect("done mutex poisoned");
+            *done = true;
+            cvar.notify_one();
+        }
+    }
+}
+
 /// Helper function to evaluate a batch of arena expressions in parallel.
 /// Returns results in original order with their indices.
 ///
@@ -627,7 +649,7 @@ async fn evaluate_batch_parallel_arena(
     batch: Vec<(usize, MettaValue, bool)>,
     env: MettaEnvironment,
 ) -> Vec<BatchOutcome> {
-    use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+    use std::sync::atomic::AtomicU32;
     use std::sync::{Arc, Condvar, Mutex};
 
     debug!(
@@ -668,6 +690,11 @@ async fn evaluate_batch_parallel_arena(
 
         pool.spawn_eval(
             move || {
+                let _completion = BatchCompletionGuard {
+                    remaining: Arc::clone(&remaining),
+                    done_pair: Arc::clone(&done_pair),
+                };
+
                 // Track this parallel eval as active (prevents GC during evaluation)
                 let _guard = EvalGuard::enter();
                 // For parallel evaluation, use StaticEvalContext which provides
@@ -724,13 +751,9 @@ async fn evaluate_batch_parallel_arena(
                     });
                 }
 
-                // Decrement barrier; if last task, notify waiter
-                if remaining.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
-                    let (lock, cvar) = &*done_pair;
-                    let mut done = lock.lock().expect("done mutex poisoned");
-                    *done = true;
-                    cvar.notify_one();
-                }
+                // The completion decrement + done-set + notify is performed by
+                // `_completion`'s Drop on every closure exit path, including a
+                // panic-unwind from the eval above.
             },
             TaskTypeId::Eval(0), // hash not needed for batch eval
             priority_levels::NORMAL,

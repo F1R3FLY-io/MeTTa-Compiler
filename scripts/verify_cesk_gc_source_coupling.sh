@@ -906,10 +906,21 @@ assert_after_before "src/rholang_integration.rs" "struct BatchOutcome" "_root_ha
 assert_after_before "src/rholang_integration.rs" "let result_vec: Vec<MettaValue> =" "eval_results.into_iter().map(|(value, _bindings)| value).collect();" "register_temporary_roots("
 assert_after_before "src/rholang_integration.rs" "let result_vec: Vec<MettaValue> =" "register_temporary_roots(" "guard[slot] = Some(BatchOutcome"
 assert_after_before "src/rholang_integration.rs" "let result_vec: Vec<MettaValue> =" "register_temporary_roots(" "_root_handle: root_handle,"
-assert_after_before "src/rholang_integration.rs" "guard[slot] = Some(BatchOutcome" "_root_handle: root_handle," "remaining.fetch_sub"
+assert_after_before "src/rholang_integration.rs" "guard[slot] = Some(BatchOutcome" "_root_handle: root_handle," "The completion decrement + done-set + notify"
 assert_after_before "src/rholang_integration.rs" "let mut collected: Vec<BatchOutcome>" "drain(..)" "collected.sort_by_key"
 assert_zero "src/rholang_integration.rs" "drop(root_handle)"
 assert_count "src/rholang_integration.rs" "let batch_results = evaluate_batch_parallel_arena(current_batch, env.clone()).await;" "2"
+
+# Rholang async batch completion coupling: RholangBatchCompletion.v/TLA applies
+# only if every spawned batch worker owns one RAII completion guard, that guard's
+# Drop is the sole executable decrement/notify site, and it is constructed
+# before EvalGuard so panic-unwind from eval still releases the parent wait.
+assert_count "src/rholang_integration.rs" "struct BatchCompletionGuard" "1"
+assert_count "src/rholang_integration.rs" ".fetch_sub(1, std::sync::atomic::Ordering::AcqRel)" "1"
+assert_after_before "src/rholang_integration.rs" "impl Drop for BatchCompletionGuard" ".fetch_sub(1, std::sync::atomic::Ordering::AcqRel)" "cvar.notify_one();"
+assert_after_before "src/rholang_integration.rs" "pool.spawn_eval(" "let _completion = BatchCompletionGuard {" "let _guard = EvalGuard::enter();"
+assert_after_before "src/rholang_integration.rs" "let _completion = BatchCompletionGuard {" "let _guard = EvalGuard::enter();" "eval_trampoline(expr, env, &ctx);"
+
 assert_count "src/rholang_integration.rs" "for outcome in batch_results {" "2"
 assert_count_between "src/rholang_integration.rs" "if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {" "current_batch = Vec::new();" "for outcome in batch_results {" "1"
 assert_after_before "src/rholang_integration.rs" "if (is_rule_def || is_ground_fact) && !current_batch.is_empty() {" "output.push(result);" "(and its index-gc _root_handle) drops HERE"

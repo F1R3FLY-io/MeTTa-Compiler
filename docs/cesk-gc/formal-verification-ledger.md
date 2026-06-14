@@ -344,6 +344,11 @@ capped debug Robot replay after the conditional canary produced the expected fri
 - `formal/rocq/gc/BatchHandoff.v` and `formal/lean/gc/BatchHandoff.lean`: prove the async rholang batch-result
   handoff obligation. A worker result survives while protected by its persistent safepoint handle, survives after the
   caller copies it into `MettaState.output`, and dropping the handle is safe only after that output copy.
+- `formal/rocq/gc/RholangBatchCompletion.v` and `tla/RholangBatchCompletion.tla`: prove and model-check the async
+  rholang batch completion obligation. Each spawned batch worker owns an RAII completion guard whose Drop is the sole
+  decrement/notify site, so a panic-unwind from `eval_trampoline` cannot strand the async caller with `remaining > 0`.
+  The negative TLC model without that guard violates `EventuallyParentDone`; the missing-slot model rejects successful
+  completion with an unstored batch slot via `NoSilentBatchSuccess`.
 - `formal/rocq/gc/SchedulerGcBoundary.v`: proves the GC-facing scheduler/thread-pool boundary. If active workers,
   live dispatch/collapse fan-outs, and async batch handoff values are all mapped into driver root channels, and
   collection admission prevents newly joined workers during the sweep window, mark/sweep cannot free a scheduler-held

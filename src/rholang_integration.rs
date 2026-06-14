@@ -651,18 +651,13 @@ async fn evaluate_batch_parallel_arena(
     let pool = global_eval_pool();
 
     // ── E1-c (F1) batch worker-spawn latch ──
-    // The batch spawns concurrent workers via `pool.spawn_eval`, which (unlike
-    // parallel_dispatch / parallel_collapse_dispatch, eval_loop.rs) does NOT latch the
-    // "a worker has spawned" flag. Under the dedicated collector this latch tells the
-    // index collector it is in the FANOUT>0 regime. Gated on `dedicated_gc_enabled()`
-    // so index-default (dedicated OFF) + slab are BYTE-IDENTICAL — `note_worker_spawned`
-    // only flips a bool the INDEX collector reads, and the ST collector's `active==0`
-    // gate already prevents a mid-batch collection regardless.
+    // The batch spawns eval workers via `pool.spawn_eval`, so it must close the
+    // non-rendezvous mid-loop index-GC gate before any worker can observe the
+    // heap. This is independent of the dedicated collector: FANOUT_DEPTH=0 still
+    // permits this API-level batch parallelism.
     #[cfg(feature = "index-gc")]
     {
-        if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
-            crate::backend::models::note_worker_spawned();
-        }
+        crate::backend::models::note_worker_spawned();
     }
 
     for (slot, (idx, expr, should_output)) in batch.into_iter().enumerate() {

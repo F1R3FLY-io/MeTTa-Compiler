@@ -196,7 +196,9 @@ capped debug Robot replay after the conditional canary produced the expected fri
   spawn-latch ordering obligation. If `note_worker_spawned()` is stored before an eval worker is submitted to the
   pool, then any later mid-loop collection check that can observe the worker must also observe the sticky latch, so
   `gate_open_midloop` is closed by `!worker_ever_spawned()`. The TLC negative configs reject both spawn-before-latch
-  and missing-latch handoff shapes with `NoWorkerWithMidloopGateOpen`.
+  and missing-latch handoff shapes with `NoWorkerWithMidloopGateOpen`. The proof forced a source correction in the
+  Rholang async batch evaluator: API-level batch parallelism can exist even when `FANOUT_DEPTH=0`, so the
+  `index-gc` latch is no longer gated on the dedicated collector.
 - `formal/rocq/gc/ThreadContribution.v` and `formal/lean/gc/ThreadContribution.lean`: if the canonical
   per-mutator contribution reader includes every component it claims (trampoline extra values, S/C/K, E0, global
   anchors, K-spine, deferred env roots; tier-leaf extra values plus env-less persistent roots), and publication/drain

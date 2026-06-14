@@ -1178,6 +1178,7 @@ assert_after_before "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midl
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_dispatch(" "crate::backend::models::note_worker_spawned();" "pool.spawn_eval_classified("
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "fn parallel_collapse_dispatch(" "crate::backend::models::note_worker_spawned();" "pool.spawn_eval_classified("
 assert_after_before "src/rholang_integration.rs" "async fn evaluate_batch_parallel_arena" "crate::backend::models::note_worker_spawned();" "pool.spawn_eval("
+assert_zero_between "src/rholang_integration.rs" "batch spawns eval workers via" "for (slot, (idx, expr, should_output))" "dedicated_gc_enabled()"
 assert_zero_between "src/backend/eval/cesk/index_heap.rs" "pub fn gate_open_midloop() -> bool" "pub fn should_collect_midloop() -> bool" "!disabled()"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "let mut midloop_roots" "collect_machine_roots_live("
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "} else if crate::backend::eval::cesk::index_heap::index_gc::should_collect_midloop() {" "collect_machine_roots_live(" "for deferred_env in &deferred_shared_drops"

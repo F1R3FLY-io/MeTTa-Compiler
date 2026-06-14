@@ -52,6 +52,51 @@ slots. `global_eval_pool()` then calls `start_init()`, which runs
 first-access startup rule is source-coupled in
 `scripts/verify_cesk_gc_source_coupling.sh`.
 
+## Lifecycle-Accounting Contract
+
+WorkPool capacity accounting is tied to worker park-state transitions:
+
+```text
+try_unpark(active worker)
+  -> no aggregate active-count change
+try_unpark(parked worker)
+  -> active_count increments once
+try_park(parked worker)
+  -> no aggregate active-count change
+try_park(active worker above min)
+  -> active_count decrements once
+respawn parked/dead replacement unparked
+  -> active_count increments once
+```
+
+The invariant is:
+
+```text
+active_count + parked_count == max_workers
+```
+
+This is formally modeled by:
+
+- `formal/rocq/gc/WorkPoolLifecycle.v`
+- `tla/WorkPoolLifecycle.tla`
+- `tla/MC_WorkPoolLifecycle_fixed.cfg`
+- `tla/MC_WorkPoolLifecycle_double_unpark_bug.cfg`
+- `tla/MC_WorkPoolLifecycle_respawn_bug.cfg`
+
+The positive model preserves `CapacityConsistent`. The double-unpark negative
+model violates `CapacityConsistent` when a caller counts a single unpark
+transition twice. The respawn negative model violates `CapacityConsistent` when
+a parked replacement is respawned unparked without incrementing the aggregate
+active count.
+
+The source-coupling check pins the corresponding implementation facts:
+
+- WorkPool and AdaptiveGcPool expose transition-returning `try_park()` and
+  `try_unpark()` operations.
+- Scaling paths hold `scale_lock` before park/unpark transition checks.
+- `unpark_n()`, `park_n()`, and `check_and_respawn_workers()` update aggregate
+  active counts only under successful transition-return checks.
+
 ## Startup-Drain Contract
 
 The WorkPool must preserve eval tasks submitted during the startup window:

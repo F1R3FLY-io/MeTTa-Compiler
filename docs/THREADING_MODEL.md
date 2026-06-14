@@ -52,6 +52,37 @@ slots. `global_eval_pool()` then calls `start_init()`, which runs
 first-access startup rule is source-coupled in
 `scripts/verify_cesk_gc_source_coupling.sh`.
 
+## Priority-Queue Fairness Contract
+
+WorkPool queue ordering must not starve older work behind newer high-priority
+work:
+
+```text
+queued task ages
+  -> score is recomputed before dequeue
+  -> age can make old work outrank newer work
+equal recomputed scores
+  -> lower sequence number wins
+```
+
+This is formally modeled by:
+
+- `formal/rocq/gc/SchedulerPriorityFairness.v`
+- `tla/PriorityQueueAging.tla`
+- `tla/MC_PriorityQueueAging_refresh.cfg`
+- `tla/MC_PriorityQueueAging_stale.cfg`
+
+Rocq proves that increased age strictly improves a task's recomputed priority
+and that equal recomputed scores fall back to FIFO sequence order. TLC preserves
+`OldPopsAfterAging` when the score is refreshed at pop time; the stale-score
+negative model violates `OldPopsAfterAging` by popping newer high-priority work
+after an older task has aged enough to run first.
+
+The source-coupling check pins the implementation to that contract:
+
+- `PriorityQueue::pop()` refreshes queued scores before selection.
+- `ScoredTask::cmp()` uses the sequence number as the FIFO tie-break.
+
 ## Lifecycle-Accounting Contract
 
 WorkPool capacity accounting is tied to worker park-state transitions:

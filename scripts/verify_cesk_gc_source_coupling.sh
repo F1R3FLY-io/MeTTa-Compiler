@@ -851,6 +851,9 @@ assert_after_before "src/backend/eval/trampoline/context.rs" "impl EvalContext f
 assert_after_before "src/backend/eval/trampoline/context.rs" "impl EvalContext for ParallelBranchContext" "if parallel_gc_coop_enabled() {" "request_gc();"
 assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" "if should_gc && !super::gc_allocator::dedicated_gc_enabled()" "request_gc();"
 assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" "request_gc();" "let _ = maybe_async_gc();"
+line_no "formal/rocq/gc/CronProducerErasure.v" "Theorem default_index_erases_legacy_cron_request" >/dev/null
+line_no "formal/rocq/gc/CronProducerErasure.v" "Theorem legacy_cron_request_requires_slab_and_pressure" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/CronProducerErasure.v"' >/dev/null
 assert_zero "src/backend/models/gc_allocator.rs" "METTATRON_INDEX_GC_PARALLEL"
 assert_zero "src/backend/models/gc_allocator.rs" "pub(crate) fn rendezvous_enabled"
 assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_PARALLEL"

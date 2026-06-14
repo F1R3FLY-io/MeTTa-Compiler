@@ -251,6 +251,46 @@ The formal lane covers the main scheduler obligations:
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
+The classifier and dynamic-eval gate contract is:
+
+```text
+insert head into L2 classification table
+  -> extend that head's contiguous range
+  -> shift every later L1 range start
+state-mutating or random head
+  -> not in known-pure head set
+dynamic eval head (`eval`, `!`, `evalc`)
+  -> not in known-pure head set
+  -> blocks no-budget parallel dispatch before strict-I/O filtering
+```
+
+This contract is checked by:
+
+- `formal/rocq/gc/SchedulerClassificationLookup.v`
+- `tla/SchedulerClassificationLookup.tla`
+- `tla/MC_SchedulerClassificationLookup_shift.cfg`
+- `tla/MC_SchedulerClassificationLookup_no_shift.cfg`
+- `formal/rocq/gc/SchedulerDynamicEvalGate.v`
+- `tla/SchedulerDynamicEvalGate.tla`
+- `tla/MC_SchedulerDynamicEvalGate_fixed.cfg`
+- `tla/MC_SchedulerDynamicEvalGate_missing.cfg`
+
+The classifier positive model preserves disjoint L2 ranges after insertion; the
+no-shift negative model violates `RangesDisjoint`. The dynamic-eval positive
+model preserves `NoDynamicEvalParallelBypass`; the missing-gate negative model
+violates it by admitting a hidden dynamic eval body into the no-budget parallel
+path.
+
+The source-coupling check pins the corresponding implementation facts:
+
+- `SchedulerAutomaton` inserts a new L2 entry and shifts later L1 starts.
+- `random-int`, `random-float`, `eval`, and `!` are absent from known-pure
+  classifications.
+- `DYNAMIC_EVAL_HEADS` contains `eval`, `!`, and `evalc`.
+- `body_blocks_parallel_dispatch()` checks state mutation, then dynamic eval,
+  then strict-print-order I/O.
+- CESK branch analysis marks `eval`, `!`, and `evalc` as impure/sequential.
+
 The wavefront reordering contract is:
 
 ```text

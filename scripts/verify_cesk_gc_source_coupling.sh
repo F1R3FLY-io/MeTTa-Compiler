@@ -856,6 +856,9 @@ assert_after_before "src/backend/models/gc_cron.rs" "fn execute_memory_monitor" 
 line_no "formal/rocq/gc/CronProducerErasure.v" "Theorem default_index_erases_legacy_cron_request" >/dev/null
 line_no "formal/rocq/gc/CronProducerErasure.v" "Theorem legacy_cron_request_requires_slab_and_pressure" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/CronProducerErasure.v"' >/dev/null
+line_no "formal/rocq/gc/GcPoolErasure.v" "Theorem default_index_erases_legacy_pool_effects" >/dev/null
+line_no "formal/rocq/gc/GcPoolErasure.v" "Theorem emitted_pool_effect_requires_slab" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/GcPoolErasure.v"' >/dev/null
 assert_zero "src/backend/models/gc_allocator.rs" "METTATRON_INDEX_GC_PARALLEL"
 assert_zero "src/backend/models/gc_allocator.rs" "pub(crate) fn rendezvous_enabled"
 assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_PARALLEL"

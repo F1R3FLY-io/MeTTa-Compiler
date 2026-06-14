@@ -714,6 +714,9 @@ assert_count "scripts/verify_cesk_gc_proof_hygiene.sh" "formal/rocq/work_pool_st
 line_no "formal/rocq/work_pool_stability/theories/Prelude.v" "Record WorkPoolParams" >/dev/null
 line_no "formal/rocq/work_pool_stability/theories/ObjectiveFunction.v" "Record WorkPoolSignals" >/dev/null
 line_no "formal/rocq/work_pool_stability/theories/LyapunovConvergence.v" "Definition V (N_opt n : nat)" >/dev/null
+line_no "docs/THREADING_MODEL.md" "Current production fanout guarantee:" >/dev/null
+line_no "docs/THREADING_MODEL.md" '`compute_wavefront()` is verified as a' >/dev/null
+line_no "docs/THREADING_MODEL.md" "it is not currently an active" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "PriorityQueueAging.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationLookup.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerWavefrontParallelism.tla" "4"

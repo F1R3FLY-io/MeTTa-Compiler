@@ -222,13 +222,21 @@ therefore uses the RAII completion guard.
 
 ## Scheduler Parallelism
 
-The scheduler maximizes safe parallelism through a staged analysis pipeline:
+The production scheduler maximizes safe fanout parallelism through the active
+dispatch pipeline:
 
 1. Classification marks known pure, impure, and dynamic-eval heads.
 2. The WFST transducer maps cost classes and descriptors to scheduling actions.
-3. Wavefront construction groups independent tasks into earliest legal waves.
+3. Purity/dynamic-eval gates reject side-effecting or code-evaluating branches.
 4. Fanout admission uses the transducer degree and runtime budget gates.
 5. Queue pressure and depth quota prevent over-parallelization.
+
+Current production fanout guarantee: admitted pure fanout dispatches every
+branch/item slot directly through `parallel_dispatch()` or
+`parallel_collapse_dispatch()`. `compute_wavefront()` is verified as a
+scheduler-library primitive for dependency-DAG grouping, but the 2026-06-14
+activation audit found no production caller; it is not currently an active
+production fanout stage.
 
 The formal lane covers the main scheduler obligations:
 
@@ -238,7 +246,12 @@ The formal lane covers the main scheduler obligations:
 - `SchedulerDynamicEvalGate.v` and `SchedulerDynamicEvalGate.tla` keep dynamic
   eval forms out of static-pure parallel classes.
 - `SchedulerWavefrontParallelism.v` and `SchedulerWavefrontParallelism.tla`
-  prove same-wave independence and earliest-ready admission.
+  prove same-wave independence and earliest-ready admission for the
+  scheduler-library wavefront primitive.
+- `SchedulerEffectConflictCompleteness.v` and
+  `SchedulerEffectConflictCompleteness.tla` prove that dependency-DAG grouping
+  is same-wave conflict-free only when callers encode every data/effect conflict
+  as a dependency edge.
 - `SchedulerTransducerParallelism.v` and
   `SchedulerTransducerParallelism.tla` prove zero-cap safety and prevent
   underutilized branch-parallel actions.
@@ -294,6 +307,8 @@ The source-coupling check pins the corresponding implementation facts:
 The wavefront reordering contract is:
 
 ```text
+caller constructs dependency graph
+  -> every data/effect conflict is represented as an edge
 task can enter wave k
   -> every dependency is in a wave < k
 task is ready for wave k and not already assigned
@@ -312,12 +327,19 @@ This contract is checked by:
 - `tla/MC_SchedulerWavefrontParallelism_independent.cfg`
 - `tla/MC_SchedulerWavefrontParallelism_cycle.cfg`
 - `tla/MC_SchedulerWavefrontParallelism_deferred.cfg`
+- `formal/rocq/gc/SchedulerEffectConflictCompleteness.v`
+- `tla/SchedulerEffectConflictCompleteness.tla`
+- `tla/MC_SchedulerEffectConflictCompleteness_complete.cfg`
+- `tla/MC_SchedulerEffectConflictCompleteness_no_conflicts.cfg`
+- `tla/MC_SchedulerEffectConflictCompleteness_missing_edge.cfg`
 
 The diamond and all-independent positive models preserve dependency safety and
 maximal ready-set admission. The cyclic same-wave negative model violates
 `SameWaveIndependent`. The deferred-ready negative model preserves dependency
 safety but violates `NoReadyTaskDeferred`, which is the optimal-parallelism side
-of the proof.
+of the proof. The effect-conflict positive models preserve same-wave conflict
+freedom when conflict edges are complete; the missing-edge negative model
+violates `ConflictEdgesCovered`.
 
 The source-coupling check pins the corresponding Kahn-loop facts:
 
@@ -325,6 +347,8 @@ The source-coupling check pins the corresponding Kahn-loop facts:
 - Dependents whose in-degree falls to zero are pushed into the next wave.
 - Malformed task indices/dependencies and cyclic unresolved suffixes degrade to
   sequential waves.
+- `WavefrontTask.dependencies` documents the caller obligation to include both
+  data dependencies and effect-conflict edges.
 
 The transducer/fanout admission contract is:
 

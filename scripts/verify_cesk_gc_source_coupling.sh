@@ -134,6 +134,65 @@ $actual"
   fi
 }
 
+# Phase F2: --gc/MTT_GC is an assertion/reporter for the compile-time store,
+# not a runtime switch. Pin the library predicate and both CLI entrypoints to the
+# same hard-error path so conformance cannot silently exercise the wrong store.
+line_no "src/backend/models/mod.rs" "pub fn compiled_gc_store() -> &'static str" >/dev/null
+line_no "src/backend/models/mod.rs" "pub fn assert_gc_request" >/dev/null
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "pub fn compiled_gc_store() -> &'static str" \
+  "if cfg!(feature = \"index-gc\") {" \
+  "\"slab\""
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "pub fn assert_gc_request" \
+  "let compiled = compiled_gc_store();" \
+  "match req.as_str() {"
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "match req.as_str() {" \
+  "\"\" | \"auto\" => {}" \
+  "r if r == compiled => {}"
+line_no "src/backend/models/mod.rs" "rebuild with \`--features index-gc\`" >/dev/null
+line_no "src/backend/models/mod.rs" "rebuild with default features (without \`index-gc\`)" >/dev/null
+line_no "src/backend/models/mod.rs" "fn the_other_store_is_a_hard_error_with_a_rebuild_hint()" >/dev/null
+line_no "src/backend/models/mod.rs" "fn unknown_values_are_rejected_with_the_expected_set()" >/dev/null
+
+assert_after_before \
+  "src/main.rs" \
+  "fn parse_args() -> Result<Options, String>" \
+  "\"--gc\" => {" \
+  "gc_request = Some(args[i].clone());"
+assert_after_before \
+  "src/main.rs" \
+  "let gc_request = gc_request" \
+  ".or_else(|| env::var(\"MTT_GC\").ok())" \
+  "let active_store = mettatron::backend::models::assert_gc_request(gc_request.as_deref())?;"
+assert_after_before \
+  "src/main.rs" \
+  "let active_store = mettatron::backend::models::assert_gc_request(gc_request.as_deref())?;" \
+  "if gc_request.is_some() {" \
+  "eprintln!(\"[mettatron] GC store = {active_store}\");"
+assert_count "src/main.rs" "assert_gc_request(gc_request.as_deref())?" "1"
+
+assert_after_before \
+  "src/bin/conformance_common.rs" \
+  "pub fn parse_base_args(args: &[String]) -> Result<BaseOptions, String>" \
+  "\"--gc\" => {" \
+  "gc_request = Some(args[i].clone());"
+assert_after_before \
+  "src/bin/conformance_common.rs" \
+  "let gc_request = gc_request" \
+  ".or_else(|| std::env::var(\"MTT_GC\").ok())" \
+  "let active_store = mettatron::backend::models::assert_gc_request(gc_request.as_deref())?;"
+assert_after_before \
+  "src/bin/conformance_common.rs" \
+  "let active_store = mettatron::backend::models::assert_gc_request(gc_request.as_deref())?;" \
+  "if gc_request.is_some() {" \
+  "eprintln!(\"[conformance] GC store = {active_store}\");"
+assert_count "src/bin/conformance_common.rs" "assert_gc_request(gc_request.as_deref())?" "1"
+
 # Scheduler/cron formal obligations added with the threading-model proof lane.
 assert_count "src/backend/priority_scheduler.rs" "self.refresh_scores(&mut heap);" "3"
 assert_count "src/backend/priority_scheduler.rs" "other.task.sequence.cmp(&self.task.sequence)" "1"

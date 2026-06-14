@@ -1226,12 +1226,14 @@ facts the proofs rely on:
 - Threading end-to-end interleaving envelope (`formal/rocq/gc/ThreadingEndToEndInterleaving.v`,
   `tla/ThreadingEndToEndInterleaving.tla`, 2026-06-14) — composes scheduler
   dependency waves, direct fanout, active-worker root publication, closed worker
-  admission, sweep, recurring-cron dispatch, cron startup delivery, WorkPool
-  startup drain, WorkPool panic isolation, and the GC-facing scheduler boundary
-  for live-dispatch plus async batch roots into one TLC state machine.
+  admission, active direct-fanout gates, sweep, recurring-cron dispatch, cron
+  startup delivery, WorkPool startup drain, WorkPool panic isolation, and the
+  GC-facing scheduler boundary for live-dispatch plus async batch roots into one
+  TLC state machine.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
-  Negative discriminators violate it for missing dependency edges, missing
-  active-worker roots, missing dispatch roots, missing batch roots, open
+  Negative discriminators violate it for missing dependency edges, active
+  direct-fanout without purity or budget gates, partial direct-fanout dispatch,
+  missing active-worker roots, missing dispatch roots, missing batch roots, open
   admission across a root snapshot, and unclaimed recurring cron dispatch.  The
   composed cron startup discriminator separately rejects a submitted startup
   task when neither `CheckEvents` nor `DrainChannel` polls the cron task

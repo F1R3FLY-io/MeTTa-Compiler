@@ -386,6 +386,12 @@ run_tlc "threading_end_to_end_safe" "ThreadingEndToEndInterleaving.tla" "MC_Thre
   pass ""
 run_tlc "threading_end_to_end_independent" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_independent.cfg" \
   pass ""
+run_tlc "threading_end_to_end_active_fanout_missing_purity" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg" \
+  fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
+run_tlc "threading_end_to_end_active_fanout_missing_budget" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg" \
+  fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
+run_tlc "threading_end_to_end_active_fanout_partial_dispatch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg" \
+  fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
 run_tlc "threading_end_to_end_missing_dependency" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_dependency.cfg" \
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_missing_worker_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg" \

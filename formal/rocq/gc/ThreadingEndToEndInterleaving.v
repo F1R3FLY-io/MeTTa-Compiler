@@ -10,10 +10,12 @@
 From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Arith Lia.
 Require Import CronStartupDelivery.
+Require Import SchedulerActiveFanoutGate.
 Require Import WorkPoolPanicIsolation.
 Require Import WorkPoolStartupDrain.
 
 Import MeTTaTron_GC_CronStartupDelivery.
+Import MeTTaTron_GC_SchedulerActiveFanoutGate.
 Import MeTTaTron_GC_WorkPoolPanicIsolation.
 Import MeTTaTron_GC_WorkPoolStartupDrain.
 
@@ -326,6 +328,114 @@ Section EndToEndModel.
     exact (missing_outer_catch_can_kill_worker_on_accounting_panic Halive).
   Qed.
 
+  Record ActiveFanoutConfig : Type := {
+    active_branch_count : nat;
+    active_min_branches : nat;
+    active_parallelism_degree : nat;
+    active_budget_granted : nat;
+    active_pure : bool;
+    active_depth_ok : bool;
+    active_pool_ok : bool;
+    active_dispatched_count : nat
+  }.
+
+  Definition active_fanout_gate_safe (c : ActiveFanoutConfig) : Prop :=
+    active_fanout_allowed
+      (active_branch_count c)
+      (active_min_branches c)
+      (active_parallelism_degree c)
+      (active_budget_granted c)
+      (active_pure c = true)
+      (active_depth_ok c = true)
+      (active_pool_ok c = true) /\
+    complete_dispatch (active_branch_count c) (active_dispatched_count c).
+
+  Definition active_fanout_envelope_safe
+      (w : Workload)
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    uses_direct_fanout w = true -> active_fanout_gate_safe c.
+
+  Definition complete_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 2;
+       active_min_branches := 2;
+       active_parallelism_degree := 2;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 2 |}.
+
+  Definition missing_purity_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 2;
+       active_min_branches := 2;
+       active_parallelism_degree := 2;
+       active_budget_granted := 1;
+       active_pure := false;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 2 |}.
+
+  Definition missing_budget_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 2;
+       active_min_branches := 2;
+       active_parallelism_degree := 2;
+       active_budget_granted := 0;
+       active_pure := true;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 2 |}.
+
+  Definition partial_dispatch_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 2;
+       active_min_branches := 2;
+       active_parallelism_degree := 2;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 1 |}.
+
+  Theorem complete_active_fanout_gate_safe :
+    active_fanout_gate_safe complete_active_fanout.
+  Proof.
+    unfold active_fanout_gate_safe, complete_active_fanout,
+      active_fanout_allowed, degree_gate, budget_gate, complete_dispatch.
+    simpl.
+    repeat split; lia.
+  Qed.
+
+  Theorem missing_purity_active_fanout_exposes_envelope_gap :
+    ~ active_fanout_gate_safe missing_purity_active_fanout.
+  Proof.
+    intros [Hallowed _].
+    unfold missing_purity_active_fanout in Hallowed.
+    simpl in Hallowed.
+    unfold active_fanout_allowed in Hallowed.
+    destruct Hallowed as [_ [_ [Hpure _]]].
+    discriminate Hpure.
+  Qed.
+
+  Theorem missing_budget_active_fanout_exposes_envelope_gap :
+    ~ active_fanout_gate_safe missing_budget_active_fanout.
+  Proof.
+    intros [Hallowed _].
+    unfold missing_budget_active_fanout in Hallowed.
+    simpl in Hallowed.
+    unfold active_fanout_allowed, budget_gate in Hallowed.
+    destruct Hallowed as [_ [_ [_ [_ [_ Hbudget]]]]].
+    lia.
+  Qed.
+
+  Theorem partial_dispatch_active_fanout_exposes_envelope_gap :
+    ~ active_fanout_gate_safe partial_dispatch_active_fanout.
+  Proof.
+    intros [_ Hcomplete].
+    unfold partial_dispatch_active_fanout, complete_dispatch in Hcomplete.
+    simpl in Hcomplete.
+    discriminate Hcomplete.
+  Qed.
+
   Definition end_to_end_safe
       (w : Workload)
       (wave : WaveAssignment)
@@ -336,6 +446,7 @@ Section EndToEndModel.
       (cron_state : CronState)
       (cron_startup : StartupConfig)
       (work_pool : WorkPoolConfig)
+      (active_fanout : ActiveFanoutConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe
@@ -345,7 +456,8 @@ Section EndToEndModel.
       late_worker_live /\
     cron_no_overlap cron_state /\
     startup_delivery_safe cron_startup /\
-    work_pool_envelope_safe work_pool.
+    work_pool_envelope_safe work_pool /\
+    active_fanout_envelope_safe w active_fanout.
 
   Theorem checked_threading_envelope_is_end_to_end_safe :
     forall w wave active_worker_live,
@@ -362,7 +474,8 @@ Section EndToEndModel.
         false
         (cron_second_due (cron_first_due true))
         complete_startup
-        complete_work_pool.
+        complete_work_pool
+        complete_active_fanout.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -374,7 +487,11 @@ Section EndToEndModel.
         * apply claimed_cron_dispatch_prevents_overlap.
         * split.
           -- apply complete_startup_delivers_submitted_task.
-          -- apply complete_work_pool_envelope_safe.
+          -- split.
+             ++ apply complete_work_pool_envelope_safe.
+             ++ unfold active_fanout_envelope_safe.
+                intros _.
+                apply complete_active_fanout_gate_safe.
   Qed.
 
   Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :
@@ -400,13 +517,14 @@ Section EndToEndModel.
           late_worker_live
           cron_state
           missing_poll_path
-          complete_work_pool.
+          complete_work_pool
+          complete_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
       Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [Hstartup _]]]].
+    destruct Hend as [_ [_ [_ [Hstartup [_ _]]]]].
     exact (missing_poll_path_exposes_delivery_gap Hstartup).
   Qed.
 
@@ -428,7 +546,8 @@ Section EndToEndModel.
           false
           cron_state
           cron_startup
-          work_pool.
+          work_pool
+          complete_active_fanout.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -456,7 +575,8 @@ Section EndToEndModel.
           false
           cron_state
           cron_startup
-          work_pool.
+          work_pool
+          complete_active_fanout.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -490,13 +610,14 @@ Section EndToEndModel.
           late_worker_live
           cron_state
           cron_startup
-          lossy_work_pool_startup.
+          lossy_work_pool_startup
+          complete_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
       Hgc Hcron Hstartup Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ Hwork_pool]]]].
+    destruct Hend as [_ [_ [_ [_ [Hwork_pool _]]]]].
     exact (lossy_work_pool_startup_exposes_envelope_gap Hwork_pool).
   Qed.
 
@@ -524,13 +645,14 @@ Section EndToEndModel.
           late_worker_live
           cron_state
           cron_startup
-          task_panic_missing_inner_work_pool.
+          task_panic_missing_inner_work_pool
+          complete_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
       Hgc Hcron Hstartup Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ Hwork_pool]]]].
+    destruct Hend as [_ [_ [_ [_ [Hwork_pool _]]]]].
     exact (missing_inner_task_panic_exposes_envelope_gap Hwork_pool).
   Qed.
 
@@ -558,14 +680,135 @@ Section EndToEndModel.
           late_worker_live
           cron_state
           cron_startup
-          accounting_panic_missing_outer_work_pool.
+          accounting_panic_missing_outer_work_pool
+          complete_active_fanout.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
       Hgc Hcron Hstartup Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ Hwork_pool]]]].
+    destruct Hend as [_ [_ [_ [_ [Hwork_pool _]]]]].
     exact (missing_outer_accounting_panic_exposes_envelope_gap Hwork_pool).
+  Qed.
+
+  Theorem unsafe_active_fanout_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool active_fanout,
+      uses_direct_fanout w = true ->
+      ~ active_fanout_gate_safe active_fanout ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          worker_rooted
+          dispatch_live
+          dispatch_rooted
+          batch_live
+          batch_rooted
+          late_worker_live
+          cron_state
+          cron_startup
+          work_pool
+          active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      active_fanout Hdirect Hunsafe Hschedule Hgc Hcron Hstartup Hwork_pool
+      Hend.
+    unfold end_to_end_safe in Hend.
+    destruct Hend as [_ [_ [_ [_ [_ Hactive]]]]].
+    exact (Hunsafe (Hactive Hdirect)).
+  Qed.
+
+  Theorem missing_purity_active_fanout_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool,
+      uses_direct_fanout w = true ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup work_pool
+          missing_purity_active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
+    eapply unsafe_active_fanout_exposes_end_to_end_gap; eauto.
+    apply missing_purity_active_fanout_exposes_envelope_gap.
+  Qed.
+
+  Theorem missing_budget_active_fanout_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool,
+      uses_direct_fanout w = true ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup work_pool
+          missing_budget_active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
+    eapply unsafe_active_fanout_exposes_end_to_end_gap; eauto.
+    apply missing_budget_active_fanout_exposes_envelope_gap.
+  Qed.
+
+  Theorem partial_dispatch_active_fanout_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool,
+      uses_direct_fanout w = true ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup work_pool
+          partial_dispatch_active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
+    eapply unsafe_active_fanout_exposes_end_to_end_gap; eauto.
+    apply partial_dispatch_active_fanout_exposes_envelope_gap.
   Qed.
 End EndToEndModel.
 

@@ -842,6 +842,9 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.v
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_cron_startup_poll_path_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dispatch_root_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_batch_root_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_purity_active_fanout_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_budget_active_fanout_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "partial_dispatch_active_fanout_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "lossy_work_pool_startup_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_inner_task_panic_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_outer_accounting_panic_exposes_end_to_end_gap" >/dev/null
@@ -876,7 +879,8 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "12"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "15"
+line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutGateComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "CronStartupReadyWaitCompletes" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "NoCronStartupTaskLost" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "IncludeDispatchRoot" >/dev/null
@@ -887,6 +891,9 @@ line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolWorkerAliveAfterHandled
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_startup_no_poll" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_missing_dispatch_root" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_missing_batch_root" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_missing_purity" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_missing_budget" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_partial_dispatch" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_lossy_enqueue" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_no_inner_catch" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_no_outer_catch" >/dev/null

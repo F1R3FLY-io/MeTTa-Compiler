@@ -28,7 +28,15 @@ CONSTANTS
     WorkPoolLossyEnqueue,
     WorkPoolFirstFailure,
     WorkPoolInnerCatch,
-    WorkPoolOuterCatch
+    WorkPoolOuterCatch,
+    ActiveBranchCount,
+    ActiveMinBranches,
+    ActiveDegree,
+    ActiveBudgetGranted,
+    ActivePure,
+    ActiveDepthOk,
+    ActivePoolOk,
+    ActivePartialDispatch
 
 TASKS == {"producer", "consumer"}
 
@@ -113,11 +121,19 @@ BooleanConstantsOK ==
     /\ WorkPoolLossyEnqueue \in BOOLEAN
     /\ WorkPoolInnerCatch \in BOOLEAN
     /\ WorkPoolOuterCatch \in BOOLEAN
+    /\ ActivePure \in BOOLEAN
+    /\ ActiveDepthOk \in BOOLEAN
+    /\ ActivePoolOk \in BOOLEAN
+    /\ ActivePartialDispatch \in BOOLEAN
 
 TypeOK ==
     /\ BooleanConstantsOK
     /\ WorkPoolStartupSubmissions \in Nat
     /\ WorkPoolFirstFailure \in {"task", "accounting"}
+    /\ ActiveBranchCount \in Nat
+    /\ ActiveMinBranches \in Nat
+    /\ ActiveDegree \in Nat
+    /\ ActiveBudgetGranted \in Nat
     /\ phase \in {"init", "scheduled", "running", "done"}
     /\ wave \in [TASKS -> Nat]
     /\ running \subseteq TASKS
@@ -575,6 +591,32 @@ NoSameWaveEffectConflict ==
 NoDirectFanoutForDependentWork ==
     DirectFanout => ~(HasDependency \/ HasEffectConflict)
 
+ActiveBranchCountGate ==
+    ActiveBranchCount >= ActiveMinBranches
+
+ActiveDegreeGate ==
+    ActiveDegree > 1
+
+ActiveBudgetGate ==
+    ActiveBudgetGranted > 0
+
+ActiveDispatchedCount ==
+    IF DirectFanout THEN
+      IF ActivePartialDispatch /\ ActiveBranchCount > 0
+      THEN ActiveBranchCount - 1
+      ELSE ActiveBranchCount
+    ELSE 0
+
+ActiveFanoutGateComplete ==
+    DirectFanout =>
+      /\ ActiveBranchCountGate
+      /\ ActiveDegreeGate
+      /\ ActivePure
+      /\ ActiveDepthOk
+      /\ ActivePoolOk
+      /\ ActiveBudgetGate
+      /\ ActiveDispatchedCount = ActiveBranchCount
+
 MaximalIndependentParallelism ==
     phase /= "init" /\ ~HasDependency /\ ~HasEffectConflict =>
       wave["producer"] = wave["consumer"]
@@ -633,6 +675,7 @@ EndToEndSafe ==
     /\ NoConsumerBeforeProducer
     /\ NoSameWaveEffectConflict
     /\ NoDirectFanoutForDependentWork
+    /\ ActiveFanoutGateComplete
     /\ MaximalIndependentParallelism
     /\ NoLiveValueSwept
     /\ NoOverlappingCronDispatch

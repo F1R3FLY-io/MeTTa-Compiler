@@ -282,7 +282,9 @@ The formal lane covers the main scheduler obligations:
   needed for subsequent queued work.  It also composes the GC-facing scheduler
   boundary for live-dispatch and async batch roots, so sweep rejects missing
   dispatch or batch root publication the same way it rejects missing active
-  worker roots.
+  worker roots.  Its active direct-fanout obligation requires branch threshold,
+  WFST degree, purity/dynamic-eval, depth, pool, budget, and complete-dispatch
+  gates before `DirectFanout` can contribute to maximal same-wave parallelism.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -557,6 +559,9 @@ The composed end-to-end envelope is modeled by:
 - `tla/ThreadingEndToEndInterleaving.tla`
 - `tla/MC_ThreadingEndToEndInterleaving_safe.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_independent.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_dependency.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_dispatch_root.cfg`
@@ -570,9 +575,10 @@ The composed end-to-end envelope is modeled by:
 
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`. The negative configs violate it when dependency edges are
-omitted, active worker roots are omitted, dispatch or async batch roots are
-omitted, worker admission stays open across the root snapshot, or recurring
-cron dispatch submits without claiming `in_flight`.
+omitted, active direct fanout skips purity/budget/complete-dispatch gates,
+active worker roots are omitted, dispatch or async batch roots are omitted,
+worker admission stays open across the root snapshot, or recurring cron
+dispatch submits without claiming `in_flight`.
 - `tla/MC_SchedulerGcBoundary_admission_open.cfg`
 - `formal/rocq/gc/SchedulerSpawnLatch.v`
 - `tla/SchedulerSpawnLatch.tla`

@@ -194,6 +194,40 @@ mod gc_request_tests {
         assert!(err.contains("rebuild with"), "carries the rebuild hint: {err}");
     }
 
+    #[cfg(feature = "index-gc")]
+    #[test]
+    fn default_index_rejects_slab_with_legacy_slab_hint() {
+        let err = assert_gc_request(Some("slab"))
+            .expect_err("default index binary must reject a slab assertion");
+        assert!(
+            err.contains("compiled with the 'index' GC store"),
+            "names the compiled default-index store: {err}"
+        );
+        assert!(
+            err.contains("`--no-default-features --features legacy-slab-gc`"),
+            "points slab callers at the explicit legacy opt-out: {err}"
+        );
+        assert!(
+            !err.contains("without `index-gc`"),
+            "must not describe impossible subtractive Cargo features: {err}"
+        );
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    #[test]
+    fn legacy_slab_rejects_index_with_default_index_hint() {
+        let err = assert_gc_request(Some("index"))
+            .expect_err("legacy slab binary must reject an index assertion");
+        assert!(
+            err.contains("compiled with the 'slab' GC store"),
+            "names the compiled legacy-slab store: {err}"
+        );
+        assert!(
+            err.contains("rebuild with default features (index-gc enabled)"),
+            "points index callers at the default feature set: {err}"
+        );
+    }
+
     #[test]
     fn unknown_values_are_rejected_with_the_expected_set() {
         let err = assert_gc_request(Some("bogus")).expect_err("unknown value must error");

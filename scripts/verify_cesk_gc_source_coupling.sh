@@ -220,7 +220,31 @@ assert_after_before \
 line_no "src/backend/models/mod.rs" "rebuild with default features (index-gc enabled)" >/dev/null
 line_no "src/backend/models/mod.rs" "rebuild with \`--no-default-features --features legacy-slab-gc\`" >/dev/null
 line_no "src/backend/models/mod.rs" "fn the_other_store_is_a_hard_error_with_a_rebuild_hint()" >/dev/null
+line_no "src/backend/models/mod.rs" "fn default_index_rejects_slab_with_legacy_slab_hint()" >/dev/null
+line_no "src/backend/models/mod.rs" "fn legacy_slab_rejects_index_with_default_index_hint()" >/dev/null
 line_no "src/backend/models/mod.rs" "fn unknown_values_are_rejected_with_the_expected_set()" >/dev/null
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "fn default_index_rejects_slab_with_legacy_slab_hint()" \
+  "\`--no-default-features --features legacy-slab-gc\`" \
+  "without \`index-gc\`"
+assert_after_before \
+  "src/backend/models/mod.rs" \
+  "fn legacy_slab_rejects_index_with_default_index_hint()" \
+  "rebuild with default features (index-gc enabled)" \
+  "fn unknown_values_are_rejected_with_the_expected_set()"
+
+line_no "scripts/f3_default_store_soak.sh" "F3 default-store soak." >/dev/null
+line_no "scripts/f3_default_store_soak.sh" "cargo build --release --bin mettatron" >/dev/null
+line_no "scripts/f3_default_store_soak.sh" "cargo build --release \"\${LEGACY_SLAB_FEATURES[@]}\" --bin mettatron" >/dev/null
+line_no "scripts/f3_default_store_soak.sh" "\$INDEX_BIN\" --gc index --repl" >/dev/null
+line_no "scripts/f3_default_store_soak.sh" "env -u METTATRON_PARALLEL_FANOUT_DEPTH -u METTATRON_INDEX_GC_DISABLE MTT_GC=slab" >/dev/null
+line_no "scripts/f3_default_store_soak.sh" "\`--no-default-features --features legacy-slab-gc\`" >/dev/null
+line_no "scripts/f3_default_store_soak.sh" "\$SLAB_BIN\" --gc slab -" >/dev/null
+line_no "docs/cesk-gc/f3-default-store-contract.md" "F3 changes the Cargo default from the old slab store to the CESK index store." >/dev/null
+line_no "docs/cesk-gc/f3-default-store-contract.md" "scripts/f3_default_store_soak.sh" >/dev/null
+line_no "docs/cesk-gc/store-centric-architecture.md" "assertion/reporter for the compile-time store, not a runtime selector" >/dev/null
+line_no "docs/cesk-gc/store-centric-architecture.md" "--no-default-features --features legacy-slab-gc" >/dev/null
 
 assert_after_before \
   "src/main.rs" \

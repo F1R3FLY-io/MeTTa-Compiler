@@ -75,11 +75,16 @@ native (scalars NaN-boxed orthogonally); slab raw-pointer model is the legacy.
 - **2b** JIT/bytecode index decode — DONE this session (gate T2/T3 off under index → VM(T1) fallback;
   entry-boundary pack/unpack mode-aware). NOTE: finish the partial `JitContext.arena` seam
   (`jit/types/context.rs:354` + `from_addr` arms `value.rs:384,405`) — it's PARTIAL, not absent.
-- **3** A/B differential infra: `--gc={slab|index}` / `MTT_GC` startup flag → selects store + `set_gc_mode_index()`; `scripts/ab_gc_diff.sh`; default slab. (Needs Inc-4 threading to actually produce index values — do the inert generic threading first, then the flag selects `IndexHeapStore`.)
+- **3** A/B differential infra: `--gc={slab|index}` / `MTT_GC` startup flag is now an
+  assertion/reporter for the compile-time store, not a runtime selector;
+  `scripts/ab_gc_diff.sh` compares a default-index binary against the explicit
+  legacy slab opt-out.
 - **4** Flip **sequential** to σ via **generic threading (option i)**: `EvalContext::factory`→assoc `type Factory` (`context.rs:33`); `engine.rs` `&GcFactory`→`<F>` (~247 sigs); `MettaEnvironment` alias (`context.rs:147`); `StaticEvalContext.store`/`SessionContext`→`IndexHeapStore`. **Dissolves GcFactory hardcoding.** Gate: green wall + 20-run PLN/mmverify stability + ASAN(index) + Welch(seq) ≠ TERRIBLE. Rollback: alias back to `SlabStore` (1 line).
 - **5** Flip **parallel** to σ + lock-free TLABs (refine `index_heap.rs:426` RwLock→TLAB claiming segments `index_arena.rs:266`); parallel-dispatch providers (`types.rs:298,373`)→Ψ. Gate: parallel-stability + ASAN + Welch(PLN {wall,RSS}) ≠ TERRIBLE.
 - **6** **Algebraic σ|_Reachable as SOLE collector**: wire `IndexHeap::mark(Ψ)`+`sweep` at safepoint (`eval_loop.rs:3454`); add guard-drop/park to `worker_cooperative_safepoint` (true quiescence); **fold the 10 providers into structural Ψ & DELETE `ROOT_REGISTRY`/`register_root_provider`/`collect_all_roots`**; **DELETE epoch/ABA/128-bit-CAS/`VALUE_HASH_CACHE` epoch-invalidation**; rehome watermark+4-level backpressure into safepoint; re-key `mork_convert` ground-cache to Addr-bitmap; wire `INNER_SHADOW`/hash-cons clear to real sweep. **Dissolves registry (#1) + epoch/ABA (#4).** Gate: **Welch ACCEPT all primary endpoints post-PGO** + OS-RSS-on-release + new TLA+ `StoreCentricGC` green.
-- **7** Feature-gate slab behind `--features legacy-slab-gc` (`#[cfg]` on `GcFactory`/`SlabAllocator`/`SlabStore`); default build = index only. Gate: green wall (default index) + `--features legacy-slab-gc` green.
+- **7** Feature-gate slab behind `--no-default-features --features legacy-slab-gc`
+  (`#[cfg]` on `GcFactory`/`SlabAllocator`/`SlabStore`); default build = index only.
+  Gate: green wall (default index) + explicit legacy slab opt-out green.
 - **8** **DELETE the bridge**: remove `GC_MODE`/`gc_mode_is_index`/mode-branches/`INNER_SHADOW`; collapse `view`/`inner_ref`/`inner_ptr` to one (index) body; auto-derive `Send/Sync`; retire the `&'static MettaValueInner` raw-ptr model. Gate: green wall + no `gc_mode_is_index` refs remain.
 - **G** (opt-in) generational nursery over σ (Addr→gen map + remembered-set barrier). **P** (opt-in) parallel marking (work-stealing into the existing `AtomicU64` bitmap — no rep change).
 

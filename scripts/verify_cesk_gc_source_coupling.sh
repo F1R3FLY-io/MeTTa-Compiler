@@ -292,6 +292,13 @@ line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem accepted_request_erasure_
 line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem default_index_rejects_slab_request" >/dev/null
 line_no "formal/rocq/gc/RuntimeModeErasure.v" "Theorem legacy_slab_rejects_index_request" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/RuntimeModeErasure.v"' >/dev/null
+line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Require Import DefaultStoreSelection." >/dev/null
+line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Definition guarded_arena_addr" >/dev/null
+line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Definition cfg_split_arena_addr" >/dev/null
+line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Theorem guarded_arena_addr_matches_cfg_split" >/dev/null
+line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Theorem legacy_slab_has_no_arena_addr" >/dev/null
+line_no "formal/rocq/gc/ArenaAddrDecodeErasure.v" "Theorem valid_emitted_addr_requires_index_store" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/ArenaAddrDecodeErasure.v"' >/dev/null
 assert_after_before \
   "formal/rocq/gc/RuntimeModeErasure.v" \
   "Definition runtime_effective_store" \
@@ -313,6 +320,20 @@ assert_after_before \
   "pub(crate) fn gc_mode_is_index() -> bool" \
   "cfg!(feature = \"index-gc\")" \
   "}"
+assert_immediate_cfg_before \
+  "src/backend/models/metta_value.rs" \
+  "pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {" \
+  "#[cfg(feature = \"index-gc\")]"
+assert_immediate_cfg_before_after \
+  "src/backend/models/metta_value.rs" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_zero_between \
+  "src/backend/models/metta_value.rs" \
+  "pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {" \
+  "pub(crate) fn addr_flags(&self) -> usize {" \
+  "gc_mode_is_index()"
 line_no "formal/rocq/gc/CfgGuardErasure.v" "Require Import DefaultStoreSelection." >/dev/null
 line_no "formal/rocq/gc/CfgGuardErasure.v" "Definition cfg_guarded_effect" >/dev/null
 line_no "formal/rocq/gc/CfgGuardErasure.v" "Theorem cfg_guard_erasure_preserves_effect" >/dev/null

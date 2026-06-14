@@ -513,14 +513,21 @@ impl MettaValue {
     /// payload is a real pointer, not an index). The 32-bit `Addr` occupies bits
     /// [35:4]; flags stay in [3:0]; bits [63:48] are zero, so `is_inline()` is
     /// byte-identical to the slab-pointer case.
+    #[cfg(feature = "index-gc")]
     #[inline]
     pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {
-        if self.is_inline() || !gc_mode_is_index() {
+        if self.is_inline() {
             return None;
         }
         Some(crate::backend::eval::cesk::index_arena::Addr::from_raw(
             (self.tagged >> 4) as u32,
         ))
+    }
+
+    #[cfg(not(feature = "index-gc"))]
+    #[inline]
+    pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {
+        None
     }
 
     /// The 4 handle flag bits (`FLAG_HAS_VARIABLES` etc.) carried in `[3:0]` of a

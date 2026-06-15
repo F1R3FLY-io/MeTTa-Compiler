@@ -2895,18 +2895,6 @@ fn parallel_dispatch(
             branches: Arc::clone(&branches),
         },
     );
-    // A5.3: index-gc registers ZERO providers (the parallel dispatch contributes
-    // ∅ in the single-threaded index regime — the registration site is downstream
-    // of `note_worker_spawned()`, and FANOUT_DEPTH=0 never spawns). The
-    // `root_provider` Arc is still constructed and moved into the handle's
-    // `_root_provider_arc` field (used in both builds); only the registry CALL is
-    // walled. A5.5 deletes the registry.
-    #[cfg(not(feature = "index-gc"))]
-    crate::backend::models::gc_allocator::register_root_provider(
-        &(Arc::clone(&root_provider)
-            as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
-    );
-
     // E1-FLIP / CEX-1 (D2): register this dispatch's fan-out in the global
     // `LIVE_DISPATCHES` anchor so the dedicated GC thread can walk the branch
     // INPUTS + completed OUTPUTS for the dispatch's lifetime
@@ -3691,16 +3679,6 @@ fn parallel_collapse_dispatch(
             items: Arc::clone(&items),
         },
     );
-    // A5.3: index-gc registers ZERO providers (parallel collapse contributes ∅ in
-    // the single-threaded index regime — downstream of `note_worker_spawned()`,
-    // never spawned at FANOUT_DEPTH=0). The `root_provider` Arc is still moved into
-    // `_root_provider_arc` (used in both builds); only the registry CALL is walled.
-    #[cfg(not(feature = "index-gc"))]
-    crate::backend::models::gc_allocator::register_root_provider(
-        &(Arc::clone(&root_provider)
-            as Arc<dyn crate::backend::models::gc_allocator::RootProvider>),
-    );
-
     // E1-FLIP / CEX-1 (D2): register the collapse fan-out (see `parallel_dispatch` —
     // GATE = `dedicated_gc_enabled()` ALONE; `n_threads()>1` is racy at this setup
     // site and would skip registration before workers enter, leaving the anchor
@@ -4351,16 +4329,6 @@ fn eval_trampoline_inner<C: EvalContext>(
                     .iter()
                     .map(|v| v.inner_ptr() as usize)
                     .collect();
-                // A5.5: collect_all_roots is slab-only (registry walled). In index the
-                // registry is empty (0 providers; its safepoint contribution ⊆ KEPT
-                // below), so OLD = root_set.roots() alone — still ⊇ S∪C∪K + the 4
-                // thread-local caches + deferred (root_set assembled them above), so the
-                // midloop oracle stays NON-VACUOUS: NEW (collect_machine_roots) must
-                // structurally cover the whole machine. `old` stays defined in both builds.
-                #[cfg(not(feature = "index-gc"))]
-                for v in crate::backend::models::collect_all_roots() {
-                    old.push(v.inner_ptr() as usize);
-                }
                 // NEW = collect_machine_roots(C,E,K,E₀) ∪ the deferred-drop transient
                 // register (the one discovered source that is a per-activation local,
                 // not a machine-global — appended exactly as the A4.4 flip will).

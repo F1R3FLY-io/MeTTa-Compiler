@@ -32,9 +32,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[cfg(not(feature = "index-gc"))]
-use crate::backend::models::{register_root_provider, RootProvider};
-
 use xxhash_rust::xxh3::Xxh3;
 
 use dashmap::DashMap;
@@ -2011,44 +2008,8 @@ fn maybe_register_jit_summary() {
 // GC Root Provider for GLOBAL_TIERED_CACHE
 // =============================================================================
 
-/// GC root provider that exposes all MettaValue constants stored in the
-/// tiered compilation cache's bytecode chunks to the garbage collector.
-///
-/// Without this, constants in cached bytecode chunks are invisible to GC and
-/// may be freed while still reachable from the cache, causing use-after-free.
-#[cfg(not(feature = "index-gc"))]
-struct TieredCacheRoots;
-
-#[cfg(not(feature = "index-gc"))]
-impl RootProvider for TieredCacheRoots {
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        global_tiered_cache().collect_roots_into(roots);
-    }
-}
-
-/// Keeps the Arc<dyn RootProvider> alive for the lifetime of the process so
-/// the Weak reference in ROOT_REGISTRY remains valid.
-#[cfg(not(feature = "index-gc"))]
-static TIERED_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
-
-/// Ensure the tiered cache is registered as a GC root provider.
-///
-/// Called lazily on first `record_execution`. Idempotent — OnceLock
-/// guarantees single initialization.
-///
-/// CESK A5.3: index-gc no-op — roots are read structurally by
-/// `collect_global_anchors` via `collect_roots_into`.
-#[cfg(not(feature = "index-gc"))]
-pub fn ensure_tiered_cache_roots_registered() {
-    TIERED_CACHE_ROOT_PROVIDER.get_or_init(|| {
-        let provider = Arc::new(TieredCacheRoots) as Arc<dyn RootProvider>;
-        register_root_provider(&provider);
-        provider
-    });
-}
-
-/// CESK A5.3: index-gc no-op (empty registry; structural roots).
-#[cfg(feature = "index-gc")]
+/// Ensure the tiered cache's roots are discoverable. The index collector reads
+/// them structurally via `collect_roots_into`, so this is a no-op.
 #[inline]
 pub fn ensure_tiered_cache_roots_registered() {}
 

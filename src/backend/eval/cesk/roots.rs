@@ -573,16 +573,7 @@ pub fn assert_quiescence_superset(
     // collect_safepoint_roots ⊆ KEPT below), so OLD ← Vec::new() here only SHRINKS
     // the discovered set — `OLD ⊆ (NEW ∪ KEPT)` is preserved by monotonicity (the
     // dropped term was already covered by KEPT). old_vals stays defined in both builds.
-    let mut old_vals: Vec<crate::backend::models::MettaValue> = {
-        #[cfg(not(feature = "index-gc"))]
-        {
-            crate::backend::models::collect_all_roots()
-        }
-        #[cfg(feature = "index-gc")]
-        {
-            Vec::new()
-        }
-    };
+    let mut old_vals: Vec<crate::backend::models::MettaValue> = Vec::new();
     old_vals.extend(result.iter().copied());
     let mut old: Vec<usize> = old_vals.iter().map(|v| v.inner_ptr() as usize).collect();
 

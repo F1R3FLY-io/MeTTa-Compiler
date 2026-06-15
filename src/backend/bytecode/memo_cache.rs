@@ -290,8 +290,6 @@ pub struct CacheStats {
 // Global Singleton Memo Cache + GC Root Provider
 // =============================================================================
 
-#[cfg(not(feature = "index-gc"))]
-use crate::backend::models::gc_allocator::{register_root_provider, RootProvider};
 /// Global singleton `MemoCache<MettaValue>` shared across all VM instances.
 ///
 /// Uses `LazyLock` for zero-cost lazy initialization. Cache size is configurable
@@ -304,44 +302,8 @@ static GLOBAL_MEMO_CACHE: LazyLock<Arc<MemoCache<MettaValue>>> = LazyLock::new(|
     Arc::new(MemoCache::new(max_entries))
 });
 
-/// GC root provider that exposes all MettaValue entries stored in the global
-/// memo cache to the garbage collector's root set.
-///
-/// Without this, cached function results are invisible to GC and may be freed
-/// while still reachable from the cache, causing use-after-free.
-#[cfg(not(feature = "index-gc"))]
-struct MemoCacheRoots;
-
-#[cfg(not(feature = "index-gc"))]
-impl RootProvider for MemoCacheRoots {
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        GLOBAL_MEMO_CACHE.collect_all_values(roots);
-    }
-}
-
-/// Keeps the `Arc<dyn RootProvider>` alive for the lifetime of the process so
-/// the `Weak` reference in `ROOT_REGISTRY` remains valid.
-#[cfg(not(feature = "index-gc"))]
-static MEMO_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
-
-/// Ensure the global memo cache is registered as a GC root provider.
-///
-/// Called lazily on first access to the global cache. Idempotent —
-/// `OnceLock` guarantees single initialization.
-///
-/// CESK A5.3: index-gc no-op — roots are read structurally by
-/// `collect_global_anchors` via `collect_all_values`.
-#[cfg(not(feature = "index-gc"))]
-pub fn ensure_memo_cache_roots_registered() {
-    MEMO_CACHE_ROOT_PROVIDER.get_or_init(|| {
-        let provider = Arc::new(MemoCacheRoots) as Arc<dyn RootProvider>;
-        register_root_provider(&provider);
-        provider
-    });
-}
-
-/// CESK A5.3: index-gc no-op (empty registry; structural roots).
-#[cfg(feature = "index-gc")]
+/// Ensure the global memo cache's roots are discoverable. The index collector
+/// reads them structurally via `collect_all_values`, so this is a no-op.
 #[inline]
 pub fn ensure_memo_cache_roots_registered() {}
 

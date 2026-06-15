@@ -20,8 +20,6 @@ use super::Compiler;
 use crate::backend::bytecode::chunk::JumpLabel;
 use crate::backend::bytecode::opcodes::Opcode;
 use crate::backend::eval::{is_eager_special_form, is_grounded_op};
-#[cfg(not(feature = "index-gc"))]
-use crate::backend::models::{register_root_provider, RootProvider};
 use crate::backend::models::{MettaValue, ValueView};
 
 // ============================================================================
@@ -42,30 +40,10 @@ static ATOM_IF: OnceLock<MettaValue> = OnceLock::new();
 // GC Root Provider for Compiler Atom Statics
 // =============================================================================
 
-/// GC root provider that exposes slab-allocated atoms in `ATOM_EQUALS`,
-/// `ATOM_PRINTLN`, and `ATOM_IF` to the garbage collector's root set.
-///
-/// Without this, if the first call to a `cached_atom_*` accessor happens
-/// during session evaluation (context_id > 0), the slab slot is tagged with
-/// that session's context. When the session ends, session GC frees the slot
-/// → use-after-free on subsequent accesses from other sessions.
-#[cfg(not(feature = "index-gc"))]
-struct CompilerAtomRoots;
-
-#[cfg(not(feature = "index-gc"))]
-impl RootProvider for CompilerAtomRoots {
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        collect_compiler_atom_roots(roots);
-    }
-}
-
 /// CESK A4.2a structural reader: collect the GC roots held by the compiler's
-/// cached atom statics (`ATOM_EQUALS`, `ATOM_PRINTLN`, `ATOM_IF`). This is the
-/// inherent collector the `RootProvider` impl delegates to, and what
-/// `collect_global_anchors` (cesk/roots.rs) calls *by name* — replacing the
-/// dynamic `ROOT_REGISTRY`/`Weak<dyn RootProvider>` dispatch with a fixed
-/// structural read. Byte-identical to the former impl body; additive (the
-/// registry path still works until Phase A5).
+/// cached atom statics (`ATOM_EQUALS`, `ATOM_PRINTLN`, `ATOM_IF`). The index
+/// collector calls this *by name* from `collect_global_anchors` (cesk/roots.rs)
+/// — a fixed structural read of the cached atoms, with no dynamic registry.
 pub(crate) fn collect_compiler_atom_roots(roots: &mut Vec<MettaValue>) {
     if let Some(v) = ATOM_EQUALS.get() {
         roots.push(*v);
@@ -78,29 +56,8 @@ pub(crate) fn collect_compiler_atom_roots(roots: &mut Vec<MettaValue>) {
     }
 }
 
-/// Keeps the `Arc<dyn RootProvider>` alive for the lifetime of the process so
-/// the `Weak` reference in `ROOT_REGISTRY` remains valid.
-#[cfg(not(feature = "index-gc"))]
-static COMPILER_ATOM_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
-
-/// Ensure the compiler atom statics are registered as GC root providers.
-///
-/// Called lazily on first atom initialization. Idempotent — `OnceLock`
-/// guarantees single initialization.
-///
-/// CESK A5.3: index-gc no-op — roots are read structurally by
-/// `collect_global_anchors` via `collect_compiler_atom_roots`.
-#[cfg(not(feature = "index-gc"))]
-fn ensure_compiler_atom_roots_registered() {
-    COMPILER_ATOM_ROOT_PROVIDER.get_or_init(|| {
-        let provider = Arc::new(CompilerAtomRoots) as Arc<dyn RootProvider>;
-        register_root_provider(&provider);
-        provider
-    });
-}
-
-/// CESK A5.3: index-gc no-op (empty registry; structural roots).
-#[cfg(feature = "index-gc")]
+/// Ensure the compiler atom statics' roots are discoverable. The index collector
+/// reads them structurally via `collect_compiler_atom_roots`, so this is a no-op.
 #[inline]
 fn ensure_compiler_atom_roots_registered() {}
 
@@ -3690,8 +3647,6 @@ impl Compiler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(not(feature = "index-gc"))]
-    use crate::backend::models::gc_allocator::collect_all_roots;
 
     #[test]
     fn test_compiler_atom_roots_registered() {
@@ -3700,14 +3655,9 @@ mod tests {
         let _ = cached_atom_println();
         let _ = cached_atom_if();
 
-        // Verify all three atoms appear in the GC root set. SLAB: via the
-        // discovery registry (`collect_all_roots`). INDEX (A5.3): the provider is
-        // no longer registered; the atoms are read STRUCTURALLY via
-        // `collect_compiler_atom_roots` (the inherent body `collect_global_anchors`
-        // reads) — assert against that path in the index build.
-        #[cfg(not(feature = "index-gc"))]
-        let roots = collect_all_roots();
-        #[cfg(feature = "index-gc")]
+        // Verify all three atoms appear in the GC root set: the cached atoms are
+        // read STRUCTURALLY via `collect_compiler_atom_roots` (whose inherent body
+        // `collect_global_anchors` reads them).
         let roots = {
             let mut r = Vec::new();
             collect_compiler_atom_roots(&mut r);

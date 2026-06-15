@@ -23,13 +23,6 @@ pub use gc_allocator::{
     set_backpressure_level, try_register_env_roots, worker_ever_spawned, EvalGuard, GcFactory,
     GcHoldGuard, SafepointRootHandle, SessionGuard, SlabAllocator, MAX_BACKPRESSURE,
 };
-// A5.5: the registry CORE re-exports are walled to slab — these symbols no longer
-// compile in the index build (the index collector reads roots structurally via
-// collect_machine_roots ∪ collect_safepoint_roots). KEPT in the common arm above:
-// collect_safepoint_roots, register_temporary_roots, SafepointRootHandle,
-// maybe_quiescent_gc, try_register_env_roots (the A5.4 driver-transport channel).
-#[cfg(not(feature = "index-gc"))]
-pub use gc_allocator::{collect_all_roots, register_root_provider, RootProvider};
 pub use gc_cron::{CronHandle, GcCronSingleton};
 pub use generic_bindings::{
     allocate_scope_id, BindingName, BindingsWithClasses, ClassData, ClassId, ClassTable,

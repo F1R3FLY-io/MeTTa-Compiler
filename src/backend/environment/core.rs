@@ -94,8 +94,6 @@ where
 use crate::backend::grounded::GroundedRegistry;
 use crate::backend::hash_utils::IdentityU64BuildHasher;
 use crate::backend::models::gc_allocator::try_register_env_roots;
-#[cfg(not(feature = "index-gc"))]
-use crate::backend::models::gc_allocator::RootProvider;
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait, SpaceHandle};
 use crate::backend::modules::ModuleRegistry;
 use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
@@ -2305,18 +2303,6 @@ impl GenericEnvironmentShared<MettaValue> {
 impl crate::backend::models::gc_allocator::EnvRoots for GenericEnvironmentShared<MettaValue> {
     fn collect_env_roots(&self, out: &mut Vec<MettaValue>) {
         self.collect_roots_into(out);
-    }
-}
-
-#[cfg(not(feature = "index-gc"))]
-impl RootProvider for GenericEnvironmentShared<MettaValue> {
-    /// Delegates to the inherent structural reader `collect_roots_into`, so the
-    /// registry-discovered path and the structural E₀ read are the SAME code
-    /// (one source of truth) throughout the bridge period. Phase A5 deletes this
-    /// `RootProvider` impl once the structural collector reads E₀ directly.
-    #[inline]
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        self.collect_roots_into(roots);
     }
 }
 

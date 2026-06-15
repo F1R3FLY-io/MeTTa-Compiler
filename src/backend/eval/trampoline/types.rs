@@ -356,30 +356,6 @@ pub struct ParallelDispatchRootProvider {
     pub(crate) branches: Arc<Vec<super::eval_loop::ParallelBranch>>,
 }
 
-#[cfg(not(feature = "index-gc"))]
-impl crate::backend::models::gc_allocator::RootProvider for ParallelDispatchRootProvider {
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        // INPUTS first — no Mutex, direct iter (immutable Arc).
-        for (value, bindings) in self.branches.iter() {
-            roots.push(*value);
-            for (_, bound) in bindings.iter() {
-                roots.push(*bound);
-            }
-        }
-        // OUTPUTS — try_lock; safe to skip if contended (worker holds
-        // EvalGuard while writing, inhibiting quiescent GC anyway).
-        if let Ok(guard) = self.results.try_lock() {
-            for slot in guard.iter().flatten() {
-                for (v, bindings) in slot.iter() {
-                    roots.push(*v);
-                    for (_, bound) in bindings.iter() {
-                        roots.push(*bound);
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// E1-FLIP / CEX-1 (D2): the index-gc dispatch-fan-out anchor. The dedicated GC
 /// thread walks this through `LIVE_DISPATCHES` (the typed analogue of the slab
@@ -470,29 +446,6 @@ pub struct ParallelCollapseRootProvider {
     pub(crate) items: Arc<Vec<BoundValue>>,
 }
 
-#[cfg(not(feature = "index-gc"))]
-impl crate::backend::models::gc_allocator::RootProvider for ParallelCollapseRootProvider {
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        // INPUTS first — no Mutex, direct iter (immutable Arc).
-        for (value, bindings) in self.items.iter() {
-            roots.push(*value);
-            for (_, bound) in bindings.iter() {
-                roots.push(*bound);
-            }
-        }
-        // OUTPUTS — try_lock per Phase 6 rationale.
-        if let Ok(guard) = self.results.try_lock() {
-            for slot in guard.iter().flatten() {
-                for (v, bindings) in slot.iter() {
-                    roots.push(*v);
-                    for (_, bound) in bindings.iter() {
-                        roots.push(*bound);
-                    }
-                }
-            }
-        }
-    }
-}
 
 /// E1-FLIP / CEX-1 (D2): the index-gc collapse-dispatch fan-out anchor. See
 /// `ParallelDispatchRootProvider`'s `DispatchRoots` impl — identical rationale and

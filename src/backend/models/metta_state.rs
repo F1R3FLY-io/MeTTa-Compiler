@@ -4,8 +4,6 @@ use std::sync::Arc;
 use parking_lot::{Mutex, MutexGuard};
 
 use super::gc_allocator::GcFactory;
-#[cfg(not(feature = "index-gc"))]
-use super::gc_allocator::{register_root_provider, RootProvider};
 use super::MettaValue;
 use crate::backend::environment::MettaEnvironment;
 
@@ -24,25 +22,6 @@ struct MettaStateGcRoots {
     output: Mutex<Vec<MettaValue>>,
 }
 
-#[cfg(not(feature = "index-gc"))]
-impl RootProvider for MettaStateGcRoots {
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        // Use blocking lock() — GC root collection MUST see all roots for
-        // correctness. Skipping a locked provider via try_lock() would risk
-        // freeing values still reachable through that provider (use-after-free).
-        //
-        // The original ABBA deadlock (GC thread holds GC_IN_PROGRESS, blocks
-        // on source mutex; test thread holds source mutex, blocks on
-        // GC_IN_PROGRESS in EvalGuard::enter) is fixed at the callsites:
-        // every `eval(state.source()[N], ...)` is decomposed into two
-        // statements so the MutexGuard is dropped before eval() is called.
-        // See the doc comment on MettaState::source() for details.
-        let source = self.source.lock();
-        let output = self.output.lock();
-        roots.extend(source.iter().copied());
-        roots.extend(output.iter().copied());
-    }
-}
 
 // ============================================================================
 // MettaState
@@ -122,13 +101,6 @@ impl MettaState {
             source: Mutex::new(source),
             output: Mutex::new(output),
         });
-        // Register as GC root provider (Weak reference — auto-unregisters on drop)
-        #[cfg(not(feature = "index-gc"))]
-        {
-            let provider: Arc<dyn RootProvider> = gc_roots.clone();
-            register_root_provider(&provider);
-        }
-
         MettaState {
             gc_roots,
             environment,

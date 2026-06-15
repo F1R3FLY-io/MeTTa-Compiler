@@ -5380,142 +5380,12 @@ pub fn maybe_process_gc_response() -> bool {
 }
 
 // ============================================================================
-// GC Root Registry — Global Root Collection for Concurrent GC
+// GC Root Registry — REMOVED (F4 rung R5)
+//
+// The legacy dynamic RootProvider registry (trait, ROOT_REGISTRY, registration,
+// collect_all_roots) is deleted: the index collector reads roots structurally
+// via collect_machine_roots ∪ the kept collect_safepoint_roots below.
 // ============================================================================
-
-/// Trait for objects that hold GC-managed values and can provide their live roots.
-///
-/// Implementors register themselves with the global root registry on creation
-/// and unregister on drop. The GC thread calls `collect_all_roots()` to gather
-/// roots from all registered providers across all threads.
-///
-/// # Thread Safety
-///
-/// `collect_roots` may be called from any thread (typically the GC thread).
-/// Implementations must be thread-safe.
-///
-/// A5.5: registry CORE walled to the slab build — the index collector reads
-/// roots purely structurally (`collect_machine_roots`) ∪ KEPT
-/// (`collect_safepoint_roots`), so the trait/registry never compile in index.
-#[cfg(not(feature = "index-gc"))]
-pub trait RootProvider: Send + Sync {
-    /// Collect all live GC root values from this provider.
-    ///
-    /// Implementations should push all `MettaValue` values that are
-    /// currently reachable from this provider into the `roots` vector.
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>);
-}
-
-/// Global registry of active root providers using weak references.
-///
-/// Uses `Weak<dyn RootProvider>` so that environments are automatically cleaned
-/// up when they go out of scope — no explicit unregistration needed. Dead entries
-/// are pruned during `collect_all_roots()`.
-///
-/// Uses `RwLock` because registration is infrequent (environment creation), while
-/// `collect_all_roots()` only runs during GC cycles (not on the allocation hot path).
-#[cfg(not(feature = "index-gc"))]
-static ROOT_REGISTRY: OnceLock<RwLock<Vec<Weak<dyn RootProvider>>>> = OnceLock::new();
-
-#[cfg(not(feature = "index-gc"))]
-fn root_registry() -> &'static RwLock<Vec<Weak<dyn RootProvider>>> {
-    ROOT_REGISTRY.get_or_init(|| RwLock::new(Vec::new()))
-}
-
-/// Register a root provider with the global GC root registry.
-///
-/// Stores a `Weak` reference — the provider is automatically removed from the
-/// registry when all strong `Arc` references are dropped.
-#[cfg(not(feature = "index-gc"))]
-pub fn register_root_provider(provider: &Arc<dyn RootProvider>) {
-    let mut registry = root_registry().write();
-    registry.push(Arc::downgrade(provider));
-}
-
-/// Collect roots from all registered providers.
-///
-/// Called by the GC integration to build a complete root set before constructing
-/// a `GcSnapshot`. This gathers live values from all active environments, VMs,
-/// and other root sources across all threads.
-///
-/// Dead (dropped) providers are automatically pruned during collection.
-///
-/// # Lock Protocol
-///
-/// Splits into two phases to minimize `ROOT_REGISTRY` hold time and prevent
-/// writer starvation (which previously deadlocked when many test threads
-/// tried to register new environments concurrently with GC root collection):
-///
-/// 1. **Snapshot phase** — Briefly acquires `ROOT_REGISTRY.write()` to upgrade
-///    all `Weak` refs to `Arc`, prune dead entries, and release the lock.
-/// 2. **Collection phase** — Iterates the local `Vec<Arc>` without holding any
-///    registry lock, calling `collect_roots()` on each provider.
-#[cfg(not(feature = "index-gc"))]
-pub fn collect_all_roots() -> Vec<MettaValue> {
-    // Phase 1: Snapshot — briefly hold write lock to upgrade Weak refs and prune dead entries.
-    // This takes O(N * weak_upgrade) time, NOT O(N * collect_roots) time.
-    let providers: Vec<Arc<dyn RootProvider>> = {
-        let mut registry = root_registry().write();
-        let mut live = Vec::with_capacity(registry.len());
-        registry.retain(|weak| {
-            if let Some(strong) = weak.upgrade() {
-                live.push(strong);
-                true
-            } else {
-                false // Provider was dropped — remove from registry
-            }
-        });
-        live
-        // ROOT_REGISTRY write lock released here
-    };
-
-    // Phase 2: Collect roots from each provider WITHOUT holding ROOT_REGISTRY.
-    // New environments can register freely during this phase.
-    let mut roots = Vec::with_capacity(providers.len() * 64); // heuristic pre-alloc
-    for provider in &providers {
-        provider.collect_roots(&mut roots);
-    }
-
-    // Also collect safepoint roots from trampoline state
-    collect_safepoint_roots(&mut roots);
-    roots
-}
-
-/// Read-only variant of `collect_all_roots()` that does NOT prune dead Weak refs.
-///
-/// Uses `ROOT_REGISTRY.read()` instead of `write()`, skipping dead entries
-/// without removing them. This prevents a race where a transiently dead Weak
-/// (from an environment Arc dropped by `deferred_shared_drops.clear()`) is
-/// pruned before the new environment's root provider registers, causing values
-/// to be missed by `trace_surviving_set()` during session release.
-///
-/// Dead entries accumulate until the next `collect_all_roots()` call (during
-/// regular GC cycles), which prunes them under write lock.
-#[cfg(not(feature = "index-gc"))]
-fn collect_all_roots_readonly() -> Vec<MettaValue> {
-    // Phase 1: Snapshot providers under read lock (no pruning).
-    let providers: Vec<Arc<dyn RootProvider>> = {
-        let registry = root_registry().read();
-        let mut live = Vec::with_capacity(registry.len());
-        for weak in registry.iter() {
-            if let Some(strong) = weak.upgrade() {
-                live.push(strong);
-            }
-        }
-        live
-        // Read lock released here
-    };
-
-    // Phase 2: Collect roots from each provider WITHOUT holding ROOT_REGISTRY.
-    let mut roots = Vec::with_capacity(providers.len() * 64);
-    for provider in &providers {
-        provider.collect_roots(&mut roots);
-    }
-
-    // Also collect safepoint roots from trampoline state
-    collect_safepoint_roots(&mut roots);
-    roots
-}
 
 // ============================================================================
 // Safepoint Root Registry — Temporary Roots for Intra-Evaluation GC
@@ -5767,39 +5637,6 @@ pub fn snapshot_live_dispatch_witness() -> (Vec<MettaValue>, usize) {
     (out, live)
 }
 
-/// Collect roots from all registered providers using a read lock (no pruning).
-///
-/// Unlike `collect_all_roots()` which uses `ROOT_REGISTRY.write()` to prune
-/// dead Weak entries, this uses `ROOT_REGISTRY.read()` and skips dead entries
-/// without removing them. Avoids write-lock contention with concurrent
-/// `register_root_provider()` calls from evaluator threads creating environments.
-///
-/// Returns `Some(roots)` on success, `None` if lock contention prevents collection.
-#[cfg(not(feature = "index-gc"))]
-fn collect_provider_roots_readonly() -> Option<Vec<MettaValue>> {
-    let registry = root_registry();
-
-    // Phase 1: Snapshot providers under read lock (no pruning).
-    let providers: Vec<Arc<dyn RootProvider>> = {
-        let guard = registry.try_read_for(std::time::Duration::from_millis(5))?;
-        let mut live = Vec::with_capacity(guard.len());
-        for weak in guard.iter() {
-            if let Some(strong) = weak.upgrade() {
-                live.push(strong);
-            }
-        }
-        live
-        // Read lock released here
-    };
-
-    // Phase 2: Collect roots from each provider WITHOUT holding ROOT_REGISTRY.
-    let mut roots = Vec::with_capacity(providers.len() * 64);
-    for provider in &providers {
-        provider.collect_roots(&mut roots);
-    }
-    Some(roots)
-}
-
 /// Build the transitive closure of all currently registered safepoint roots.
 ///
 /// Returns `(Some(HashSet), env_complete)` while at least one safepoint root
@@ -5848,16 +5685,8 @@ pub(crate) fn trace_safepoint_live_set() -> (Option<PtrHashSet>, bool) {
     // Also collect environment roots (rules, bindings, types, spaces).
     // Values dead per a previous GC cycle may now be live through the
     // environment (e.g., added as a rule RHS between cycles).
-    // A5.5: the provider-registry reader is slab-only; in index the registry is
-    // empty (E₀ read structurally, no providers), so env_roots is empty and
-    // env_complete is trivially true (nothing to be incomplete about). The fn
-    // itself stays compiled in both builds.
-    #[cfg(not(feature = "index-gc"))]
-    let (env_roots, env_complete) = match collect_provider_roots_readonly() {
-        Some(roots) => (roots, true),
-        None => (Vec::new(), false),
-    };
-    #[cfg(feature = "index-gc")]
+    // The dynamic provider registry was removed (F4 R5); E₀ is read structurally,
+    // so there are no extra env roots here and env_complete is trivially true.
     let (env_roots, env_complete): (Vec<MettaValue>, bool) = (Vec::new(), true);
 
     let total_roots = safepoint_roots.len() + env_roots.len();
@@ -6420,47 +6249,11 @@ pub fn maybe_process_gc_response_fast() -> bool {
 ///
 /// This is called from `GenericEnvironment::new()`, `make_owned()`,
 /// `fork_for_nondeterminism()`, `union()`, and `union_all()`.
-#[cfg(not(feature = "index-gc"))]
-pub fn try_register_env_roots<V>(
-    shared: &Arc<crate::backend::environment::GenericEnvironmentShared<V>>,
-) where
-    V: crate::backend::models::metta_value_trait::MettaValueTrait
-        + Clone
-        + Send
-        + Sync
-        + Unpin
-        + 'static,
-{
-    // Skip registration when GC is disabled.
-    if is_gc_disabled() {
-        return;
-    }
-    // NOTE: Environments must always be registered regardless of GC pool state.
-    // The GC pool's session release workers call collect_all_roots() →
-    // trace_surviving_set(). If environments are not registered, the surviving
-    // set is empty and ALL session-allocated values (including RuleEntry.lhs/rhs)
-    // are freed, causing use-after-free when match_rules_native() dereferences
-    // freed slab slots.
-
-    // Clone the Arc and try to downcast to the concrete MettaValue type
-    let any: Arc<dyn Any + Send + Sync> = shared.clone();
-    if let Ok(arena_shared) =
-        any.downcast::<crate::backend::environment::GenericEnvironmentShared<MettaValue>>()
-    {
-        // GenericEnvironmentShared<MettaValue> implements RootProvider
-        let provider: Arc<dyn RootProvider> = arena_shared;
-        register_root_provider(&provider);
-    }
-}
-
-/// CESK A5.3: index-gc build registers ZERO providers. E₀ (the persistent global
-/// environment) is read STRUCTURALLY by `collect_persistent_roots` via
-/// `GenericEnvironmentShared::<MettaValue>::collect_roots_into` — never through
-/// the `ROOT_REGISTRY` — so environment registration is a no-op here. The
-/// signature (incl. the `V` bound) survives because the 5 callers
+/// E₀ (the persistent global environment) is read STRUCTURALLY by
+/// `collect_persistent_roots`, never through a registry, so environment
+/// registration is a no-op. The signature survives because the 5 callers
 /// (`GenericEnvironment::new`/`make_owned`/`fork_for_nondeterminism`/`union`/
-/// `union_all`) invoke it unconditionally in both builds.
-#[cfg(feature = "index-gc")]
+/// `union_all`) invoke it unconditionally.
 #[inline]
 pub fn try_register_env_roots<V>(
     _shared: &Arc<crate::backend::environment::GenericEnvironmentShared<V>>,
@@ -7297,13 +7090,8 @@ impl SlabAllocator {
         // Weak refs from ROOT_REGISTRY. This prevents a race where an
         // environment's root provider is pruned before its clone registers,
         // causing values to be missed and freed while still reachable.
-        // A5.5: collect_all_roots_readonly is slab-only (registry-backed). In
-        // index the registry is empty by construction (no providers), so the
-        // index arm is an empty root set — this fn is unreachable in index
-        // (the slab session-release path is inert), making it a no-op there.
-        #[cfg(not(feature = "index-gc"))]
-        let roots = collect_all_roots_readonly();
-        #[cfg(feature = "index-gc")]
+        // The dynamic provider registry was removed (F4 R5); E₀ is read
+        // structurally, so this surviving-set helper collects no extra roots.
         let roots: Vec<MettaValue> = Vec::new();
         if trace {
             eprintln!(
@@ -9242,108 +9030,6 @@ mod tests {
     }
 
     // ================================================================
-    // Safepoint Root Registry Tests
-    // ================================================================
-
-    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_register_temporary_roots_basic() {
-        let factory = global_factory();
-        let v1 = factory.long(111);
-        let v2 = factory.atom("safepoint_test");
-
-        let handle = register_temporary_roots(vec![v1, v2]);
-
-        // Roots should appear in collect_all_roots()
-        let roots = collect_all_roots();
-        let has_v1 = roots.iter().any(|r| r.as_long() == Some(111));
-        let has_v2 = roots.iter().any(|r| r.as_atom() == Some("safepoint_test"));
-        assert!(has_v1, "safepoint root v1 should be in collect_all_roots()");
-        assert!(has_v2, "safepoint root v2 should be in collect_all_roots()");
-
-        // Drop handle — roots should be cleared
-        drop(handle);
-
-        // After drop, roots should no longer include our values
-        // (other roots from environments may still be present)
-        let roots_after = collect_all_roots();
-        let still_has_v2 = roots_after
-            .iter()
-            .any(|r| r.as_atom() == Some("safepoint_test"));
-        assert!(
-            !still_has_v2,
-            "safepoint roots should be cleared after handle drop"
-        );
-    }
-
-    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_register_temporary_roots_multiple_handles() {
-        let factory = global_factory();
-
-        let handle1 = register_temporary_roots(vec![factory.long(1001)]);
-        let handle2 = register_temporary_roots(vec![factory.long(1002)]);
-
-        // Both should appear
-        let roots = collect_all_roots();
-        assert!(roots.iter().any(|r| r.as_long() == Some(1001)));
-        assert!(roots.iter().any(|r| r.as_long() == Some(1002)));
-
-        // Drop first handle
-        drop(handle1);
-        let roots = collect_all_roots();
-        assert!(!roots.iter().any(|r| r.as_long() == Some(1001)));
-        assert!(roots.iter().any(|r| r.as_long() == Some(1002)));
-
-        // Drop second handle
-        drop(handle2);
-        let roots = collect_all_roots();
-        assert!(!roots.iter().any(|r| r.as_long() == Some(1002)));
-    }
-
-    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_register_temporary_roots_empty_active_handle_does_not_alias() {
-        let factory = global_factory();
-
-        let empty_handle = register_temporary_roots(Vec::new());
-        let live_handle = register_temporary_roots(vec![factory.atom("empty-active-root-live")]);
-
-        drop(empty_handle);
-
-        let roots = collect_all_roots();
-        assert!(
-            roots
-                .iter()
-                .any(|r| r.as_atom() == Some("empty-active-root-live")),
-            "dropping an active empty handle must not clear another active root set"
-        );
-
-        drop(live_handle);
-    }
-
-    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_register_temporary_roots_slot_reuse() {
-        let factory = global_factory();
-
-        // Register and drop to create an empty slot
-        let handle = register_temporary_roots(vec![factory.long(2001)]);
-        drop(handle);
-
-        // Next registration should reuse the empty slot
-        let handle2 = register_temporary_roots(vec![factory.long(2002)]);
-        let roots = collect_all_roots();
-        assert!(roots.iter().any(|r| r.as_long() == Some(2002)));
-        assert!(!roots.iter().any(|r| r.as_long() == Some(2001)));
-        drop(handle2);
-    }
-
-    // ================================================================
     // EvalGuard Drop/Reacquire Tests
     // ================================================================
 
@@ -9652,31 +9338,6 @@ mod tests {
             0,
             "a straggler from the ended cycle must NOT bump (gen-gated drop)"
         );
-    }
-
-    // A5.5: calls collect_all_roots() (slab-only registry reader) — compile in slab only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_safepoint_with_temporary_roots() {
-        let factory = global_factory();
-        let _guard = EvalGuard::enter();
-
-        // Simulate safepoint: register roots, drop guard, re-acquire
-        let roots = vec![factory.long(9999), factory.atom("safepoint_root")];
-        let root_handle = register_temporary_roots(roots);
-
-        drop_eval_guard_for_safepoint();
-
-        // Roots should be visible in collect_all_roots() while guard is dropped
-        let all_roots = collect_all_roots();
-        assert!(
-            all_roots.iter().any(|r| r.as_long() == Some(9999)),
-            "safepoint roots should be visible during safepoint"
-        );
-
-        reacquire_eval_guard_after_safepoint();
-        drop(root_handle);
-        drop(_guard);
     }
 
     #[test]

@@ -511,29 +511,6 @@ pub fn eval_with_trace(
     result
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // A5.5: calls collect_all_roots() (slab-only registry reader after A5.5) —
-    // compile in slab only. Same class as the gc_allocator.rs registry tests.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_refresh_thread_local_cache_roots_registers_eval_memo_values() {
-        let cached = MettaValue::sym("thread-local-cache-root");
-
-        trampoline::dispatch_hints::clear_eval_memo();
-        trampoline::dispatch_hints::eval_memo_put(0xfeed_cafe, 0, &[cached]);
-        refresh_thread_local_cache_roots();
-
-        let roots = crate::backend::models::collect_all_roots();
-        assert!(roots.contains(&cached));
-
-        trampoline::dispatch_hints::clear_eval_memo();
-        refresh_thread_local_cache_roots();
-    }
-}
-
 /// Inner eval body with trace — bytecode/JIT tiered execution with trace-enabled
 /// tree-walker fallback.
 ///

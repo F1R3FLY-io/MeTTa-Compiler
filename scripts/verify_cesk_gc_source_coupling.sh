@@ -1368,90 +1368,14 @@ assert_zero "src/backend/eval/cesk/index_node.rs" "not yet wired"
 assert_zero "src/backend/eval/cesk/index_arena.rs" "Increment 2 is in progress"
 assert_zero "src/backend/eval/cesk/index_heap.rs" "Inc 2 is in progress"
 assert_zero "src/backend/eval/cesk/index_node.rs" "Inc 2 is in progress"
-assert_before \
-  "src/backend/models/mod.rs" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "pub use gc_allocator::{collect_all_roots, register_root_provider, RootProvider};"
-assert_before \
-  "src/backend/models/gc_allocator.rs" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "pub trait RootProvider: Send + Sync {"
-
-# Registry isolation: the bridge-period dynamic root registry must stay a slab
-# artifact. In the index build, every value-bearing provider is reached through
-# a named structural reader or a typed live-env/live-dispatch driver channel.
-assert_immediate_cfg_before \
-  "src/backend/models/mod.rs" \
-  "pub use gc_allocator::{collect_all_roots, register_root_provider, RootProvider};" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/models/gc_allocator.rs" \
-  "pub trait RootProvider: Send + Sync {" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/models/gc_allocator.rs" \
-  "static ROOT_REGISTRY: OnceLock<RwLock<Vec<Weak<dyn RootProvider>>>> = OnceLock::new();" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/models/gc_allocator.rs" \
-  "pub fn register_root_provider(provider: &Arc<dyn RootProvider>) {" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/models/gc_allocator.rs" \
-  "pub fn collect_all_roots() -> Vec<MettaValue> {" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/models/gc_allocator.rs" \
-  "fn collect_all_roots_readonly() -> Vec<MettaValue> {" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/models/gc_allocator.rs" \
-  "pub fn try_register_env_roots<V>(" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after \
-  "src/backend/models/gc_allocator.rs" \
-  "CESK A5.3: index-gc build registers ZERO providers." \
-  "pub fn try_register_env_roots<V>(" \
-  "#[cfg(feature = \"index-gc\")]"
-
-assert_immediate_cfg_before "src/backend/bytecode/cache.rs" "use crate::backend::models::{register_root_provider, RootProvider};" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/cache.rs" "struct BytecodeCacheRoots;" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/cache.rs" "impl RootProvider for BytecodeCacheRoots {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/cache.rs" "static BYTECODE_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/cache.rs" "CESK A5.3: the index-gc build registers ZERO providers" "pub fn ensure_bytecode_cache_roots_registered() {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/cache.rs" "CESK A5.3: index-gc no-op" "pub fn ensure_bytecode_cache_roots_registered() {}" "#[cfg(feature = \"index-gc\")]"
-
-assert_immediate_cfg_before "src/backend/bytecode/compiler/iterative.rs" "use crate::backend::models::{register_root_provider, RootProvider};" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/compiler/iterative.rs" "struct CompilerAtomRoots;" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/compiler/iterative.rs" "impl RootProvider for CompilerAtomRoots {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/compiler/iterative.rs" "static COMPILER_ATOM_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/compiler/iterative.rs" "CESK A5.3: index-gc no-op — roots are read structurally" "fn ensure_compiler_atom_roots_registered() {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/compiler/iterative.rs" "CESK A5.3: index-gc no-op (empty registry; structural roots)." "fn ensure_compiler_atom_roots_registered() {}" "#[cfg(feature = \"index-gc\")]"
-
-assert_immediate_cfg_before "src/backend/bytecode/memo_cache.rs" "use crate::backend::models::gc_allocator::{register_root_provider, RootProvider};" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/memo_cache.rs" "struct MemoCacheRoots;" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/memo_cache.rs" "impl RootProvider for MemoCacheRoots {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/memo_cache.rs" "static MEMO_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/memo_cache.rs" "CESK A5.3: index-gc no-op — roots are read structurally" "pub fn ensure_memo_cache_roots_registered() {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/memo_cache.rs" "CESK A5.3: index-gc no-op (empty registry; structural roots)." "pub fn ensure_memo_cache_roots_registered() {}" "#[cfg(feature = \"index-gc\")]"
-
-assert_immediate_cfg_before "src/backend/bytecode/space_registry.rs" "use crate::backend::models::{register_root_provider, RootProvider};" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/space_registry.rs" "struct SpaceRegistryRoots;" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/space_registry.rs" "impl RootProvider for SpaceRegistryRoots {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/space_registry.rs" "static SPACE_REGISTRY_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/space_registry.rs" "CESK A5.3: index-gc no-op — roots are read structurally" "pub fn ensure_space_registry_roots_registered() {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/space_registry.rs" "CESK A5.3: index-gc no-op (empty registry; structural roots)." "pub fn ensure_space_registry_roots_registered() {}" "#[cfg(feature = \"index-gc\")]"
-
-assert_immediate_cfg_before "src/backend/bytecode/tiered_cache.rs" "use crate::backend::models::{register_root_provider, RootProvider};" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/tiered_cache.rs" "struct TieredCacheRoots;" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/tiered_cache.rs" "impl RootProvider for TieredCacheRoots {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/bytecode/tiered_cache.rs" "static TIERED_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/tiered_cache.rs" "CESK A5.3: index-gc no-op — roots are read structurally" "pub fn ensure_tiered_cache_roots_registered() {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after "src/backend/bytecode/tiered_cache.rs" "CESK A5.3: index-gc no-op (empty registry; structural roots)." "pub fn ensure_tiered_cache_roots_registered() {}" "#[cfg(feature = \"index-gc\")]"
-
-assert_immediate_cfg_before "src/backend/environment/core.rs" "impl RootProvider for GenericEnvironmentShared<MettaValue> {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::RootProvider for ParallelDispatchRootProvider {" "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::RootProvider for ParallelCollapseRootProvider {" "#[cfg(not(feature = \"index-gc\"))]"
+# (F4 R5) The dynamic RootProvider registry was deleted. All former provider
+# pins — the mod.rs re-export; the gc_allocator trait / ROOT_REGISTRY static /
+# register_root_provider / collect_all_roots / collect_all_roots_readonly /
+# try_register_env_roots slab arm; the six bytecode/env/dispatch provider impls
+# and their slab ensure_fns — are gone. Roots are now read STRUCTURALLY via
+# collect_machine_roots ∪ collect_safepoint_roots. RootDiscoveryErasure.v
+# (pinned above) is the formal witness that no legacy discovery effect can
+# re-enter the index regime, so no source-coupling pin replaces them.
 
 # Collapse-bind binding-capture frames carry the variable ATOM handles
 # (MettaValue), NOT laundered &'static str, and ARE a first-class structural root
@@ -2558,7 +2482,7 @@ assert_zero "src/backend/bytecode/compiler/iterative.rs" ".take("
 assert_zero "src/backend/bytecode/compiler/iterative.rs" ".set("
 assert_after_before "src/backend/bytecode/compiler/iterative.rs" "pub(crate) fn collect_compiler_atom_roots" "ATOM_EQUALS.get()" "roots.push(*v);"
 assert_after_before "src/backend/bytecode/compiler/iterative.rs" "if let Some(v) = ATOM_PRINTLN.get()" "roots.push(*v);" "if let Some(v) = ATOM_IF.get()"
-assert_after_before "src/backend/bytecode/compiler/iterative.rs" "if let Some(v) = ATOM_IF.get()" "roots.push(*v);" "static COMPILER_ATOM_ROOT_PROVIDER"
+assert_after_before "src/backend/bytecode/compiler/iterative.rs" "if let Some(v) = ATOM_IF.get()" "roots.push(*v);" "fn ensure_compiler_atom_roots_registered"
 assert_after_before "src/backend/eval/cesk/roots.rs" "pub fn collect_global_anchors" "collect_subgoal_roots(out);" "collect_thunk_roots(out);"
 assert_after_before "src/backend/eval/cesk/tabling.rs" "fn shade_values" "downcast_ref::<MettaValue>()" "satb_shade_evicted_roots(roots);"
 assert_after_before "src/backend/eval/cesk/tabling.rs" "fn insert_entry_with_satb" "with_satb_deletion_barrier" "self.entries.insert(expr_hash, entry);"

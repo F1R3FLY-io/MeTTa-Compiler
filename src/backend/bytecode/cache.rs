@@ -18,18 +18,12 @@ use std::num::NonZeroUsize;
 #[cfg(feature = "track-stats")]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
-// `OnceLock` only backs the slab-build's RootProvider registration cache (A5.3);
-// the index build registers no providers, so it would be unused there.
-#[cfg(not(feature = "index-gc"))]
-use std::sync::OnceLock;
 use xxhash_rust::xxh3::Xxh3;
 
 use lru::LruCache;
 
 use crate::backend::bytecode::chunk::{BytecodeChunk, GenericBytecodeChunk};
 use crate::backend::hash_utils::IdentityU64BuildHasher;
-#[cfg(not(feature = "index-gc"))]
-use crate::backend::models::{register_root_provider, RootProvider};
 use crate::backend::models::{MettaValue, MettaValueTrait, ValueView};
 
 /// Statistics for bytecode cache monitoring (lock-free atomics).
@@ -272,21 +266,6 @@ pub fn cache_sizes() -> (usize, usize) {
 // GC Root Provider for BYTECODE_CACHE
 // =============================================================================
 
-/// GC root provider that exposes all MettaValue constants stored in cached
-/// BytecodeChunks to the garbage collector's root set.
-///
-/// Without this, constants in cached bytecode chunks are invisible to GC and
-/// may be freed while still reachable from the cache, causing use-after-free.
-#[cfg(not(feature = "index-gc"))]
-struct BytecodeCacheRoots;
-
-#[cfg(not(feature = "index-gc"))]
-impl RootProvider for BytecodeCacheRoots {
-    fn collect_roots(&self, roots: &mut Vec<MettaValue>) {
-        collect_bytecode_cache_roots(roots);
-    }
-}
-
 /// CESK A4.2a structural reader: collect the GC roots held by the global
 /// bytecode cache — the `MettaValue` constants of every cached `BytecodeChunk`
 /// and its sub-chunks. This inherent collector is what the `RootProvider` impl
@@ -338,31 +317,8 @@ pub fn collect_chunk_constants(chunk: &BytecodeChunk, roots: &mut Vec<MettaValue
     collect_generic_chunk_constants(chunk, roots);
 }
 
-/// Keeps the Arc<dyn RootProvider> alive for the lifetime of the process so
-/// the Weak reference in ROOT_REGISTRY remains valid.
-#[cfg(not(feature = "index-gc"))]
-static BYTECODE_CACHE_ROOT_PROVIDER: OnceLock<Arc<dyn RootProvider>> = OnceLock::new();
-
-/// Ensure the bytecode cache is registered as a GC root provider.
-///
-/// Called lazily on first cache mutation (cache_bytecode). Idempotent —
-/// OnceLock guarantees single initialization.
-///
-/// CESK A5.3: the index-gc build registers ZERO providers (`collect_global_anchors`
-/// reads `collect_bytecode_cache_roots` by name), so this is a no-op there. The
-/// signature survives because `cache_bytecode` calls it unconditionally.
-#[cfg(not(feature = "index-gc"))]
-pub fn ensure_bytecode_cache_roots_registered() {
-    BYTECODE_CACHE_ROOT_PROVIDER.get_or_init(|| {
-        let provider = Arc::new(BytecodeCacheRoots) as Arc<dyn RootProvider>;
-        register_root_provider(&provider);
-        provider
-    });
-}
-
-/// CESK A5.3: index-gc no-op — the registry is empty; roots are read structurally
-/// by `collect_global_anchors` via `collect_bytecode_cache_roots`.
-#[cfg(feature = "index-gc")]
+/// Ensure the bytecode cache's roots are discoverable. The index collector reads
+/// them structurally via `collect_bytecode_cache_roots`, so this is a no-op.
 #[inline]
 pub fn ensure_bytecode_cache_roots_registered() {}
 

@@ -1646,7 +1646,6 @@ assert_zero "src/backend/models/gc_allocator.rs" "pub(crate) fn rendezvous_enabl
 assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_PARALLEL"
 assert_zero "src/backend/models/gc_allocator.rs" "METTATRON_INDEX_GC_DEDICATED"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub(crate) fn dedicated_gc_enabled() -> bool" "gc_mode_is_index()" "}"
-assert_immediate_cfg_before "src/backend/models/mod.rs" "pub mod gc_thread;" "#[cfg(not(feature = \"index-gc\"))]"
 assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_DEDICATED"
 assert_zero "scripts/e1_flip_v4_asan.sh" "METTATRON_INDEX_GC_DEDICATED"
 assert_zero "scripts/e1_flip_discriminator.sh" "METTATRON_INDEX_GC_DEDICATED"

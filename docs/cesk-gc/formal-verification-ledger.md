@@ -149,7 +149,8 @@ capped debug Robot replay after the conditional canary produced the expected fri
 - `formal/rocq/gc/KSpineCurrentWork.v`: proves the typed K-spine current-work obligation. If a suspended trampoline
   activation contributes the in-flight current work item, pending work stack, and continuation stack to its K-spine
   root reader, ordinary mark/sweep cannot free any live suspended control component. The companion TLA+ discriminator
-  (`KSpineCurrentWork.tla`) rejects the historical shape where the current-work component is omitted.
+  (`KSpineCurrentWork.tla`) rejects any omitted control-root component: current work, pending work stack, or
+  continuation stack.
 - `formal/rocq/gc/RendezvousWitness.v` and `formal/lean/gc/RendezvousWitness.lean`: if every occupied witness slot
   is published, publication buffers that slot's structural roots, and the driver drains the buffer, every occupied
   participant root is in the driver root set and cannot be freed after mark/sweep.
@@ -1039,8 +1040,8 @@ facts the proofs rely on:
   saved owner snapshot captured before node-slot reuse, and segment reset drops any pending snapshot before side
   indices can be reused. `SideFreeQuiescence.v` and `SideReclaimSnapshot.tla` cover the positive and negative cases.
 - The K-spine current-work gap is modeled separately from the pending work-stack: a suspended trampoline activation
-  roots its in-flight work item before a nested evaluator can collect. `KSpineCurrentWork.v` and its TLC discriminator
-  fail if `current_work` is omitted.
+  roots its in-flight work item before a nested evaluator can collect. `KSpineCurrentWork.v` and its TLC discriminators
+  fail if `current_work`, the pending `work_stack`, or the continuation stack is omitted.
 - VM native locals live across nested CESK evaluation are now a formal K-spine leaf obligation. `VmNestedLocals.v`
   proves that pre-eval locals, dispatch RHS locals, rule-match vectors, saved bindings, combo vectors, and accumulated
   outcomes survive collection when published through `VmLeaf::ValueVec`; `VmNestedLocals.tla` fails if either the
@@ -1248,15 +1249,17 @@ facts the proofs rely on:
   `SchedulerFanoutAdmissionCompleteness.v`,
   `CollapseFanoutAdmissionCompleteness.v`, `SchedulerFanoutProgress.v`, and
   `SchedulerGcBoundary.v`, plus `DedicatedHandoff.v`,
-  `GcDriverChannelProtocol.v`, `E1DefaultConcurrentFlip.v` and
+  `GcDriverChannelProtocol.v`, `KSpineCurrentWork.v`,
+  `E1DefaultConcurrentFlip.v` and
   `E1SatbStwDriverProgress.v`: classification-table
   range disjointness, wavefront edge coverage, direct-fanout independent-wavefront
   refinement, admitted branch/collapse slot representation, FANOUT participant
   accounting, parked-worker resume, worker completion-drop accounting, the
   GC-facing scheduler root/admission boundary, and the E1 dedicated default-flip
   request/backstop boundary plus the SATB-success-or-fresh-STW driver release
-  boundary, dedicated root-vector ownership handoff, and driver request/response
-  channel liveness are part of the same end-to-end proof boundary.
+  boundary, dedicated root-vector ownership handoff, driver request/response
+  channel liveness, and K-spine structural control roots are part of the same
+  end-to-end proof boundary.
   The Rocq envelope now also imports `CESKCollectorSafety.v` and proves
   `end_to_end_safe_feeds_cesk_index_gc_safety`: from `EndToEndSafe` it extracts
   the `gc_window_safe` scheduler-root premises, feeds them into
@@ -1295,7 +1298,11 @@ facts the proofs rely on:
   `DriverNoOrphanReplySend`, and `DriverFireAndForgetDoesNotWait` for missing
   request sender, missing reply attempt, orphan reply, and fire-and-forget wait
   shapes, matching the channel-liveness theorem composed by
-  `GcDriverChannelProtocol`. The missing dependency-edge and effect-conflict-edge
+  `GcDriverChannelProtocol`. The K-spine E2E discriminators fail specifically
+  on `KSpineCurrentWorkRooted`, `KSpineWorkStackRooted`, and `KSpineKontRooted`
+  for omitted current work, pending work stack, and continuation roots, matching
+  the typed K-spine theorem composed by `KSpineCurrentWork`. The missing
+  dependency-edge and effect-conflict-edge
   E2E discriminators now fail specifically on `SchedulerWavefrontEdgesComplete`,
   and the partial
   direct-dispatch discriminator fails on

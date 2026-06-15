@@ -320,7 +320,11 @@ The formal lane covers the main scheduler obligations:
   driver receives require the spawn-created request sender/owned receiver,
   synchronous `Collect` waits require a carried response sender, caller-owned
   response receiver, and driver reply attempt, reply sends cannot be orphaned,
-  and fire-and-forget requests cannot create response waits.
+  and fire-and-forget requests cannot create response waits. The envelope now
+  also imports `KSpineCurrentWork.v`: a suspended trampoline activation's
+  structural control roots must include the in-flight `current_work` item, the
+  pending `work_stack`, and the continuation stack before a nested evaluator can
+  collect.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -609,6 +613,9 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_driver_channel_missing_reply.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_driver_channel_orphan_reply.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_driver_channel_fire_and_forget_wait.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_k_spine_missing_current_work.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_k_spine_missing_work_stack.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_k_spine_missing_kont.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg`
@@ -648,7 +655,8 @@ The positive dependency-bearing and independent configs preserve
 `SchedulerDirectFanoutRefinesWavefront`, `ActiveFanoutAdmissionComplete`,
 `CollapseFanoutAdmissionComplete`, `E1DefaultFlipSafe`, and
 `E1SatbStwDriverSafe`, `DedicatedHandoffSafe`, and
-`DriverChannelProtocolSafe` inside the composed model.
+`DriverChannelProtocolSafe`, and `KSpineCurrentWorkSafe` inside the composed
+model.
 The no-shift classification config violates
 `SchedulerClassificationRangesDisjoint`. The E1 legacy-default and
 trigger-backstop configs violate `E1LegacyProducersSuppressed` and
@@ -663,7 +671,10 @@ omits the reply attempt. The driver-channel configs violate
 `DriverRequestReceiveHasProducer`, `DriverResponseWaitHasProducer`,
 `DriverNoOrphanReplySend`, and `DriverFireAndForgetDoesNotWait` for the
 corresponding missing request sender, missing reply, orphan reply, and
-fire-and-forget wait shapes. The missing dependency and missing effect-conflict
+fire-and-forget wait shapes. The K-spine configs violate
+`KSpineCurrentWorkRooted`, `KSpineWorkStackRooted`, and `KSpineKontRooted` when
+the composed structural-root reader omits the current work item, pending work
+stack, or continuation stack. The missing dependency and missing effect-conflict
 edge configs violate
 `SchedulerWavefrontEdgesComplete`. The partial direct-dispatch config violates
 `SchedulerDirectFanoutRefinesWavefront`. The degree-as-spawn-cap and

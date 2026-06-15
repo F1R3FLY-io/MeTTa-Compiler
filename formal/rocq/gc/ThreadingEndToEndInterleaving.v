@@ -19,6 +19,7 @@ Require Import DedicatedHandoff.
 Require Import E1DefaultConcurrentFlip.
 Require Import E1SatbStwDriverProgress.
 Require Import GcDriverChannelProtocol.
+Require Import KSpineCurrentWork.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerClassificationLookup.
 Require Import SchedulerDirectFanoutWavefrontRefinement.
@@ -69,6 +70,8 @@ Module Dedicated :=
   MeTTaTron_GC_DedicatedHandoff.
 Module DriverChannel :=
   MeTTaTron_GC_GcDriverChannelProtocol.
+Module KSpine :=
+  MeTTaTron_GC_KSpineCurrentWork.
 Module E1Default :=
   MeTTaTron_GC_E1DefaultConcurrentFlip.
 Module E1Driver :=
@@ -86,6 +89,11 @@ Section EndToEndModel.
   | BoundaryDispatchFanout : BoundaryAddr
   | BoundaryBatchHandoff : BoundaryAddr
   | BoundaryNewAdmission : BoundaryAddr.
+
+  Inductive KSpineAddr : Type :=
+  | KSpineCurrent : KSpineAddr
+  | KSpineWorkStack : KSpineAddr
+  | KSpineKont : KSpineAddr.
 
   Record Workload : Type := {
     has_dependency : bool;
@@ -1151,6 +1159,233 @@ Section EndToEndModel.
       fire_and_forget_waits_driver_channel in Hno_wait.
     simpl in Hno_wait.
     exact (Hno_wait I I).
+  Qed.
+
+  Record KSpineCurrentWorkConfig : Type := {
+    k_spine_current_work_live : bool;
+    k_spine_work_stack_live : bool;
+    k_spine_kont_live : bool;
+    k_spine_current_work_rooted : bool;
+    k_spine_work_stack_rooted : bool;
+    k_spine_kont_rooted : bool
+  }.
+
+  Definition k_spine_component
+      (live : bool)
+      (target addr : KSpineAddr)
+      : Prop :=
+    live = true /\ addr = target.
+
+  Definition k_spine_current_work_component
+      (c : KSpineCurrentWorkConfig)
+      : KSpineAddr -> Prop :=
+    k_spine_component (k_spine_current_work_live c) KSpineCurrent.
+
+  Definition k_spine_work_stack_component
+      (c : KSpineCurrentWorkConfig)
+      : KSpineAddr -> Prop :=
+    k_spine_component (k_spine_work_stack_live c) KSpineWorkStack.
+
+  Definition k_spine_kont_component
+      (c : KSpineCurrentWorkConfig)
+      : KSpineAddr -> Prop :=
+    k_spine_component (k_spine_kont_live c) KSpineKont.
+
+  Definition k_spine_control_live
+      (c : KSpineCurrentWorkConfig)
+      : KSpineAddr -> Prop :=
+    @KSpine.SuspendedControl KSpineAddr
+      (k_spine_current_work_component c)
+      (k_spine_work_stack_component c)
+      (k_spine_kont_component c).
+
+  Definition k_spine_rooted_control
+      (c : KSpineCurrentWorkConfig)
+      (addr : KSpineAddr)
+      : Prop :=
+    k_spine_component (k_spine_current_work_rooted c) KSpineCurrent addr \/
+    k_spine_component (k_spine_work_stack_rooted c) KSpineWorkStack addr \/
+    k_spine_component (k_spine_kont_rooted c) KSpineKont addr.
+
+  Definition k_spine_freed
+      (c : KSpineCurrentWorkConfig)
+      (addr : KSpineAddr)
+      : Prop :=
+    k_spine_control_live c addr /\ ~ k_spine_rooted_control c addr.
+
+  Definition k_spine_current_work_rooted_complete
+      (c : KSpineCurrentWorkConfig)
+      : Prop :=
+    forall addr,
+      k_spine_current_work_component c addr ->
+      k_spine_rooted_control c addr.
+
+  Definition k_spine_work_stack_rooted_complete
+      (c : KSpineCurrentWorkConfig)
+      : Prop :=
+    forall addr,
+      k_spine_work_stack_component c addr ->
+      k_spine_rooted_control c addr.
+
+  Definition k_spine_kont_rooted_complete
+      (c : KSpineCurrentWorkConfig)
+      : Prop :=
+    forall addr,
+      k_spine_kont_component c addr ->
+      k_spine_rooted_control c addr.
+
+  Definition k_spine_no_live_control_freed
+      (c : KSpineCurrentWorkConfig)
+      : Prop :=
+    forall addr,
+      k_spine_control_live c addr ->
+      ~ k_spine_freed c addr.
+
+  Definition k_spine_current_work_safe
+      (c : KSpineCurrentWorkConfig)
+      : Prop :=
+    k_spine_current_work_rooted_complete c /\
+    k_spine_work_stack_rooted_complete c /\
+    k_spine_kont_rooted_complete c /\
+    k_spine_no_live_control_freed c.
+
+  Definition complete_k_spine_current_work : KSpineCurrentWorkConfig :=
+    {| k_spine_current_work_live := true;
+       k_spine_work_stack_live := true;
+       k_spine_kont_live := true;
+       k_spine_current_work_rooted := true;
+       k_spine_work_stack_rooted := true;
+       k_spine_kont_rooted := true |}.
+
+  Definition missing_current_work_k_spine : KSpineCurrentWorkConfig :=
+    {| k_spine_current_work_live := true;
+       k_spine_work_stack_live := true;
+       k_spine_kont_live := true;
+       k_spine_current_work_rooted := false;
+       k_spine_work_stack_rooted := true;
+       k_spine_kont_rooted := true |}.
+
+  Definition missing_work_stack_k_spine : KSpineCurrentWorkConfig :=
+    {| k_spine_current_work_live := true;
+       k_spine_work_stack_live := true;
+       k_spine_kont_live := true;
+       k_spine_current_work_rooted := true;
+       k_spine_work_stack_rooted := false;
+       k_spine_kont_rooted := true |}.
+
+  Definition missing_kont_k_spine : KSpineCurrentWorkConfig :=
+    {| k_spine_current_work_live := true;
+       k_spine_work_stack_live := true;
+       k_spine_kont_live := true;
+       k_spine_current_work_rooted := true;
+       k_spine_work_stack_rooted := true;
+       k_spine_kont_rooted := false |}.
+
+  Theorem k_spine_root_contract_survives_collection :
+    forall c,
+      k_spine_current_work_rooted_complete c ->
+      k_spine_work_stack_rooted_complete c ->
+      k_spine_kont_rooted_complete c ->
+      k_spine_no_live_control_freed c.
+  Proof.
+    intros c Hcurrent Hwork Hkont addr Hlive.
+    eapply (@KSpine.suspended_control_survives_collection
+      KSpineAddr
+      (k_spine_current_work_component c)
+      (k_spine_work_stack_component c)
+      (k_spine_kont_component c)
+      (k_spine_rooted_control c)
+      (k_spine_rooted_control c)
+      (k_spine_freed c)).
+    - exact Hcurrent.
+    - exact Hwork.
+    - exact Hkont.
+    - intros rooted_addr Hrooted. exact Hrooted.
+    - intros freed_addr Hfreed Hrooted.
+      exact (proj2 Hfreed Hrooted).
+    - exact Hlive.
+  Qed.
+
+  Theorem complete_k_spine_current_work_safe :
+    k_spine_current_work_safe complete_k_spine_current_work.
+  Proof.
+    unfold k_spine_current_work_safe.
+    repeat split.
+    - intros addr Hcomponent.
+      left. exact Hcomponent.
+    - intros addr Hcomponent.
+      right. left. exact Hcomponent.
+    - intros addr Hcomponent.
+      right. right. exact Hcomponent.
+    - apply k_spine_root_contract_survives_collection;
+        [ intros addr Hcomponent; left; exact Hcomponent
+        | intros addr Hcomponent; right; left; exact Hcomponent
+        | intros addr Hcomponent; right; right; exact Hcomponent ].
+  Qed.
+
+  Theorem k_spine_current_work_safe_exports_no_live_free :
+    forall c,
+      k_spine_current_work_safe c ->
+      k_spine_no_live_control_freed c.
+  Proof.
+    intros c [_ [_ [_ Hnofree]]].
+    exact Hnofree.
+  Qed.
+
+  Theorem missing_current_work_exposes_k_spine_gap :
+    ~ k_spine_current_work_safe missing_current_work_k_spine.
+  Proof.
+    intros [Hcurrent _].
+    specialize (Hcurrent KSpineCurrent).
+    assert (Hlive :
+      k_spine_current_work_component
+        missing_current_work_k_spine KSpineCurrent).
+    { split; reflexivity. }
+    specialize (Hcurrent Hlive).
+    unfold k_spine_rooted_control, k_spine_component,
+      missing_current_work_k_spine in Hcurrent.
+    simpl in Hcurrent.
+    destruct Hcurrent as [[Hfalse _] | [[_ Hneq] | [_ Hneq]]].
+    - discriminate Hfalse.
+    - discriminate Hneq.
+    - discriminate Hneq.
+  Qed.
+
+  Theorem missing_work_stack_exposes_k_spine_gap :
+    ~ k_spine_current_work_safe missing_work_stack_k_spine.
+  Proof.
+    intros [_ [Hwork _]].
+    specialize (Hwork KSpineWorkStack).
+    assert (Hlive :
+      k_spine_work_stack_component
+        missing_work_stack_k_spine KSpineWorkStack).
+    { split; reflexivity. }
+    specialize (Hwork Hlive).
+    unfold k_spine_rooted_control, k_spine_component,
+      missing_work_stack_k_spine in Hwork.
+    simpl in Hwork.
+    destruct Hwork as [[_ Hneq] | [[Hfalse _] | [_ Hneq]]].
+    - discriminate Hneq.
+    - discriminate Hfalse.
+    - discriminate Hneq.
+  Qed.
+
+  Theorem missing_kont_exposes_k_spine_gap :
+    ~ k_spine_current_work_safe missing_kont_k_spine.
+  Proof.
+    intros [_ [_ [Hkont _]]].
+    specialize (Hkont KSpineKont).
+    assert (Hlive :
+      k_spine_kont_component missing_kont_k_spine KSpineKont).
+    { split; reflexivity. }
+    specialize (Hkont Hlive).
+    unfold k_spine_rooted_control, k_spine_component,
+      missing_kont_k_spine in Hkont.
+    simpl in Hkont.
+    destruct Hkont as [[_ Hneq] | [[_ Hneq] | [Hfalse _]]].
+    - discriminate Hneq.
+    - discriminate Hneq.
+    - discriminate Hfalse.
   Qed.
 
   Definition WaveAssignment : Type := Task -> nat.
@@ -3274,6 +3509,7 @@ Section EndToEndModel.
       (e1_satb_stw_driver : E1SatbStwDriverConfig)
       (dedicated_handoff : DedicatedHandoffConfig)
       (driver_channel : DriverChannelConfig)
+      (k_spine_current_work : KSpineCurrentWorkConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe
@@ -3296,7 +3532,8 @@ Section EndToEndModel.
     e1_default_flip_safe e1_default_flip /\
     e1_satb_stw_driver_safe e1_satb_stw_driver /\
     dedicated_handoff_safe dedicated_handoff /\
-    driver_channel_protocol_safe driver_channel.
+    driver_channel_protocol_safe driver_channel /\
+    k_spine_current_work_safe k_spine_current_work.
 
   Theorem end_to_end_safe_implies_gc_window_safe :
     forall w wave
@@ -3306,7 +3543,7 @@ Section EndToEndModel.
       late_worker_live
       spawn_latch cron_state cron_startup work_pool active_fanout
       fanout_progress classification_lookup e1_default_flip
-      e1_satb_stw_driver dedicated_handoff driver_channel,
+      e1_satb_stw_driver dedicated_handoff driver_channel k_spine_current_work,
       end_to_end_safe
         w wave
         active_worker_live worker_rooted
@@ -3315,7 +3552,8 @@ Section EndToEndModel.
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
-        e1_satb_stw_driver dedicated_handoff driver_channel ->
+        e1_satb_stw_driver dedicated_handoff driver_channel
+        k_spine_current_work ->
       gc_window_safe
         active_worker_live worker_rooted
         dispatch_live dispatch_rooted
@@ -3326,7 +3564,7 @@ Section EndToEndModel.
       batch_live batch_rooted late_worker_live spawn_latch cron_state
       cron_startup work_pool active_fanout fanout_progress
       classification_lookup e1_default_flip e1_satb_stw_driver
-      dedicated_handoff driver_channel Hend.
+      dedicated_handoff driver_channel k_spine_current_work Hend.
     unfold end_to_end_safe in Hend.
     exact (proj1 (proj2 Hend)).
   Qed.
@@ -3339,7 +3577,7 @@ Section EndToEndModel.
       late_worker_live
       spawn_latch cron_state cron_startup work_pool active_fanout
       fanout_progress classification_lookup e1_default_flip
-      e1_satb_stw_driver dedicated_handoff driver_channel
+      e1_satb_stw_driver dedicated_handoff driver_channel k_spine_current_work
       (StructuralRoot WorkerRoot SafepointRoot EnvAnchor DispatchAnchor
        InitialRoot ShadedDeletion AllocateBlack PublishedAlloc SegmentWritten
        SegmentPublished SlotWritten SlotPublished AddrReturned ReadObserved
@@ -3355,7 +3593,8 @@ Section EndToEndModel.
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
-        e1_satb_stw_driver dedicated_handoff driver_channel ->
+        e1_satb_stw_driver dedicated_handoff driver_channel
+        k_spine_current_work ->
       (forall a,
           FutureTouch a ->
           @Collector.Reach BoundaryAddr
@@ -3426,7 +3665,7 @@ Section EndToEndModel.
       dispatch_rooted batch_live batch_rooted late_worker_live spawn_latch
       cron_state cron_startup work_pool active_fanout fanout_progress
       classification_lookup e1_default_flip e1_satb_stw_driver
-      dedicated_handoff driver_channel StructuralRoot WorkerRoot
+      dedicated_handoff driver_channel k_spine_current_work StructuralRoot WorkerRoot
       SafepointRoot EnvAnchor DispatchAnchor InitialRoot ShadedDeletion
       AllocateBlack PublishedAlloc SegmentWritten SegmentPublished SlotWritten
       SlotPublished AddrReturned ReadObserved ConcurrentReturned ReuseReturned
@@ -3444,7 +3683,8 @@ Section EndToEndModel.
         late_worker_live
         spawn_latch cron_state cron_startup work_pool active_fanout
         fanout_progress classification_lookup e1_default_flip
-        e1_satb_stw_driver dedicated_handoff driver_channel Hend)
+        e1_satb_stw_driver dedicated_handoff driver_channel
+        k_spine_current_work Hend)
       as Hgc_window.
     destruct
       (gc_window_safe_exports_boundary_driver_roots
@@ -3482,7 +3722,8 @@ Section EndToEndModel.
         complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -3514,7 +3755,9 @@ Section EndToEndModel.
                                  * apply complete_e1_satb_stw_driver_safe.
                                  * split.
                                    -- apply complete_dedicated_handoff_safe.
-                                   -- apply complete_driver_channel_protocol_safe. }
+                                   -- split.
+                                      ++ apply complete_driver_channel_protocol_safe.
+                                      ++ apply complete_k_spine_current_work_safe. }
   Qed.
 
   Theorem no_shift_classification_lookup_exposes_end_to_end_gap :
@@ -3542,7 +3785,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3576,7 +3820,8 @@ Section EndToEndModel.
           legacy_default_ungated_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3609,7 +3854,8 @@ Section EndToEndModel.
           trigger_failure_missing_backstop_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3642,7 +3888,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           missing_e1_satb_success_release_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3675,7 +3922,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           missing_e1_satb_abort_stw_backstop_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3708,7 +3956,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           inline_after_consumed_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3741,7 +3990,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           missing_reply_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3774,7 +4024,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          missing_request_sender_driver_channel.
+          missing_request_sender_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3807,7 +4058,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          missing_reply_driver_channel.
+          missing_reply_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3840,7 +4092,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          orphan_reply_driver_channel.
+          orphan_reply_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
@@ -3873,11 +4126,114 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          fire_and_forget_waits_driver_channel.
+          fire_and_forget_waits_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
     apply fire_and_forget_wait_exposes_driver_channel_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_current_work_k_spine_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          complete_driver_channel
+          missing_current_work_k_spine.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_current_work_exposes_k_spine_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_work_stack_k_spine_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          complete_driver_channel
+          missing_work_stack_k_spine.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_work_stack_exposes_k_spine_gap.
+    tauto.
+  Qed.
+
+  Theorem missing_kont_k_spine_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          complete_e1_default_flip
+          complete_e1_satb_stw_driver
+          complete_dedicated_handoff
+          complete_driver_channel
+          missing_kont_k_spine.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    apply missing_kont_exposes_k_spine_gap.
     tauto.
   Qed.
 
@@ -3912,7 +4268,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
@@ -3957,7 +4314,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_startup work_pool
@@ -4003,7 +4361,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4039,7 +4398,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -4075,7 +4435,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -4117,7 +4478,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -4159,7 +4521,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -4201,7 +4564,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -4245,7 +4609,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4278,7 +4643,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -4310,7 +4676,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -4342,7 +4709,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -4374,7 +4742,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -4418,7 +4787,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4465,7 +4835,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4500,7 +4871,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4533,7 +4905,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4566,7 +4939,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4599,7 +4973,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4632,7 +5007,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4665,7 +5041,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4698,7 +5075,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4731,7 +5109,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -4764,7 +5143,8 @@ Section EndToEndModel.
           complete_e1_default_flip
           complete_e1_satb_stw_driver
           complete_dedicated_handoff
-          complete_driver_channel.
+          complete_driver_channel
+          complete_k_spine_current_work.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool

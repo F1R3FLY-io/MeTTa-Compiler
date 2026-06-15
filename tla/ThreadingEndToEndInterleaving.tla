@@ -58,6 +58,9 @@ CONSTANTS
     DriverReplyAttempted,
     DriverCallerWaiting,
     DriverFireAndForgetSent,
+    KSpineIncludeCurrentWork,
+    KSpineIncludeWorkStack,
+    KSpineIncludeKont,
     IncludeWorkerRoot,
     IncludeDispatchRoot,
     IncludeBatchRoot,
@@ -282,6 +285,9 @@ BooleanConstantsOK ==
     /\ DriverReplyAttempted \in BOOLEAN
     /\ DriverCallerWaiting \in BOOLEAN
     /\ DriverFireAndForgetSent \in BOOLEAN
+    /\ KSpineIncludeCurrentWork \in BOOLEAN
+    /\ KSpineIncludeWorkStack \in BOOLEAN
+    /\ KSpineIncludeKont \in BOOLEAN
     /\ IncludeWorkerRoot \in BOOLEAN
     /\ IncludeDispatchRoot \in BOOLEAN
     /\ IncludeBatchRoot \in BOOLEAN
@@ -532,6 +538,26 @@ DriverChannelProtocolSafe ==
     /\ DriverResponseWaitHasProducer
     /\ DriverNoOrphanReplySend
     /\ DriverFireAndForgetDoesNotWait
+
+KSpineCurrentWorkRooted ==
+    KSpineIncludeCurrentWork
+
+KSpineWorkStackRooted ==
+    KSpineIncludeWorkStack
+
+KSpineKontRooted ==
+    KSpineIncludeKont
+
+KSpineNoLiveControlFreed ==
+    /\ KSpineCurrentWorkRooted
+    /\ KSpineWorkStackRooted
+    /\ KSpineKontRooted
+
+KSpineCurrentWorkSafe ==
+    /\ KSpineCurrentWorkRooted
+    /\ KSpineWorkStackRooted
+    /\ KSpineKontRooted
+    /\ KSpineNoLiveControlFreed
 
 ConsumerWave ==
     IF EdgeComplete /\ (HasDependency \/ HasEffectConflict) THEN 1 ELSE 0
@@ -1382,6 +1408,7 @@ EndToEndSafe ==
     /\ E1SatbStwDriverSafe
     /\ DedicatedHandoffSafe
     /\ DriverChannelProtocolSafe
+    /\ KSpineCurrentWorkSafe
     /\ SchedulerWavefrontEdgesComplete
     /\ SchedulerDirectFanoutRefinesWavefront
     /\ ActiveFanoutGateComplete

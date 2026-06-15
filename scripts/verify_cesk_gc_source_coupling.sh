@@ -873,10 +873,12 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "DedicatedHandoff" >/de
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "E1DefaultConcurrentFlip" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "E1SatbStwDriverProgress" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "GcDriverChannelProtocol" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "KSpineCurrentWork" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CESKCollectorSafety" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Collector :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Dedicated :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module DriverChannel :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module KSpine :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module E1Driver :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "gc_window_safe_exports_boundary_driver_roots" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_implies_gc_window_safe" >/dev/null
@@ -914,6 +916,12 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_request_sender
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_reply_driver_channel_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "orphan_reply_driver_channel_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "fire_and_forget_wait_driver_channel_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "k_spine_root_contract_survives_collection" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "KSpine.suspended_control_survives_collection" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_k_spine_current_work_safe" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_current_work_k_spine_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_work_stack_k_spine_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_kont_k_spine_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dependency_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_effect_conflict_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_implies_admission_complete" >/dev/null
@@ -955,7 +963,8 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "45"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "48"
+assert_count "scripts/verify_cesk_gc_formal.sh" "KSpineCurrentWork.tla" "4"
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_classification_no_shift" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationRangesDisjoint is equal to FALSE" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_e1_legacy_default_ungated" >/dev/null
@@ -978,6 +987,12 @@ line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_driver_channel_
 line_no "scripts/verify_cesk_gc_formal.sh" "DriverNoOrphanReplySend is equal to FALSE" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_driver_channel_fire_and_forget_wait" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "DriverFireAndForgetDoesNotWait is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_k_spine_missing_current_work" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "KSpineCurrentWorkRooted is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_k_spine_missing_work_stack" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "KSpineWorkStackRooted is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_k_spine_missing_kont" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "KSpineKontRooted is equal to FALSE" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutGateComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "SchedulerClassificationRangesDisjoint" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "E1DefaultFlipSafe" >/dev/null
@@ -994,6 +1009,10 @@ line_no "tla/ThreadingEndToEndInterleaving.tla" "DriverRequestReceiveHasProducer
 line_no "tla/ThreadingEndToEndInterleaving.tla" "DriverResponseWaitHasProducer" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "DriverNoOrphanReplySend" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "DriverFireAndForgetDoesNotWait" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "KSpineCurrentWorkSafe" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "KSpineCurrentWorkRooted" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "KSpineWorkStackRooted" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "KSpineKontRooted" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "CollapseFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerDegreeMatches" >/dev/null

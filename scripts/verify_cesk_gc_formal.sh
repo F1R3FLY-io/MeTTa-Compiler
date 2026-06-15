@@ -408,6 +408,12 @@ run_tlc "threading_end_to_end_driver_channel_orphan_reply" "ThreadingEndToEndInt
   fail "The invariant of DriverNoOrphanReplySend is equal to FALSE"
 run_tlc "threading_end_to_end_driver_channel_fire_and_forget_wait" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_driver_channel_fire_and_forget_wait.cfg" \
   fail "The invariant of DriverFireAndForgetDoesNotWait is equal to FALSE"
+run_tlc "threading_end_to_end_k_spine_missing_current_work" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_k_spine_missing_current_work.cfg" \
+  fail "The invariant of KSpineCurrentWorkRooted is equal to FALSE"
+run_tlc "threading_end_to_end_k_spine_missing_work_stack" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_k_spine_missing_work_stack.cfg" \
+  fail "The invariant of KSpineWorkStackRooted is equal to FALSE"
+run_tlc "threading_end_to_end_k_spine_missing_kont" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_k_spine_missing_kont.cfg" \
+  fail "The invariant of KSpineKontRooted is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_purity" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg" \
   fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_budget" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg" \
@@ -570,6 +576,10 @@ run_tlc "midloop_root_union_missing_driver_c" "MC_MidloopRootUnion.tla" "MC_Midl
 run_tlc "k_spine_current_work_all" "MC_KSpineCurrentWork.tla" "MC_KSpineCurrentWork_all.cfg" \
   pass ""
 run_tlc "k_spine_current_work_missing_current" "MC_KSpineCurrentWork.tla" "MC_KSpineCurrentWork_missing_current.cfg" \
+  fail "Invariant NoLiveControlFreed is violated"
+run_tlc "k_spine_current_work_missing_work_stack" "MC_KSpineCurrentWork.tla" "MC_KSpineCurrentWork_missing_work_stack.cfg" \
+  fail "Invariant NoLiveControlFreed is violated"
+run_tlc "k_spine_current_work_missing_kont" "MC_KSpineCurrentWork.tla" "MC_KSpineCurrentWork_missing_kont.cfg" \
   fail "Invariant NoLiveControlFreed is violated"
 run_tlc "vm_nested_locals_all" "MC_VmNestedLocals.tla" "MC_VmNestedLocals_all.cfg" \
   pass ""

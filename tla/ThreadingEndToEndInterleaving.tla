@@ -18,6 +18,9 @@ CONSTANTS
     CloseAdmission,
     WorkerSpawnBeforeLatch,
     WorkerMissingLatch,
+    FanoutParticipantContributes,
+    FanoutResumeParked,
+    FanoutCompletionGuard,
     ClaimCronBeforeDispatch,
     PublishCronStopBeforeIdle,
     ReturnCronHandleSender,
@@ -108,15 +111,34 @@ VARIABLES
     workPoolLifecycleActive,
     workPoolLifecycleParked,
     workPoolLifecyclePhase,
-    workPoolLifecycleScenario
+    workPoolLifecycleScenario,
+    fanoutProgressPhase,
+    fanoutWorkerActive,
+    fanoutWorkerContributed,
+    fanoutWorkerParked,
+    fanoutWorkerResumed,
+    fanoutWorkerSpawned,
+    fanoutCompletionDropped
 
 baseNoSpawnVars ==
     <<phase, wave, running, completed, consumerBeforeProducer,
       conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
       valueFreed, inFlight, cronWorkerRunning, cronOverlap,
-      cronStopRequested, cronDispatchedAgain, dispatchCount>>
+      cronStopRequested, cronDispatchedAgain, dispatchCount,
+      fanoutProgressPhase, fanoutWorkerActive, fanoutWorkerContributed,
+      fanoutWorkerParked, fanoutWorkerResumed, fanoutWorkerSpawned,
+      fanoutCompletionDropped>>
 
 baseVars ==
+    <<phase, wave, running, completed, consumerBeforeProducer,
+      conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
+      workerSpawnPhase, workerSpawnLatch, workerExists, valueFreed,
+      inFlight, cronWorkerRunning, cronOverlap, cronStopRequested,
+      cronDispatchedAgain, dispatchCount, fanoutProgressPhase,
+      fanoutWorkerActive, fanoutWorkerContributed, fanoutWorkerParked,
+      fanoutWorkerResumed, fanoutWorkerSpawned, fanoutCompletionDropped>>
+
+baseNoFanoutVars ==
     <<phase, wave, running, completed, consumerBeforeProducer,
       conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
       workerSpawnPhase, workerSpawnLatch, workerExists, valueFreed,
@@ -151,6 +173,11 @@ workPoolLifecycleVars ==
     <<workPoolLifecycleActive, workPoolLifecycleParked,
       workPoolLifecyclePhase, workPoolLifecycleScenario>>
 
+fanoutProgressVars ==
+    <<fanoutProgressPhase, fanoutWorkerActive, fanoutWorkerContributed,
+      fanoutWorkerParked, fanoutWorkerResumed, fanoutWorkerSpawned,
+      fanoutCompletionDropped>>
+
 workPoolVars ==
     <<workPoolStartupVars, workPoolPanicVars, workPoolPriorityVars, workPoolOverflowVars,
       workPoolLifecycleVars>>
@@ -169,6 +196,9 @@ BooleanConstantsOK ==
     /\ CloseAdmission \in BOOLEAN
     /\ WorkerSpawnBeforeLatch \in BOOLEAN
     /\ WorkerMissingLatch \in BOOLEAN
+    /\ FanoutParticipantContributes \in BOOLEAN
+    /\ FanoutResumeParked \in BOOLEAN
+    /\ FanoutCompletionGuard \in BOOLEAN
     /\ ClaimCronBeforeDispatch \in BOOLEAN
     /\ PublishCronStopBeforeIdle \in BOOLEAN
     /\ ReturnCronHandleSender \in BOOLEAN
@@ -272,6 +302,13 @@ TypeOK ==
     /\ workPoolLifecycleParked \in Nat
     /\ workPoolLifecyclePhase \in {"ready", "done"}
     /\ workPoolLifecycleScenario \in {"none", "DoubleUnpark", "RespawnParked"}
+    /\ fanoutProgressPhase \in {"ready", "resumed", "completed"}
+    /\ fanoutWorkerActive \in BOOLEAN
+    /\ fanoutWorkerContributed \in BOOLEAN
+    /\ fanoutWorkerParked \in BOOLEAN
+    /\ fanoutWorkerResumed \in BOOLEAN
+    /\ fanoutWorkerSpawned \in BOOLEAN
+    /\ fanoutCompletionDropped \in BOOLEAN
 
 EdgeComplete ==
     /\ (HasDependency => DependencyEdgeEncoded)
@@ -341,6 +378,13 @@ Init ==
     /\ workPoolLifecycleParked = WorkPoolLifecycleInitialParked
     /\ workPoolLifecyclePhase = "ready"
     /\ workPoolLifecycleScenario = "none"
+    /\ fanoutProgressPhase = "ready"
+    /\ fanoutWorkerActive = FALSE
+    /\ fanoutWorkerContributed = FALSE
+    /\ fanoutWorkerParked = FALSE
+    /\ fanoutWorkerResumed = FALSE
+    /\ fanoutWorkerSpawned = FALSE
+    /\ fanoutCompletionDropped = FALSE
 
 Schedule ==
     /\ phase = "init"
@@ -799,6 +843,23 @@ WorkPoolLifecycleRespawnParked ==
     /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
 
+FanoutParkAndResume ==
+    /\ fanoutProgressPhase = "ready"
+    /\ fanoutProgressPhase' = "resumed"
+    /\ fanoutWorkerActive' = TRUE
+    /\ fanoutWorkerContributed' = FanoutParticipantContributes
+    /\ fanoutWorkerParked' = TRUE
+    /\ fanoutWorkerResumed' = FanoutResumeParked
+    /\ UNCHANGED <<fanoutWorkerSpawned, fanoutCompletionDropped>>
+
+FanoutCompleteWorker ==
+    /\ fanoutProgressPhase \in {"ready", "resumed"}
+    /\ fanoutProgressPhase' = "completed"
+    /\ fanoutWorkerSpawned' = TRUE
+    /\ fanoutCompletionDropped' = FanoutCompletionGuard
+    /\ UNCHANGED <<fanoutWorkerActive, fanoutWorkerContributed,
+                  fanoutWorkerParked, fanoutWorkerResumed>>
+
 Done ==
     /\ phase = "done"
     /\ UNCHANGED vars
@@ -829,7 +890,8 @@ ThreadingNext ==
 
 Next ==
     \/ (ThreadingNext /\ UNCHANGED startupVars /\ UNCHANGED workPoolVars /\
-        UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
+        UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>> /\
+        UNCHANGED fanoutProgressVars)
     \/ (CronStartupRun /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
     \/ (CronStartupSubmitAfterReady /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
     \/ (CronStartupPollCheckEvents /\ UNCHANGED <<workerSpawnPhase, workerSpawnLatch, workerExists>>)
@@ -855,6 +917,10 @@ Next ==
         UNCHANGED <<baseNoSpawnVars, gcBoundaryVars, startupVars, workPoolVars>>)
     \/ (WorkerSpawnWithoutPriorLatch /\
         UNCHANGED <<baseNoSpawnVars, gcBoundaryVars, startupVars, workPoolVars>>)
+    \/ (FanoutParkAndResume /\
+        UNCHANGED <<baseNoFanoutVars, gcBoundaryVars, startupVars, workPoolVars>>)
+    \/ (FanoutCompleteWorker /\
+        UNCHANGED <<baseNoFanoutVars, gcBoundaryVars, startupVars, workPoolVars>>)
     \/ Idle
 
 Spec ==
@@ -1042,6 +1108,16 @@ WorkPoolStartupEventuallyDrained ==
 WorkPoolSecondEventuallyCompleted ==
     <>workPoolSecondCompleted
 
+FanoutActiveParticipantAccounted ==
+    fanoutWorkerActive =>
+      fanoutWorkerContributed /\ (fanoutWorkerParked \/ fanoutProgressPhase = "completed")
+
+FanoutParkedWorkerResumed ==
+    fanoutWorkerActive /\ fanoutWorkerParked => fanoutWorkerResumed
+
+FanoutParentWaitNotStranded ==
+    fanoutWorkerSpawned => fanoutCompletionDropped
+
 EndToEndSafe ==
     /\ NoConsumerBeforeProducer
     /\ NoSameWaveEffectConflict
@@ -1073,5 +1149,8 @@ EndToEndSafe ==
     /\ WorkPoolOverflowWithinCap
     /\ WorkPoolLifecycleCapacityConsistent
     /\ WorkPoolLifecycleActiveWithinBounds
+    /\ FanoutActiveParticipantAccounted
+    /\ FanoutParkedWorkerResumed
+    /\ FanoutParentWaitNotStranded
 
 =============================================================================

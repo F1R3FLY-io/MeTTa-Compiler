@@ -356,7 +356,9 @@ capped debug Robot replay after the conditional canary produced the expected fri
 - `formal/rocq/gc/SchedulerFanoutProgress.v`: composes the FANOUT scheduler progress obligations. Given the existing
   trigger backstop, posted-driver or SATB-abort-to-STW fallback, generation-based resume, participant contribution,
   and completion-guard premises, every active parked worker is resumed and the parent wait cannot be stranded by a
-  missing worker completion drop. The temporal eventuality/discriminator layer remains the paired TLC suite.
+  missing worker completion drop. The temporal eventuality/discriminator layer remains the paired TLC suite, and the
+  end-to-end threading envelope imports this contract so participant accounting, parked-worker resume, and completion
+  guard drops are checked alongside scheduler, cron, WorkPool, and GC-boundary interleavings.
 - `formal/rocq/gc/SchedulerFanoutAdmissionCompleteness.v` and
   `tla/SchedulerFanoutAdmissionCompleteness.tla`: prove and model-check the live fanout admission contract. The WFST
   `parallelism_degree` is an admission gate (`1` sequential, `>1` eligible for the purity/depth/pool/budget gates),
@@ -1229,7 +1231,10 @@ facts the proofs rely on:
   admission, eval-worker spawn latching, active direct-fanout gates, sweep,
   recurring-cron dispatch, cron startup delivery, WorkPool startup drain,
   WorkPool panic isolation, and the GC-facing scheduler boundary for
-  live-dispatch plus async batch roots into one TLC state machine.
+  live-dispatch plus async batch roots into one TLC state machine. It now also
+  composes `SchedulerFanoutProgress.v` so FANOUT participant accounting,
+  parked-worker resume, and worker completion-drop accounting are part of the
+  same end-to-end proof boundary.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, active
   direct-fanout without purity or budget gates, partial direct-fanout dispatch,
@@ -1239,7 +1244,9 @@ facts the proofs rely on:
   the pure no-budget path, strict I/O through the pure no-budget path, missing
   active-worker roots, missing dispatch roots, missing batch roots, open
   admission across a root snapshot, worker spawn before the sticky latch, missing
-  worker-spawn latch, unclaimed recurring cron dispatch, and a pooled recurring
+  worker-spawn latch, missing FANOUT participant contribution, missing parked
+  FANOUT worker resume, missing worker completion-drop accounting, unclaimed
+  recurring cron dispatch, and a pooled recurring
   worker that clears `in_flight` without first publishing the terminal stop
   state.  The composed cron startup discriminator separately rejects a submitted
   startup task when neither `CheckEvents` nor

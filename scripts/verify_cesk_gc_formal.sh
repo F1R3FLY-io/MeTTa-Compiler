@@ -418,6 +418,12 @@ run_tlc "threading_end_to_end_spawn_before_latch" "ThreadingEndToEndInterleaving
   fail "Invariant WorkerSpawnLatchPrecedesWorker is violated"
 run_tlc "threading_end_to_end_missing_spawn_latch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_spawn_latch.cfg" \
   fail "Invariant WorkerSpawnLatchPrecedesWorker is violated"
+run_tlc "threading_end_to_end_fanout_missing_contribution" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_fanout_missing_contribution.cfg" \
+  fail "Invariant FanoutActiveParticipantAccounted is violated"
+run_tlc "threading_end_to_end_fanout_missing_resume" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_fanout_missing_resume.cfg" \
+  fail "Invariant FanoutParkedWorkerResumed is violated"
+run_tlc "threading_end_to_end_fanout_missing_completion_drop" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_fanout_missing_completion_drop.cfg" \
+  fail "Invariant FanoutParentWaitNotStranded is violated"
 run_tlc "threading_end_to_end_unclaimed_cron" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg" \
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_cron_no_stop" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_cron_no_stop.cfg" \

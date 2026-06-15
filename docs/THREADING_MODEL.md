@@ -272,7 +272,11 @@ The formal lane covers the main scheduler obligations:
 - `ThreadingEndToEndInterleaving.v` and
   `ThreadingEndToEndInterleaving.tla` compose scheduler dependency waves,
   direct-fanout maximality, active-worker GC roots, closed worker admission, and
-  eval-worker spawn latching into one small interleaving envelope.  The latch
+  eval-worker spawn latching into one small interleaving envelope.  The FANOUT
+  progress obligation composes participant accounting, parked-worker resume, and
+  worker completion-drop accounting, so an active parked worker cannot remain
+  parked and a parent wait cannot be stranded by a missing worker guard drop.
+  The latch
   obligation requires each worker handoff to publish the sticky
   `worker_ever_spawned` latch before the worker can exist, so the single-threaded
   mid-loop index-GC gate cannot stay open after eval-worker parallelism becomes
@@ -582,6 +586,9 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_open_admission.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_spawn_before_latch.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_spawn_latch.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_fanout_missing_contribution.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_fanout_missing_resume.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_fanout_missing_completion_drop.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_cron_no_stop.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_startup_no_poll.cfg`
@@ -602,7 +609,9 @@ dynamic-eval blocker, state mutation is allowed through the pure no-budget
 path, strict I/O is allowed through the pure no-budget path, active worker
 roots are omitted, dispatch or async batch roots are omitted, worker admission
 stays open across the root snapshot, worker spawn reaches the pool before the
-sticky spawn latch is stored, a handoff site omits that latch entirely, or
+sticky spawn latch is stored, a handoff site omits that latch entirely, FANOUT
+participant accounting is missing, a parked FANOUT worker is not resumed, a
+worker completion guard fails to drop parent-wait accounting, or
 recurring cron dispatch submits without claiming `in_flight`, or a pooled
 recurring worker clears `in_flight` without first publishing the terminal stop
 state.

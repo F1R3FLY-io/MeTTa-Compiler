@@ -3,8 +3,9 @@
     This proof composes the audit obligations that were previously checked in
     separate files: scheduler reordering, effect-conflict exclusion, direct
     fanout maximality for independent work, active-worker GC rooting, closed
-    worker admission during a root snapshot, eval-worker spawn latching, and
-    recurring cron in_flight claims plus stop-before-redispatch.
+    worker admission during a root snapshot, eval-worker spawn latching,
+    FANOUT parked-worker resume and completion-drop progress, and recurring
+    cron in_flight claims plus stop-before-redispatch.
 *)
 
 From Stdlib Require Import Bool.Bool.
@@ -14,6 +15,7 @@ Require Import CronRecurringDispatch.
 Require Import CronStartupDelivery.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerDynamicEvalGate.
+Require Import SchedulerFanoutProgress.
 Require Import SchedulerPriorityFairness.
 Require Import SchedulerSpawnLatch.
 Require Import SchedulerTransducerParallelism.
@@ -26,6 +28,7 @@ Import MeTTaTron_GC_CronRecurringDispatch.
 Import MeTTaTron_GC_CronStartupDelivery.
 Import MeTTaTron_GC_SchedulerActiveFanoutGate.
 Import MeTTaTron_GC_SchedulerDynamicEvalGate.
+Import MeTTaTron_GC_SchedulerFanoutProgress.
 Import MeTTaTron_GC_SchedulerPriorityFairness.
 Import MeTTaTron_GC_SchedulerSpawnLatch.
 Import MeTTaTron_GC_SchedulerTransducerParallelism.
@@ -1184,6 +1187,250 @@ Section EndToEndModel.
     split; reflexivity.
   Qed.
 
+  Record FanoutProgressConfig : Type := {
+    fanout_active : Task -> Prop;
+    fanout_contributed : Task -> Prop;
+    fanout_parked : Task -> Prop;
+    fanout_finished : Task -> Prop;
+    fanout_resumed : Task -> Prop;
+    fanout_spawned : Task -> Prop;
+    fanout_dropped : Task -> Prop;
+    fanout_exit : Task -> ExitPath;
+    fanout_trigger_sent : Prop;
+    fanout_trigger_failed : Prop;
+    fanout_driver_posted : Prop;
+    fanout_request_cleared : Prop;
+    fanout_backstop_resumed : Prop;
+    fanout_cycle_closed : Prop;
+    fanout_generation_advanced : Prop;
+    fanout_satb_abort : Prop;
+    fanout_stw_fallback_ran : Prop
+  }.
+
+  Definition fanout_exit_event
+      (c : FanoutProgressConfig)
+      (w : Task)
+      (e : ExitPath)
+      : Prop :=
+    fanout_exit c w = e.
+
+  Definition fanout_progress_safe
+      (c : FanoutProgressConfig)
+      : Prop :=
+    (forall w,
+        fanout_active c w ->
+        @ParticipantAccounted Task
+          (fanout_parked c)
+          (fanout_finished c)
+          w) /\
+    (forall w,
+        fanout_active c w ->
+        fanout_parked c w ->
+        fanout_resumed c w) /\
+    ~ @ParentWaitStranded Task
+        (fanout_spawned c)
+        (fanout_dropped c).
+
+  Definition all_tasks (_ : Task) : Prop := True.
+
+  Definition no_tasks (_ : Task) : Prop := False.
+
+  Definition complete_fanout_progress : FanoutProgressConfig :=
+    {| fanout_active := all_tasks;
+       fanout_contributed := all_tasks;
+       fanout_parked := all_tasks;
+       fanout_finished := all_tasks;
+       fanout_resumed := all_tasks;
+       fanout_spawned := all_tasks;
+       fanout_dropped := all_tasks;
+       fanout_exit := fun _ => NormalExit;
+       fanout_trigger_sent := True;
+       fanout_trigger_failed := False;
+       fanout_driver_posted := True;
+       fanout_request_cleared := True;
+       fanout_backstop_resumed := True;
+       fanout_cycle_closed := True;
+       fanout_generation_advanced := True;
+       fanout_satb_abort := False;
+       fanout_stw_fallback_ran := True |}.
+
+  Definition missing_parked_resume_fanout : FanoutProgressConfig :=
+    {| fanout_active := all_tasks;
+       fanout_contributed := all_tasks;
+       fanout_parked := all_tasks;
+       fanout_finished := all_tasks;
+       fanout_resumed := no_tasks;
+       fanout_spawned := all_tasks;
+       fanout_dropped := all_tasks;
+       fanout_exit := fun _ => NormalExit;
+       fanout_trigger_sent := True;
+       fanout_trigger_failed := False;
+       fanout_driver_posted := True;
+       fanout_request_cleared := True;
+       fanout_backstop_resumed := True;
+       fanout_cycle_closed := True;
+       fanout_generation_advanced := True;
+       fanout_satb_abort := False;
+       fanout_stw_fallback_ran := True |}.
+
+  Definition missing_participant_accounting_fanout : FanoutProgressConfig :=
+    {| fanout_active := all_tasks;
+       fanout_contributed := no_tasks;
+       fanout_parked := no_tasks;
+       fanout_finished := no_tasks;
+       fanout_resumed := all_tasks;
+       fanout_spawned := all_tasks;
+       fanout_dropped := all_tasks;
+       fanout_exit := fun _ => NormalExit;
+       fanout_trigger_sent := True;
+       fanout_trigger_failed := False;
+       fanout_driver_posted := True;
+       fanout_request_cleared := True;
+       fanout_backstop_resumed := True;
+       fanout_cycle_closed := True;
+       fanout_generation_advanced := True;
+       fanout_satb_abort := False;
+       fanout_stw_fallback_ran := True |}.
+
+  Definition missing_completion_drop_fanout : FanoutProgressConfig :=
+    {| fanout_active := all_tasks;
+       fanout_contributed := all_tasks;
+       fanout_parked := all_tasks;
+       fanout_finished := all_tasks;
+       fanout_resumed := all_tasks;
+       fanout_spawned := all_tasks;
+       fanout_dropped := no_tasks;
+       fanout_exit := fun _ => NormalExit;
+       fanout_trigger_sent := True;
+       fanout_trigger_failed := False;
+       fanout_driver_posted := True;
+       fanout_request_cleared := True;
+       fanout_backstop_resumed := True;
+       fanout_cycle_closed := True;
+       fanout_generation_advanced := True;
+       fanout_satb_abort := False;
+       fanout_stw_fallback_ran := True |}.
+
+  Theorem scheduler_fanout_contract_implies_e2e_progress :
+    forall c,
+      @AllParticipantsContributed Task
+        (fanout_active c)
+        (fanout_contributed c) ->
+      (forall w,
+        fanout_contributed c w ->
+        @ParticipantAccounted Task
+          (fanout_parked c)
+          (fanout_finished c)
+          w) ->
+      SuccessfulTriggerHasDriver
+        (fanout_trigger_sent c)
+        (fanout_driver_posted c) ->
+      TriggerFailureBackstopped
+        (fanout_trigger_failed c)
+        (fanout_request_cleared c)
+        (fanout_backstop_resumed c) ->
+      (fanout_backstop_resumed c ->
+       forall w,
+        fanout_active c w ->
+        fanout_parked c w ->
+        fanout_resumed c w) ->
+      DriverCompletesOrAborts
+        (fanout_driver_posted c)
+        (fanout_cycle_closed c)
+        (fanout_satb_abort c) ->
+      (fanout_satb_abort c -> fanout_stw_fallback_ran c) ->
+      (fanout_stw_fallback_ran c -> fanout_cycle_closed c) ->
+      (fanout_cycle_closed c -> fanout_generation_advanced c) ->
+      (forall w,
+        fanout_active c w ->
+        fanout_parked c w ->
+        fanout_generation_advanced c ->
+        fanout_resumed c w) ->
+      (forall w,
+        fanout_spawned c w ->
+        @WorkerExited Task (fanout_exit_event c) w) ->
+      (forall w,
+        fanout_exit_event c w NormalExit ->
+        fanout_dropped c w) ->
+      (forall w,
+        fanout_exit_event c w PanicExit ->
+        fanout_dropped c w) ->
+      (fanout_trigger_sent c \/ fanout_trigger_failed c) ->
+      fanout_progress_safe c.
+  Proof.
+    intros c Hall Haccounted Hsent_driver Hfailed_backstop Hbackstop_resumes
+      Hdriver_progress Habort_fallback Hfallback_closes Hclosed_gen
+      Hgeneration_resumes Hexits Hnormal Hpanic Htrigger.
+    unfold fanout_progress_safe.
+    eapply (@scheduler_fanout_gc_progress_contract Task).
+    - exact Hall.
+    - exact Haccounted.
+    - exact Hsent_driver.
+    - exact Hfailed_backstop.
+    - exact Hbackstop_resumes.
+    - exact Hdriver_progress.
+    - exact Habort_fallback.
+    - exact Hfallback_closes.
+    - exact Hclosed_gen.
+    - exact Hgeneration_resumes.
+    - exact Hexits.
+    - exact Hnormal.
+    - exact Hpanic.
+    - exact Htrigger.
+  Qed.
+
+  Theorem complete_fanout_progress_safe :
+    fanout_progress_safe complete_fanout_progress.
+  Proof.
+    unfold fanout_progress_safe, complete_fanout_progress, all_tasks.
+    simpl.
+    split.
+    - intros w _.
+      left.
+      exact I.
+    - split.
+      + intros w _ _.
+        exact I.
+      + intros [w [_ Hnot_dropped]].
+        apply Hnot_dropped.
+        exact I.
+  Qed.
+
+  Theorem missing_participant_accounting_exposes_fanout_progress_gap :
+    ~ fanout_progress_safe missing_participant_accounting_fanout.
+  Proof.
+    intros [Haccounted _].
+    unfold missing_participant_accounting_fanout, all_tasks, no_tasks in
+      Haccounted.
+    simpl in Haccounted.
+    destruct (Haccounted Producer I) as [Hparked | Hfinished].
+    - exact Hparked.
+    - exact Hfinished.
+  Qed.
+
+  Theorem missing_parked_resume_exposes_fanout_progress_gap :
+    ~ fanout_progress_safe missing_parked_resume_fanout.
+  Proof.
+    intros [_ [Hresumed _]].
+    unfold missing_parked_resume_fanout, all_tasks, no_tasks in Hresumed.
+    simpl in Hresumed.
+    exact (Hresumed Producer I I).
+  Qed.
+
+  Theorem missing_completion_drop_exposes_fanout_progress_gap :
+    ~ fanout_progress_safe missing_completion_drop_fanout.
+  Proof.
+    intros [_ [_ Hnot_stranded]].
+    apply Hnot_stranded.
+    exists Producer.
+    unfold missing_completion_drop_fanout, all_tasks, no_tasks.
+    simpl.
+    split.
+    - exact I.
+    - intros Hdrop.
+      exact Hdrop.
+  Qed.
+
   Definition end_to_end_safe
       (w : Workload)
       (wave : WaveAssignment)
@@ -1196,6 +1443,7 @@ Section EndToEndModel.
       (cron_startup : StartupConfig)
       (work_pool : WorkPoolConfig)
       (active_fanout : ActiveFanoutConfig)
+      (fanout_progress : FanoutProgressConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe
@@ -1207,7 +1455,8 @@ Section EndToEndModel.
     cron_dispatch_safe cron_state /\
     startup_delivery_safe cron_startup /\
     work_pool_envelope_safe work_pool /\
-    active_fanout_envelope_safe w active_fanout.
+    active_fanout_envelope_safe w active_fanout /\
+    fanout_progress_safe fanout_progress.
 
   Theorem checked_threading_envelope_is_end_to_end_safe :
     forall w wave active_worker_live,
@@ -1228,7 +1477,8 @@ Section EndToEndModel.
             (cron_second_due (cron_first_due true))))
         complete_startup
         complete_work_pool
-        complete_active_fanout.
+        complete_active_fanout
+        complete_fanout_progress.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -1244,9 +1494,11 @@ Section EndToEndModel.
              ++ apply complete_startup_delivers_submitted_task.
              ++ split.
                 ** apply complete_work_pool_envelope_safe.
-                ** unfold active_fanout_envelope_safe.
-                   intros _.
-                   apply complete_active_fanout_stack_safe.
+                ** split.
+                   --- unfold active_fanout_envelope_safe.
+                       intros _.
+                       apply complete_active_fanout_stack_safe.
+                   --- apply complete_fanout_progress_safe.
   Qed.
 
   Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :
@@ -1274,7 +1526,8 @@ Section EndToEndModel.
           cron_state
           missing_poll_path
           complete_work_pool
-          complete_active_fanout.
+          complete_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
@@ -1313,7 +1566,8 @@ Section EndToEndModel.
               (cron_second_due (cron_first_due true))))
           cron_startup
           work_pool
-          active_fanout.
+          active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_startup work_pool
@@ -1353,7 +1607,8 @@ Section EndToEndModel.
           cron_state
           cron_startup
           work_pool
-          active_fanout.
+          active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1383,7 +1638,8 @@ Section EndToEndModel.
           cron_state
           cron_startup
           work_pool
-          complete_active_fanout.
+          complete_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -1413,7 +1669,8 @@ Section EndToEndModel.
           cron_state
           cron_startup
           work_pool
-          complete_active_fanout.
+          complete_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -1449,7 +1706,8 @@ Section EndToEndModel.
           cron_state
           cron_startup
           lossy_work_pool_startup
-          complete_active_fanout.
+          complete_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -1485,7 +1743,8 @@ Section EndToEndModel.
           cron_state
           cron_startup
           task_panic_missing_inner_work_pool
-          complete_active_fanout.
+          complete_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -1521,7 +1780,8 @@ Section EndToEndModel.
           cron_state
           cron_startup
           accounting_panic_missing_outer_work_pool
-          complete_active_fanout.
+          complete_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -1559,7 +1819,8 @@ Section EndToEndModel.
           cron_state
           cron_startup
           work_pool
-          active_fanout.
+          active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1586,7 +1847,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup
-          uncapped_overflow_work_pool active_fanout.
+          uncapped_overflow_work_pool active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -1612,7 +1874,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup
-          double_unpark_overcounts_work_pool active_fanout.
+          double_unpark_overcounts_work_pool active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -1638,7 +1901,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup
-          respawn_without_increment_work_pool active_fanout.
+          respawn_without_increment_work_pool active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -1664,7 +1928,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup
-          stale_priority_work_pool active_fanout.
+          stale_priority_work_pool active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -1702,14 +1967,15 @@ Section EndToEndModel.
           cron_state
           cron_startup
           work_pool
-          active_fanout.
+          active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
       active_fanout Hdirect Hunsafe Hschedule Hgc Hcron Hstartup Hwork_pool
       Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [_ [_ Hactive]]]]]].
+    destruct Hend as [_ [_ [_ [_ [_ [_ [Hactive _]]]]]]].
     destruct (Hactive Hdirect) as [Hgate _].
     exact (Hunsafe Hgate).
   Qed.
@@ -1743,14 +2009,15 @@ Section EndToEndModel.
           cron_state
           cron_startup
           work_pool
-          active_fanout.
+          active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
       active_fanout Hdirect Hunsafe Hschedule Hgc Hcron Hstartup Hwork_pool
       Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [_ [_ Hactive]]]]]].
+    destruct Hend as [_ [_ [_ [_ [_ [_ [Hactive _]]]]]]].
     exact (Hunsafe (Hactive Hdirect)).
   Qed.
 
@@ -1772,7 +2039,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
-          zero_cap_bug_active_fanout.
+          zero_cap_bug_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1799,7 +2067,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
-          underutilized_transducer_active_fanout.
+          underutilized_transducer_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1826,7 +2095,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
-          non_branch_parallel_active_fanout.
+          non_branch_parallel_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1853,7 +2123,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
-          missing_dynamic_eval_gate_active_fanout.
+          missing_dynamic_eval_gate_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1880,7 +2151,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
-          state_mutation_bypass_active_fanout.
+          state_mutation_bypass_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1907,7 +2179,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
-          strict_io_bypass_active_fanout.
+          strict_io_bypass_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1934,7 +2207,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
-          missing_purity_active_fanout.
+          missing_purity_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1961,7 +2235,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
-          missing_budget_active_fanout.
+          missing_budget_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -1988,7 +2263,8 @@ Section EndToEndModel.
           w wave active_worker_live worker_rooted
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
-          partial_dispatch_active_fanout.
+          partial_dispatch_active_fanout
+          complete_fanout_progress.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool

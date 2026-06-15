@@ -30,6 +30,7 @@ CONSTANTS
     WorkPoolFirstFailure,
     WorkPoolInnerCatch,
     WorkPoolOuterCatch,
+    WorkPoolRecomputeAtPop,
     WorkPoolOverflowRequested,
     WorkPoolInitialOverflowLive,
     WorkPoolMaxOverflow,
@@ -94,6 +95,9 @@ VARIABLES
     workPoolSecondCompleted,
     workPoolRuntimeRecorded,
     workPoolCpuPublished,
+    workPoolOldAge,
+    workPoolHighEnqueued,
+    workPoolPopped,
     workPoolOverflowLive,
     workPoolOverflowPhase,
     workPoolLifecycleActive,
@@ -122,6 +126,9 @@ workPoolPanicVars ==
     <<workPoolPanicPhase, workPoolWorkerAlive, workPoolFirstHandled,
       workPoolSecondCompleted, workPoolRuntimeRecorded, workPoolCpuPublished>>
 
+workPoolPriorityVars ==
+    <<workPoolOldAge, workPoolHighEnqueued, workPoolPopped>>
+
 workPoolOverflowVars ==
     <<workPoolOverflowLive, workPoolOverflowPhase>>
 
@@ -130,7 +137,7 @@ workPoolLifecycleVars ==
       workPoolLifecyclePhase, workPoolLifecycleScenario>>
 
 workPoolVars ==
-    <<workPoolStartupVars, workPoolPanicVars, workPoolOverflowVars,
+    <<workPoolStartupVars, workPoolPanicVars, workPoolPriorityVars, workPoolOverflowVars,
       workPoolLifecycleVars>>
 
 vars == <<baseVars, gcBoundaryVars, startupVars, workPoolVars>>
@@ -157,6 +164,7 @@ BooleanConstantsOK ==
     /\ WorkPoolLossyEnqueue \in BOOLEAN
     /\ WorkPoolInnerCatch \in BOOLEAN
     /\ WorkPoolOuterCatch \in BOOLEAN
+    /\ WorkPoolRecomputeAtPop \in BOOLEAN
     /\ WorkPoolEnforceOverflowCap \in BOOLEAN
     /\ WorkPoolUseTransitionResult \in BOOLEAN
     /\ WorkPoolRespawnCountsParked \in BOOLEAN
@@ -235,6 +243,9 @@ TypeOK ==
     /\ workPoolSecondCompleted \in BOOLEAN
     /\ workPoolRuntimeRecorded \in BOOLEAN
     /\ workPoolCpuPublished \in BOOLEAN
+    /\ workPoolOldAge \in 0..1
+    /\ workPoolHighEnqueued \in BOOLEAN
+    /\ workPoolPopped \in {"none", "old", "high"}
     /\ workPoolOverflowLive \in Nat
     /\ workPoolOverflowPhase \in {"ready", "done"}
     /\ workPoolLifecycleActive \in Nat
@@ -298,6 +309,9 @@ Init ==
     /\ workPoolSecondCompleted = FALSE
     /\ workPoolRuntimeRecorded = FALSE
     /\ workPoolCpuPublished = FALSE
+    /\ workPoolOldAge = 0
+    /\ workPoolHighEnqueued = FALSE
+    /\ workPoolPopped = "none"
     /\ workPoolOverflowLive = WorkPoolInitialOverflowLive
     /\ workPoolOverflowPhase = "ready"
     /\ workPoolLifecycleActive = WorkPoolLifecycleInitialActive
@@ -522,6 +536,7 @@ WorkPoolSubmit ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
     /\ UNCHANGED workPoolLifecycleVars
 
@@ -537,6 +552,7 @@ WorkPoolStart ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
     /\ UNCHANGED workPoolLifecycleVars
 
@@ -553,6 +569,7 @@ WorkPoolDrain ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
     /\ UNCHANGED workPoolLifecycleVars
 
@@ -569,6 +586,7 @@ WorkPoolFinish ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
     /\ UNCHANGED workPoolLifecycleVars
 
@@ -585,6 +603,7 @@ WorkPoolStuck ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
     /\ UNCHANGED workPoolLifecycleVars
 
@@ -609,6 +628,7 @@ WorkPoolRunFirstTaskPanic ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
     /\ UNCHANGED workPoolLifecycleVars
 
@@ -628,6 +648,7 @@ WorkPoolRunFirstAccountingPanic ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
     /\ UNCHANGED workPoolLifecycleVars
 
@@ -644,6 +665,45 @@ WorkPoolRunSecond ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolPriorityVars
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
+
+WorkPoolAgeOld ==
+    /\ workPoolOldAge = 0
+    /\ workPoolOldAge' = 1
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED <<workPoolHighEnqueued, workPoolPopped>>
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
+
+WorkPoolEnqueueHigh ==
+    /\ workPoolOldAge = 1
+    /\ ~workPoolHighEnqueued
+    /\ workPoolHighEnqueued' = TRUE
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED <<workPoolOldAge, workPoolPopped>>
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
+
+WorkPoolPopPriority ==
+    /\ workPoolHighEnqueued
+    /\ workPoolPopped = "none"
+    /\ workPoolPopped' = IF WorkPoolRecomputeAtPop THEN "old" ELSE "high"
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED <<workPoolOldAge, workPoolHighEnqueued>>
     /\ UNCHANGED workPoolOverflowVars
     /\ UNCHANGED workPoolLifecycleVars
 
@@ -657,6 +717,7 @@ WorkPoolOverflowSpawn ==
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolLifecycleVars
 
 WorkPoolLifecycleDoubleUnpark ==
@@ -674,6 +735,7 @@ WorkPoolLifecycleDoubleUnpark ==
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
 
 WorkPoolLifecycleRespawnParked ==
@@ -691,6 +753,7 @@ WorkPoolLifecycleRespawnParked ==
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolPriorityVars
     /\ UNCHANGED workPoolOverflowVars
 
 Done ==
@@ -737,6 +800,9 @@ Next ==
     \/ WorkPoolRunFirstTaskPanic
     \/ WorkPoolRunFirstAccountingPanic
     \/ WorkPoolRunSecond
+    \/ WorkPoolAgeOld
+    \/ WorkPoolEnqueueHigh
+    \/ WorkPoolPopPriority
     \/ WorkPoolOverflowSpawn
     \/ WorkPoolLifecycleDoubleUnpark
     \/ WorkPoolLifecycleRespawnParked
@@ -898,6 +964,12 @@ WorkPoolTaskPanicPublishesHeartbeat ==
 WorkPoolWorkerAliveAfterHandled ==
     workPoolFirstHandled => workPoolWorkerAlive
 
+WorkPoolOldPopsAfterAging ==
+    /\ workPoolHighEnqueued
+    /\ workPoolOldAge = 1
+    /\ workPoolPopped # "none"
+    => workPoolPopped = "old"
+
 WorkPoolOverflowWithinCap ==
     workPoolOverflowLive <= WorkPoolMaxOverflow
 
@@ -940,6 +1012,7 @@ EndToEndSafe ==
     /\ WorkPoolNoRuntimeRecordForTaskPanic
     /\ WorkPoolTaskPanicPublishesHeartbeat
     /\ WorkPoolWorkerAliveAfterHandled
+    /\ WorkPoolOldPopsAfterAging
     /\ WorkPoolOverflowWithinCap
     /\ WorkPoolLifecycleCapacityConsistent
     /\ WorkPoolLifecycleActiveWithinBounds

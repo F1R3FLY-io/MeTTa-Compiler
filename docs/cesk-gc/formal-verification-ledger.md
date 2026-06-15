@@ -1248,7 +1248,11 @@ facts the proofs rely on:
   WorkPool overflow and lifecycle accounting: the E2E model rejects uncapped
   overflow spawning, double-unpark overcounting, and parked-worker respawn
   without the active-count increment, using the same cap/capacity invariants as
-  the standalone `WorkPoolOverflowCap` and `WorkPoolLifecycle` models.
+  the standalone `WorkPoolOverflowCap` and `WorkPoolLifecycle` models.  It also
+  composes WorkPool priority-aging fairness: pop-time score recomputation is
+  required before dequeue, and the stale-priority discriminator violates
+  `WorkPoolOldPopsAfterAging` by popping newer high-priority work before the
+  aged older task.
 - JIT Long boxing store selection (`formal/rocq/gc/JitLongBoxStoreSelection.v`,
   `tla/JitLongBoxStoreSelection.tla`, 2026-06-14) — proves out-of-inline-range
   JIT Long boxing selects the compiled store: index builds allocate through the

@@ -279,12 +279,15 @@ The formal lane covers the main scheduler obligations:
   envelope composes WorkPool startup drain and panic isolation: startup
   submissions must be retained until workers drain them, task panics must
   publish the heartbeat path, and accounting panics must not kill the worker
-  needed for subsequent queued work.  It also composes the GC-facing scheduler
-  boundary for live-dispatch and async batch roots, so sweep rejects missing
-  dispatch or batch root publication the same way it rejects missing active
-  worker roots.  Its active direct-fanout obligation requires branch threshold,
-  WFST degree, purity/dynamic-eval, depth, pool, budget, and complete-dispatch
-  gates before `DirectFanout` can contribute to maximal same-wave parallelism.
+  needed for subsequent queued work.  The WorkPool envelope also composes the
+  priority-aging dequeue contract: pop-time score recomputation is required so
+  aged older work is not starved behind newer high-base-priority work.  It also
+  composes the GC-facing scheduler boundary for live-dispatch and async batch
+  roots, so sweep rejects missing dispatch or batch root publication the same
+  way it rejects missing active worker roots.  Its active direct-fanout
+  obligation requires branch threshold, WFST degree, purity/dynamic-eval, depth,
+  pool, budget, and complete-dispatch gates before `DirectFanout` can contribute
+  to maximal same-wave parallelism.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -582,6 +585,7 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_uncapped_overflow.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_double_unpark_bug.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_respawn_bug.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_work_pool_stale_priority.cfg`
 
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`. The negative configs violate it when dependency edges are
@@ -596,8 +600,10 @@ claiming `in_flight`, or a pooled recurring worker clears `in_flight` without
 first publishing the terminal stop state.
 The composed WorkPool discriminators additionally reject overflow spawning
 that bypasses the live-worker cap, double-unpark accounting that counts one
-parked worker twice, and respawning a parked replacement without incrementing
-the aggregate active count.
+parked worker twice, respawning a parked replacement without incrementing
+the aggregate active count, and stale priority dequeue that skips pop-time
+age recomputation and therefore pops newer high-priority work before an aged
+older task.
 - `tla/MC_SchedulerGcBoundary_admission_open.cfg`
 - `formal/rocq/gc/SchedulerSpawnLatch.v`
 - `tla/SchedulerSpawnLatch.tla`

@@ -858,6 +858,8 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_outer_accounti
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "uncapped_overflow_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "double_unpark_overcount_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "respawn_without_increment_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "stale_priority_work_pool_exposes_envelope_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "stale_priority_dequeue_exposes_end_to_end_gap" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "BindingProjection.v" "1"
 assert_zero "scripts/verify_cesk_gc_formal.sh" "RUN_LEAN_MIRRORS"
@@ -889,7 +891,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "25"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "26"
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutGateComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerDegreeMatches" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerMaximalBeforeCap" >/dev/null
@@ -910,6 +912,8 @@ line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolWorkerAliveAfterHandled
 line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolOverflowWithinCap" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolLifecycleCapacityConsistent" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolLifecycleActiveWithinBounds" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolRecomputeAtPop" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolOldPopsAfterAging" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_startup_no_poll" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_missing_dispatch_root" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_missing_batch_root" >/dev/null
@@ -929,6 +933,7 @@ line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_no_ou
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_uncapped_overflow" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_double_unpark_bug" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_respawn_bug" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_stale_priority" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "BindingProjection.tla" "4"
 

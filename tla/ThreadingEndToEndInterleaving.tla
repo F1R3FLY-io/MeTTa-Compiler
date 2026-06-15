@@ -1013,6 +1013,28 @@ ActiveFanoutGateComplete ==
       /\ ActiveBudgetGate
       /\ ActiveDispatchedCount = ActiveBranchCount
 
+ActiveFanoutAdmitted ==
+    /\ DirectFanout
+    /\ ActiveBranchCountGate
+    /\ ActiveDegreeGate
+    /\ ActivePure
+    /\ ActiveDepthOk
+    /\ ActivePoolOk
+    /\ ActiveBudgetGate
+
+ActiveFanoutAdmissionComplete ==
+    ActiveFanoutAdmitted => ActiveDispatchedCount = ActiveBranchCount
+
+CollapseFanoutAdmitted ==
+    /\ DirectFanout
+    /\ ActiveBranchCountGate
+    /\ ActiveDepthOk
+    /\ ActivePoolOk
+    /\ ActiveBudgetGate
+
+CollapseFanoutAdmissionComplete ==
+    CollapseFanoutAdmitted => ActiveDispatchedCount = ActiveBranchCount
+
 ActiveBlocksParallelDispatch ==
     \/ ActiveStateMutation
     \/ ActiveStrictPrint /\ ActiveIo
@@ -1142,6 +1164,8 @@ EndToEndSafe ==
     /\ SchedulerWavefrontEdgesComplete
     /\ SchedulerDirectFanoutRefinesWavefront
     /\ ActiveFanoutGateComplete
+    /\ ActiveFanoutAdmissionComplete
+    /\ CollapseFanoutAdmissionComplete
     /\ ActiveTransducerDegreeMatches
     /\ ActiveTransducerMaximalBeforeCap
     /\ ActiveTransducerDefaultGateSound

@@ -392,6 +392,10 @@ run_tlc "threading_end_to_end_active_fanout_missing_budget" "ThreadingEndToEndIn
   fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_partial_dispatch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg" \
   fail "Invariant SchedulerDirectFanoutRefinesWavefront is violated"
+run_tlc "threading_end_to_end_fanout_degree_cap_admission" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_fanout_degree_cap_admission.cfg" \
+  fail "The invariant of ActiveFanoutAdmissionComplete is equal to FALSE"
+run_tlc "threading_end_to_end_collapse_threshold_cap_admission" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_collapse_threshold_cap_admission.cfg" \
+  fail "The invariant of CollapseFanoutAdmissionComplete is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_zero_cap_bug" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_zero_cap_bug.cfg" \
   fail "The invariant of ActiveTransducerDegreeMatches is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_underutilized" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_underutilized.cfg" \

@@ -298,9 +298,12 @@ The formal lane covers the main scheduler obligations:
   standalone wavefront/effect/direct-refinement theorems, and the E2E TLC model
   exposes `SchedulerWavefrontEdgesComplete` plus
   `SchedulerDirectFanoutRefinesWavefront`.  Its active direct-fanout obligation
-  requires branch threshold, WFST degree, purity/dynamic-eval, depth, pool,
-  budget, and complete-dispatch gates before `DirectFanout` can contribute to
-  maximal same-wave parallelism.
+  imports the standalone fanout and collapse admission-completeness theorems,
+  and the E2E TLC model exposes `ActiveFanoutAdmissionComplete` plus
+  `CollapseFanoutAdmissionComplete`. Branch threshold, WFST degree,
+  purity/dynamic-eval, depth, pool, budget, and complete-dispatch gates are
+  required before `DirectFanout` can contribute to maximal same-wave
+  parallelism.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -579,6 +582,8 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_fanout_degree_cap_admission.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_collapse_threshold_cap_admission.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_zero_cap_bug.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_underutilized.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_nonbranch_degree.cfg`
@@ -610,10 +615,13 @@ The composed end-to-end envelope is modeled by:
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`; the safe config also preserves `SchedulerBoundaryComplete`,
 `SchedulerWavefrontEdgesComplete`, and
-`SchedulerDirectFanoutRefinesWavefront` inside the composed model. The missing
+`SchedulerDirectFanoutRefinesWavefront`, `ActiveFanoutAdmissionComplete`, and
+`CollapseFanoutAdmissionComplete` inside the composed model. The missing
 dependency and missing effect-conflict edge configs violate
 `SchedulerWavefrontEdgesComplete`. The partial direct-dispatch config violates
-`SchedulerDirectFanoutRefinesWavefront`. Other negative configs violate
+`SchedulerDirectFanoutRefinesWavefront`. The degree-as-spawn-cap and
+threshold-as-spawn-cap configs violate `ActiveFanoutAdmissionComplete` and
+`CollapseFanoutAdmissionComplete`. Other negative configs violate
 `EndToEndSafe` when active direct fanout skips purity/budget/complete-dispatch gates,
 active direct fanout bypasses the WFST transducer's nonzero degree,
 maximal-before-cap, or branch-parallel class gates, dynamic eval bypasses the

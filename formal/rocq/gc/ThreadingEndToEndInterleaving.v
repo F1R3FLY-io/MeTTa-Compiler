@@ -13,10 +13,12 @@ From Stdlib Require Import Arith Lia.
 From Stdlib Require Import ZArith.
 Require Import CronRecurringDispatch.
 Require Import CronStartupDelivery.
+Require Import CollapseFanoutAdmissionCompleteness.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerDirectFanoutWavefrontRefinement.
 Require Import SchedulerDynamicEvalGate.
 Require Import SchedulerEffectConflictCompleteness.
+Require Import SchedulerFanoutAdmissionCompleteness.
 Require Import SchedulerFanoutProgress.
 Require Import SchedulerGcBoundary.
 Require Import SchedulerPriorityFairness.
@@ -49,6 +51,10 @@ Module DirectRefinement :=
   MeTTaTron_GC_SchedulerDirectFanoutWavefrontRefinement.
 Module EffectCompleteness :=
   MeTTaTron_GC_SchedulerEffectConflictCompleteness.
+Module FanoutAdmission :=
+  MeTTaTron_GC_SchedulerFanoutAdmissionCompleteness.
+Module CollapseAdmission :=
+  MeTTaTron_GC_CollapseFanoutAdmissionCompleteness.
 Module Wavefront :=
   MeTTaTron_GC_SchedulerWavefrontParallelism.
 
@@ -1339,14 +1345,61 @@ Section EndToEndModel.
     (active_dynamic_eval c = true -> active_blocks_parallel_dispatch c) /\
     (active_state_mutation c = true -> active_blocks_parallel_dispatch c) /\
     (active_strict_print c = true ->
-     active_io c = true ->
-     active_blocks_parallel_dispatch c) /\
+	 active_io c = true ->
+	 active_blocks_parallel_dispatch c) /\
     active_no_budget_parallel_safe c.
+
+  Definition active_fanout_admitted_by_standalone
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    FanoutAdmission.fanout_admitted
+      (active_branch_count c)
+      (active_min_branches c)
+      (active_parallelism_degree c)
+      (active_budget_granted c)
+      (active_pure c = true)
+      (active_depth_ok c = true)
+      (active_pool_ok c = true).
+
+  Definition active_fanout_admission_represents_every_branch
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    forall slot,
+      slot < active_branch_count c ->
+      FanoutAdmission.branch_slot_represented
+        (active_dispatched_count c)
+        slot.
+
+  Definition active_collapse_admitted_by_standalone
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    CollapseAdmission.collapse_admitted
+      (active_branch_count c)
+      (active_min_branches c)
+      (active_budget_granted c)
+      (active_depth_ok c = true)
+      (active_pool_ok c = true).
+
+  Definition active_collapse_admission_represents_every_item
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    forall slot,
+      slot < active_branch_count c ->
+      CollapseAdmission.item_slot_represented
+        (active_dispatched_count c)
+        slot.
+
+  Definition active_fanout_admission_complete
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    active_fanout_admission_represents_every_branch c /\
+    active_collapse_admission_represents_every_item c.
 
   Definition active_fanout_stack_safe (c : ActiveFanoutConfig) : Prop :=
     active_fanout_gate_safe c /\
     active_transducer_safe c /\
-    active_parallel_dispatch_blockers_safe c.
+    active_parallel_dispatch_blockers_safe c /\
+    active_fanout_admission_complete c.
 
   Definition active_fanout_envelope_safe
       (w : Workload)
@@ -1421,6 +1474,40 @@ Section EndToEndModel.
        active_depth_ok := true;
        active_pool_ok := true;
        active_dispatched_count := 1 |}.
+
+  Definition degree_capped_admission_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 3;
+       active_min_branches := 2;
+       active_parallelism_degree := 2;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 3;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 2 |}.
+
+  Definition threshold_capped_collapse_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 3;
+       active_min_branches := 2;
+       active_parallelism_degree := 3;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 3;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 2 |}.
 
   Definition zero_cap_bug_active_fanout : ActiveFanoutConfig :=
     {| active_branch_count := 4;
@@ -1533,6 +1620,101 @@ Section EndToEndModel.
     repeat split; lia.
   Qed.
 
+  Theorem active_fanout_gate_safe_implies_standalone_admission :
+    forall c,
+      active_fanout_gate_safe c ->
+      active_fanout_admitted_by_standalone c.
+  Proof.
+    intros c [Hallowed _].
+    unfold active_fanout_admitted_by_standalone.
+    unfold active_fanout_allowed in Hallowed.
+    unfold FanoutAdmission.fanout_admitted,
+      FanoutAdmission.degree_gate.
+    unfold degree_gate, budget_gate in Hallowed.
+    destruct Hallowed as
+      [Hmin [Hdegree [Hpure [Hdepth [Hpool Hbudget]]]]].
+    repeat split; assumption.
+  Qed.
+
+  Theorem active_fanout_gate_safe_implies_collapse_admission :
+    forall c,
+      active_fanout_gate_safe c ->
+      active_collapse_admitted_by_standalone c.
+  Proof.
+    intros c [Hallowed _].
+    unfold active_collapse_admitted_by_standalone.
+    unfold active_fanout_allowed in Hallowed.
+    unfold CollapseAdmission.collapse_admitted,
+      CollapseAdmission.threshold_gate.
+    unfold degree_gate, budget_gate in Hallowed.
+    destruct Hallowed as
+      [Hmin [_ [_ [Hdepth [Hpool Hbudget]]]]].
+    repeat split; assumption.
+  Qed.
+
+  Theorem active_fanout_gate_safe_represents_admitted_branches :
+    forall c,
+      active_fanout_gate_safe c ->
+      active_fanout_admission_represents_every_branch c.
+  Proof.
+    intros c Hgate slot Hslot.
+    unfold active_fanout_admission_represents_every_branch.
+    apply
+      (FanoutAdmission.admitted_complete_fanout_represents_every_branch
+        (active_branch_count c)
+        (active_min_branches c)
+        (active_parallelism_degree c)
+        (active_budget_granted c)
+        (active_pure c = true)
+        (active_depth_ok c = true)
+        (active_pool_ok c = true)
+        (active_dispatched_count c)).
+    - apply active_fanout_gate_safe_implies_standalone_admission.
+      exact Hgate.
+    - destruct Hgate as [_ Hcomplete].
+      unfold FanoutAdmission.complete_dispatch.
+      unfold complete_dispatch in Hcomplete.
+      exact Hcomplete.
+    - exact Hslot.
+  Qed.
+
+  Theorem active_fanout_gate_safe_represents_collapse_items :
+    forall c,
+      active_fanout_gate_safe c ->
+      active_collapse_admission_represents_every_item c.
+  Proof.
+    intros c Hgate slot Hslot.
+    unfold active_collapse_admission_represents_every_item.
+    apply
+      (CollapseAdmission.admitted_complete_collapse_represents_every_item
+        (active_branch_count c)
+        (active_min_branches c)
+        (active_budget_granted c)
+        (active_depth_ok c = true)
+        (active_pool_ok c = true)
+        (active_dispatched_count c)).
+    - apply active_fanout_gate_safe_implies_collapse_admission.
+      exact Hgate.
+    - destruct Hgate as [_ Hcomplete].
+      unfold CollapseAdmission.complete_dispatch.
+      unfold complete_dispatch in Hcomplete.
+      exact Hcomplete.
+    - exact Hslot.
+  Qed.
+
+  Theorem active_fanout_gate_safe_implies_admission_complete :
+    forall c,
+      active_fanout_gate_safe c ->
+      active_fanout_admission_complete c.
+  Proof.
+    intros c Hgate.
+    split.
+    - apply active_fanout_gate_safe_represents_admitted_branches.
+      exact Hgate.
+    - apply active_fanout_gate_safe_represents_collapse_items.
+      exact Hgate.
+  Qed.
+
   Theorem complete_active_transducer_safe :
     active_transducer_safe complete_active_fanout.
   Proof.
@@ -1550,17 +1732,20 @@ Section EndToEndModel.
     - apply complete_active_fanout_gate_safe.
     - split.
       + apply complete_active_transducer_safe.
-      + repeat split.
-        * intros Hdyn; discriminate Hdyn.
-        * intros Hmutation; discriminate Hmutation.
-        * intros Hstrict _; discriminate Hstrict.
-        * unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
-            blocks_parallel_dispatch, complete_active_fanout.
-          simpl.
-          intros _ [Hstate | [[Hstrict _] | [_ Hdyn]]].
-          -- discriminate Hstate.
-          -- discriminate Hstrict.
-          -- discriminate Hdyn.
+      + split.
+        * repeat split.
+          -- intros Hdyn; discriminate Hdyn.
+          -- intros Hmutation; discriminate Hmutation.
+          -- intros Hstrict _; discriminate Hstrict.
+          -- unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
+              blocks_parallel_dispatch, complete_active_fanout.
+             simpl.
+             intros _ [Hstate | [[Hstrict _] | [_ Hdyn]]].
+             ++ discriminate Hstate.
+             ++ discriminate Hstrict.
+             ++ discriminate Hdyn.
+        * apply active_fanout_gate_safe_implies_admission_complete.
+          apply complete_active_fanout_gate_safe.
   Qed.
 
   Theorem missing_purity_active_fanout_exposes_envelope_gap :
@@ -1592,6 +1777,52 @@ Section EndToEndModel.
     unfold partial_dispatch_active_fanout, complete_dispatch in Hcomplete.
     simpl in Hcomplete.
     discriminate Hcomplete.
+  Qed.
+
+  Theorem degree_capped_active_fanout_exposes_admission_gap :
+    ~ active_fanout_admission_represents_every_branch
+        degree_capped_admission_active_fanout.
+  Proof.
+    intros Hall.
+    pose proof
+      (FanoutAdmission.degree_capped_partial_dispatch_misses_slot
+        3 2 ltac:(lia) ltac:(lia))
+      as [slot [Hslot Hmiss]].
+    apply Hmiss.
+    specialize (Hall slot Hslot).
+    unfold degree_capped_admission_active_fanout in Hall.
+    simpl in Hall.
+    exact Hall.
+  Qed.
+
+  Theorem threshold_capped_collapse_exposes_admission_gap :
+    ~ active_collapse_admission_represents_every_item
+        threshold_capped_collapse_active_fanout.
+  Proof.
+    intros Hall.
+    pose proof
+      (CollapseAdmission.threshold_capped_partial_dispatch_misses_slot
+        3 2 ltac:(lia))
+      as [slot [Hslot Hmiss]].
+    apply Hmiss.
+    specialize (Hall slot Hslot).
+    unfold threshold_capped_collapse_active_fanout in Hall.
+    simpl in Hall.
+    exact Hall.
+  Qed.
+
+  Theorem degree_capped_active_fanout_exposes_combined_admission_gap :
+    ~ active_fanout_admission_complete degree_capped_admission_active_fanout.
+  Proof.
+    intros [Hbranches _].
+    exact (degree_capped_active_fanout_exposes_admission_gap Hbranches).
+  Qed.
+
+  Theorem threshold_capped_collapse_exposes_combined_admission_gap :
+    ~ active_fanout_admission_complete threshold_capped_collapse_active_fanout.
+  Proof.
+    intros [_ Hcollapse].
+    exact (threshold_capped_collapse_exposes_admission_gap Hcollapse).
   Qed.
 
   Theorem zero_cap_bug_active_fanout_exposes_envelope_gap :
@@ -1631,7 +1862,7 @@ Section EndToEndModel.
   Theorem missing_dynamic_eval_gate_exposes_envelope_gap :
     ~ active_fanout_stack_safe missing_dynamic_eval_gate_active_fanout.
   Proof.
-    intros [_ [_ [Hdynamic _]]].
+    intros [_ [_ [[Hdynamic _] _]]].
     unfold active_blocks_parallel_dispatch,
       missing_dynamic_eval_gate_active_fanout in Hdynamic.
     simpl in Hdynamic.
@@ -1646,7 +1877,8 @@ Section EndToEndModel.
   Theorem state_mutation_bypass_exposes_envelope_gap :
     ~ active_fanout_stack_safe state_mutation_bypass_active_fanout.
   Proof.
-    intros [_ [_ [_ [_ [_ Hno_budget]]]]].
+    intros [_ [_ [Hblockers _]]].
+    destruct Hblockers as [_ [_ [_ Hno_budget]]].
     unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
       blocks_parallel_dispatch, state_mutation_bypass_active_fanout in
       Hno_budget.
@@ -1660,7 +1892,8 @@ Section EndToEndModel.
   Theorem strict_io_bypass_exposes_envelope_gap :
     ~ active_fanout_stack_safe strict_io_bypass_active_fanout.
   Proof.
-    intros [_ [_ [_ [_ [_ Hno_budget]]]]].
+    intros [_ [_ [Hblockers _]]].
+    destruct Hblockers as [_ [_ [_ Hno_budget]]].
     unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
       blocks_parallel_dispatch, strict_io_bypass_active_fanout in
       Hno_budget.

@@ -869,9 +869,14 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_completion_dro
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerWavefrontParallelism" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerEffectConflictCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerDirectFanoutWavefrontRefinement" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerFanoutAdmissionCompleteness" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CollapseFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "local_scheduler_contracts_compose_standalone_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dependency_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_effect_conflict_edge_exposes_incomplete_reordering" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_implies_admission_complete" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "degree_capped_active_fanout_exposes_admission_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "threshold_capped_collapse_exposes_admission_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "rooted_closed_scheduler_boundary_safe" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_active_worker_boundary_root_exposes_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dispatch_boundary_root_exposes_gap" >/dev/null
@@ -908,8 +913,10 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "32"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "34"
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutGateComplete" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutAdmissionComplete" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "CollapseFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerDegreeMatches" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerMaximalBeforeCap" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerDefaultGateSound" >/dev/null
@@ -953,6 +960,10 @@ line_no "scripts/verify_cesk_gc_formal.sh" "Invariant SchedulerBoundaryComplete 
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_missing_purity" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_missing_budget" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_partial_dispatch" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_fanout_degree_cap_admission" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_collapse_threshold_cap_admission" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "The invariant of ActiveFanoutAdmissionComplete is equal to FALSE" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "The invariant of CollapseFanoutAdmissionComplete is equal to FALSE" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_zero_cap_bug" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_underutilized" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_nonbranch_degree" >/dev/null

@@ -1234,12 +1234,14 @@ facts the proofs rely on:
   boundary for active workers, live-dispatch fanout, async batch roots, and
   closed admission into one TLC state machine. It now composes
   `SchedulerWavefrontParallelism.v`, `SchedulerEffectConflictCompleteness.v`,
-  `SchedulerDirectFanoutWavefrontRefinement.v`, `SchedulerFanoutProgress.v`,
-  and `SchedulerGcBoundary.v`: wavefront edge coverage, direct-fanout
-  independent-wavefront refinement, FANOUT participant accounting,
-  parked-worker resume, worker completion-drop accounting, and the GC-facing
-  scheduler root/admission boundary are part of the same end-to-end proof
-  boundary.
+  `SchedulerDirectFanoutWavefrontRefinement.v`,
+  `SchedulerFanoutAdmissionCompleteness.v`,
+  `CollapseFanoutAdmissionCompleteness.v`, `SchedulerFanoutProgress.v`, and
+  `SchedulerGcBoundary.v`: wavefront edge coverage, direct-fanout
+  independent-wavefront refinement, admitted branch/collapse slot
+  representation, FANOUT participant accounting, parked-worker resume, worker
+  completion-drop accounting, and the GC-facing scheduler root/admission
+  boundary are part of the same end-to-end proof boundary.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, active
   direct-fanout without purity or budget gates, partial direct-fanout dispatch,
@@ -1256,6 +1258,10 @@ facts the proofs rely on:
   and the partial direct-dispatch discriminator fails on
   `SchedulerDirectFanoutRefinesWavefront`, matching the standalone scheduler
   wavefront/effect/direct-refinement proofs inside the composed model. The
+  degree-as-spawn-cap and threshold-as-spawn-cap E2E discriminators fail
+  specifically on `ActiveFanoutAdmissionComplete` and
+  `CollapseFanoutAdmissionComplete`, matching the standalone fanout/collapse
+  admission-completeness proofs inside the composed model. The
   missing active-worker-root, dispatch-root, batch-root, and
   open-admission E2E discriminators now fail specifically on
   `SchedulerBoundaryComplete`, matching the standalone scheduler/GC boundary

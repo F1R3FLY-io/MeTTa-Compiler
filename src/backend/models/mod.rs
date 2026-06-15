@@ -53,55 +53,39 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 // GC migration indirection seam (Increment 4, sub-step 1)
 // ============================================================================
 //
-// These three items are the single place where the evaluator's value
-// factory/store are selected. The whole `src/backend/eval/**` tree threads
-// `ActiveFactory`/`ActiveStore`/`active_factory()` instead of the concrete
-// slab types, so flipping the store-centric GC migration to the index arena
-// is a localized one-place change here — re-point these aliases at
-// `IndexFactory` / `IndexHeapStore` (`src/backend/eval/cesk/index_heap.rs`).
-//
-// In this sub-step the aliases resolve to the existing slab types, so the
-// default build is byte-identical (no cargo feature flag yet).
+// These items are the single place where the evaluator's value factory/store
+// are named. The whole `src/backend/eval/**` tree threads `ActiveFactory` /
+// `ActiveStore` / `active_factory()` instead of the concrete types, so the
+// evaluator is store-agnostic at the type level. They resolve to the index
+// arena store (`src/backend/eval/cesk/index_heap.rs`), the only store.
 
 /// The active value factory for the evaluator: the index-arena store's alloc
-/// interface `IndexFactory` (`src/backend/eval/cesk/index_heap.rs`). The
-/// `index-gc` feature is mandatory (enforced by the `lib.rs` guard); the gate
-/// is removed wholesale when the feature itself is retired.
+/// interface `IndexFactory` (`src/backend/eval/cesk/index_heap.rs`).
 pub type ActiveFactory = crate::backend::eval::cesk::index_heap::IndexFactory;
 
 /// The active `Store` impl: the index heap store σ, `IndexHeapStore`.
 pub type ActiveStore = crate::backend::eval::cesk::index_heap::IndexHeapStore;
 
-/// Get the active value factory instance. Delegates to `global_factory()`, which
-/// is itself feature-selected (slab `GcFactory` vs index `IndexFactory`).
+/// Get the active value factory instance. Delegates to `global_factory()`
+/// (the index `IndexFactory`).
 #[inline]
 pub fn active_factory() -> ActiveFactory {
     global_factory()
 }
 
-/// The GC value-store compiled into this binary. The store is **compile-time
-/// exclusive** (`ActiveStore`/`ActiveFactory` are `#[cfg]`-selected; the slab's
-/// `&'static`-ptr value payload and the index arena's `Addr` payload cannot
-/// coexist in one build), so this is fixed per build: `"index"` under the
-/// default/index-gc feature set, otherwise `"slab"` under the legacy slab opt-out.
+/// The GC value-store compiled into this binary. The slab store has been
+/// decommissioned; the index arena store is the only store, so this is always
+/// `"index"`. Retained as the single source of truth for the `--gc` reporter.
 #[inline]
 pub fn compiled_gc_store() -> &'static str {
-    if cfg!(feature = "index-gc") {
-        "index"
-    } else {
-        "slab"
-    }
+    "index"
 }
 
-/// Inc 3: resolve a `--gc` / `MTT_GC` request against the compile-time store.
-///
-/// Because the value model is compile-time exclusive, `--gc` is **not** a runtime
-/// store switch — it is an ASSERTION that the running binary is the store the
-/// caller intended, guarding against the confound of believing you tested
-/// `index` while actually running a `slab` binary (or vice-versa). Returns the
-/// compiled store name on success; on a concrete mismatch returns `Err(msg)` with
-/// a rebuild hint (the caller hard-errors before evaluating). An `"auto"`, empty,
-/// or absent request always succeeds (no assertion requested).
+/// Resolve a `--gc` / `MTT_GC` request against the compiled store. The index
+/// arena is the only store, so `--gc index` / `--gc auto` / empty / absent
+/// always succeed; `--gc slab` hard-errors (the slab store is decommissioned);
+/// any other value is rejected. Returns the compiled store name (`"index"`) on
+/// success.
 pub fn assert_gc_request(request: Option<&str>) -> Result<&'static str, String> {
     let compiled = compiled_gc_store();
     if let Some(raw) = request {
@@ -109,16 +93,12 @@ pub fn assert_gc_request(request: Option<&str>) -> Result<&'static str, String> 
         match req.as_str() {
             "" | "auto" => {}
             r if r == compiled => {}
-            "slab" | "index" => {
-                let hint = if req == "index" {
-                    "rebuild with default features (index-gc enabled)"
-                } else {
-                    "the slab store has been decommissioned; rebuild with default \
-                     features to use index-gc, the only supported store"
-                };
+            "slab" => {
                 return Err(format!(
-                    "--gc={req} requested, but this binary was compiled with the '{compiled}' \
-                     GC store. The store is compile-time exclusive — {hint}."
+                    "--gc=slab requested, but this binary was compiled with the \
+                     '{compiled}' GC store; the slab store has been decommissioned — \
+                     rebuild with default features to use index-gc, the only \
+                     supported store."
                 ));
             }
             other => {
@@ -136,9 +116,8 @@ mod gc_request_tests {
     use super::{assert_gc_request, compiled_gc_store};
 
     /// F2 (the --gc/MTT_GC assert + reporter): the resolved request must match
-    /// the compile-time store or hard-error BEFORE evaluation. These tests are
-    /// cfg-agnostic — they derive expectations from `compiled_gc_store()`, so
-    /// they hold in both the default index build and the legacy slab opt-out.
+    /// the compiled store (`"index"`, the only store) or hard-error BEFORE
+    /// evaluation. The tests derive expectations from `compiled_gc_store()`.
     #[test]
     fn matching_request_passes_and_reports_the_compiled_store() {
         let compiled = compiled_gc_store();
@@ -166,7 +145,7 @@ mod gc_request_tests {
     #[test]
     fn the_other_store_is_a_hard_error_with_a_rebuild_hint() {
         let compiled = compiled_gc_store();
-        let other = if compiled == "slab" { "index" } else { "slab" };
+        let other = "slab"; // the only non-matching value for the index-only store
         let err = assert_gc_request(Some(other)).expect_err("store mismatch must hard-error");
         assert!(
             err.contains(&format!("--gc={other} requested")),

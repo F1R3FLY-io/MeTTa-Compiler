@@ -5411,7 +5411,7 @@ pub fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
 // read structurally by name, with a bounded shape; nothing opts in except the
 // dispatch op, and what it yields is determined entirely by K-structure. It is the
 // parallel analogue of `collect_k_spine`'s `SUSPENDED_ACTIVATIONS`. (The slab build
-// did exactly this via `ParallelDispatchRootProvider` in `ROOT_REGISTRY`; A5 deleted
+// did exactly this via `ParallelDispatchRoots` in `ROOT_REGISTRY`; A5 deleted
 // the registry and never replaced the walk — that omission is the residual bug D2
 // fixes. We do NOT reuse `ROOT_REGISTRY`: this is a typed, dispatch-only anchor.)
 //
@@ -5423,7 +5423,7 @@ pub fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
 
 /// E1-FLIP / CEX-1 (D2): the GC-thread-readable view of one in-flight parallel
 /// dispatch's fan-out (`branches`/`items` INPUTS + `results` OUTPUTS). Implemented
-/// by `ParallelDispatchRootProvider` / `ParallelCollapseRootProvider` (types.rs),
+/// by `ParallelDispatchRoots` / `ParallelCollapseRoots` (types.rs),
 /// whose bodies are the SAME `collect_roots` the slab `RootProvider` impls run
 /// (inputs from the immutable `Arc<Vec<…>>`; outputs via `results.try_lock()`,
 /// NEVER `lock` — a contended `results` ⇒ a worker mid-write holding its EvalGuard
@@ -6127,7 +6127,7 @@ pub fn maybe_process_gc_response_fast() -> bool {
 // producing ~1.3 s `gc-pause` events visible in `trace-analyzer`.
 //
 // Replaced by:
-//   - `ParallelDispatchRootProvider` / `ParallelCollapseRootProvider`
+//   - `ParallelDispatchRoots` / `ParallelCollapseRoots`
 //     (Phase 6 commit `429e798` + Phase 8 input coverage in `b4e0ed7`)
 //   - `current_iter_root::CurrentIterRootProvider` (Phase 9.1)
 //   - `register_temporary_roots` for parent frame snapshots

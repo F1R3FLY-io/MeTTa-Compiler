@@ -2497,7 +2497,7 @@ impl Drop for CompletionGuard {
 /// frame_chain registration via `_root_guard`, popped on drop.
 /// `branches` is taken as `Arc<Vec<...>>` (not `Vec<...>`) so the same
 /// allocation can be shared between (a) the per-dispatch
-/// `ParallelDispatchRootProvider` registered with `ROOT_REGISTRY`
+/// `ParallelDispatchRoots` registered with `ROOT_REGISTRY`
 /// (Phase 8 — closes the worker-INPUT vs GC-pool-walker race) AND
 /// (b) the caller's `WaitForParallel.stable_branches_snapshot` field.
 /// One allocation, one ref-count chain.
@@ -2743,7 +2743,7 @@ fn parallel_dispatch(
                             let my_gen = crate::backend::models::gc_allocator::current_cycle_gen();
                             // Genuine-CESK self-read of the about-to-return result set:
                             // every value ∪ every binding value (the exact idiom
-                            // `ParallelDispatchRootProvider::collect_roots` uses).
+                            // `ParallelDispatchRoots::collect_roots` uses).
                             let mut result_roots: Vec<crate::backend::models::MettaValue> =
                                 Vec::with_capacity(eval_results.len() * 4);
                             for (value, bindings) in eval_results.iter() {
@@ -2841,7 +2841,7 @@ fn parallel_dispatch(
     // dropping the handle on the trampoline thread frees the provider
     // and the Weak in ROOT_REGISTRY is auto-pruned on next root walk.
     let root_provider = Arc::new(
-        crate::backend::eval::trampoline::types::ParallelDispatchRootProvider {
+        crate::backend::eval::trampoline::types::ParallelDispatchRoots {
             results: Arc::clone(&results),
             // Phase 8: share the SAME Arc the caller will use for
             // `WaitForParallel.stable_branches_snapshot`. Single allocation,
@@ -2896,7 +2896,7 @@ fn parallel_dispatch(
         num_branches,
         started_at_alloc_count,
         stall_state: Mutex::new(StallState::default()),
-        _root_provider_arc: root_provider,
+        _dispatch_roots_arc: root_provider,
         tracked_vars_hint,
         // E1-FLIP / CEX-1 (D2): RAII anchor deregistration (None when dormant).
         _live_dispatch: live_dispatch,
@@ -3321,7 +3321,7 @@ fn pump_parallel_collapse_wait(
 /// ProcessCollapseBind paths (Sites 4 and 5) in `process_continuation`.
 /// `items` is taken as `Arc<Vec<...>>` (not `Vec<...>`) so the same
 /// allocation can be shared between (a) the per-dispatch
-/// `ParallelCollapseRootProvider` registered with `ROOT_REGISTRY`
+/// `ParallelCollapseRoots` registered with `ROOT_REGISTRY`
 /// (Phase 8 — input-root coverage) AND (b) the caller's
 /// `WaitForParallelCollapse.stable_items_snapshot` field.
 fn parallel_collapse_dispatch(
@@ -3475,7 +3475,7 @@ fn parallel_collapse_dispatch(
             //     items — no caches get populated in that case.
             //
             // (b) Eval-path items produce values fed straight into
-            //     `results[slot]`, which `ParallelCollapseRootProvider`
+            //     `results[slot]`, which `ParallelCollapseRoots`
             //     (registered at the construction site in `429e798`)
             //     already covers for cross-thread GC visibility. The
             //     parent's merge path drives results into
@@ -3594,7 +3594,7 @@ fn parallel_collapse_dispatch(
     // Register a GC root provider for this dispatch.
     // See `parallel_dispatch` for the rationale and lifetime invariants.
     let root_provider = Arc::new(
-        crate::backend::eval::trampoline::types::ParallelCollapseRootProvider {
+        crate::backend::eval::trampoline::types::ParallelCollapseRoots {
             results: Arc::clone(&results),
             // Phase 8: share the Arc the caller will use for
             // `WaitForParallelCollapse.stable_items_snapshot`.
@@ -3624,7 +3624,7 @@ fn parallel_collapse_dispatch(
         num_branches: num_items,
         started_at_alloc_count: AtomicU64::new(crate::backend::models::alloc_count_snapshot()),
         stall_state: Mutex::new(StallState::default()),
-        _root_provider_arc: root_provider,
+        _dispatch_roots_arc: root_provider,
         // Phase 10.A: handed off to the WaitForParallelCollapse continuation
         // for sidecar per-branch binding-projection reconstruction.
         tracked_vars_hint: parent_tracked_vars,

@@ -201,7 +201,7 @@ pub struct StallState {
 /// `_live_dispatch` RAII field).
 ///
 /// **Thread-safety**: the handle is `Send + Sync` so its
-/// `ParallelDispatchRootProvider` can be registered (as an
+/// `ParallelDispatchRoots` can be registered (as an
 /// `Arc<dyn DispatchRoots>`) in the global `LIVE_DISPATCHES` anchor. This is
 /// REQUIRED for correctness: worker branches (running on the eval work-pool)
 /// write their results into `results[slot]` between parent pump-ticks. The
@@ -239,9 +239,9 @@ pub struct ParallelDispatchHandle {
     /// DispatchRoots>` is registered in the global `LIVE_DISPATCHES` anchor at
     /// dispatch construction. Drops when the handle drops (on the trampoline
     /// thread), at which point the `Weak` is auto-pruned on the next anchor
-    /// walk. See `ParallelDispatchRootProvider`'s doc for the race this closes.
+    /// walk. See `ParallelDispatchRoots`'s doc for the race this closes.
     #[allow(dead_code)]
-    pub(crate) _root_provider_arc: Arc<ParallelDispatchRootProvider>,
+    pub(crate) _dispatch_roots_arc: Arc<ParallelDispatchRoots>,
     /// Phase 10.A — Stage 1e closure: tracked-vars hint captured from the
     /// parent thread's `BINDING_CAPTURE_STACK` at dispatch construction.
     /// Workers re-establish a shadow capture frame from this hint so
@@ -310,10 +310,10 @@ impl std::fmt::Debug for ParallelDispatchHandle {
 // A5.3: the index-gc build cfg-walls the `RootProvider` impl (it registers ZERO
 // providers — roots are structural), so these fields are read only in the slab
 // build. The struct is still constructed and held alive via the dispatch handle's
-// `_root_provider_arc` field (byte-identical construction in both builds), so it is
+// `_dispatch_roots_arc` field (byte-identical construction in both builds), so it is
 // intentionally dead-but-present in the index regime.
 #[cfg_attr(feature = "index-gc", allow(dead_code))]
-pub struct ParallelDispatchRootProvider {
+pub struct ParallelDispatchRoots {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
     /// Stable snapshot of worker INPUTS for the dispatch lifetime.
     /// Shares the same Arc as `WaitForParallel.stable_branches_snapshot`
@@ -352,7 +352,7 @@ pub struct ParallelDispatchRootProvider {
 /// `results.try_lock()`, never a blocking `lock` — a contended `results` means a
 /// worker mid-write holding its EvalGuard, which self-rooted that value as a
 /// rendezvous participant, so skipping is safe).
-impl crate::backend::models::gc_allocator::DispatchRoots for ParallelDispatchRootProvider {
+impl crate::backend::models::gc_allocator::DispatchRoots for ParallelDispatchRoots {
     fn collect_dispatch_roots(&self, roots: &mut Vec<MettaValue>) {
         // INPUTS first — no Mutex, direct iter (immutable Arc).
         for (value, bindings) in self.branches.iter() {
@@ -388,9 +388,9 @@ pub struct ParallelCollapseDispatchHandle {
     pub num_branches: usize,
     pub started_at_alloc_count: AtomicU64,
     pub stall_state: Mutex<StallState>,
-    /// See `ParallelDispatchHandle::_root_provider_arc`.
+    /// See `ParallelDispatchHandle::_dispatch_roots_arc`.
     #[allow(dead_code)]
-    pub(crate) _root_provider_arc: Arc<ParallelCollapseRootProvider>,
+    pub(crate) _dispatch_roots_arc: Arc<ParallelCollapseRoots>,
     /// See `ParallelDispatchHandle::tracked_vars_hint` (Phase 10.A).
     pub tracked_vars_hint: Option<Arc<SmallVec<[MettaValue; 4]>>>,
     /// E1-FLIP / CEX-1 (D2): see `ParallelDispatchHandle::_live_dispatch`.
@@ -411,26 +411,26 @@ impl std::fmt::Debug for ParallelCollapseDispatchHandle {
 }
 
 /// GC root provider for an active parallel-collapse dispatch. See
-/// `ParallelDispatchRootProvider` for the design rationale (the same
+/// `ParallelDispatchRoots` for the design rationale (the same
 /// reasoning applies — collapse handles also carry `EvalFrameGuard`).
 #[derive(Debug)]
-// A5.3: see `ParallelDispatchRootProvider` — the `RootProvider` impl is slab-only;
-// the struct stays alive via `ParallelCollapseDispatchHandle::_root_provider_arc`.
+// A5.3: see `ParallelDispatchRoots` — the `RootProvider` impl is slab-only;
+// the struct stays alive via `ParallelCollapseDispatchHandle::_dispatch_roots_arc`.
 #[cfg_attr(feature = "index-gc", allow(dead_code))]
-pub struct ParallelCollapseRootProvider {
+pub struct ParallelCollapseRoots {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
     /// Stable snapshot of worker INPUTS for the dispatch lifetime.
     /// Shares the same Arc as `WaitForParallelCollapse.stable_items_snapshot`.
-    /// See `ParallelDispatchRootProvider::branches` for the full
+    /// See `ParallelDispatchRoots::branches` for the full
     /// rationale — collapse workers capture items by-move identically.
     pub(crate) items: Arc<Vec<BoundValue>>,
 }
 
 
 /// E1-FLIP / CEX-1 (D2): the index-gc collapse-dispatch fan-out anchor. See
-/// `ParallelDispatchRootProvider`'s `DispatchRoots` impl — identical rationale and
+/// `ParallelDispatchRoots`'s `DispatchRoots` impl — identical rationale and
 /// body (collapse workers capture `items` by-move identically).
-impl crate::backend::models::gc_allocator::DispatchRoots for ParallelCollapseRootProvider {
+impl crate::backend::models::gc_allocator::DispatchRoots for ParallelCollapseRoots {
     fn collect_dispatch_roots(&self, roots: &mut Vec<MettaValue>) {
         // INPUTS first — no Mutex, direct iter (immutable Arc).
         for (value, bindings) in self.items.iter() {
@@ -1152,9 +1152,9 @@ pub enum Continuation {
     /// no C-stack growth across ticks regardless of `MAX_PARALLEL_DEPTH`.
     WaitForParallel {
         /// Per-call state for the dispatch (shared via Arc with workers).
-        /// The handle's `_root_provider_arc` keeps a GC root provider
+        /// The handle's `_dispatch_roots_arc` keeps a GC root provider
         /// alive for the dispatch's lifetime; see
-        /// `ParallelDispatchRootProvider` for the race it closes.
+        /// `ParallelDispatchRoots` for the race it closes.
         handle: ParallelDispatchHandle,
         /// How to merge per-branch results into `base_results`.
         merge_mode: ParallelMergeMode,
@@ -1181,9 +1181,9 @@ pub enum Continuation {
     /// **Stack-safety mandate (2026-05-15)**: wait state for a trampolinized
     /// parallel-collapse dispatch. Mirrors `WaitForParallel`.
     WaitForParallelCollapse {
-        /// The handle's `_root_provider_arc` keeps a GC root provider
+        /// The handle's `_dispatch_roots_arc` keeps a GC root provider
         /// alive for the dispatch's lifetime; see
-        /// `ParallelCollapseRootProvider`.
+        /// `ParallelCollapseRoots`.
         handle: ParallelCollapseDispatchHandle,
         merge_mode: CollapseMergeMode,
         /// The original items being collapsed (preserved for safepoint roots

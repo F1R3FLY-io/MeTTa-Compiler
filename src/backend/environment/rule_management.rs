@@ -3813,7 +3813,7 @@ where
                         == std::any::TypeId::of::<crate::backend::models::MettaValue>()
                 {
                     // I-10: Parallel speculative matching — head matching is pure read-only.
-                    // Only for MettaValue (GcFactory is Send+Sync).
+                    // Only for MettaValue (ActiveFactory is Send+Sync).
                     let chunks = crate::backend::eval::cesk::chunk_candidates(
                         candidates.len(),
                         std::thread::available_parallelism()
@@ -3822,12 +3822,14 @@ where
                             .min(candidates.len()),
                     );
 
-                    // SAFETY: V is MettaValue (TypeId checked above). GcFactory is Send+Sync.
-                    // We need to transmute the factory to a concrete Send+Sync type for
-                    // std::thread::scope since the generic F doesn't promise Send.
+                    // SAFETY: V == MettaValue (TypeId guard above), so F is the active
+                    // value factory `ActiveFactory` (`IndexFactory`). Reinterpreting `&F`
+                    // as `*const ActiveFactory` is an identity cast; `ActiveFactory` is
+                    // Send+Sync for the `std::thread::scope` below (the generic F doesn't
+                    // promise Send).
                     let factory_ptr =
-                        &self.factory as *const F as *const crate::backend::models::GcFactory;
-                    let gc_factory: crate::backend::models::GcFactory = unsafe { *factory_ptr };
+                        &self.factory as *const F as *const crate::backend::models::ActiveFactory;
+                    let gc_factory: crate::backend::models::ActiveFactory = unsafe { *factory_ptr };
                     // Collect (rule_idx, result) pairs so we can canonicalize order
                     // after thread join. Chunks partition candidate range, so within
                     // a chunk rule_idx is monotonic; across chunks, thread-scheduling

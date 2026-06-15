@@ -1238,16 +1238,17 @@ facts the proofs rely on:
   dynamic eval that bypasses the dynamic-eval blocker, state mutation through
   the pure no-budget path, strict I/O through the pure no-budget path, missing
   active-worker roots, missing dispatch roots, missing batch roots, open
-  admission across a root snapshot, and unclaimed recurring cron dispatch.  The
-  composed cron startup discriminator separately rejects a submitted startup
-  task when neither `CheckEvents` nor `DrainChannel` polls the cron task
-  channel.  Composed WorkPool discriminators reject lossy startup enqueue,
-  missing inner task-panic heartbeat publication, and missing outer
-  accounting-panic catch.  The envelope now also composes WorkPool overflow
-  and lifecycle accounting: the E2E model rejects uncapped overflow spawning,
-  double-unpark overcounting, and parked-worker respawn without the active-count
-  increment, using the same cap/capacity invariants as the standalone
-  `WorkPoolOverflowCap` and `WorkPoolLifecycle` models.
+  admission across a root snapshot, unclaimed recurring cron dispatch, and a
+  pooled recurring worker that clears `in_flight` without first publishing the
+  terminal stop state.  The composed cron startup discriminator separately
+  rejects a submitted startup task when neither `CheckEvents` nor
+  `DrainChannel` polls the cron task channel.  Composed WorkPool discriminators
+  reject lossy startup enqueue, missing inner task-panic heartbeat publication,
+  and missing outer accounting-panic catch.  The envelope now also composes
+  WorkPool overflow and lifecycle accounting: the E2E model rejects uncapped
+  overflow spawning, double-unpark overcounting, and parked-worker respawn
+  without the active-count increment, using the same cap/capacity invariants as
+  the standalone `WorkPoolOverflowCap` and `WorkPoolLifecycle` models.
 - JIT Long boxing store selection (`formal/rocq/gc/JitLongBoxStoreSelection.v`,
   `tla/JitLongBoxStoreSelection.tla`, 2026-06-14) — proves out-of-inline-range
   JIT Long boxing selects the compiled store: index builds allocate through the

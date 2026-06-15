@@ -17,6 +17,7 @@ CONSTANTS
     IncludeBatchRoot,
     CloseAdmission,
     ClaimCronBeforeDispatch,
+    PublishCronStopBeforeIdle,
     ReturnCronHandleSender,
     ReturnCronReadyReceiver,
     ReadySentInsideCronRun,
@@ -74,6 +75,8 @@ VARIABLES
     inFlight,
     cronWorkerRunning,
     cronOverlap,
+    cronStopRequested,
+    cronDispatchedAgain,
     dispatchCount,
     startupPhase,
     cronReadyObserved,
@@ -101,7 +104,8 @@ VARIABLES
 baseVars ==
     <<phase, wave, running, completed, consumerBeforeProducer,
       conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
-      valueFreed, inFlight, cronWorkerRunning, cronOverlap, dispatchCount>>
+      valueFreed, inFlight, cronWorkerRunning, cronOverlap,
+      cronStopRequested, cronDispatchedAgain, dispatchCount>>
 
 startupVars ==
     <<startupPhase, cronReadyObserved, cronStartupTaskSubmitted,
@@ -142,6 +146,7 @@ BooleanConstantsOK ==
     /\ IncludeBatchRoot \in BOOLEAN
     /\ CloseAdmission \in BOOLEAN
     /\ ClaimCronBeforeDispatch \in BOOLEAN
+    /\ PublishCronStopBeforeIdle \in BOOLEAN
     /\ ReturnCronHandleSender \in BOOLEAN
     /\ ReturnCronReadyReceiver \in BOOLEAN
     /\ ReadySentInsideCronRun \in BOOLEAN
@@ -211,6 +216,8 @@ TypeOK ==
     /\ inFlight \in BOOLEAN
     /\ cronWorkerRunning \in BOOLEAN
     /\ cronOverlap \in BOOLEAN
+    /\ cronStopRequested \in BOOLEAN
+    /\ cronDispatchedAgain \in BOOLEAN
     /\ dispatchCount \in Nat
     /\ startupPhase \in {"spawned", "ready", "submitted", "observed", "lost"}
     /\ cronReadyObserved \in BOOLEAN
@@ -272,6 +279,8 @@ Init ==
     /\ inFlight = FALSE
     /\ cronWorkerRunning = FALSE
     /\ cronOverlap = FALSE
+    /\ cronStopRequested = FALSE
+    /\ cronDispatchedAgain = FALSE
     /\ dispatchCount = 0
     /\ startupPhase = "spawned"
     /\ cronReadyObserved = FALSE
@@ -303,7 +312,8 @@ Schedule ==
     /\ conflictSameWave' = (HasEffectConflict /\ ConsumerWave = 0)
     /\ UNCHANGED <<running, completed, consumerBeforeProducer, rootsBuilt,
                   workerRooted, lateWorkerLive, valueFreed, inFlight,
-                  cronWorkerRunning, cronOverlap, dispatchCount>>
+                  cronWorkerRunning, cronOverlap, cronStopRequested,
+                  cronDispatchedAgain, dispatchCount>>
 
 AdmissionOpen ==
     ~(rootsBuilt /\ CloseAdmission)
@@ -317,7 +327,8 @@ StartProducer ==
     /\ running' = running \cup {"producer"}
     /\ UNCHANGED <<wave, completed, consumerBeforeProducer, conflictSameWave,
                   rootsBuilt, workerRooted, lateWorkerLive, valueFreed,
-                  inFlight, cronWorkerRunning, cronOverlap, dispatchCount>>
+                  inFlight, cronWorkerRunning, cronOverlap,
+                  cronStopRequested, cronDispatchedAgain, dispatchCount>>
 
 ConsumerReady ==
     IF wave["consumer"] = 0 THEN TRUE ELSE "producer" \in completed
@@ -334,7 +345,8 @@ StartConsumer ==
         (consumerBeforeProducer \/ (HasDependency /\ ~("producer" \in completed)))
     /\ UNCHANGED <<wave, completed, conflictSameWave, rootsBuilt, workerRooted,
                   lateWorkerLive, valueFreed, inFlight, cronWorkerRunning,
-                  cronOverlap, dispatchCount>>
+                  cronOverlap, cronStopRequested, cronDispatchedAgain,
+                  dispatchCount>>
 
 Complete(task) ==
     /\ task \in running
@@ -343,7 +355,8 @@ Complete(task) ==
     /\ phase' = IF completed' = TASKS THEN "done" ELSE "running"
     /\ UNCHANGED <<wave, consumerBeforeProducer, conflictSameWave, rootsBuilt,
                   workerRooted, lateWorkerLive, valueFreed, inFlight,
-                  cronWorkerRunning, cronOverlap, dispatchCount>>
+                  cronWorkerRunning, cronOverlap, cronStopRequested,
+                  cronDispatchedAgain, dispatchCount>>
 
 BuildRoots ==
     /\ ~rootsBuilt
@@ -354,7 +367,8 @@ BuildRoots ==
     /\ UNCHANGED <<phase, wave, running, completed, consumerBeforeProducer,
                   conflictSameWave, dispatchFanoutLive, batchHandoffLive,
                   lateWorkerLive, valueFreed, inFlight, cronWorkerRunning,
-                  cronOverlap, dispatchCount>>
+                  cronOverlap, cronStopRequested, cronDispatchedAgain,
+                  dispatchCount>>
 
 AdmitLateWorker ==
     /\ rootsBuilt
@@ -365,7 +379,8 @@ AdmitLateWorker ==
                   conflictSameWave, rootsBuilt, workerRooted,
                   dispatchFanoutLive, batchHandoffLive, dispatchRooted,
                   batchRooted, valueFreed, inFlight, cronWorkerRunning,
-                  cronOverlap, dispatchCount>>
+                  cronOverlap, cronStopRequested, cronDispatchedAgain,
+                  dispatchCount>>
 
 Sweep ==
     /\ rootsBuilt
@@ -379,7 +394,7 @@ Sweep ==
                   conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
                   dispatchFanoutLive, batchHandoffLive, dispatchRooted,
                   batchRooted, inFlight, cronWorkerRunning, cronOverlap,
-                  dispatchCount>>
+                  cronStopRequested, cronDispatchedAgain, dispatchCount>>
 
 CronFirstDue ==
     /\ dispatchCount = 0
@@ -388,7 +403,8 @@ CronFirstDue ==
     /\ dispatchCount' = 1
     /\ UNCHANGED <<phase, wave, running, completed, consumerBeforeProducer,
                   conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
-                  valueFreed, cronOverlap>>
+                  valueFreed, cronOverlap, cronStopRequested,
+                  cronDispatchedAgain>>
 
 CronSecondDue ==
     /\ dispatchCount = 1
@@ -400,15 +416,27 @@ CronSecondDue ==
             /\ cronOverlap' = TRUE
     /\ UNCHANGED <<phase, wave, running, completed, consumerBeforeProducer,
                   conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
-                  valueFreed, inFlight, cronWorkerRunning>>
+                  valueFreed, inFlight, cronWorkerRunning, cronStopRequested,
+                  cronDispatchedAgain>>
 
 CronWorkerComplete ==
     /\ cronWorkerRunning
     /\ inFlight' = FALSE
     /\ cronWorkerRunning' = FALSE
+    /\ cronStopRequested' = PublishCronStopBeforeIdle
     /\ UNCHANGED <<phase, wave, running, completed, consumerBeforeProducer,
                   conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
-                  valueFreed, cronOverlap, dispatchCount>>
+                  valueFreed, cronOverlap, cronDispatchedAgain, dispatchCount>>
+
+CronFinalDue ==
+    /\ dispatchCount >= 1
+    /\ ~cronWorkerRunning
+    /\ ~cronDispatchedAgain
+    /\ cronDispatchedAgain' = ~cronStopRequested
+    /\ UNCHANGED <<phase, wave, running, completed, consumerBeforeProducer,
+                  conflictSameWave, rootsBuilt, workerRooted, lateWorkerLive,
+                  valueFreed, inFlight, cronWorkerRunning, cronOverlap,
+                  cronStopRequested, dispatchCount>>
 
 CronStartupRun ==
     /\ startupPhase = "spawned"
@@ -681,6 +709,7 @@ ThreadingNoGcNext ==
     \/ CronFirstDue
     \/ CronSecondDue
     \/ CronWorkerComplete
+    \/ CronFinalDue
 
 GcBoundaryNext ==
     \/ BuildRoots
@@ -829,6 +858,9 @@ NoLiveValueSwept ==
 NoOverlappingCronDispatch ==
     ~cronOverlap
 
+CronStopPreventsRedispatch ==
+    ~cronDispatchedAgain
+
 CronStartupReadyWaitCompletes ==
     (startupPhase /= "spawned" /\ ScheduleCronTaskAfterReady) =>
       cronReadyObserved
@@ -898,6 +930,7 @@ EndToEndSafe ==
     /\ MaximalIndependentParallelism
     /\ NoLiveValueSwept
     /\ NoOverlappingCronDispatch
+    /\ CronStopPreventsRedispatch
     /\ CronStartupReadyWaitCompletes
     /\ CronStartupScheduleAfterReadyHasHandle
     /\ CronStartupSubmittedReachable

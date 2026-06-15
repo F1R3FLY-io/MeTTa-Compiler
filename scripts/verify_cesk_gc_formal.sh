@@ -416,6 +416,8 @@ run_tlc "threading_end_to_end_open_admission" "ThreadingEndToEndInterleaving.tla
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_unclaimed_cron" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg" \
   fail "Invariant EndToEndSafe is violated"
+run_tlc "threading_end_to_end_cron_no_stop" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_cron_no_stop.cfg" \
+  fail "Invariant CronStopPreventsRedispatch is violated"
 run_tlc "threading_end_to_end_startup_no_poll" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_startup_no_poll.cfg" \
   fail "Invariant NoCronStartupTaskLost is violated"
 run_tlc "threading_end_to_end_work_pool_lossy_enqueue" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_work_pool_lossy_enqueue.cfg" \

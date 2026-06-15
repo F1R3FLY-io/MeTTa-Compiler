@@ -4,11 +4,12 @@
     separate files: scheduler reordering, effect-conflict exclusion, direct
     fanout maximality for independent work, active-worker GC rooting, closed
     worker admission during a root snapshot, and recurring cron in_flight
-    claims.
+    claims plus stop-before-redispatch.
 *)
 
 From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Arith Lia.
+Require Import CronRecurringDispatch.
 Require Import CronStartupDelivery.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerDynamicEvalGate.
@@ -18,6 +19,7 @@ Require Import WorkPoolOverflowCap.
 Require Import WorkPoolPanicIsolation.
 Require Import WorkPoolStartupDrain.
 
+Import MeTTaTron_GC_CronRecurringDispatch.
 Import MeTTaTron_GC_CronStartupDelivery.
 Import MeTTaTron_GC_SchedulerActiveFanoutGate.
 Import MeTTaTron_GC_SchedulerDynamicEvalGate.
@@ -211,21 +213,69 @@ Section EndToEndModel.
 
   Record CronState : Type := {
     cron_in_flight : bool;
-    cron_overlap : bool
+    cron_stop_requested : bool;
+    cron_overlap : bool;
+    cron_dispatched_again : bool
   }.
+
+  Definition cron_dispatch_state (s : CronState) : DispatchState :=
+    {| in_flight := cron_in_flight s;
+       stop_requested := cron_stop_requested s |}.
 
   Definition cron_first_due (claim_before_dispatch : bool) : CronState :=
     {| cron_in_flight := claim_before_dispatch;
-       cron_overlap := false |}.
+       cron_stop_requested := false;
+       cron_overlap := false;
+       cron_dispatched_again := false |}.
 
   Definition cron_second_due (s : CronState) : CronState :=
     if cron_in_flight s then
-      {| cron_in_flight := true; cron_overlap := cron_overlap s |}
+      {| cron_in_flight := true;
+         cron_stop_requested := cron_stop_requested s;
+         cron_overlap := cron_overlap s;
+         cron_dispatched_again := cron_dispatched_again s |}
     else
-      {| cron_in_flight := false; cron_overlap := true |}.
+      {| cron_in_flight := false;
+         cron_stop_requested := cron_stop_requested s;
+         cron_overlap := true;
+         cron_dispatched_again := cron_dispatched_again s |}.
+
+  Definition cron_worker_complete
+      (publish_stop_before_idle : bool)
+      (s : CronState)
+      : CronState :=
+    let completed :=
+      worker_complete
+        (if publish_stop_before_idle then Stop else Continue)
+        (cron_dispatch_state s) in
+    {| cron_in_flight := in_flight completed;
+       cron_stop_requested := stop_requested completed;
+       cron_overlap := cron_overlap s;
+       cron_dispatched_again := cron_dispatched_again s |}.
+
+  Definition cron_final_due (s : CronState) : CronState :=
+    match cron_due (cron_dispatch_state s) with
+    | Dispatch =>
+        {| cron_in_flight := cron_in_flight s;
+           cron_stop_requested := cron_stop_requested s;
+           cron_overlap := cron_overlap s;
+           cron_dispatched_again := true |}
+    | RequeueOnly | DropRecurring =>
+        {| cron_in_flight := cron_in_flight s;
+           cron_stop_requested := cron_stop_requested s;
+           cron_overlap := cron_overlap s;
+           cron_dispatched_again := false |}
+    end.
 
   Definition cron_no_overlap (s : CronState) : Prop :=
     cron_overlap s = false.
+
+  Definition cron_stop_prevents_redispatch (s : CronState) : Prop :=
+    cron_dispatched_again s = false.
+
+  Definition cron_dispatch_safe (s : CronState) : Prop :=
+    cron_no_overlap s /\
+    cron_stop_prevents_redispatch s.
 
   Theorem claimed_cron_dispatch_prevents_overlap :
     cron_no_overlap (cron_second_due (cron_first_due true)).
@@ -233,8 +283,37 @@ Section EndToEndModel.
     reflexivity.
   Qed.
 
+  Theorem published_stop_prevents_redispatch :
+    cron_stop_prevents_redispatch
+      (cron_final_due
+        (cron_worker_complete true
+          (cron_second_due (cron_first_due true)))).
+  Proof.
+    reflexivity.
+  Qed.
+
+  Theorem complete_cron_dispatch_safe :
+    cron_dispatch_safe
+      (cron_final_due
+        (cron_worker_complete true
+          (cron_second_due (cron_first_due true)))).
+  Proof.
+    split.
+    - apply claimed_cron_dispatch_prevents_overlap.
+    - apply published_stop_prevents_redispatch.
+  Qed.
+
   Theorem unclaimed_cron_dispatch_exposes_overlap :
     cron_overlap (cron_second_due (cron_first_due false)) = true.
+  Proof.
+    reflexivity.
+  Qed.
+
+  Theorem missing_cron_stop_publish_exposes_redispatch :
+    cron_dispatched_again
+      (cron_final_due
+        (cron_worker_complete false
+          (cron_second_due (cron_first_due true)))) = true.
   Proof.
     reflexivity.
   Qed.
@@ -945,7 +1024,7 @@ Section EndToEndModel.
       dispatch_live dispatch_rooted
       batch_live batch_rooted
       late_worker_live /\
-    cron_no_overlap cron_state /\
+    cron_dispatch_safe cron_state /\
     startup_delivery_safe cron_startup /\
     work_pool_envelope_safe work_pool /\
     active_fanout_envelope_safe w active_fanout.
@@ -963,7 +1042,9 @@ Section EndToEndModel.
         true
         true
         false
-        (cron_second_due (cron_first_due true))
+        (cron_final_due
+          (cron_worker_complete true
+            (cron_second_due (cron_first_due true))))
         complete_startup
         complete_work_pool
         complete_active_fanout.
@@ -975,7 +1056,7 @@ Section EndToEndModel.
     - split.
       + apply rooted_closed_gc_window_safe.
       + split.
-        * apply claimed_cron_dispatch_prevents_overlap.
+        * apply complete_cron_dispatch_safe.
         * split.
           -- apply complete_startup_delivers_submitted_task.
           -- split.
@@ -995,7 +1076,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       ~ end_to_end_safe
           w
           wave
@@ -1019,10 +1100,50 @@ Section EndToEndModel.
     exact (missing_poll_path_exposes_delivery_gap Hstartup).
   Qed.
 
+  Theorem missing_cron_stop_publish_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_startup work_pool active_fanout,
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      active_fanout_envelope_safe w active_fanout ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          worker_rooted
+          dispatch_live
+          dispatch_rooted
+          batch_live
+          batch_rooted
+          late_worker_live
+          (cron_final_due
+            (cron_worker_complete false
+              (cron_second_due (cron_first_due true))))
+          cron_startup
+          work_pool
+          active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_startup work_pool
+      active_fanout Hschedule Hgc Hstartup Hwork_pool Hactive Hend.
+    unfold end_to_end_safe, cron_dispatch_safe,
+      cron_stop_prevents_redispatch in Hend.
+    simpl in Hend.
+    destruct Hend as [_ [_ [[_ Hstop] _]]].
+    discriminate Hstop.
+  Qed.
+
   Theorem missing_dispatch_root_exposes_end_to_end_gap :
     forall w wave cron_state cron_startup work_pool,
       schedule_envelope_safe w wave ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1051,7 +1172,7 @@ Section EndToEndModel.
   Theorem missing_batch_root_exposes_end_to_end_gap :
     forall w wave cron_state cron_startup work_pool,
       schedule_envelope_safe w wave ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1087,7 +1208,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       ~ end_to_end_safe
           w
@@ -1122,7 +1243,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       ~ end_to_end_safe
           w
@@ -1157,7 +1278,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       ~ end_to_end_safe
           w
@@ -1193,7 +1314,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       active_fanout_envelope_safe w active_fanout ->
       ~ end_to_end_safe
@@ -1229,7 +1350,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       active_fanout_envelope_safe w active_fanout ->
       ~ end_to_end_safe
@@ -1255,7 +1376,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       active_fanout_envelope_safe w active_fanout ->
       ~ end_to_end_safe
@@ -1281,7 +1402,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       active_fanout_envelope_safe w active_fanout ->
       ~ end_to_end_safe
@@ -1309,7 +1430,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1349,7 +1470,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1387,7 +1508,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1414,7 +1535,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1441,7 +1562,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1468,7 +1589,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1495,7 +1616,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1522,7 +1643,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1549,7 +1670,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1576,7 +1697,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe
@@ -1603,7 +1724,7 @@ Section EndToEndModel.
         dispatch_live dispatch_rooted
         batch_live batch_rooted
         late_worker_live ->
-      cron_no_overlap cron_state ->
+      cron_dispatch_safe cron_state ->
       startup_delivery_safe cron_startup ->
       work_pool_envelope_safe work_pool ->
       ~ end_to_end_safe

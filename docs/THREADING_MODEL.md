@@ -574,6 +574,7 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_missing_batch_root.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_open_admission.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_unclaimed_cron.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_cron_no_stop.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_startup_no_poll.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_lossy_enqueue.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_no_inner_catch.cfg`
@@ -591,7 +592,8 @@ dynamic-eval blocker, state mutation is allowed through the pure no-budget
 path, strict I/O is allowed through the pure no-budget path, active worker
 roots are omitted, dispatch or async batch roots are omitted, worker admission
 stays open across the root snapshot, or recurring cron dispatch submits without
-claiming `in_flight`.
+claiming `in_flight`, or a pooled recurring worker clears `in_flight` without
+first publishing the terminal stop state.
 The composed WorkPool discriminators additionally reject overflow spawning
 that bypasses the live-worker cap, double-unpark accounting that counts one
 parked worker twice, and respawning a parked replacement without incrementing

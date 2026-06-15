@@ -840,6 +840,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.v" "1"
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_cron_startup_poll_path_exposes_end_to_end_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_cron_stop_publish_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dispatch_root_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_batch_root_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_purity_active_fanout_exposes_end_to_end_gap" >/dev/null
@@ -888,7 +889,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "24"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "25"
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutGateComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerDegreeMatches" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerMaximalBeforeCap" >/dev/null
@@ -897,6 +898,8 @@ line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveDynamicEvalGateComplete" 
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveStateMutationBlocks" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveStrictIoBlocks" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveNoBudgetParallelSafe" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "PublishCronStopBeforeIdle" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "CronStopPreventsRedispatch" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "CronStartupReadyWaitCompletes" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "NoCronStartupTaskLost" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "IncludeDispatchRoot" >/dev/null
@@ -919,6 +922,7 @@ line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_n
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_dynamic_eval_missing_gate" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_state_mutation_bypass" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_strict_io_bypass" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_cron_no_stop" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_lossy_enqueue" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_no_inner_catch" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_work_pool_no_outer_catch" >/dev/null

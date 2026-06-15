@@ -402,9 +402,9 @@ impl HybridExecutor {
 
     /// Collect results from JIT context and convert to MettaValue.
     ///
-    /// This method handles the conversion from NaN-boxed JitValue to MettaValue.
-    /// In arena mode, TAG_PTR pointers already point to MettaValueInner, so
-    /// the conversion is mostly zero-copy.
+    /// This method decodes NaN-boxed JitValue payloads according to the active
+    /// store policy verified by
+    /// `formal/rocq/gc/JitPayloadConversionStorePolicy.v`.
     fn collect_jit_results_arena(
         &self,
         ctx: &JitContext,
@@ -442,9 +442,10 @@ impl HybridExecutor {
 
 /// Convert a NaN-boxed JIT value to MettaValue.
 ///
-/// In arena mode, TAG_PTR pointers point to MettaValueInner, so the conversion
-/// is zero-copy for complex values. Primitives (Long, Bool, Nil, Unit) are
-/// created fresh in the arena.
+/// TAG_PTR/TAG_ERROR payloads are store-shaped: index-gc payloads reconstruct
+/// arena handles, while legacy slab payloads may dereference
+/// `MettaValueInner` pointers. Inline primitives are created through the active
+/// factory with no heap inspection.
 ///
 /// # Arguments
 /// * `jit_val` - Raw NaN-boxed 64-bit value
@@ -509,7 +510,7 @@ fn jit_to_value(jit_val: u64, factory: &crate::backend::models::ActiveFactory) -
                     tag,
                 )
             } else {
-                // Pointer to slab-allocated MettaValueInner
+                // Legacy slab: payload is a MettaValueInner pointer.
                 let ptr = (jit_val & PAYLOAD_MASK) as *const MettaValueInner;
                 if !ptr.is_null() {
                     unsafe { MettaValue::from_inner(&*ptr) }

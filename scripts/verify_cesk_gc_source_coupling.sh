@@ -475,6 +475,39 @@ assert_after_before \
   "TAG_ERROR => {" \
   "MettaValue::from_inner(&*ptr)" \
   "TAG_ATOM => {"
+line_no "src/backend/bytecode/jit/hybrid/arena.rs" "formal/rocq/gc/JitPayloadConversionStorePolicy.v" >/dev/null
+assert_after_before \
+  "src/backend/bytecode/jit/hybrid/arena.rs" \
+  "fn jit_to_value" \
+  "TAG_LONG =>" \
+  "factory.long(value)"
+line_no "src/backend/bytecode/jit/hybrid/arena.rs" "TAG_BOOL => factory.bool" >/dev/null
+line_no "src/backend/bytecode/jit/hybrid/arena.rs" "TAG_UNIT => factory.unit()" >/dev/null
+assert_after_before \
+  "src/backend/bytecode/jit/hybrid/arena.rs" \
+  "fn jit_to_value" \
+  "TAG_PTR => {" \
+  "TAG_ERROR => {"
+assert_after_before \
+  "src/backend/bytecode/jit/hybrid/arena.rs" \
+  "TAG_PTR => {" \
+  "MettaValue::from_addr(" \
+  "TAG_ERROR => {"
+assert_after_before \
+  "src/backend/bytecode/jit/hybrid/arena.rs" \
+  "TAG_PTR => {" \
+  "MettaValue::from_inner(&*ptr)" \
+  "TAG_ERROR => {"
+assert_after_before \
+  "src/backend/bytecode/jit/hybrid/arena.rs" \
+  "TAG_ERROR => {" \
+  "MettaValue::from_addr(" \
+  "_ => {"
+assert_after_before \
+  "src/backend/bytecode/jit/hybrid/arena.rs" \
+  "TAG_ERROR => {" \
+  "MettaValue::from_inner(&*ptr)" \
+  "_ => {"
 line_no "src/backend/bytecode/jit/runtime/state_ops.rs" "formal/rocq/gc/JitPayloadConversionStorePolicy.v" >/dev/null
 assert_after_before \
   "src/backend/models/metta_value.rs" \

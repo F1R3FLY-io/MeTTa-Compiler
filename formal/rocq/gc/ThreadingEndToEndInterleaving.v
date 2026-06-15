@@ -15,6 +15,7 @@ Require Import CronRecurringDispatch.
 Require Import CronStartupDelivery.
 Require Import CollapseFanoutAdmissionCompleteness.
 Require Import SchedulerActiveFanoutGate.
+Require Import SchedulerClassificationLookup.
 Require Import SchedulerDirectFanoutWavefrontRefinement.
 Require Import SchedulerDynamicEvalGate.
 Require Import SchedulerEffectConflictCompleteness.
@@ -55,6 +56,8 @@ Module FanoutAdmission :=
   MeTTaTron_GC_SchedulerFanoutAdmissionCompleteness.
 Module CollapseAdmission :=
   MeTTaTron_GC_CollapseFanoutAdmissionCompleteness.
+Module Classification :=
+  MeTTaTron_GC_SchedulerClassificationLookup.
 Module Wavefront :=
   MeTTaTron_GC_SchedulerWavefrontParallelism.
 
@@ -76,6 +79,73 @@ Section EndToEndModel.
     effect_conflict_edge_encoded : bool;
     uses_direct_fanout : bool
   }.
+
+  Record ClassificationLookupConfig : Type := {
+    classification_start : nat;
+    classification_count : nat;
+    classification_later_count : nat;
+    classification_shift_later_start : bool
+  }.
+
+  Definition classification_later_start
+      (c : ClassificationLookupConfig)
+      : nat :=
+    if classification_shift_later_start c
+    then S (classification_start c + classification_count c)
+    else classification_start c + classification_count c.
+
+  Definition classification_lookup_safe
+      (c : ClassificationLookupConfig)
+      : Prop :=
+    Classification.disjoint
+      (classification_start c)
+      (S (classification_count c))
+      (classification_later_start c)
+      (classification_later_count c).
+
+  Definition complete_classification_lookup : ClassificationLookupConfig :=
+    {| classification_start := 0;
+       classification_count := 1;
+       classification_later_count := 1;
+       classification_shift_later_start := true |}.
+
+  Definition no_shift_classification_lookup : ClassificationLookupConfig :=
+    {| classification_start := 0;
+       classification_count := 1;
+       classification_later_count := 1;
+       classification_shift_later_start := false |}.
+
+  Theorem shifted_classification_lookup_range_disjoint :
+    forall start count later_count,
+      classification_lookup_safe
+        {| classification_start := start;
+           classification_count := count;
+           classification_later_count := later_count;
+           classification_shift_later_start := true |}.
+  Proof.
+    intros start count later_count.
+    unfold classification_lookup_safe, classification_later_start.
+    simpl.
+    apply Classification.shifted_adjacent_later_range_is_disjoint.
+  Qed.
+
+  Theorem complete_classification_lookup_safe :
+    classification_lookup_safe complete_classification_lookup.
+  Proof.
+    apply shifted_classification_lookup_range_disjoint.
+  Qed.
+
+  Theorem no_shift_classification_lookup_exposes_overlap :
+    ~ classification_lookup_safe no_shift_classification_lookup.
+  Proof.
+    intros Hdisjoint.
+    unfold classification_lookup_safe, no_shift_classification_lookup,
+      classification_later_start in Hdisjoint.
+    simpl in Hdisjoint.
+    unfold Classification.disjoint, Classification.in_range in Hdisjoint.
+    specialize (Hdisjoint 1).
+    apply Hdisjoint; lia.
+  Qed.
 
   Definition WaveAssignment : Type := Task -> nat.
 
@@ -2162,6 +2232,7 @@ Section EndToEndModel.
       (work_pool : WorkPoolConfig)
       (active_fanout : ActiveFanoutConfig)
       (fanout_progress : FanoutProgressConfig)
+      (classification_lookup : ClassificationLookupConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe
@@ -2179,7 +2250,8 @@ Section EndToEndModel.
       active_worker_live worker_rooted
       dispatch_live dispatch_rooted
       batch_live batch_rooted
-      late_worker_live.
+      late_worker_live /\
+    classification_lookup_safe classification_lookup.
 
   Theorem checked_threading_envelope_is_end_to_end_safe :
     forall w wave active_worker_live,
@@ -2201,7 +2273,8 @@ Section EndToEndModel.
         complete_startup
         complete_work_pool
         complete_active_fanout
-        complete_fanout_progress.
+        complete_fanout_progress
+        complete_classification_lookup.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -2223,7 +2296,38 @@ Section EndToEndModel.
                        apply complete_active_fanout_stack_safe.
                    --- split.
                        +++ apply complete_fanout_progress_safe.
-                       +++ apply rooted_closed_scheduler_boundary_safe.
+                       +++ split.
+                           { apply rooted_closed_scheduler_boundary_safe. }
+                           { apply complete_classification_lookup_safe. }
+  Qed.
+
+  Theorem no_shift_classification_lookup_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          no_shift_classification_lookup.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    destruct Hend as [_ [_ [_ [_ [_ [_ [_ [_ [_ Hclassification]]]]]]]]].
+    exact (no_shift_classification_lookup_exposes_overlap Hclassification).
   Qed.
 
   Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :
@@ -2252,7 +2356,8 @@ Section EndToEndModel.
           missing_poll_path
           complete_work_pool
           complete_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
@@ -2292,7 +2397,8 @@ Section EndToEndModel.
           cron_startup
           work_pool
           active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_startup work_pool
@@ -2333,7 +2439,8 @@ Section EndToEndModel.
           cron_startup
           work_pool
           active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2364,7 +2471,8 @@ Section EndToEndModel.
           cron_startup
           work_pool
           complete_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -2395,7 +2503,8 @@ Section EndToEndModel.
           cron_startup
           work_pool
           complete_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -2432,7 +2541,8 @@ Section EndToEndModel.
           cron_startup
           lossy_work_pool_startup
           complete_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -2469,7 +2579,8 @@ Section EndToEndModel.
           cron_startup
           task_panic_missing_inner_work_pool
           complete_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -2506,7 +2617,8 @@ Section EndToEndModel.
           cron_startup
           accounting_panic_missing_outer_work_pool
           complete_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -2545,7 +2657,8 @@ Section EndToEndModel.
           cron_startup
           work_pool
           active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2573,7 +2686,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup
           uncapped_overflow_work_pool active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -2600,7 +2714,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup
           double_unpark_overcounts_work_pool active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -2627,7 +2742,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup
           respawn_without_increment_work_pool active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -2654,7 +2770,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup
           stale_priority_work_pool active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -2693,7 +2810,8 @@ Section EndToEndModel.
           cron_startup
           work_pool
           active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2735,7 +2853,8 @@ Section EndToEndModel.
           cron_startup
           work_pool
           active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2765,7 +2884,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           zero_cap_bug_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2793,7 +2913,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           underutilized_transducer_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2821,7 +2942,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           non_branch_parallel_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2849,7 +2971,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           missing_dynamic_eval_gate_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2877,7 +3000,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           state_mutation_bypass_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2905,7 +3029,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           strict_io_bypass_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2933,7 +3058,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           missing_purity_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2961,7 +3087,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           missing_budget_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2989,7 +3116,8 @@ Section EndToEndModel.
           dispatch_live dispatch_rooted batch_live batch_rooted
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           partial_dispatch_active_fanout
-          complete_fanout_progress.
+          complete_fanout_progress
+          complete_classification_lookup.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool

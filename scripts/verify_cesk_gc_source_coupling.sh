@@ -868,10 +868,13 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_parked_resume_
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_completion_drop_exposes_fanout_progress_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerWavefrontParallelism" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerEffectConflictCompleteness" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerClassificationLookup" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerDirectFanoutWavefrontRefinement" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CollapseFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "local_scheduler_contracts_compose_standalone_reordering" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_classification_lookup_safe" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "no_shift_classification_lookup_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dependency_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_effect_conflict_edge_exposes_incomplete_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_implies_admission_complete" >/dev/null
@@ -913,8 +916,11 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "CronRecurringDispatch.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "CronStartupDelivery.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolOverflowCap.tla" "2"
 assert_count "scripts/verify_cesk_gc_formal.sh" "WorkPoolLifecycle.tla" "3"
-assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "34"
+assert_count "scripts/verify_cesk_gc_formal.sh" "ThreadingEndToEndInterleaving.tla" "35"
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_classification_no_shift" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "SchedulerClassificationRangesDisjoint is equal to FALSE" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutGateComplete" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "SchedulerClassificationRangesDisjoint" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "CollapseFanoutAdmissionComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "ActiveTransducerDegreeMatches" >/dev/null

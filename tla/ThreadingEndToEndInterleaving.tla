@@ -12,6 +12,7 @@ CONSTANTS
     HasEffectConflict,
     ConflictEdgeEncoded,
     DirectFanout,
+    ClassificationShiftLaterStarts,
     IncludeWorkerRoot,
     IncludeDispatchRoot,
     IncludeBatchRoot,
@@ -190,6 +191,7 @@ BooleanConstantsOK ==
     /\ HasEffectConflict \in BOOLEAN
     /\ ConflictEdgeEncoded \in BOOLEAN
     /\ DirectFanout \in BOOLEAN
+    /\ ClassificationShiftLaterStarts \in BOOLEAN
     /\ IncludeWorkerRoot \in BOOLEAN
     /\ IncludeDispatchRoot \in BOOLEAN
     /\ IncludeBatchRoot \in BOOLEAN
@@ -316,6 +318,18 @@ EdgeComplete ==
 
 SchedulerWavefrontEdgesComplete ==
     EdgeComplete
+
+ClassificationTargetStart == 0
+
+ClassificationTargetCountAfterInsert == 2
+
+ClassificationLaterStart ==
+    IF ClassificationShiftLaterStarts THEN 2 ELSE 1
+
+SchedulerClassificationRangesDisjoint ==
+    ~(ClassificationLaterStart
+        < ClassificationTargetStart + ClassificationTargetCountAfterInsert /\
+      ClassificationTargetStart < ClassificationLaterStart + 1)
 
 ConsumerWave ==
     IF EdgeComplete /\ (HasDependency \/ HasEffectConflict) THEN 1 ELSE 0
@@ -1161,6 +1175,7 @@ EndToEndSafe ==
     /\ NoConsumerBeforeProducer
     /\ NoSameWaveEffectConflict
     /\ NoDirectFanoutForDependentWork
+    /\ SchedulerClassificationRangesDisjoint
     /\ SchedulerWavefrontEdgesComplete
     /\ SchedulerDirectFanoutRefinesWavefront
     /\ ActiveFanoutGateComplete

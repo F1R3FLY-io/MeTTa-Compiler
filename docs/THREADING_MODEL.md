@@ -241,8 +241,8 @@ production fanout stage.
 The formal lane covers the main scheduler obligations:
 
 - `SchedulerClassificationLookup.v` and `SchedulerClassificationLookup.tla`
-  keep insertion into the classification tables index-safe and ensure
-  state-mutating heads are not treated as known pure.
+  keep insertion into the classification tables index-safe by proving that a new
+  head extends the target L2 range and shifts later L1 starts.
 - `SchedulerDynamicEvalGate.v` and `SchedulerDynamicEvalGate.tla` keep dynamic
   eval forms out of static-pure parallel classes.
 - `SchedulerWavefrontParallelism.v` and `SchedulerWavefrontParallelism.tla`
@@ -295,8 +295,9 @@ The formal lane covers the main scheduler obligations:
   `SchedulerBoundaryComplete` invariant in the E2E TLC model, so active workers,
   live-dispatch fanout, async batch handoff, and closed admission are checked as
   one GC-facing scheduler boundary.  Its schedule obligation imports the
-  standalone wavefront/effect/direct-refinement theorems, and the E2E TLC model
-  exposes `SchedulerWavefrontEdgesComplete` plus
+  standalone classification, wavefront, effect, and direct-refinement theorems,
+  and the E2E TLC model exposes `SchedulerClassificationRangesDisjoint`,
+  `SchedulerWavefrontEdgesComplete`, plus
   `SchedulerDirectFanoutRefinesWavefront`.  Its active direct-fanout obligation
   imports the standalone fanout and collapse admission-completeness theorems,
   and the E2E TLC model exposes `ActiveFanoutAdmissionComplete` plus
@@ -326,16 +327,18 @@ This contract is checked by:
 - `tla/SchedulerClassificationLookup.tla`
 - `tla/MC_SchedulerClassificationLookup_shift.cfg`
 - `tla/MC_SchedulerClassificationLookup_no_shift.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_classification_no_shift.cfg`
 - `formal/rocq/gc/SchedulerDynamicEvalGate.v`
 - `tla/SchedulerDynamicEvalGate.tla`
 - `tla/MC_SchedulerDynamicEvalGate_fixed.cfg`
 - `tla/MC_SchedulerDynamicEvalGate_missing.cfg`
 
 The classifier positive model preserves disjoint L2 ranges after insertion; the
-no-shift negative model violates `RangesDisjoint`. The dynamic-eval positive
-model preserves `NoDynamicEvalParallelBypass`; the missing-gate negative model
-violates it by admitting a hidden dynamic eval body into the no-budget parallel
-path.
+standalone no-shift negative model violates `RangesDisjoint`, and the composed
+end-to-end no-shift config violates `SchedulerClassificationRangesDisjoint`.
+The dynamic-eval positive model preserves `NoDynamicEvalParallelBypass`; the
+missing-gate negative model violates it by admitting a hidden dynamic eval body
+into the no-budget parallel path.
 
 The source-coupling check pins the corresponding implementation facts:
 
@@ -579,6 +582,7 @@ The composed end-to-end envelope is modeled by:
 - `tla/ThreadingEndToEndInterleaving.tla`
 - `tla/MC_ThreadingEndToEndInterleaving_safe.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_independent.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_classification_no_shift.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg`
@@ -614,10 +618,11 @@ The composed end-to-end envelope is modeled by:
 
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`; the safe config also preserves `SchedulerBoundaryComplete`,
-`SchedulerWavefrontEdgesComplete`, and
+`SchedulerClassificationRangesDisjoint`, `SchedulerWavefrontEdgesComplete`,
 `SchedulerDirectFanoutRefinesWavefront`, `ActiveFanoutAdmissionComplete`, and
-`CollapseFanoutAdmissionComplete` inside the composed model. The missing
-dependency and missing effect-conflict edge configs violate
+`CollapseFanoutAdmissionComplete` inside the composed model. The no-shift
+classification config violates `SchedulerClassificationRangesDisjoint`. The
+missing dependency and missing effect-conflict edge configs violate
 `SchedulerWavefrontEdgesComplete`. The partial direct-dispatch config violates
 `SchedulerDirectFanoutRefinesWavefront`. The degree-as-spawn-cap and
 threshold-as-spawn-cap configs violate `ActiveFanoutAdmissionComplete` and

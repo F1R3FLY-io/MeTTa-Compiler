@@ -718,7 +718,9 @@ capped debug Robot replay after the conditional canary produced the expected fri
   model-check the L1/L2 classifier-table insertion obligation used by MeTTa instruction reordering. Inserting a new
   head into a class must extend that class's contiguous L2 range and shift later L1 starts; failing to shift later
   starts violates range disjointness. This pins the lookup structure that separates pure parallelizable heads from
-  state-mutating heads before the scheduler maximizes parallelism.
+  state-mutating heads before the scheduler maximizes parallelism. The end-to-end threading envelope now imports this
+  proof as `SchedulerClassificationRangesDisjoint`; the E2E no-shift discriminator keeps every other scheduler,
+  WorkPool, cron, and GC-boundary setting safe and fails specifically on that classification invariant.
 - `formal/rocq/gc/SchedulerWavefrontParallelism.v` and `tla/SchedulerWavefrontParallelism.tla`: prove and
   model-check the wavefront instruction-reordering obligation. A task may share a wave only when all dependency edges
   point to earlier waves; a ready task whose dependencies are already in prior waves and that has not already run must
@@ -1233,15 +1235,17 @@ facts the proofs rely on:
   WorkPool startup drain, WorkPool panic isolation, and the GC-facing scheduler
   boundary for active workers, live-dispatch fanout, async batch roots, and
   closed admission into one TLC state machine. It now composes
-  `SchedulerWavefrontParallelism.v`, `SchedulerEffectConflictCompleteness.v`,
+  `SchedulerClassificationLookup.v`, `SchedulerWavefrontParallelism.v`,
+  `SchedulerEffectConflictCompleteness.v`,
   `SchedulerDirectFanoutWavefrontRefinement.v`,
   `SchedulerFanoutAdmissionCompleteness.v`,
   `CollapseFanoutAdmissionCompleteness.v`, `SchedulerFanoutProgress.v`, and
-  `SchedulerGcBoundary.v`: wavefront edge coverage, direct-fanout
-  independent-wavefront refinement, admitted branch/collapse slot
-  representation, FANOUT participant accounting, parked-worker resume, worker
-  completion-drop accounting, and the GC-facing scheduler root/admission
-  boundary are part of the same end-to-end proof boundary.
+  `SchedulerGcBoundary.v`: classification-table range disjointness, wavefront
+  edge coverage, direct-fanout independent-wavefront refinement, admitted
+  branch/collapse slot representation, FANOUT participant accounting,
+  parked-worker resume, worker completion-drop accounting, and the GC-facing
+  scheduler root/admission boundary are part of the same end-to-end proof
+  boundary.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, active
   direct-fanout without purity or budget gates, partial direct-fanout dispatch,
@@ -1253,9 +1257,12 @@ facts the proofs rely on:
   participant contribution, missing parked FANOUT worker resume, missing worker
   completion-drop accounting, unclaimed recurring cron dispatch, and a pooled recurring
   worker that clears `in_flight` without first publishing the terminal stop
-  state. The missing dependency-edge and effect-conflict-edge E2E
-  discriminators now fail specifically on `SchedulerWavefrontEdgesComplete`,
-  and the partial direct-dispatch discriminator fails on
+  state. The no-shift classification E2E discriminator fails specifically on
+  `SchedulerClassificationRangesDisjoint`, matching the standalone
+  `SchedulerClassificationLookup` model inside the composed envelope. The
+  missing dependency-edge and effect-conflict-edge E2E discriminators now fail
+  specifically on `SchedulerWavefrontEdgesComplete`, and the partial
+  direct-dispatch discriminator fails on
   `SchedulerDirectFanoutRefinesWavefront`, matching the standalone scheduler
   wavefront/effect/direct-refinement proofs inside the composed model. The
   degree-as-spawn-cap and threshold-as-spawn-cap E2E discriminators fail

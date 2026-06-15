@@ -22,6 +22,23 @@ Section DynamicEvalGateModel.
     ~ blocks_parallel_dispatch
         dynamic_eval_gate dynamic_eval state_mutation strict_print io.
 
+  Theorem present_dynamic_eval_gate_blocks_dynamic_eval :
+    forall dynamic_eval_gate dynamic_eval state_mutation strict_print io,
+      dynamic_eval_gate ->
+      dynamic_eval ->
+      blocks_parallel_dispatch
+        dynamic_eval_gate dynamic_eval state_mutation strict_print io.
+  Proof.
+    intros dynamic_eval_gate dynamic_eval state_mutation strict_print io
+      Hgate Heval.
+    unfold blocks_parallel_dispatch.
+    right.
+    right.
+    split.
+    - exact Hgate.
+    - exact Heval.
+  Qed.
+
   Theorem dynamic_eval_gate_blocks_dynamic_eval :
     forall dynamic_eval state_mutation strict_print io,
       dynamic_eval ->
@@ -29,12 +46,23 @@ Section DynamicEvalGateModel.
         True dynamic_eval state_mutation strict_print io.
   Proof.
     intros dynamic_eval state_mutation strict_print io Heval.
-    unfold blocks_parallel_dispatch.
-    right.
-    right.
-    split.
+    apply present_dynamic_eval_gate_blocks_dynamic_eval.
     - exact I.
     - exact Heval.
+  Qed.
+
+  Theorem no_budget_parallel_excludes_gated_dynamic_eval :
+    forall dynamic_eval_gate dynamic_eval state_mutation strict_print io,
+      no_budget_parallel_allowed
+        dynamic_eval_gate dynamic_eval state_mutation strict_print io ->
+      dynamic_eval_gate ->
+      ~ dynamic_eval.
+  Proof.
+    intros dynamic_eval_gate dynamic_eval state_mutation strict_print io
+      Hallowed Hgate Heval.
+    unfold no_budget_parallel_allowed in Hallowed.
+    apply Hallowed.
+    apply present_dynamic_eval_gate_blocks_dynamic_eval; assumption.
   Qed.
 
   Theorem no_budget_parallel_excludes_dynamic_eval :
@@ -43,11 +71,25 @@ Section DynamicEvalGateModel.
         True dynamic_eval state_mutation strict_print io ->
       ~ dynamic_eval.
   Proof.
-    intros dynamic_eval state_mutation strict_print io Hallowed Heval.
-    unfold no_budget_parallel_allowed in Hallowed.
-    apply Hallowed.
-    apply dynamic_eval_gate_blocks_dynamic_eval.
-    exact Heval.
+    intros dynamic_eval state_mutation strict_print io Hallowed.
+    eapply
+      (no_budget_parallel_excludes_gated_dynamic_eval
+        True dynamic_eval state_mutation strict_print io).
+    - exact Hallowed.
+    - exact I.
+  Qed.
+
+  Theorem present_state_mutation_blocks :
+    forall dynamic_eval_gate dynamic_eval state_mutation strict_print io,
+      state_mutation ->
+      blocks_parallel_dispatch
+        dynamic_eval_gate dynamic_eval state_mutation strict_print io.
+  Proof.
+    intros dynamic_eval_gate dynamic_eval state_mutation strict_print io
+      Hstate.
+    unfold blocks_parallel_dispatch.
+    left.
+    exact Hstate.
   Qed.
 
   Theorem state_mutation_still_blocks :
@@ -56,9 +98,25 @@ Section DynamicEvalGateModel.
         dynamic_eval_gate dynamic_eval True strict_print io.
   Proof.
     intros dynamic_eval_gate dynamic_eval strict_print io.
-    unfold blocks_parallel_dispatch.
-    left.
+    apply present_state_mutation_blocks.
     exact I.
+  Qed.
+
+  Theorem present_strict_io_blocks :
+    forall dynamic_eval_gate dynamic_eval state_mutation strict_print io,
+      strict_print ->
+      io ->
+      blocks_parallel_dispatch
+        dynamic_eval_gate dynamic_eval state_mutation strict_print io.
+  Proof.
+    intros dynamic_eval_gate dynamic_eval state_mutation strict_print io
+      Hstrict Hio.
+    unfold blocks_parallel_dispatch.
+    right.
+    left.
+    split.
+    - exact Hstrict.
+    - exact Hio.
   Qed.
 
   Theorem strict_io_still_blocks :
@@ -67,10 +125,7 @@ Section DynamicEvalGateModel.
         dynamic_eval_gate dynamic_eval state_mutation True True.
   Proof.
     intros dynamic_eval_gate dynamic_eval state_mutation.
-    unfold blocks_parallel_dispatch.
-    right.
-    left.
-    split; exact I.
+    apply present_strict_io_blocks; exact I.
   Qed.
 
   Theorem missing_dynamic_eval_gate_allows_counterexample :

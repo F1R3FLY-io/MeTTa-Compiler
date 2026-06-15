@@ -753,7 +753,9 @@ capped debug Robot replay after the conditional canary produced the expected fri
 - `formal/rocq/gc/SchedulerDynamicEvalGate.v` and `tla/SchedulerDynamicEvalGate.tla`: prove and model-check the
   dynamic-evaluation parallel-dispatch obligation. Dynamic heads (`eval`, `!`, `evalc`) can execute code supplied by a
   variable or user expression, so absence of a visible mutating head is not enough to admit the no-budget parallel
-  path. The fixed TLC config preserves `NoDynamicEvalParallelBypass`; the missing-gate discriminator violates it,
+  path. The E2E threading proof consumes the standalone blocker lemmas for active dynamic eval, state mutation,
+  strict IO, and gated no-budget exclusion. The fixed TLC config preserves `NoDynamicEvalParallelBypass`; the
+  missing-gate discriminator violates it,
   matching the source correction that removes dynamic eval from known-pure classification and makes the scheduler's
   parallel-dispatch blocker reject dynamic-eval bodies before strict I/O filtering.
 - `formal/rocq/gc/CronRecurringDispatch.v` and `tla/CronRecurringDispatch.tla`: prove and model-check pooled cron

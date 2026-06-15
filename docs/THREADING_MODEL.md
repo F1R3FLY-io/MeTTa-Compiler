@@ -244,7 +244,9 @@ The formal lane covers the main scheduler obligations:
   keep insertion into the classification tables index-safe by proving that a new
   head extends the target L2 range and shifts later L1 starts.
 - `SchedulerDynamicEvalGate.v` and `SchedulerDynamicEvalGate.tla` keep dynamic
-  eval forms out of static-pure parallel classes.
+  eval forms out of static-pure parallel classes; the E2E proof consumes the
+  standalone blocker lemmas for active dynamic eval, state mutation, strict IO,
+  and no-budget exclusion.
 - `SchedulerWavefrontParallelism.v` and `SchedulerWavefrontParallelism.tla`
   prove same-wave independence and earliest-ready admission for the
   scheduler-library wavefront primitive.

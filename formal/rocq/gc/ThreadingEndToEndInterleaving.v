@@ -59,6 +59,8 @@ Module DirectRefinement :=
   MeTTaTron_GC_SchedulerDirectFanoutWavefrontRefinement.
 Module EffectCompleteness :=
   MeTTaTron_GC_SchedulerEffectConflictCompleteness.
+Module DynamicEval :=
+  MeTTaTron_GC_SchedulerDynamicEvalGate.
 Module FanoutAdmission :=
   MeTTaTron_GC_SchedulerFanoutAdmissionCompleteness.
 Module CollapseAdmission :=
@@ -2974,6 +2976,54 @@ Section EndToEndModel.
 	 active_blocks_parallel_dispatch c) /\
     active_no_budget_parallel_safe c.
 
+  Theorem active_dynamic_eval_gate_blocks_parallel_dispatch :
+    forall c,
+      active_dynamic_eval_gate c = true ->
+      active_dynamic_eval c = true ->
+      active_blocks_parallel_dispatch c.
+  Proof.
+    intros c Hgate Hdynamic.
+    unfold active_blocks_parallel_dispatch.
+    apply DynamicEval.present_dynamic_eval_gate_blocks_dynamic_eval;
+      assumption.
+  Qed.
+
+  Theorem active_state_mutation_blocks_parallel_dispatch :
+    forall c,
+      active_state_mutation c = true ->
+      active_blocks_parallel_dispatch c.
+  Proof.
+    intros c Hstate.
+    unfold active_blocks_parallel_dispatch.
+    apply DynamicEval.present_state_mutation_blocks.
+    exact Hstate.
+  Qed.
+
+  Theorem active_strict_io_blocks_parallel_dispatch :
+    forall c,
+      active_strict_print c = true ->
+      active_io c = true ->
+      active_blocks_parallel_dispatch c.
+  Proof.
+    intros c Hstrict Hio.
+    unfold active_blocks_parallel_dispatch.
+    apply DynamicEval.present_strict_io_blocks; assumption.
+  Qed.
+
+  Theorem active_no_budget_parallel_excludes_dynamic_eval :
+    forall c,
+      active_no_budget_parallel_safe c ->
+      active_pure c = true ->
+      active_dynamic_eval_gate c = true ->
+      ~ active_dynamic_eval c = true.
+  Proof.
+    intros c Hsafe Hpure Hgate Hdynamic.
+    unfold active_no_budget_parallel_safe in Hsafe.
+    pose proof (Hsafe Hpure) as Hallowed.
+    eapply DynamicEval.no_budget_parallel_excludes_gated_dynamic_eval;
+      eauto.
+  Qed.
+
   Definition active_fanout_admitted_by_standalone
       (c : ActiveFanoutConfig)
       : Prop :=
@@ -3359,6 +3409,31 @@ Section EndToEndModel.
         reflexivity.
   Qed.
 
+  Theorem complete_active_parallel_dispatch_blockers_safe :
+    active_parallel_dispatch_blockers_safe complete_active_fanout.
+  Proof.
+    unfold active_parallel_dispatch_blockers_safe.
+    split.
+    - intros Hdynamic.
+      apply active_dynamic_eval_gate_blocks_parallel_dispatch.
+      + unfold complete_active_fanout; reflexivity.
+      + exact Hdynamic.
+    - split.
+      + intros Hmutation.
+        apply active_state_mutation_blocks_parallel_dispatch.
+        exact Hmutation.
+      + split.
+        * intros Hstrict Hio.
+          apply active_strict_io_blocks_parallel_dispatch; assumption.
+        * unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
+            complete_active_fanout.
+          simpl.
+          intros _ [Hstate | [[Hstrict _] | [_ Hdynamic]]].
+          -- discriminate Hstate.
+          -- discriminate Hstrict.
+          -- discriminate Hdynamic.
+  Qed.
+
   Theorem complete_active_fanout_stack_safe :
     active_fanout_stack_safe complete_active_fanout.
   Proof.
@@ -3367,17 +3442,7 @@ Section EndToEndModel.
     - split.
       + apply complete_active_transducer_safe.
       + split.
-        * repeat split.
-          -- intros Hdyn; discriminate Hdyn.
-          -- intros Hmutation; discriminate Hmutation.
-          -- intros Hstrict _; discriminate Hstrict.
-          -- unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
-              blocks_parallel_dispatch, complete_active_fanout.
-             simpl.
-             intros _ [Hstate | [[Hstrict _] | [_ Hdyn]]].
-             ++ discriminate Hstate.
-             ++ discriminate Hstrict.
-             ++ discriminate Hdyn.
+        * apply complete_active_parallel_dispatch_blockers_safe.
         * apply active_fanout_gate_safe_implies_admission_complete.
           apply complete_active_fanout_gate_safe.
   Qed.
@@ -3525,14 +3590,14 @@ Section EndToEndModel.
   Proof.
     intros [_ [_ [Hblockers _]]].
     destruct Hblockers as [_ [_ [_ Hno_budget]]].
-    unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
-      blocks_parallel_dispatch, state_mutation_bypass_active_fanout in
-      Hno_budget.
-    simpl in Hno_budget.
+    unfold active_no_budget_parallel_safe in Hno_budget.
     specialize (Hno_budget eq_refl).
+    unfold no_budget_parallel_allowed in Hno_budget.
     apply Hno_budget.
-    left.
-    reflexivity.
+    change (active_blocks_parallel_dispatch
+      state_mutation_bypass_active_fanout).
+    apply active_state_mutation_blocks_parallel_dispatch.
+    unfold state_mutation_bypass_active_fanout; reflexivity.
   Qed.
 
   Theorem strict_io_bypass_exposes_envelope_gap :
@@ -3540,15 +3605,13 @@ Section EndToEndModel.
   Proof.
     intros [_ [_ [Hblockers _]]].
     destruct Hblockers as [_ [_ [_ Hno_budget]]].
-    unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
-      blocks_parallel_dispatch, strict_io_bypass_active_fanout in
-      Hno_budget.
-    simpl in Hno_budget.
+    unfold active_no_budget_parallel_safe in Hno_budget.
     specialize (Hno_budget eq_refl).
+    unfold no_budget_parallel_allowed in Hno_budget.
     apply Hno_budget.
-    right.
-    left.
-    split; reflexivity.
+    change (active_blocks_parallel_dispatch strict_io_bypass_active_fanout).
+    apply active_strict_io_blocks_parallel_dispatch;
+      unfold strict_io_bypass_active_fanout; reflexivity.
   Qed.
 
   Record FanoutProgressConfig : Type := {

@@ -609,6 +609,12 @@ line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Definition active_fanout_a
 line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_fanout_requires_purity_gate" >/dev/null
 line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_fanout_requires_budget_gate" >/dev/null
 line_no "formal/rocq/gc/SchedulerActiveFanoutGate.v" "Theorem active_complete_dispatch_represents_every_slot" >/dev/null
+line_no "formal/rocq/gc/SchedulerDynamicEvalGate.v" "Theorem present_dynamic_eval_gate_blocks_dynamic_eval" >/dev/null
+line_no "formal/rocq/gc/SchedulerDynamicEvalGate.v" "Theorem no_budget_parallel_excludes_gated_dynamic_eval" >/dev/null
+line_no "formal/rocq/gc/SchedulerDynamicEvalGate.v" "Theorem present_state_mutation_blocks" >/dev/null
+line_no "formal/rocq/gc/SchedulerDynamicEvalGate.v" "Theorem state_mutation_still_blocks" >/dev/null
+line_no "formal/rocq/gc/SchedulerDynamicEvalGate.v" "Theorem present_strict_io_blocks" >/dev/null
+line_no "formal/rocq/gc/SchedulerDynamicEvalGate.v" "Theorem strict_io_still_blocks" >/dev/null
 line_no "formal/rocq/gc/SchedulerTransducerParallelism.v" "Theorem branch_degree_gate_sound" >/dev/null
 line_no "formal/rocq/gc/SchedulerTransducerParallelism.v" "Theorem branch_degree_maximal_before_cap" >/dev/null
 line_no "formal/rocq/gc/SchedulerTransducerParallelism.v" "Theorem zero_cap_degrades_to_sequential_nonzero" >/dev/null
@@ -898,6 +904,7 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.PublishedSlo
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerDirectFanoutWavefrontRefinement" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CollapseFanoutAdmissionCompleteness" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module DynamicEval :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "local_scheduler_contracts_compose_standalone_reordering" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_classification_lookup_safe" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "no_shift_classification_lookup_exposes_end_to_end_gap" >/dev/null
@@ -949,6 +956,15 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_transducer_degr
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Transducer.branch_degree_gate_sound" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_transducer_degree_match_zero_cap_degrades_to_sequential" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Transducer.zero_cap_degrades_to_sequential_nonzero" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_dynamic_eval_gate_blocks_parallel_dispatch" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "DynamicEval.present_dynamic_eval_gate_blocks_dynamic_eval" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_state_mutation_blocks_parallel_dispatch" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "DynamicEval.present_state_mutation_blocks" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_strict_io_blocks_parallel_dispatch" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "DynamicEval.present_strict_io_blocks" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_no_budget_parallel_excludes_dynamic_eval" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "DynamicEval.no_budget_parallel_excludes_gated_dynamic_eval" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_active_parallel_dispatch_blockers_safe" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "degree_capped_active_fanout_exposes_admission_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "threshold_capped_collapse_exposes_admission_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "rooted_closed_scheduler_boundary_safe" >/dev/null

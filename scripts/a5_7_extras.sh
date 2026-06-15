@@ -24,7 +24,7 @@ echo "conformance_dir=$CONF"
 echo "logs=$LOG_DIR"
 
 echo "### build INDEX mettatron + mtt-conformance (release)"
-"${CAP[@]}" cargo build --release --features index-gc --bin mettatron --bin mtt-conformance > "$LOG_DIR/a57_build.log" 2>&1
+"${CAP[@]}" cargo build --release --bin mettatron --bin mtt-conformance > "$LOG_DIR/a57_build.log" 2>&1
 echo "build_rc=$?"; tail -2 "$LOG_DIR/a57_build.log"
 
 echo "### mmverify demo0 (expect 'Correct proof')"

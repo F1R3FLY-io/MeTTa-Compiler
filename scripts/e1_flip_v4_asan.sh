@@ -47,7 +47,7 @@ echo "### build mettatron index-gc ASAN (release, -Zbuild-std, -j4, capped 24G)"
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1000% -p TasksMax=512 --quiet \
   env RUSTFLAGS="-Zsanitizer=address -Cdebuginfo=2 -Ctarget-cpu=native" \
   cargo +nightly build --release -Zbuild-std --target x86_64-unknown-linux-gnu \
-    --bin mettatron -j4 --features index-gc > "${P}_build.log" 2>&1
+    --bin mettatron -j4 > "${P}_build.log" 2>&1
 BUILD_RC=$?
 echo "build_rc=$BUILD_RC"
 tail -5 "${P}_build.log"

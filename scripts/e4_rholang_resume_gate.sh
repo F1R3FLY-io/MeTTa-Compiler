@@ -8,7 +8,7 @@
 # `#[cfg(all(feature = "async", feature = "index-gc"))]` inside the
 # `#[cfg(feature = "rholang")]` module. NO other gate compiles the
 # `index-gc + rholang` feature combination (the greenwall / ASAN / formal harness all
-# build `--features index-gc` WITHOUT rholang), so without this gate the ship path
+# build `` WITHOUT rholang), so without this gate the ship path
 # would bit-rot uncompiled.
 #
 # The rholang runtime is NOT empirically runnable in this environment, so the ship
@@ -31,7 +31,7 @@ echo "repo=$REPO"; echo "log=$LOG"
 
 set +e
 systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 -p CPUQuota=1200% --quiet \
-  cargo check --features index-gc,rholang > "$LOG" 2>&1
+  cargo check --features rholang > "$LOG" 2>&1
 rc=$?
 set -e
 
@@ -45,5 +45,5 @@ if [[ "$rc" -ne 0 ]]; then
   echo "RESULT: FAIL (index-gc,rholang does not compile)"
   exit 1
 fi
-echo "RESULT: PASS (faithful rholang ship/resume compiles under --features index-gc,rholang)"
+echo "RESULT: PASS (faithful rholang ship/resume compiles under --features rholang)"
 date

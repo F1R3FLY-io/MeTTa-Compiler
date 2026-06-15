@@ -76,7 +76,7 @@ build_ref() {  # $1=ref $2=worktree $3=output-bin $4=log
   # rust-toolchain file), so a fresh worktree defaults to stable and fails E0554 on
   # fast-slice-utils' #![feature]. .cargo/config.toml (target-cpu=native) IS tracked, so
   # it ships with the worktree.
-  ( cd "$wt" && "${BUILDCAP[@]}" cargo +nightly build --release --features index-gc --bin mettatron ) \
+  ( cd "$wt" && "${BUILDCAP[@]}" cargo +nightly build --release --bin mettatron ) \
     >>"$log" 2>&1
   local build_rc=$?
   if [ "$build_rc" -ne 0 ]; then

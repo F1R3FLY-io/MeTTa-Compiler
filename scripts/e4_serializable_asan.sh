@@ -42,7 +42,7 @@ systemd-run --user --scope -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=800% 
   env RUSTFLAGS="-Zsanitizer=address -C target-cpu=native" \
       ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
   cargo +nightly nextest run -Zbuild-std --target x86_64-unknown-linux-gnu \
-    --features index-gc continuation_slice \
+    continuation_slice \
   > "${P}.log" 2>&1
 rc=$?
 set -e

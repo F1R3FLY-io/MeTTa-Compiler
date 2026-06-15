@@ -2631,7 +2631,7 @@ assert_after_before "src/backend/eval/cesk/continuation_slice.rs" "fn from_value
 # (resume == evaluate; the env is NOT serialized). Uses ONLY the validated core
 # (capture_slice / restore_from_bytes) + the production eval path. The rholang runtime
 # is not empirically runnable here, so this path is verified by compile-check
-# (`cargo check --features index-gc,rholang`, scripts/e4_rholang_resume_gate.sh) +
+# (`cargo check --features rholang`, scripts/e4_rholang_resume_gate.sh) +
 # these structural source-coupling pins — NOT a behavioral test.
 # (R1) RunOutcome carries a serialized slice (not a SuspendedEval).
 line_no "src/rholang_integration.rs" "Suspended(crate::backend::eval::cesk::SerializedContinuationSlice)," >/dev/null

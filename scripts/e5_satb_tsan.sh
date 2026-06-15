@@ -14,7 +14,7 @@
 #
 #   Usage: scripts/e5_satb_tsan.sh <label>
 #
-# Build: -Zsanitizer=thread -Zbuild-std nightly, release, --features index-gc.
+# Build: -Zsanitizer=thread -Zbuild-std nightly, release,.
 # Runs : FANOUT=8 PLN workloads (Robot, FlyingRaven) with MIN_BYTES low so the
 #        rendezvous collector actually fires WHILE workers are live (non-vacuous:
 #        '[index_gc] rendezvous ... cycle' > 0). TSan is ~5-15x slower than
@@ -54,7 +54,7 @@ else
   systemd-run --user --scope -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=800% -p TasksMax=256 --quiet \
     env RUSTFLAGS="-Zsanitizer=thread -Cdebuginfo=2 -Ctarget-cpu=native" \
     cargo +nightly build --release -Zbuild-std --target x86_64-unknown-linux-gnu \
-      --bin mettatron -j4 --features index-gc > "${P}_build.log" 2>&1
+      --bin mettatron -j4 > "${P}_build.log" 2>&1
   BUILD_RC=$?
   echo "build_rc=$BUILD_RC"; tail -4 "${P}_build.log"
   if [ "$BUILD_RC" -ne 0 ]; then echo "BUILD FAILED — aborting"; exit 1; fi

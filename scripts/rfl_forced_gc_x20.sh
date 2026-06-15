@@ -37,7 +37,7 @@ failures=0
 for i in $(seq 1 "$RUNS"); do
   log="$P/run_${i}.log"
   echo "### run $i/$RUNS"
-  "${CAP[@]}" cargo test --test rfl_forced_gc --features index-gc -- --nocapture >"$log" 2>&1
+  "${CAP[@]}" cargo test --test rfl_forced_gc -- --nocapture >"$log" 2>&1
   rc=$?
   if [ "$rc" -ne 0 ]; then
     failures=$((failures + 1))

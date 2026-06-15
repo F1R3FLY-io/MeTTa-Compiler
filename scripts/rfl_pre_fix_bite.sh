@@ -117,7 +117,7 @@ log="$LOG_DIR/cargo_test.log"
 env CARGO_TARGET_DIR="$TARGET_DIR" "${CAP[@]}" \
   cargo test -q --lib pre_fix_current_segment_minor_repushes_listed_free_slot \
     --manifest-path "$WT/Cargo.toml" \
-    --features index-gc \
+    \
     -- --nocapture >"$log" 2>&1
 rc=$?
 

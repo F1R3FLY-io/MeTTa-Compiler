@@ -398,6 +398,12 @@ run_tlc "threading_end_to_end_active_fanout_underutilized" "ThreadingEndToEndInt
   fail "The invariant of ActiveTransducerMaximalBeforeCap is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_nonbranch_degree" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_nonbranch_degree.cfg" \
   fail "The invariant of ActiveTransducerDefaultGateSound is equal to FALSE"
+run_tlc "threading_end_to_end_active_fanout_dynamic_eval_missing_gate" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_dynamic_eval_missing_gate.cfg" \
+  fail "The invariant of ActiveDynamicEvalGateComplete is equal to FALSE"
+run_tlc "threading_end_to_end_active_fanout_state_mutation_bypass" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_state_mutation_bypass.cfg" \
+  fail "The invariant of ActiveNoBudgetParallelSafe is equal to FALSE"
+run_tlc "threading_end_to_end_active_fanout_strict_io_bypass" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_strict_io_bypass.cfg" \
+  fail "The invariant of ActiveNoBudgetParallelSafe is equal to FALSE"
 run_tlc "threading_end_to_end_missing_dependency" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_dependency.cfg" \
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_missing_worker_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg" \

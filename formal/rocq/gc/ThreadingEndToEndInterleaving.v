@@ -11,6 +11,7 @@ From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Arith Lia.
 Require Import CronStartupDelivery.
 Require Import SchedulerActiveFanoutGate.
+Require Import SchedulerDynamicEvalGate.
 Require Import SchedulerTransducerParallelism.
 Require Import WorkPoolLifecycle.
 Require Import WorkPoolOverflowCap.
@@ -19,6 +20,7 @@ Require Import WorkPoolStartupDrain.
 
 Import MeTTaTron_GC_CronStartupDelivery.
 Import MeTTaTron_GC_SchedulerActiveFanoutGate.
+Import MeTTaTron_GC_SchedulerDynamicEvalGate.
 Import MeTTaTron_GC_SchedulerTransducerParallelism.
 Import MeTTaTron_GC_WorkPoolLifecycle.
 Import MeTTaTron_GC_WorkPoolPanicIsolation.
@@ -518,6 +520,11 @@ Section EndToEndModel.
     active_max_parallel : nat;
     active_budget_granted : nat;
     active_pure : bool;
+    active_dynamic_eval_gate : bool;
+    active_dynamic_eval : bool;
+    active_state_mutation : bool;
+    active_strict_print : bool;
+    active_io : bool;
     active_depth_ok : bool;
     active_pool_ok : bool;
     active_dispatched_count : nat
@@ -560,8 +567,41 @@ Section EndToEndModel.
     active_transducer_maximal_before_cap c /\
     active_transducer_default_gate_sound c.
 
+  Definition active_blocks_parallel_dispatch
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    blocks_parallel_dispatch
+      (active_dynamic_eval_gate c = true)
+      (active_dynamic_eval c = true)
+      (active_state_mutation c = true)
+      (active_strict_print c = true)
+      (active_io c = true).
+
+  Definition active_no_budget_parallel_safe
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    active_pure c = true ->
+    no_budget_parallel_allowed
+      (active_dynamic_eval_gate c = true)
+      (active_dynamic_eval c = true)
+      (active_state_mutation c = true)
+      (active_strict_print c = true)
+      (active_io c = true).
+
+  Definition active_parallel_dispatch_blockers_safe
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    (active_dynamic_eval c = true -> active_blocks_parallel_dispatch c) /\
+    (active_state_mutation c = true -> active_blocks_parallel_dispatch c) /\
+    (active_strict_print c = true ->
+     active_io c = true ->
+     active_blocks_parallel_dispatch c) /\
+    active_no_budget_parallel_safe c.
+
   Definition active_fanout_stack_safe (c : ActiveFanoutConfig) : Prop :=
-    active_fanout_gate_safe c /\ active_transducer_safe c.
+    active_fanout_gate_safe c /\
+    active_transducer_safe c /\
+    active_parallel_dispatch_blockers_safe c.
 
   Definition active_fanout_envelope_safe
       (w : Workload)
@@ -577,6 +617,11 @@ Section EndToEndModel.
        active_max_parallel := 2;
        active_budget_granted := 1;
        active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
        active_depth_ok := true;
        active_pool_ok := true;
        active_dispatched_count := 2 |}.
@@ -589,6 +634,11 @@ Section EndToEndModel.
        active_max_parallel := 2;
        active_budget_granted := 1;
        active_pure := false;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
        active_depth_ok := true;
        active_pool_ok := true;
        active_dispatched_count := 2 |}.
@@ -601,6 +651,11 @@ Section EndToEndModel.
        active_max_parallel := 2;
        active_budget_granted := 0;
        active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
        active_depth_ok := true;
        active_pool_ok := true;
        active_dispatched_count := 2 |}.
@@ -613,6 +668,11 @@ Section EndToEndModel.
        active_max_parallel := 2;
        active_budget_granted := 1;
        active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
        active_depth_ok := true;
        active_pool_ok := true;
        active_dispatched_count := 1 |}.
@@ -625,6 +685,11 @@ Section EndToEndModel.
        active_max_parallel := 0;
        active_budget_granted := 1;
        active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
        active_depth_ok := true;
        active_pool_ok := true;
        active_dispatched_count := 4 |}.
@@ -637,6 +702,11 @@ Section EndToEndModel.
        active_max_parallel := 8;
        active_budget_granted := 1;
        active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
        active_depth_ok := true;
        active_pool_ok := true;
        active_dispatched_count := 4 |}.
@@ -649,6 +719,62 @@ Section EndToEndModel.
        active_max_parallel := 2;
        active_budget_granted := 1;
        active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 2 |}.
+
+  Definition missing_dynamic_eval_gate_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 2;
+       active_min_branches := 2;
+       active_parallelism_degree := 2;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 2;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_dynamic_eval_gate := false;
+       active_dynamic_eval := true;
+       active_state_mutation := false;
+       active_strict_print := false;
+       active_io := false;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 2 |}.
+
+  Definition state_mutation_bypass_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 2;
+       active_min_branches := 2;
+       active_parallelism_degree := 2;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 2;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := true;
+       active_strict_print := false;
+       active_io := false;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 2 |}.
+
+  Definition strict_io_bypass_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 2;
+       active_min_branches := 2;
+       active_parallelism_degree := 2;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 2;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_dynamic_eval_gate := true;
+       active_dynamic_eval := false;
+       active_state_mutation := false;
+       active_strict_print := true;
+       active_io := true;
        active_depth_ok := true;
        active_pool_ok := true;
        active_dispatched_count := 2 |}.
@@ -677,7 +803,19 @@ Section EndToEndModel.
   Proof.
     split.
     - apply complete_active_fanout_gate_safe.
-    - apply complete_active_transducer_safe.
+    - split.
+      + apply complete_active_transducer_safe.
+      + repeat split.
+        * intros Hdyn; discriminate Hdyn.
+        * intros Hmutation; discriminate Hmutation.
+        * intros Hstrict _; discriminate Hstrict.
+        * unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
+            blocks_parallel_dispatch, complete_active_fanout.
+          simpl.
+          intros _ [Hstate | [[Hstrict _] | [_ Hdyn]]].
+          -- discriminate Hstate.
+          -- discriminate Hstrict.
+          -- discriminate Hdyn.
   Qed.
 
   Theorem missing_purity_active_fanout_exposes_envelope_gap :
@@ -714,7 +852,7 @@ Section EndToEndModel.
   Theorem zero_cap_bug_active_fanout_exposes_envelope_gap :
     ~ active_fanout_stack_safe zero_cap_bug_active_fanout.
   Proof.
-    intros [_ [Hmatches _]].
+    intros [_ [[Hmatches _] _]].
     unfold active_transducer_degree_matches, zero_cap_bug_active_fanout in
       Hmatches.
     simpl in Hmatches.
@@ -724,7 +862,7 @@ Section EndToEndModel.
   Theorem underutilized_transducer_exposes_envelope_gap :
     ~ active_fanout_stack_safe underutilized_transducer_active_fanout.
   Proof.
-    intros [_ [_ [Hmaximal _]]].
+    intros [_ [[_ [Hmaximal _]] _]].
     unfold active_transducer_maximal_before_cap,
       underutilized_transducer_active_fanout in Hmaximal.
     simpl in Hmaximal.
@@ -738,11 +876,55 @@ Section EndToEndModel.
   Theorem non_branch_parallel_class_exposes_envelope_gap :
     ~ active_fanout_stack_safe non_branch_parallel_active_fanout.
   Proof.
-    intros [_ [_ [_ Hgate]]].
+    intros [_ [[_ [_ Hgate]] _]].
     unfold active_transducer_default_gate_sound,
       non_branch_parallel_active_fanout in Hgate.
     simpl in Hgate.
     exact (Hgate ltac:(lia)).
+  Qed.
+
+  Theorem missing_dynamic_eval_gate_exposes_envelope_gap :
+    ~ active_fanout_stack_safe missing_dynamic_eval_gate_active_fanout.
+  Proof.
+    intros [_ [_ [Hdynamic _]]].
+    unfold active_blocks_parallel_dispatch,
+      missing_dynamic_eval_gate_active_fanout in Hdynamic.
+    simpl in Hdynamic.
+    specialize (Hdynamic eq_refl).
+    unfold blocks_parallel_dispatch in Hdynamic.
+    destruct Hdynamic as [Hstate | [[Hstrict _] | [Hgate _]]].
+    - discriminate Hstate.
+    - discriminate Hstrict.
+    - discriminate Hgate.
+  Qed.
+
+  Theorem state_mutation_bypass_exposes_envelope_gap :
+    ~ active_fanout_stack_safe state_mutation_bypass_active_fanout.
+  Proof.
+    intros [_ [_ [_ [_ [_ Hno_budget]]]]].
+    unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
+      blocks_parallel_dispatch, state_mutation_bypass_active_fanout in
+      Hno_budget.
+    simpl in Hno_budget.
+    specialize (Hno_budget eq_refl).
+    apply Hno_budget.
+    left.
+    reflexivity.
+  Qed.
+
+  Theorem strict_io_bypass_exposes_envelope_gap :
+    ~ active_fanout_stack_safe strict_io_bypass_active_fanout.
+  Proof.
+    intros [_ [_ [_ [_ [_ Hno_budget]]]]].
+    unfold active_no_budget_parallel_safe, no_budget_parallel_allowed,
+      blocks_parallel_dispatch, strict_io_bypass_active_fanout in
+      Hno_budget.
+    simpl in Hno_budget.
+    specialize (Hno_budget eq_refl).
+    apply Hno_budget.
+    right.
+    left.
+    split; reflexivity.
   Qed.
 
   Definition end_to_end_safe
@@ -1273,6 +1455,87 @@ Section EndToEndModel.
       Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
     eapply unsafe_active_fanout_stack_exposes_end_to_end_gap; eauto.
     apply non_branch_parallel_class_exposes_envelope_gap.
+  Qed.
+
+  Theorem missing_dynamic_eval_gate_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool,
+      uses_direct_fanout w = true ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup work_pool
+          missing_dynamic_eval_gate_active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
+    eapply unsafe_active_fanout_stack_exposes_end_to_end_gap; eauto.
+    apply missing_dynamic_eval_gate_exposes_envelope_gap.
+  Qed.
+
+  Theorem state_mutation_bypass_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool,
+      uses_direct_fanout w = true ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup work_pool
+          state_mutation_bypass_active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
+    eapply unsafe_active_fanout_stack_exposes_end_to_end_gap; eauto.
+    apply state_mutation_bypass_exposes_envelope_gap.
+  Qed.
+
+  Theorem strict_io_bypass_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool,
+      uses_direct_fanout w = true ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup work_pool
+          strict_io_bypass_active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
+    eapply unsafe_active_fanout_stack_exposes_end_to_end_gap; eauto.
+    apply strict_io_bypass_exposes_envelope_gap.
   Qed.
 
   Theorem missing_purity_active_fanout_exposes_end_to_end_gap :

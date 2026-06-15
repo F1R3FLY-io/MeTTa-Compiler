@@ -45,6 +45,11 @@ CONSTANTS
     ActiveMaxParallel,
     ActiveBudgetGranted,
     ActivePure,
+    ActiveDynamicEvalGate,
+    ActiveDynamicEval,
+    ActiveStateMutation,
+    ActiveStrictPrint,
+    ActiveIo,
     ActiveDepthOk,
     ActivePoolOk,
     ActivePartialDispatch
@@ -151,6 +156,11 @@ BooleanConstantsOK ==
     /\ WorkPoolUseTransitionResult \in BOOLEAN
     /\ WorkPoolRespawnCountsParked \in BOOLEAN
     /\ ActivePure \in BOOLEAN
+    /\ ActiveDynamicEvalGate \in BOOLEAN
+    /\ ActiveDynamicEval \in BOOLEAN
+    /\ ActiveStateMutation \in BOOLEAN
+    /\ ActiveStrictPrint \in BOOLEAN
+    /\ ActiveIo \in BOOLEAN
     /\ ActiveDepthOk \in BOOLEAN
     /\ ActivePoolOk \in BOOLEAN
     /\ ActivePartialDispatch \in BOOLEAN
@@ -783,6 +793,32 @@ ActiveFanoutGateComplete ==
       /\ ActiveBudgetGate
       /\ ActiveDispatchedCount = ActiveBranchCount
 
+ActiveBlocksParallelDispatch ==
+    \/ ActiveStateMutation
+    \/ ActiveStrictPrint /\ ActiveIo
+    \/ ActiveDynamicEvalGate /\ ActiveDynamicEval
+
+ActiveDynamicEvalGateComplete ==
+    /\ DirectFanout
+    /\ ActiveDynamicEval
+    => ActiveBlocksParallelDispatch
+
+ActiveStateMutationBlocks ==
+    /\ DirectFanout
+    /\ ActiveStateMutation
+    => ActiveBlocksParallelDispatch
+
+ActiveStrictIoBlocks ==
+    /\ DirectFanout
+    /\ ActiveStrictPrint
+    /\ ActiveIo
+    => ActiveBlocksParallelDispatch
+
+ActiveNoBudgetParallelSafe ==
+    /\ DirectFanout
+    /\ ActivePure
+    => ~ActiveBlocksParallelDispatch
+
 MaximalIndependentParallelism ==
     phase /= "init" /\ ~HasDependency /\ ~HasEffectConflict =>
       wave["producer"] = wave["consumer"]
@@ -855,6 +891,10 @@ EndToEndSafe ==
     /\ ActiveTransducerDegreeMatches
     /\ ActiveTransducerMaximalBeforeCap
     /\ ActiveTransducerDefaultGateSound
+    /\ ActiveDynamicEvalGateComplete
+    /\ ActiveStateMutationBlocks
+    /\ ActiveStrictIoBlocks
+    /\ ActiveNoBudgetParallelSafe
     /\ MaximalIndependentParallelism
     /\ NoLiveValueSwept
     /\ NoOverlappingCronDispatch

@@ -197,21 +197,20 @@ pub struct StallState {
 /// wait loop previously kept on its stack frame. The handle is owned by a
 /// `Continuation::WaitForParallel` variant; when that continuation is
 /// consumed (at completion or cancellation), the handle drops — releasing
-/// the budget, popping the frame-chain entry via `_root_guard.Drop`, and
-/// freeing the `Box<ParallelBranchRootFrame>` whose raw pointer the guard
-/// held.
+/// the budget and freeing its `LIVE_DISPATCHES` anchor slot (the
+/// `_live_dispatch` RAII field).
 ///
-/// **Thread-safety**: the handle is `Send + Sync` so it can be wrapped in
-/// `Arc<ParallelDispatchHandle>` and registered with the global GC
-/// `ROOT_REGISTRY` as a `RootProvider`. This is REQUIRED for correctness:
-/// worker branches (running on the eval work-pool) write their results
-/// into `results[slot]` between parent pump-ticks. The parent's
-/// `frame_chain` registration is thread-local and invisible to GC pool
-/// workers running on different threads; without the global root provider,
-/// a GC cycle triggered while the parent is parked on `cvar.wait_timeout`
-/// would not see the worker writes → mark-sweep frees them → SIGSEGV /
-/// SIGBUS on next dereference. The Sync requirement is satisfied by using
-/// `AtomicU64` / `Mutex` for the previously-`Cell` fields.
+/// **Thread-safety**: the handle is `Send + Sync` so its
+/// `ParallelDispatchRootProvider` can be registered (as an
+/// `Arc<dyn DispatchRoots>`) in the global `LIVE_DISPATCHES` anchor. This is
+/// REQUIRED for correctness: worker branches (running on the eval work-pool)
+/// write their results into `results[slot]` between parent pump-ticks. The
+/// parent's structural roots are read on its own thread and are invisible to
+/// the dedicated GC thread running concurrently; without the global dispatch
+/// anchor, a GC cycle triggered while the parent is parked on
+/// `cvar.wait_timeout` would not see the worker writes → they could be swept
+/// → use-after-free on next dereference. The Sync requirement is satisfied by
+/// using `AtomicU64` / `Mutex` for the previously-`Cell` fields.
 pub struct ParallelDispatchHandle {
     /// Per-branch result slots: `Arc<Mutex<Vec<Option<Vec<BoundValue>>>>>`.
     /// Each spawned branch closure writes its slot when complete.
@@ -229,18 +228,6 @@ pub struct ParallelDispatchHandle {
     /// Total number of branches dispatched (informational; equal to the
     /// initial `remaining` value).
     pub num_branches: usize,
-    /// Heap-allocated frame whose raw pointer was registered with the
-    /// frame_chain. The `_root_guard` field holds the LIFO pop handle;
-    /// both must drop together (guard first, then box) so the pop happens
-    /// before the backing allocation is freed.
-    ///
-    /// Visibility is `pub(crate)` because `ParallelBranchRootFrame` itself
-    /// is crate-private — external callers can't name the type anyway.
-    /// `allow(dead_code)`: the field's purpose is to keep the heap box alive
-    /// for the lifetime of `_root_guard` (which holds a raw pointer to it);
-    /// the box is never read directly after construction.
-    #[allow(dead_code)]
-    pub(crate) root_frame: Box<super::eval_loop::ParallelBranchRootFrame>,
     /// Snapshot of the global allocation counter at the start of the
     /// last cooperative GC drop. Used by the WaitForParallel pump to gate
     /// periodic guard drops.
@@ -248,11 +235,11 @@ pub struct ParallelDispatchHandle {
     /// Per-call stall-detection state. Mutex contention is zero in
     /// practice: only the pump-driver thread reads/writes this.
     pub stall_state: Mutex<StallState>,
-    /// Strong reference to the GC root provider registered with the
-    /// global `ROOT_REGISTRY` at dispatch construction. Drops when the
-    /// handle drops (on the trampoline thread), at which point the
-    /// `Weak` in the registry is auto-pruned on the next root walk.
-    /// See `ParallelDispatchRootProvider`'s doc for the race this closes.
+    /// Strong reference to the dispatch root provider whose `Weak<dyn
+    /// DispatchRoots>` is registered in the global `LIVE_DISPATCHES` anchor at
+    /// dispatch construction. Drops when the handle drops (on the trampoline
+    /// thread), at which point the `Weak` is auto-pruned on the next anchor
+    /// walk. See `ParallelDispatchRootProvider`'s doc for the race this closes.
     #[allow(dead_code)]
     pub(crate) _root_provider_arc: Arc<ParallelDispatchRootProvider>,
     /// Phase 10.A — Stage 1e closure: tracked-vars hint captured from the
@@ -392,19 +379,15 @@ impl crate::backend::models::gc_allocator::DispatchRoots for ParallelDispatchRoo
 
 /// Handle for a trampolinized parallel-collapse dispatch.
 ///
-/// Mirrors `ParallelDispatchHandle` for the `parallel_collapse_eval` path.
-/// Differs in that the root frame stores `items: Vec<BoundValue>` instead
-/// of `branches: Vec<ParallelBranch>`.
+/// Mirrors `ParallelDispatchHandle` for the `parallel_collapse_eval` path
+/// (the collapse fan-out dispatches `items: Vec<BoundValue>` rather than
+/// `branches: Vec<ParallelBranch>`).
 pub struct ParallelCollapseDispatchHandle {
     pub results: super::eval_loop::ParallelEvalResults,
     pub remaining: Arc<AtomicU32>,
     pub done_pair: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
     pub cancel_token: Arc<CancelToken>,
     pub num_branches: usize,
-    /// `pub(crate)` because `ParallelCollapseRootFrame` is crate-private.
-    /// `allow(dead_code)`: held alive for the lifetime of `_root_guard`.
-    #[allow(dead_code)]
-    pub(crate) root_frame: Box<super::eval_loop::ParallelCollapseRootFrame>,
     pub started_at_alloc_count: AtomicU64,
     pub stall_state: Mutex<StallState>,
     /// See `ParallelDispatchHandle::_root_provider_arc`.

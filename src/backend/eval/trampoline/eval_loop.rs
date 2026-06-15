@@ -2440,16 +2440,6 @@ pub(crate) type ParallelEvalResults =
     std::sync::Arc<std::sync::Mutex<Vec<Option<Vec<BoundValue>>>>>;
 pub(crate) type ParallelBranch = (MettaValue, SharedBindings);
 
-pub(crate) struct ParallelBranchRootFrame {
-    pub(crate) branches: Vec<ParallelBranch>,
-    pub(crate) results: ParallelEvalResults,
-}
-
-pub(crate) struct ParallelCollapseRootFrame {
-    pub(crate) items: Vec<BoundValue>,
-    pub(crate) results: ParallelEvalResults,
-}
-
 /// **Completion-counter RAII (TLA+ `CollapseCompletion.tla`, 2026-06-03)**.
 ///
 /// A per-worker completion guard whose `Drop` performs the SOLE
@@ -2583,28 +2573,6 @@ fn parallel_dispatch(
 
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
-
-    // Allocate the root frame on the heap. The Box's address is registered
-    // with the frame_chain via push_custom; the resulting EvalFrameGuard is
-    // stored in `handle._root_guard` so the registration outlives this
-    // function and is popped only when the handle drops (i.e., when
-    // WaitForParallel is consumed at completion).
-    //
-    // `branches` is now `Arc<Vec<...>>`; `(*branches).clone()` materializes
-    // a Vec for the root_frame (the frame_chain's
-    // `collect_parallel_branch_frame_roots` walker requires the heap-pinned
-    // Vec, not an Arc indirection, per the unsafe push_custom contract).
-    let root_frame = Box::new(ParallelBranchRootFrame {
-        branches: (*branches).clone(),
-        results: Arc::clone(&results),
-    });
-    // A5.6: slab-only. The index build has no frame_chain module; the parallel
-    // push site is cfg-walled here in lock-step with the `_root_guard` field
-    // (types.rs) and the struct-literal slot below. `note_worker_spawned()`
-    // (below, before any spawn) closes the single-threaded index collector
-    // gate the instant this handle could exist, so dropping the frame_chain
-    // push drops no live index root. `root_frame` (Box) stays unconditional —
-    // it is moved into the handle's `root_frame` field in both builds.
 
     // Phase 10.A: capture parent's tracked-vars union ONCE before the spawn
     // loop. Each worker closure gets a cheap Arc::clone — the union is
@@ -2941,7 +2909,6 @@ fn parallel_dispatch(
         done_pair,
         cancel_token,
         num_branches,
-        root_frame,
         started_at_alloc_count,
         stall_state: Mutex::new(StallState::default()),
         _root_provider_arc: root_provider,
@@ -3417,16 +3384,6 @@ fn parallel_collapse_dispatch(
     let pool = global_eval_pool();
     let child_depth = caller_depth + 1;
 
-    // `items` is now `Arc<Vec<...>>`; materialize a Vec for the
-    // root_frame's heap-pinned slot (frame_chain's collect walker
-    // requires a Vec, not an Arc indirection).
-    let root_frame = Box::new(ParallelCollapseRootFrame {
-        items: (*items).clone(),
-        results: Arc::clone(&results),
-    });
-    // A5.6: slab-only (see analogous wall in `parallel_dispatch`). `root_frame`
-    // (Box) stays unconditional — moved into the handle in both builds.
-
     // Phase 10.A — Stage 1e closure: capture the parent's collapse-bind
     // tracked-vars union ONCE before the spawn loop. Each worker clones
     // the Arc (cheap) and pushes a shadow `BINDING_CAPTURE_STACK` frame
@@ -3701,7 +3658,6 @@ fn parallel_collapse_dispatch(
         done_pair,
         cancel_token,
         num_branches: num_items,
-        root_frame,
         // A5.6: slab-only — pairs with the `_root_guard` field wall in types.rs.
         #[cfg(not(feature = "index-gc"))]
         _root_guard: Some(root_guard),
@@ -15812,8 +15768,8 @@ fn process_continuation<C: EvalContext>(
                     }
                 }
                 drop(guard);
-                // handle drops here → `_root_guard` pops the frame_chain LIFO
-                // entry → `root_frame` Box drops after, releasing its memory.
+                // handle drops here → its `_live_dispatch` RAII frees the
+                // LIVE_DISPATCHES anchor slot.
 
                 work_stack.push(WorkItem::Resume {
                     result: (merged, env),
@@ -16036,8 +15992,8 @@ fn process_continuation<C: EvalContext>(
                     }
                 };
 
-                // handle drops here → _root_guard pops the frame_chain LIFO
-                // entry → root_frame Box drops after.
+                // handle drops here → its `_live_dispatch` RAII frees the
+                // LIVE_DISPATCHES anchor slot.
                 let _ = outer_carrying;
                 let _ = stable_items_snapshot;
                 work_stack.push(WorkItem::Resume {

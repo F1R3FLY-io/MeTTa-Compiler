@@ -304,7 +304,11 @@ The formal lane covers the main scheduler obligations:
   `CollapseFanoutAdmissionComplete`. Branch threshold, WFST degree,
   purity/dynamic-eval, depth, pool, budget, and complete-dispatch gates are
   required before `DirectFanout` can contribute to maximal same-wave
-  parallelism.
+  parallelism. Its GC-regime obligation imports `E1DefaultConcurrentFlip.v`:
+  index mode must imply the dedicated collector regime, legacy default/session/
+  parallel/cron request producers must be suppressed there, and FANOUT trigger
+  failure must clear the request and resume workers instead of leaving a
+  driverless pending cycle.
 
 These proofs are mandatory in `scripts/verify_cesk_gc_formal.sh`.
 
@@ -583,6 +587,8 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_safe.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_independent.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_classification_no_shift.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_e1_legacy_default_ungated.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_e1_trigger_missing_backstop.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg`
@@ -619,10 +625,14 @@ The composed end-to-end envelope is modeled by:
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`; the safe config also preserves `SchedulerBoundaryComplete`,
 `SchedulerClassificationRangesDisjoint`, `SchedulerWavefrontEdgesComplete`,
-`SchedulerDirectFanoutRefinesWavefront`, `ActiveFanoutAdmissionComplete`, and
-`CollapseFanoutAdmissionComplete` inside the composed model. The no-shift
-classification config violates `SchedulerClassificationRangesDisjoint`. The
-missing dependency and missing effect-conflict edge configs violate
+`SchedulerDirectFanoutRefinesWavefront`, `ActiveFanoutAdmissionComplete`,
+`CollapseFanoutAdmissionComplete`, and `E1DefaultFlipSafe` inside the composed
+model. The no-shift classification config violates
+`SchedulerClassificationRangesDisjoint`. The E1 legacy-default and
+trigger-backstop configs violate `E1LegacyProducersSuppressed` and
+`E1FailedTriggerBackstopped`, matching the dedicated-regime and FANOUT
+rendezvous-trigger submodels. The missing dependency and missing effect-conflict
+edge configs violate
 `SchedulerWavefrontEdgesComplete`. The partial direct-dispatch config violates
 `SchedulerDirectFanoutRefinesWavefront`. The degree-as-spawn-cap and
 threshold-as-spawn-cap configs violate `ActiveFanoutAdmissionComplete` and

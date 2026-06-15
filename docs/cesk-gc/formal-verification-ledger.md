@@ -1240,12 +1240,12 @@ facts the proofs rely on:
   `SchedulerDirectFanoutWavefrontRefinement.v`,
   `SchedulerFanoutAdmissionCompleteness.v`,
   `CollapseFanoutAdmissionCompleteness.v`, `SchedulerFanoutProgress.v`, and
-  `SchedulerGcBoundary.v`: classification-table range disjointness, wavefront
-  edge coverage, direct-fanout independent-wavefront refinement, admitted
-  branch/collapse slot representation, FANOUT participant accounting,
-  parked-worker resume, worker completion-drop accounting, and the GC-facing
-  scheduler root/admission boundary are part of the same end-to-end proof
-  boundary.
+  `SchedulerGcBoundary.v`, plus `E1DefaultConcurrentFlip.v`: classification-table
+  range disjointness, wavefront edge coverage, direct-fanout independent-wavefront
+  refinement, admitted branch/collapse slot representation, FANOUT participant
+  accounting, parked-worker resume, worker completion-drop accounting, the
+  GC-facing scheduler root/admission boundary, and the E1 dedicated default-flip
+  request/backstop boundary are part of the same end-to-end proof boundary.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, active
   direct-fanout without purity or budget gates, partial direct-fanout dispatch,
@@ -1259,9 +1259,13 @@ facts the proofs rely on:
   worker that clears `in_flight` without first publishing the terminal stop
   state. The no-shift classification E2E discriminator fails specifically on
   `SchedulerClassificationRangesDisjoint`, matching the standalone
-  `SchedulerClassificationLookup` model inside the composed envelope. The
-  missing dependency-edge and effect-conflict-edge E2E discriminators now fail
-  specifically on `SchedulerWavefrontEdgesComplete`, and the partial
+  `SchedulerClassificationLookup` model inside the composed envelope. The E1
+  legacy-default and trigger-backstop E2E discriminators fail specifically on
+  `E1LegacyProducersSuppressed` and `E1FailedTriggerBackstopped`, matching the
+  default dedicated-regime and FANOUT rendezvous-trigger premises composed by
+  `E1DefaultConcurrentFlip`. The missing dependency-edge and effect-conflict-edge
+  E2E discriminators now fail specifically on `SchedulerWavefrontEdgesComplete`,
+  and the partial
   direct-dispatch discriminator fails on
   `SchedulerDirectFanoutRefinesWavefront`, matching the standalone scheduler
   wavefront/effect/direct-refinement proofs inside the composed model. The

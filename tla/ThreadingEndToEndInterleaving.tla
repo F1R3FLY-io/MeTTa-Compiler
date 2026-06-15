@@ -13,6 +13,20 @@ CONSTANTS
     ConflictEdgeEncoded,
     DirectFanout,
     ClassificationShiftLaterStarts,
+    E1IndexMode,
+    E1Dedicated,
+    E1GateDefault,
+    E1GateSession,
+    E1GateParallel,
+    E1GateCron,
+    E1FanoutWatermark,
+    E1TriggerSent,
+    E1TriggerFailed,
+    E1DriverPosted,
+    E1CycleClosed,
+    E1GenerationAdvanced,
+    E1RequestCleared,
+    E1WorkersResumed,
     IncludeWorkerRoot,
     IncludeDispatchRoot,
     IncludeBatchRoot,
@@ -192,6 +206,20 @@ BooleanConstantsOK ==
     /\ ConflictEdgeEncoded \in BOOLEAN
     /\ DirectFanout \in BOOLEAN
     /\ ClassificationShiftLaterStarts \in BOOLEAN
+    /\ E1IndexMode \in BOOLEAN
+    /\ E1Dedicated \in BOOLEAN
+    /\ E1GateDefault \in BOOLEAN
+    /\ E1GateSession \in BOOLEAN
+    /\ E1GateParallel \in BOOLEAN
+    /\ E1GateCron \in BOOLEAN
+    /\ E1FanoutWatermark \in BOOLEAN
+    /\ E1TriggerSent \in BOOLEAN
+    /\ E1TriggerFailed \in BOOLEAN
+    /\ E1DriverPosted \in BOOLEAN
+    /\ E1CycleClosed \in BOOLEAN
+    /\ E1GenerationAdvanced \in BOOLEAN
+    /\ E1RequestCleared \in BOOLEAN
+    /\ E1WorkersResumed \in BOOLEAN
     /\ IncludeWorkerRoot \in BOOLEAN
     /\ IncludeDispatchRoot \in BOOLEAN
     /\ IncludeBatchRoot \in BOOLEAN
@@ -330,6 +358,38 @@ SchedulerClassificationRangesDisjoint ==
     ~(ClassificationLaterStart
         < ClassificationTargetStart + ClassificationTargetCountAfterInsert /\
       ClassificationTargetStart < ClassificationLaterStart + 1)
+
+E1DefaultDedicatedFollowsIndex ==
+    E1IndexMode => E1Dedicated
+
+E1LegacyProducersSuppressed ==
+    E1Dedicated =>
+      E1GateDefault /\ E1GateSession /\ E1GateParallel /\ E1GateCron
+
+E1FanoutTriggerTotal ==
+    E1Dedicated /\ E1FanoutWatermark => E1TriggerSent \/ E1TriggerFailed
+
+E1SuccessfulTriggerPostsDriver ==
+    E1TriggerSent => E1DriverPosted
+
+E1FailedTriggerBackstopped ==
+    E1TriggerFailed => E1RequestCleared /\ E1WorkersResumed
+
+E1PostedDriverClosesCycle ==
+    E1DriverPosted => E1CycleClosed
+
+E1ClosedCycleReleasesWorkers ==
+    E1CycleClosed =>
+      E1GenerationAdvanced /\ E1RequestCleared /\ E1WorkersResumed
+
+E1DefaultFlipSafe ==
+    /\ E1DefaultDedicatedFollowsIndex
+    /\ E1LegacyProducersSuppressed
+    /\ E1FanoutTriggerTotal
+    /\ E1SuccessfulTriggerPostsDriver
+    /\ E1FailedTriggerBackstopped
+    /\ E1PostedDriverClosesCycle
+    /\ E1ClosedCycleReleasesWorkers
 
 ConsumerWave ==
     IF EdgeComplete /\ (HasDependency \/ HasEffectConflict) THEN 1 ELSE 0
@@ -1176,6 +1236,7 @@ EndToEndSafe ==
     /\ NoSameWaveEffectConflict
     /\ NoDirectFanoutForDependentWork
     /\ SchedulerClassificationRangesDisjoint
+    /\ E1DefaultFlipSafe
     /\ SchedulerWavefrontEdgesComplete
     /\ SchedulerDirectFanoutRefinesWavefront
     /\ ActiveFanoutGateComplete

@@ -14,6 +14,7 @@ From Stdlib Require Import ZArith.
 Require Import CronRecurringDispatch.
 Require Import CronStartupDelivery.
 Require Import CollapseFanoutAdmissionCompleteness.
+Require Import E1DefaultConcurrentFlip.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerClassificationLookup.
 Require Import SchedulerDirectFanoutWavefrontRefinement.
@@ -58,6 +59,8 @@ Module CollapseAdmission :=
   MeTTaTron_GC_CollapseFanoutAdmissionCompleteness.
 Module Classification :=
   MeTTaTron_GC_SchedulerClassificationLookup.
+Module E1Default :=
+  MeTTaTron_GC_E1DefaultConcurrentFlip.
 Module Wavefront :=
   MeTTaTron_GC_SchedulerWavefrontParallelism.
 
@@ -145,6 +148,239 @@ Section EndToEndModel.
     unfold Classification.disjoint, Classification.in_range in Hdisjoint.
     specialize (Hdisjoint 1).
     apply Hdisjoint; lia.
+  Qed.
+
+  Inductive E1LegacyProducer : Type :=
+  | E1DefaultSafepoint : E1LegacyProducer
+  | E1SessionSafepoint : E1LegacyProducer
+  | E1ParallelSafepoint : E1LegacyProducer
+  | E1CronAsync : E1LegacyProducer.
+
+  Record E1DefaultFlipConfig : Type := {
+    e1_index_mode : bool;
+    e1_dedicated : bool;
+    e1_legacy_default_gated : bool;
+    e1_legacy_session_gated : bool;
+    e1_legacy_parallel_gated : bool;
+    e1_legacy_cron_gated : bool;
+    e1_fanout_watermark : bool;
+    e1_trigger_sent : bool;
+    e1_trigger_failed : bool;
+    e1_driver_posted : bool;
+    e1_cycle_closed : bool;
+    e1_generation_advanced : bool;
+    e1_request_cleared : bool;
+    e1_workers_resumed : bool
+  }.
+
+  Definition e1_legacy_request
+      (c : E1DefaultFlipConfig)
+      (p : E1LegacyProducer)
+      : Prop :=
+    match p with
+    | E1DefaultSafepoint => e1_legacy_default_gated c = false
+    | E1SessionSafepoint => e1_legacy_session_gated c = false
+    | E1ParallelSafepoint => e1_legacy_parallel_gated c = false
+    | E1CronAsync => e1_legacy_cron_gated c = false
+    end.
+
+  Definition e1_default_dedicated_follows_index
+      (c : E1DefaultFlipConfig)
+      : Prop :=
+    e1_index_mode c = true -> e1_dedicated c = true.
+
+  Definition e1_legacy_requests_suppressed
+      (c : E1DefaultFlipConfig)
+      : Prop :=
+    e1_dedicated c = true ->
+    forall p, ~ e1_legacy_request c p.
+
+  Definition e1_fanout_trigger_total
+      (c : E1DefaultFlipConfig)
+      : Prop :=
+    e1_dedicated c = true ->
+    e1_fanout_watermark c = true ->
+    e1_trigger_sent c = true \/ e1_trigger_failed c = true.
+
+  Definition e1_successful_trigger_posts_driver
+      (c : E1DefaultFlipConfig)
+      : Prop :=
+    e1_trigger_sent c = true -> e1_driver_posted c = true.
+
+  Definition e1_failed_trigger_backstopped
+      (c : E1DefaultFlipConfig)
+      : Prop :=
+    e1_trigger_failed c = true ->
+    e1_request_cleared c = true /\ e1_workers_resumed c = true.
+
+  Definition e1_posted_driver_closes_cycle
+      (c : E1DefaultFlipConfig)
+      : Prop :=
+    e1_driver_posted c = true -> e1_cycle_closed c = true.
+
+  Definition e1_closed_cycle_releases_workers
+      (c : E1DefaultFlipConfig)
+      : Prop :=
+    e1_cycle_closed c = true ->
+    e1_generation_advanced c = true /\
+    e1_request_cleared c = true /\
+    e1_workers_resumed c = true.
+
+  Definition e1_default_flip_safe
+      (c : E1DefaultFlipConfig)
+      : Prop :=
+    e1_default_dedicated_follows_index c /\
+    e1_legacy_requests_suppressed c /\
+    e1_fanout_trigger_total c /\
+    e1_successful_trigger_posts_driver c /\
+    e1_failed_trigger_backstopped c /\
+    e1_posted_driver_closes_cycle c /\
+    e1_closed_cycle_releases_workers c.
+
+  Definition complete_e1_default_flip : E1DefaultFlipConfig :=
+    {| e1_index_mode := true;
+       e1_dedicated := true;
+       e1_legacy_default_gated := true;
+       e1_legacy_session_gated := true;
+       e1_legacy_parallel_gated := true;
+       e1_legacy_cron_gated := true;
+       e1_fanout_watermark := true;
+       e1_trigger_sent := true;
+       e1_trigger_failed := false;
+       e1_driver_posted := true;
+       e1_cycle_closed := true;
+       e1_generation_advanced := true;
+       e1_request_cleared := true;
+       e1_workers_resumed := true |}.
+
+  Definition legacy_default_ungated_e1_default_flip : E1DefaultFlipConfig :=
+    {| e1_index_mode := true;
+       e1_dedicated := true;
+       e1_legacy_default_gated := false;
+       e1_legacy_session_gated := true;
+       e1_legacy_parallel_gated := true;
+       e1_legacy_cron_gated := true;
+       e1_fanout_watermark := true;
+       e1_trigger_sent := true;
+       e1_trigger_failed := false;
+       e1_driver_posted := true;
+       e1_cycle_closed := true;
+       e1_generation_advanced := true;
+       e1_request_cleared := true;
+       e1_workers_resumed := true |}.
+
+  Definition trigger_failure_missing_backstop_e1_default_flip
+      : E1DefaultFlipConfig :=
+    {| e1_index_mode := true;
+       e1_dedicated := true;
+       e1_legacy_default_gated := true;
+       e1_legacy_session_gated := true;
+       e1_legacy_parallel_gated := true;
+       e1_legacy_cron_gated := true;
+       e1_fanout_watermark := true;
+       e1_trigger_sent := false;
+       e1_trigger_failed := true;
+       e1_driver_posted := false;
+       e1_cycle_closed := false;
+       e1_generation_advanced := false;
+       e1_request_cleared := false;
+       e1_workers_resumed := false |}.
+
+  Theorem complete_e1_default_flip_safe :
+    e1_default_flip_safe complete_e1_default_flip.
+  Proof.
+    unfold e1_default_flip_safe, e1_default_dedicated_follows_index,
+      e1_legacy_requests_suppressed, e1_fanout_trigger_total,
+      e1_successful_trigger_posts_driver, e1_failed_trigger_backstopped,
+      e1_posted_driver_closes_cycle, e1_closed_cycle_releases_workers,
+      complete_e1_default_flip, e1_legacy_request.
+    cbn.
+    repeat split; intros; try (destruct p);
+      try firstorder; try reflexivity; try discriminate; try contradiction.
+  Qed.
+
+  Theorem e1_default_flip_safe_excludes_driverless_or_stuck_request :
+    forall c,
+      e1_default_flip_safe c ->
+      e1_index_mode c = true ->
+      ~ ((exists p, e1_legacy_request c p) \/
+         (e1_trigger_sent c = true /\ ~ e1_driver_posted c = true) \/
+         (e1_trigger_failed c = true /\ ~ e1_request_cleared c = true)).
+  Proof.
+    intros c Hsafe Hindex Hbad.
+    unfold e1_default_flip_safe in Hsafe.
+    destruct Hsafe as
+      [Hdefault [Hlegacy [_ [Hposts [Hfailed _]]]]].
+    eapply
+      (E1Default.default_flip_no_driverless_request_or_stuck_workers
+        E1LegacyProducer
+        (e1_index_mode c = true)
+        (e1_dedicated c = true)
+        (e1_trigger_sent c = true)
+        (e1_trigger_failed c = true)
+        (e1_driver_posted c = true)
+        (e1_request_cleared c = true)
+        (e1_workers_resumed c = true)
+        (e1_legacy_request c)).
+    - exact Hdefault.
+    - exact Hlegacy.
+    - exact Hposts.
+    - exact Hfailed.
+    - exact Hindex.
+    - exact Hbad.
+  Qed.
+
+  Theorem e1_default_flip_safe_implies_trigger_progress :
+    forall c,
+      e1_default_flip_safe c ->
+      e1_index_mode c = true ->
+      e1_fanout_watermark c = true ->
+      (e1_cycle_closed c = true /\
+       e1_generation_advanced c = true /\
+       e1_request_cleared c = true /\
+       e1_workers_resumed c = true) \/
+      (e1_request_cleared c = true /\ e1_workers_resumed c = true).
+  Proof.
+    intros c Hsafe Hindex Hwatermark.
+    unfold e1_default_flip_safe in Hsafe.
+    destruct Hsafe as
+      [Hdefault [_ [Htrigger [Hposts [Hfailed [Hcloses Hreleases]]]]]].
+    eapply
+      (E1Default.default_flip_fanout_trigger_progress
+        (e1_index_mode c = true)
+        (e1_dedicated c = true)
+        (e1_fanout_watermark c = true)
+        (e1_trigger_sent c = true)
+        (e1_trigger_failed c = true)
+        (e1_driver_posted c = true)
+        (e1_cycle_closed c = true)
+        (e1_generation_advanced c = true)
+        (e1_request_cleared c = true)
+        (e1_workers_resumed c = true));
+      eauto.
+  Qed.
+
+  Theorem legacy_default_ungated_exposes_e1_default_flip_gap :
+    ~ e1_default_flip_safe legacy_default_ungated_e1_default_flip.
+  Proof.
+    intros [_ [Hlegacy _]].
+    unfold e1_legacy_requests_suppressed,
+      legacy_default_ungated_e1_default_flip in Hlegacy.
+    simpl in Hlegacy.
+    specialize (Hlegacy eq_refl E1DefaultSafepoint).
+    apply Hlegacy.
+    reflexivity.
+  Qed.
+
+  Theorem trigger_failure_missing_backstop_exposes_e1_default_flip_gap :
+    ~ e1_default_flip_safe trigger_failure_missing_backstop_e1_default_flip.
+  Proof.
+    intros [_ [_ [_ [_ [Hfailed _]]]]].
+    unfold e1_failed_trigger_backstopped,
+      trigger_failure_missing_backstop_e1_default_flip in Hfailed.
+    simpl in Hfailed.
+    destruct (Hfailed eq_refl) as [Hcleared _].
+    discriminate Hcleared.
   Qed.
 
   Definition WaveAssignment : Type := Task -> nat.
@@ -2233,6 +2469,7 @@ Section EndToEndModel.
       (active_fanout : ActiveFanoutConfig)
       (fanout_progress : FanoutProgressConfig)
       (classification_lookup : ClassificationLookupConfig)
+      (e1_default_flip : E1DefaultFlipConfig)
       : Prop :=
     schedule_envelope_safe w wave /\
     gc_window_safe
@@ -2251,7 +2488,8 @@ Section EndToEndModel.
       dispatch_live dispatch_rooted
       batch_live batch_rooted
       late_worker_live /\
-    classification_lookup_safe classification_lookup.
+    classification_lookup_safe classification_lookup /\
+    e1_default_flip_safe e1_default_flip.
 
   Theorem checked_threading_envelope_is_end_to_end_safe :
     forall w wave active_worker_live,
@@ -2274,7 +2512,8 @@ Section EndToEndModel.
         complete_work_pool
         complete_active_fanout
         complete_fanout_progress
-        complete_classification_lookup.
+        complete_classification_lookup
+        complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live Hschedule.
     unfold end_to_end_safe.
@@ -2298,7 +2537,9 @@ Section EndToEndModel.
                        +++ apply complete_fanout_progress_safe.
                        +++ split.
                            { apply rooted_closed_scheduler_boundary_safe. }
-                           { apply complete_classification_lookup_safe. }
+                           { split.
+                             - apply complete_classification_lookup_safe.
+                             - apply complete_e1_default_flip_safe. }
   Qed.
 
   Theorem no_shift_classification_lookup_exposes_end_to_end_gap :
@@ -2322,12 +2563,74 @@ Section EndToEndModel.
           complete_work_pool
           complete_active_fanout
           complete_fanout_progress
-          no_shift_classification_lookup.
+          no_shift_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live Hschedule Hend.
     unfold end_to_end_safe in Hend.
-    destruct Hend as [_ [_ [_ [_ [_ [_ [_ [_ [_ Hclassification]]]]]]]]].
+    destruct Hend as
+      [_ [_ [_ [_ [_ [_ [_ [_ [_ [Hclassification _]]]]]]]]]].
     exact (no_shift_classification_lookup_exposes_overlap Hclassification).
+  Qed.
+
+  Theorem legacy_default_ungated_e1_default_flip_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          legacy_default_ungated_e1_default_flip.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    destruct Hend as [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ He1]]]]]]]]]].
+    exact (legacy_default_ungated_exposes_e1_default_flip_gap He1).
+  Qed.
+
+  Theorem trigger_failure_missing_backstop_exposes_end_to_end_gap :
+    forall w wave active_worker_live,
+      schedule_envelope_safe w wave ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          active_worker_live
+          true
+          true
+          true
+          true
+          false
+          complete_spawn_latch
+          (cron_final_due
+            (cron_worker_complete true
+              (cron_second_due (cron_first_due true))))
+          complete_startup
+          complete_work_pool
+          complete_active_fanout
+          complete_fanout_progress
+          complete_classification_lookup
+          trigger_failure_missing_backstop_e1_default_flip.
+  Proof.
+    intros w wave active_worker_live Hschedule Hend.
+    unfold end_to_end_safe in Hend.
+    destruct Hend as [_ [_ [_ [_ [_ [_ [_ [_ [_ [_ He1]]]]]]]]]].
+    exact (trigger_failure_missing_backstop_exposes_e1_default_flip_gap He1).
   Qed.
 
   Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :
@@ -2357,7 +2660,8 @@ Section EndToEndModel.
           complete_work_pool
           complete_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state Hschedule Hgc Hcron
@@ -2398,7 +2702,8 @@ Section EndToEndModel.
           work_pool
           active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_startup work_pool
@@ -2440,7 +2745,8 @@ Section EndToEndModel.
           work_pool
           active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2472,7 +2778,8 @@ Section EndToEndModel.
           work_pool
           complete_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -2504,7 +2811,8 @@ Section EndToEndModel.
           work_pool
           complete_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave cron_state cron_startup work_pool Hschedule Hcron Hstartup
       Hwork_pool Hend.
@@ -2542,7 +2850,8 @@ Section EndToEndModel.
           lossy_work_pool_startup
           complete_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -2580,7 +2889,8 @@ Section EndToEndModel.
           task_panic_missing_inner_work_pool
           complete_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -2618,7 +2928,8 @@ Section EndToEndModel.
           accounting_panic_missing_outer_work_pool
           complete_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup Hschedule
@@ -2658,7 +2969,8 @@ Section EndToEndModel.
           work_pool
           active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2687,7 +2999,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup
           uncapped_overflow_work_pool active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -2715,7 +3028,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup
           double_unpark_overcounts_work_pool active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -2743,7 +3057,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup
           respawn_without_increment_work_pool active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -2771,7 +3086,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup
           stale_priority_work_pool active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup
@@ -2811,7 +3127,8 @@ Section EndToEndModel.
           work_pool
           active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2854,7 +3171,8 @@ Section EndToEndModel.
           work_pool
           active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2885,7 +3203,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           zero_cap_bug_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2914,7 +3233,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           underutilized_transducer_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2943,7 +3263,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           non_branch_parallel_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -2972,7 +3293,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           missing_dynamic_eval_gate_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3001,7 +3323,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           state_mutation_bypass_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3030,7 +3353,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           strict_io_bypass_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3059,7 +3383,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           missing_purity_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3088,7 +3413,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           missing_budget_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
@@ -3117,7 +3443,8 @@ Section EndToEndModel.
           late_worker_live complete_spawn_latch cron_state cron_startup work_pool
           partial_dispatch_active_fanout
           complete_fanout_progress
-          complete_classification_lookup.
+          complete_classification_lookup
+          complete_e1_default_flip.
   Proof.
     intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
       batch_live batch_rooted late_worker_live cron_state cron_startup work_pool

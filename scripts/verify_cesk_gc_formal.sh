@@ -388,6 +388,10 @@ run_tlc "threading_end_to_end_independent" "ThreadingEndToEndInterleaving.tla" "
   pass ""
 run_tlc "threading_end_to_end_classification_no_shift" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_classification_no_shift.cfg" \
   fail "The invariant of SchedulerClassificationRangesDisjoint is equal to FALSE"
+run_tlc "threading_end_to_end_e1_legacy_default_ungated" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_e1_legacy_default_ungated.cfg" \
+  fail "The invariant of E1LegacyProducersSuppressed is equal to FALSE"
+run_tlc "threading_end_to_end_e1_trigger_missing_backstop" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_e1_trigger_missing_backstop.cfg" \
+  fail "The invariant of E1FailedTriggerBackstopped is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_purity" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg" \
   fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_missing_budget" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg" \

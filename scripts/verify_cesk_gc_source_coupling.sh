@@ -906,7 +906,30 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerDirectFanoutW
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CollapseFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module DynamicEval :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module WorkPoolLife :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module WorkPoolPanicModel :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module WorkPoolStartupModel :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module PriorityModel :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "local_scheduler_contracts_compose_standalone_reordering" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_work_pool_startup_uses_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_work_pool_panic_uses_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_work_pool_overflow_uses_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_work_pool_lifecycle_uses_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_work_pool_priority_uses_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "work_pool_overflow_safe_preserves_cap_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "work_pool_lifecycle_safe_double_unpark_matches_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "work_pool_lifecycle_safe_respawn_counts_parked_via_standalone" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "WorkPoolStartupModel.prestart_enqueue_retains_all" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "WorkPoolPanicModel.task_panic_inner_catch_keeps_worker_alive" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "WorkPoolPanicModel.task_panic_inner_catch_skips_runtime_update" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "WorkPoolPanicModel.task_panic_inner_catch_publishes_cpu_state" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "overflow_spawn_preserves_cap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "WorkPoolLife.unpark_preserves_capacity_consistency" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "PriorityModel.older_task_eventually_preempts" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "WorkPoolLife.try_unpark_parked_counts_once" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "WorkPoolLife.respawn_parked_replacement_must_increment" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "WorkPoolPanicModel.missing_inner_catch_loses_task_panic_heartbeat" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "WorkPoolPanicModel.missing_outer_catch_can_kill_worker_on_accounting_panic" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_classification_lookup_safe" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "no_shift_classification_lookup_exposes_end_to_end_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_e1_default_flip_safe" >/dev/null

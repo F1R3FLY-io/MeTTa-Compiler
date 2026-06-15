@@ -292,9 +292,13 @@ The formal lane covers the main scheduler obligations:
   envelope composes WorkPool startup drain and panic isolation: startup
   submissions must be retained until workers drain them, task panics must
   publish the heartbeat path, and accounting panics must not kill the worker
-  needed for subsequent queued work.  The WorkPool envelope also composes the
-  priority-aging dequeue contract: pop-time score recomputation is required so
-  aged older work is not starved behind newer high-base-priority work.  It also
+  needed for subsequent queued work.  The Rocq E2E envelope now proves these
+  obligations through explicit bridge lemmas that call the standalone
+  `WorkPoolStartupDrain`, `WorkPoolPanicIsolation`, `WorkPoolOverflowCap`,
+  `WorkPoolLifecycle`, and `SchedulerPriorityFairness` theorems.  The WorkPool
+  envelope also composes the priority-aging dequeue contract: pop-time score
+  recomputation is required so aged older work is not starved behind newer
+  high-base-priority work.  It also
   imports the `SchedulerGcBoundary.v` theorem and exposes the same
   `SchedulerBoundaryComplete` invariant in the E2E TLC model, so active workers,
   live-dispatch fanout, async batch handoff, and closed admission are checked as
@@ -720,7 +724,11 @@ that bypasses the live-worker cap, double-unpark accounting that counts one
 parked worker twice, respawning a parked replacement without incrementing
 the aggregate active count, and stale priority dequeue that skips pop-time
 age recomputation and therefore pops newer high-priority work before an aged
-older task.
+older task.  The Rocq proof composes these failures through standalone theorem
+calls, including `overflow_spawn_preserves_cap`,
+`try_unpark_parked_counts_once`, and
+`respawn_parked_replacement_must_increment`, instead of local arithmetic-only
+re-proofs.
 
 The Rocq envelope also bridges the threading boundary into
 `CESKCollectorSafety.v`: `end_to_end_safe_feeds_cesk_index_gc_safety` extracts

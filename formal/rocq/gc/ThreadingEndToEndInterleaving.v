@@ -87,6 +87,14 @@ Module E1Driver :=
   MeTTaTron_GC_E1SatbStwDriverProgress.
 Module Wavefront :=
   MeTTaTron_GC_SchedulerWavefrontParallelism.
+Module WorkPoolLife :=
+  MeTTaTron_GC_WorkPoolLifecycle.
+Module WorkPoolPanicModel :=
+  MeTTaTron_GC_WorkPoolPanicIsolation.
+Module WorkPoolStartupModel :=
+  MeTTaTron_GC_WorkPoolStartupDrain.
+Module PriorityModel :=
+  MeTTaTron_GC_SchedulerPriorityFairness.
 
 Section EndToEndModel.
   Inductive Task : Type :=
@@ -2758,21 +2766,114 @@ Section EndToEndModel.
        work_pool_new_seq := 1;
        work_pool_popped_old := false |}.
 
+  Theorem complete_work_pool_startup_uses_standalone :
+    work_pool_startup_safe complete_work_pool.
+  Proof.
+    unfold work_pool_startup_safe, complete_work_pool.
+    simpl.
+    apply WorkPoolStartupModel.prestart_enqueue_retains_all.
+  Qed.
+
+  Theorem complete_work_pool_panic_uses_standalone :
+    work_pool_panic_safe complete_work_pool.
+  Proof.
+    unfold work_pool_panic_safe, complete_work_pool.
+    simpl.
+    split.
+    - apply WorkPoolPanicModel.task_panic_inner_catch_keeps_worker_alive.
+    - split.
+      + apply WorkPoolPanicModel.task_panic_inner_catch_skips_runtime_update.
+      + intros _.
+        apply WorkPoolPanicModel.task_panic_inner_catch_publishes_cpu_state.
+  Qed.
+
+  Theorem complete_work_pool_overflow_uses_standalone :
+    work_pool_overflow_safe complete_work_pool.
+  Proof.
+    unfold work_pool_overflow_safe, complete_work_pool.
+    simpl.
+    split; [ lia | ].
+    split; [ reflexivity | ].
+    pose proof (overflow_spawn_preserves_cap 3 0 2 ltac:(lia)) as Hcap.
+    simpl in Hcap.
+    exact Hcap.
+  Qed.
+
+  Theorem complete_work_pool_lifecycle_uses_standalone :
+    work_pool_lifecycle_safe complete_work_pool.
+  Proof.
+    unfold work_pool_lifecycle_safe, complete_work_pool.
+    simpl.
+    split; [ lia | ].
+    split; [ unfold WorkPoolLife.consistent; lia | ].
+    split; [ reflexivity | ].
+    split; [ reflexivity | ].
+    split.
+    - apply WorkPoolLife.unpark_preserves_capacity_consistency.
+      unfold WorkPoolLife.consistent; lia.
+    - split; [ reflexivity | ].
+      split; [ reflexivity | ].
+      apply WorkPoolLife.unpark_preserves_capacity_consistency.
+      unfold WorkPoolLife.consistent; lia.
+  Qed.
+
+  Theorem complete_work_pool_priority_uses_standalone :
+    work_pool_priority_fair_safe complete_work_pool.
+  Proof.
+    unfold work_pool_priority_fair_safe, complete_work_pool.
+    simpl.
+    split; [ reflexivity | ].
+    intros Hage.
+    split.
+    - apply PriorityModel.older_task_eventually_preempts.
+      exact Hage.
+    - reflexivity.
+  Qed.
+
+  Theorem work_pool_overflow_safe_preserves_cap_via_standalone :
+    forall c,
+      work_pool_overflow_safe c ->
+      work_pool_overflow_live c + work_pool_overflow_spawned c
+        <= work_pool_overflow_max c.
+  Proof.
+    intros c [Hlive [Hspawn _]].
+    rewrite Hspawn.
+    apply overflow_spawn_preserves_cap.
+    exact Hlive.
+  Qed.
+
+  Theorem work_pool_lifecycle_safe_double_unpark_matches_standalone :
+    forall c,
+      work_pool_lifecycle_safe c ->
+      work_pool_double_unpark_active c = S (work_pool_lifecycle_active c).
+  Proof.
+    intros c [_ [_ [Hcount _]]].
+    rewrite Hcount.
+    destruct
+      (WorkPoolLife.try_unpark_parked_counts_once
+        (work_pool_lifecycle_active c)) as [Honce _].
+    exact Honce.
+  Qed.
+
+  Theorem work_pool_lifecycle_safe_respawn_counts_parked_via_standalone :
+    forall c,
+      work_pool_lifecycle_safe c ->
+      work_pool_respawn_active c = S (work_pool_lifecycle_active c).
+  Proof.
+    intros c [_ [_ [_ [_ [_ [Hrespawn _]]]]]].
+    rewrite Hrespawn.
+    apply WorkPoolLife.respawn_parked_replacement_must_increment.
+  Qed.
+
   Theorem complete_work_pool_envelope_safe :
     work_pool_envelope_safe complete_work_pool.
   Proof.
-    unfold work_pool_envelope_safe, work_pool_startup_safe,
-      work_pool_panic_safe, work_pool_overflow_safe,
-      work_pool_lifecycle_safe, complete_work_pool,
-      prestart_queue_after_submissions.
-    simpl.
-    unfold consistent.
-    repeat split; try reflexivity; try lia;
-      try (intros Hage;
-           split;
-           [ apply older_task_eventually_preempts; exact Hage
-           | reflexivity ]);
-      try (apply older_task_eventually_preempts; lia).
+    unfold work_pool_envelope_safe.
+    split; [ apply complete_work_pool_startup_uses_standalone | ].
+    split; [ apply complete_work_pool_panic_uses_standalone | ].
+    split; [ apply complete_work_pool_overflow_uses_standalone | ].
+    split; [ apply complete_work_pool_lifecycle_uses_standalone | ].
+    apply complete_work_pool_priority_uses_standalone.
   Qed.
 
   Theorem lossy_work_pool_startup_exposes_envelope_gap :
@@ -2793,7 +2894,9 @@ Section EndToEndModel.
     simpl.
     intros [_ [[_ [_ Hheartbeat]] _]].
     specialize (Hheartbeat eq_refl).
-    exact (missing_inner_catch_loses_task_panic_heartbeat Hheartbeat).
+    exact
+      (WorkPoolPanicModel.missing_inner_catch_loses_task_panic_heartbeat
+        Hheartbeat).
   Qed.
 
   Theorem missing_outer_accounting_panic_exposes_envelope_gap :
@@ -2803,39 +2906,45 @@ Section EndToEndModel.
       accounting_panic_missing_outer_work_pool.
     simpl.
     intros [_ [[Halive _] _]].
-    exact (missing_outer_catch_can_kill_worker_on_accounting_panic Halive).
+    exact
+      (WorkPoolPanicModel.missing_outer_catch_can_kill_worker_on_accounting_panic
+        Halive).
   Qed.
 
   Theorem uncapped_overflow_exposes_envelope_gap :
     ~ work_pool_envelope_safe uncapped_overflow_work_pool.
   Proof.
-    unfold work_pool_envelope_safe, work_pool_overflow_safe,
-      uncapped_overflow_work_pool.
-    simpl.
-    intros [_ [_ [[_ [_ Hcap]] _]]].
+    unfold work_pool_envelope_safe.
+    intros [_ [_ [Hoverflow _]]].
+    pose proof
+      (work_pool_overflow_safe_preserves_cap_via_standalone
+        uncapped_overflow_work_pool Hoverflow) as Hcap.
+    simpl in Hcap.
     lia.
   Qed.
 
   Theorem double_unpark_overcount_exposes_envelope_gap :
     ~ work_pool_envelope_safe double_unpark_overcounts_work_pool.
   Proof.
-    unfold work_pool_envelope_safe, work_pool_lifecycle_safe,
-      double_unpark_overcounts_work_pool, consistent.
-    simpl.
+    unfold work_pool_envelope_safe.
     intros [_ [_ [_ [Hlife _]]]].
-    destruct Hlife as [_ [_ [_ [_ [Hconsistent _]]]]].
-    lia.
+    pose proof
+      (work_pool_lifecycle_safe_double_unpark_matches_standalone
+        double_unpark_overcounts_work_pool Hlife) as Hcount.
+    simpl in Hcount.
+    discriminate Hcount.
   Qed.
 
   Theorem respawn_without_increment_exposes_envelope_gap :
     ~ work_pool_envelope_safe respawn_without_increment_work_pool.
   Proof.
-    unfold work_pool_envelope_safe, work_pool_lifecycle_safe,
-      respawn_without_increment_work_pool, consistent.
-    simpl.
+    unfold work_pool_envelope_safe.
     intros [_ [_ [_ [Hlife _]]]].
-    destruct Hlife as [_ [_ [_ [_ [_ [_ [_ Hconsistent]]]]]]].
-    lia.
+    pose proof
+      (work_pool_lifecycle_safe_respawn_counts_parked_via_standalone
+        respawn_without_increment_work_pool Hlife) as Hcount.
+    simpl in Hcount.
+    discriminate Hcount.
   Qed.
 
   Theorem stale_priority_work_pool_exposes_envelope_gap :

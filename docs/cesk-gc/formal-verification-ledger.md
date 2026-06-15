@@ -1340,7 +1340,11 @@ facts the proofs rely on:
   composes WorkPool priority-aging fairness: pop-time score recomputation is
   required before dequeue, and the stale-priority discriminator violates
   `WorkPoolOldPopsAfterAging` by popping newer high-priority work before the
-  aged older task.  The composed spawn-latch discriminators violate
+  aged older task.  The E2E Rocq proof now exposes named WorkPool bridge lemmas
+  whose proof terms call the standalone startup, panic-isolation, overflow-cap,
+  lifecycle, and priority-aging theorems directly; source coupling pins those
+  qualified theorem calls so the composed envelope cannot silently regress to
+  local arithmetic-only obligations.  The composed spawn-latch discriminators violate
   `WorkerSpawnLatchPrecedesWorker`, matching either a pool handoff that spawns
   before storing `worker_ever_spawned` or a handoff site that omits the latch.
 - JIT Long boxing store selection (`formal/rocq/gc/JitLongBoxStoreSelection.v`,

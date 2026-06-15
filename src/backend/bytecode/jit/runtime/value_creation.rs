@@ -20,31 +20,12 @@ use super::helpers::{jit_to_value_generic, value_to_jit_generic};
 use super::stack_ops::jit_runtime_load_constant;
 use crate::backend::bytecode::jit::types::{JitContext, JitValue, TAG_MASK, TAG_PTR, TAG_UNIT};
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
-// `GcFactory`/`SlabAllocator` are only the legacy slab opt-out path.  The
-// index-gc build must use `active_factory()` and ignore the JIT arena pointer
+// The index-gc build uses `active_factory()` and ignores the JIT arena pointer
 // as a store selector (formal/rocq/gc/JitValueCreationStoreSelection.v).
-#[cfg(not(feature = "index-gc"))]
-use crate::backend::models::{GcFactory, SlabAllocator};
 
 // =============================================================================
 // Phase 2a: Value Creation Runtime (MakeSExpr, ConsAtom)
 // =============================================================================
-
-#[cfg(not(feature = "index-gc"))]
-#[inline]
-unsafe fn value_creation_factory(ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {
-    let arena_ptr = if !ctx.is_null() {
-        (*ctx).arena_ptr()
-    } else {
-        std::ptr::null()
-    };
-    let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
-        &*(arena_ptr as *const SlabAllocator)
-    } else {
-        crate::backend::models::global_allocator()
-    };
-    GcFactory::new(alloc)
-}
 
 #[cfg(feature = "index-gc")]
 #[inline]

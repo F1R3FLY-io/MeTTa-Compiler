@@ -346,41 +346,25 @@ assert_after_before \
   "eval_with_store selected = eval_with_store active."
 line_no "src/backend/models/metta_value.rs" "formal/rocq/gc/RuntimeModeErasure.v" >/dev/null
 line_no "src/backend/bytecode/jit/runtime/value_creation.rs" "formal/rocq/gc/JitValueCreationStoreSelection.v" >/dev/null
-assert_immediate_cfg_before \
-  "src/backend/bytecode/jit/runtime/value_creation.rs" \
-  "use crate::backend::models::{GcFactory, SlabAllocator};" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/bytecode/jit/runtime/value_creation.rs" \
-  "unsafe fn value_creation_factory(ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {" \
-  "#[cfg(not(feature = \"index-gc\"))]"
+# (F4 R7) The slab value_creation_factory arm + the GcFactory/SlabAllocator
+# import were deleted; only the index arm (active_factory) remains, gated until
+# R-final. JitValueCreationStoreSelection.v (pinned above) is the witness.
 assert_immediate_cfg_before \
   "src/backend/bytecode/jit/runtime/value_creation.rs" \
   "unsafe fn value_creation_factory(_ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {" \
   "#[cfg(feature = \"index-gc\")]"
 line_no "src/backend/bytecode/jit/runtime/value_creation.rs" "crate::backend::models::active_factory()" >/dev/null
 assert_count "src/backend/bytecode/jit/runtime/value_creation.rs" "value_creation_factory(ctx)" "4"
-assert_count "src/backend/bytecode/jit/runtime/value_creation.rs" "GcFactory::new(alloc)" "1"
+assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "GcFactory::new(alloc)"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_sexpr_generic::<MettaValue, GcFactory>"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "cons_atom_generic::<MettaValue, GcFactory>"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_list_generic::<MettaValue, GcFactory>"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_quote_generic::<MettaValue, GcFactory>"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "Uses the slab allocator (via GcFactory)"
 line_no "src/backend/bytecode/jit/runtime/type_ops.rs" "formal/rocq/gc/JitTypeOpsStoreSelection.v" >/dev/null
-assert_immediate_cfg_before \
-  "src/backend/bytecode/jit/runtime/type_ops.rs" \
-  "use crate::backend::models::{GcFactory, SlabAllocator};" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_after_before \
-  "src/backend/bytecode/jit/runtime/type_ops.rs" \
-  "pub unsafe extern \"C\" fn jit_runtime_get_type" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "GcFactory::new(alloc)"
-assert_after_before \
-  "src/backend/bytecode/jit/runtime/type_ops.rs" \
-  "pub unsafe extern \"C\" fn jit_runtime_get_type" \
-  "GcFactory::new(alloc)" \
-  "#[cfg(feature = \"index-gc\")]"
+# (F4 R7) The slab get_type factory arm + the GcFactory/SlabAllocator import
+# were deleted; only the index arm (active_factory) remains, gated until
+# R-final. JitTypeOpsStoreSelection.v (pinned above) is the witness.
 assert_after_before \
   "src/backend/bytecode/jit/runtime/type_ops.rs" \
   "pub unsafe extern \"C\" fn jit_runtime_get_type" \
@@ -391,7 +375,7 @@ assert_after_before \
   "pub unsafe extern \"C\" fn jit_runtime_get_type" \
   "crate::backend::models::active_factory()" \
   "get_type_generic::<MettaValue, crate::backend::models::ActiveFactory>"
-assert_count "src/backend/bytecode/jit/runtime/type_ops.rs" "GcFactory::new(alloc)" "1"
+assert_zero "src/backend/bytecode/jit/runtime/type_ops.rs" "GcFactory::new(alloc)"
 assert_zero "src/backend/bytecode/jit/runtime/type_ops.rs" "get_type_generic::<MettaValue, GcFactory>"
 line_no "src/backend/bytecode/jit/runtime/type_ops.rs" "formal/rocq/gc/JitIsFunctionPointerDecode.v" >/dev/null
 assert_after_before \
@@ -542,11 +526,8 @@ assert_after_before \
   "pub fn from_long(n: i64) -> Self {" \
   "#[cfg(feature = \"index-gc\")]" \
   "global_factory().long(n)"
-assert_after_before \
-  "src/backend/bytecode/jit/types/value.rs" \
-  "global_factory().long(n)" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "global_allocator()"
+# (F4 R7) The slab from_long fallback (global_allocator().alloc_value) was
+# deleted; only the index arm remains. JitLongBoxStoreSelection.v is the witness.
 assert_zero_between \
   "src/backend/bytecode/jit/types/value.rs" \
   "pub fn from_long(n: i64) -> Self {" \
@@ -1948,7 +1929,7 @@ assert_after_before "src/backend/bytecode/jit/runtime/nondeterminism.rs" "let po
 assert_after_before "src/backend/bytecode/jit/runtime/nondeterminism.rs" "let pool_idx = ctx_ref.stack_save_pool_alloc(stack_count);" "ctx_ref.stack_save_to_pool(pool_idx as usize, stack_count);" "saved_stack_pool_idx = pool_idx;"
 assert_after_before "src/backend/bytecode/jit/runtime/nondeterminism.rs" "pub unsafe extern \"C\" fn jit_runtime_fork_native" "cp.saved_stack_pool_idx = saved_stack_pool_idx;" "ctx_ref.choice_point_count += 1;"
 assert_count_between "src/backend/bytecode/jit/runtime/nondeterminism.rs" "pub unsafe extern \"C\" fn jit_runtime_fork_native" "pub unsafe extern \"C\" fn jit_runtime_yield_native" "cp.saved_stack_pool_idx = -1" "0"
-assert_count "src/backend/bytecode/jit/runtime/call_support.rs" "roots.push(arg.clone());" "2"
+assert_count "src/backend/bytecode/jit/runtime/call_support.rs" "roots.push(arg.clone());" "1"
 assert_after_before "src/backend/bytecode/jit/runtime/call_support.rs" "roots.push(arg.clone());" "collect_jit_roots_into" "worker_cooperative_safepoint(&roots);"
 assert_after_before "src/backend/bytecode/jit/runtime/sexpr_ops.rs" "unsafe fn jit_maybe_pre_eval_structural" "roots.push(v.clone());" "collect_jit_roots_into"
 assert_after_before "src/backend/bytecode/jit/runtime/sexpr_ops.rs" "unsafe fn jit_maybe_pre_eval_structural" "collect_jit_roots_into" "worker_cooperative_safepoint(&roots);"

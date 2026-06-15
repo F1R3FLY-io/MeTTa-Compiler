@@ -70,14 +70,6 @@ impl JitValue {
             let v = crate::backend::models::global_factory().long(n);
             return JitValue::from_inner_ptr(v.inner_ptr());
         }
-        #[cfg(not(feature = "index-gc"))]
-        {
-            // Legacy slab fallback: allocate MettaValueInner::Long(n) on the
-            // slab and tag as PTR. The slab guarantees 'static lifetime.
-            let inner = crate::backend::models::gc_allocator::global_allocator()
-                .alloc_value(MettaValueInner::Long(n));
-            JitValue::from_inner_ptr(inner)
-        }
     }
 
     /// Maximum signed value representable as an inline 48-bit Long.

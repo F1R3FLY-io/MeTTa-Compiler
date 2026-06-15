@@ -15,13 +15,8 @@ use crate::backend::bytecode::jit::types::{
     TAG_PTR, TAG_UNIT, TAG_VAR,
 };
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
-// `GcFactory`/`SlabAllocator` are only used by the slab factory construction in
-// `jit_runtime_get_type`, which is compiled out under `--features index-gc`.
 // The store-selection obligation is modeled in
 // formal/rocq/gc/JitTypeOpsStoreSelection.v.
-#[cfg(not(feature = "index-gc"))]
-use crate::backend::models::{GcFactory, SlabAllocator};
-
 use super::helpers::value_to_jit_generic;
 
 // =============================================================================
@@ -78,25 +73,8 @@ static TYPE_NAME_UNKNOWN: &str = "Unknown";
 /// that outlives this call.
 #[no_mangle]
 pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
-    // Default (slab) build: construct the slab factory over the (possibly
-    // arena-specific) allocator — byte-identical to the pre-seam code. Under
-    // `--features index-gc` the active store is the index arena, which ignores
-    // the JIT arena pointer entirely, so use the feature-correct accessor and
-    // skip the arena-pointer plumbing altogether.
-    #[cfg(not(feature = "index-gc"))]
-    let factory = {
-        let arena_ptr = if !ctx.is_null() {
-            (*ctx).arena_ptr()
-        } else {
-            std::ptr::null()
-        };
-        let alloc: &'static SlabAllocator = if !arena_ptr.is_null() {
-            &*(arena_ptr as *const SlabAllocator)
-        } else {
-            crate::backend::models::global_allocator()
-        };
-        GcFactory::new(alloc)
-    };
+    // The index arena store ignores the JIT arena pointer as a store selector
+    // (formal/rocq/gc/JitTypeOpsStoreSelection.v), so use the active factory.
     #[cfg(feature = "index-gc")]
     let factory = crate::backend::models::active_factory();
 

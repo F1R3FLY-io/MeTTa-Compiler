@@ -2520,16 +2520,10 @@ pub fn global_allocator() -> &'static SlabAllocator {
     alloc
 }
 
-/// Get the ACTIVE value factory (Inc 4 — store-centric GC seam). By default the
-/// global slab `GcFactory`; under `--features index-gc` the index-arena store's
-/// `IndexFactory`. This is COMPILE-TIME store selection — the accessor returns
-/// the active store's alloc interface (a different factory *type* per build) — so
-/// every one of the ~194 `global_factory()` callers auto-follows the active store
-/// without per-site changes. It is NOT a runtime mode-dispatch inside the factory.
-#[cfg(not(feature = "index-gc"))]
-pub fn global_factory() -> crate::backend::models::ActiveFactory {
-    GcFactory::new(global_allocator())
-}
+/// Get the ACTIVE value factory: the index-arena store's `IndexFactory`. The
+/// accessor returns the active store's alloc interface, so every one of the
+/// ~194 `global_factory()` callers follows the index store without per-site
+/// changes. It is NOT a runtime mode-dispatch inside the factory.
 #[cfg(feature = "index-gc")]
 pub fn global_factory() -> crate::backend::models::ActiveFactory {
     crate::backend::eval::cesk::index_heap::IndexFactory

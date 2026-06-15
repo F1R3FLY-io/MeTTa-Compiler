@@ -156,24 +156,8 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     // Plan 3 hook H-1 (2026-05-06): cooperative GC safepoint at the JIT
     // tier-return edge. Parallel-branch workers entering the trampoline from JIT
     // must surrender their EvalGuard so quiescence-driven GC can fire; the walker
-    // registers JitContext slab roots + the local `arg` before the safepoint.
+    // registers JitContext roots + the local `arg` before the safepoint.
     //
-    // SLAB ARM (B4.2 cfg-wall): on slab this is a discovery-style channel
-    // (collect_jit_roots_into → worker_cooperative_safepoint, on the slab
-    // parallel-worker `is_gc_requested()` rendezvous).
-    #[cfg(not(feature = "index-gc"))]
-    {
-        let is_worker =
-            crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER.with(|f| f.get());
-        if is_worker && crate::backend::models::gc_allocator::is_gc_requested() {
-            let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
-            roots.push(arg.clone());
-            crate::backend::bytecode::jit::runtime::gc_roots::collect_jit_roots_into(
-                ctx_ref, &mut roots,
-            );
-            crate::backend::eval::trampoline::eval_loop::worker_cooperative_safepoint(&roots);
-        }
-    }
     // INDEX ARM (E1-c step 4, design §Part-6): the JIT tier must also PARK for the
     // dedicated GC thread under FANOUT>0. This adds LIVENESS (the cooperative
     // safepoint), NOT discovery — the same register-file values are ALSO structural

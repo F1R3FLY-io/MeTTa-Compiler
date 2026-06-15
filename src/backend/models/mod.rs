@@ -63,19 +63,14 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 // In this sub-step the aliases resolve to the existing slab types, so the
 // default build is byte-identical (no cargo feature flag yet).
 
-/// The active value factory for the evaluator (Inc 4: the store-centric GC seam).
-/// The slab `GcFactory` in the legacy (decommissioned) slab build, retained gated
-/// until R7; default builds use the index-arena store's alloc interface `IndexFactory`.
-/// Compile-time store selection — NOT a runtime mode flag inside the factory.
-#[cfg(not(feature = "index-gc"))]
-pub type ActiveFactory = GcFactory;
+/// The active value factory for the evaluator: the index-arena store's alloc
+/// interface `IndexFactory` (`src/backend/eval/cesk/index_heap.rs`). The
+/// `index-gc` feature is mandatory (enforced by the `lib.rs` guard); the gate
+/// is removed wholesale when the feature itself is retired.
 #[cfg(feature = "index-gc")]
 pub type ActiveFactory = crate::backend::eval::cesk::index_heap::IndexFactory;
 
-/// The active `Store` impl: `IndexHeapStore` (the store σ) by default,
-/// `SlabStore` only in the legacy (decommissioned) slab build, retained gated until R7.
-#[cfg(not(feature = "index-gc"))]
-pub type ActiveStore = crate::backend::eval::cesk::store::SlabStore;
+/// The active `Store` impl: the index heap store σ, `IndexHeapStore`.
 #[cfg(feature = "index-gc")]
 pub type ActiveStore = crate::backend::eval::cesk::index_heap::IndexHeapStore;
 

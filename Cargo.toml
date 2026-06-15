@@ -288,10 +288,6 @@ symbol-interning = ["lasso"]
 # value factory + Store to the non-moving, index-addressed store instead of the
 # slab. Compile-time store selection: default builds use index-gc.
 index-gc = ["dep:postcard"]
-# Legacy slab opt-out for old-default comparison gates. Cargo features are
-# additive, so this is only valid with `--no-default-features`; src/lib.rs rejects
-# both-store and no-store feature selections.
-legacy-slab-gc = ["interning", "async", "symbol-interning"]
 
 # Evaluation trace: binary tracing of every rewrite, type check, error,
 # bailout, and tier transition with full source location provenance.

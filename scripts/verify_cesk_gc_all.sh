@@ -116,11 +116,11 @@ run_with_scope() {
     timeout --signal=TERM --kill-after=10s "$timeout_secs" "$@"
 }
 
-# ── mmverify on both store binaries (greenwall leaves the default-index release
-#    built; the legacy-slab arm rebuilds quickly thanks to the cache) ─────────
-run_mmverify_both() {
+# ── mmverify on the index binary (greenwall leaves the default-index release
+#    built) ────────────────────────────────────────────────────────────────
+run_mmverify_index() {
   set -e
-  local out_index out_slab
+  local out_index
   systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1600% --quiet \
     cargo build --release --bin mettatron
   cp target/release/mettatron "$LOG_DIR/mtt-index"
@@ -128,14 +128,7 @@ run_mmverify_both() {
     "$LOG_DIR/mtt-index" examples/mmverify/demo0/verify_demo0.metta 2>&1)"
   out_index="$(printf '%s\n' "$out_index" | grep -c 'Correct proof!' || true)"
   [[ "$out_index" -ge 1 ]] || { echo "index mmverify did not print 'Correct proof!'"; exit 1; }
-  systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1600% --quiet \
-    cargo build --release --no-default-features --features legacy-slab-gc --bin mettatron
-  cp target/release/mettatron "$LOG_DIR/mtt-slab"
-  out_slab="$(run_with_scope "$RUN_MEM_MAX" "$RUN_CPU_QUOTA" "$RUN_TIMEOUT_SECS" \
-    "$LOG_DIR/mtt-slab" examples/mmverify/demo0/verify_demo0.metta 2>&1)"
-  out_slab="$(printf '%s\n' "$out_slab" | grep -c 'Correct proof!' || true)"
-  [[ "$out_slab" -ge 1 ]] || { echo "slab mmverify did not print 'Correct proof!'"; exit 1; }
-  echo "mmverify Correct on both arms"
+  echo "mmverify Correct on the index arm"
 }
 
 # ── 20-run alpha-normalized sorted-content determinism (Robot, FANOUT=8, the
@@ -173,6 +166,6 @@ stage FORMAL     "Rocq corpus + TLC discriminators" bash scripts/verify_cesk_gc_
 stage GREENWALL  "builds + nextest + conformance + oracle" bash scripts/a5_greenwall.sh "allwall-${SAFE_LABEL}" --with-oracle || exit 1
 stage E1ASAN     "forced-cycle ASAN (FANOUT=8, 3 arms)"    bash scripts/e1_flip_v4_asan.sh        || exit 1
 stage LOOM       "loom concurrency models"         run_loom                                       || exit 1
-stage MMVERIFY   "mmverify Correct (both stores)"  run_mmverify_both                              || exit 1
+stage MMVERIFY   "mmverify Correct (index)"  run_mmverify_index                              || exit 1
 stage DETERM     "20-run alpha-normalized sorted-content determinism" run_determinism             || exit 1
 # the trap prints the verdict; its rc is the script's rc

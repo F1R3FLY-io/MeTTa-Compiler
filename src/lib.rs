@@ -2,17 +2,11 @@
 // Requires nightly Rust (same as -Zsanitizer=address).
 #![feature(cfg_sanitize)]
 
-#[cfg(all(feature = "index-gc", feature = "legacy-slab-gc"))]
+#[cfg(not(feature = "index-gc"))]
 compile_error!(
-    "features `index-gc` and `legacy-slab-gc` are mutually exclusive; \
-     default builds use index-gc, and legacy slab requires \
-     `--no-default-features --features legacy-slab-gc`"
-);
-
-#[cfg(not(any(feature = "index-gc", feature = "legacy-slab-gc")))]
-compile_error!(
-    "select exactly one GC store feature: default/index-gc or \
-     `--no-default-features --features legacy-slab-gc`"
+    "index-gc is required: the store-centric CESK index GC is the only \
+     supported store. Build with default features (do not pass \
+     `--no-default-features` without re-enabling `index-gc`)."
 );
 
 pub mod backend;

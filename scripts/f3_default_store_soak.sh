@@ -4,9 +4,8 @@
 # Rebuilds fresh binaries and exercises the observable F3 contract:
 #   * default features compile the index store;
 #   * default-env CLI and REPL sessions assert/report index and evaluate work;
-#   * a slab request against the default-index binary hard-errors with the
-#     legacy slab opt-out hint;
-#   * the explicit legacy slab opt-out still builds and accepts --gc slab.
+#   * a slab request against the default-index binary hard-errors, reporting the
+#     slab store is decommissioned (F4 R2 removed the legacy slab build).
 #
 # Usage: scripts/f3_default_store_soak.sh [label]
 set -euo pipefail
@@ -23,11 +22,9 @@ LOG_DIR="${LOG_DIR:-$(mktemp -d -p "$LOG_ROOT" "f3_${SAFE_LABEL}.XXXXXXXX")}"
 P="$LOG_DIR/f3_${SAFE_LABEL}"
 WORKLOAD="$LOG_DIR/f3_smoke.metta"
 INDEX_BIN="$LOG_DIR/mettatron-default-index"
-SLAB_BIN="$LOG_DIR/mettatron-legacy-slab"
 
 BUILD_CAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1200% --quiet timeout --signal=TERM --kill-after=10s 600s)
 RUN_CAP=(systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 -p CPUQuota=400% --quiet timeout --signal=TERM --kill-after=5s 60s)
-LEGACY_SLAB_FEATURES=(--no-default-features --features legacy-slab-gc)
 
 cat > "$WORKLOAD" <<'METTA'
 !(+ 1 2)
@@ -95,7 +92,7 @@ assert_contains repl_index "${P}_repl_index.log" "MeTTaTron REPL"
 assert_contains repl_index "${P}_repl_index.log" "[3]"
 assert_contains repl_index "${P}_repl_index.log" "Goodbye!"
 
-echo "### default-index binary rejects slab requests with legacy-slab opt-out hint"
+echo "### default-index binary rejects slab requests (slab store decommissioned)"
 set +e
 env -u METTATRON_PARALLEL_FANOUT_DEPTH -u METTATRON_INDEX_GC_DISABLE MTT_GC=slab \
   "${RUN_CAP[@]}" "$INDEX_BIN" "$WORKLOAD" >"${P}_mismatch_slab.log" 2>&1
@@ -106,22 +103,8 @@ if [[ "$mismatch_rc" -eq 0 ]]; then
   fail_with_log mismatch_slab "${P}_mismatch_slab.log" "slab request unexpectedly succeeded against default-index binary"
 fi
 assert_contains mismatch_slab "${P}_mismatch_slab.log" "compiled with the 'index' GC store"
-assert_contains mismatch_slab "${P}_mismatch_slab.log" '`--no-default-features --features legacy-slab-gc`'
+assert_contains mismatch_slab "${P}_mismatch_slab.log" "the slab store has been decommissioned"
 assert_not_contains mismatch_slab "${P}_mismatch_slab.log" 'without `index-gc`'
-
-echo "### build legacy-slab opt-out mettatron"
-run_logged build_slab "${P}_build_slab.log" "${BUILD_CAP[@]}" cargo build --release "${LEGACY_SLAB_FEATURES[@]}" --bin mettatron
-cp target/release/mettatron "$SLAB_BIN"
-
-echo "### legacy-slab CLI accepts --gc slab and evaluates"
-run_logged cli_slab "${P}_cli_slab.log" \
-  env -u MTT_GC -u METTATRON_PARALLEL_FANOUT_DEPTH -u METTATRON_INDEX_GC_DISABLE \
-  bash -c 'printf "%s\n" "!(+ 1 2)" | "$@"' bash "${RUN_CAP[@]}" "$SLAB_BIN" --gc slab -
-assert_contains cli_slab "${P}_cli_slab.log" "[mettatron] GC store = slab"
-assert_contains cli_slab "${P}_cli_slab.log" "[3]"
-
-echo "### restore default-index release binary"
-run_logged restore_index "${P}_restore_index.log" "${BUILD_CAP[@]}" cargo build --release --bin mettatron
 
 echo "===== F3 DEFAULT-STORE SOAK [$LABEL] DONE ====="; date
 echo "artifacts=$LOG_DIR"

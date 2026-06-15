@@ -136,7 +136,7 @@ $actual"
 
 # Phase F3: Cargo feature selection realizes DefaultStoreSelection.v.
 line_no "Cargo.toml" "default = [\"interning\", \"async\", \"symbol-interning\", \"index-gc\"]" >/dev/null
-line_no "Cargo.toml" "legacy-slab-gc = [\"interning\", \"async\", \"symbol-interning\"]" >/dev/null
+line_no "Cargo.toml" "index-gc = [\"dep:postcard\"]" >/dev/null
 assert_after_before \
   "Cargo.toml" \
   "[features]" \
@@ -144,58 +144,37 @@ assert_after_before \
   "async = [\"tokio\"]"
 assert_after_before \
   "Cargo.toml" \
+  "[features]" \
   "index-gc = [\"dep:postcard\"]" \
-  "legacy-slab-gc = [\"interning\", \"async\", \"symbol-interning\"]" \
   "trace = [\"dep:postcard\", \"dep:trace-format\"]"
+# F4 R2: the legacy slab feature is decommissioned. index-gc is the only store;
+# the sole compile-time guard rejects a build that drops it.
 assert_after_before \
   "src/lib.rs" \
   "#![feature(cfg_sanitize)]" \
-  "#[cfg(all(feature = \"index-gc\", feature = \"legacy-slab-gc\"))]" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
   "compile_error!("
 assert_after_before \
   "src/lib.rs" \
-  "#[cfg(all(feature = \"index-gc\", feature = \"legacy-slab-gc\"))]" \
-  "features \`index-gc\` and \`legacy-slab-gc\` are mutually exclusive" \
-  "\`--no-default-features --features legacy-slab-gc\`"
-assert_after_before \
-  "src/lib.rs" \
-  "#[cfg(not(any(feature = \"index-gc\", feature = \"legacy-slab-gc\")))]" \
-  "select exactly one GC store feature" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "index-gc is required" \
   "pub mod backend;"
 
 # Phase F3 live gates realize the same DefaultStoreSelection.v theorem: default
-# builds exercise index-gc; the slab comparison arm is only the explicit legacy
-# opt-out. This prevents verification scripts from silently comparing index
-# against itself after the default flip.
+# builds exercise index-gc. (F4 R2 removed the legacy slab comparison arms and
+# the ab_gc_diff / f1_welch_bench / f1_memory_effectiveness A/B scripts.)
 assert_after_before \
   "scripts/a5_greenwall.sh" \
   "### 1 DEFAULT-INDEX nextest" \
   'cargo nextest run --release' \
-  "### 2 LEGACY-SLAB nextest"
-line_no "scripts/a5_greenwall.sh" 'cargo nextest run --release "${LEGACY_SLAB_FEATURES[@]}"' >/dev/null
+  "### 3 DEFAULT-INDEX conformance bin build"
 line_no "scripts/a5_greenwall.sh" 'cargo build --release --bin mtt-conformance' >/dev/null
 assert_after_before \
-  "scripts/ab_gc_diff.sh" \
-  "--no-default-features --features legacy-slab-gc" \
-  '"$bin" --conformance-dir "$CONF_DIR" --gc "$label"' \
-  "diffing conformance pass/fail sets"
-line_no "scripts/ab_gc_diff.sh" 'cargo nextest run "${LEGACY_SLAB_FEATURES[@]}"' >/dev/null
-line_no "scripts/f1_welch_bench.sh" 'build_one index "$INDEX_BIN"' >/dev/null
-line_no "scripts/f1_welch_bench.sh" 'build_one slab  "$SLAB_BIN" --no-default-features --features legacy-slab-gc' >/dev/null
-assert_after_before \
   "scripts/verify_cesk_gc_all.sh" \
-  "local out_index out_slab" \
+  "local out_index" \
   "cargo build --release --bin mettatron" \
   'cp target/release/mettatron "$LOG_DIR/mtt-index"'
-assert_after_before \
-  "scripts/verify_cesk_gc_all.sh" \
-  'cp target/release/mettatron "$LOG_DIR/mtt-index"' \
-  "cargo build --release --no-default-features --features legacy-slab-gc --bin mettatron" \
-  'cp target/release/mettatron "$LOG_DIR/mtt-slab"'
-line_no "scripts/drlock_gate.sh" 'cargo nextest run --release "${LEGACY_SLAB_FEATURES[@]}"' >/dev/null
 line_no "scripts/drlock_gate.sh" 'cargo nextest run --release' >/dev/null
-line_no "scripts/a5_asan_both.sh" 'build_asan --no-default-features --features legacy-slab-gc' >/dev/null
-line_no "scripts/f1_memory_effectiveness.sh" 'build_one slab  "$SLAB_BIN" --no-default-features --features legacy-slab-gc' >/dev/null
 
 # Phase F2: --gc/MTT_GC is an assertion/reporter for the compile-time store,
 # not a runtime switch. Pin the library predicate and both CLI entrypoints to the
@@ -218,15 +197,15 @@ assert_after_before \
   "\"\" | \"auto\" => {}" \
   "r if r == compiled => {}"
 line_no "src/backend/models/mod.rs" "rebuild with default features (index-gc enabled)" >/dev/null
-line_no "src/backend/models/mod.rs" "rebuild with \`--no-default-features --features legacy-slab-gc\`" >/dev/null
+line_no "src/backend/models/mod.rs" "the slab store has been decommissioned" >/dev/null
 line_no "src/backend/models/mod.rs" "fn the_other_store_is_a_hard_error_with_a_rebuild_hint()" >/dev/null
-line_no "src/backend/models/mod.rs" "fn default_index_rejects_slab_with_legacy_slab_hint()" >/dev/null
+line_no "src/backend/models/mod.rs" "fn default_index_rejects_slab_with_decommission_hint()" >/dev/null
 line_no "src/backend/models/mod.rs" "fn legacy_slab_rejects_index_with_default_index_hint()" >/dev/null
 line_no "src/backend/models/mod.rs" "fn unknown_values_are_rejected_with_the_expected_set()" >/dev/null
 assert_after_before \
   "src/backend/models/mod.rs" \
-  "fn default_index_rejects_slab_with_legacy_slab_hint()" \
-  "\`--no-default-features --features legacy-slab-gc\`" \
+  "fn default_index_rejects_slab_with_decommission_hint()" \
+  "the slab store has been decommissioned" \
   "without \`index-gc\`"
 assert_after_before \
   "src/backend/models/mod.rs" \
@@ -236,11 +215,8 @@ assert_after_before \
 
 line_no "scripts/f3_default_store_soak.sh" "F3 default-store soak." >/dev/null
 line_no "scripts/f3_default_store_soak.sh" "cargo build --release --bin mettatron" >/dev/null
-line_no "scripts/f3_default_store_soak.sh" "cargo build --release \"\${LEGACY_SLAB_FEATURES[@]}\" --bin mettatron" >/dev/null
 line_no "scripts/f3_default_store_soak.sh" "\$INDEX_BIN\" --gc index --repl" >/dev/null
 line_no "scripts/f3_default_store_soak.sh" "env -u METTATRON_PARALLEL_FANOUT_DEPTH -u METTATRON_INDEX_GC_DISABLE MTT_GC=slab" >/dev/null
-line_no "scripts/f3_default_store_soak.sh" "\`--no-default-features --features legacy-slab-gc\`" >/dev/null
-line_no "scripts/f3_default_store_soak.sh" "\$SLAB_BIN\" --gc slab -" >/dev/null
 line_no "docs/cesk-gc/f3-default-store-contract.md" "F3 changes the Cargo default from the old slab store to the CESK index store." >/dev/null
 line_no "docs/cesk-gc/f3-default-store-contract.md" "scripts/f3_default_store_soak.sh" >/dev/null
 line_no "docs/cesk-gc/store-centric-architecture.md" "assertion/reporter for the compile-time store, not a runtime selector" >/dev/null

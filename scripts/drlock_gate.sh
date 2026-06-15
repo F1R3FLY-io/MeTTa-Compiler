@@ -3,7 +3,7 @@
 # at MemoryMax=20G MemorySwapMax=0 (shared machine), FOREGROUND. Each step writes a
 # log under a temporary directory so it runs ONCE. Pass a step name as $1.
 #
-#   nextest_slab | nextest_index | conf_f0 | conf_oracle | mmverify
+#   nextest_index | conf_f0 | conf_oracle | mmverify
 set -uo pipefail
 STEP="${1:?usage: drlock_gate.sh <step>}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -12,7 +12,6 @@ REPO_PARENT="$(cd -- "$REPO/.." && pwd -P)"
 CONF_DIR="${CONFORMANCE_DIR:-$REPO_PARENT/mettatron-specification/conformance}"
 cd "$REPO"
 CAP=(systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 -p CPUQuota=1000%)
-LEGACY_SLAB_FEATURES=(--no-default-features --features legacy-slab-gc)
 SAFE_STEP="${STEP//[^A-Za-z0-9_.-]/_}"
 LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
 mkdir -p "$LOG_ROOT"
@@ -23,11 +22,6 @@ echo "conformance_dir=$CONF_DIR"
 echo "logs=$LOG_DIR"
 
 case "$STEP" in
-  nextest_slab)
-    echo "### LEGACY-SLAB nextest (expect 4343/0)"; date
-    "${CAP[@]}" cargo nextest run --release "${LEGACY_SLAB_FEATURES[@]}" > "${P}_slab_nextest.log" 2>&1; echo "slab_rc=$?"
-    grep -E "Summary|tests run|^ *FAIL|TIMEOUT|Starting" "${P}_slab_nextest.log" | tail -6
-    ;;
   nextest_index)
     echo "### DEFAULT-INDEX nextest (expect ~4186/0)"; date
     "${CAP[@]}" cargo nextest run --release > "${P}_index_nextest.log" 2>&1; echo "index_rc=$?"

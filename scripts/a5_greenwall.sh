@@ -5,8 +5,7 @@
 #
 # Runs (all heavy ops capped under systemd-run, MemorySwapMax=0, FOREGROUND
 # within this script):
-#   1. DEFAULT-INDEX nextest (release)       → expect 4167 pass / 0 fail
-#   2. LEGACY-SLAB nextest (release opt-out) → expect 4324 pass / 0 fail
+#   1. DEFAULT-INDEX nextest (release)       → expect 0 fail
 #   3. DEFAULT-INDEX conformance bin build (release)
 #   4. DEFAULT-INDEX conformance (release, all 483) → expect 483 pass (base 222 +
 #      M11-pt 221 + M11-he 40, the latter two SUBSETS of 483), cycles>0.
@@ -14,8 +13,7 @@
 #   5. DEFAULT-INDEX conformance DEBUG, MAX_BYTES=1MiB → machine-equivalence
 #      oracle fires every collection; expect 0 oracle panics, 483 pass.
 #
-# Baselines (dbc6fa8 / A5.7, Phase A complete): legacy slab 4324,
-# default index 4167, conf 483.
+# Baselines (F4 R2, slab decommissioned): default index conf 483.
 set -euo pipefail
 LABEL="${1:?usage: a5_greenwall.sh <label> [--with-oracle]}"
 WITH_ORACLE=0; [[ "${2:-}" == "--with-oracle" ]] && WITH_ORACLE=1
@@ -26,7 +24,6 @@ CONF_DIR="${CONFORMANCE_DIR:-$REPO_PARENT/mettatron-specification/conformance}"
 cd "$REPO"
 CAP=(systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=1600%)
 RUNBIN=(systemd-run --user --scope -p MemoryMax=16G -p MemorySwapMax=0 -p CPUQuota=1600%)
-LEGACY_SLAB_FEATURES=(--no-default-features --features legacy-slab-gc)
 SAFE_LABEL="${LABEL//[^A-Za-z0-9_.-]/_}"
 LOG_ROOT="${LOG_ROOT:-$REPO/target/gc-logs}"
 mkdir -p "$LOG_ROOT"
@@ -91,10 +88,6 @@ echo "### 1 DEFAULT-INDEX nextest (expect 4167/0)"
 run_logged index "${P}_index_nextest.log" "${CAP[@]}" cargo nextest run --release
 grep -E "Summary|tests run|^ *FAIL|TIMEOUT" "${P}_index_nextest.log" | tail -4 || true
 
-echo "### 2 LEGACY-SLAB nextest (expect 4324/0)"
-run_logged slab "${P}_slab_nextest.log" "${CAP[@]}" cargo nextest run --release "${LEGACY_SLAB_FEATURES[@]}"
-grep -E "Summary|tests run|^ *FAIL|TIMEOUT" "${P}_slab_nextest.log" | tail -4 || true
-
 echo "### 3 DEFAULT-INDEX conformance bin build (release)"
 run_logged confbuild "${P}_confbuild.log" "${CAP[@]}" cargo build --release --bin mtt-conformance
 tail -2 "${P}_confbuild.log"
@@ -121,8 +114,6 @@ echo "### 4b WARNINGS — mettatron lib (0-new-warnings gate; A5 baseline = 49 B
 echo "    (nextest logs report '(lib test)' which is noisy; cargo check gives the clean '(lib)' count.)"
 run_logged wcheck_index "${P}_wcheck_index.log" "${CAP[@]}" cargo check
 require_warning_count "index lib" "${P}_wcheck_index.log" 49
-run_logged wcheck_slab "${P}_wcheck_slab.log" "${CAP[@]}" cargo check "${LEGACY_SLAB_FEATURES[@]}"
-require_warning_count "slab lib" "${P}_wcheck_slab.log" 49
 
 if [[ "$WITH_ORACLE" == "1" ]]; then
   echo "### 5 DEFAULT-INDEX conformance DEBUG (machine-equivalence oracle, MAX_BYTES=1MiB; expect 0 panics, 483 pass)"

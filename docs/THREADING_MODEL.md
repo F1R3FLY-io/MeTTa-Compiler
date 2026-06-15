@@ -572,6 +572,9 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_lossy_enqueue.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_no_inner_catch.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_no_outer_catch.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_work_pool_uncapped_overflow.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_work_pool_double_unpark_bug.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_work_pool_respawn_bug.cfg`
 
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`. The negative configs violate it when dependency edges are
@@ -579,6 +582,10 @@ omitted, active direct fanout skips purity/budget/complete-dispatch gates,
 active worker roots are omitted, dispatch or async batch roots are omitted,
 worker admission stays open across the root snapshot, or recurring cron
 dispatch submits without claiming `in_flight`.
+The composed WorkPool discriminators additionally reject overflow spawning
+that bypasses the live-worker cap, double-unpark accounting that counts one
+parked worker twice, and respawning a parked replacement without incrementing
+the aggregate active count.
 - `tla/MC_SchedulerGcBoundary_admission_open.cfg`
 - `formal/rocq/gc/SchedulerSpawnLatch.v`
 - `tla/SchedulerSpawnLatch.tla`

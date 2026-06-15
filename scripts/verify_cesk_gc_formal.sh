@@ -412,6 +412,12 @@ run_tlc "threading_end_to_end_work_pool_no_inner_catch" "ThreadingEndToEndInterl
   fail "Invariant WorkPoolTaskPanicPublishesHeartbeat is violated"
 run_tlc "threading_end_to_end_work_pool_no_outer_catch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_work_pool_no_outer_catch.cfg" \
   fail "Invariant WorkPoolWorkerAliveAfterHandled is violated"
+run_tlc "threading_end_to_end_work_pool_uncapped_overflow" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_work_pool_uncapped_overflow.cfg" \
+  fail "Invariant WorkPoolOverflowWithinCap is violated"
+run_tlc "threading_end_to_end_work_pool_double_unpark_bug" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_work_pool_double_unpark_bug.cfg" \
+  fail "Invariant WorkPoolLifecycleCapacityConsistent is violated"
+run_tlc "threading_end_to_end_work_pool_respawn_bug" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_work_pool_respawn_bug.cfg" \
+  fail "Invariant WorkPoolLifecycleCapacityConsistent is violated"
 run_tlc "counter_flush_locked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_locked.cfg" \
   pass ""
 run_tlc "counter_flush_unlocked" "CounterFlushExclusion.tla" "MC_CounterFlushExclusion_unlocked.cfg" \

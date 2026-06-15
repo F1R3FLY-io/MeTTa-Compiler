@@ -11,11 +11,14 @@ From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Arith Lia.
 Require Import CronStartupDelivery.
 Require Import SchedulerActiveFanoutGate.
+Require Import WorkPoolLifecycle.
+Require Import WorkPoolOverflowCap.
 Require Import WorkPoolPanicIsolation.
 Require Import WorkPoolStartupDrain.
 
 Import MeTTaTron_GC_CronStartupDelivery.
 Import MeTTaTron_GC_SchedulerActiveFanoutGate.
+Import MeTTaTron_GC_WorkPoolLifecycle.
 Import MeTTaTron_GC_WorkPoolPanicIsolation.
 Import MeTTaTron_GC_WorkPoolStartupDrain.
 
@@ -237,7 +240,18 @@ Section EndToEndModel.
     work_pool_retained : nat;
     work_pool_inner_catch : bool;
     work_pool_outer_catch : bool;
-    work_pool_failure : FailureKind
+    work_pool_failure : FailureKind;
+    work_pool_overflow_requested : nat;
+    work_pool_overflow_live : nat;
+    work_pool_overflow_max : nat;
+    work_pool_overflow_spawned : nat;
+    work_pool_lifecycle_active : nat;
+    work_pool_lifecycle_parked : nat;
+    work_pool_lifecycle_max : nat;
+    work_pool_double_unpark_active : nat;
+    work_pool_double_unpark_parked : nat;
+    work_pool_respawn_active : nat;
+    work_pool_respawn_parked : nat
   }.
 
   Definition work_pool_startup_safe (c : WorkPoolConfig) : Prop :=
@@ -254,47 +268,181 @@ Section EndToEndModel.
     (work_pool_failure c = TaskClosurePanic ->
      task_panic_heartbeat_published r).
 
+  Definition work_pool_overflow_safe (c : WorkPoolConfig) : Prop :=
+    work_pool_overflow_live c <= work_pool_overflow_max c /\
+    work_pool_overflow_spawned c =
+      overflow_spawn_quota
+        (work_pool_overflow_requested c)
+        (work_pool_overflow_live c)
+        (work_pool_overflow_max c) /\
+    work_pool_overflow_live c + work_pool_overflow_spawned c
+      <= work_pool_overflow_max c.
+
+  Definition work_pool_lifecycle_safe (c : WorkPoolConfig) : Prop :=
+    0 < work_pool_lifecycle_parked c /\
+    consistent
+      (work_pool_lifecycle_active c)
+      (work_pool_lifecycle_parked c)
+      (work_pool_lifecycle_max c) /\
+    work_pool_double_unpark_active c =
+      try_unpark_count (work_pool_lifecycle_active c) Parked /\
+    work_pool_double_unpark_parked c =
+      work_pool_lifecycle_parked c - 1 /\
+    consistent
+      (work_pool_double_unpark_active c)
+      (work_pool_double_unpark_parked c)
+      (work_pool_lifecycle_max c) /\
+    work_pool_respawn_active c =
+      respawn_unpark_count (work_pool_lifecycle_active c) Parked /\
+    work_pool_respawn_parked c =
+      work_pool_lifecycle_parked c - 1 /\
+    consistent
+      (work_pool_respawn_active c)
+      (work_pool_respawn_parked c)
+      (work_pool_lifecycle_max c).
+
   Definition work_pool_envelope_safe (c : WorkPoolConfig) : Prop :=
-    work_pool_startup_safe c /\ work_pool_panic_safe c.
+    work_pool_startup_safe c /\
+    work_pool_panic_safe c /\
+    work_pool_overflow_safe c /\
+    work_pool_lifecycle_safe c.
 
   Definition complete_work_pool : WorkPoolConfig :=
     {| work_pool_submitted := 1;
        work_pool_retained := prestart_queue_after_submissions 1;
        work_pool_inner_catch := true;
        work_pool_outer_catch := true;
-       work_pool_failure := TaskClosurePanic |}.
+       work_pool_failure := TaskClosurePanic;
+       work_pool_overflow_requested := 3;
+       work_pool_overflow_live := 0;
+       work_pool_overflow_max := 2;
+       work_pool_overflow_spawned := overflow_spawn_quota 3 0 2;
+       work_pool_lifecycle_active := 1;
+       work_pool_lifecycle_parked := 1;
+       work_pool_lifecycle_max := 2;
+       work_pool_double_unpark_active := try_unpark_count 1 Parked;
+       work_pool_double_unpark_parked := 0;
+       work_pool_respawn_active := respawn_unpark_count 1 Parked;
+       work_pool_respawn_parked := 0 |}.
 
   Definition lossy_work_pool_startup : WorkPoolConfig :=
     {| work_pool_submitted := 1;
        work_pool_retained := 0;
        work_pool_inner_catch := true;
        work_pool_outer_catch := true;
-       work_pool_failure := TaskClosurePanic |}.
+       work_pool_failure := TaskClosurePanic;
+       work_pool_overflow_requested := 3;
+       work_pool_overflow_live := 0;
+       work_pool_overflow_max := 2;
+       work_pool_overflow_spawned := overflow_spawn_quota 3 0 2;
+       work_pool_lifecycle_active := 1;
+       work_pool_lifecycle_parked := 1;
+       work_pool_lifecycle_max := 2;
+       work_pool_double_unpark_active := try_unpark_count 1 Parked;
+       work_pool_double_unpark_parked := 0;
+       work_pool_respawn_active := respawn_unpark_count 1 Parked;
+       work_pool_respawn_parked := 0 |}.
 
   Definition task_panic_missing_inner_work_pool : WorkPoolConfig :=
     {| work_pool_submitted := 1;
        work_pool_retained := prestart_queue_after_submissions 1;
        work_pool_inner_catch := false;
        work_pool_outer_catch := true;
-       work_pool_failure := TaskClosurePanic |}.
+       work_pool_failure := TaskClosurePanic;
+       work_pool_overflow_requested := 3;
+       work_pool_overflow_live := 0;
+       work_pool_overflow_max := 2;
+       work_pool_overflow_spawned := overflow_spawn_quota 3 0 2;
+       work_pool_lifecycle_active := 1;
+       work_pool_lifecycle_parked := 1;
+       work_pool_lifecycle_max := 2;
+       work_pool_double_unpark_active := try_unpark_count 1 Parked;
+       work_pool_double_unpark_parked := 0;
+       work_pool_respawn_active := respawn_unpark_count 1 Parked;
+       work_pool_respawn_parked := 0 |}.
 
   Definition accounting_panic_missing_outer_work_pool : WorkPoolConfig :=
     {| work_pool_submitted := 1;
        work_pool_retained := prestart_queue_after_submissions 1;
        work_pool_inner_catch := true;
        work_pool_outer_catch := false;
-       work_pool_failure := AccountingPanic |}.
+       work_pool_failure := AccountingPanic;
+       work_pool_overflow_requested := 3;
+       work_pool_overflow_live := 0;
+       work_pool_overflow_max := 2;
+       work_pool_overflow_spawned := overflow_spawn_quota 3 0 2;
+       work_pool_lifecycle_active := 1;
+       work_pool_lifecycle_parked := 1;
+       work_pool_lifecycle_max := 2;
+       work_pool_double_unpark_active := try_unpark_count 1 Parked;
+       work_pool_double_unpark_parked := 0;
+       work_pool_respawn_active := respawn_unpark_count 1 Parked;
+       work_pool_respawn_parked := 0 |}.
+
+  Definition uncapped_overflow_work_pool : WorkPoolConfig :=
+    {| work_pool_submitted := 1;
+       work_pool_retained := prestart_queue_after_submissions 1;
+       work_pool_inner_catch := true;
+       work_pool_outer_catch := true;
+       work_pool_failure := TaskClosurePanic;
+       work_pool_overflow_requested := 3;
+       work_pool_overflow_live := 0;
+       work_pool_overflow_max := 2;
+       work_pool_overflow_spawned := 3;
+       work_pool_lifecycle_active := 1;
+       work_pool_lifecycle_parked := 1;
+       work_pool_lifecycle_max := 2;
+       work_pool_double_unpark_active := try_unpark_count 1 Parked;
+       work_pool_double_unpark_parked := 0;
+       work_pool_respawn_active := respawn_unpark_count 1 Parked;
+       work_pool_respawn_parked := 0 |}.
+
+  Definition double_unpark_overcounts_work_pool : WorkPoolConfig :=
+    {| work_pool_submitted := 1;
+       work_pool_retained := prestart_queue_after_submissions 1;
+       work_pool_inner_catch := true;
+       work_pool_outer_catch := true;
+       work_pool_failure := TaskClosurePanic;
+       work_pool_overflow_requested := 3;
+       work_pool_overflow_live := 0;
+       work_pool_overflow_max := 2;
+       work_pool_overflow_spawned := overflow_spawn_quota 3 0 2;
+       work_pool_lifecycle_active := 1;
+       work_pool_lifecycle_parked := 1;
+       work_pool_lifecycle_max := 2;
+       work_pool_double_unpark_active := 3;
+       work_pool_double_unpark_parked := 0;
+       work_pool_respawn_active := respawn_unpark_count 1 Parked;
+       work_pool_respawn_parked := 0 |}.
+
+  Definition respawn_without_increment_work_pool : WorkPoolConfig :=
+    {| work_pool_submitted := 1;
+       work_pool_retained := prestart_queue_after_submissions 1;
+       work_pool_inner_catch := true;
+       work_pool_outer_catch := true;
+       work_pool_failure := TaskClosurePanic;
+       work_pool_overflow_requested := 3;
+       work_pool_overflow_live := 0;
+       work_pool_overflow_max := 2;
+       work_pool_overflow_spawned := overflow_spawn_quota 3 0 2;
+       work_pool_lifecycle_active := 1;
+       work_pool_lifecycle_parked := 1;
+       work_pool_lifecycle_max := 2;
+       work_pool_double_unpark_active := try_unpark_count 1 Parked;
+       work_pool_double_unpark_parked := 0;
+       work_pool_respawn_active := 1;
+       work_pool_respawn_parked := 0 |}.
 
   Theorem complete_work_pool_envelope_safe :
     work_pool_envelope_safe complete_work_pool.
   Proof.
     unfold work_pool_envelope_safe, work_pool_startup_safe,
-      work_pool_panic_safe, complete_work_pool,
+      work_pool_panic_safe, work_pool_overflow_safe,
+      work_pool_lifecycle_safe, complete_work_pool,
       prestart_queue_after_submissions.
     simpl.
-    split.
-    - reflexivity.
-    - repeat split.
+    unfold consistent.
+    repeat split; try reflexivity; lia.
   Qed.
 
   Theorem lossy_work_pool_startup_exposes_envelope_gap :
@@ -313,7 +461,7 @@ Section EndToEndModel.
     unfold work_pool_envelope_safe, work_pool_panic_safe,
       task_panic_missing_inner_work_pool.
     simpl.
-    intros [_ [_ [_ Hheartbeat]]].
+    intros [_ [[_ [_ Hheartbeat]] _]].
     specialize (Hheartbeat eq_refl).
     exact (missing_inner_catch_loses_task_panic_heartbeat Hheartbeat).
   Qed.
@@ -324,8 +472,40 @@ Section EndToEndModel.
     unfold work_pool_envelope_safe, work_pool_panic_safe,
       accounting_panic_missing_outer_work_pool.
     simpl.
-    intros [_ [Halive _]].
+    intros [_ [[Halive _] _]].
     exact (missing_outer_catch_can_kill_worker_on_accounting_panic Halive).
+  Qed.
+
+  Theorem uncapped_overflow_exposes_envelope_gap :
+    ~ work_pool_envelope_safe uncapped_overflow_work_pool.
+  Proof.
+    unfold work_pool_envelope_safe, work_pool_overflow_safe,
+      uncapped_overflow_work_pool.
+    simpl.
+    intros [_ [_ [[_ [_ Hcap]] _]]].
+    lia.
+  Qed.
+
+  Theorem double_unpark_overcount_exposes_envelope_gap :
+    ~ work_pool_envelope_safe double_unpark_overcounts_work_pool.
+  Proof.
+    unfold work_pool_envelope_safe, work_pool_lifecycle_safe,
+      double_unpark_overcounts_work_pool, consistent.
+    simpl.
+    intros [_ [_ [_ Hlife]]].
+    destruct Hlife as [_ [_ [_ [_ [Hconsistent _]]]]].
+    lia.
+  Qed.
+
+  Theorem respawn_without_increment_exposes_envelope_gap :
+    ~ work_pool_envelope_safe respawn_without_increment_work_pool.
+  Proof.
+    unfold work_pool_envelope_safe, work_pool_lifecycle_safe,
+      respawn_without_increment_work_pool, consistent.
+    simpl.
+    intros [_ [_ [_ Hlife]]].
+    destruct Hlife as [_ [_ [_ [_ [_ [_ [_ Hconsistent]]]]]]].
+    lia.
   Qed.
 
   Record ActiveFanoutConfig : Type := {
@@ -689,6 +869,121 @@ Section EndToEndModel.
     unfold end_to_end_safe in Hend.
     destruct Hend as [_ [_ [_ [_ [Hwork_pool _]]]]].
     exact (missing_outer_accounting_panic_exposes_envelope_gap Hwork_pool).
+  Qed.
+
+  Theorem unsafe_work_pool_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool active_fanout,
+      ~ work_pool_envelope_safe work_pool ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      active_fanout_envelope_safe w active_fanout ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          worker_rooted
+          dispatch_live
+          dispatch_rooted
+          batch_live
+          batch_rooted
+          late_worker_live
+          cron_state
+          cron_startup
+          work_pool
+          active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      active_fanout Hunsafe Hschedule Hgc Hcron Hstartup Hactive Hend.
+    unfold end_to_end_safe in Hend.
+    destruct Hend as [_ [_ [_ [_ [Hwork_pool _]]]]].
+    exact (Hunsafe Hwork_pool).
+  Qed.
+
+  Theorem uncapped_overflow_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup active_fanout,
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      active_fanout_envelope_safe w active_fanout ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup
+          uncapped_overflow_work_pool active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup
+      active_fanout Hschedule Hgc Hcron Hstartup Hactive.
+    eapply unsafe_work_pool_exposes_end_to_end_gap; eauto.
+    apply uncapped_overflow_exposes_envelope_gap.
+  Qed.
+
+  Theorem double_unpark_overcount_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup active_fanout,
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      active_fanout_envelope_safe w active_fanout ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup
+          double_unpark_overcounts_work_pool active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup
+      active_fanout Hschedule Hgc Hcron Hstartup Hactive.
+    eapply unsafe_work_pool_exposes_end_to_end_gap; eauto.
+    apply double_unpark_overcount_exposes_envelope_gap.
+  Qed.
+
+  Theorem respawn_without_increment_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup active_fanout,
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      active_fanout_envelope_safe w active_fanout ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup
+          respawn_without_increment_work_pool active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup
+      active_fanout Hschedule Hgc Hcron Hstartup Hactive.
+    eapply unsafe_work_pool_exposes_end_to_end_gap; eauto.
+    apply respawn_without_increment_exposes_envelope_gap.
   Qed.
 
   Theorem unsafe_active_fanout_exposes_end_to_end_gap :

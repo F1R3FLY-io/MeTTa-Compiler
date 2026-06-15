@@ -29,6 +29,15 @@ CONSTANTS
     WorkPoolFirstFailure,
     WorkPoolInnerCatch,
     WorkPoolOuterCatch,
+    WorkPoolOverflowRequested,
+    WorkPoolInitialOverflowLive,
+    WorkPoolMaxOverflow,
+    WorkPoolEnforceOverflowCap,
+    WorkPoolLifecycleMaxWorkers,
+    WorkPoolLifecycleInitialActive,
+    WorkPoolLifecycleInitialParked,
+    WorkPoolUseTransitionResult,
+    WorkPoolRespawnCountsParked,
     ActiveBranchCount,
     ActiveMinBranches,
     ActiveDegree,
@@ -74,7 +83,13 @@ VARIABLES
     workPoolFirstHandled,
     workPoolSecondCompleted,
     workPoolRuntimeRecorded,
-    workPoolCpuPublished
+    workPoolCpuPublished,
+    workPoolOverflowLive,
+    workPoolOverflowPhase,
+    workPoolLifecycleActive,
+    workPoolLifecycleParked,
+    workPoolLifecyclePhase,
+    workPoolLifecycleScenario
 
 baseVars ==
     <<phase, wave, running, completed, consumerBeforeProducer,
@@ -96,7 +111,16 @@ workPoolPanicVars ==
     <<workPoolPanicPhase, workPoolWorkerAlive, workPoolFirstHandled,
       workPoolSecondCompleted, workPoolRuntimeRecorded, workPoolCpuPublished>>
 
-workPoolVars == <<workPoolStartupVars, workPoolPanicVars>>
+workPoolOverflowVars ==
+    <<workPoolOverflowLive, workPoolOverflowPhase>>
+
+workPoolLifecycleVars ==
+    <<workPoolLifecycleActive, workPoolLifecycleParked,
+      workPoolLifecyclePhase, workPoolLifecycleScenario>>
+
+workPoolVars ==
+    <<workPoolStartupVars, workPoolPanicVars, workPoolOverflowVars,
+      workPoolLifecycleVars>>
 
 vars == <<baseVars, gcBoundaryVars, startupVars, workPoolVars>>
 
@@ -121,6 +145,9 @@ BooleanConstantsOK ==
     /\ WorkPoolLossyEnqueue \in BOOLEAN
     /\ WorkPoolInnerCatch \in BOOLEAN
     /\ WorkPoolOuterCatch \in BOOLEAN
+    /\ WorkPoolEnforceOverflowCap \in BOOLEAN
+    /\ WorkPoolUseTransitionResult \in BOOLEAN
+    /\ WorkPoolRespawnCountsParked \in BOOLEAN
     /\ ActivePure \in BOOLEAN
     /\ ActiveDepthOk \in BOOLEAN
     /\ ActivePoolOk \in BOOLEAN
@@ -130,6 +157,12 @@ TypeOK ==
     /\ BooleanConstantsOK
     /\ WorkPoolStartupSubmissions \in Nat
     /\ WorkPoolFirstFailure \in {"task", "accounting"}
+    /\ WorkPoolOverflowRequested \in Nat
+    /\ WorkPoolInitialOverflowLive \in Nat
+    /\ WorkPoolMaxOverflow \in Nat
+    /\ WorkPoolLifecycleMaxWorkers \in Nat
+    /\ WorkPoolLifecycleInitialActive \in Nat
+    /\ WorkPoolLifecycleInitialParked \in Nat
     /\ ActiveBranchCount \in Nat
     /\ ActiveMinBranches \in Nat
     /\ ActiveDegree \in Nat
@@ -168,6 +201,12 @@ TypeOK ==
     /\ workPoolSecondCompleted \in BOOLEAN
     /\ workPoolRuntimeRecorded \in BOOLEAN
     /\ workPoolCpuPublished \in BOOLEAN
+    /\ workPoolOverflowLive \in Nat
+    /\ workPoolOverflowPhase \in {"ready", "done"}
+    /\ workPoolLifecycleActive \in Nat
+    /\ workPoolLifecycleParked \in Nat
+    /\ workPoolLifecyclePhase \in {"ready", "done"}
+    /\ workPoolLifecycleScenario \in {"none", "DoubleUnpark", "RespawnParked"}
 
 EdgeComplete ==
     /\ (HasDependency => DependencyEdgeEncoded)
@@ -175,6 +214,18 @@ EdgeComplete ==
 
 ConsumerWave ==
     IF EdgeComplete /\ (HasDependency \/ HasEffectConflict) THEN 1 ELSE 0
+
+Min(a, b) == IF a <= b THEN a ELSE b
+
+OverflowCapacity(live, max) == IF max >= live THEN max - live ELSE 0
+
+OverflowSpawnQuota(req, live, max) ==
+    Min(req, OverflowCapacity(live, max))
+
+OverflowSpawned(live) ==
+    IF WorkPoolEnforceOverflowCap
+    THEN OverflowSpawnQuota(WorkPoolOverflowRequested, live, WorkPoolMaxOverflow)
+    ELSE WorkPoolOverflowRequested
 
 Init ==
     /\ phase = "init"
@@ -211,6 +262,12 @@ Init ==
     /\ workPoolSecondCompleted = FALSE
     /\ workPoolRuntimeRecorded = FALSE
     /\ workPoolCpuPublished = FALSE
+    /\ workPoolOverflowLive = WorkPoolInitialOverflowLive
+    /\ workPoolOverflowPhase = "ready"
+    /\ workPoolLifecycleActive = WorkPoolLifecycleInitialActive
+    /\ workPoolLifecycleParked = WorkPoolLifecycleInitialParked
+    /\ workPoolLifecyclePhase = "ready"
+    /\ workPoolLifecycleScenario = "none"
 
 Schedule ==
     /\ phase = "init"
@@ -410,6 +467,8 @@ WorkPoolSubmit ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
 
 WorkPoolStart ==
     /\ workPoolStartupPhase = "submit"
@@ -423,6 +482,8 @@ WorkPoolStart ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
 
 WorkPoolDrain ==
     /\ workPoolStartupPhase = "drain"
@@ -437,6 +498,8 @@ WorkPoolDrain ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
 
 WorkPoolFinish ==
     /\ workPoolStartupPhase = "drain"
@@ -451,6 +514,8 @@ WorkPoolFinish ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
 
 WorkPoolStuck ==
     /\ workPoolStartupPhase = "drain"
@@ -465,6 +530,8 @@ WorkPoolStuck ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
 
 WorkPoolRunFirstTaskPanic ==
     /\ workPoolPanicPhase = "first"
@@ -487,6 +554,8 @@ WorkPoolRunFirstTaskPanic ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
 
 WorkPoolRunFirstAccountingPanic ==
     /\ workPoolPanicPhase = "first"
@@ -504,6 +573,8 @@ WorkPoolRunFirstAccountingPanic ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
 
 WorkPoolRunSecond ==
     /\ workPoolPanicPhase = "second"
@@ -518,6 +589,54 @@ WorkPoolRunSecond ==
     /\ UNCHANGED gcBoundaryVars
     /\ UNCHANGED startupVars
     /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolOverflowVars
+    /\ UNCHANGED workPoolLifecycleVars
+
+WorkPoolOverflowSpawn ==
+    /\ workPoolOverflowPhase = "ready"
+    /\ workPoolOverflowLive' =
+        workPoolOverflowLive + OverflowSpawned(workPoolOverflowLive)
+    /\ workPoolOverflowPhase' = "done"
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolLifecycleVars
+
+WorkPoolLifecycleDoubleUnpark ==
+    /\ workPoolLifecyclePhase = "ready"
+    /\ workPoolLifecycleParked > 0
+    /\ workPoolLifecycleActive' =
+        IF WorkPoolUseTransitionResult
+        THEN workPoolLifecycleActive + 1
+        ELSE workPoolLifecycleActive + 2
+    /\ workPoolLifecycleParked' = workPoolLifecycleParked - 1
+    /\ workPoolLifecyclePhase' = "done"
+    /\ workPoolLifecycleScenario' = "DoubleUnpark"
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolOverflowVars
+
+WorkPoolLifecycleRespawnParked ==
+    /\ workPoolLifecyclePhase = "ready"
+    /\ workPoolLifecycleParked > 0
+    /\ workPoolLifecycleActive' =
+        IF WorkPoolRespawnCountsParked
+        THEN workPoolLifecycleActive + 1
+        ELSE workPoolLifecycleActive
+    /\ workPoolLifecycleParked' = workPoolLifecycleParked - 1
+    /\ workPoolLifecyclePhase' = "done"
+    /\ workPoolLifecycleScenario' = "RespawnParked"
+    /\ UNCHANGED baseVars
+    /\ UNCHANGED gcBoundaryVars
+    /\ UNCHANGED startupVars
+    /\ UNCHANGED workPoolStartupVars
+    /\ UNCHANGED workPoolPanicVars
+    /\ UNCHANGED workPoolOverflowVars
 
 Done ==
     /\ phase = "done"
@@ -562,6 +681,9 @@ Next ==
     \/ WorkPoolRunFirstTaskPanic
     \/ WorkPoolRunFirstAccountingPanic
     \/ WorkPoolRunSecond
+    \/ WorkPoolOverflowSpawn
+    \/ WorkPoolLifecycleDoubleUnpark
+    \/ WorkPoolLifecycleRespawnParked
     \/ Idle
 
 Spec ==
@@ -581,6 +703,9 @@ Spec ==
     /\ WF_vars(WorkPoolRunFirstTaskPanic)
     /\ WF_vars(WorkPoolRunFirstAccountingPanic)
     /\ WF_vars(WorkPoolRunSecond)
+    /\ WF_vars(WorkPoolOverflowSpawn)
+    /\ WF_vars(WorkPoolLifecycleDoubleUnpark)
+    /\ WF_vars(WorkPoolLifecycleRespawnParked)
 
 NoConsumerBeforeProducer ==
     ~consumerBeforeProducer
@@ -664,6 +789,16 @@ WorkPoolTaskPanicPublishesHeartbeat ==
 WorkPoolWorkerAliveAfterHandled ==
     workPoolFirstHandled => workPoolWorkerAlive
 
+WorkPoolOverflowWithinCap ==
+    workPoolOverflowLive <= WorkPoolMaxOverflow
+
+WorkPoolLifecycleCapacityConsistent ==
+    workPoolLifecycleActive + workPoolLifecycleParked =
+      WorkPoolLifecycleMaxWorkers
+
+WorkPoolLifecycleActiveWithinBounds ==
+    workPoolLifecycleActive <= WorkPoolLifecycleMaxWorkers
+
 WorkPoolStartupEventuallyDrained ==
     <>(workPoolStartupPhase = "done" /\
        workPoolCompleted = WorkPoolStartupSubmissions)
@@ -688,5 +823,8 @@ EndToEndSafe ==
     /\ WorkPoolNoRuntimeRecordForTaskPanic
     /\ WorkPoolTaskPanicPublishesHeartbeat
     /\ WorkPoolWorkerAliveAfterHandled
+    /\ WorkPoolOverflowWithinCap
+    /\ WorkPoolLifecycleCapacityConsistent
+    /\ WorkPoolLifecycleActiveWithinBounds
 
 =============================================================================

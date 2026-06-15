@@ -1239,7 +1239,11 @@ facts the proofs rely on:
   task when neither `CheckEvents` nor `DrainChannel` polls the cron task
   channel.  Composed WorkPool discriminators reject lossy startup enqueue,
   missing inner task-panic heartbeat publication, and missing outer
-  accounting-panic catch.
+  accounting-panic catch.  The envelope now also composes WorkPool overflow
+  and lifecycle accounting: the E2E model rejects uncapped overflow spawning,
+  double-unpark overcounting, and parked-worker respawn without the active-count
+  increment, using the same cap/capacity invariants as the standalone
+  `WorkPoolOverflowCap` and `WorkPoolLifecycle` models.
 - JIT Long boxing store selection (`formal/rocq/gc/JitLongBoxStoreSelection.v`,
   `tla/JitLongBoxStoreSelection.tla`, 2026-06-14) — proves out-of-inline-range
   JIT Long boxing selects the compiled store: index builds allocate through the

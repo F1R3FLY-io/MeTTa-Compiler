@@ -923,7 +923,6 @@ line_no "src/backend/models/work_pool.rs" "fn test_work_pool_survives_panicking_
 line_no "src/backend/models/adaptive_pool.rs" "pub fn try_park(&self) -> bool" >/dev/null
 line_no "src/backend/models/adaptive_pool.rs" "pub fn try_unpark(&self) -> bool" >/dev/null
 line_no "src/backend/models/work_pool.rs" "scale_lock: Mutex<()>," >/dev/null
-line_no "src/backend/models/gc_pool.rs" "scale_lock: parking_lot::Mutex<()>," >/dev/null
 assert_after_before \
   "src/backend/models/work_pool.rs" \
   "pub fn unpark_n" \
@@ -936,21 +935,6 @@ assert_after_before \
   "if park.try_park() {"
 assert_after_before \
   "src/backend/models/work_pool.rs" \
-  "pub fn check_and_respawn_workers" \
-  "let _scale = self.scale_lock.lock();" \
-  "if park.try_unpark() {"
-assert_after_before \
-  "src/backend/models/gc_pool.rs" \
-  "pub fn unpark_n" \
-  "let _scale = self.scale_lock.lock();" \
-  "if park.try_unpark() {"
-assert_after_before \
-  "src/backend/models/gc_pool.rs" \
-  "pub fn park_n" \
-  "let _scale = self.scale_lock.lock();" \
-  "if park.try_park() {"
-assert_after_before \
-  "src/backend/models/gc_pool.rs" \
   "pub fn check_and_respawn_workers" \
   "let _scale = self.scale_lock.lock();" \
   "if park.try_unpark() {"
@@ -1361,11 +1345,6 @@ assert_after_before \
   "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
   "// === Phase 3: Free value slots"
 assert_after_before \
-  "src/backend/models/gc_pool.rs" \
-  "fn execute_session_release" \
-  "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
-  "let alloc = global_allocator();"
-assert_after_before \
   "src/backend/models/gc_allocator.rs" \
   "pub fn release_session(&self, context_id: u32)" \
   "let _counter_flush_guard = super::gc_cron::COUNTER_FLUSH_LOCK.lock();" \
@@ -1392,7 +1371,7 @@ assert_zero "src/backend/eval/cesk/index_node.rs" "Inc 2 is in progress"
 assert_before \
   "src/backend/models/mod.rs" \
   "#[cfg(not(feature = \"index-gc\"))]" \
-  "pub use gc_allocator::{collect_all_roots, register_root_provider, trigger_gc_cycle, RootProvider};"
+  "pub use gc_allocator::{collect_all_roots, register_root_provider, RootProvider};"
 assert_before \
   "src/backend/eval/mod.rs" \
   "#[cfg(not(feature = \"index-gc\"))]" \
@@ -1407,7 +1386,7 @@ assert_before \
 # a named structural reader or a typed live-env/live-dispatch driver channel.
 assert_immediate_cfg_before \
   "src/backend/models/mod.rs" \
-  "pub use gc_allocator::{collect_all_roots, register_root_provider, trigger_gc_cycle, RootProvider};" \
+  "pub use gc_allocator::{collect_all_roots, register_root_provider, RootProvider};" \
   "#[cfg(not(feature = \"index-gc\"))]"
 assert_immediate_cfg_before \
   "src/backend/models/gc_allocator.rs" \
@@ -1548,75 +1527,6 @@ line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/CronProduce
 line_no "formal/rocq/gc/GcPoolErasure.v" "Theorem default_index_erases_legacy_pool_effects" >/dev/null
 line_no "formal/rocq/gc/GcPoolErasure.v" "Theorem emitted_pool_effect_requires_slab" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/GcPoolErasure.v"' >/dev/null
-assert_immediate_cfg_before \
-  "src/backend/models/mod.rs" \
-  "pub mod gc_pool;" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/models/work_pool.rs" \
-  "let _ = super::gc_pool::global_gc_pool();" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/models/gc_cron.rs" \
-  "use super::gc_pool::global_gc_pool;" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after \
-  "src/backend/models/gc_cron.rs" \
-  "fn new() -> Self" \
-  "let pool = global_gc_pool();" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/models/gc_cron.rs" \
-  "let gc_pool = global_gc_pool();" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-line_no "src/backend/models/gc_cron.rs" "#[cfg(not(feature = \"index-gc\"))] gc_pool: &super::gc_pool::AdaptiveGcPool," >/dev/null
-assert_after_before \
-  "src/backend/models/gc_cron.rs" \
-  "F4/GcPoolErasure: adaptive GC-pool hill climbing is a legacy slab effect." \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "gc_pool.unpark_n(decision.count);"
-assert_immediate_cfg_before \
-  "src/backend/models/gc_cron.rs" \
-  "let respawned = gc_pool.check_and_respawn_workers();" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after \
-  "src/backend/models/gc_cron.rs" \
-  "mod tests" \
-  "use super::super::gc_pool::AdaptiveGcPool;" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before_after \
-  "src/backend/models/gc_cron.rs" \
-  "fn execute_memory_monitor_for_test" \
-  "let pool = AdaptiveGcPool::with_workers(1, 2);" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_after_before \
-  "src/backend/models/gc_allocator.rs" \
-  "fn enqueue_session_release" \
-  "#[cfg(feature = \"index-gc\")]" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_after_before \
-  "src/backend/models/gc_allocator.rs" \
-  "fn enqueue_session_release" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "let pool = super::gc_pool::global_gc_pool();"
-assert_after_before \
-  "src/backend/models/gc_allocator.rs" \
-  "pub fn maybe_process_gc_response" \
-  "#[cfg(feature = \"index-gc\")]" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_after_before \
-  "src/backend/models/gc_allocator.rs" \
-  "pub fn maybe_process_gc_response" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "let pool = super::gc_pool::global_gc_pool();"
-assert_immediate_cfg_before \
-  "src/backend/diagnostics.rs" \
-  "use crate::backend::models::gc_pool::global_gc_pool;" \
-  "#[cfg(not(feature = \"index-gc\"))]"
-assert_immediate_cfg_before \
-  "src/backend/diagnostics.rs" \
-  "let gp = global_gc_pool();" \
-  "#[cfg(not(feature = \"index-gc\"))]"
 assert_zero "src/backend/models/gc_allocator.rs" "METTATRON_INDEX_GC_PARALLEL"
 assert_zero "src/backend/models/gc_allocator.rs" "pub(crate) fn rendezvous_enabled"
 assert_zero "scripts/d2_3_rendezvous_asan.sh" "METTATRON_INDEX_GC_PARALLEL"
@@ -1693,24 +1603,6 @@ assert_after_before "src/backend/eval/cesk/gc_driver.rs" "pub(crate) fn request_
 # constructor-created sender, every worker response sender has a caller-visible
 # receiver, the cron ready receiver has a one-shot sender, and the legacy
 # ResultReceiver wrapper is dormant because it is never constructed.
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let (high_tx, high_rx) = crossbeam_channel::unbounded::<GcWorkItem>();" "let (low_tx, low_rx) = crossbeam_channel::unbounded::<GcWorkItem>();"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let (low_tx, low_rx) = crossbeam_channel::unbounded::<GcWorkItem>();" "let (response_tx, response_rx) = crossbeam_channel::unbounded::<GcResponse>();"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let high_rx = high_rx.clone();" "let low_rx = low_rx.clone();"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let low_rx = low_rx.clone();" "let response_tx = response_tx.clone();"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn with_workers" "let response_tx = response_tx.clone();" "gc_pool_worker_loop(id, high_rx, low_rx, response_tx, shutdown, park);"
-assert_after_before "src/backend/models/gc_pool.rs" "debug!(min_workers, max_workers, \"AdaptiveGcPool started\");" "high_tx," "high_rx,"
-assert_after_before "src/backend/models/gc_pool.rs" "debug!(min_workers, max_workers, \"AdaptiveGcPool started\");" "low_tx," "low_rx,"
-assert_after_before "src/backend/models/gc_pool.rs" "debug!(min_workers, max_workers, \"AdaptiveGcPool started\");" "response_tx," "response_rx,"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn submit_high" "self.high_tx.send(item)" "}"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn submit_low" "self.low_tx.send(item)" "}"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn try_recv_response" "self.response_rx.try_recv().ok()" "}"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn recv_response_blocking" "self.response_rx.recv().ok()" "}"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn check_and_respawn_workers" "let high_rx = self.high_rx.clone();" "let low_rx = self.low_rx.clone();"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn check_and_respawn_workers" "let low_rx = self.low_rx.clone();" "let response_tx = self.response_tx.clone();"
-assert_after_before "src/backend/models/gc_pool.rs" "pub fn check_and_respawn_workers" "let response_tx = self.response_tx.clone();" "gc_pool_worker_loop(id, high_rx, low_rx, response_tx, shutdown, park);"
-assert_after_before "src/backend/models/gc_pool.rs" "fn gc_pool_worker_loop" "high_rx: Receiver<GcWorkItem>," "match high_rx.try_recv()"
-assert_after_before "src/backend/models/gc_pool.rs" "fn gc_pool_worker_loop" "low_rx: Receiver<GcWorkItem>," "low_rx.recv_timeout(LOW_CHANNEL_TIMEOUT)"
-assert_after_before "src/backend/models/gc_pool.rs" "fn gc_pool_worker_loop" "response_tx: Sender<GcResponse>," "response_tx.send(response)"
 
 assert_after_before "src/backend/models/task_scheduler.rs" "fn spawn_cron_with_interval_name_and_pool" "let (task_tx, task_rx) = unbounded::<ScheduledTask>();" "let (ready_tx, ready_rx) = unbounded::<()>();"
 assert_after_before "src/backend/models/task_scheduler.rs" "fn spawn_cron_with_interval_name_and_pool" "let (ready_tx, ready_rx) = unbounded::<()>();" "let thread_handle = thread::Builder::new()"

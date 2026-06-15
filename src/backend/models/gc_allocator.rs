@@ -2539,8 +2539,8 @@ pub fn global_factory() -> crate::backend::models::ActiveFactory {
 // Global GC Thread + Coordination
 // ============================================================================
 
-// GLOBAL_GC_THREAD removed — replaced by AdaptiveGcPool (gc_pool.rs).
-// The old single GcThread module has been deleted (F4 rung R1); see git history.
+// Legacy global GC executors (GcThread, then the adaptive worker pool) have been
+// removed (F4 rungs R1/R3); see git history.
 
 /// Flag set by the cron manager or allocation pressure to request a GC cycle.
 /// Checked by `maybe_gc()` in the trampoline loop (every 256 iterations).
@@ -2733,30 +2733,8 @@ fn enqueue_session_release(context_id: u32) {
         return; // Never release persistent values
     }
 
-    // F4/GcPoolErasure: the adaptive GC pool is the legacy slab executor. Under
-    // index-gc, session release is handled by the CESK/index regime and must not
-    // initialize or submit work to the slab pool.
-    #[cfg(feature = "index-gc")]
-    {
-        return;
-    }
-
-    #[cfg(not(feature = "index-gc"))]
-    {
-        // Inc 4 (store-centric GC): under index mode the evaluator allocates into the
-        // index store σ, not the slab — the slab session holds no eval values, and the
-        // slab collector MUST NOT trace index-mode roots (`inner_ptr()` returns
-        // INDEX_KEY_TAG-tagged keys, not slab pointers — tracing them as pointers
-        // faults). The compile-time wall above keeps this path slab-only.
-        if crate::backend::models::metta_value::gc_mode_is_index() {
-            return;
-        }
-
-        let pool = super::gc_pool::global_gc_pool();
-        pool.submit_low(super::gc_pool::GcWorkItem::SessionRelease {
-            context_ids: vec![context_id],
-        });
-    }
+    // F4 R3: under index-gc, session release is handled by the CESK/index
+    // regime; there is no legacy slab pool to submit work to.
 }
 
 /// Release all values allocated during a session, except those reachable from roots.
@@ -2837,7 +2815,7 @@ pub(super) static GC_PROGRESS_CONDVAR: Condvar = Condvar::new();
 
 /// Mutex + Condvar pair for notifying threads waiting for quiescent state
 /// (ACTIVE_EVALUATORS == 0). EvalGuard::drop() notifies when transitioning
-/// from 1→0. Used by gc_pool workers to wait for safe root tracing points.
+/// from 1→0. Used by the GC workers to wait for safe root tracing points.
 pub(super) static QUIESCENT_MUTEX: Mutex<()> = Mutex::new(());
 pub(super) static QUIESCENT_CONDVAR: Condvar = Condvar::new();
 
@@ -4810,7 +4788,7 @@ pub fn worker_ever_spawned() -> bool {
 /// expressions while still protecting result values from session-release
 /// sweeps that would invalidate thread-local caches.
 ///
-/// Read by `gc_pool::execute_session_release` to defer session sweeps.
+/// Read by session-release sweeps to defer them.
 /// Mark-sweep paths (`maybe_quiescent_gc`, `safepoint_wait_for_quiescence`)
 /// do NOT consult this counter — they only check `ACTIVE_EVALUATORS`.
 pub(super) static SESSION_RELEASE_INHIBITORS: AtomicU32 = AtomicU32::new(0);
@@ -4858,7 +4836,7 @@ impl Drop for GcHoldGuard {
     }
 }
 
-/// Read-only accessor for `SESSION_RELEASE_INHIBITORS` (for `gc_pool` and diagnostics).
+/// Read-only accessor for `SESSION_RELEASE_INHIBITORS` (for diagnostics).
 #[inline]
 pub fn session_release_inhibitors() -> u32 {
     SESSION_RELEASE_INHIBITORS.load(Ordering::Acquire)
@@ -5264,13 +5242,8 @@ pub fn maybe_quiescent_gc() -> bool {
         return false;
     }
 
-    // Safe: no evaluators active, build snapshot and submit to GC pool.
-    // A5.5: the slab pool path (trigger_gc_cycle_via_pool → collect_all_roots) is
-    // walled to slab; in index this fn is already runtime-inert above
-    // (gc_mode_is_index early-return), so the index arm is a never-reached `false`.
-    #[cfg(not(feature = "index-gc"))]
-    let result = trigger_gc_cycle_via_pool();
-    #[cfg(feature = "index-gc")]
+    // F4 R3: the legacy slab pool path was removed; the index collector marks
+    // directly, so this quiescent-trigger entry point is a no-op returning false.
     let result = false;
 
     drop(_gc_guard);
@@ -5357,11 +5330,7 @@ pub fn maybe_async_gc() -> bool {
         }
     };
 
-    // A5.5: slab pool path walled to slab; index is runtime-inert above
-    // (gc_mode_is_index early-return), so the index arm is a never-reached `false`.
-    #[cfg(not(feature = "index-gc"))]
-    let result = trigger_gc_cycle_via_pool();
-    #[cfg(feature = "index-gc")]
+    // F4 R3: the legacy slab pool path was removed; this is a no-op returning false.
     let result = false;
     drop(_gc_guard);
     result
@@ -5400,84 +5369,14 @@ pub fn maybe_process_gc_response() -> bool {
     // Lazily spawn the GC cron manager (idempotent via OnceLock)
     let _ = global_gc_cron();
 
-    // F4/GcPoolErasure: the response channel belongs to the legacy slab GC pool.
-    // The index collector does not receive responses from that pool, but keeping
-    // cron initialization above preserves counter-sync scheduling.
+    // F4 R3: the legacy slab GC-pool response channel was removed; the index
+    // collector does not receive pool responses, but cron init above preserves
+    // counter-sync scheduling.
     #[cfg(feature = "index-gc")]
     {
         return false;
     }
 
-    #[cfg(not(feature = "index-gc"))]
-    {
-        // Acquire GC_IN_PROGRESS for mutual exclusion with
-        // release_session_with_surviving() on GC pool worker threads.
-        // Both paths free/poison value slots — concurrent execution is a
-        // TOCTOU race on slot epoch/content (FlyingRaven ASAN finding).
-        //
-        // try_enter() is non-blocking: if session release holds the guard,
-        // we skip — the response stays on the channel for the next call.
-        // Must acquire BEFORE try_recv_response() so we don't consume a
-        // response we can't safely process.
-        let _gc_guard = match GcInProgressGuard::try_enter() {
-            Some(guard) => guard,
-            None => return false,
-        };
-
-        let pool = super::gc_pool::global_gc_pool();
-        let alloc = global_allocator();
-
-        match pool.try_recv_response() {
-            Some(response) => {
-                alloc.process_gc_response(&response);
-                // Page release is handled inside process_gc_response() (Phase 5).
-
-                // Adaptive threshold: floor at committed bytes to prevent perpetual GC cycling.
-                // Without the committed floor, slab fragmentation (pages with live values can't
-                // be decommitted) causes committed >> live_bytes × GROWTH_FACTOR, making
-                // committed/threshold >> 1.0 → bp_level=3 permanently → perpetual GC requests.
-                // Flooring at committed ensures ratio ≤ 1.0 post-GC; GC only re-triggers
-                // when NEW allocations push committed above the threshold.
-                let live_based = (response.live_bytes as f64 * GC_GROWTH_FACTOR) as usize;
-                let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
-                let new_threshold = live_based.max(committed).max(MIN_GC_THRESHOLD);
-                alloc.set_gc_threshold(new_threshold);
-
-                // Clear in-flight flag — aligns with TLA+ `hasGcResponse' = FALSE`
-                // in ProcessGcResponse. A new GC cycle can now be triggered.
-                GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
-
-                // Wake any thread blocked in apply_backpressure_tier2().
-                // Must notify AFTER clearing GC_CYCLE_IN_FLIGHT so the woken thread
-                // sees the updated flag when it re-checks the while condition.
-                GC_CYCLE_CONDVAR.notify_all();
-
-                // Immediate backpressure feedback — don't wait for next cron poll (100ms).
-                // Re-evaluate backpressure level based on current committed/threshold ratio.
-                // Models TLA+ ProcessGcResponse: backpressureLevel' = max(bp - 1, 0).
-                let committed = alloc.committed_bytes_atomic().load(Ordering::Relaxed);
-                let threshold = alloc.gc_threshold_atomic().load(Ordering::Relaxed);
-                let new_level = if threshold > 0 {
-                    if committed >= threshold * 2 {
-                        3
-                    } else if committed >= threshold * 3 / 2 {
-                        2
-                    } else if committed >= threshold {
-                        1
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                };
-                set_backpressure_level(new_level);
-
-                return true;
-            }
-            None => {}
-        }
-        false
-    }
 }
 
 // ============================================================================
@@ -6576,85 +6475,11 @@ pub fn try_register_env_roots<V>(
     // E₀ is read structurally; no registry registration in the index regime.
 }
 
-/// Trigger a GC cycle using the global allocator, root registry, and GC pool.
-///
-/// This is the primary GC entry point. It:
-/// 1. Processes any pending GC response from a previous cycle
-/// 2. Collects roots from all registered providers
-/// 3. Builds a snapshot from the global allocator
-/// 4. Submits the snapshot to the adaptive GC pool (HIGH priority)
-///
-/// Returns `true` if a GC cycle was initiated.
-///
-/// A5.5: walled to slab — this wrapper calls `collect_all_roots()` (now
-/// slab-only) and is runtime-inert in index (the `gc_mode_is_index()`
-/// early-return), so compiling it only in slab is a zero-runtime-behavior change.
-#[cfg(not(feature = "index-gc"))]
-pub fn trigger_gc_cycle() -> bool {
-    // Inc 4: the slab collector is inert in index mode (see enqueue_session_release).
-    if crate::backend::models::metta_value::gc_mode_is_index() {
-        return false;
-    }
-    let pool = super::gc_pool::global_gc_pool();
-    let alloc = global_allocator();
+// (F4 R3) trigger_gc_cycle removed: it submitted Collect work to the legacy
+// slab GC pool, which no longer exists. The index collector marks/sweeps
+// directly under the index-heap write lock.
 
-    // Process pending response only if we can acquire mutual exclusion
-    // with release_session_with_surviving() on GC pool worker threads.
-    // Both paths free/poison value slots — concurrent execution is a
-    // TOCTOU race (FlyingRaven ASAN finding).
-    //
-    // Check GC_IN_PROGRESS before try_recv_response() so we don't
-    // consume a response we can't safely process.
-    if !GC_IN_PROGRESS.load(Ordering::Acquire) {
-        if let Some(response) = pool.try_recv_response() {
-            if let Some(_gc_guard) = GcInProgressGuard::try_enter() {
-                alloc.process_gc_response(&response);
-                // Page release is handled inside process_gc_response() (Phase 5).
-                GC_CYCLE_IN_FLIGHT.store(false, Ordering::Release);
-                // _gc_guard drops here → clears GC_IN_PROGRESS
-            }
-            // If guard fails after consuming: response is lost, but dead slots
-            // will be re-discovered in the next GC cycle (conservative, safe).
-        }
-    }
-
-    // Don't queue another cycle if one is already in flight
-    if GC_CYCLE_IN_FLIGHT.load(Ordering::Acquire) {
-        return false;
-    }
-
-    // Collect roots from all registered providers
-    let roots = collect_all_roots();
-
-    // Build snapshot and submit to GC pool (HIGH priority channel)
-    let snapshot = alloc.build_snapshot(roots);
-    GC_CYCLE_IN_FLIGHT.store(true, Ordering::Release);
-    pool.submit_high(super::gc_pool::GcWorkItem::Collect(snapshot));
-    true
-}
-
-/// Trigger a GC cycle via the pool without processing pending responses.
-///
-/// Used by `maybe_quiescent_gc()` where responses are processed separately
-/// by `maybe_process_gc_response()`.
-///
-/// Sets `GC_CYCLE_IN_FLIGHT` before submitting the snapshot to prevent
-/// queueing multiple snapshots. Aligns with TLA+ `hasGcRequest' = TRUE`
-/// in `TryQuiescentGc_SnapshotOK`.
-///
-/// A5.5: walled to slab — calls `collect_all_roots()` (slab-only). Its callers
-/// (`maybe_quiescent_gc`/`maybe_async_gc`, compiled in both builds) two-arm the
-/// call so the index arm yields `false` without referencing this fn.
-#[cfg(not(feature = "index-gc"))]
-fn trigger_gc_cycle_via_pool() -> bool {
-    let pool = super::gc_pool::global_gc_pool();
-    let alloc = global_allocator();
-    let roots = collect_all_roots();
-    let snapshot = alloc.build_snapshot(roots);
-    GC_CYCLE_IN_FLIGHT.store(true, Ordering::Release);
-    pool.submit_high(super::gc_pool::GcWorkItem::Collect(snapshot));
-    true
-}
+// (F4 R3) trigger_gc_cycle_via_pool removed: same legacy slab GC pool path.
 
 // ============================================================================
 // GC Mark-Sweep Support

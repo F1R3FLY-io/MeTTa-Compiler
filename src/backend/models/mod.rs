@@ -2,8 +2,6 @@ pub mod adaptive_pool;
 pub mod bindings;
 pub mod gc_allocator;
 pub mod gc_cron;
-#[cfg(not(feature = "index-gc"))]
-pub mod gc_pool;
 pub mod generic_bindings;
 pub mod memo_handle;
 pub mod metta_state;
@@ -31,7 +29,7 @@ pub use gc_allocator::{
 // collect_safepoint_roots, register_temporary_roots, SafepointRootHandle,
 // maybe_quiescent_gc, try_register_env_roots (the A5.4 driver-transport channel).
 #[cfg(not(feature = "index-gc"))]
-pub use gc_allocator::{collect_all_roots, register_root_provider, trigger_gc_cycle, RootProvider};
+pub use gc_allocator::{collect_all_roots, register_root_provider, RootProvider};
 pub use gc_cron::{CronHandle, GcCronSingleton};
 pub use generic_bindings::{
     allocate_scope_id, BindingName, BindingsWithClasses, ClassData, ClassId, ClassTable,

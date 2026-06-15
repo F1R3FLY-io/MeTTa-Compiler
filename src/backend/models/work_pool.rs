@@ -1470,19 +1470,17 @@ pub fn global_compile_pool() -> &'static WorkPool {
 
 /// Eagerly initialize all global thread pools at application startup.
 ///
-/// Forces initialization of the eval pool workers, compile pool, the legacy
-/// slab GC pool when that store is compiled, and scaling monitor. Call from `main()`
-/// before any evaluation to start workers warming up during arg parsing.
+/// Forces initialization of the eval pool workers, compile pool, and scaling
+/// monitor. Call from `main()` before any evaluation to start workers warming up
+/// during arg parsing.
 ///
 /// This is optional — all pools self-initialize on first access via
-/// `global_eval_pool()` / `global_compile_pool()` / slab `global_gc_pool()`,
+/// `global_eval_pool()` / `global_compile_pool()`,
 /// so the Rholang integration entry point also triggers initialization.
 /// Calling this from `main()` just starts it sooner.
 pub fn init_thread_pools() {
     let _ = global_eval_pool(); // Triggers LazyLock + start_init + scaling monitor
     let _ = global_compile_pool(); // Triggers LazyLock for compile pool
-    #[cfg(not(feature = "index-gc"))]
-    let _ = super::gc_pool::global_gc_pool(); // Triggers OnceLock for GC pool
 }
 
 // ============================================================================

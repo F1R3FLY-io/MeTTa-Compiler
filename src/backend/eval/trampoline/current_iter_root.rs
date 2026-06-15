@@ -3,7 +3,7 @@
 //! ## Why this exists
 //!
 //! The GC is **purely asynchronous** by mandate. The mark-sweep cycle runs on
-//! the `AdaptiveGcPool` workers and reads its root set from the global
+//! the dedicated GC workers and reads its root set from the global
 //! `ROOT_REGISTRY` (see `gc_allocator::register_root_provider` and
 //! `collect_all_roots`). Each `RootProvider` lives in a `Weak<dyn RootProvider>`;
 //! the GC walks them with `Acquire` ordering at snapshot time.

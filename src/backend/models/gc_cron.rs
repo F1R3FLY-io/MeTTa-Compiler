@@ -23,8 +23,6 @@ use super::adaptive_pool::{Ema, HillClimber, ScaleAction};
 use super::gc_allocator::gc_values_freed_total;
 #[cfg(not(feature = "index-gc"))]
 use super::gc_allocator::{maybe_async_gc, request_gc};
-#[cfg(not(feature = "index-gc"))]
-use super::gc_pool::global_gc_pool;
 use super::task_scheduler::TaskSchedulerSingleton;
 use super::work_pool::WorkPool;
 
@@ -128,7 +126,7 @@ struct MonitorState {
 impl MonitorState {
     /// Create a new MonitorState with explicit pool parameters.
     ///
-    /// Production code reads from `global_gc_pool()` and passes values.
+    /// Both tests and production pass explicit worker params.
     /// Tests pass hardcoded values without initializing the global pool.
     fn with_params(_min_workers: usize, _max_workers: usize, _active_workers: usize) -> Self {
         Self {
@@ -150,21 +148,9 @@ impl MonitorState {
         }
     }
 
-    /// Create a new MonitorState from the global GC pool.
+    /// Create a new MonitorState (the index collector does not size an adaptive pool).
     fn new() -> Self {
-        #[cfg(not(feature = "index-gc"))]
-        {
-            let pool = global_gc_pool();
-            Self::with_params(
-                pool.min_workers(),
-                pool.max_workers(),
-                pool.active_workers(),
-            )
-        }
-        #[cfg(feature = "index-gc")]
-        {
-            Self::with_params(0, 0, 0)
-        }
+        Self::with_params(0, 0, 0)
     }
 }
 
@@ -228,8 +214,6 @@ pub fn spawn_gc_cron(
     let alloc_clone = Arc::clone(&alloc_count);
     let threshold_clone = Arc::clone(&gc_threshold);
     let mut monitor = MonitorState::new();
-    #[cfg(not(feature = "index-gc"))]
-    let gc_pool = global_gc_pool();
 
     // Initial delay matches the interval so the first poll has a meaningful
     // baseline (prev_alloc_count / prev_poll_time are set at construction).
@@ -238,15 +222,6 @@ pub fn spawn_gc_cron(
         MONITOR_INTERVAL_MS,
         "memory-monitor",
         move || {
-            #[cfg(not(feature = "index-gc"))]
-            execute_memory_monitor(
-                &committed_clone,
-                &alloc_clone,
-                &threshold_clone,
-                &mut monitor,
-                gc_pool,
-            );
-            #[cfg(feature = "index-gc")]
             execute_memory_monitor(
                 &committed_clone,
                 &alloc_clone,
@@ -290,7 +265,6 @@ fn execute_memory_monitor(
     alloc_count: &AtomicU64,
     gc_threshold: &AtomicUsize,
     monitor: &mut MonitorState,
-    #[cfg(not(feature = "index-gc"))] gc_pool: &super::gc_pool::AdaptiveGcPool,
 ) -> bool {
     let now = Instant::now();
     let current_alloc_count = alloc_count.load(AtomicOrdering::Relaxed);
@@ -362,62 +336,8 @@ fn execute_memory_monitor(
     // races on the global GC_REQUESTED flag).
     let result = should_gc;
 
-    // F4/GcPoolErasure: adaptive GC-pool hill climbing is a legacy slab effect.
-    // The monitor decision above remains common; pool scaling is slab-only.
-    #[cfg(not(feature = "index-gc"))]
-    {
-        // --- GC Pool Hill Climbing ---
-        // Compute alloc rate and free rate, then feed the alloc/free ratio
-        // (clamped to [0, 10]) into the EMA → HillClimber for adaptive sizing.
-        if elapsed.as_nanos() > 0 {
-            let elapsed_secs = elapsed.as_secs_f64();
-            let alloc_delta = current_alloc_count.saturating_sub(monitor.prev_alloc_count);
-            let alloc_rate = alloc_delta as f64 / elapsed_secs;
-
-            let current_freed = gc_values_freed_total();
-            let freed_delta = current_freed.saturating_sub(monitor.prev_freed_count);
-            let free_rate = freed_delta as f64 / elapsed_secs;
-            monitor.prev_freed_count = current_freed;
-
-            // Compute ratio (alloc / free). Guard against division by zero:
-            // if free_rate == 0 but alloc_rate > 0, ratio = 10 (max pressure).
-            // if both are 0, ratio = 1.0 (neutral — no scaling action needed).
-            let ratio = if free_rate > 0.0 {
-                (alloc_rate / free_rate).min(10.0)
-            } else if alloc_rate > 0.0 {
-                10.0 // GC not freeing but allocation happening → max pressure
-            } else {
-                1.0 // Idle — neutral
-            };
-
-            // Feed ratio as objective to hill climber (higher ratio = worse,
-            // hill climber minimizes objective).
-            let smoothed = monitor.ema_alloc_free_ratio.update(ratio);
-            let decision = monitor.gc_climber.step(smoothed);
-
-            match decision.action {
-                ScaleAction::Unpark => {
-                    gc_pool.unpark_n(decision.count);
-                }
-                ScaleAction::Park => {
-                    gc_pool.park_n(decision.count);
-                }
-                ScaleAction::Hold => {}
-            }
-        }
-    }
-
     monitor.prev_alloc_count = current_alloc_count;
     monitor.prev_poll_time = now;
-
-    // Check for and respawn dead GC workers in the legacy slab pool.
-    #[cfg(not(feature = "index-gc"))]
-    {
-        let respawned = gc_pool.check_and_respawn_workers();
-        if respawned > 0 {
-            tracing::warn!(respawned, "GC memory monitor: respawned dead GC workers");
-        }
-    }
 
     result
 }
@@ -547,8 +467,6 @@ fn execute_counter_sync() {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "index-gc"))]
-    use super::super::gc_pool::AdaptiveGcPool;
     use super::*;
     use std::sync::atomic::Ordering;
     use std::thread;
@@ -560,18 +478,7 @@ mod tests {
         gc_threshold: &AtomicUsize,
         monitor: &mut MonitorState,
     ) -> bool {
-        #[cfg(not(feature = "index-gc"))]
-        {
-            let pool = AdaptiveGcPool::with_workers(1, 2);
-            let result =
-                execute_memory_monitor(committed_bytes, alloc_count, gc_threshold, monitor, &pool);
-            pool.shutdown();
-            result
-        }
-        #[cfg(feature = "index-gc")]
-        {
-            execute_memory_monitor(committed_bytes, alloc_count, gc_threshold, monitor)
-        }
+        execute_memory_monitor(committed_bytes, alloc_count, gc_threshold, monitor)
     }
 
     // ========================================================================

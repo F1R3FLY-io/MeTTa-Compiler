@@ -64,36 +64,6 @@ fn from_long_round_trips_inline() {
         assert_eq!(actual, n, "inline round-trip failed for {}", n);
     }
 }
-
-// JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-#[cfg(not(feature = "index-gc"))]
-#[test]
-fn from_long_round_trips_heap_path() {
-    // Values just past 2^47 force the heap path. The MettaValue::Long
-    // round-trip must preserve the FULL 64-bit value.
-    let big_positives = [
-        JitValue::INLINE_LONG_MAX + 1,
-        (1i64 << 50),
-        (1i64 << 62),
-        i64::MAX,
-    ];
-    let big_negatives = [
-        JitValue::INLINE_LONG_MIN - 1,
-        -(1i64 << 50),
-        -(1i64 << 62),
-        i64::MIN,
-    ];
-    for n in big_positives.iter().chain(big_negatives.iter()).copied() {
-        let v = JitValue::from_long(n);
-        let metta = unsafe { v.to_metta() };
-        let actual = match metta.view() {
-            ValueView::Long(x) => x,
-            other => panic!("expected ValueView::Long, got {:?} for {}", other, n),
-        };
-        assert_eq!(actual, n, "heap round-trip failed for {}", n);
-    }
-}
-
 #[test]
 fn from_long_inline_unchecked_is_const_friendly() {
     // Used by JitValue::ZERO / ONE. Only valid for compile-time-known

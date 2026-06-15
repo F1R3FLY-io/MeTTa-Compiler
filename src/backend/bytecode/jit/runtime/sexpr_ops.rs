@@ -164,17 +164,12 @@ unsafe fn jit_maybe_pre_eval_structural(ctx_ref: &JitContext, v: MettaValue) -> 
     // Plan 3 hook H-2 (2026-05-06): cooperative GC safepoint before
     // JIT→trampoline re-entry. Same pattern as `jit_pre_eval_arg`.
     {
-        // E1-c step 4 (design §Part-6): widen so this JIT structural pre-eval poll
-        // also parks on the INDEX path (the dedicated driver counts every
-        // EvalGuard-holding thread, not only `IS_PARALLEL_WORKER`-flagged ones). On
-        // slab, `cfg!(feature = "index-gc")` folds to false ⇒ textually
-        // `is_worker && is_gc_requested()` — BYTE-IDENTICAL. Index-default (dedicated
-        // OFF): `is_gc_requested()` is false (nothing sets it), so the body never runs.
-        if crate::backend::models::gc_allocator::is_gc_requested()
-            && (cfg!(feature = "index-gc")
-                || crate::backend::eval::trampoline::eval_loop::IS_PARALLEL_WORKER
-                    .with(|f| f.get()))
-        {
+        // E1-c step 4 (design §Part-6): this JIT structural pre-eval poll fires for
+        // ANY EvalGuard-holding thread that observes `is_gc_requested()` (the
+        // dedicated driver counts every such thread, not only `IS_PARALLEL_WORKER`-
+        // flagged ones). Dedicated OFF: `is_gc_requested()` is false (nothing sets
+        // it), so the body never runs.
+        if crate::backend::models::gc_allocator::is_gc_requested() {
             let mut roots: Vec<MettaValue> = Vec::with_capacity(64);
             roots.push(v.clone());
             crate::backend::bytecode::jit::runtime::gc_roots::collect_jit_roots_into(

@@ -312,7 +312,7 @@ impl std::fmt::Debug for ParallelDispatchHandle {
 // build. The struct is still constructed and held alive via the dispatch handle's
 // `_dispatch_roots_arc` field (byte-identical construction in both builds), so it is
 // intentionally dead-but-present in the index regime.
-#[cfg_attr(feature = "index-gc", allow(dead_code))]
+#[allow(dead_code)]
 pub struct ParallelDispatchRoots {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
     /// Stable snapshot of worker INPUTS for the dispatch lifetime.
@@ -416,7 +416,7 @@ impl std::fmt::Debug for ParallelCollapseDispatchHandle {
 #[derive(Debug)]
 // A5.3: see `ParallelDispatchRoots` — the `RootProvider` impl is slab-only;
 // the struct stays alive via `ParallelCollapseDispatchHandle::_dispatch_roots_arc`.
-#[cfg_attr(feature = "index-gc", allow(dead_code))]
+#[allow(dead_code)]
 pub struct ParallelCollapseRoots {
     pub(crate) results: super::eval_loop::ParallelEvalResults,
     /// Stable snapshot of worker INPUTS for the dispatch lifetime.

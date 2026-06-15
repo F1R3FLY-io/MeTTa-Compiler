@@ -2,13 +2,6 @@
 // Requires nightly Rust (same as -Zsanitizer=address).
 #![feature(cfg_sanitize)]
 
-#[cfg(not(feature = "index-gc"))]
-compile_error!(
-    "index-gc is required: the store-centric CESK index GC is the only \
-     supported store. Build with default features (do not pass \
-     `--no-default-features` without re-enabling `index-gc`)."
-);
-
 pub mod backend;
 pub mod config;
 pub mod ir;

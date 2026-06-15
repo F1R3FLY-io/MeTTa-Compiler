@@ -499,12 +499,13 @@ pub(crate) fn is_variable_str(s: &str) -> bool {
 // F4: value-decode store is selected at compile time.
 // ==========================================================================
 
-/// `true` iff this binary was compiled with the CESK index-arena value store.
-/// Runtime `--gc` / `MTT_GC` requests are assertions over this fixed store, not
-/// mode switches; see `formal/rocq/gc/RuntimeModeErasure.v`.
+/// `true` — the CESK index-arena value store is the only store. Runtime `--gc`
+/// / `MTT_GC` requests are assertions over this fixed store, not mode switches;
+/// see `formal/rocq/gc/RuntimeModeErasure.v`. Retained as a named predicate so
+/// the index-mode call sites read intentionally.
 #[inline(always)]
 pub(crate) fn gc_mode_is_index() -> bool {
-    cfg!(feature = "index-gc")
+    true
 }
 
 impl MettaValue {

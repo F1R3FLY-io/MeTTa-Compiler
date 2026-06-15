@@ -5,10 +5,7 @@ use mettatron::backend::eval::trampoline::new_env;
 
 macro_rules! eval_bind {
     (($results:pat, $env:pat) = eval($value:expr, $input_env:expr, $state:expr $(,)?)) => {
-        #[cfg(feature = "index-gc")]
         let ($results, $env, _eval_root_handle) = eval($value, $input_env, $state);
-        #[cfg(not(feature = "index-gc"))]
-        let ($results, $env) = eval($value, $input_env, $state);
     };
 }
 

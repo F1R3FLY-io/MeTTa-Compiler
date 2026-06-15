@@ -4,7 +4,6 @@
 //! test drives the public compile/eval path through enough allocation churn to
 //! force real index-GC cycles while that detector is enabled.
 
-#![cfg(feature = "index-gc")]
 
 use std::fmt::Write;
 

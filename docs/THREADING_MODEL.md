@@ -267,7 +267,9 @@ The formal lane covers the main scheduler obligations:
   admitted when the runtime gates allow it.
 - `SchedulerActiveFanoutGate.v` and `SchedulerActiveFanoutGate.tla` compose
   the active production rule-match fanout gates: branch threshold, WFST degree,
-  purity/dynamic-eval blocking, depth, pool availability, and budget.
+  purity/dynamic-eval blocking, depth, pool availability, and budget. The E2E
+  proof consumes the standalone purity, budget, and dispatch-slot
+  representation lemmas for active fanout counterexamples.
 - `CollapseFanoutAdmissionCompleteness.v` and
   `CollapseFanoutAdmissionCompleteness.tla` prove the same input-completeness
   contract for `collapse` and `collapse-bind`.

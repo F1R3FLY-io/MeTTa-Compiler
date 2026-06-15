@@ -901,6 +901,7 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_feeds_
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.end_to_end_cesk_index_gc_safety" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.ConcurrentFreshOnly" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.PublishedSlotReady" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module ActiveFanout :=" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerDirectFanoutWavefrontRefinement" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CollapseFanoutAdmissionCompleteness" >/dev/null
@@ -965,6 +966,12 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "DynamicEval.present_st
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_no_budget_parallel_excludes_dynamic_eval" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "DynamicEval.no_budget_parallel_excludes_gated_dynamic_eval" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "complete_active_parallel_dispatch_blockers_safe" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_requires_purity" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "ActiveFanout.active_fanout_requires_purity_gate" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_requires_budget" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "ActiveFanout.active_fanout_requires_budget_gate" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "active_fanout_gate_safe_represents_dispatch_slot" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "ActiveFanout.active_complete_dispatch_represents_every_slot" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "degree_capped_active_fanout_exposes_admission_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "threshold_capped_collapse_exposes_admission_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "rooted_closed_scheduler_boundary_safe" >/dev/null

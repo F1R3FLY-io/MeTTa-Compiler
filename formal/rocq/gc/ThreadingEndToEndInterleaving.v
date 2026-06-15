@@ -55,6 +55,8 @@ Open Scope nat_scope.
 
 Module MeTTaTron_GC_ThreadingEndToEndInterleaving.
 
+Module ActiveFanout :=
+  MeTTaTron_GC_SchedulerActiveFanoutGate.
 Module DirectRefinement :=
   MeTTaTron_GC_SchedulerDirectFanoutWavefrontRefinement.
 Module EffectCompleteness :=
@@ -2875,6 +2877,65 @@ Section EndToEndModel.
       (active_pool_ok c = true) /\
     complete_dispatch (active_branch_count c) (active_dispatched_count c).
 
+  Theorem active_fanout_gate_safe_requires_purity :
+    forall c,
+      active_fanout_gate_safe c ->
+      active_pure c = true.
+  Proof.
+    intros c [Hallowed _].
+    exact
+      (ActiveFanout.active_fanout_requires_purity_gate
+        (active_branch_count c)
+        (active_min_branches c)
+        (active_parallelism_degree c)
+        (active_budget_granted c)
+        (active_pure c = true)
+        (active_depth_ok c = true)
+        (active_pool_ok c = true)
+        Hallowed).
+  Qed.
+
+  Theorem active_fanout_gate_safe_requires_budget :
+    forall c,
+      active_fanout_gate_safe c ->
+      budget_gate (active_budget_granted c).
+  Proof.
+    intros c [Hallowed _].
+    exact
+      (ActiveFanout.active_fanout_requires_budget_gate
+        (active_branch_count c)
+        (active_min_branches c)
+        (active_parallelism_degree c)
+        (active_budget_granted c)
+        (active_pure c = true)
+        (active_depth_ok c = true)
+        (active_pool_ok c = true)
+        Hallowed).
+  Qed.
+
+  Theorem active_fanout_gate_safe_represents_dispatch_slot :
+    forall c slot,
+      active_fanout_gate_safe c ->
+      slot < active_branch_count c ->
+      ActiveFanout.slot_represented (active_dispatched_count c) slot.
+  Proof.
+    intros c slot [Hallowed Hcomplete] Hslot.
+    exact
+      (ActiveFanout.active_complete_dispatch_represents_every_slot
+        (active_branch_count c)
+        (active_min_branches c)
+        (active_parallelism_degree c)
+        (active_budget_granted c)
+        (active_pure c = true)
+        (active_depth_ok c = true)
+        (active_pool_ok c = true)
+        (active_dispatched_count c)
+        slot
+        Hallowed
+        Hcomplete
+        Hslot).
+  Qed.
+
   Definition active_transducer_degree_matches (c : ActiveFanoutConfig) : Prop :=
     active_parallelism_degree c =
       branch_degree
@@ -3450,32 +3511,35 @@ Section EndToEndModel.
   Theorem missing_purity_active_fanout_exposes_envelope_gap :
     ~ active_fanout_gate_safe missing_purity_active_fanout.
   Proof.
-    intros [Hallowed _].
-    unfold missing_purity_active_fanout in Hallowed.
-    simpl in Hallowed.
-    unfold active_fanout_allowed in Hallowed.
-    destruct Hallowed as [_ [_ [Hpure _]]].
+    intros Hgate.
+    pose proof (active_fanout_gate_safe_requires_purity _ Hgate) as Hpure.
+    unfold missing_purity_active_fanout in Hpure.
+    simpl in Hpure.
     discriminate Hpure.
   Qed.
 
   Theorem missing_budget_active_fanout_exposes_envelope_gap :
     ~ active_fanout_gate_safe missing_budget_active_fanout.
   Proof.
-    intros [Hallowed _].
-    unfold missing_budget_active_fanout in Hallowed.
-    simpl in Hallowed.
-    unfold active_fanout_allowed, budget_gate in Hallowed.
-    destruct Hallowed as [_ [_ [_ [_ [_ Hbudget]]]]].
+    intros Hgate.
+    pose proof (active_fanout_gate_safe_requires_budget _ Hgate) as Hbudget.
+    unfold missing_budget_active_fanout in Hbudget.
+    simpl in Hbudget.
+    unfold budget_gate in Hbudget.
     lia.
   Qed.
 
   Theorem partial_dispatch_active_fanout_exposes_envelope_gap :
     ~ active_fanout_gate_safe partial_dispatch_active_fanout.
   Proof.
-    intros [_ Hcomplete].
-    unfold partial_dispatch_active_fanout, complete_dispatch in Hcomplete.
-    simpl in Hcomplete.
-    discriminate Hcomplete.
+    intros Hgate.
+    pose proof
+      (active_fanout_gate_safe_represents_dispatch_slot
+        partial_dispatch_active_fanout 1 Hgate ltac:(simpl; lia))
+      as Hrepresented.
+    unfold ActiveFanout.slot_represented in Hrepresented.
+    simpl in Hrepresented.
+    lia.
   Qed.
 
   Theorem degree_capped_active_fanout_exposes_admission_gap :

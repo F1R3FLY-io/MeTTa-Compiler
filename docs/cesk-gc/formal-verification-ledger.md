@@ -369,7 +369,8 @@ capped debug Robot replay after the conditional canary produced the expected fri
 - `formal/rocq/gc/SchedulerActiveFanoutGate.v` and `tla/SchedulerActiveFanoutGate.tla`: compose the production
   rule-match fanout gates on the active direct-dispatch path. A dispatch implies the branch threshold, WFST degree,
   purity/dynamic-eval, depth, active-worker pool, and budget gates; once dispatched, every admitted branch slot is
-  represented. TLC rejects missing-purity, missing-budget, and partial-dispatch variants.
+  represented. The E2E threading proof consumes the standalone purity, budget, and dispatch-slot representation
+  lemmas for active fanout counterexamples. TLC rejects missing-purity, missing-budget, and partial-dispatch variants.
 - `formal/rocq/gc/CollapseFanoutAdmissionCompleteness.v` and
   `tla/CollapseFanoutAdmissionCompleteness.tla`: prove and model-check the matching input-completeness contract for
   `collapse` and `collapse-bind`. The collapse threshold is an admission threshold, not a spawn cap; once admitted,

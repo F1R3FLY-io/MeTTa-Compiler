@@ -852,9 +852,11 @@ capped debug Robot replay after the conditional canary produced the expected fri
 facts the proofs rely on:
 
 - `ROOT_REGISTRY`, `RootProvider`, `frame_chain`, `current_iter_root`, every bridge-period `RootProvider` impl, and
-  every bridge-period root-provider registration function remain slab-only. The index variants of those registration
-  functions are no-ops, and index roots are read through named structural readers or typed live-env/live-dispatch driver
-  channels.
+  every bridge-period root-provider registration function are **physically deleted** (F4 R1–R8 + R-final): the
+  `index-gc` Cargo feature is retired (the index arena store is the only store; there is no cfg split), and the legacy
+  slab GC is gone. The source-coupling gate locks their absence with `assert_zero`. Index roots are read through named
+  structural readers (`collect_machine_roots` ∪ `collect_safepoint_roots`, the `EnvRoots` / `DispatchRoots` traits) or
+  typed live-env / live-dispatch driver channels (`LIVE_DISPATCHES`).
 - `IndexHeap::child_addrs_for_mark` first delegates to `Node::child_addrs` for inline handle fields, then explicitly
   resolves side-arena `SExpr`/`Conjunction` children, then traverses first-class `SpaceHandle` contents. The harness
   also pins the premises that `State` payloads are rooted by `GenericEnvironmentShared::collect_roots_into` and

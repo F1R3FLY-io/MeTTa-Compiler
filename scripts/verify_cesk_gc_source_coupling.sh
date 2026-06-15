@@ -134,31 +134,15 @@ $actual"
   fi
 }
 
-# Phase F3: Cargo feature selection realizes DefaultStoreSelection.v.
-line_no "Cargo.toml" "default = [\"interning\", \"async\", \"symbol-interning\", \"index-gc\"]" >/dev/null
-line_no "Cargo.toml" "index-gc = [\"dep:postcard\"]" >/dev/null
-assert_after_before \
-  "Cargo.toml" \
-  "[features]" \
-  "default = [\"interning\", \"async\", \"symbol-interning\", \"index-gc\"]" \
-  "async = [\"tokio\"]"
-assert_after_before \
-  "Cargo.toml" \
-  "[features]" \
-  "index-gc = [\"dep:postcard\"]" \
-  "trace = [\"dep:postcard\", \"dep:trace-format\"]"
-# F4 R2: the legacy slab feature is decommissioned. index-gc is the only store;
-# the sole compile-time guard rejects a build that drops it.
-assert_after_before \
-  "src/lib.rs" \
-  "#![feature(cfg_sanitize)]" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "compile_error!("
-assert_after_before \
-  "src/lib.rs" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "index-gc is required" \
-  "pub mod backend;"
+# F4 R-final: the index-gc Cargo feature is RETIRED — the index arena store is
+# the only store. DefaultStoreSelection.v remains the abstract witness that index
+# is the default store; the feature must never reappear, and postcard (used
+# unconditionally by cesk/continuation_slice.rs) is now a non-optional dependency.
+assert_zero "Cargo.toml" "index-gc"
+assert_zero "Cargo.toml" "dep:postcard"
+line_no "Cargo.toml" "postcard = { version = \"1\", features = [\"alloc\"] }" >/dev/null
+# The index-gc compile-time guard in lib.rs is removed (no feature to guard).
+assert_zero "src/lib.rs" "compile_error!"
 
 # F4 R8: the slab Store impl (SlabStore) is deleted; the Store trait survives,
 # impl'd only by IndexHeapStore. (SlabAllocator/GcFactory are KEPT — they are
@@ -187,11 +171,7 @@ line_no "scripts/drlock_gate.sh" 'cargo nextest run --release' >/dev/null
 # same hard-error path so conformance cannot silently exercise the wrong store.
 line_no "src/backend/models/mod.rs" "pub fn compiled_gc_store() -> &'static str" >/dev/null
 line_no "src/backend/models/mod.rs" "pub fn assert_gc_request" >/dev/null
-assert_after_before \
-  "src/backend/models/mod.rs" \
-  "pub fn compiled_gc_store() -> &'static str" \
-  "if cfg!(feature = \"index-gc\") {" \
-  "\"slab\""
+# (F4 R-final) compiled_gc_store() is unconditional "index" now (was cfg!-gated).
 assert_after_before \
   "src/backend/models/mod.rs" \
   "pub fn assert_gc_request" \
@@ -202,22 +182,15 @@ assert_after_before \
   "match req.as_str() {" \
   "\"\" | \"auto\" => {}" \
   "r if r == compiled => {}"
-line_no "src/backend/models/mod.rs" "rebuild with default features (index-gc enabled)" >/dev/null
 line_no "src/backend/models/mod.rs" "the slab store has been decommissioned" >/dev/null
 line_no "src/backend/models/mod.rs" "fn the_other_store_is_a_hard_error_with_a_rebuild_hint()" >/dev/null
 line_no "src/backend/models/mod.rs" "fn default_index_rejects_slab_with_decommission_hint()" >/dev/null
-line_no "src/backend/models/mod.rs" "fn legacy_slab_rejects_index_with_default_index_hint()" >/dev/null
 line_no "src/backend/models/mod.rs" "fn unknown_values_are_rejected_with_the_expected_set()" >/dev/null
 assert_after_before \
   "src/backend/models/mod.rs" \
   "fn default_index_rejects_slab_with_decommission_hint()" \
   "the slab store has been decommissioned" \
   "without \`index-gc\`"
-assert_after_before \
-  "src/backend/models/mod.rs" \
-  "fn legacy_slab_rejects_index_with_default_index_hint()" \
-  "rebuild with default features (index-gc enabled)" \
-  "fn unknown_values_are_rejected_with_the_expected_set()"
 
 line_no "scripts/f3_default_store_soak.sh" "F3 default-store soak." >/dev/null
 line_no "scripts/f3_default_store_soak.sh" "cargo build --release --bin mettatron" >/dev/null
@@ -352,13 +325,10 @@ assert_after_before \
   "eval_with_store selected = eval_with_store active."
 line_no "src/backend/models/metta_value.rs" "formal/rocq/gc/RuntimeModeErasure.v" >/dev/null
 line_no "src/backend/bytecode/jit/runtime/value_creation.rs" "formal/rocq/gc/JitValueCreationStoreSelection.v" >/dev/null
-# (F4 R7) The slab value_creation_factory arm + the GcFactory/SlabAllocator
-# import were deleted; only the index arm (active_factory) remains, gated until
-# R-final. JitValueCreationStoreSelection.v (pinned above) is the witness.
-assert_immediate_cfg_before \
-  "src/backend/bytecode/jit/runtime/value_creation.rs" \
-  "unsafe fn value_creation_factory(_ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {" \
-  "#[cfg(feature = \"index-gc\")]"
+# The slab value_creation_factory arm was deleted (F4 R7); the index arm
+# (active_factory) is now unconditional. JitValueCreationStoreSelection.v
+# (pinned above) is the witness.
+line_no "src/backend/bytecode/jit/runtime/value_creation.rs" "unsafe fn value_creation_factory(_ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {" >/dev/null
 line_no "src/backend/bytecode/jit/runtime/value_creation.rs" "crate::backend::models::active_factory()" >/dev/null
 assert_count "src/backend/bytecode/jit/runtime/value_creation.rs" "value_creation_factory(ctx)" "4"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "GcFactory::new(alloc)"
@@ -368,14 +338,9 @@ assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_list_gene
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_quote_generic::<MettaValue, GcFactory>"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "Uses the slab allocator (via GcFactory)"
 line_no "src/backend/bytecode/jit/runtime/type_ops.rs" "formal/rocq/gc/JitTypeOpsStoreSelection.v" >/dev/null
-# (F4 R7) The slab get_type factory arm + the GcFactory/SlabAllocator import
-# were deleted; only the index arm (active_factory) remains, gated until
-# R-final. JitTypeOpsStoreSelection.v (pinned above) is the witness.
-assert_after_before \
-  "src/backend/bytecode/jit/runtime/type_ops.rs" \
-  "pub unsafe extern \"C\" fn jit_runtime_get_type" \
-  "#[cfg(feature = \"index-gc\")]" \
-  "crate::backend::models::active_factory()"
+# The slab get_type factory arm was deleted (F4 R7); the index arm
+# (active_factory) is now unconditional. JitTypeOpsStoreSelection.v
+# (pinned above) is the witness.
 assert_after_before \
   "src/backend/bytecode/jit/runtime/type_ops.rs" \
   "pub unsafe extern \"C\" fn jit_runtime_get_type" \
@@ -475,34 +440,20 @@ assert_after_before \
   "MettaValue::from_inner(&*ptr)" \
   "_ => {"
 line_no "src/backend/bytecode/jit/runtime/state_ops.rs" "formal/rocq/gc/JitPayloadConversionStorePolicy.v" >/dev/null
+# gc_mode_is_index() is unconditionally `true` now (the slab store is gone).
 assert_after_before \
   "src/backend/models/metta_value.rs" \
   "pub(crate) fn gc_mode_is_index() -> bool" \
-  "cfg!(feature = \"index-gc\")" \
+  "true" \
   "}"
-assert_immediate_cfg_before \
-  "src/backend/models/metta_value.rs" \
-  "pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {" \
-  "#[cfg(feature = \"index-gc\")]"
-assert_immediate_cfg_before_after \
-  "src/backend/models/metta_value.rs" \
-  "#[cfg(not(feature = \"index-gc\"))]" \
-  "pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {" \
-  "#[cfg(not(feature = \"index-gc\"))]"
+# as_arena_addr is unconditional now (the slab not-arm was deleted in F4 R1b,
+# the index arm un-gated in R-final).
 assert_zero_between \
   "src/backend/models/metta_value.rs" \
   "pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {" \
   "pub(crate) fn addr_flags(&self) -> usize {" \
   "gc_mode_is_index()"
-assert_immediate_cfg_before \
-  "src/backend/models/metta_value.rs" \
-  "pub fn inner_ptr(&self) -> *const MettaValueInner {" \
-  "#[cfg(feature = \"index-gc\")]"
-assert_immediate_cfg_before_after \
-  "src/backend/models/metta_value.rs" \
-  "(INDEX_KEY_TAG | (self.tagged >> 4)) as *const MettaValueInner" \
-  "pub fn inner_ptr(&self) -> *const MettaValueInner {" \
-  "#[cfg(not(feature = \"index-gc\"))]"
+# inner_ptr is unconditional now (the slab not-arm was deleted, index un-gated).
 assert_zero_between \
   "src/backend/models/metta_value.rs" \
   "pub fn inner_ptr(&self) -> *const MettaValueInner {" \
@@ -530,8 +481,8 @@ line_no "tla/JitLongBoxStoreSelection.tla" "NoSlabFallbackCompiledInIndex" >/dev
 assert_after_before \
   "src/backend/bytecode/jit/types/value.rs" \
   "pub fn from_long(n: i64) -> Self {" \
-  "#[cfg(feature = \"index-gc\")]" \
-  "global_factory().long(n)"
+  "global_factory().long(n)" \
+  "pub const INLINE_LONG_MAX"
 # (F4 R7) The slab from_long fallback (global_allocator().alloc_value) was
 # deleted; only the index arm remains. JitLongBoxStoreSelection.v is the witness.
 assert_zero_between \
@@ -558,15 +509,15 @@ assert_after_before \
   "src/backend/models/mod.rs" \
   "match req.as_str() {" \
   "\"\" | \"auto\" => {}" \
-  "\"slab\" | \"index\" => {"
+  "\"slab\" => {"
 assert_after_before \
   "src/backend/models/mod.rs" \
   "match req.as_str() {" \
   "r if r == compiled => {}" \
-  "\"slab\" | \"index\" => {"
+  "\"slab\" => {"
 assert_after_before \
   "src/backend/models/mod.rs" \
-  "\"slab\" | \"index\" => {" \
+  "\"slab\" => {" \
   "return Err(format!(" \
   "other => {"
 assert_after_before \
@@ -1720,7 +1671,7 @@ assert_count "src/backend/eval/trampoline/eval_loop.rs" "register_live_env(" "2"
 assert_after_before "src/backend/eval/mod.rs" "let _live_env_handle = {" "register_live_env(" "let r = eval_inner(value, env, state);"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "Register THIS worker's branch env" "register_live_env(" "eval_trampoline_with_carrying(branch_expr, env"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "THIS collapse worker's env" "register_live_env(" "eval_trampoline_with_carrying("
-assert_after_before "src/backend/environment/core.rs" "impl crate::backend::models::gc_allocator::EnvRoots for GenericEnvironmentShared<MettaValue>" "self.collect_roots_into(out);" "#[cfg(not(feature = \"index-gc\"))]"
+assert_after_before "src/backend/environment/core.rs" "impl crate::backend::models::gc_allocator::EnvRoots for GenericEnvironmentShared<MettaValue>" "fn collect_env_roots(&self, out: &mut Vec<MettaValue>) {" "self.collect_roots_into(out);"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_env_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_env_roots(out);"
 assert_zero "src/backend/models/gc_allocator.rs" "DEAD until E1-FLIP Path B V4"
 
@@ -1765,8 +1716,8 @@ assert_count "src/backend/eval/trampoline/eval_loop.rs" "_live_dispatch: live_di
 assert_count "src/backend/eval/trampoline/types.rs" "pub(crate) _live_dispatch: Option<crate::backend::models::gc_allocator::LiveDispatchHandle>" "2"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "let live_dispatch = if crate::backend::models::gc_allocator::dedicated_gc_enabled() {" "register_live_dispatch(" "_live_dispatch: live_dispatch,"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "register the collapse fan-out" "register_live_dispatch(" "_live_dispatch: live_dispatch,"
-assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::DispatchRoots for ParallelDispatchRootProvider" "for (value, bindings) in self.branches.iter()" "if let Ok(guard) = self.results.try_lock()"
-assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::DispatchRoots for ParallelCollapseRootProvider" "for (value, bindings) in self.items.iter()" "if let Ok(guard) = self.results.try_lock()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::DispatchRoots for ParallelDispatchRoots" "for (value, bindings) in self.branches.iter()" "if let Ok(guard) = self.results.try_lock()"
+assert_after_before "src/backend/eval/trampoline/types.rs" "impl crate::backend::models::gc_allocator::DispatchRoots for ParallelCollapseRoots" "for (value, bindings) in self.items.iter()" "if let Ok(guard) = self.results.try_lock()"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn collect_live_dispatch_anchors(out: &mut Vec<MettaValue>)" "weak.upgrade()" "strong.collect_dispatch_roots(out);"
 assert_after_before "src/backend/models/gc_allocator.rs" "pub fn snapshot_live_dispatch_witness() -> (Vec<MettaValue>, usize)" "weak.upgrade()" "strong.collect_dispatch_roots(&mut out);"
 
@@ -1836,7 +1787,7 @@ assert_after_before "src/backend/eval/cesk/k_spine.rs" "pub fn collect_k_spine" 
 assert_after_before "src/backend/eval/cesk/k_spine.rs" "pub fn collect_k_spine" "for w in (*work_stack).iter()" "for c in (*continuations).iter()"
 assert_after_before "src/backend/eval/trampoline/types.rs" "#[derive(Debug, Clone)]" "pub enum WorkItem" "impl WorkItem"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "let mut current_work_for_spine: Option<WorkItem> = None;" "current_work: &current_work_for_spine as *const Option<WorkItem>," "while let Some(work) = work_stack.pop()"
-assert_count "src/backend/eval/trampoline/eval_loop.rs" "current_work: &current_work_for_spine as *const Option<WorkItem>," "2"
+assert_count "src/backend/eval/trampoline/eval_loop.rs" "current_work: &current_work_for_spine as *const Option<WorkItem>," "1"
 assert_after_before "src/backend/eval/trampoline/eval_loop.rs" "while let Some(work) = work_stack.pop()" "current_work_for_spine = Some(work.clone());" "if crate::backend::interrupt::is_interrupted()"
 
 assert_after_before "src/backend/eval/cesk/roots.rs" "ThreadContribution::Trampoline {" "out.extend_from_slice(extra);" "collect_machine_roots_live("
@@ -1867,7 +1818,7 @@ assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_root
 assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for frame in self.collapse_bind_frames.iter()" "for bindings in self.per_result_bindings.iter()"
 assert_after_before "src/backend/bytecode/vm/mod.rs" "pub(crate) fn collect_roots_into" "for (_, vs) in self.dispatch_memo.values()" "for entry in self.trail.iter()"
 assert_after_before "src/backend/bytecode/vm/mod.rs" "fn run_cooperative_safepoint" "self.collect_roots_into(&mut buf);" "worker_cooperative_safepoint(&buf_mv);"
-assert_after_before "src/backend/bytecode/vm/mod.rs" "periodic cooperative GC safepoint for parallel-" "cfg!(feature = \"index-gc\")" "self.run_cooperative_safepoint();"
+assert_after_before "src/backend/bytecode/vm/mod.rs" "periodic cooperative GC safepoint for parallel-" "gc_allocator::is_gc_requested() {" "self.run_cooperative_safepoint();"
 assert_after_before "src/backend/eval/cesk/k_spine.rs" "VmLeaf::Vm { vm }" "(*vm).collect_roots_into(out);" "VmLeaf::SavedBindings"
 assert_after_before "src/backend/eval/cesk/k_spine.rs" "ValueVec { values: *const Vec<MettaValue> }" "VmLeaf::ValueVec { values }" "out.extend_from_slice(&*values);"
 assert_after_before "src/backend/eval/cesk/k_spine.rs" "VmLeaf::Jit { ctx }" "collect_jit_roots_into(" "&*ctx, out,"
@@ -2621,10 +2572,9 @@ assert_after_before "src/backend/eval/cesk/gc_driver.rs" "fn close_open_rendezvo
 # (`witness_directory_summary`, itself index-gc-gated) is the E1 liveness diagnosis lever.
 assert_after_before "src/backend/diagnostics.rs" "fn render_gc_state()" "gc_mode_is_index()" "render_index_heap_state(&mut out);"
 assert_after_before "src/backend/diagnostics.rs" "fn render_gc_state()" "render_index_heap_state(&mut out);" "── Slab Pages ──"
-assert_immediate_cfg_before "src/backend/diagnostics.rs" "render_index_heap_state(&mut out);" "#[cfg(feature = \"index-gc\")]"
-assert_immediate_cfg_before "src/backend/diagnostics.rs" "fn render_index_heap_state(out: &mut String) {" "#[cfg(all(unix, feature = \"index-gc\"))]"
+assert_immediate_cfg_before "src/backend/diagnostics.rs" "fn render_index_heap_state(out: &mut String) {" "#[cfg(unix)]"
 assert_after_before "src/backend/diagnostics.rs" "fn render_index_heap_state(out: &mut String) {" "global_index_heap().try_read()" "witness_directory_summary(gen)"
-assert_immediate_cfg_before "src/backend/models/gc_allocator.rs" "pub(crate) fn witness_directory_summary(" "#[cfg(feature = \"index-gc\")]"
+line_no "src/backend/models/gc_allocator.rs" "pub(crate) fn witness_directory_summary(" >/dev/null
 
 # TrampolineFanoutSpineProgress (formal/rocq/gc/TrampolineFanoutSpineProgress.v +
 # tla/TrampolineFanoutSpineProgress.tla) — the PROGRESS/termination companion to the

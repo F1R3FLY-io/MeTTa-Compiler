@@ -1233,6 +1233,8 @@ facts the proofs rely on:
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, active
   direct-fanout without purity or budget gates, partial direct-fanout dispatch,
+  active direct-fanout that bypasses the WFST transducer's zero-cap clamp,
+  maximal-before-cap use of available branches, or branch-parallel class gate,
   missing active-worker roots, missing dispatch roots, missing batch roots, open
   admission across a root snapshot, and unclaimed recurring cron dispatch.  The
   composed cron startup discriminator separately rejects a submitted startup

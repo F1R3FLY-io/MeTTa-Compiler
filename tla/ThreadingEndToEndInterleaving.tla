@@ -41,6 +41,8 @@ CONSTANTS
     ActiveBranchCount,
     ActiveMinBranches,
     ActiveDegree,
+    ActiveCostClass,
+    ActiveMaxParallel,
     ActiveBudgetGranted,
     ActivePure,
     ActiveDepthOk,
@@ -153,6 +155,19 @@ BooleanConstantsOK ==
     /\ ActivePoolOk \in BOOLEAN
     /\ ActivePartialDispatch \in BOOLEAN
 
+Classes ==
+  {"GroundCheap", "GroundArith", "SymbolicCheap", "SymbolicModerate",
+   "RecursiveBounded", "RecursiveUnbounded", "ParallelPure",
+   "ImpureSequential"}
+
+BranchParallel(c) ==
+  c \in {"SymbolicModerate", "ParallelPure"}
+
+DefaultDegree(c) ==
+  CASE c = "SymbolicModerate" -> 4
+    [] c = "ParallelPure" -> 8
+    [] OTHER -> 1
+
 TypeOK ==
     /\ BooleanConstantsOK
     /\ WorkPoolStartupSubmissions \in Nat
@@ -166,6 +181,8 @@ TypeOK ==
     /\ ActiveBranchCount \in Nat
     /\ ActiveMinBranches \in Nat
     /\ ActiveDegree \in Nat
+    /\ ActiveCostClass \in Classes
+    /\ ActiveMaxParallel \in Nat
     /\ ActiveBudgetGranted \in Nat
     /\ phase \in {"init", "scheduled", "running", "done"}
     /\ wave \in [TASKS -> Nat]
@@ -725,6 +742,30 @@ ActiveDegreeGate ==
 ActiveBudgetGate ==
     ActiveBudgetGranted > 0
 
+ActiveSafeCap ==
+    IF ActiveMaxParallel = 0 THEN 1 ELSE ActiveMaxParallel
+
+ActiveTransducerIdealDegree ==
+    IF BranchParallel(ActiveCostClass) /\ ActiveBranchCount > 1 THEN
+      Min(ActiveBranchCount, ActiveSafeCap)
+    ELSE
+      DefaultDegree(ActiveCostClass)
+
+ActiveTransducerDegreeMatches ==
+    DirectFanout => ActiveDegree = ActiveTransducerIdealDegree
+
+ActiveTransducerMaximalBeforeCap ==
+    /\ DirectFanout
+    /\ BranchParallel(ActiveCostClass)
+    /\ ActiveBranchCount > 1
+    /\ ActiveBranchCount <= ActiveSafeCap
+    => ActiveDegree = ActiveBranchCount
+
+ActiveTransducerDefaultGateSound ==
+    /\ DirectFanout
+    /\ ActiveDegree > 1
+    => BranchParallel(ActiveCostClass)
+
 ActiveDispatchedCount ==
     IF DirectFanout THEN
       IF ActivePartialDispatch /\ ActiveBranchCount > 0
@@ -811,6 +852,9 @@ EndToEndSafe ==
     /\ NoSameWaveEffectConflict
     /\ NoDirectFanoutForDependentWork
     /\ ActiveFanoutGateComplete
+    /\ ActiveTransducerDegreeMatches
+    /\ ActiveTransducerMaximalBeforeCap
+    /\ ActiveTransducerDefaultGateSound
     /\ MaximalIndependentParallelism
     /\ NoLiveValueSwept
     /\ NoOverlappingCronDispatch

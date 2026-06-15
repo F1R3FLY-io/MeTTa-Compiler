@@ -11,6 +11,7 @@ From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Arith Lia.
 Require Import CronStartupDelivery.
 Require Import SchedulerActiveFanoutGate.
+Require Import SchedulerTransducerParallelism.
 Require Import WorkPoolLifecycle.
 Require Import WorkPoolOverflowCap.
 Require Import WorkPoolPanicIsolation.
@@ -18,6 +19,7 @@ Require Import WorkPoolStartupDrain.
 
 Import MeTTaTron_GC_CronStartupDelivery.
 Import MeTTaTron_GC_SchedulerActiveFanoutGate.
+Import MeTTaTron_GC_SchedulerTransducerParallelism.
 Import MeTTaTron_GC_WorkPoolLifecycle.
 Import MeTTaTron_GC_WorkPoolPanicIsolation.
 Import MeTTaTron_GC_WorkPoolStartupDrain.
@@ -512,6 +514,8 @@ Section EndToEndModel.
     active_branch_count : nat;
     active_min_branches : nat;
     active_parallelism_degree : nat;
+    active_cost_class : CostClass;
+    active_max_parallel : nat;
     active_budget_granted : nat;
     active_pure : bool;
     active_depth_ok : bool;
@@ -530,16 +534,47 @@ Section EndToEndModel.
       (active_pool_ok c = true) /\
     complete_dispatch (active_branch_count c) (active_dispatched_count c).
 
+  Definition active_transducer_degree_matches (c : ActiveFanoutConfig) : Prop :=
+    active_parallelism_degree c =
+      branch_degree
+        (active_cost_class c)
+        (active_branch_count c)
+        (active_max_parallel c).
+
+  Definition active_transducer_maximal_before_cap
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    branch_parallel_class (active_cost_class c) ->
+    1 < active_branch_count c ->
+    active_branch_count c <= safe_cap (active_max_parallel c) ->
+    active_parallelism_degree c = active_branch_count c.
+
+  Definition active_transducer_default_gate_sound
+      (c : ActiveFanoutConfig)
+      : Prop :=
+    1 < active_parallelism_degree c ->
+    branch_parallel_class (active_cost_class c).
+
+  Definition active_transducer_safe (c : ActiveFanoutConfig) : Prop :=
+    active_transducer_degree_matches c /\
+    active_transducer_maximal_before_cap c /\
+    active_transducer_default_gate_sound c.
+
+  Definition active_fanout_stack_safe (c : ActiveFanoutConfig) : Prop :=
+    active_fanout_gate_safe c /\ active_transducer_safe c.
+
   Definition active_fanout_envelope_safe
       (w : Workload)
       (c : ActiveFanoutConfig)
       : Prop :=
-    uses_direct_fanout w = true -> active_fanout_gate_safe c.
+    uses_direct_fanout w = true -> active_fanout_stack_safe c.
 
   Definition complete_active_fanout : ActiveFanoutConfig :=
     {| active_branch_count := 2;
        active_min_branches := 2;
        active_parallelism_degree := 2;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 2;
        active_budget_granted := 1;
        active_pure := true;
        active_depth_ok := true;
@@ -550,6 +585,8 @@ Section EndToEndModel.
     {| active_branch_count := 2;
        active_min_branches := 2;
        active_parallelism_degree := 2;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 2;
        active_budget_granted := 1;
        active_pure := false;
        active_depth_ok := true;
@@ -560,6 +597,8 @@ Section EndToEndModel.
     {| active_branch_count := 2;
        active_min_branches := 2;
        active_parallelism_degree := 2;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 2;
        active_budget_granted := 0;
        active_pure := true;
        active_depth_ok := true;
@@ -570,11 +609,49 @@ Section EndToEndModel.
     {| active_branch_count := 2;
        active_min_branches := 2;
        active_parallelism_degree := 2;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 2;
        active_budget_granted := 1;
        active_pure := true;
        active_depth_ok := true;
        active_pool_ok := true;
        active_dispatched_count := 1 |}.
+
+  Definition zero_cap_bug_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 4;
+       active_min_branches := 2;
+       active_parallelism_degree := 0;
+       active_cost_class := SymbolicModerate;
+       active_max_parallel := 0;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 4 |}.
+
+  Definition underutilized_transducer_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 4;
+       active_min_branches := 2;
+       active_parallelism_degree := 3;
+       active_cost_class := ParallelPure;
+       active_max_parallel := 8;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 4 |}.
+
+  Definition non_branch_parallel_active_fanout : ActiveFanoutConfig :=
+    {| active_branch_count := 2;
+       active_min_branches := 2;
+       active_parallelism_degree := 2;
+       active_cost_class := GroundCheap;
+       active_max_parallel := 2;
+       active_budget_granted := 1;
+       active_pure := true;
+       active_depth_ok := true;
+       active_pool_ok := true;
+       active_dispatched_count := 2 |}.
 
   Theorem complete_active_fanout_gate_safe :
     active_fanout_gate_safe complete_active_fanout.
@@ -583,6 +660,24 @@ Section EndToEndModel.
       active_fanout_allowed, degree_gate, budget_gate, complete_dispatch.
     simpl.
     repeat split; lia.
+  Qed.
+
+  Theorem complete_active_transducer_safe :
+    active_transducer_safe complete_active_fanout.
+  Proof.
+    unfold active_transducer_safe, active_transducer_degree_matches,
+      active_transducer_maximal_before_cap,
+      active_transducer_default_gate_sound, complete_active_fanout.
+    simpl.
+    repeat split; try reflexivity; intros; exact I.
+  Qed.
+
+  Theorem complete_active_fanout_stack_safe :
+    active_fanout_stack_safe complete_active_fanout.
+  Proof.
+    split.
+    - apply complete_active_fanout_gate_safe.
+    - apply complete_active_transducer_safe.
   Qed.
 
   Theorem missing_purity_active_fanout_exposes_envelope_gap :
@@ -614,6 +709,40 @@ Section EndToEndModel.
     unfold partial_dispatch_active_fanout, complete_dispatch in Hcomplete.
     simpl in Hcomplete.
     discriminate Hcomplete.
+  Qed.
+
+  Theorem zero_cap_bug_active_fanout_exposes_envelope_gap :
+    ~ active_fanout_stack_safe zero_cap_bug_active_fanout.
+  Proof.
+    intros [_ [Hmatches _]].
+    unfold active_transducer_degree_matches, zero_cap_bug_active_fanout in
+      Hmatches.
+    simpl in Hmatches.
+    discriminate Hmatches.
+  Qed.
+
+  Theorem underutilized_transducer_exposes_envelope_gap :
+    ~ active_fanout_stack_safe underutilized_transducer_active_fanout.
+  Proof.
+    intros [_ [_ [Hmaximal _]]].
+    unfold active_transducer_maximal_before_cap,
+      underutilized_transducer_active_fanout in Hmaximal.
+    simpl in Hmaximal.
+    assert (Hbranches : 1 < 4) by lia.
+    assert (Hcap : 4 <= safe_cap 8) by
+      (unfold safe_cap; lia).
+    specialize (Hmaximal I Hbranches Hcap).
+    lia.
+  Qed.
+
+  Theorem non_branch_parallel_class_exposes_envelope_gap :
+    ~ active_fanout_stack_safe non_branch_parallel_active_fanout.
+  Proof.
+    intros [_ [_ [_ Hgate]]].
+    unfold active_transducer_default_gate_sound,
+      non_branch_parallel_active_fanout in Hgate.
+    simpl in Hgate.
+    exact (Hgate ltac:(lia)).
   Qed.
 
   Definition end_to_end_safe
@@ -671,7 +800,7 @@ Section EndToEndModel.
              ++ apply complete_work_pool_envelope_safe.
              ++ unfold active_fanout_envelope_safe.
                 intros _.
-                apply complete_active_fanout_gate_safe.
+                apply complete_active_fanout_stack_safe.
   Qed.
 
   Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :
@@ -1022,7 +1151,128 @@ Section EndToEndModel.
       Hend.
     unfold end_to_end_safe in Hend.
     destruct Hend as [_ [_ [_ [_ [_ Hactive]]]]].
+    destruct (Hactive Hdirect) as [Hgate _].
+    exact (Hunsafe Hgate).
+  Qed.
+
+  Theorem unsafe_active_fanout_stack_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool active_fanout,
+      uses_direct_fanout w = true ->
+      ~ active_fanout_stack_safe active_fanout ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w
+          wave
+          active_worker_live
+          worker_rooted
+          dispatch_live
+          dispatch_rooted
+          batch_live
+          batch_rooted
+          late_worker_live
+          cron_state
+          cron_startup
+          work_pool
+          active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      active_fanout Hdirect Hunsafe Hschedule Hgc Hcron Hstartup Hwork_pool
+      Hend.
+    unfold end_to_end_safe in Hend.
+    destruct Hend as [_ [_ [_ [_ [_ Hactive]]]]].
     exact (Hunsafe (Hactive Hdirect)).
+  Qed.
+
+  Theorem zero_cap_transducer_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool,
+      uses_direct_fanout w = true ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup work_pool
+          zero_cap_bug_active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
+    eapply unsafe_active_fanout_stack_exposes_end_to_end_gap; eauto.
+    apply zero_cap_bug_active_fanout_exposes_envelope_gap.
+  Qed.
+
+  Theorem underutilized_transducer_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool,
+      uses_direct_fanout w = true ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup work_pool
+          underutilized_transducer_active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
+    eapply unsafe_active_fanout_stack_exposes_end_to_end_gap; eauto.
+    apply underutilized_transducer_exposes_envelope_gap.
+  Qed.
+
+  Theorem non_branch_parallel_class_exposes_end_to_end_gap :
+    forall w wave active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live
+      cron_state cron_startup work_pool,
+      uses_direct_fanout w = true ->
+      schedule_envelope_safe w wave ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      cron_no_overlap cron_state ->
+      startup_delivery_safe cron_startup ->
+      work_pool_envelope_safe work_pool ->
+      ~ end_to_end_safe
+          w wave active_worker_live worker_rooted
+          dispatch_live dispatch_rooted batch_live batch_rooted
+          late_worker_live cron_state cron_startup work_pool
+          non_branch_parallel_active_fanout.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live cron_state cron_startup work_pool
+      Hdirect Hschedule Hgc Hcron Hstartup Hwork_pool.
+    eapply unsafe_active_fanout_stack_exposes_end_to_end_gap; eauto.
+    apply non_branch_parallel_class_exposes_envelope_gap.
   Qed.
 
   Theorem missing_purity_active_fanout_exposes_end_to_end_gap :

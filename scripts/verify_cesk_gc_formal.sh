@@ -392,6 +392,12 @@ run_tlc "threading_end_to_end_active_fanout_missing_budget" "ThreadingEndToEndIn
   fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
 run_tlc "threading_end_to_end_active_fanout_partial_dispatch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg" \
   fail "The invariant of ActiveFanoutGateComplete is equal to FALSE"
+run_tlc "threading_end_to_end_active_fanout_zero_cap_bug" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_zero_cap_bug.cfg" \
+  fail "The invariant of ActiveTransducerDegreeMatches is equal to FALSE"
+run_tlc "threading_end_to_end_active_fanout_underutilized" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_underutilized.cfg" \
+  fail "The invariant of ActiveTransducerMaximalBeforeCap is equal to FALSE"
+run_tlc "threading_end_to_end_active_fanout_nonbranch_degree" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_active_fanout_nonbranch_degree.cfg" \
+  fail "The invariant of ActiveTransducerDefaultGateSound is equal to FALSE"
 run_tlc "threading_end_to_end_missing_dependency" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_dependency.cfg" \
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_missing_worker_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg" \

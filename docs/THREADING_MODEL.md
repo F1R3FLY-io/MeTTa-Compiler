@@ -562,6 +562,9 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_purity.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_missing_budget.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_active_fanout_partial_dispatch.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_active_fanout_zero_cap_bug.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_active_fanout_underutilized.cfg`
+- `tla/MC_ThreadingEndToEndInterleaving_active_fanout_nonbranch_degree.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_dependency.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg`
 - `tla/MC_ThreadingEndToEndInterleaving_missing_dispatch_root.cfg`
@@ -579,9 +582,11 @@ The composed end-to-end envelope is modeled by:
 The positive dependency-bearing and independent configs preserve
 `EndToEndSafe`. The negative configs violate it when dependency edges are
 omitted, active direct fanout skips purity/budget/complete-dispatch gates,
-active worker roots are omitted, dispatch or async batch roots are omitted,
-worker admission stays open across the root snapshot, or recurring cron
-dispatch submits without claiming `in_flight`.
+active direct fanout bypasses the WFST transducer's nonzero degree,
+maximal-before-cap, or branch-parallel class gates, active worker roots are
+omitted, dispatch or async batch roots are omitted, worker admission stays open
+across the root snapshot, or recurring cron dispatch submits without claiming
+`in_flight`.
 The composed WorkPool discriminators additionally reject overflow spawning
 that bypasses the live-worker cap, double-unpark accounting that counts one
 parked worker twice, and respawning a parked replacement without incrementing

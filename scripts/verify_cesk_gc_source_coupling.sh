@@ -303,6 +303,17 @@ line_no "tla/JitValueCreationStoreSelection.tla" "FactoryMatchesCompiledStore ==
 line_no "tla/JitValueCreationStoreSelection.tla" "NoSlabFactoryInIndex ==" >/dev/null
 line_no "tla/JitValueCreationStoreSelection.tla" "NoArenaPtrStoreSelectionInIndex ==" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/JitValueCreationStoreSelection.v"' >/dev/null
+line_no "formal/rocq/gc/JitTypeOpsStoreSelection.v" "Require Import DefaultStoreSelection." >/dev/null
+line_no "formal/rocq/gc/JitTypeOpsStoreSelection.v" "Definition cfg_split_type_ops_selection" >/dev/null
+line_no "formal/rocq/gc/JitTypeOpsStoreSelection.v" "Definition unconditional_slab_type_ops_selection" >/dev/null
+line_no "formal/rocq/gc/JitTypeOpsStoreSelection.v" "Theorem cfg_split_type_ops_selection_matches_valid_store" >/dev/null
+line_no "formal/rocq/gc/JitTypeOpsStoreSelection.v" "Theorem emitted_type_ops_slab_factory_requires_slab_store" >/dev/null
+line_no "formal/rocq/gc/JitTypeOpsStoreSelection.v" "Theorem index_get_type_selection_never_uses_runtime_arena_pointer" >/dev/null
+line_no "formal/rocq/gc/JitTypeOpsStoreSelection.v" "Theorem unconditional_slab_type_ops_mismatches_default_index" >/dev/null
+line_no "tla/JitTypeOpsStoreSelection.tla" "GetTypeFactoryMatchesCompiledStore ==" >/dev/null
+line_no "tla/JitTypeOpsStoreSelection.tla" "NoGetTypeSlabFactoryInIndex ==" >/dev/null
+line_no "tla/JitTypeOpsStoreSelection.tla" "NoGetTypeArenaPtrStoreSelectionInIndex ==" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" 'run_rocq "formal/rocq/gc/JitTypeOpsStoreSelection.v"' >/dev/null
 line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Require Import DefaultStoreSelection." >/dev/null
 line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Definition cfg_split_is_function_inspection" >/dev/null
 line_no "formal/rocq/gc/JitIsFunctionPointerDecode.v" "Definition slab_deref_is_function_inspection" >/dev/null
@@ -365,6 +376,33 @@ assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "cons_atom_gene
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_list_generic::<MettaValue, GcFactory>"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "make_quote_generic::<MettaValue, GcFactory>"
 assert_zero "src/backend/bytecode/jit/runtime/value_creation.rs" "Uses the slab allocator (via GcFactory)"
+line_no "src/backend/bytecode/jit/runtime/type_ops.rs" "formal/rocq/gc/JitTypeOpsStoreSelection.v" >/dev/null
+assert_immediate_cfg_before \
+  "src/backend/bytecode/jit/runtime/type_ops.rs" \
+  "use crate::backend::models::{GcFactory, SlabAllocator};" \
+  "#[cfg(not(feature = \"index-gc\"))]"
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/type_ops.rs" \
+  "pub unsafe extern \"C\" fn jit_runtime_get_type" \
+  "#[cfg(not(feature = \"index-gc\"))]" \
+  "GcFactory::new(alloc)"
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/type_ops.rs" \
+  "pub unsafe extern \"C\" fn jit_runtime_get_type" \
+  "GcFactory::new(alloc)" \
+  "#[cfg(feature = \"index-gc\")]"
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/type_ops.rs" \
+  "pub unsafe extern \"C\" fn jit_runtime_get_type" \
+  "#[cfg(feature = \"index-gc\")]" \
+  "crate::backend::models::active_factory()"
+assert_after_before \
+  "src/backend/bytecode/jit/runtime/type_ops.rs" \
+  "pub unsafe extern \"C\" fn jit_runtime_get_type" \
+  "crate::backend::models::active_factory()" \
+  "get_type_generic::<MettaValue, crate::backend::models::ActiveFactory>"
+assert_count "src/backend/bytecode/jit/runtime/type_ops.rs" "GcFactory::new(alloc)" "1"
+assert_zero "src/backend/bytecode/jit/runtime/type_ops.rs" "get_type_generic::<MettaValue, GcFactory>"
 line_no "src/backend/bytecode/jit/runtime/type_ops.rs" "formal/rocq/gc/JitIsFunctionPointerDecode.v" >/dev/null
 assert_after_before \
   "src/backend/bytecode/jit/runtime/type_ops.rs" \
@@ -859,6 +897,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictComplete
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.v" "1"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitTypeOpsStoreSelection.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitIsFunctionPointerDecode.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.v" "1"
@@ -1066,6 +1105,7 @@ assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerEffectConflictComplete
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerActiveFanoutGate.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDirectFanoutWavefrontRefinement.tla" "3"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitValueCreationStoreSelection.tla" "4"
+assert_count "scripts/verify_cesk_gc_formal.sh" "JitTypeOpsStoreSelection.tla" "4"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitLongBoxStoreSelection.tla" "5"
 assert_count "scripts/verify_cesk_gc_formal.sh" "JitIsFunctionPointerDecode.tla" "5"
 assert_count "scripts/verify_cesk_gc_formal.sh" "SchedulerDynamicEvalGate.tla" "2"

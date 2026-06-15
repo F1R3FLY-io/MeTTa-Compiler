@@ -228,6 +228,7 @@ run_rocq "formal/rocq/gc/E1DefaultConcurrentFlip.v"
 run_rocq "formal/rocq/gc/E1SatbStwDriverProgress.v"
 run_rocq "formal/rocq/gc/DefaultStoreSelection.v"
 run_rocq "formal/rocq/gc/JitValueCreationStoreSelection.v"
+run_rocq "formal/rocq/gc/JitTypeOpsStoreSelection.v"
 run_rocq "formal/rocq/gc/JitLongBoxStoreSelection.v"
 run_rocq "formal/rocq/gc/JitIsFunctionPointerDecode.v"
 run_rocq "formal/rocq/gc/ArenaAddrDecodeErasure.v"
@@ -309,6 +310,14 @@ run_tlc "jit_value_creation_index_slab_bug" "JitValueCreationStoreSelection.tla"
 run_tlc "jit_value_creation_index_arena_bug" "JitValueCreationStoreSelection.tla" "MC_JitValueCreationStoreSelection_index_arena_bug.cfg" \
   fail "The invariant of NoArenaPtrStoreSelectionInIndex is equal to FALSE"
 run_tlc "jit_value_creation_legacy_slab_correct" "JitValueCreationStoreSelection.tla" "MC_JitValueCreationStoreSelection_legacy_slab_correct.cfg" \
+  pass ""
+run_tlc "jit_type_ops_index_correct" "JitTypeOpsStoreSelection.tla" "MC_JitTypeOpsStoreSelection_index_correct.cfg" \
+  pass ""
+run_tlc "jit_type_ops_index_slab_bug" "JitTypeOpsStoreSelection.tla" "MC_JitTypeOpsStoreSelection_index_slab_bug.cfg" \
+  fail "The invariant of GetTypeFactoryMatchesCompiledStore is equal to FALSE"
+run_tlc "jit_type_ops_index_arena_bug" "JitTypeOpsStoreSelection.tla" "MC_JitTypeOpsStoreSelection_index_arena_bug.cfg" \
+  fail "The invariant of NoGetTypeArenaPtrStoreSelectionInIndex is equal to FALSE"
+run_tlc "jit_type_ops_legacy_slab_correct" "JitTypeOpsStoreSelection.tla" "MC_JitTypeOpsStoreSelection_legacy_slab_correct.cfg" \
   pass ""
 run_tlc "jit_long_box_index_overflow_correct" "JitLongBoxStoreSelection.tla" "MC_JitLongBoxStoreSelection_index_overflow_correct.cfg" \
   pass ""

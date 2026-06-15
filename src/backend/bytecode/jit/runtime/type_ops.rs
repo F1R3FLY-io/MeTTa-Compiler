@@ -17,6 +17,8 @@ use crate::backend::bytecode::jit::types::{
 use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueInner, MettaValueTrait};
 // `GcFactory`/`SlabAllocator` are only used by the slab factory construction in
 // `jit_runtime_get_type`, which is compiled out under `--features index-gc`.
+// The store-selection obligation is modeled in
+// formal/rocq/gc/JitTypeOpsStoreSelection.v.
 #[cfg(not(feature = "index-gc"))]
 use crate::backend::models::{GcFactory, SlabAllocator};
 

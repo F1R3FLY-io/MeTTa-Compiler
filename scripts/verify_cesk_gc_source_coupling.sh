@@ -870,6 +870,14 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerWavefrontPara
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerEffectConflictCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerClassificationLookup" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "E1DefaultConcurrentFlip" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CESKCollectorSafety" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Module Collector :=" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "gc_window_safe_exports_boundary_driver_roots" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_implies_gc_window_safe" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "end_to_end_safe_feeds_cesk_index_gc_safety" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.end_to_end_cesk_index_gc_safety" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.ConcurrentFreshOnly" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "Collector.PublishedSlotReady" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerDirectFanoutWavefrontRefinement" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "SchedulerFanoutAdmissionCompleteness" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "CollapseFanoutAdmissionCompleteness" >/dev/null

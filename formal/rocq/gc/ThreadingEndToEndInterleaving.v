@@ -13,6 +13,7 @@ From Stdlib Require Import Arith Lia.
 From Stdlib Require Import ZArith.
 Require Import CronRecurringDispatch.
 Require Import CronStartupDelivery.
+Require Import CESKCollectorSafety.
 Require Import CollapseFanoutAdmissionCompleteness.
 Require Import E1DefaultConcurrentFlip.
 Require Import SchedulerActiveFanoutGate.
@@ -59,6 +60,8 @@ Module CollapseAdmission :=
   MeTTaTron_GC_CollapseFanoutAdmissionCompleteness.
 Module Classification :=
   MeTTaTron_GC_SchedulerClassificationLookup.
+Module Collector :=
+  MeTTaTron_GC_CESKCollectorSafety.
 Module E1Default :=
   MeTTaTron_GC_E1DefaultConcurrentFlip.
 Module Wavefront :=
@@ -920,6 +923,37 @@ Section EndToEndModel.
     - intros addr Hfreed Hmarked.
       destruct Hfreed as [_ Hnot_driver].
       exact (Hnot_driver Hmarked).
+  Qed.
+
+  Theorem gc_window_safe_exports_boundary_driver_roots :
+    forall active_worker_live worker_rooted
+      dispatch_live dispatch_rooted batch_live batch_rooted late_worker_live,
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live ->
+      (forall addr,
+        boundary_root active_worker_live BoundaryActiveWorker addr ->
+        boundary_driver_root worker_rooted dispatch_rooted batch_rooted addr) /\
+      (forall addr,
+        boundary_root dispatch_live BoundaryDispatchFanout addr ->
+        boundary_driver_root worker_rooted dispatch_rooted batch_rooted addr) /\
+      (forall addr,
+        boundary_root batch_live BoundaryBatchHandoff addr ->
+        boundary_driver_root worker_rooted dispatch_rooted batch_rooted addr) /\
+      (forall addr,
+        boundary_root late_worker_live BoundaryNewAdmission addr ->
+        False).
+  Proof.
+    intros [] [] [] [] [] [] [] Hsafe;
+      unfold gc_window_safe, sweep_frees_live_value in Hsafe;
+      simpl in Hsafe; try discriminate Hsafe;
+      repeat split;
+      intros addr Hroot;
+      unfold boundary_driver_root, boundary_root in *;
+      destruct Hroot as [Hlive ->]; try discriminate Hlive;
+      auto.
   Qed.
 
   Theorem missing_active_worker_boundary_root_exposes_gap :
@@ -2490,6 +2524,158 @@ Section EndToEndModel.
       late_worker_live /\
     classification_lookup_safe classification_lookup /\
     e1_default_flip_safe e1_default_flip.
+
+  Theorem end_to_end_safe_implies_gc_window_safe :
+    forall w wave
+      active_worker_live worker_rooted
+      dispatch_live dispatch_rooted
+      batch_live batch_rooted
+      late_worker_live
+      spawn_latch cron_state cron_startup work_pool active_fanout
+      fanout_progress classification_lookup e1_default_flip,
+      end_to_end_safe
+        w wave
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live
+        spawn_latch cron_state cron_startup work_pool active_fanout
+        fanout_progress classification_lookup e1_default_flip ->
+      gc_window_safe
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live.
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live dispatch_rooted
+      batch_live batch_rooted late_worker_live spawn_latch cron_state
+      cron_startup work_pool active_fanout fanout_progress
+      classification_lookup e1_default_flip Hend.
+    unfold end_to_end_safe in Hend.
+    exact (proj1 (proj2 Hend)).
+  Qed.
+
+  Theorem end_to_end_safe_feeds_cesk_index_gc_safety :
+    forall w wave
+      active_worker_live worker_rooted
+      dispatch_live dispatch_rooted
+      batch_live batch_rooted
+      late_worker_live
+      spawn_latch cron_state cron_startup work_pool active_fanout
+      fanout_progress classification_lookup e1_default_flip
+      (StructuralRoot WorkerRoot SafepointRoot EnvAnchor DispatchAnchor
+       InitialRoot ShadedDeletion AllocateBlack PublishedAlloc SegmentWritten
+       SegmentPublished SlotWritten SlotPublished AddrReturned ReadObserved
+       ConcurrentReturned ReuseReturned Fresh OnFreeList Marked Freed
+       FutureTouch : BoundaryAddr -> Prop)
+      (InlineEdge SideEdge SpaceEdge ReaderEdge SatbEdge :
+        BoundaryAddr -> BoundaryAddr -> Prop),
+      end_to_end_safe
+        w wave
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live
+        spawn_latch cron_state cron_startup work_pool active_fanout
+        fanout_progress classification_lookup e1_default_flip ->
+      (forall a,
+          FutureTouch a ->
+          @Collector.Reach BoundaryAddr
+            (@Collector.CollectorRoot BoundaryAddr StructuralRoot
+              (boundary_driver_root worker_rooted dispatch_rooted batch_rooted))
+            (@Collector.SemanticNodeEdge BoundaryAddr InlineEdge SideEdge
+              SpaceEdge) a \/
+          @Collector.DriverRootUnion BoundaryAddr WorkerRoot SafepointRoot EnvAnchor
+            DispatchAnchor a \/
+          @Collector.SchedulerLiveRoot BoundaryAddr
+            (boundary_root active_worker_live BoundaryActiveWorker)
+            (boundary_root dispatch_live BoundaryDispatchFanout)
+            (boundary_root batch_live BoundaryBatchHandoff)
+            (boundary_root late_worker_live BoundaryNewAdmission) a \/
+          @Collector.Reach BoundaryAddr
+            (@Collector.ConcurrentCollectorRoot BoundaryAddr InitialRoot
+              (boundary_driver_root worker_rooted dispatch_rooted batch_rooted)
+              ShadedDeletion AllocateBlack)
+            SatbEdge a \/
+          PublishedAlloc a) ->
+      (forall a,
+          @Collector.CollectorRoot BoundaryAddr StructuralRoot
+            (boundary_driver_root worker_rooted dispatch_rooted batch_rooted)
+            a ->
+          Marked a) ->
+      (forall parent child,
+          Marked parent -> ReaderEdge parent child -> Marked child) ->
+      (forall parent child, InlineEdge parent child -> ReaderEdge parent child) ->
+      (forall parent child, SideEdge parent child -> ReaderEdge parent child) ->
+      (forall parent child, SpaceEdge parent child -> ReaderEdge parent child) ->
+      (forall a, Freed a -> ~ Marked a) ->
+      (forall a,
+          WorkerRoot a ->
+          boundary_driver_root worker_rooted dispatch_rooted batch_rooted a) ->
+      (forall a,
+          SafepointRoot a ->
+          boundary_driver_root worker_rooted dispatch_rooted batch_rooted a) ->
+      (forall a,
+          EnvAnchor a ->
+          boundary_driver_root worker_rooted dispatch_rooted batch_rooted a) ->
+      (forall a,
+          DispatchAnchor a ->
+          boundary_driver_root worker_rooted dispatch_rooted batch_rooted a) ->
+      (forall a,
+          @Collector.Reach BoundaryAddr
+            (@Collector.ConcurrentCollectorRoot BoundaryAddr InitialRoot
+              (boundary_driver_root worker_rooted dispatch_rooted batch_rooted)
+              ShadedDeletion AllocateBlack)
+            SatbEdge a ->
+          Marked a) ->
+      (forall a, PublishedAlloc a -> AllocateBlack a) ->
+      (forall a, ReadObserved a -> AddrReturned a) ->
+      (forall a, AddrReturned a -> SlotPublished a) ->
+      (forall a, SlotPublished a -> SlotWritten a) ->
+      (forall a, SlotPublished a -> SegmentPublished a) ->
+      (forall a, SegmentPublished a -> SegmentWritten a) ->
+      @Collector.ConcurrentFreshOnly BoundaryAddr ConcurrentReturned Fresh ->
+      @Collector.FreeListSeparated BoundaryAddr Fresh OnFreeList ->
+      (forall a, ReuseReturned a -> OnFreeList a) ->
+      (forall a, FutureTouch a -> ~ Freed a) /\
+      (forall a,
+          ReadObserved a ->
+          @Collector.PublishedSlotReady BoundaryAddr SegmentWritten SegmentPublished
+            SlotWritten SlotPublished AddrReturned a) /\
+      (forall a, ConcurrentReturned a -> ~ ReuseReturned a).
+  Proof.
+    intros w wave active_worker_live worker_rooted dispatch_live
+      dispatch_rooted batch_live batch_rooted late_worker_live spawn_latch
+      cron_state cron_startup work_pool active_fanout fanout_progress
+      classification_lookup e1_default_flip StructuralRoot WorkerRoot
+      SafepointRoot EnvAnchor DispatchAnchor InitialRoot ShadedDeletion
+      AllocateBlack PublishedAlloc SegmentWritten SegmentPublished SlotWritten
+      SlotPublished AddrReturned ReadObserved ConcurrentReturned ReuseReturned
+      Fresh OnFreeList Marked Freed FutureTouch InlineEdge SideEdge SpaceEdge
+      ReaderEdge SatbEdge Hend Hfuture_shape Hcollector_root_marked
+      Hreader_closed Hinline Hside Hspace Hsweep Hworker Hsafepoint Henv
+      Hdispatch Hsatb_mark Hpublished_black Hread Hreturned Hslot_written
+      Hslot_segment Hsegment_written Hfresh Hseparated Hreuse_on_free.
+    pose proof
+      (end_to_end_safe_implies_gc_window_safe
+        w wave
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live
+        spawn_latch cron_state cron_startup work_pool active_fanout
+        fanout_progress classification_lookup e1_default_flip Hend)
+      as Hgc_window.
+    destruct
+      (gc_window_safe_exports_boundary_driver_roots
+        active_worker_live worker_rooted
+        dispatch_live dispatch_rooted
+        batch_live batch_rooted
+        late_worker_live Hgc_window)
+      as [Hactive [Hfanout [Hbatch Hadmission_closed]]].
+    eapply (@Collector.end_to_end_cesk_index_gc_safety BoundaryAddr);
+      eauto.
+  Qed.
 
   Theorem checked_threading_envelope_is_end_to_end_safe :
     forall w wave active_worker_live,

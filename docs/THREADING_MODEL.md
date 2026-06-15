@@ -657,6 +657,14 @@ parked worker twice, respawning a parked replacement without incrementing
 the aggregate active count, and stale priority dequeue that skips pop-time
 age recomputation and therefore pops newer high-priority work before an aged
 older task.
+
+The Rocq envelope also bridges the threading boundary into
+`CESKCollectorSafety.v`: `end_to_end_safe_feeds_cesk_index_gc_safety` extracts
+the `gc_window_safe` scheduler-root premises from `EndToEndSafe` and applies
+the CESK collector capstone. That composition carries the threading proof into
+future-touch no-UAF, published-slot readiness, and concurrent-allocation versus
+exclusive-reuse disjointness. This is a proof composition over existing
+collector premises, so it does not add a new TLA state-machine surface.
 - `formal/rocq/gc/SchedulerSpawnLatch.v`
 - `tla/SchedulerSpawnLatch.tla`
 - `tla/MC_SchedulerSpawnLatch_all.cfg`

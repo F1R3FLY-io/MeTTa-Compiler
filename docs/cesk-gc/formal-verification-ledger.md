@@ -1246,6 +1246,13 @@ facts the proofs rely on:
   accounting, parked-worker resume, worker completion-drop accounting, the
   GC-facing scheduler root/admission boundary, and the E1 dedicated default-flip
   request/backstop boundary are part of the same end-to-end proof boundary.
+  The Rocq envelope now also imports `CESKCollectorSafety.v` and proves
+  `end_to_end_safe_feeds_cesk_index_gc_safety`: from `EndToEndSafe` it extracts
+  the `gc_window_safe` scheduler-root premises, feeds them into
+  `end_to_end_cesk_index_gc_safety`, and carries the threading proof through to
+  future-touch no-UAF, published-slot readiness, and concurrent-allocation versus
+  exclusive-reuse disjointness. This bridge composes existing Rocq capstones and
+  adds no new TLA state-machine surface.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, active
   direct-fanout without purity or budget gates, partial direct-fanout dispatch,

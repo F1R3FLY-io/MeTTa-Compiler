@@ -447,58 +447,6 @@ mod tests {
         assert_eq!(ctx.resume_ip, 10);
     }
 
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_collect_native_gathers_results() {
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 8];
-        let mut results: Vec<JitValue> = vec![JitValue::unit(); 16];
-
-        let mut ctx = unsafe {
-            JitContext::with_nondet(
-                stack.as_mut_ptr(),
-                stack.len(),
-                std::ptr::null(),
-                0,
-                choice_points.as_mut_ptr(),
-                choice_points.len(),
-                results.as_mut_ptr(),
-                results.len(),
-            )
-        };
-
-        // Store some results manually
-        unsafe {
-            *ctx.results.add(0) = JitValue::from_long(1);
-            *ctx.results.add(1) = JitValue::from_long(2);
-            *ctx.results.add(2) = JitValue::from_long(3);
-        }
-        ctx.results_count = 3;
-
-        // Collect results
-        let result = unsafe { jit_runtime_collect_native(&mut ctx) };
-
-        // Should return a heap pointer
-        let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_PTR);
-
-        // Results should be cleared
-        assert_eq!(ctx.results_count, 0);
-
-        // Verify the SExpr contents
-        let ptr = (result & PAYLOAD_MASK) as *const MettaValueInner;
-        let metta_val = unsafe { MettaValue::from_inner(&*ptr) };
-        if let MettaValueInner::SExpr(items) = metta_val.inner() {
-            assert_eq!(items.len(), 3);
-            assert_eq!(items[0], MettaValue::Long(1));
-            assert_eq!(items[1], MettaValue::Long(2));
-            assert_eq!(items[2], MettaValue::Long(3));
-        } else {
-            panic!("Expected SExpr");
-        }
-    }
-
     #[test]
     fn test_has_alternatives() {
         let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
@@ -746,247 +694,6 @@ mod tests {
     // 2. Yield stores results for each alternative
     // 3. Collect gathers all results into an S-expression
     // =========================================================================
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_fork_yield_collect_full_cycle() {
-        // Create context with nondeterminism support
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 32];
-        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 16];
-        let mut results: Vec<JitValue> = vec![JitValue::unit(); 32];
-        let mut saved_stack: Vec<JitValue> = vec![JitValue::unit(); 32];
-
-        let mut ctx = unsafe {
-            JitContext::with_nondet(
-                stack.as_mut_ptr(),
-                stack.len(),
-                std::ptr::null(),
-                0,
-                choice_points.as_mut_ptr(),
-                choice_points.len(),
-                results.as_mut_ptr(),
-                results.len(),
-            )
-        };
-        ctx.saved_stack = saved_stack.as_mut_ptr();
-        ctx.saved_stack_cap = saved_stack.len();
-
-        // =====================================================================
-        // Phase 1: Fork - Create choice point with 3 alternatives (1, 2, 3)
-        // =====================================================================
-        let alternatives = vec![
-            JitAlternative::value(JitValue::from_long(1)),
-            JitAlternative::value(JitValue::from_long(2)),
-            JitAlternative::value(JitValue::from_long(3)),
-        ];
-        let alts_ptr = Box::leak(alternatives.into_boxed_slice()).as_ptr();
-
-        // Push the fork choice point
-        unsafe {
-            jit_runtime_push_choice_point(&mut ctx, 3, alts_ptr, 0, std::ptr::null());
-        }
-
-        // Verify choice point was created
-        assert_eq!(ctx.choice_point_count, 1);
-        let has_alts = unsafe { jit_runtime_has_alternatives(&ctx) };
-        assert_eq!(has_alts, 1);
-
-        // =====================================================================
-        // Phase 2: Process each alternative and Yield results
-        // =====================================================================
-        // Simulate the evaluation loop:
-        // - Get next alternative via fail_native
-        // - Yield the result
-        // - Repeat until no more alternatives
-
-        // Process alternative 1
-        let alt1 = unsafe { jit_runtime_fail_native(&mut ctx) };
-        let val1 = JitValue::from_raw(alt1);
-        assert_eq!(val1.as_long(), 1);
-
-        // Yield alternative 1
-        let signal1 = unsafe { jit_runtime_yield_native(&mut ctx, val1.to_bits(), 0) };
-        assert_eq!(signal1, JIT_SIGNAL_YIELD);
-        assert_eq!(ctx.results_count, 1);
-
-        // Process alternative 2
-        let alt2 = unsafe { jit_runtime_fail_native(&mut ctx) };
-        let val2 = JitValue::from_raw(alt2);
-        assert_eq!(val2.as_long(), 2);
-
-        // Yield alternative 2
-        let signal2 = unsafe { jit_runtime_yield_native(&mut ctx, val2.to_bits(), 0) };
-        assert_eq!(signal2, JIT_SIGNAL_YIELD);
-        assert_eq!(ctx.results_count, 2);
-
-        // Process alternative 3
-        let alt3 = unsafe { jit_runtime_fail_native(&mut ctx) };
-        let val3 = JitValue::from_raw(alt3);
-        assert_eq!(val3.as_long(), 3);
-
-        // Yield alternative 3
-        let signal3 = unsafe { jit_runtime_yield_native(&mut ctx, val3.to_bits(), 0) };
-        assert_eq!(signal3, JIT_SIGNAL_YIELD);
-        assert_eq!(ctx.results_count, 3);
-
-        // No more alternatives - fail_native returns FAIL signal
-        let alt4 = unsafe { jit_runtime_fail_native(&mut ctx) };
-        assert_eq!(alt4, JIT_SIGNAL_FAIL as u64);
-        assert_eq!(ctx.choice_point_count, 0);
-
-        // =====================================================================
-        // Phase 3: Collect all yielded results
-        // =====================================================================
-        let collected_raw = unsafe { jit_runtime_collect_native(&mut ctx) };
-
-        // Verify it's a heap pointer (TAG_PTR)
-        let tag = collected_raw & TAG_MASK;
-        assert_eq!(tag, TAG_PTR);
-
-        // Results should be cleared after collection
-        assert_eq!(ctx.results_count, 0);
-
-        // =====================================================================
-        // Phase 4: Verify the collected S-expression
-        // =====================================================================
-        let ptr = (collected_raw & PAYLOAD_MASK) as *const MettaValueInner;
-        let metta_val = unsafe { MettaValue::from_inner(&*ptr) };
-
-        if let MettaValueInner::SExpr(items) = metta_val.inner() {
-            assert_eq!(items.len(), 3, "Expected 3 collected results");
-            assert_eq!(items[0], MettaValue::Long(1), "First result should be 1");
-            assert_eq!(items[1], MettaValue::Long(2), "Second result should be 2");
-            assert_eq!(items[2], MettaValue::Long(3), "Third result should be 3");
-        } else {
-            panic!("Expected SExpr, got {:?}", metta_val);
-        }
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_nested_fork_yield_collect() {
-        // Test nested Fork/Yield/Collect with two levels of nondeterminism
-        // Outer fork: alternatives A, B
-        // For each outer, inner fork: alternatives 1, 2
-        // Expected results: (A 1), (A 2), (B 1), (B 2)
-
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 64];
-        let mut choice_points: Vec<JitChoicePoint> = vec![JitChoicePoint::default(); 16];
-        let mut results: Vec<JitValue> = vec![JitValue::unit(); 64];
-        let mut saved_stack: Vec<JitValue> = vec![JitValue::unit(); 64];
-
-        let mut ctx = unsafe {
-            JitContext::with_nondet(
-                stack.as_mut_ptr(),
-                stack.len(),
-                std::ptr::null(),
-                0,
-                choice_points.as_mut_ptr(),
-                choice_points.len(),
-                results.as_mut_ptr(),
-                results.len(),
-            )
-        };
-        ctx.saved_stack = saved_stack.as_mut_ptr();
-        ctx.saved_stack_cap = saved_stack.len();
-
-        // Create slab-allocated MettaValues for atoms
-        let atom_a = MettaValue::Atom("A".to_string());
-        let atom_b = MettaValue::Atom("B".to_string());
-
-        // Outer fork: A, B
-        let outer_alts = vec![
-            JitAlternative::value(JitValue::from_inner_ptr(atom_a.inner_ptr())),
-            JitAlternative::value(JitValue::from_inner_ptr(atom_b.inner_ptr())),
-        ];
-        let outer_ptr = Box::leak(outer_alts.into_boxed_slice()).as_ptr();
-
-        unsafe {
-            jit_runtime_push_choice_point(&mut ctx, 2, outer_ptr, 0, std::ptr::null());
-        }
-        assert_eq!(ctx.choice_point_count, 1);
-
-        let mut collected_pairs: Vec<(String, i64)> = Vec::new();
-
-        // Process outer alternatives
-        for outer_idx in 0..2 {
-            // Get outer alternative
-            let outer_val_raw = unsafe { jit_runtime_fail_native(&mut ctx) };
-            if outer_val_raw == JIT_SIGNAL_FAIL as u64 {
-                break;
-            }
-            let outer_val = JitValue::from_raw(outer_val_raw);
-
-            // Extract atom name (to_metta() returns MettaValue directly)
-            let metta = unsafe { outer_val.to_metta() };
-            let outer_name = if let MettaValueInner::Atom(name) = metta.inner() {
-                name.to_string()
-            } else {
-                panic!("Expected Atom for outer, got {:?}", metta);
-            };
-
-            // Inner fork: 1, 2
-            let inner_alts = vec![
-                JitAlternative::value(JitValue::from_long(1)),
-                JitAlternative::value(JitValue::from_long(2)),
-            ];
-            let inner_ptr = Box::leak(inner_alts.into_boxed_slice()).as_ptr();
-
-            unsafe {
-                jit_runtime_push_choice_point(&mut ctx, 2, inner_ptr, 0, std::ptr::null());
-            }
-
-            // Process inner alternatives
-            for _inner_idx in 0..2 {
-                let inner_val_raw = unsafe { jit_runtime_fail_native(&mut ctx) };
-                if inner_val_raw == JIT_SIGNAL_FAIL as u64 {
-                    break;
-                }
-                let inner_val = JitValue::from_raw(inner_val_raw);
-                let inner_num = inner_val.as_long();
-
-                // Record the pair
-                collected_pairs.push((outer_name.clone(), inner_num));
-
-                // Yield combined result (as a simple encoding: outer_idx * 10 + inner_num)
-                let combined = JitValue::from_long(outer_idx as i64 * 10 + inner_num);
-                unsafe {
-                    jit_runtime_yield_native(&mut ctx, combined.to_bits(), 0);
-                }
-            }
-        }
-
-        // Verify we collected all 4 combinations
-        assert_eq!(collected_pairs.len(), 4);
-        assert!(collected_pairs.contains(&("A".to_string(), 1)));
-        assert!(collected_pairs.contains(&("A".to_string(), 2)));
-        assert!(collected_pairs.contains(&("B".to_string(), 1)));
-        assert!(collected_pairs.contains(&("B".to_string(), 2)));
-
-        // Verify results were yielded
-        assert_eq!(ctx.results_count, 4);
-
-        // Collect all results
-        let collected_raw = unsafe { jit_runtime_collect_native(&mut ctx) };
-        let tag = collected_raw & TAG_MASK;
-        assert_eq!(tag, TAG_PTR);
-
-        let ptr = (collected_raw & PAYLOAD_MASK) as *const MettaValueInner;
-        let metta_val = unsafe { MettaValue::from_inner(&*ptr) };
-
-        if let MettaValueInner::SExpr(items) = metta_val.inner() {
-            assert_eq!(items.len(), 4, "Expected 4 collected results");
-            // Results should be: 1 (A,1), 2 (A,2), 11 (B,1), 12 (B,2)
-            assert_eq!(items[0], MettaValue::Long(1)); // A*10 + 1 = 0*10 + 1 = 1
-            assert_eq!(items[1], MettaValue::Long(2)); // A*10 + 2 = 0*10 + 2 = 2
-            assert_eq!(items[2], MettaValue::Long(11)); // B*10 + 1 = 1*10 + 1 = 11
-            assert_eq!(items[3], MettaValue::Long(12)); // B*10 + 2 = 1*10 + 2 = 12
-        } else {
-            panic!("Expected SExpr, got {:?}", metta_val);
-        }
-    }
 
     #[test]
     fn test_fork_with_early_cut() {
@@ -1273,37 +980,6 @@ mod tests {
         assert!(neg.is_long());
     }
 
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_value_max_long() {
-        // Z.A.2 (2026-05-12): JitValue::from_long routes out-of-range
-        // values to the slab-allocated heap path tagged TAG_PTR, so
-        // `is_long()` (which checks TAG_LONG) returns false. The full
-        // i64::MAX is preserved via the MettaValueInner::Long round-trip.
-        let max = JitValue::from_long(i64::MAX);
-        assert!(
-            !max.is_long(),
-            "i64::MAX should be heap-allocated, not inline"
-        );
-        let metta = unsafe { max.to_metta() };
-        assert_eq!(metta.as_long(), Some(i64::MAX));
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_value_min_long() {
-        // Z.A.2: see test_jit_value_max_long for rationale.
-        let min = JitValue::from_long(i64::MIN);
-        assert!(
-            !min.is_long(),
-            "i64::MIN should be heap-allocated, not inline"
-        );
-        let metta = unsafe { min.to_metta() };
-        assert_eq!(metta.as_long(), Some(i64::MIN));
-    }
-
     #[test]
     fn test_jit_value_inline_long_max_in_range() {
         // 2^47 - 1 stays inline.
@@ -1517,22 +1193,6 @@ mod tests {
             unsafe { jit_runtime_eval_if(std::ptr::null_mut(), condition, then_val, else_val, 0) };
         let jv = JitValue::from_raw(result);
         assert_eq!(jv.as_long(), 99); // Conservative fallback: else_val
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_eval_quote() {
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx =
-            unsafe { JitContext::new(stack.as_mut_ptr(), stack.len(), std::ptr::null(), 0) };
-
-        let expr = JitValue::from_long(42).to_bits();
-        let result = unsafe { jit_runtime_eval_quote(&mut ctx, expr, 0) };
-
-        // Quote should wrap the value
-        let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_PTR); // Quote creates a heap-allocated Quote value
     }
 
     #[test]
@@ -2596,29 +2256,6 @@ mod tests {
         assert_eq!(tag, TAG_PTR);
     }
 
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_get_type_sexpr() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let sexpr = MettaValue::SExpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
-        let sexpr_jit = metta_to_jit(&sexpr);
-
-        let result = unsafe { jit_runtime_get_type(&mut ctx, sexpr_jit.to_bits(), 0) };
-        let tag = result & TAG_MASK;
-        assert_eq!(tag, TAG_PTR);
-    }
-
     #[test]
     fn test_jit_get_type_variable() {
         let constants: Vec<MettaValue> = vec![];
@@ -2704,31 +2341,6 @@ mod tests {
         let jv = JitValue::from_raw(result);
         assert!(jv.is_bool());
         // Type variables match anything, should return true
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_assert_type_pass() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let val = JitValue::from_long(42).to_bits();
-        let type_atom = metta_to_jit(&MettaValue::sym("Number"));
-
-        let result = unsafe { jit_runtime_assert_type(&mut ctx, val, type_atom.to_bits(), 0) };
-
-        // Should return the original value
-        assert_eq!(result, val);
-        assert!(!ctx.bailout);
     }
 
     #[test]
@@ -2906,35 +2518,6 @@ mod tests {
 
         let result = unsafe { jit_runtime_eval_chain(&mut ctx, first, second, 0) };
         assert_eq!(result, second);
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_eval_quote_wraps_value() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let expr = metta_to_jit(&MettaValue::sym("foo")).to_bits();
-        let result = unsafe { jit_runtime_eval_quote(&mut ctx, expr, 0) };
-
-        // Should wrap in a quote
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::SExpr(elems) = metta.inner() {
-            assert_eq!(elems.len(), 2);
-            if let MettaValueInner::Atom(s) = elems[0].inner() {
-                assert_eq!(*s, "quote");
-            }
-        }
     }
 
     #[test]
@@ -3617,160 +3200,6 @@ mod tests {
         }
     }
 
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_make_sexpr_single_4c() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let values = [JitValue::from_long(42).to_bits()];
-        let result = unsafe { jit_runtime_make_sexpr(&mut ctx, values.as_ptr(), 1, 0) };
-
-        // Returns S-expression with one element
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::SExpr(elems) = metta.inner() {
-            assert_eq!(elems.len(), 1);
-            if let MettaValueInner::Long(n) = elems[0].inner() {
-                assert_eq!(*n, 42);
-            }
-        }
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_make_sexpr_multiple_4c() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let values = [
-            metta_to_jit(&MettaValue::sym("+")).to_bits(),
-            JitValue::from_long(1).to_bits(),
-            JitValue::from_long(2).to_bits(),
-        ];
-        let result = unsafe { jit_runtime_make_sexpr(&mut ctx, values.as_ptr(), 3, 0) };
-
-        // Returns S-expression with three elements
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::SExpr(elems) = metta.inner() {
-            assert_eq!(elems.len(), 3);
-        }
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_cons_atom_to_sexpr_4c() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let head = JitValue::from_long(1).to_bits();
-        let tail = metta_to_jit(&MettaValue::SExpr(vec![
-            MettaValue::Long(2),
-            MettaValue::Long(3),
-        ]))
-        .to_bits();
-
-        let result = unsafe { jit_runtime_cons_atom(&mut ctx, head, tail, 0) };
-
-        // Returns S-expression with head prepended
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::SExpr(elems) = metta.inner() {
-            assert_eq!(elems.len(), 3);
-            if let MettaValueInner::Long(n) = elems[0].inner() {
-                assert_eq!(*n, 1);
-            }
-        }
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_cons_atom_to_nil_4c() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let head = JitValue::from_long(42).to_bits();
-        let tail = TAG_UNIT;
-
-        let result = unsafe { jit_runtime_cons_atom(&mut ctx, head, tail, 0) };
-
-        // Returns single-element S-expression
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::SExpr(elems) = metta.inner() {
-            assert_eq!(elems.len(), 1);
-            if let MettaValueInner::Long(n) = elems[0].inner() {
-                assert_eq!(*n, 42);
-            }
-        }
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_make_quote_wraps_4c() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let expr = metta_to_jit(&MettaValue::sym("foo")).to_bits();
-        let result = unsafe { jit_runtime_make_quote(&mut ctx, expr, 0) };
-
-        // Returns (quote foo)
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::SExpr(elems) = metta.inner() {
-            assert_eq!(elems.len(), 2);
-            if let MettaValueInner::Atom(s) = elems[0].inner() {
-                assert_eq!(*s, "quote");
-            }
-        }
-    }
-
     // ==========================================================================
     // Phase 4C: Additional Type Operations Tests (renamed to avoid conflicts)
     // ==========================================================================
@@ -3844,60 +3273,6 @@ mod tests {
         let metta = unsafe { jv.to_metta() };
         if let MettaValueInner::Atom(s) = metta.inner() {
             assert_eq!(*s, "Unit");
-        }
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_get_type_sexpr_4c() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let sexpr = MettaValue::SExpr(vec![MettaValue::sym("a"), MettaValue::sym("b")]);
-        let val = metta_to_jit(&sexpr).to_bits();
-        let result = unsafe { jit_runtime_get_type(&mut ctx, val, 0) };
-
-        // Should return "Expression" type
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(*s, "Expression");
-        }
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_get_type_space_4c() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let space = SpaceHandle::new(200, "type-test-space-4c".to_string());
-        let val = metta_to_jit(&MettaValue::Space(space)).to_bits();
-        let result = unsafe { jit_runtime_get_type(&mut ctx, val, 0) };
-
-        // Should return "Space" type
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(*s, "Space");
         }
     }
 
@@ -4530,38 +3905,6 @@ mod tests {
     // Phase 4D: Expression Operations Tests
     // ==========================================================================
 
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_get_head_sexpr() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let sexpr = MettaValue::SExpr(vec![
-            MettaValue::sym("foo"),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let val = metta_to_jit(&sexpr).to_bits();
-
-        let result = unsafe { jit_runtime_get_head(&mut ctx, val, 0) };
-
-        // Should return "foo"
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::Atom(s) = metta.inner() {
-            assert_eq!(*s, "foo");
-        }
-    }
-
     #[test]
     fn test_jit_get_head_empty() {
         let constants: Vec<MettaValue> = vec![];
@@ -4589,38 +3932,6 @@ mod tests {
         assert!(jit_val.is_heap(), "Error atom should be heap-allocated");
     }
 
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_get_tail_sexpr() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let sexpr = MettaValue::SExpr(vec![
-            MettaValue::sym("foo"),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let val = metta_to_jit(&sexpr).to_bits();
-
-        let result = unsafe { jit_runtime_get_tail(&mut ctx, val, 0) };
-
-        // Should return (1 2)
-        let jv = JitValue::from_raw(result);
-        let metta = unsafe { jv.to_metta() };
-        if let MettaValueInner::SExpr(elems) = metta.inner() {
-            assert_eq!(elems.len(), 2);
-        }
-    }
-
     #[test]
     fn test_jit_get_tail_empty() {
         let constants: Vec<MettaValue> = vec![];
@@ -4645,36 +3956,6 @@ mod tests {
         if let MettaValueInner::SExpr(elems) = metta.inner() {
             assert!(elems.is_empty());
         }
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_jit_get_arity_sexpr() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let sexpr = MettaValue::SExpr(vec![
-            MettaValue::sym("foo"),
-            MettaValue::Long(1),
-            MettaValue::Long(2),
-        ]);
-        let val = metta_to_jit(&sexpr).to_bits();
-
-        let result = unsafe { jit_runtime_get_arity(&mut ctx, val, 0) };
-
-        // Should return 3
-        let jv = JitValue::from_raw(result);
-        assert!(jv.is_long());
-        assert_eq!(jv.as_long(), 3);
     }
 
     #[test]
@@ -6101,48 +5382,6 @@ mod tests {
         // Empty list should return nil
         let result = unsafe { jit_runtime_make_list(&mut ctx, std::ptr::null(), 0, 0) };
         assert_eq!(result & TAG_MASK, TAG_UNIT);
-    }
-
-    // JIT T2/T3 FFI is VM-fallback-gated under index mode (Inc 2b); JIT-direct test runs in the slab build only.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_make_list_single() {
-        let constants: Vec<MettaValue> = vec![];
-        let mut stack: Vec<JitValue> = vec![JitValue::unit(); 16];
-        let mut ctx = unsafe {
-            JitContext::new(
-                stack.as_mut_ptr(),
-                stack.len(),
-                constants.as_ptr(),
-                constants.len(),
-            )
-        };
-
-        let values = vec![JitValue::from_long(1).to_bits()];
-        let result = unsafe { jit_runtime_make_list(&mut ctx, values.as_ptr(), 1, 0) };
-
-        // Should be a heap value (Cons structure)
-        assert_eq!(result & TAG_MASK, TAG_PTR);
-
-        // Verify structure
-        let jit_val = JitValue::from_raw(result);
-        let metta = unsafe { jit_val.to_metta() };
-        match metta.inner() {
-            MettaValueInner::SExpr(elems) => {
-                assert_eq!(elems.len(), 3); // (Cons 1 Nil)
-                if let MettaValueInner::Atom(s) = elems[0].inner() {
-                    assert_eq!(*s, "Cons");
-                } else {
-                    panic!("Expected Atom for first element");
-                }
-                if let MettaValueInner::Long(n) = elems[1].inner() {
-                    assert_eq!(*n, 1);
-                } else {
-                    panic!("Expected Long for second element");
-                }
-            }
-            _ => panic!("Expected SExpr for list"),
-        }
     }
 
     #[test]

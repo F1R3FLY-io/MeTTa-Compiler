@@ -16,6 +16,7 @@ Require Import CronStartupDelivery.
 Require Import SchedulerActiveFanoutGate.
 Require Import SchedulerDynamicEvalGate.
 Require Import SchedulerFanoutProgress.
+Require Import SchedulerGcBoundary.
 Require Import SchedulerPriorityFairness.
 Require Import SchedulerSpawnLatch.
 Require Import SchedulerTransducerParallelism.
@@ -29,6 +30,7 @@ Import MeTTaTron_GC_CronStartupDelivery.
 Import MeTTaTron_GC_SchedulerActiveFanoutGate.
 Import MeTTaTron_GC_SchedulerDynamicEvalGate.
 Import MeTTaTron_GC_SchedulerFanoutProgress.
+Import MeTTaTron_GC_SchedulerGcBoundary.
 Import MeTTaTron_GC_SchedulerPriorityFairness.
 Import MeTTaTron_GC_SchedulerSpawnLatch.
 Import MeTTaTron_GC_SchedulerTransducerParallelism.
@@ -44,6 +46,12 @@ Section EndToEndModel.
   Inductive Task : Type :=
   | Producer : Task
   | Consumer : Task.
+
+  Inductive BoundaryAddr : Type :=
+  | BoundaryActiveWorker : BoundaryAddr
+  | BoundaryDispatchFanout : BoundaryAddr
+  | BoundaryBatchHandoff : BoundaryAddr
+  | BoundaryNewAdmission : BoundaryAddr.
 
   Record Workload : Type := {
     has_dependency : bool;
@@ -219,6 +227,204 @@ Section EndToEndModel.
         false worker_rooted false false false false true = true.
   Proof.
     intros []; reflexivity.
+  Qed.
+
+  Definition boundary_root
+      (live : bool)
+      (target addr : BoundaryAddr)
+      : Prop :=
+    live = true /\ addr = target.
+
+  Definition boundary_driver_root
+      (worker_rooted dispatch_rooted batch_rooted : bool)
+      (addr : BoundaryAddr)
+      : Prop :=
+    boundary_root worker_rooted BoundaryActiveWorker addr \/
+    boundary_root dispatch_rooted BoundaryDispatchFanout addr \/
+    boundary_root batch_rooted BoundaryBatchHandoff addr.
+
+  Definition boundary_scheduler_live
+      (active_worker_live dispatch_live batch_live late_worker_live : bool)
+      : BoundaryAddr -> Prop :=
+    @SchedulerLiveRoot BoundaryAddr
+      (boundary_root active_worker_live BoundaryActiveWorker)
+      (boundary_root dispatch_live BoundaryDispatchFanout)
+      (boundary_root batch_live BoundaryBatchHandoff)
+      (boundary_root late_worker_live BoundaryNewAdmission).
+
+  Definition boundary_freed
+      (active_worker_live worker_rooted
+       dispatch_live dispatch_rooted
+       batch_live batch_rooted
+       late_worker_live : bool)
+      (addr : BoundaryAddr)
+      : Prop :=
+    boundary_scheduler_live
+      active_worker_live dispatch_live batch_live late_worker_live addr /\
+    ~ boundary_driver_root worker_rooted dispatch_rooted batch_rooted addr.
+
+  Definition scheduler_boundary_safe
+      (active_worker_live worker_rooted
+       dispatch_live dispatch_rooted
+       batch_live batch_rooted
+       late_worker_live : bool)
+      : Prop :=
+    forall addr,
+      boundary_scheduler_live
+        active_worker_live dispatch_live batch_live late_worker_live addr ->
+      ~ boundary_freed
+          active_worker_live worker_rooted
+          dispatch_live dispatch_rooted
+          batch_live batch_rooted
+          late_worker_live addr.
+
+  Theorem rooted_closed_scheduler_boundary_safe :
+    forall active_worker_live dispatch_live batch_live,
+      scheduler_boundary_safe
+        active_worker_live active_worker_live
+        dispatch_live dispatch_live
+        batch_live batch_live
+        false.
+  Proof.
+    intros active_worker_live dispatch_live batch_live.
+    unfold scheduler_boundary_safe, boundary_scheduler_live, boundary_freed.
+    set (ActiveRoot := boundary_root active_worker_live BoundaryActiveWorker).
+    set (DispatchRoot := boundary_root dispatch_live BoundaryDispatchFanout).
+    set (BatchRoot := boundary_root batch_live BoundaryBatchHandoff).
+    set (NewRoot := boundary_root false BoundaryNewAdmission).
+    set (DriverRoot :=
+           boundary_driver_root active_worker_live dispatch_live batch_live).
+    change
+      (forall addr,
+        @SchedulerLiveRoot BoundaryAddr ActiveRoot DispatchRoot BatchRoot
+          NewRoot addr ->
+        ~ (@SchedulerLiveRoot BoundaryAddr ActiveRoot DispatchRoot BatchRoot
+             NewRoot addr /\ ~ DriverRoot addr)).
+    eapply (@scheduler_live_root_survives_collection
+      BoundaryAddr ActiveRoot DispatchRoot BatchRoot NewRoot DriverRoot
+      DriverRoot
+      (fun addr =>
+         @SchedulerLiveRoot BoundaryAddr ActiveRoot DispatchRoot BatchRoot
+           NewRoot addr /\ ~ DriverRoot addr)).
+    - intros addr Hroot.
+      unfold DriverRoot, boundary_driver_root.
+      left.
+      exact Hroot.
+    - intros addr Hroot.
+      unfold DriverRoot, boundary_driver_root.
+      right.
+      left.
+      exact Hroot.
+    - intros addr Hroot.
+      unfold DriverRoot, boundary_driver_root.
+      right.
+      right.
+      exact Hroot.
+    - intros addr Hnew.
+      unfold NewRoot, boundary_root in Hnew.
+      destruct Hnew as [Hfalse _].
+      discriminate Hfalse.
+    - intros addr Hdriver.
+      exact Hdriver.
+    - intros addr Hfreed Hmarked.
+      destruct Hfreed as [_ Hnot_driver].
+      exact (Hnot_driver Hmarked).
+  Qed.
+
+  Theorem missing_active_worker_boundary_root_exposes_gap :
+    ~ scheduler_boundary_safe true false false false false false false.
+  Proof.
+    intros Hsafe.
+    specialize (Hsafe BoundaryActiveWorker).
+    unfold boundary_scheduler_live, boundary_freed, boundary_driver_root,
+      boundary_root in Hsafe.
+    assert (Hlive :
+      @SchedulerLiveRoot BoundaryAddr
+        (fun addr : BoundaryAddr => true = true /\ addr = BoundaryActiveWorker)
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryDispatchFanout)
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryBatchHandoff)
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryNewAdmission)
+        BoundaryActiveWorker).
+    { left. split; reflexivity. }
+    apply (Hsafe Hlive).
+    split.
+    - exact Hlive.
+    - intros [[Hfalse _] | [[Hfalse _] | [Hfalse _]]].
+      + discriminate Hfalse.
+      + discriminate Hfalse.
+      + discriminate Hfalse.
+  Qed.
+
+  Theorem missing_dispatch_boundary_root_exposes_gap :
+    ~ scheduler_boundary_safe false false true false false false false.
+  Proof.
+    intros Hsafe.
+    specialize (Hsafe BoundaryDispatchFanout).
+    unfold boundary_scheduler_live, boundary_freed, boundary_driver_root,
+      boundary_root in Hsafe.
+    assert (Hlive :
+      @SchedulerLiveRoot BoundaryAddr
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryActiveWorker)
+        (fun addr : BoundaryAddr => true = true /\ addr = BoundaryDispatchFanout)
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryBatchHandoff)
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryNewAdmission)
+        BoundaryDispatchFanout).
+    { right. left. split; reflexivity. }
+    apply (Hsafe Hlive).
+    split.
+    - exact Hlive.
+    - intros [[Hfalse _] | [[Hfalse _] | [Hfalse _]]].
+      + discriminate Hfalse.
+      + discriminate Hfalse.
+      + discriminate Hfalse.
+  Qed.
+
+  Theorem missing_batch_boundary_root_exposes_gap :
+    ~ scheduler_boundary_safe false false false false true false false.
+  Proof.
+    intros Hsafe.
+    specialize (Hsafe BoundaryBatchHandoff).
+    unfold boundary_scheduler_live, boundary_freed, boundary_driver_root,
+      boundary_root in Hsafe.
+    assert (Hlive :
+      @SchedulerLiveRoot BoundaryAddr
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryActiveWorker)
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryDispatchFanout)
+        (fun addr : BoundaryAddr => true = true /\ addr = BoundaryBatchHandoff)
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryNewAdmission)
+        BoundaryBatchHandoff).
+    { right. right. left. split; reflexivity. }
+    apply (Hsafe Hlive).
+    split.
+    - exact Hlive.
+    - intros [[Hfalse _] | [[Hfalse _] | [Hfalse _]]].
+      + discriminate Hfalse.
+      + discriminate Hfalse.
+      + discriminate Hfalse.
+  Qed.
+
+  Theorem open_admission_boundary_root_exposes_gap :
+    ~ scheduler_boundary_safe false false false false false false true.
+  Proof.
+    intros Hsafe.
+    specialize (Hsafe BoundaryNewAdmission).
+    unfold boundary_scheduler_live, boundary_freed, boundary_driver_root,
+      boundary_root in Hsafe.
+    assert (Hlive :
+      @SchedulerLiveRoot BoundaryAddr
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryActiveWorker)
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryDispatchFanout)
+        (fun addr : BoundaryAddr => false = true /\ addr = BoundaryBatchHandoff)
+        (fun addr : BoundaryAddr => true = true /\ addr = BoundaryNewAdmission)
+        BoundaryNewAdmission).
+    { right. right. right. split; reflexivity. }
+    apply (Hsafe Hlive).
+    split.
+    - exact Hlive.
+    - intros [[Hfalse _] | [[Hfalse _] | [Hfalse _]]].
+      + discriminate Hfalse.
+      + discriminate Hfalse.
+      + discriminate Hfalse.
   Qed.
 
   Record SpawnLatchConfig : Type := {
@@ -1456,7 +1662,12 @@ Section EndToEndModel.
     startup_delivery_safe cron_startup /\
     work_pool_envelope_safe work_pool /\
     active_fanout_envelope_safe w active_fanout /\
-    fanout_progress_safe fanout_progress.
+    fanout_progress_safe fanout_progress /\
+    scheduler_boundary_safe
+      active_worker_live worker_rooted
+      dispatch_live dispatch_rooted
+      batch_live batch_rooted
+      late_worker_live.
 
   Theorem checked_threading_envelope_is_end_to_end_safe :
     forall w wave active_worker_live,
@@ -1498,7 +1709,9 @@ Section EndToEndModel.
                    --- unfold active_fanout_envelope_safe.
                        intros _.
                        apply complete_active_fanout_stack_safe.
-                   --- apply complete_fanout_progress_safe.
+                   --- split.
+                       +++ apply complete_fanout_progress_safe.
+                       +++ apply rooted_closed_scheduler_boundary_safe.
   Qed.
 
   Theorem missing_cron_startup_poll_path_exposes_end_to_end_gap :

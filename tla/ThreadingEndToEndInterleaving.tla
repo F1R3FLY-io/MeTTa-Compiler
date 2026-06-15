@@ -1036,6 +1036,13 @@ MaximalIndependentParallelism ==
 NoLiveValueSwept ==
     ~valueFreed
 
+SchedulerBoundaryComplete ==
+    rootsBuilt =>
+      /\ (running /= {} => workerRooted)
+      /\ (dispatchFanoutLive => dispatchRooted)
+      /\ (batchHandoffLive => batchRooted)
+      /\ ~lateWorkerLive
+
 WorkerSpawnLatchPrecedesWorker ==
     workerExists => workerSpawnLatch
 
@@ -1132,6 +1139,7 @@ EndToEndSafe ==
     /\ ActiveNoBudgetParallelSafe
     /\ MaximalIndependentParallelism
     /\ NoLiveValueSwept
+    /\ SchedulerBoundaryComplete
     /\ WorkerSpawnLatchPrecedesWorker
     /\ WorkerSpawnLatchClosesMidloopGate
     /\ NoOverlappingCronDispatch

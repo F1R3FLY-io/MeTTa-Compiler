@@ -866,6 +866,11 @@ line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "scheduler_fanout_contr
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_participant_accounting_exposes_fanout_progress_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_parked_resume_exposes_fanout_progress_gap" >/dev/null
 line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_completion_drop_exposes_fanout_progress_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "rooted_closed_scheduler_boundary_safe" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_active_worker_boundary_root_exposes_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_dispatch_boundary_root_exposes_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "missing_batch_boundary_root_exposes_gap" >/dev/null
+line_no "formal/rocq/gc/ThreadingEndToEndInterleaving.v" "open_admission_boundary_root_exposes_gap" >/dev/null
 assert_count "scripts/verify_cesk_gc_formal.sh" "CounterFlushExclusion.v" "1"
 assert_count "scripts/verify_cesk_gc_formal.sh" "BindingProjection.v" "1"
 assert_zero "scripts/verify_cesk_gc_formal.sh" "RUN_LEAN_MIRRORS"
@@ -912,6 +917,7 @@ line_no "tla/ThreadingEndToEndInterleaving.tla" "CronStartupReadyWaitCompletes" 
 line_no "tla/ThreadingEndToEndInterleaving.tla" "NoCronStartupTaskLost" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "IncludeDispatchRoot" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "IncludeBatchRoot" >/dev/null
+line_no "tla/ThreadingEndToEndInterleaving.tla" "SchedulerBoundaryComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolAllSubmittedComplete" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolTaskPanicPublishesHeartbeat" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "WorkPoolWorkerAliveAfterHandled" >/dev/null
@@ -927,8 +933,11 @@ line_no "tla/ThreadingEndToEndInterleaving.tla" "FanoutActiveParticipantAccounte
 line_no "tla/ThreadingEndToEndInterleaving.tla" "FanoutParkedWorkerResumed" >/dev/null
 line_no "tla/ThreadingEndToEndInterleaving.tla" "FanoutParentWaitNotStranded" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_startup_no_poll" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_missing_worker_root" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_missing_dispatch_root" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_missing_batch_root" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_open_admission" >/dev/null
+line_no "scripts/verify_cesk_gc_formal.sh" "Invariant SchedulerBoundaryComplete is violated" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_missing_purity" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_missing_budget" >/dev/null
 line_no "scripts/verify_cesk_gc_formal.sh" "threading_end_to_end_active_fanout_partial_dispatch" >/dev/null

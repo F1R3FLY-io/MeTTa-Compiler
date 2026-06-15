@@ -1230,25 +1230,27 @@ facts the proofs rely on:
   dependency waves, direct fanout, active-worker root publication, closed worker
   admission, eval-worker spawn latching, active direct-fanout gates, sweep,
   recurring-cron dispatch, cron startup delivery, WorkPool startup drain,
-  WorkPool panic isolation, and the GC-facing scheduler boundary for
-  live-dispatch plus async batch roots into one TLC state machine. It now also
-  composes `SchedulerFanoutProgress.v` so FANOUT participant accounting,
-  parked-worker resume, and worker completion-drop accounting are part of the
-  same end-to-end proof boundary.
+  WorkPool panic isolation, and the GC-facing scheduler boundary for active
+  workers, live-dispatch fanout, async batch roots, and closed admission into
+  one TLC state machine. It now composes both `SchedulerFanoutProgress.v` and
+  `SchedulerGcBoundary.v`: FANOUT participant accounting, parked-worker resume,
+  worker completion-drop accounting, and the GC-facing scheduler root/admission
+  boundary are part of the same end-to-end proof boundary.
   Positive dependency-bearing and independent configs preserve `EndToEndSafe`.
   Negative discriminators violate it for missing dependency edges, active
   direct-fanout without purity or budget gates, partial direct-fanout dispatch,
   active direct-fanout that bypasses the WFST transducer's zero-cap clamp,
   maximal-before-cap use of available branches, or branch-parallel class gate,
   dynamic eval that bypasses the dynamic-eval blocker, state mutation through
-  the pure no-budget path, strict I/O through the pure no-budget path, missing
-  active-worker roots, missing dispatch roots, missing batch roots, open
-  admission across a root snapshot, worker spawn before the sticky latch, missing
-  worker-spawn latch, missing FANOUT participant contribution, missing parked
-  FANOUT worker resume, missing worker completion-drop accounting, unclaimed
-  recurring cron dispatch, and a pooled recurring
+  the pure no-budget path, strict I/O through the pure no-budget path, worker
+  spawn before the sticky latch, missing worker-spawn latch, missing FANOUT
+  participant contribution, missing parked FANOUT worker resume, missing worker
+  completion-drop accounting, unclaimed recurring cron dispatch, and a pooled recurring
   worker that clears `in_flight` without first publishing the terminal stop
-  state.  The composed cron startup discriminator separately rejects a submitted
+  state. The missing active-worker-root, dispatch-root, batch-root, and
+  open-admission E2E discriminators now fail specifically on
+  `SchedulerBoundaryComplete`, matching the standalone scheduler/GC boundary
+  model inside the composed interleaving envelope. The composed cron startup discriminator separately rejects a submitted
   startup task when neither `CheckEvents` nor
   `DrainChannel` polls the cron task channel.  Composed WorkPool discriminators
   reject lossy startup enqueue, missing inner task-panic heartbeat publication,

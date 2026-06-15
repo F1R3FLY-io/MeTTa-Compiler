@@ -290,9 +290,10 @@ The formal lane covers the main scheduler obligations:
   needed for subsequent queued work.  The WorkPool envelope also composes the
   priority-aging dequeue contract: pop-time score recomputation is required so
   aged older work is not starved behind newer high-base-priority work.  It also
-  composes the GC-facing scheduler boundary for live-dispatch and async batch
-  roots, so sweep rejects missing dispatch or batch root publication the same
-  way it rejects missing active worker roots.  Its active direct-fanout
+  imports the `SchedulerGcBoundary.v` theorem and exposes the same
+  `SchedulerBoundaryComplete` invariant in the E2E TLC model, so active workers,
+  live-dispatch fanout, async batch handoff, and closed admission are checked as
+  one GC-facing scheduler boundary.  Its active direct-fanout
   obligation requires branch threshold, WFST degree, purity/dynamic-eval, depth,
   pool, budget, and complete-dispatch gates before `DirectFanout` can contribute
   to maximal same-wave parallelism.
@@ -563,6 +564,7 @@ The boundary is modeled by:
 - `tla/MC_SchedulerGcBoundary_missing_worker.cfg`
 - `tla/MC_SchedulerGcBoundary_missing_dispatch.cfg`
 - `tla/MC_SchedulerGcBoundary_missing_batch.cfg`
+- `tla/MC_SchedulerGcBoundary_admission_open.cfg`
 
 The composed end-to-end envelope is modeled by:
 
@@ -601,27 +603,29 @@ The composed end-to-end envelope is modeled by:
 - `tla/MC_ThreadingEndToEndInterleaving_work_pool_stale_priority.cfg`
 
 The positive dependency-bearing and independent configs preserve
-`EndToEndSafe`. The negative configs violate it when dependency edges are
+`EndToEndSafe`, and the safe config also preserves
+`SchedulerBoundaryComplete` inside the composed model. The negative configs
+violate `EndToEndSafe` when dependency edges are
 omitted, active direct fanout skips purity/budget/complete-dispatch gates,
 active direct fanout bypasses the WFST transducer's nonzero degree,
 maximal-before-cap, or branch-parallel class gates, dynamic eval bypasses the
 dynamic-eval blocker, state mutation is allowed through the pure no-budget
-path, strict I/O is allowed through the pure no-budget path, active worker
-roots are omitted, dispatch or async batch roots are omitted, worker admission
-stays open across the root snapshot, worker spawn reaches the pool before the
-sticky spawn latch is stored, a handoff site omits that latch entirely, FANOUT
-participant accounting is missing, a parked FANOUT worker is not resumed, a
-worker completion guard fails to drop parent-wait accounting, or
-recurring cron dispatch submits without claiming `in_flight`, or a pooled
+path, strict I/O is allowed through the pure no-budget path, worker spawn
+reaches the pool before the sticky spawn latch is stored, a handoff site omits
+that latch entirely, FANOUT participant accounting is missing, a parked FANOUT
+worker is not resumed, a worker completion guard fails to drop parent-wait
+accounting, or recurring cron dispatch submits without claiming `in_flight`, or a pooled
 recurring worker clears `in_flight` without first publishing the terminal stop
 state.
+The active-worker-root, dispatch-root, async-batch-root, and open-admission
+E2E discriminators violate `SchedulerBoundaryComplete`, matching the standalone
+`SchedulerGcBoundary` proof contract inside the composed interleaving model.
 The composed WorkPool discriminators additionally reject overflow spawning
 that bypasses the live-worker cap, double-unpark accounting that counts one
 parked worker twice, respawning a parked replacement without incrementing
 the aggregate active count, and stale priority dequeue that skips pop-time
 age recomputation and therefore pops newer high-priority work before an aged
 older task.
-- `tla/MC_SchedulerGcBoundary_admission_open.cfg`
 - `formal/rocq/gc/SchedulerSpawnLatch.v`
 - `tla/SchedulerSpawnLatch.tla`
 - `tla/MC_SchedulerSpawnLatch_all.cfg`

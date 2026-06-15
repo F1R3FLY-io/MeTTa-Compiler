@@ -407,13 +407,13 @@ run_tlc "threading_end_to_end_active_fanout_strict_io_bypass" "ThreadingEndToEnd
 run_tlc "threading_end_to_end_missing_dependency" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_dependency.cfg" \
   fail "Invariant EndToEndSafe is violated"
 run_tlc "threading_end_to_end_missing_worker_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_worker_root.cfg" \
-  fail "Invariant EndToEndSafe is violated"
+  fail "Invariant SchedulerBoundaryComplete is violated"
 run_tlc "threading_end_to_end_missing_dispatch_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_dispatch_root.cfg" \
-  fail "Invariant EndToEndSafe is violated"
+  fail "Invariant SchedulerBoundaryComplete is violated"
 run_tlc "threading_end_to_end_missing_batch_root" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_batch_root.cfg" \
-  fail "Invariant EndToEndSafe is violated"
+  fail "Invariant SchedulerBoundaryComplete is violated"
 run_tlc "threading_end_to_end_open_admission" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_open_admission.cfg" \
-  fail "Invariant EndToEndSafe is violated"
+  fail "Invariant SchedulerBoundaryComplete is violated"
 run_tlc "threading_end_to_end_spawn_before_latch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_spawn_before_latch.cfg" \
   fail "Invariant WorkerSpawnLatchPrecedesWorker is violated"
 run_tlc "threading_end_to_end_missing_spawn_latch" "ThreadingEndToEndInterleaving.tla" "MC_ThreadingEndToEndInterleaving_missing_spawn_latch.cfg" \

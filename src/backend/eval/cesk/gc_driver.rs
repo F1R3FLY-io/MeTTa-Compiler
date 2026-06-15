@@ -287,11 +287,9 @@ fn prepare_rendezvous_roots() -> Vec<MettaValue> {
     let mut roots: Vec<MettaValue> = Vec::new();
     ga::drain_worker_root_buffer(&mut roots);
     ga::collect_safepoint_roots(&mut roots);
-    #[cfg(feature = "index-gc")]
     ga::collect_live_env_anchors(&mut roots);
-    #[cfg(feature = "index-gc")]
     ga::collect_live_dispatch_anchors(&mut roots);
-    #[cfg(all(feature = "index-gc", debug_assertions))]
+    #[cfg(debug_assertions)]
     assert_rendezvous_union_complete(&roots, n);
     roots
 }
@@ -417,7 +415,7 @@ fn gc_driver_satb_rendezvous_cycle(
 /// (a)+(b)+A4.3 discharge `reachable(R) ⊇ every live value`. Debug-only; zero-cost in
 /// release (the call site is `#[cfg(debug_assertions)]`). `#[cfg(index-gc)]`: the
 /// dispatch-witness helper it calls is index-only (the anchor is too).
-#[cfg(all(feature = "index-gc", debug_assertions))]
+#[cfg(debug_assertions)]
 fn assert_rendezvous_union_complete(roots: &[MettaValue], n_snapshot: u32) {
     use crate::backend::models::gc_allocator as ga;
     // `inner_ptr()` is an inherent method on `MettaValue` (metta_value.rs:1275), so no
@@ -612,7 +610,6 @@ mod tests {
         // a synthetic root set: in the index-gc build that runs a real collection,
         // and an empty root set would mark nothing and sweep every live value in
         // the shared global heap.
-        #[cfg(feature = "index-gc")]
         assert!(
             dedicated_gc_enabled(),
             "index-gc build must default to the dedicated CESK GC driver"

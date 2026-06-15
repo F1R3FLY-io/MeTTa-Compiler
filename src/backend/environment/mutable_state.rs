@@ -50,7 +50,6 @@ where
     /// States are truly mutable and changes are globally visible.
     pub fn change_state(&mut self, state_id: u64, new_value: &V) -> bool {
         // No make_owned() - states are shared, not copy-on-write
-        #[cfg(feature = "index-gc")]
         let changed = super::core::with_env_satb_deletion_barrier(|satb_active| {
             let mut guard = self.shared.states.write();
             if let Some(entry) = guard.get_mut(&state_id) {

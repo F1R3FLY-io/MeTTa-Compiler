@@ -513,7 +513,6 @@ impl MettaValue {
     /// payload is a real pointer, not an index). The 32-bit `Addr` occupies bits
     /// [35:4]; flags stay in [3:0]; bits [63:48] are zero, so `is_inline()` is
     /// byte-identical to the slab-pointer case.
-    #[cfg(feature = "index-gc")]
     #[inline]
     pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {
         if self.is_inline() {
@@ -536,7 +535,6 @@ impl MettaValue {
     /// reconstructs the EXACT handle after a fresh re-intern. Only meaningful for a
     /// non-inline (heap) handle; for an inline scalar the low bits are part of the
     /// NaN-box payload and the caller carries the scalar by value instead.
-    #[cfg(feature = "index-gc")]
     #[inline]
     pub(crate) fn addr_flags(&self) -> usize {
         self.tagged & 0xF
@@ -587,7 +585,6 @@ impl MettaValue {
     /// BENCH-ONLY (`mtt-hitpath-bench`, the exp19 gate): the raw arena id,
     /// or `None` for an inline scalar. Thin pub shim over the crate-private
     /// [`as_arena_addr`](Self::as_arena_addr).
-    #[cfg(feature = "index-gc")]
     #[inline(always)]
     pub fn as_arena_addr_raw_for_bench(&self) -> Option<u32> {
         self.as_arena_addr().map(|a| a.raw())
@@ -596,7 +593,6 @@ impl MettaValue {
     /// BENCH-ONLY (`mtt-hitpath-bench`): materialize this heap handle's
     /// `MettaValueInner` once — the column mock's build step. Panics on an
     /// inline scalar (the bench filters those via the raw-id shim).
-    #[cfg(feature = "index-gc")]
     pub fn materialize_inner_for_bench(&self) -> MettaValueInner {
         let addr = self
             .as_arena_addr()
@@ -1419,7 +1415,6 @@ impl MettaValue {
     /// Returns the pointer to the **outermost** MettaValueInner (which may be Spanned).
     /// This is correct for GC marking, which needs to track the actual slab slot.
     /// For inline NaN-boxed values, returns null (no slab slot to mark).
-    #[cfg(feature = "index-gc")]
     #[inline]
     pub fn inner_ptr(&self) -> *const MettaValueInner {
         if self.is_inline() {
@@ -1715,7 +1710,6 @@ impl MettaValue {
         // falls through to materialize. The DEBUG oracle (R2-F2) couples a
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
-        #[cfg(feature = "index-gc")]
         {
             let tag = self.tag5();
             if tag != TAG5_ATOM && tag != TAG5_SPANNED {
@@ -1825,7 +1819,6 @@ impl MettaValue {
         // falls through to materialize. The DEBUG oracle (R2-F2) couples a
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
-        #[cfg(feature = "index-gc")]
         {
             let tag = self.tag5();
             if tag != TAG5_SEXPR && tag != TAG5_SPANNED {
@@ -1865,7 +1858,6 @@ impl MettaValue {
         // falls through to materialize. The DEBUG oracle (R2-F2) couples a
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
-        #[cfg(feature = "index-gc")]
         {
             let tag = self.tag5();
             if tag != TAG5_ERROR && tag != TAG5_SPANNED {
@@ -1910,7 +1902,6 @@ impl MettaValue {
         // falls through to materialize. The DEBUG oracle (R2-F2) couples a
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
-        #[cfg(feature = "index-gc")]
         {
             let tag = self.tag5();
             if tag != TAG5_CONJUNCTION && tag != TAG5_SPANNED {
@@ -1994,7 +1985,6 @@ impl MettaValue {
         // falls through to materialize. The DEBUG oracle (R2-F2) couples a
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
-        #[cfg(feature = "index-gc")]
         {
             let tag = self.tag5();
             if tag != TAG5_QUOTED && tag != TAG5_SPANNED {
@@ -3161,7 +3151,6 @@ impl MettaValueTrait for MettaValue {
         // falls through to materialize. The DEBUG oracle (R2-F2) couples a
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
-        #[cfg(feature = "index-gc")]
         {
             let tag = self.tag5();
             if tag != TAG5_ERROR && tag != TAG5_SPANNED {
@@ -3366,7 +3355,6 @@ impl MettaValueTrait for MettaValue {
         // falls through to materialize. The DEBUG oracle (R2-F2) couples a
         // fast-negative to materialization agreement — the direction the
         // inner_ref_index tripwire cannot see.
-        #[cfg(feature = "index-gc")]
         {
             let tag = self.tag5();
             if tag != TAG5_ATOM && tag != TAG5_SEXPR && tag != TAG5_SPANNED {

@@ -380,7 +380,6 @@ impl SpaceHandle {
             SpaceBacking::Owned { space } => {
                 if has_pattern_variables(atom) {
                     // Variable atom → remove from Vec
-                    #[cfg(feature = "index-gc")]
                     {
                         return crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                             |satb_active| {

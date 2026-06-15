@@ -67,11 +67,9 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 /// interface `IndexFactory` (`src/backend/eval/cesk/index_heap.rs`). The
 /// `index-gc` feature is mandatory (enforced by the `lib.rs` guard); the gate
 /// is removed wholesale when the feature itself is retired.
-#[cfg(feature = "index-gc")]
 pub type ActiveFactory = crate::backend::eval::cesk::index_heap::IndexFactory;
 
 /// The active `Store` impl: the index heap store σ, `IndexHeapStore`.
-#[cfg(feature = "index-gc")]
 pub type ActiveStore = crate::backend::eval::cesk::index_heap::IndexHeapStore;
 
 /// Get the active value factory instance. Delegates to `global_factory()`, which
@@ -181,7 +179,6 @@ mod gc_request_tests {
         assert!(err.contains("rebuild with"), "carries the rebuild hint: {err}");
     }
 
-    #[cfg(feature = "index-gc")]
     #[test]
     fn default_index_rejects_slab_with_decommission_hint() {
         let err = assert_gc_request(Some("slab"))

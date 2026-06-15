@@ -100,7 +100,6 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 #[cfg(not(feature = "index-gc"))]
 pub type EvalReturn = EvalResult;
 /// See [`EvalReturn`] (slab variant). The third element rides the B3 leaving-park handle.
-#[cfg(feature = "index-gc")]
 pub type EvalReturn = (
     SmallVec<[MettaValue; 2]>,
     MettaEnvironment,
@@ -263,7 +262,6 @@ pub fn eval(
     // above the CESK machine. Midloop/rendezvous collections cannot read `state`
     // directly, so publish those values to the narrow safepoint channel for this
     // eval interval; quiescence still also reads `state` structurally by name.
-    #[cfg(feature = "index-gc")]
     let _driver_c_handle = {
         let mut driver_roots = Vec::new();
         state.collect_driver_program_roots(&mut driver_roots);
@@ -275,7 +273,6 @@ pub fn eval(
     // declared here so it ESCAPES that scope AND the post-processing below, riding out in
     // the returned `EvalReturn` so the caller drops it only AFTER consuming the results.
     // `None` whenever B3 does not fire. Index-gc only (slab return is the unchanged 2-tuple).
-    #[cfg(feature = "index-gc")]
     let mut b3_root_handle: Option<SafepointRootHandle> = None;
 
     // Scope the EvalGuard so it drops after eval completes.
@@ -291,7 +288,6 @@ pub fn eval(
         // `_guard` scope (so E₀ is covered for the directive's lifetime). Covers the
         // CoW-forked child bindings via the branch-spawn registration too (granularity
         // (a)). BYTE-IDENTICAL WHEN DORMANT: #[cfg(index-gc)] wall + dedicated-first.
-        #[cfg(feature = "index-gc")]
         let _live_env_handle = {
             if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                 let dyn_env: std::sync::Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
@@ -327,7 +323,6 @@ pub fn eval(
         // thread also routes it through SAFEPOINT_ROOTS for the snapshot-after-release
         // window). Registering a SUPERSET of the final result (pre-error-filter `r.0`) is
         // SOUND: extra dead roots defer one cycle, never a UAF.
-        #[cfg(feature = "index-gc")]
         {
             use crate::backend::models::gc_allocator::{
                 current_cycle_gen, dedicated_gc_enabled, is_gc_requested, note_reified_park,
@@ -462,7 +457,6 @@ pub fn eval(
     {
         result
     }
-    #[cfg(feature = "index-gc")]
     {
         (result.0, result.1, b3_root_handle)
     }

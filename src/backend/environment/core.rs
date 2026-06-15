@@ -100,7 +100,6 @@ use crate::backend::mork_convert::{with_mork_bytes, with_mork_query_bytes};
 use crate::backend::wide_mork::decode::wide_bytes_to_generic_value;
 use crate::backend::wide_mork::encoding::encode_wide_storage;
 
-#[cfg(feature = "index-gc")]
 pub(crate) fn shade_generic_values_for_satb<V, I>(values: I)
 where
     V: Clone + 'static,
@@ -116,7 +115,6 @@ where
     crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
 }
 
-#[cfg(feature = "index-gc")]
 #[inline]
 pub(crate) fn with_env_satb_deletion_barrier<R>(f: impl FnOnce(bool) -> R) -> R {
     crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(f)
@@ -2299,7 +2297,6 @@ impl GenericEnvironmentShared<MettaValue> {
 // verified-complete structural E₀ reader above — zero new traversal. `#[cfg(index-gc)]`
 // because the `EnvRoots` trait + the `LIVE_ENVS` registry are index-only (in slab the
 // env is walked via the structural quiescence reader, not this registry).
-#[cfg(feature = "index-gc")]
 impl crate::backend::models::gc_allocator::EnvRoots for GenericEnvironmentShared<MettaValue> {
     fn collect_env_roots(&self, out: &mut Vec<MettaValue>) {
         self.collect_roots_into(out);
@@ -2594,7 +2591,6 @@ where
                         ":" => {
                             if let Some(name) = items[1].as_atom() {
                                 let typ = &items[2];
-                                #[cfg(feature = "index-gc")]
                                 with_env_satb_deletion_barrier(|satb_active| {
                                     let mut removed = Vec::new();
                                     {

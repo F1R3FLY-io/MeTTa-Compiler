@@ -357,7 +357,7 @@ mod tests {
     ///
     /// `gc_mode_is_index()` is true by construction under `feature = "index-gc"`.
     #[test]
-    #[cfg(all(debug_assertions, feature = "index-gc"))]
+    #[cfg(debug_assertions)]
     fn a4_3_oracle_holds_across_safepoint() {
         // (cnt 5000 0) is tail-recursive (bounded K depth) but runs > 4096
         // trampoline iterations ⇒ ≥1 safepoint; `amb` adds a nondeterministic fork.
@@ -389,7 +389,7 @@ mod tests {
     /// `MIN_BYTES` is parsed once — set it BEFORE any eval; nextest isolates each
     /// test in its own process, so this does not leak to other tests.
     #[test]
-    #[cfg(all(debug_assertions, feature = "index-gc"))]
+    #[cfg(debug_assertions)]
     fn a4_4_quiescence_oracle_holds() {
         std::env::set_var("METTATRON_INDEX_GC_MIN_BYTES", "0");
         let src = "!(+ 1 2)\n!(* 3 4)\n!(if (== 1 1) (+ 5 6) 0)";

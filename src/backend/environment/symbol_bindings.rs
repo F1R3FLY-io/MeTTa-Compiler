@@ -21,7 +21,6 @@ where
     pub fn bind(&mut self, symbol: &str, value: V) {
         self.make_owned();
 
-        #[cfg(feature = "index-gc")]
         super::core::with_env_satb_deletion_barrier(|satb_active| {
             let old = self
                 .shared

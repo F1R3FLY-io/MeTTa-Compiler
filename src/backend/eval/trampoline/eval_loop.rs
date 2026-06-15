@@ -222,7 +222,6 @@ pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
         // canonical reader makes a future thread-local source propagate automatically.
         // F2 gen-gating as at site #1.
         let mut park_roots: Vec<MettaValue> = Vec::with_capacity(extra_roots.len() + 128);
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::roots::collect_complete_thread_contribution(
             &mut park_roots,
             crate::backend::eval::cesk::roots::ThreadContribution::TierLeaf { extra: extra_roots },
@@ -308,7 +307,6 @@ pub(crate) fn clear_aba_sensitive_caches() {
 /// comprehensive clear, the SAME set the single-threaded collector clears, run on
 /// the thread that OWNS the caches. (In the single-threaded regime the collector
 /// already runs on that thread, so this is unneeded there.)
-#[cfg(feature = "index-gc")]
 pub(crate) fn clear_all_worker_thread_local_caches() {
     // (i) The ABA-sensitive interned/Addr-keyed set: VALUE_HASH_CACHE (the
     //     `is_memoized_normal_form` smoking gun), MORK byte/ground-fragment caches,
@@ -335,7 +333,6 @@ pub(crate) fn clear_all_worker_thread_local_caches() {
 /// `clear_aba_sensitive_caches()` call-site behavior.
 #[inline]
 fn clear_worker_caches_on_resume() {
-    #[cfg(feature = "index-gc")]
     {
         if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
             clear_all_worker_thread_local_caches();
@@ -357,9 +354,7 @@ fn clear_worker_caches_on_resume() {
 /// source thread-local afterwards is race-free). BYTE-IDENTICAL when dormant: the
 /// `Drop` body is a single `dedicated_gc_enabled()` load that short-circuits OFF by
 /// default; the struct is `#[cfg(index-gc)]`.
-#[cfg(feature = "index-gc")]
 struct WorkerCacheTeardownGuard;
-#[cfg(feature = "index-gc")]
 impl Drop for WorkerCacheTeardownGuard {
     #[inline]
     fn drop(&mut self) {
@@ -2663,7 +2658,6 @@ fn parallel_dispatch(
             // dedicated collection. Drops just before `_guard` releases the witness, and
             // after the finisher has published this worker's roots (publish copies Addrs
             // by value ⇒ clearing the source thread-local afterwards is race-free).
-            #[cfg(feature = "index-gc")]
             let _cache_teardown = WorkerCacheTeardownGuard;
             // Phase 10.A — Stage 1e closure: re-establish the parent's
             // collapse-bind tracked-vars on the worker thread so
@@ -2702,7 +2696,6 @@ fn parallel_dispatch(
             // NOT cover. Registered BEFORE `env` is moved into the eval; the RAII
             // handle is held for the whole closure body (the worker's lifetime).
             // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
-            #[cfg(feature = "index-gc")]
             let _worker_live_env = {
                 if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                     let dyn_env: Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
@@ -2743,7 +2736,6 @@ fn parallel_dispatch(
                     // SLAB-BYTE-IDENTICAL: the block is behind the
                     // `#[cfg(feature = "index-gc")]` wall, and the runtime arm first
                     // checks `dedicated_gc_enabled()`, which follows index mode.
-                    #[cfg(feature = "index-gc")]
                     {
                         if crate::backend::models::gc_allocator::dedicated_gc_enabled()
                             && crate::backend::models::gc_allocator::is_gc_requested()
@@ -2884,7 +2876,6 @@ fn parallel_dispatch(
     // anchor stays empty there regardless. Reuses the SAME `root_provider` Arc
     // (constructed in both builds) — no new allocation; `DispatchRoots` and
     // `RootProvider` are distinct traits on it.
-    #[cfg(feature = "index-gc")]
     let live_dispatch = if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
         Some(
             crate::backend::models::gc_allocator::register_live_dispatch(
@@ -2914,7 +2905,6 @@ fn parallel_dispatch(
         _root_provider_arc: root_provider,
         tracked_vars_hint,
         // E1-FLIP / CEX-1 (D2): RAII anchor deregistration (None when dormant).
-        #[cfg(feature = "index-gc")]
         _live_dispatch: live_dispatch,
     }
 }
@@ -3025,7 +3015,6 @@ fn pump_parallel_wait(
     // = a synthetic empty `Resume`. The park drains+restores the parent's full depth (it may
     // be at nested-eval depth>1) and blocks until the cycle resumes.
     // Slab stays on the non-index path because dedicated_gc_enabled() is false.
-    #[cfg(feature = "index-gc")]
     if crate::backend::models::gc_allocator::dedicated_gc_enabled()
         && crate::backend::models::gc_allocator::is_gc_requested()
         && handle.remaining.load(Ordering::Acquire) > 0
@@ -3220,7 +3209,6 @@ fn pump_parallel_collapse_wait(
     // values the sweep would drop — publish the FULL `Trampoline` contribution (mirror of
     // branch-B @ ~4249), `extra` = the collapse parent's in-flight roots (stable_items ∪
     // handle.results). Slab stays on the non-index path.
-    #[cfg(feature = "index-gc")]
     if crate::backend::models::gc_allocator::dedicated_gc_enabled()
         && crate::backend::models::gc_allocator::is_gc_requested()
         && handle.remaining.load(Ordering::Acquire) > 0
@@ -3459,7 +3447,6 @@ fn parallel_collapse_dispatch(
             // dedicated collection (the collapse worker's `is_memoized_normal_form` →
             // VALUE_HASH_CACHE smoking gun). Drops just before `_guard` releases the
             // witness, after the finisher published this worker's roots.
-            #[cfg(feature = "index-gc")]
             let _cache_teardown = WorkerCacheTeardownGuard;
             // ── E1-FLIP Path B V4 — B2′ (collapse-worker granularity) ──
             // SIBLING of the branch-worker registration at `:2594-2603`. Register
@@ -3480,7 +3467,6 @@ fn parallel_collapse_dispatch(
             // at `:3432`; the RAII handle is held for the whole closure body (the
             // worker's lifetime). Slab stays byte-identical through the
             // #[cfg(index-gc)] wall and `dedicated_gc_enabled()` short-circuit.
-            #[cfg(feature = "index-gc")]
             let _worker_live_env = {
                 if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
                     let dyn_env: Arc<dyn crate::backend::models::gc_allocator::EnvRoots> =
@@ -3565,7 +3551,6 @@ fn parallel_collapse_dispatch(
             // is about to move into `results[slot]`; until then it is live only on
             // this stack. SLAB-BYTE-IDENTICAL via the `#[cfg(feature =
             // "index-gc")]` wall + `dedicated_gc_enabled()`-first short-circuit.
-            #[cfg(feature = "index-gc")]
             {
                 if crate::backend::models::gc_allocator::dedicated_gc_enabled()
                     && crate::backend::models::gc_allocator::is_gc_requested()
@@ -3640,7 +3625,6 @@ fn parallel_collapse_dispatch(
     // GATE = `dedicated_gc_enabled()` ALONE; `n_threads()>1` is racy at this setup
     // site and would skip registration before workers enter, leaving the anchor
     // empty → the class-2 hole unwalked).
-    #[cfg(feature = "index-gc")]
     let live_dispatch = if crate::backend::models::gc_allocator::dedicated_gc_enabled() {
         Some(
             crate::backend::models::gc_allocator::register_live_dispatch(
@@ -3668,7 +3652,6 @@ fn parallel_collapse_dispatch(
         // for sidecar per-branch binding-projection reconstruction.
         tracked_vars_hint: parent_tracked_vars,
         // E1-FLIP / CEX-1 (D2): RAII anchor deregistration (None when dormant).
-        #[cfg(feature = "index-gc")]
         _live_dispatch: live_dispatch,
     }
 }
@@ -4011,7 +3994,6 @@ fn eval_trampoline_inner<C: EvalContext>(
     // SAFETY: `current_work_for_spine`/`work_stack`/`continuations` outlive this
     // guard (locals of this activation, dropped after it) with stable addresses
     // (declared once, mutated in place); `collect_k_spine` reads them read-only.
-    #[cfg(feature = "index-gc")]
     let _tramp_kspine_guard = unsafe {
         crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
             crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
@@ -4219,7 +4201,7 @@ fn eval_trampoline_inner<C: EvalContext>(
             // subgoal, thunk, binding-capture, K-spine). Keep this block for the
             // slab build and for the debug index machine-equivalence oracle, but do
             // not walk the subgoal/thunk caches every 4096 ticks in release index.
-            #[cfg(any(not(feature = "index-gc"), debug_assertions))]
+            #[cfg(debug_assertions)]
             {
                 root_set.collect_all(&machine_operand_stack, &work, &work_stack, &continuations);
 
@@ -4255,7 +4237,7 @@ fn eval_trampoline_inner<C: EvalContext>(
                     }
                 }
             }
-            #[cfg(all(feature = "index-gc", not(debug_assertions)))]
+            #[cfg(not(debug_assertions))]
             {
                 root_set.clear();
             }
@@ -4471,7 +4453,6 @@ fn eval_trampoline_inner<C: EvalContext>(
                 //    inside `collect_machine_roots_live` via `collect_global_anchors`);
                 //    routing through the canonical reader makes a future thread-local
                 //    source propagate to every site with one edit in `collect_global_anchors`.
-                #[cfg(feature = "index-gc")]
                 crate::backend::eval::cesk::roots::collect_complete_thread_contribution(
                     &mut my_roots,
                     crate::backend::eval::cesk::roots::ThreadContribution::Trampoline {
@@ -18742,7 +18723,7 @@ fn process_continuation<C: EvalContext>(
 // D2.1 integration test — worker self-root CESK-completeness (index-gc only)
 // =============================================================================
 //
-// Gated `#[cfg(all(test, feature = "index-gc"))]` because it exercises the
+// Gated `#[cfg(test)]` because it exercises the
 // store-centric index collector's rendezvous: each parked worker SELF-COLLECTS
 // its own structural roots (the genuine-CESK crux — the collector cannot read a
 // parked worker's native-stack registers), and the requestor's union must cover
@@ -18761,7 +18742,7 @@ fn process_continuation<C: EvalContext>(
 // exercises every primitive the live branch invokes with genuinely non-trivial
 // registers (a per-worker control value, a continuation, an operand-stack
 // frame, the persistent E₀ env).
-#[cfg(all(test, feature = "index-gc"))]
+#[cfg(test)]
 mod d2_1_rendezvous_integration_tests {
     use crate::backend::environment::MettaEnvironment;
     use crate::backend::eval::cesk::operand_stack::OperandStack;

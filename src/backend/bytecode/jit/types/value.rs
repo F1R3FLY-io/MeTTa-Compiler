@@ -64,7 +64,6 @@ impl JitValue {
         // Index fence: mint a genuine index heap Long via the factory and pack
         // its `inner_ptr()` form (`INDEX_KEY_TAG | tagged >> 4`). This is the
         // only TAG_PTR payload shape index-mode unpack trusts.
-        #[cfg(feature = "index-gc")]
         {
             use crate::backend::models::MettaValueFactory;
             let v = crate::backend::models::global_factory().long(n);
@@ -529,7 +528,7 @@ impl JitValue {
     pub const ONE: JitValue = JitValue::from_long_inline_unchecked(1);
 }
 
-#[cfg(all(test, feature = "index-gc"))]
+#[cfg(test)]
 mod index_fence_tests {
     use super::*;
     use crate::backend::eval::cesk::index_heap::enter_index_mode_for_test;

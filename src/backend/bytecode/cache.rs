@@ -200,7 +200,6 @@ pub fn get_cached_bytecode(hash: u64) -> Option<Arc<BytecodeChunk>> {
 #[inline]
 pub fn cache_bytecode(hash: u64, chunk: Arc<BytecodeChunk>) {
     ensure_bytecode_cache_roots_registered();
-    #[cfg(feature = "index-gc")]
     crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
         |satb_active| {
             let mut cache = BYTECODE_CACHE.write();
@@ -230,7 +229,6 @@ pub fn get_stats() -> BytecodeCacheStatsSnapshot {
 /// Clear all caches (mainly for testing)
 pub fn clear_caches() {
     CAN_COMPILE_CACHE.write().clear();
-    #[cfg(feature = "index-gc")]
     crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
         |satb_active| {
             let mut bytecode_cache = BYTECODE_CACHE.write();
@@ -280,7 +278,6 @@ pub(crate) fn collect_bytecode_cache_roots(roots: &mut Vec<MettaValue>) {
     }
 }
 
-#[cfg(feature = "index-gc")]
 fn shade_evicted_bytecode_chunk(chunk: &BytecodeChunk) {
     let mut roots = Vec::new();
     collect_chunk_constants(chunk, &mut roots);

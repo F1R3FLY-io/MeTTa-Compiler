@@ -410,7 +410,6 @@ pub fn collect_machine_roots_live(
 /// a `Trampoline` site). So the union over all participants always includes E₀'s
 /// struct; this reader contributes the rest of the persistent set that a leaf
 /// thread CAN read. Appends to `out` (never clears).
-#[cfg(feature = "index-gc")]
 pub fn collect_persistent_roots_no_env0(out: &mut Vec<crate::backend::models::MettaValue>) {
     // ∪ E₀'s global singleton caches (5 OnceLock + 4 thread-local + binding-capture).
     collect_global_anchors(out);
@@ -436,7 +435,6 @@ pub fn collect_persistent_roots_no_env0(out: &mut Vec<crate::backend::models::Me
 /// the GC thread physically cannot reach thread B's caches — B MUST self-publish
 /// (this function, on B's own thread). The shared dispatch fan-out is walked
 /// separately by the GC thread itself (D2 / `collect_live_dispatch_anchors`).
-#[cfg(feature = "index-gc")]
 pub enum ThreadContribution<'a> {
     /// Sites #1 (midloop park), #3 (dispatch finisher), #4 (collapse finisher),
     /// #5 (slab/midloop safepoint) — a live trampoline activation with in-scope
@@ -470,7 +468,6 @@ pub enum ThreadContribution<'a> {
 
 /// E1-FLIP / CEX-1 (D1) — collect THIS thread's complete reachable contribution.
 /// See [`ThreadContribution`]. Appends to `out` (never clears).
-#[cfg(feature = "index-gc")]
 pub fn collect_complete_thread_contribution(
     out: &mut Vec<crate::backend::models::MettaValue>,
     ctx: ThreadContribution<'_>,

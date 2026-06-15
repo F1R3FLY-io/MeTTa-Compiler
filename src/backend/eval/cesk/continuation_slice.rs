@@ -655,7 +655,7 @@ pub fn restore_from_bytes(buf: &[u8]) -> Result<RestoredSuspension, SliceError> 
     restore_slice(&slice)
 }
 
-#[cfg(all(test, feature = "index-gc"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend::eval::cesk::index_heap::global_index_heap;

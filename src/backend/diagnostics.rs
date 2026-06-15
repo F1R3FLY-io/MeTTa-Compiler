@@ -246,7 +246,6 @@ fn render_gc_state() -> String {
     let _ = writeln!(out);
 
     // ---- index mode: report the CESK IndexHeap + rendezvous cycle, NOT the slab pages ----
-    #[cfg(feature = "index-gc")]
     {
         if index_mode {
             render_index_heap_state(&mut out);
@@ -375,7 +374,7 @@ fn render_gc_state() -> String {
 /// will close. The `IndexHeap` is read with `try_read()` so the dump NEVER blocks the diagnostic
 /// watcher thread on the heap lock (a collection holding the write lock prints a clear note
 /// instead of deadlocking the dump).
-#[cfg(all(unix, feature = "index-gc"))]
+#[cfg(unix)]
 fn render_index_heap_state(out: &mut String) {
     use crate::backend::eval::cesk::index_heap::global_index_heap;
     use crate::backend::models::gc_allocator;
@@ -959,7 +958,7 @@ pub fn print_pool_stats() {
     eprintln!();
 }
 
-#[cfg(all(test, unix, feature = "index-gc"))]
+#[cfg(all(test, unix))]
 mod index_dump_coupling_tests {
     use super::*;
 

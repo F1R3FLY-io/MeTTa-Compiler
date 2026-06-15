@@ -160,7 +160,6 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
         }
     }
 
-    #[cfg(feature = "index-gc")]
     fn shade_values<I>(values: I)
     where
         V: 'static,
@@ -176,7 +175,6 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
         crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
     }
 
-    #[cfg(feature = "index-gc")]
     fn shade_entry(entry: TableEntry<V>)
     where
         V: 'static,
@@ -184,7 +182,6 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
         Self::shade_values(entry.results);
     }
 
-    #[cfg(feature = "index-gc")]
     fn insert_entry_with_satb(&mut self, expr_hash: u64, entry: TableEntry<V>)
     where
         V: 'static,
@@ -206,7 +203,6 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
         self.entries.insert(expr_hash, entry);
     }
 
-    #[cfg(feature = "index-gc")]
     fn remove_entry_with_satb(&mut self, expr_hash: u64)
     where
         V: 'static,
@@ -228,7 +224,6 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
         self.entries.remove(&expr_hash);
     }
 
-    #[cfg(feature = "index-gc")]
     fn clear_entries_with_satb(&mut self)
     where
         V: 'static,

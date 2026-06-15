@@ -705,7 +705,6 @@ thread_local! {
     /// (index_heap.rs:2128) and the park/teardown hygiene miss. (VALUE_HASH_CACHE already
     /// self-heals this way; these two value-memos did NOT — the residual ~3.75% DEDICATED=1
     /// wrong-subset corruption, confirmed by the eval-caches-disabled discriminator 0/40.)
-    #[cfg(feature = "index-gc")]
     static EVAL_CACHES_GC_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -715,7 +714,6 @@ thread_local! {
 /// `#[cfg(index-gc)]`: the slab build protects these memos via query-gen/mutation-epoch (NOT
 /// gc_sweep_epoch), so adding a gc-epoch clear there would change slab behaviour; gating to
 /// the index build keeps the slab path byte-identical.
-#[cfg(feature = "index-gc")]
 #[inline]
 fn ensure_eval_caches_gc_epoch_current() {
     let current = crate::backend::models::gc_allocator::gc_sweep_epoch();
@@ -728,7 +726,6 @@ fn ensure_eval_caches_gc_epoch_current() {
     });
 }
 
-#[cfg(feature = "index-gc")]
 #[inline]
 fn shade_evicted_eval_memo_entry((_query_gen, _epoch, _gen, entries): EvalMemoEntry) {
     crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(entries);
@@ -738,7 +735,6 @@ pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>
     if eval_caches_disabled() {
         return None;
     }
-    #[cfg(feature = "index-gc")]
     ensure_eval_caches_gc_epoch_current();
     let expr_hash = eval_memo_key(expr_hash, tracked_key);
     let current_epoch = mutation_epoch();
@@ -760,7 +756,6 @@ pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>
             stale = true;
         }
         if stale {
-            #[cfg(feature = "index-gc")]
             crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                 |satb_active| {
                     let evicted = memo.pop(&expr_hash);
@@ -783,7 +778,6 @@ pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>
 /// Store evaluation results in the memo cache.
 #[inline]
 pub fn eval_memo_put(expr_hash: u64, tracked_key: u64, results: &[MettaValue]) {
-    #[cfg(feature = "index-gc")]
     ensure_eval_caches_gc_epoch_current();
     let expr_hash = eval_memo_key(expr_hash, tracked_key);
     let query_gen = query_generation();
@@ -792,7 +786,6 @@ pub fn eval_memo_put(expr_hash: u64, tracked_key: u64, results: &[MettaValue]) {
     let entries: SmallVec<[MettaValue; 4]> = results.iter().copied().collect();
     EVAL_MEMO.with(|memo_cell| {
         let mut memo = memo_cell.borrow_mut();
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 // E2 SATB LRU barrier: `push` returns same-key overwrites and
@@ -833,7 +826,6 @@ pub fn collect_eval_memo_roots(out: &mut Vec<MettaValue>) {
 pub fn clear_eval_memo() {
     EVAL_MEMO.with(|memo_cell| {
         let mut memo = memo_cell.borrow_mut();
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 if satb_active {
@@ -879,7 +871,6 @@ pub fn clear_eval_memo() {
 type MatchResultEntry =
     SmallVec<[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>); 4]>;
 
-#[cfg(feature = "index-gc")]
 fn shade_evicted_match_result_entry(entries: MatchResultEntry) {
     let mut roots = Vec::with_capacity(entries.len().saturating_mul(3));
     for (rhs, bindings, rhs_type) in entries {
@@ -926,7 +917,6 @@ pub fn match_result_get(
     if eval_caches_disabled() {
         return None;
     }
-    #[cfg(feature = "index-gc")]
     ensure_eval_caches_gc_epoch_current();
     // I-9: Epoch check removed — deterministic GC keeps state garbage-free.
     let current_rule_epoch = RULE_EPOCH.load(Ordering::Acquire);
@@ -961,7 +951,6 @@ pub fn match_result_put(
     expr_arity: usize,
     results: &[(MettaValue, GenericBindings<MettaValue>, Option<MettaValue>)],
 ) {
-    #[cfg(feature = "index-gc")]
     ensure_eval_caches_gc_epoch_current();
     let current_rule_epoch = RULE_EPOCH.load(Ordering::Acquire);
     let current_mutation_epoch = mutation_epoch();
@@ -969,7 +958,6 @@ pub fn match_result_put(
     let entries: MatchResultEntry = results.iter().cloned().collect();
     MATCH_RESULT_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 // E2 SATB LRU barrier: `push` exposes both same-key overwrites
@@ -1039,7 +1027,6 @@ pub fn collect_match_result_roots(out: &mut Vec<MettaValue>) {
 pub fn clear_match_result_cache() {
     MATCH_RESULT_CACHE.with(|cache_cell| {
         let mut cache = cache_cell.borrow_mut();
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 if satb_active {
@@ -1133,11 +1120,9 @@ thread_local! {
     /// reuse after a sweep can stale-hit on a parked worker that did not run the
     /// sweeping thread's eager `clear_operator_cache`. Lazy epoch validation makes
     /// the next lookup on that worker self-heal.
-    #[cfg(feature = "index-gc")]
     static OPERATOR_CACHE_GC_EPOCH: Cell<u64> = const { Cell::new(0) };
 }
 
-#[cfg(feature = "index-gc")]
 #[inline]
 fn ensure_operator_cache_gc_epoch_current() {
     let current = crate::backend::models::gc_allocator::gc_sweep_epoch();
@@ -1168,7 +1153,6 @@ fn op_cache_key(head: &str, arity: usize) -> u64 {
 /// at the current rule epoch. Returns `None` on cache miss or stale entry.
 #[inline]
 pub fn operator_cache_get(head: &str, arity: usize) -> Option<OperatorCacheEntry> {
-    #[cfg(feature = "index-gc")]
     ensure_operator_cache_gc_epoch_current();
     let current_epoch = RULE_EPOCH.load(Ordering::Acquire);
     let key = op_cache_key(head, arity);
@@ -1199,7 +1183,6 @@ pub fn clear_operator_cache() {
     OPERATOR_CACHE.with(|cache_cell| {
         cache_cell.borrow_mut().clear();
     });
-    #[cfg(feature = "index-gc")]
     // Keep explicit clears coherent with the lazy sweep-epoch guard.
     OPERATOR_CACHE_GC_EPOCH.with(|e| {
         e.set(crate::backend::models::gc_allocator::gc_sweep_epoch());

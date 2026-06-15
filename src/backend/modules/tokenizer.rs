@@ -21,7 +21,6 @@ use regex::Regex;
 
 use crate::backend::models::MettaValue;
 
-#[cfg(feature = "index-gc")]
 fn shade_token_values<V, I>(values: I)
 where
     V: Clone + Send + Sync + 'static,
@@ -381,7 +380,6 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
 
     /// Clear all registered tokens.
     pub fn clear(&mut self) {
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 if satb_active {
@@ -400,7 +398,6 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
     /// Remove a token by pattern string.
     /// Returns true if a token was removed.
     pub fn remove_token(&mut self, pattern: &str) -> bool {
-        #[cfg(feature = "index-gc")]
         {
             crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                 |satb_active| {

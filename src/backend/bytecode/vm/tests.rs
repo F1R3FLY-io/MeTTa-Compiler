@@ -8510,7 +8510,6 @@ fn test_trail_mark_undo_new_binding() {
 // `VmLeafGuard` under `--features index-gc`. ─────────────────────────────────
 
 /// Index sibling of `vm_frame_under_trampoline_contributes_roots`.
-#[cfg(feature = "index-gc")]
 #[test]
 fn vm_frame_under_trampoline_contributes_roots_index() {
     use crate::backend::eval::cesk::k_spine::collect_k_spine;
@@ -8564,7 +8563,6 @@ fn vm_frame_under_trampoline_contributes_roots_index() {
 }
 
 /// Index sibling of `nested_vm_frames_each_contribute_roots`.
-#[cfg(feature = "index-gc")]
 #[test]
 fn nested_vm_frames_each_contribute_roots_index() {
     use crate::backend::eval::cesk::k_spine::collect_k_spine;

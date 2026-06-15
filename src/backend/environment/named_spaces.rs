@@ -88,7 +88,6 @@ where
     {
         self.make_owned();
 
-        #[cfg(feature = "index-gc")]
         let removed = super::core::with_env_satb_deletion_barrier(|satb_active| {
             let mut guard = self.shared.named_spaces.write();
             if let Some((_, atoms)) = guard.get_mut(&space_id) {

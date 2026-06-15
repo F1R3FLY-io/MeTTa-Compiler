@@ -51,7 +51,6 @@ pub type GenericMorkResult<V, F> = (Vec<V>, GenericEnvironment<V, F>);
 /// `bytecode/vm/mod.rs::run_cooperative_safepoint`); for non-`MettaValue`
 /// monomorphizations the body dead-code-eliminates. `#[cfg(index-gc)]`: the dedicated
 /// rendezvous is an index-only construct.
-#[cfg(feature = "index-gc")]
 #[inline]
 fn mork_liveness_poll<V>(
     counter: &mut u64,
@@ -258,11 +257,9 @@ where
             // the join's binding alternatives; poll for liveness (in-flight = the whole
             // `binding_sets`, which carries live MettaValues the caller holds across this
             // reduction). Explicit counted loop (was `.map().collect()`) to host the poll.
-            #[cfg(feature = "index-gc")]
             let mut gc_poll_counter: u64 = 0;
             let mut group: Vec<String> = Vec::with_capacity(binding_sets.len());
             for theta in binding_sets.iter() {
-                #[cfg(feature = "index-gc")]
                 mork_liveness_poll(&mut gc_poll_counter, &[], binding_sets, &[]);
                 group.push(apply_bindings_generic(e, theta, factory).friendly_repr());
             }
@@ -387,11 +384,9 @@ where
     let mut final_env = env;
 
     // E1-FLIP Path B V4 — Step 3: per-loop liveness throttle (index-gc only).
-    #[cfg(feature = "index-gc")]
     let mut gc_poll_counter: u64 = 0;
     for bindings in binding_sets {
         // E1-FLIP Path B V4 — Step 3: liveness poll (results so far ∪ this binding set).
-        #[cfg(feature = "index-gc")]
         mork_liveness_poll(
             &mut gc_poll_counter,
             &all_results,
@@ -492,12 +487,10 @@ where
     let mut next_bindings = Vec::new();
 
     // E1-FLIP Path B V4 — Step 3: per-loop liveness throttle (index-gc only).
-    #[cfg(feature = "index-gc")]
     let mut gc_poll_counter: u64 = 0;
     for bindings in current_bindings {
         // E1-FLIP Path B V4 — Step 3: liveness poll. In-flight = the accumulated
         // `next_bindings` alternatives ∪ the just-dequeued `bindings` being expanded.
-        #[cfg(feature = "index-gc")]
         mork_liveness_poll(
             &mut gc_poll_counter,
             &[],
@@ -574,7 +567,6 @@ where
     let mut binding_alternatives: Vec<GenericBindings<V>> = vec![initial_bindings.clone()];
 
     // E1-FLIP Path B V4 — Step 3: per-loop liveness throttle (index-gc only).
-    #[cfg(feature = "index-gc")]
     let mut gc_poll_counter: u64 = 0;
     for goal in goals.iter() {
         // Skip exec forms in pass 1
@@ -588,7 +580,6 @@ where
         for current_bindings in binding_alternatives.iter() {
             // E1-FLIP Path B V4 — Step 3: liveness poll. In-flight = the source
             // `binding_alternatives` ∪ the accumulating `next_alternatives`.
-            #[cfg(feature = "index-gc")]
             mork_liveness_poll(
                 &mut gc_poll_counter,
                 &[],
@@ -637,7 +628,6 @@ where
     for current_bindings in binding_alternatives.iter() {
         // E1-FLIP Path B V4 — Step 3: liveness poll. In-flight = the emitted
         // `all_results` so far ∪ the remaining `binding_alternatives` to instantiate.
-        #[cfg(feature = "index-gc")]
         mork_liveness_poll(
             &mut gc_poll_counter,
             &all_results,

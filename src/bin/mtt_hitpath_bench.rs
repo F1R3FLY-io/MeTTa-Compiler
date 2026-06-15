@@ -20,7 +20,6 @@
 //! Run (index build only):
 //!   cargo build --release --features index-gc --bin mtt-hitpath-bench
 //!   taskset -c 8 ./target/release/mtt-hitpath-bench
-#[cfg(feature = "index-gc")]
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("parallel") {
         return parallel_gate();
@@ -131,7 +130,6 @@ fn main() {
 // the question the N=1 gate could not answer — per-worker shadow
 // re-materialization (arm A) vs one shared column (arm B) at N=8.
 // Pre-committed rule: B beats A by ≥30% AGGREGATE CPU or the column stays dead.
-#[cfg(feature = "index-gc")]
 pub fn parallel_gate() {
     use mettatron::backend::models::{MettaValue, MettaValueFactory, MettaValueInner};
     use std::hint::black_box;

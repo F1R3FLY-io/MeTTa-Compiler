@@ -8,7 +8,6 @@ use std::sync::Arc;
 use crate::backend::models::MettaValue;
 use crate::backend::MettaEnvironment;
 
-#[cfg(feature = "index-gc")]
 fn shade_module_atoms<I>(atoms: I)
 where
     I: IntoIterator<Item = MettaValue>,
@@ -90,7 +89,6 @@ impl ModuleSpace {
     /// Remove an atom from this space.
     /// Returns true if the atom was found and removed.
     pub fn remove_atom(&mut self, atom: &MettaValue) -> bool {
-        #[cfg(feature = "index-gc")]
         {
             crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                 |satb_active| {
@@ -182,7 +180,6 @@ impl ModuleSpace {
 
     /// Clear all atoms from the main space (not dependencies).
     pub fn clear(&mut self) {
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 if satb_active {

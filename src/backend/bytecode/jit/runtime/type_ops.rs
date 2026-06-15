@@ -75,7 +75,6 @@ static TYPE_NAME_UNKNOWN: &str = "Unknown";
 pub unsafe extern "C" fn jit_runtime_get_type(ctx: *mut JitContext, val: u64, _ip: u64) -> u64 {
     // The index arena store ignores the JIT arena pointer as a store selector
     // (formal/rocq/gc/JitTypeOpsStoreSelection.v), so use the active factory.
-    #[cfg(feature = "index-gc")]
     let factory = crate::backend::models::active_factory();
 
     // S6: consult environment for type assertions if available.
@@ -524,7 +523,7 @@ pub unsafe extern "C" fn jit_runtime_is_function(_ctx: *mut JitContext, val: u64
     TAG_BOOL | (is_fn as u64)
 }
 
-#[cfg(all(test, feature = "index-gc"))]
+#[cfg(test)]
 mod index_is_function_tests {
     use super::*;
     use crate::backend::eval::cesk::index_heap::IndexFactory;

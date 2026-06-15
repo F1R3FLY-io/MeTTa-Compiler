@@ -1086,7 +1086,6 @@ impl IndexHeap {
     /// capture must not perturb them — capture runs under a SHARED `.read()` lock).
     /// Stack-safe explicit worklist; idempotent; order of the returned vector is
     /// the discovery order (irrelevant — restore topo-sorts via the remap fixpoint).
-    #[cfg(feature = "index-gc")]
     pub fn reachable_closure(&self, roots: &[Addr]) -> Vec<Addr> {
         let mut seen: std::collections::HashSet<Addr> =
             std::collections::HashSet::with_capacity(roots.len().max(16));
@@ -1128,7 +1127,6 @@ impl IndexHeap {
     /// position-independent copy of the live σ node. Lives next to
     /// `child_addrs_for_mark` so the closure-and-emit pair stays in lockstep with
     /// the edge relation.
-    #[cfg(feature = "index-gc")]
     pub fn emit_node(
         &self,
         addr: Addr,
@@ -4969,7 +4967,7 @@ mod tests {
 // Gated `feature = "index-gc"` (IndexFactory only allocates into the index heap
 // under that feature; `gc_mode_is_index()` inits to true there) and `not(loom)`
 // (uses std threads, not loom's instrumented model).
-#[cfg(all(test, feature = "index-gc", not(loom)))]
+#[cfg(all(test, not(loom)))]
 mod tsan_concurrent_factory {
     use super::*;
     use crate::backend::models::{note_worker_spawned, MettaValueFactory};

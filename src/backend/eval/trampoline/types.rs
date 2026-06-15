@@ -266,7 +266,6 @@ pub struct ParallelDispatchHandle {
     /// Stored last so it drops AFTER the provider Arc it downgraded (Rust drops
     /// fields in declaration order; the Weak in the anchor is harmless once
     /// upgraded-to-None).
-    #[cfg(feature = "index-gc")]
     pub(crate) _live_dispatch: Option<crate::backend::models::gc_allocator::LiveDispatchHandle>,
 }
 
@@ -353,7 +352,6 @@ pub struct ParallelDispatchRootProvider {
 /// `results.try_lock()`, never a blocking `lock` — a contended `results` means a
 /// worker mid-write holding its EvalGuard, which self-rooted that value as a
 /// rendezvous participant, so skipping is safe).
-#[cfg(feature = "index-gc")]
 impl crate::backend::models::gc_allocator::DispatchRoots for ParallelDispatchRootProvider {
     fn collect_dispatch_roots(&self, roots: &mut Vec<MettaValue>) {
         // INPUTS first — no Mutex, direct iter (immutable Arc).
@@ -396,7 +394,6 @@ pub struct ParallelCollapseDispatchHandle {
     /// See `ParallelDispatchHandle::tracked_vars_hint` (Phase 10.A).
     pub tracked_vars_hint: Option<Arc<SmallVec<[MettaValue; 4]>>>,
     /// E1-FLIP / CEX-1 (D2): see `ParallelDispatchHandle::_live_dispatch`.
-    #[cfg(feature = "index-gc")]
     pub(crate) _live_dispatch: Option<crate::backend::models::gc_allocator::LiveDispatchHandle>,
 }
 
@@ -433,7 +430,6 @@ pub struct ParallelCollapseRootProvider {
 /// E1-FLIP / CEX-1 (D2): the index-gc collapse-dispatch fan-out anchor. See
 /// `ParallelDispatchRootProvider`'s `DispatchRoots` impl — identical rationale and
 /// body (collapse workers capture `items` by-move identically).
-#[cfg(feature = "index-gc")]
 impl crate::backend::models::gc_allocator::DispatchRoots for ParallelCollapseRootProvider {
     fn collect_dispatch_roots(&self, roots: &mut Vec<MettaValue>) {
         // INPUTS first — no Mutex, direct iter (immutable Arc).
@@ -1814,7 +1810,6 @@ pub enum Continuation {
 /// per loop at the loop level. They are intentionally NOT walked here: doing so
 /// would re-walk all of `E₀` per frame (O(|E₀|) per frame). `subtypes` holds
 /// only `Vec<String>` (no `Addr`s) and is likewise skipped.
-#[cfg(feature = "index-gc")]
 #[inline]
 fn collect_fork_local_roots(env: &SharedEnv, out: &mut Vec<MettaValue>) {
     let s = &env.shared;
@@ -1838,7 +1833,6 @@ impl WorkItem {
     /// compile error here until it is classified env-carrying or env-free — so
     /// a future variant holding a forked env cannot silently escape the root
     /// walk in [`Self::collect_values`].
-    #[cfg(feature = "index-gc")]
     fn frame_env(&self) -> Option<&SharedEnv> {
         match self {
             Self::Eval { env, .. } | Self::EvalWithBindings { env, .. } => Some(env),
@@ -1856,7 +1850,6 @@ impl WorkItem {
         // concurrent index sweep does not reclaim slots held only by a worker's
         // fork_for_nondeterminism child env. Index-only: slab roots env via the
         // ROOT_REGISTRY/RootProvider apparatus, so this would be redundant there.
-        #[cfg(feature = "index-gc")]
         if let Some(e) = self.frame_env() {
             collect_fork_local_roots(e, out);
         }
@@ -2185,7 +2178,6 @@ impl Continuation {
     /// Exactly three variants are env-free (`Done`, `ProcessOnceRestore`,
     /// `ReexportLetBindings`); `CollectSExpr` names its env field `original_env`
     /// (the naming trap); every other variant carries `env`.
-    #[cfg(feature = "index-gc")]
     fn frame_env(&self) -> Option<&SharedEnv> {
         match self {
             // ── env-free variants ──
@@ -2280,7 +2272,6 @@ impl Continuation {
     pub fn collect_values(&self, out: &mut Vec<MettaValue>) {
         // Root the frame's forked-env-local Addrs (CoW-diverged maps) — see
         // `WorkItem::collect_values` for the rationale. Index-only.
-        #[cfg(feature = "index-gc")]
         if let Some(e) = self.frame_env() {
             collect_fork_local_roots(e, out);
         }
@@ -3317,7 +3308,6 @@ impl Continuation {
                 // Forked-env-local roots — these three narrowed arms do NOT
                 // delegate to `collect_values`, so the env walk is repeated here
                 // (the `_` catch-all gets it via `collect_values`). Index-only.
-                #[cfg(feature = "index-gc")]
                 collect_fork_local_roots(env, out);
                 #[cfg(not(feature = "index-gc"))]
                 let _ = env;
@@ -3348,7 +3338,6 @@ impl Continuation {
                 env,
                 ..
             } => {
-                #[cfg(feature = "index-gc")]
                 collect_fork_local_roots(env, out);
                 #[cfg(not(feature = "index-gc"))]
                 let _ = env;
@@ -3370,7 +3359,6 @@ impl Continuation {
                 env,
                 ..
             } => {
-                #[cfg(feature = "index-gc")]
                 collect_fork_local_roots(env, out);
                 #[cfg(not(feature = "index-gc"))]
                 let _ = env;

@@ -1128,7 +1128,6 @@ where
         }
     }
 
-    #[cfg(feature = "index-gc")]
     #[inline]
     fn push_metta_root_from_v(out: &mut Vec<MettaValue>, value: &V) {
         if TypeId::of::<V>() == TypeId::of::<MettaValue>() {
@@ -1138,7 +1137,6 @@ where
         }
     }
 
-    #[cfg(feature = "index-gc")]
     fn collect_bindings_roots_as_metta(
         out: &mut Vec<MettaValue>,
         bindings: &GenericBindings<V>,
@@ -1151,7 +1149,6 @@ where
         }
     }
 
-    #[cfg(feature = "index-gc")]
     fn collect_outcome_roots_as_metta(
         out: &mut Vec<MettaValue>,
         outcomes: &[(V, GenericBindings<V>)],
@@ -1165,7 +1162,6 @@ where
         }
     }
 
-    #[cfg(feature = "index-gc")]
     fn collect_rule_match_roots_as_metta(
         out: &mut Vec<MettaValue>,
         matches: &[crate::backend::environment::rule_management::RuleMatchResult<V>],
@@ -1184,7 +1180,6 @@ where
         }
     }
 
-    #[cfg(feature = "index-gc")]
     fn collect_pre_eval_local_roots_as_metta(
         &self,
         out: &mut Vec<MettaValue>,
@@ -1204,7 +1199,6 @@ where
         }
     }
 
-    #[cfg(feature = "index-gc")]
     fn with_vm_value_vec_roots(
         values: &Vec<MettaValue>,
     ) -> Option<crate::backend::eval::cesk::k_spine::VmLeafGuard> {
@@ -7757,14 +7751,12 @@ where
                 .clone();
             let saved_outer_bindings = self.current_bindings.clone();
             let sub_outcomes = {
-                #[cfg(feature = "index-gc")]
                 let _vm_nested_local_roots = {
                     let mut roots = Vec::with_capacity(8);
                     Self::push_metta_root_from_v(&mut roots, &rhs);
                     Self::collect_bindings_roots_as_metta(&mut roots, &saved_outer_bindings);
                     roots
                 };
-                #[cfg(feature = "index-gc")]
                 let _vm_nested_local_roots_guard =
                     Self::with_vm_value_vec_roots(&_vm_nested_local_roots);
                 self.eval_sub_expr_vm_all_with_bindings(rhs.clone(), env)
@@ -7975,7 +7967,6 @@ where
             // preserving each sub-result's bindings.
             let rhs = result.instantiated_rhs.clone();
             let sub_results = {
-                #[cfg(feature = "index-gc")]
                 let _vm_nested_local_roots = {
                     let mut roots = Vec::with_capacity(matches.len().saturating_mul(4) + 16);
                     Self::collect_rule_match_roots_as_metta(&mut roots, &matches);
@@ -7985,7 +7976,6 @@ where
                     Self::push_metta_root_from_v(&mut roots, &rhs);
                     roots
                 };
-                #[cfg(feature = "index-gc")]
                 let _vm_nested_local_roots_guard =
                     Self::with_vm_value_vec_roots(&_vm_nested_local_roots);
                 self.eval_sub_expr_vm_all_with_bindings(rhs, env.clone())
@@ -8191,7 +8181,6 @@ where
             for m in matches.iter() {
                 let rhs = m.instantiated_rhs.clone();
                 let sub_results = {
-                    #[cfg(feature = "index-gc")]
                     let _vm_nested_local_roots = {
                         let mut roots = Vec::with_capacity(
                             combinations.len().saturating_mul(3)
@@ -8208,7 +8197,6 @@ where
                         Self::push_metta_root_from_v(&mut roots, &rhs);
                         roots
                     };
-                    #[cfg(feature = "index-gc")]
                     let _vm_nested_local_roots_guard =
                         Self::with_vm_value_vec_roots(&_vm_nested_local_roots);
                     self.eval_sub_expr_vm_all_with_bindings(rhs, env.clone())
@@ -8489,7 +8477,6 @@ where
             // this arg. Empty vec means irreducible; treat as literal.
             let sub_env = self.env.as_ref().expect("env checked above").clone();
             let sub_results = {
-                #[cfg(feature = "index-gc")]
                 let _pre_eval_local_roots = {
                     let mut roots =
                         Vec::with_capacity(per_arg_results.len().saturating_mul(4) + 8);
@@ -8501,7 +8488,6 @@ where
                     );
                     roots
                 };
-                #[cfg(feature = "index-gc")]
                 let _pre_eval_local_roots_guard =
                     Self::with_vm_value_vec_roots(&_pre_eval_local_roots);
                 self.eval_sub_expr_vm_all_with_bindings(item_to_eval.clone(), sub_env)
@@ -8718,13 +8704,11 @@ where
         // nested trampoline call. The local is still used on the no-result path,
         // so it must be visible to structural GC while the nested CESK machine
         // is running.
-        #[cfg(feature = "index-gc")]
         let _vm_local_roots = {
             let mut roots = Vec::with_capacity(1);
             roots.push(metta_sub_expr);
             roots
         };
-        #[cfg(feature = "index-gc")]
         let _vm_local_roots_guard = Self::with_vm_value_vec_roots(&_vm_local_roots);
         let _vm_roots_guard = self.with_vm_roots_frame();
 

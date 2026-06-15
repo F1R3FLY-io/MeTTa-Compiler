@@ -724,7 +724,6 @@ fn eval_metta(
         // out-of-scope. So the block stays typed `(results, new_env)` in BOTH builds, and
         // the Auto branch threads its handle out via `b3_root_handle` (declared here so it
         // outlives result consumption — the F1 ride; dropped with `_result_roots` below).
-        #[cfg(feature = "index-gc")]
         let mut b3_root_handle: Option<mettatron::backend::models::SafepointRootHandle> = None;
         #[cfg(feature = "trace")]
         let (results, new_env) = {
@@ -741,7 +740,6 @@ fn eval_metta(
                 {
                     eval(expr, env, &state)
                 }
-                #[cfg(feature = "index-gc")]
                 {
                     let (r, e, h) = eval(expr, env, &state);
                     b3_root_handle = h;
@@ -765,7 +763,6 @@ fn eval_metta(
             {
                 eval(expr, env, &state)
             }
-            #[cfg(feature = "index-gc")]
             {
                 let (r, e, h) = eval(expr, env, &state);
                 b3_root_handle = h;
@@ -840,7 +837,6 @@ fn eval_metta(
         // session-release GC to run), then guard (enqueue async release_session). The B3
         // handle (index-gc) kept the leaving roots in SAFEPOINT_ROOTS across the sliver
         // [eval() returns, main re-registers via _result_roots] + the format above.
-        #[cfg(feature = "index-gc")]
         drop(b3_root_handle);
         drop(_result_roots);
         drop(gc_hold);
@@ -1081,7 +1077,6 @@ fn run_repl(options: &Options) {
                             // `_result_roots`. Slab return is the unchanged 2-tuple.
                             #[cfg(not(feature = "index-gc"))]
                             let (results, updated_env) = eval(expr, env, &state);
-                            #[cfg(feature = "index-gc")]
                             let (results, updated_env, _b3_root_handle) = eval(expr, env, &state);
                             env = updated_env;
 

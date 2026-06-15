@@ -368,7 +368,6 @@ pub(crate) struct RuleEntry<V: MettaValueTrait + Clone> {
     pub body_contains_cut: bool,
 }
 
-#[cfg(feature = "index-gc")]
 fn shade_rule_entry_for_satb<V>(entry: &RuleEntry<V>)
 where
     V: MettaValueTrait + Clone + 'static,
@@ -542,7 +541,6 @@ impl<V: MettaValueTrait + Clone + 'static> RuleGroup<V> {
                     entries[pos].multiplicity -= 1;
                     return Some(false);
                 } else {
-                    #[cfg(feature = "index-gc")]
                     {
                         let removed = entries.remove(pos);
                         if satb_active {
@@ -571,7 +569,6 @@ impl<V: MettaValueTrait + Clone + 'static> RuleGroup<V> {
                 self.variable_first_arg[pos].multiplicity -= 1;
                 return Some(false);
             } else {
-                #[cfg(feature = "index-gc")]
                 {
                     let removed = self.variable_first_arg.remove(pos);
                     if satb_active {
@@ -621,7 +618,6 @@ impl<V: MettaValueTrait + Clone + 'static> RuleGroup<V> {
                 } else {
                     let removed = entries.remove(pos);
                     let rhs = removed.rhs.clone();
-                    #[cfg(feature = "index-gc")]
                     if satb_active {
                         shade_rule_entry_for_satb(&removed);
                     }
@@ -642,7 +638,6 @@ impl<V: MettaValueTrait + Clone + 'static> RuleGroup<V> {
             } else {
                 let removed = self.variable_first_arg.remove(pos);
                 let rhs = removed.rhs.clone();
-                #[cfg(feature = "index-gc")]
                 if satb_active {
                     shade_rule_entry_for_satb(&removed);
                 }
@@ -1119,7 +1114,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
 
     /// Remove a rule by decrementing multiplicity. Returns true if the entry was removed entirely.
     pub fn remove_rule(&mut self, lhs: &V, rhs: &V) -> bool {
-        #[cfg(feature = "index-gc")]
         {
             return crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                 |satb_active| self.remove_rule_inner(lhs, rhs, satb_active),
@@ -1162,7 +1156,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 self.wildcard[pos].multiplicity -= 1;
                 return false;
             } else {
-                #[cfg(feature = "index-gc")]
                 {
                     let removed = self.wildcard.remove(pos);
                     if satb_active {
@@ -1205,7 +1198,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
     /// `.is_some()` to decide whether the index was authoritatively
     /// updated; only run a fallback path on `None`.
     pub fn remove_rule_by_debruijn(&mut self, full_bytes: &[u8]) -> Option<bool> {
-        #[cfg(feature = "index-gc")]
         {
             return crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                 |satb_active| self.remove_rule_by_debruijn_inner(full_bytes, satb_active),
@@ -1254,7 +1246,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 self.wildcard[pos].multiplicity -= 1;
                 return Some(false);
             } else {
-                #[cfg(feature = "index-gc")]
                 {
                     let removed = self.wildcard.remove(pos);
                     if satb_active {
@@ -1428,7 +1419,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
 
     /// Clear the index.
     pub fn clear(&mut self) {
-        #[cfg(feature = "index-gc")]
         {
             crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                 |satb_active| self.clear_inner(satb_active),
@@ -1444,7 +1434,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
         #[cfg(not(feature = "index-gc"))]
         let _ = satb_active;
 
-        #[cfg(feature = "index-gc")]
         if satb_active {
             for entry in self
                 .by_head_arity

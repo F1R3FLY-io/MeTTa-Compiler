@@ -103,21 +103,18 @@ impl SpaceRegistry {
         self.create(name)
     }
 
-    #[cfg(feature = "index-gc")]
     fn shade_space_handle(handle: &SpaceHandle) {
         let mut roots = Vec::new();
         handle.collect_gc_values(&mut roots);
         crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
     }
 
-    #[cfg(feature = "index-gc")]
     fn shade_all_spaces(&self) {
         let mut roots = Vec::new();
         self.collect_all_gc_values(&mut roots);
         crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
     }
 
-    #[cfg(feature = "index-gc")]
     fn register_with_satb(&self, name: &str, handle: SpaceHandle) {
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
@@ -136,7 +133,6 @@ impl SpaceRegistry {
         self.spaces.insert(name.to_string(), handle);
     }
 
-    #[cfg(feature = "index-gc")]
     fn remove_with_satb(&self, name: &str) -> bool {
         let mut removed = false;
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
@@ -158,7 +154,6 @@ impl SpaceRegistry {
         self.spaces.remove(name).is_some()
     }
 
-    #[cfg(feature = "index-gc")]
     fn clear_with_satb(&self) {
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {

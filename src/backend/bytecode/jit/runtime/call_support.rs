@@ -172,7 +172,6 @@ unsafe fn jit_pre_eval_arg(ctx_ref: &JitContext, arg: &MettaValue) -> Option<Met
     // Slab stays inert because dedicated_gc_enabled() is false there; in index
     // mode, a pending FANOUT rendezvous makes this tier-return edge publish JIT
     // roots before parking.
-    #[cfg(feature = "index-gc")]
     {
         if crate::backend::models::gc_allocator::is_gc_requested() {
             let mut roots: Vec<MettaValue> = Vec::with_capacity(64);

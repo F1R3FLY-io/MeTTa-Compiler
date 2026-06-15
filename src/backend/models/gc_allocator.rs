@@ -2509,7 +2509,6 @@ pub fn global_allocator() -> &'static SlabAllocator {
 /// accessor returns the active store's alloc interface, so every one of the
 /// ~194 `global_factory()` callers follows the index store without per-site
 /// changes. It is NOT a runtime mode-dispatch inside the factory.
-#[cfg(feature = "index-gc")]
 pub fn global_factory() -> crate::backend::models::ActiveFactory {
     crate::backend::eval::cesk::index_heap::IndexFactory
 }
@@ -3438,7 +3437,6 @@ pub(crate) fn all_occupied_slots_satisfied(cur_gen: u64) -> (bool, *const Witnes
 /// indicator the E1 liveness diagnosis keys on). Lock-free (atomic loads over the never-realloc
 /// leaked chunk list), so it is safe to call from the SIGUSR1 diagnostic watcher thread during
 /// a suspected hang. #275: feeds the index-mode dump's `GC Cycle / Rendezvous` section.
-#[cfg(feature = "index-gc")]
 pub(crate) fn witness_directory_summary(cur_gen: u64) -> (usize, usize, usize) {
     let total = WITNESS_NEXT_INDEX.load(Ordering::Acquire);
     let mut occupied = 0usize;
@@ -3500,7 +3498,6 @@ pub(crate) fn current_witness_ok() -> bool {
 ///
 /// Live on the index-gc dedicated-rendezvous path; cfg-gated out of the slab
 /// build.
-#[cfg(feature = "index-gc")]
 pub trait EnvRoots: Send + Sync {
     fn collect_env_roots(&self, out: &mut Vec<MettaValue>);
 }
@@ -3510,10 +3507,8 @@ pub trait EnvRoots: Send + Sync {
 /// Each entry is a `Weak` so an env dropped without deregistering self-prunes on the
 /// next walk. Fully-qualified `std::sync::Weak` because the `use std::sync::Weak` is
 /// `#[cfg(not(index-gc))]`-gated (keeps the 49-warning baseline in both builds).
-#[cfg(feature = "index-gc")]
 static LIVE_ENVS: OnceLock<Mutex<Vec<Option<std::sync::Weak<dyn EnvRoots>>>>> = OnceLock::new();
 
-#[cfg(feature = "index-gc")]
 fn live_envs() -> &'static Mutex<Vec<Option<std::sync::Weak<dyn EnvRoots>>>> {
     LIVE_ENVS.get_or_init(|| Mutex::new(Vec::new()))
 }
@@ -3524,12 +3519,10 @@ fn live_envs() -> &'static Mutex<Vec<Option<std::sync::Weak<dyn EnvRoots>>>> {
 ///
 /// Live on the index-gc dedicated-rendezvous path; cfg-gated out of the slab
 /// build.
-#[cfg(feature = "index-gc")]
 pub struct LiveEnvHandle {
     idx: usize,
 }
 
-#[cfg(feature = "index-gc")]
 impl Drop for LiveEnvHandle {
     fn drop(&mut self) {
         let registry = live_envs();
@@ -3546,7 +3539,6 @@ impl Drop for LiveEnvHandle {
 ///
 /// Live on the index-gc dedicated-rendezvous path; cfg-gated out of the slab
 /// build.
-#[cfg(feature = "index-gc")]
 pub fn register_live_env(e: &Arc<dyn EnvRoots>) -> LiveEnvHandle {
     let registry = live_envs();
     let mut guard = registry.lock();
@@ -3570,7 +3562,6 @@ pub fn register_live_env(e: &Arc<dyn EnvRoots>) -> LiveEnvHandle {
 ///
 /// Live on the index-gc dedicated-rendezvous path; cfg-gated out of the slab
 /// build.
-#[cfg(feature = "index-gc")]
 pub fn collect_live_env_anchors(out: &mut Vec<MettaValue>) {
     if let Some(registry) = LIVE_ENVS.get() {
         let mut guard = registry.lock();
@@ -3803,7 +3794,6 @@ pub(crate) fn worker_park_and_root_in_cycle(roots: &[MettaValue], my_gen: u64) {
             // (above) is never lost. The finishers + the zero-root drop bump get NO
             // note_reified_park ⇒ they can NEVER satisfy the witness BY CONSTRUCTION.
             // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
-            #[cfg(feature = "index-gc")]
             {
                 if dedicated_gc_enabled() {
                     note_reified_park(my_gen);
@@ -3953,7 +3943,6 @@ pub(crate) static GC_PARK_WAITERS: AtomicUsize = AtomicUsize::new(0);
 // `reacquire_eval_guard_after_safepoint_full`, and its only reader is the index-gc
 // dump accessor — so it is index-gc-only (GATE/PARK are referenced by the
 // always-compiled, slab-dead `worker_wait_for_resume`/`worker_resume_wait_for_cycle`).
-#[cfg(feature = "index-gc")]
 pub(crate) static GC_STRADDLE_WAITERS: AtomicUsize = AtomicUsize::new(0);
 
 /// RAII occupancy guard: increments a wait-site counter on entry, decrements on EVERY
@@ -3974,7 +3963,6 @@ impl Drop for GcWaitSiteGuard {
 }
 
 /// Snapshot `(gate, park, straddle)` GC wait-site occupancy for the diagnostic dump.
-#[cfg(feature = "index-gc")]
 pub(crate) fn gc_wait_site_occupancy() -> (usize, usize, usize) {
     (
         GC_GATE_WAITERS.load(Ordering::Acquire),
@@ -4657,7 +4645,6 @@ impl EvalGuard {
                 // slot stays occupied continuously from here to the OUTERMOST drop
                 // (across parks) — DECOUPLED from N_THREADS (which releases at a park).
                 // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
-                #[cfg(feature = "index-gc")]
                 {
                     if dedicated_gc_enabled() {
                         witness_acquire_slot();
@@ -4693,7 +4680,6 @@ impl Drop for EvalGuard {
                     // locks a parking_lot mutex (no poison, unwind-safe) + only infallible
                     // ops, so it is safe during a panic-unwind drop (no double-panic).
                     // SLAB-BYTE-IDENTICAL: #[cfg(index-gc)] wall + index-mode gate.
-                    #[cfg(feature = "index-gc")]
                     {
                         if dedicated_gc_enabled() && is_gc_requested() {
                             let my_gen = current_cycle_gen();
@@ -4708,7 +4694,6 @@ impl Drop for EvalGuard {
                     // (park) drop does NOT release — the frozen machine is still live —
                     // so this is reached ONLY at the genuine end of the thread's
                     // evaluation. SLAB-BYTE-IDENTICAL: cfg + index-mode gate.
-                    #[cfg(feature = "index-gc")]
                     {
                         if dedicated_gc_enabled() {
                             witness_release_slot();
@@ -5292,7 +5277,6 @@ pub fn maybe_process_gc_response() -> bool {
     // F4 R3: the legacy slab GC-pool response channel was removed; the index
     // collector does not receive pool responses, but cron init above preserves
     // counter-sync scheduling.
-    #[cfg(feature = "index-gc")]
     {
         return false;
     }
@@ -5444,7 +5428,6 @@ pub fn collect_safepoint_roots(roots: &mut Vec<MettaValue>) {
 /// (inputs from the immutable `Arc<Vec<…>>`; outputs via `results.try_lock()`,
 /// NEVER `lock` — a contended `results` ⇒ a worker mid-write holding its EvalGuard
 /// is a participant who self-rooted that value, so skipping is safe).
-#[cfg(feature = "index-gc")]
 pub trait DispatchRoots: Send + Sync {
     fn collect_dispatch_roots(&self, out: &mut Vec<MettaValue>);
 }
@@ -5457,11 +5440,9 @@ pub trait DispatchRoots: Send + Sync {
 // import above is `#[cfg(not(index-gc))]`-gated (it was slab-ROOT_REGISTRY-only); the
 // fully-qualified path keeps that import — and the 49-warning baseline — untouched in
 // both builds.
-#[cfg(feature = "index-gc")]
 static LIVE_DISPATCHES: OnceLock<Mutex<Vec<Option<std::sync::Weak<dyn DispatchRoots>>>>> =
     OnceLock::new();
 
-#[cfg(feature = "index-gc")]
 fn live_dispatches() -> &'static Mutex<Vec<Option<std::sync::Weak<dyn DispatchRoots>>>> {
     LIVE_DISPATCHES.get_or_init(|| Mutex::new(Vec::new()))
 }
@@ -5470,12 +5451,10 @@ fn live_dispatches() -> &'static Mutex<Vec<Option<std::sync::Weak<dyn DispatchRo
 /// Stored in the dispatch handle's `_live_dispatch` field, so the slot is released
 /// when the `WaitForParallel`(`Collapse`) continuation is consumed (the dispatch
 /// finishes / cancels). Mirrors `SafepointRootHandle`.
-#[cfg(feature = "index-gc")]
 pub struct LiveDispatchHandle {
     idx: usize,
 }
 
-#[cfg(feature = "index-gc")]
 impl Drop for LiveDispatchHandle {
     fn drop(&mut self) {
         let registry = live_dispatches();
@@ -5491,7 +5470,6 @@ impl Drop for LiveDispatchHandle {
 /// `Weak` — never extends the lifetime); reuses a free slot or appends. The
 /// returned handle frees the slot on drop. Call at dispatch construction
 /// (`parallel_dispatch` / `parallel_collapse_dispatch`).
-#[cfg(feature = "index-gc")]
 pub fn register_live_dispatch(d: &Arc<dyn DispatchRoots>) -> LiveDispatchHandle {
     let registry = live_dispatches();
     let mut guard = registry.lock();
@@ -5513,7 +5491,6 @@ pub fn register_live_dispatch(d: &Arc<dyn DispatchRoots>) -> LiveDispatchHandle 
 /// `WORKER_ROOT_BUFFER` and `collect_safepoint_roots`. Lock order: `LIVE_DISPATCHES`
 /// then per-handle `results.try_lock()` (inside `collect_dispatch_roots`, never a
 /// blocking `lock`); the GC thread holds no other lock here.
-#[cfg(feature = "index-gc")]
 pub fn collect_live_dispatch_anchors(out: &mut Vec<MettaValue>) {
     if let Some(registry) = LIVE_DISPATCHES.get() {
         let mut guard = registry.lock();
@@ -5539,7 +5516,7 @@ pub fn collect_live_dispatch_anchors(out: &mut Vec<MettaValue>) {
 /// `Addr`s (as `inner_ptr` usizes) WITHOUT pruning — the witness multiset the
 /// rendezvous-union oracle checks `collect_live_dispatch_anchors` covered. Returns
 /// the live-handle count too. Debug-only callers.
-#[cfg(all(feature = "index-gc", debug_assertions))]
+#[cfg(debug_assertions)]
 pub fn snapshot_live_dispatch_witness() -> (Vec<MettaValue>, usize) {
     let mut out = Vec::new();
     let mut live = 0usize;
@@ -5847,7 +5824,6 @@ pub fn reacquire_eval_guard_after_safepoint() {
             // production (the FANOUT>0 reified parks use the `_full` variant), so the
             // restamp is inert there, but it is wired for lifecycle consistency with
             // the `_full` rejoin. SLAB-BYTE-IDENTICAL: cfg + index-mode gate.
-            #[cfg(feature = "index-gc")]
             {
                 if dedicated_gc_enabled() {
                     witness_restamp_acquired(current_cycle_gen());
@@ -5901,7 +5877,6 @@ pub fn reacquire_eval_guard_after_safepoint_full(
     // ── E1-FLIP Path B V4: the STRADDLE re-park loop ──
     // Engaged ONLY when the dedicated GC thread is driving (cfg + dedicated). When
     // dormant, falls through to the unchanged base protocol below (BYTE-IDENTICAL).
-    #[cfg(feature = "index-gc")]
     {
         if dedicated_gc_enabled() {
             let _site = GcWaitSiteGuard::enter(&GC_STRADDLE_WAITERS);

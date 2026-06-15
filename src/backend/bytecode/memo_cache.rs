@@ -27,7 +27,6 @@ use dashmap::DashMap;
 use crate::backend::models::MettaValue;
 use crate::backend::models::metta_value_trait::MettaValueTrait;
 
-#[cfg(feature = "index-gc")]
 fn shade_evicted_values<V, I>(values: I)
 where
     V: MettaValueTrait + Clone + Send + Sync + 'static,
@@ -149,7 +148,6 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> MemoCache<V> {
     pub fn insert(&self, head: &str, args: &[V], result: V) {
         let key = GenericMemoKey::new(head, args);
 
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 let mut evicted = Vec::new();
@@ -211,7 +209,6 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> MemoCache<V> {
 
     /// Clear the cache.
     pub fn clear(&self) {
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 if satb_active {

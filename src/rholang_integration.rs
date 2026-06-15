@@ -348,7 +348,6 @@ pub fn run_state(
         // pushed]` the leaving roots stay in SAFEPOINT_ROOTS for a concurrent cycle.
         #[cfg(not(feature = "index-gc"))]
         let (results, new_env) = eval(expr, env, compiled_state);
-        #[cfg(feature = "index-gc")]
         let (results, new_env, _b3_root_handle) = eval(expr, env, compiled_state);
         env = new_env;
 
@@ -487,7 +486,7 @@ pub async fn run_state_async(
 /// continuation slice) when the trampoline yields, and `Completed` (carrying the
 /// finished state) otherwise. A `Suspended` slice is self-rooting (it owns copied
 /// `Node` bytes), so it needs no `SafepointRootHandle` across the ship boundary.
-#[cfg(all(feature = "async", feature = "index-gc"))]
+#[cfg(feature = "async")]
 #[derive(Debug)]
 pub enum RunOutcome {
     /// Evaluation finished without yielding; the result state is attached.
@@ -516,7 +515,7 @@ pub enum RunOutcome {
 /// via [`resume_shipped`]'s `into`. Contract: one slice = one shipped directive
 /// (directives after the shipped one are evaluated by a subsequent run over the
 /// remaining source).
-#[cfg(all(feature = "async", feature = "index-gc"))]
+#[cfg(feature = "async")]
 pub async fn run_state_async_resumable(
     accumulated_state: MettaState,
     compiled_state: &MettaState,
@@ -567,7 +566,7 @@ pub async fn run_state_async_resumable(
 /// `restored.control[0]` is the shipped directive over fresh, non-freed σ slots (the
 /// `restored_future_touch_not_freed` safety obligation). Resume == evaluate the
 /// directive: the program rules are supplied by `into` (the env is NOT serialized).
-#[cfg(all(feature = "async", feature = "index-gc"))]
+#[cfg(feature = "async")]
 pub async fn resume_shipped(buf: &[u8], into: &MettaState) -> Result<(), String> {
     use crate::backend::eval::cesk::restore_from_bytes;
 
@@ -611,7 +610,6 @@ struct BatchOutcome {
     idx: usize,
     results: Vec<MettaValue>,
     should_output: bool,
-    #[cfg(feature = "index-gc")]
     _root_handle: Option<crate::backend::models::SafepointRootHandle>,
 }
 
@@ -677,7 +675,6 @@ async fn evaluate_batch_parallel_arena(
     // non-rendezvous mid-loop index-GC gate before any worker can observe the
     // heap. This is independent of the dedicated collector: FANOUT_DEPTH=0 still
     // permits this API-level batch parallelism.
-    #[cfg(feature = "index-gc")]
     {
         crate::backend::models::note_worker_spawned();
     }
@@ -729,7 +726,6 @@ async fn evaluate_batch_parallel_arena(
                 // BYTE-IDENTICAL WHEN DORMANT: the `#[cfg(index-gc)]` wall + the
                 // `dedicated_gc_enabled()`-first short-circuit ⇒ slab does not compile
                 // it; index-default leaves the handle None.
-                #[cfg(feature = "index-gc")]
                 let root_handle = if crate::backend::models::gc_allocator::dedicated_gc_enabled()
                 {
                     Some(crate::backend::models::register_temporary_roots(
@@ -746,7 +742,6 @@ async fn evaluate_batch_parallel_arena(
                         idx,
                         results: result_vec,
                         should_output,
-                        #[cfg(feature = "index-gc")]
                         _root_handle: root_handle,
                     });
                 }
@@ -858,7 +853,6 @@ pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
         // result consumption below (F1 ride-to-caller, C-0c). Slab is the 2-tuple.
         #[cfg(not(feature = "index-gc"))]
         let (results, new_env) = eval(expr, env, &state);
-        #[cfg(feature = "index-gc")]
         let (results, new_env, _b3_root_handle) = eval(expr, env, &state);
         env = new_env;
 
@@ -951,7 +945,6 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
         // result consumption below (F1 ride-to-caller, C-0c). Slab is the 2-tuple.
         #[cfg(not(feature = "index-gc"))]
         let (results, new_env) = eval(expr, env, &state);
-        #[cfg(feature = "index-gc")]
         let (results, new_env, _b3_root_handle) = eval(expr, env, &state);
         env = new_env;
 

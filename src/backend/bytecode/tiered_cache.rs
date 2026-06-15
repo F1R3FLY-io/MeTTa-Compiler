@@ -890,14 +890,12 @@ struct PendingBytecodeRootGuard {
     roots: Arc<DashMap<u64, PendingBytecodeRootEntry, IdentityU64BuildHasher>>,
 }
 
-#[cfg(feature = "index-gc")]
 fn shade_tiered_roots(roots: Vec<MettaValue>) {
     crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
 }
 
 impl Drop for PendingBytecodeRootGuard {
     fn drop(&mut self) {
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 let removed = self
@@ -1134,7 +1132,6 @@ impl TieredCache {
     ) -> PendingBytecodeRootGuard {
         let token = next_pending_bytecode_root_token();
         let entry = PendingBytecodeRootEntry { token, root: expr };
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 let old = self.pending_bytecode_roots.insert(expr_hash, entry);
@@ -1297,7 +1294,6 @@ impl TieredCache {
         if !enqueued {
             // Task dropped due to backpressure — revert state so future
             // executions can re-trigger compilation
-            #[cfg(feature = "index-gc")]
             crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                 |satb_active| {
                     let removed = self
@@ -1883,7 +1879,6 @@ impl TieredCache {
 
     /// Clear the entire cache
     pub fn clear(&self) {
-        #[cfg(feature = "index-gc")]
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
                 if satb_active {

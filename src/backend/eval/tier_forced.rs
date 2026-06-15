@@ -266,7 +266,6 @@ pub fn eval_with_tier(
     // so it must carry the same midloop/rendezvous guarantee itself: the caller's
     // MettaState source/output stay visible through SAFEPOINT_ROOTS for the whole
     // tier-specific transition.
-    #[cfg(feature = "index-gc")]
     let _driver_c_handle = {
         let mut driver_roots = Vec::new();
         state.collect_driver_program_roots(&mut driver_roots);

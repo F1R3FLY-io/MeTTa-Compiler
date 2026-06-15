@@ -147,7 +147,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
         }
     }
 
-    #[cfg(feature = "index-gc")]
     fn shade_values<I>(values: I)
     where
         V: 'static,
@@ -163,7 +162,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
         crate::backend::eval::cesk::index_heap::index_gc::satb_shade_evicted_roots(roots);
     }
 
-    #[cfg(feature = "index-gc")]
     fn shade_thunk(thunk: Thunk<V>)
     where
         V: 'static,
@@ -171,7 +169,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
         Self::shade_values(thunk.results);
     }
 
-    #[cfg(feature = "index-gc")]
     fn insert_thunk_with_satb(&mut self, expr_hash: u64, thunk: Thunk<V>)
     where
         V: 'static,
@@ -193,7 +190,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
         self.entries.insert(expr_hash, thunk);
     }
 
-    #[cfg(feature = "index-gc")]
     fn remove_thunk_with_satb(&mut self, expr_hash: u64)
     where
         V: 'static,
@@ -215,7 +211,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
         self.entries.remove(&expr_hash);
     }
 
-    #[cfg(feature = "index-gc")]
     fn clear_entries_with_satb(&mut self)
     where
         V: 'static,
@@ -298,7 +293,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
     /// successful evaluation.
     pub fn update(&mut self, expr_hash: u64, results: SmallVec<[V; 2]>) {
         if let Some(thunk) = self.entries.get_mut(&expr_hash) {
-            #[cfg(feature = "index-gc")]
             crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                 |satb_active| {
                     if satb_active {

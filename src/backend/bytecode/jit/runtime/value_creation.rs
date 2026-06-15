@@ -27,7 +27,6 @@ use crate::backend::models::{MettaValue, MettaValueFactory, MettaValueTrait};
 // Phase 2a: Value Creation Runtime (MakeSExpr, ConsAtom)
 // =============================================================================
 
-#[cfg(feature = "index-gc")]
 #[inline]
 unsafe fn value_creation_factory(_ctx: *mut JitContext) -> crate::backend::models::ActiveFactory {
     crate::backend::models::active_factory()

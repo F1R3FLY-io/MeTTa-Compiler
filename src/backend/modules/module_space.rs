@@ -104,15 +104,6 @@ impl ModuleSpace {
                 },
             )
         }
-        #[cfg(not(feature = "index-gc"))]
-        {
-            if let Some(pos) = self.atoms.iter().position(|a| a == atom) {
-                self.atoms.remove(pos);
-                true
-            } else {
-                false
-            }
-        }
     }
 
     /// Get all atoms in the main space (not dependencies).
@@ -188,10 +179,6 @@ impl ModuleSpace {
                 self.atoms.clear();
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.atoms.clear();
-        }
     }
 }
 

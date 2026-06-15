@@ -909,11 +909,6 @@ impl Drop for PendingBytecodeRootGuard {
                 }
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.roots
-                .remove_if(&self.expr_hash, |_hash, entry| entry.token == self.token);
-        }
     }
 }
 
@@ -1142,10 +1137,6 @@ impl TieredCache {
                 }
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.pending_bytecode_roots.insert(expr_hash, entry);
-        }
         PendingBytecodeRootGuard {
             expr_hash,
             token,
@@ -1307,11 +1298,6 @@ impl TieredCache {
                     }
                 },
             );
-            #[cfg(not(feature = "index-gc"))]
-            {
-                self.pending_bytecode_roots
-                    .remove_if(&state.expr_hash, |_hash, entry| entry.token == root_token);
-            }
             state.revert_bytecode_to_not_started();
             #[cfg(feature = "track-stats")]
             self.bytecode_compilations_triggered
@@ -1899,11 +1885,6 @@ impl TieredCache {
                 self.pending_bytecode_roots.clear();
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.entries.clear();
-            self.pending_bytecode_roots.clear();
-        }
         #[cfg(feature = "track-stats")]
         self.reset_stats();
     }

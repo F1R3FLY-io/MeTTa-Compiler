@@ -226,12 +226,6 @@ pub(crate) fn worker_cooperative_safepoint(extra_roots: &[MettaValue]) {
             &mut park_roots,
             crate::backend::eval::cesk::roots::ThreadContribution::TierLeaf { extra: extra_roots },
         );
-        // Slab build: the dedicated rendezvous is an index-only construct
-        // (`gate_open_rendezvous` const-folds `gc_mode_is_index()` false in slab), so
-        // this branch is effectively dead there; publish only `extra_roots` to keep the
-        // slab path byte-identical to the pre-CEX-1 behaviour.
-        #[cfg(not(feature = "index-gc"))]
-        park_roots.extend_from_slice(extra_roots);
         let my_gen = gc_allocator::current_cycle_gen();
         let saved_depth = gc_allocator::drop_eval_guard_for_safepoint_full();
         gc_allocator::worker_park_and_root_in_cycle(&park_roots, my_gen);
@@ -3083,14 +3077,6 @@ fn pump_parallel_wait(
         // parent thread's thread-locals; off it, byte-identical clear_aba_sensitive_caches.
         clear_worker_caches_on_resume();
     }
-    // Slab: the new full-park params are unused on this path (the index
-    // collector is the only consumer). Borrow them once to keep `-D warnings` quiet
-    // without perturbing behaviour (no-op; the values are untouched).
-    #[cfg(not(feature = "index-gc"))]
-    {
-        let _ = (work_stack, continuations, env, deferred_shared_drops);
-    }
-
     // (2) Periodic cooperative GC drop — gated by alloc-delta or explicit
     //     gc-request. Mirrors the original wait loop's logic at
     //     parallel_branch_eval:1975-2037.
@@ -3267,12 +3253,6 @@ fn pump_parallel_collapse_wait(
         // this parent thread's thread-locals); off it, byte-identical.
         clear_worker_caches_on_resume();
     }
-    // Slab: borrow the new params once (no-op) to keep `-D warnings` quiet.
-    #[cfg(not(feature = "index-gc"))]
-    {
-        let _ = (work_stack, continuations, env, deferred_shared_drops);
-    }
-
     // (2) Periodic cooperative GC drop (no work-stealing per mandate).
     if super::context::parallel_gc_coop_enabled() && handle.remaining.load(Ordering::Acquire) > 0 {
         let current_allocs = crate::backend::models::alloc_count_snapshot();
@@ -3642,9 +3622,6 @@ fn parallel_collapse_dispatch(
         done_pair,
         cancel_token,
         num_branches: num_items,
-        // A5.6: slab-only — pairs with the `_root_guard` field wall in types.rs.
-        #[cfg(not(feature = "index-gc"))]
-        _root_guard: Some(root_guard),
         started_at_alloc_count: AtomicU64::new(crate::backend::models::alloc_count_snapshot()),
         stall_state: Mutex::new(StallState::default()),
         _root_provider_arc: root_provider,
@@ -3722,39 +3699,6 @@ fn parallel_collapse_threshold() -> usize {
 /// lifetime. The collector reuses `WorkItem::collect_values` /
 /// `Continuation::collect_values` (the exact same decode the trampoline's own
 /// `RootSet` uses) to walk the CURRENT contents at collection time.
-// A5.1: SLAB-ONLY. The index build roots the suspended-spine (C, K) structurally
-// via the typed K-spine `SuspendedActivation::Spine` (see the cfg-split guard push
-// below), so this frame_chain payload struct + its collector are compiled only for
-// the slab build (deleted with frame_chain at F4).
-#[cfg(not(feature = "index-gc"))]
-struct TrampolineFrameRoots {
-    work_stack: *const Vec<WorkItem>,
-    continuations: *const Vec<Continuation>,
-}
-
-/// Frame-chain collector for [`TrampolineFrameRoots`].
-///
-/// # Safety
-///
-/// `data` MUST point to a live `TrampolineFrameRoots` whose `work_stack` /
-/// `continuations` pointers name the still-live, in-scope `Vec`s of the
-/// activation that registered the frame. The RAII guard ([`EvalFrameGuard`])
-/// is dropped before those `Vec`s go out of scope (both are locals of the same
-/// `eval_trampoline_inner` activation), so the pointers are valid for the
-/// frame's whole lifetime. Read-only.
-#[cfg(not(feature = "index-gc"))]
-unsafe fn collect_trampoline_frame_roots(data: *const (), out: &mut Vec<MettaValue>) {
-    let r = unsafe { &*(data as *const TrampolineFrameRoots) };
-    let work_stack = unsafe { &*r.work_stack };
-    let continuations = unsafe { &*r.continuations };
-    for w in work_stack.iter() {
-        w.collect_values(out);
-    }
-    for c in continuations.iter() {
-        c.collect_values(out);
-    }
-}
-
 pub fn eval_trampoline<C: EvalContext>(
     value: MettaValue,
     env: MettaEnvironment,
@@ -3962,32 +3906,6 @@ fn eval_trampoline_inner<C: EvalContext>(
     //
 
     // A4.2b: typed `SUSPENDED_ACTIVATIONS::Spine` record alongside the
-    // `frame_chain` guard above (index-gc only ⇒ byte-identical slab path). It
-    // references the SAME in-scope `current_work_for_spine`/`work_stack` (C) and
-    // `continuations` (K), read structurally by `collect_k_spine`. Declared after
-    // `_tramp_frame_guard`, so it drops first (LIFO); all pointees outlive both
-    // guards.
-    #[cfg(not(feature = "index-gc"))]
-    let _tramp_kspine_guard: Option<
-        crate::backend::eval::cesk::k_spine::SuspendedActivationGuard,
-    > = if crate::backend::models::metta_value::gc_mode_is_index() {
-        // SAFETY: `current_work_for_spine` / `work_stack` / `continuations`
-        // outlive this guard (locals of this activation, dropped after it) with
-        // stable addresses (declared once, mutated in place). `collect_k_spine`
-        // reads them read-only.
-        Some(unsafe {
-            crate::backend::eval::cesk::k_spine::SuspendedActivationGuard::push(
-                crate::backend::eval::cesk::k_spine::SuspendedActivation::Spine {
-                    current_work: &current_work_for_spine as *const Option<WorkItem>,
-                    work_stack: &work_stack as *const Vec<WorkItem>,
-                    continuations: &continuations as *const Vec<Continuation>,
-                },
-            )
-        })
-    } else {
-        None
-    };
-
     // A5.1 INDEX build: the typed K-spine `Spine` record is the SOLE mid-execution
     // root source for this activation (read by `collect_machine_roots` ->
     // `collect_k_spine`). Unconditional — the index build always runs index GC mode.
@@ -4465,25 +4383,6 @@ fn eval_trampoline_inner<C: EvalContext>(
                         extra: &[],
                     },
                 );
-                // Slab build: this branch is runtime-dead (the dedicated rendezvous is
-                // index-only — `gate_open_rendezvous` const-folds `gc_mode_is_index()`
-                // false), but must compile. Build `my_roots` via the same components the
-                // canonical reader's `Trampoline` arm expands to (machine-live ∪ deferred)
-                // so the slab path stays byte-identical to the pre-CEX-1 behaviour.
-                #[cfg(not(feature = "index-gc"))]
-                {
-                    crate::backend::eval::cesk::roots::collect_machine_roots_live(
-                        &mut my_roots,
-                        &machine_operand_stack,
-                        &work,
-                        &work_stack,
-                        &continuations,
-                        env.shared.as_ref(),
-                    );
-                    for deferred_env in &deferred_shared_drops {
-                        deferred_env.as_ref().collect_roots_into(&mut my_roots);
-                    }
-                }
                 // (B) PARK: capture my_gen BEFORE leaving the active set (F2 gen-gating
                 // — a cycle-end gen bump that races my park is then observed by the
                 // gen-gated primitives: `worker_park_and_root_in_cycle` drops stale

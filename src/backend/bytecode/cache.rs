@@ -212,12 +212,6 @@ pub fn cache_bytecode(hash: u64, chunk: Arc<BytecodeChunk>) {
             }
         },
     );
-    #[cfg(not(feature = "index-gc"))]
-    {
-        let mut cache = BYTECODE_CACHE.write();
-        let evicted = cache.push(hash, chunk);
-        let _ = evicted;
-    }
 }
 
 /// Get current cache statistics (lock-free snapshot)
@@ -244,10 +238,6 @@ pub fn clear_caches() {
             bytecode_cache.clear();
         },
     );
-    #[cfg(not(feature = "index-gc"))]
-    {
-        BYTECODE_CACHE.write().clear();
-    }
     // Reset stats atomically (no lock needed)
     #[cfg(feature = "track-stats")]
     CACHE_STATS.reset();

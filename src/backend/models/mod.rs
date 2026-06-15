@@ -197,21 +197,6 @@ mod gc_request_tests {
         );
     }
 
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn legacy_slab_rejects_index_with_default_index_hint() {
-        let err = assert_gc_request(Some("index"))
-            .expect_err("legacy slab binary must reject an index assertion");
-        assert!(
-            err.contains("compiled with the 'slab' GC store"),
-            "names the compiled legacy-slab store: {err}"
-        );
-        assert!(
-            err.contains("rebuild with default features (index-gc enabled)"),
-            "points index callers at the default feature set: {err}"
-        );
-    }
-
     #[test]
     fn unknown_values_are_rejected_with_the_expected_set() {
         let err = assert_gc_request(Some("bogus")).expect_err("unknown value must error");

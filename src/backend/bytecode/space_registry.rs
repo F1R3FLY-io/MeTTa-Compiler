@@ -26,9 +26,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 // `Arc`/`OnceLock` only back the slab-build's RootProvider registration cache (A5.3);
 // the index build registers no providers, so they would be unused there.
-#[cfg(not(feature = "index-gc"))]
-use std::sync::{Arc, OnceLock};
-
 use dashmap::DashMap;
 
 use crate::backend::models::{MettaValue, SpaceHandle};
@@ -128,11 +125,6 @@ impl SpaceRegistry {
         );
     }
 
-    #[cfg(not(feature = "index-gc"))]
-    fn register_with_satb(&self, name: &str, handle: SpaceHandle) {
-        self.spaces.insert(name.to_string(), handle);
-    }
-
     fn remove_with_satb(&self, name: &str) -> bool {
         let mut removed = false;
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
@@ -149,11 +141,6 @@ impl SpaceRegistry {
         removed
     }
 
-    #[cfg(not(feature = "index-gc"))]
-    fn remove_with_satb(&self, name: &str) -> bool {
-        self.spaces.remove(name).is_some()
-    }
-
     fn clear_with_satb(&self) {
         crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
             |satb_active| {
@@ -163,11 +150,6 @@ impl SpaceRegistry {
                 self.spaces.clear();
             },
         );
-    }
-
-    #[cfg(not(feature = "index-gc"))]
-    fn clear_with_satb(&self) {
-        self.spaces.clear();
     }
 
     /// Register an existing SpaceHandle by name

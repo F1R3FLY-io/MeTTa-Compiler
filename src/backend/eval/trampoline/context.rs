@@ -540,16 +540,6 @@ mod tests {
     // allocator ref. Under `--features index-gc` the factory is the ZST
     // `IndexFactory`, so the context is zero-sized — this size invariant is
     // slab-specific and runs only in the slab build.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_static_arena_context_size() {
-        // StaticEvalContext should be pointer-sized (holds one GcFactory which has one &'static ref)
-        assert_eq!(
-            std::mem::size_of::<StaticEvalContext>(),
-            std::mem::size_of::<&()>()
-        );
-    }
-
     #[test]
     fn test_static_arena_context_env() {
         let _env = StaticEvalContext::new_env();

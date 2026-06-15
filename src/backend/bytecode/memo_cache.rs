@@ -17,9 +17,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 // `OnceLock` only backs the slab-build's RootProvider registration cache (A5.3).
-#[cfg(not(feature = "index-gc"))]
-use std::sync::OnceLock;
-
 use xxhash_rust::xxh3::Xxh3;
 
 use dashmap::DashMap;
@@ -171,22 +168,6 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> MemoCache<V> {
                 }
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            // Evict if at capacity
-            if self.cache.len() >= self.max_entries && !self.cache.contains_key(&key) {
-                let _ = self.evict_lru();
-            }
-
-            let new_count = self.access_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            let _ = self.cache.insert(
-                key,
-                GenericMemoEntry {
-                    result,
-                    access_count: new_count,
-                },
-            );
-        }
     }
 
     /// Evict least recently used entries (~25%).
@@ -222,10 +203,6 @@ impl<V: MettaValueTrait + Clone + Send + Sync + 'static> MemoCache<V> {
                 self.cache.clear();
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.cache.clear();
-        }
     }
 
     /// Get cache statistics.

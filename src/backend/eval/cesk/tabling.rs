@@ -198,11 +198,6 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
         );
     }
 
-    #[cfg(not(feature = "index-gc"))]
-    fn insert_entry_with_satb(&mut self, expr_hash: u64, entry: TableEntry<V>) {
-        self.entries.insert(expr_hash, entry);
-    }
-
     fn remove_entry_with_satb(&mut self, expr_hash: u64)
     where
         V: 'static,
@@ -217,11 +212,6 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
                 }
             },
         );
-    }
-
-    #[cfg(not(feature = "index-gc"))]
-    fn remove_entry_with_satb(&mut self, expr_hash: u64) {
-        self.entries.remove(&expr_hash);
     }
 
     fn clear_entries_with_satb(&mut self)
@@ -241,11 +231,6 @@ impl<V: MettaValueTrait + Clone + 'static> SubgoalTable<V> {
                 self.entries.clear();
             },
         );
-    }
-
-    #[cfg(not(feature = "index-gc"))]
-    fn clear_entries_with_satb(&mut self) {
-        self.entries.clear();
     }
 
     /// Look up a cached result by expression hash.

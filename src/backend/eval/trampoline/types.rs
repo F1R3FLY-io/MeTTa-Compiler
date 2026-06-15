@@ -3309,8 +3309,6 @@ impl Continuation {
                 // delegate to `collect_values`, so the env walk is repeated here
                 // (the `_` catch-all gets it via `collect_values`). Index-only.
                 collect_fork_local_roots(env, out);
-                #[cfg(not(feature = "index-gc"))]
-                let _ = env;
                 // UAF fix (Finding 1): root the collapse-bind tracked-var atoms.
                 // `tracked_vars_hint` is NEVER narrowed by the cut (it is the
                 // caller's observation set, not a `remaining_*` alternative), so
@@ -3339,8 +3337,6 @@ impl Continuation {
                 ..
             } => {
                 collect_fork_local_roots(env, out);
-                #[cfg(not(feature = "index-gc"))]
-                let _ = env;
                 let mut bridge = TrampolineFanoutSpineBridge::new();
                 bridge.push(TrampolineFanoutSpineNode::ProcessAmb {
                     remaining_alts: remaining_alts.as_slice(),
@@ -3360,8 +3356,6 @@ impl Continuation {
                 ..
             } => {
                 collect_fork_local_roots(env, out);
-                #[cfg(not(feature = "index-gc"))]
-                let _ = env;
                 let mut bridge = TrampolineFanoutSpineBridge::new();
                 bridge.push(TrampolineFanoutSpineNode::ProcessMatchTemplates {
                     remaining_templates: remaining_templates.as_slice(),

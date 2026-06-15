@@ -120,12 +120,6 @@ fn main() {
     let _ = black_box(acc);
 }
 
-#[cfg(not(feature = "index-gc"))]
-fn main() {
-    eprintln!("mtt-hitpath-bench requires --features index-gc");
-    std::process::exit(2);
-}
-
 // ── exp21 PARALLEL gate (column-v2 design, inner-column-v2-design-2026-06-12.md):
 // the question the N=1 gate could not answer — per-worker shadow
 // re-materialization (arm A) vs one shared column (arm B) at N=8.

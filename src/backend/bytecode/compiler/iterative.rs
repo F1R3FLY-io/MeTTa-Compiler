@@ -7,9 +7,6 @@
 use std::collections::VecDeque;
 use std::sync::OnceLock;
 // `Arc` only backs the slab-build's RootProvider registration cache (A5.3).
-#[cfg(not(feature = "index-gc"))]
-use std::sync::Arc;
-
 use super::error::{CompileError, CompileResult};
 use super::work_item::{
     BinaryOp, CaseState, CatchState, ChainState, CompileWork, Continuation, HigherOrderOp,

@@ -185,11 +185,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
         );
     }
 
-    #[cfg(not(feature = "index-gc"))]
-    fn insert_thunk_with_satb(&mut self, expr_hash: u64, thunk: Thunk<V>) {
-        self.entries.insert(expr_hash, thunk);
-    }
-
     fn remove_thunk_with_satb(&mut self, expr_hash: u64)
     where
         V: 'static,
@@ -204,11 +199,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
                 }
             },
         );
-    }
-
-    #[cfg(not(feature = "index-gc"))]
-    fn remove_thunk_with_satb(&mut self, expr_hash: u64) {
-        self.entries.remove(&expr_hash);
     }
 
     fn clear_entries_with_satb(&mut self)
@@ -228,11 +218,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
                 self.entries.clear();
             },
         );
-    }
-
-    #[cfg(not(feature = "index-gc"))]
-    fn clear_entries_with_satb(&mut self) {
-        self.entries.clear();
     }
 
     /// Look up or create a thunk for the given expression hash.
@@ -306,15 +291,6 @@ impl<V: MettaValueTrait + Clone + 'static> ThunkTable<V> {
                         crate::backend::eval::trampoline::dispatch_hints::cache_generation();
                 },
             );
-            #[cfg(not(feature = "index-gc"))]
-            {
-                thunk.state = ThunkState::Evaluated;
-                thunk.results = results;
-                thunk.mutation_epoch =
-                    crate::backend::eval::trampoline::dispatch_hints::mutation_epoch();
-                thunk.scope_gen =
-                    crate::backend::eval::trampoline::dispatch_hints::cache_generation();
-            }
         }
     }
 

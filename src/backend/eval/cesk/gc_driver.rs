@@ -614,10 +614,5 @@ mod tests {
             dedicated_gc_enabled(),
             "index-gc build must default to the dedicated CESK GC driver"
         );
-        #[cfg(not(feature = "index-gc"))]
-        assert!(
-            !dedicated_gc_enabled(),
-            "slab build must not enable the index dedicated driver"
-        );
     }
 }

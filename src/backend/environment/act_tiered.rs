@@ -792,10 +792,6 @@ impl MettaEnvironment {
             }
             self.shared.atom_space.variable_atoms.write().clear();
         });
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.shared.atom_space.variable_atoms.write().clear();
-        }
         self.shared
             .atom_space
             .total_atoms

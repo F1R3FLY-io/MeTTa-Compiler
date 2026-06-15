@@ -766,10 +766,6 @@ pub fn eval_memo_get(expr_hash: u64, tracked_key: u64) -> Option<Vec<MettaValue>
                     }
                 },
             );
-            #[cfg(not(feature = "index-gc"))]
-            {
-                let _ = memo.pop(&expr_hash);
-            }
         }
         None
     })
@@ -798,11 +794,6 @@ pub fn eval_memo_put(expr_hash: u64, tracked_key: u64, results: &[MettaValue]) {
                 }
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            let evicted = memo.push(expr_hash, (query_gen, epoch, gen, entries));
-            let _ = evicted;
-        }
     });
 }
 
@@ -840,10 +831,6 @@ pub fn clear_eval_memo() {
                 memo.clear();
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            memo.clear();
-        }
     });
 }
 
@@ -983,20 +970,6 @@ pub fn match_result_put(
                 }
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            let evicted = cache.push(
-                expr_hash,
-                (
-                    current_query_gen,
-                    current_rule_epoch,
-                    current_mutation_epoch,
-                    expr_arity,
-                    entries,
-                ),
-            );
-            let _ = evicted;
-        }
     });
 }
 
@@ -1051,10 +1024,6 @@ pub fn clear_match_result_cache() {
                 cache.clear();
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            cache.clear();
-        }
     });
 }
 

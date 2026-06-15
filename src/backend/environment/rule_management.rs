@@ -531,9 +531,6 @@ impl<V: MettaValueTrait + Clone + 'static> RuleGroup<V> {
 
     /// Remove a rule by position. Returns true if entry was fully removed.
     fn remove_rule(&mut self, lhs: &V, rhs: &V, satb_active: bool) -> Option<bool> {
-        #[cfg(not(feature = "index-gc"))]
-        let _ = satb_active;
-
         // Search in first-arg-indexed buckets
         for entries in self.by_first_arg_head.values_mut() {
             if let Some(pos) = entries.iter().position(|e| &e.lhs == lhs && &e.rhs == rhs) {
@@ -546,10 +543,6 @@ impl<V: MettaValueTrait + Clone + 'static> RuleGroup<V> {
                         if satb_active {
                             shade_rule_entry_for_satb(&removed);
                         }
-                    }
-                    #[cfg(not(feature = "index-gc"))]
-                    {
-                        entries.remove(pos);
                     }
                     // Disc tree indexes by rule_index_in_group; removing an
                     // entry invalidates those indices, so the tree must be
@@ -574,10 +567,6 @@ impl<V: MettaValueTrait + Clone + 'static> RuleGroup<V> {
                     if satb_active {
                         shade_rule_entry_for_satb(&removed);
                     }
-                }
-                #[cfg(not(feature = "index-gc"))]
-                {
-                    self.variable_first_arg.remove(pos);
                 }
                 self.invalidate_disc_tree();
                 return Some(true);
@@ -606,9 +595,6 @@ impl<V: MettaValueTrait + Clone + 'static> RuleGroup<V> {
         full_bytes: &[u8],
         satb_active: bool,
     ) -> Option<RemovalOutcome<V>> {
-        #[cfg(not(feature = "index-gc"))]
-        let _ = satb_active;
-
         // Search first-arg-indexed buckets
         for entries in self.by_first_arg_head.values_mut() {
             if let Some(pos) = entries.iter().position(|e| e.full_debruijn == full_bytes) {
@@ -1119,10 +1105,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 |satb_active| self.remove_rule_inner(lhs, rhs, satb_active),
             );
         }
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.remove_rule_inner(lhs, rhs, false)
-        }
     }
 
     fn remove_rule_inner(&mut self, lhs: &V, rhs: &V, satb_active: bool) -> bool {
@@ -1162,10 +1144,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                         shade_rule_entry_for_satb(&removed);
                     }
                 }
-                #[cfg(not(feature = "index-gc"))]
-                {
-                    self.wildcard.remove(pos);
-                }
                 return true;
             }
         }
@@ -1202,10 +1180,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
             return crate::backend::eval::cesk::index_heap::index_gc::with_satb_deletion_barrier(
                 |satb_active| self.remove_rule_by_debruijn_inner(full_bytes, satb_active),
             );
-        }
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.remove_rule_by_debruijn_inner(full_bytes, false)
         }
     }
 
@@ -1251,10 +1225,6 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                     if satb_active {
                         shade_rule_entry_for_satb(&removed);
                     }
-                }
-                #[cfg(not(feature = "index-gc"))]
-                {
-                    self.wildcard.remove(pos);
                 }
                 return Some(true);
             }
@@ -1424,16 +1394,9 @@ impl<V: MettaValueTrait + Clone> RuleIndex<V> {
                 |satb_active| self.clear_inner(satb_active),
             );
         }
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.clear_inner(false);
-        }
     }
 
     fn clear_inner(&mut self, satb_active: bool) {
-        #[cfg(not(feature = "index-gc"))]
-        let _ = satb_active;
-
         if satb_active {
             for entry in self
                 .by_head_arity

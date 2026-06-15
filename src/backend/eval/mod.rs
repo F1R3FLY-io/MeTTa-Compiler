@@ -97,8 +97,6 @@ pub type EvalResult = (SmallVec<[MettaValue; 2]>, MettaEnvironment);
 /// use the `(results, env, ..)` rest-pattern, which is valid for BOTH the
 /// 2-tuple (legacy slab) and the 3-tuple (default index-gc) and harmlessly drops
 /// the always-`None` handle.
-#[cfg(not(feature = "index-gc"))]
-pub type EvalReturn = EvalResult;
 /// See [`EvalReturn`] (slab variant). The third element rides the B3 leaving-park handle.
 pub type EvalReturn = (
     SmallVec<[MettaValue; 2]>,
@@ -453,10 +451,6 @@ pub fn eval(
 
     // E1-FLIP Path B V4 — B3: ride the leaving-park handle out so the caller drops it
     // only AFTER consuming the results (C-0c). Slab return is the unchanged 2-tuple.
-    #[cfg(not(feature = "index-gc"))]
-    {
-        result
-    }
     {
         (result.0, result.1, b3_root_handle)
     }

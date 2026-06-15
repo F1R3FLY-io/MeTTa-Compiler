@@ -103,21 +103,6 @@ where
             }
             false
         });
-        #[cfg(not(feature = "index-gc"))]
-        let removed = {
-            let mut guard = self.shared.named_spaces.write();
-            if let Some((_, atoms)) = guard.get_mut(&space_id) {
-                // Remove first matching atom
-                if let Some(pos) = atoms.iter().position(|x| x == value) {
-                    atoms.remove(pos);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        };
         if removed {
             self.modified.store(true, Ordering::Release);
         }

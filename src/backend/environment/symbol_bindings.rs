@@ -33,14 +33,6 @@ where
                 }
             }
         });
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.shared
-                .bindings
-                .write()
-                .insert(symbol.to_string(), value);
-        }
-
         // Also register in fuzzy matcher for suggestions
         self.shared.fuzzy_matcher.write().insert(symbol);
 

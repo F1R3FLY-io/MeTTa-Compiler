@@ -2613,17 +2613,6 @@ where
                                         shade_generic_values_for_satb(removed);
                                     }
                                 });
-                                #[cfg(not(feature = "index-gc"))]
-                                {
-                                    let mut types = self.shared.types.write();
-                                    if let Some(vec) = types.get_mut(name) {
-                                        vec.retain(|t| t != typ);
-                                        if vec.is_empty() {
-                                            types.remove(name);
-                                        }
-                                    }
-                                    drop(types);
-                                }
                                 self.shared.type_index_dirty.store(true, Ordering::Release);
                                 is_type_removal = true;
                             }

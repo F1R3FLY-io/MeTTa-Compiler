@@ -736,10 +736,6 @@ fn eval_metta(
                 }
                 (results, env)
             } else if matches!(options.tier, TierSelection::Auto) {
-                #[cfg(not(feature = "index-gc"))]
-                {
-                    eval(expr, env, &state)
-                }
                 {
                     let (r, e, h) = eval(expr, env, &state);
                     b3_root_handle = h;
@@ -759,10 +755,6 @@ fn eval_metta(
             }
             (results, env)
         } else if matches!(options.tier, TierSelection::Auto) {
-            #[cfg(not(feature = "index-gc"))]
-            {
-                eval(expr, env, &state)
-            }
             {
                 let (r, e, h) = eval(expr, env, &state);
                 b3_root_handle = h;
@@ -1075,8 +1067,6 @@ fn run_repl(options: &Options) {
                             // B3 (index-gc): ride the leaving-park handle to a NAMED local
                             // (F1, C-0c) so it outlives the format below; dropped with
                             // `_result_roots`. Slab return is the unchanged 2-tuple.
-                            #[cfg(not(feature = "index-gc"))]
-                            let (results, updated_env) = eval(expr, env, &state);
                             let (results, updated_env, _b3_root_handle) = eval(expr, env, &state);
                             env = updated_env;
 

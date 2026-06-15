@@ -346,8 +346,6 @@ pub fn run_state(
         // 2-tuple (no handle); index-gc adds the third element. Dropped at the end of the
         // loop body, AFTER `drop(guard)` — so during the sliver `[eval() returns, results
         // pushed]` the leaving roots stay in SAFEPOINT_ROOTS for a concurrent cycle.
-        #[cfg(not(feature = "index-gc"))]
-        let (results, new_env) = eval(expr, env, compiled_state);
         let (results, new_env, _b3_root_handle) = eval(expr, env, compiled_state);
         env = new_env;
 
@@ -851,8 +849,6 @@ pub fn eval_metta_session(src: &str) -> Result<Vec<String>, SyntaxError> {
 
         // B3 (index-gc): bind the leaving-park handle to a NAMED local outliving the
         // result consumption below (F1 ride-to-caller, C-0c). Slab is the 2-tuple.
-        #[cfg(not(feature = "index-gc"))]
-        let (results, new_env) = eval(expr, env, &state);
         let (results, new_env, _b3_root_handle) = eval(expr, env, &state);
         env = new_env;
 
@@ -943,8 +939,6 @@ pub fn eval_metta_session_raw(src: &str) -> Result<MettaState, SyntaxError> {
 
         // B3 (index-gc): bind the leaving-park handle to a NAMED local outliving the
         // result consumption below (F1 ride-to-caller, C-0c). Slab is the 2-tuple.
-        #[cfg(not(feature = "index-gc"))]
-        let (results, new_env) = eval(expr, env, &state);
         let (results, new_env, _b3_root_handle) = eval(expr, env, &state);
         env = new_env;
 

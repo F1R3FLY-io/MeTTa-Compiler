@@ -523,12 +523,6 @@ impl MettaValue {
         ))
     }
 
-    #[cfg(not(feature = "index-gc"))]
-    #[inline]
-    pub(crate) fn as_arena_addr(&self) -> Option<crate::backend::eval::cesk::index_arena::Addr> {
-        None
-    }
-
     /// The 4 handle flag bits (`FLAG_HAS_VARIABLES` etc.) carried in `[3:0]` of a
     /// slab/index heap handle. E4 serializable continuations record these next to a
     /// heap handle's old raw `Addr` so [`from_addr`](Self::from_addr)`(new, flags)`
@@ -698,21 +692,6 @@ mod inc2_mode_tests {
     // heap value carries no arena Addr. In the default `index-gc` build the
     // compiled store is Index and `global_factory()` yields index handles, so
     // this slab-mode invariant is false by design.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn legacy_slab_mode_has_no_arena_addr() {
-        assert!(!gc_mode_is_index(), "legacy slab value-decode mode is Slab");
-        // A slab-allocated heap value is not an arena Addr in Slab mode.
-        let v = crate::backend::models::global_factory().atom("x");
-        assert_eq!(
-            v.as_arena_addr(),
-            None,
-            "slab heap value has no Addr in Slab mode"
-        );
-        // Inline scalars never have an Addr, regardless of mode.
-        let n = crate::backend::models::global_factory().long(7);
-        assert_eq!(n.as_arena_addr(), None, "inline scalar has no Addr");
-    }
 }
 
 /// The actual value enum, allocated in the arena.
@@ -1437,15 +1416,6 @@ impl MettaValue {
     /// Returns the pointer to the **outermost** MettaValueInner (which may be Spanned).
     /// This is correct for GC marking, which needs to track the actual slab slot.
     /// For inline NaN-boxed values, returns null (no slab slot to mark).
-    #[cfg(not(feature = "index-gc"))]
-    #[inline]
-    pub fn inner_ptr(&self) -> *const MettaValueInner {
-        if self.is_inline() {
-            return std::ptr::null();
-        }
-        (self.tagged & PTR_MASK) as *const MettaValueInner
-    }
-
     // ========================================================================
     // Type checking and inspection methods
     // ========================================================================

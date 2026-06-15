@@ -412,24 +412,6 @@ impl SpaceHandle {
                             },
                         );
                     }
-                    #[cfg(not(feature = "index-gc"))]
-                    {
-                        let mut var_atoms = space.variable_atoms.write();
-                        if let Some(idx) = var_atoms.iter().position(|(v, _)| v == atom) {
-                            let count = &mut var_atoms[idx].1;
-                            if *count > 1 {
-                                *count -= 1;
-                            } else {
-                                var_atoms.swap_remove(idx);
-                            }
-                            space
-                                .total_atoms
-                                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                            true
-                        } else {
-                            false
-                        }
-                    }
                 } else {
                     // Ground atom → MORK PathMap
                     match with_mork_bytes(

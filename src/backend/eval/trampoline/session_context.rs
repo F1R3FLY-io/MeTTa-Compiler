@@ -27,9 +27,6 @@ use crate::backend::models::{
 };
 // `GcFactory` is only referenced by the slab-only `eval_factory()`/`storage_factory()`
 // shims, which are compiled out under `--features index-gc`.
-#[cfg(not(feature = "index-gc"))]
-use crate::backend::models::GcFactory;
-
 use super::context::{EvalContext, MettaEnvironment};
 // Inc 0 (Store seam): hold a `Store` rather than a bare `GcFactory`.
 // `ActiveStore` (= `SlabStore` today) is the GC-migration alias; `Store` is
@@ -136,12 +133,6 @@ impl<'s> SessionContext<'s> {
     /// (pure backward-compat shims), so under `--features index-gc` — where
     /// `ActiveStore = IndexHeapStore` lacks `gc_factory()` — they are compiled
     /// out entirely rather than ported to the index store.
-    #[cfg(not(feature = "index-gc"))]
-    #[inline]
-    pub fn eval_factory(&self) -> GcFactory {
-        self.store.gc_factory()
-    }
-
     /// Get the factory for persistent (storage) allocations.
     ///
     /// Returns the same `GcFactory` used for all allocations. This method
@@ -150,12 +141,6 @@ impl<'s> SessionContext<'s> {
     ///
     /// Inc-4 coupling: see [`SessionContext::eval_factory`] — slab-specific
     /// `gc_factory()` accessor; compiled out under `--features index-gc`.
-    #[cfg(not(feature = "index-gc"))]
-    #[inline]
-    pub fn storage_factory(&self) -> GcFactory {
-        self.store.gc_factory()
-    }
-
     /// Get reference to the MettaState.
     #[inline]
     pub fn state(&self) -> &'s MettaState {
@@ -302,20 +287,6 @@ mod tests {
 
     // Exercises the slab-only `eval_factory()`/`storage_factory()` backward-compat
     // shims, which are compiled out under `--features index-gc`.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_session_context_creation() {
-        let state = MettaState::new();
-        let ctx = SessionContext::new(&state);
-
-        // Both factory accessors should work and produce valid values
-        let eval_value = ctx.eval_factory().atom("eval");
-        let storage_value = ctx.storage_factory().atom("storage");
-
-        assert!(eval_value.is_atom());
-        assert!(storage_value.is_atom());
-    }
-
     #[test]
     fn test_session_context_factory_trait() {
         let state = MettaState::new();
@@ -329,28 +300,6 @@ mod tests {
 
     // Exercises the slab-only `eval_factory()`/`storage_factory()` backward-compat
     // shims, which are compiled out under `--features index-gc`.
-    #[cfg(not(feature = "index-gc"))]
-    #[test]
-    fn test_single_factory_model() {
-        let state = MettaState::new();
-        let ctx = SessionContext::new(&state);
-
-        // eval_factory and storage_factory return the same GcFactory,
-        // so allocations from either are interchangeable
-        let eval_values: Vec<_> = (0..100).map(|i| ctx.eval_factory().long(i)).collect();
-        let storage_values: Vec<_> = (0..100)
-            .map(|i| ctx.storage_factory().long(i + 1000))
-            .collect();
-
-        // Both sets should be independently accessible
-        for (i, v) in eval_values.iter().enumerate() {
-            assert_eq!(v.as_long(), Some(i as i64));
-        }
-        for (i, v) in storage_values.iter().enumerate() {
-            assert_eq!(v.as_long(), Some((i + 1000) as i64));
-        }
-    }
-
     #[test]
     fn test_session_context_debug() {
         let state = MettaState::new();

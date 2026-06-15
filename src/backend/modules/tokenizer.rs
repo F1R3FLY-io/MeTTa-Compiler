@@ -389,10 +389,6 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
                 self.tokens.clear();
             },
         );
-        #[cfg(not(feature = "index-gc"))]
-        {
-            self.tokens.clear();
-        }
     }
 
     /// Remove a token by pattern string.
@@ -416,12 +412,6 @@ impl<V: Clone + Send + Sync + 'static> GenericTokenizer<V> {
                     self.tokens.len() < before
                 },
             )
-        }
-        #[cfg(not(feature = "index-gc"))]
-        {
-            let before = self.tokens.len();
-            self.tokens.retain(|e| e.pattern() != pattern);
-            self.tokens.len() < before
         }
     }
 }

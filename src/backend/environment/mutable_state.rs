@@ -63,16 +63,6 @@ where
                 false
             }
         });
-        #[cfg(not(feature = "index-gc"))]
-        let changed = {
-            let mut guard = self.shared.states.write();
-            if let Some(entry) = guard.get_mut(&state_id) {
-                *entry = new_value.clone();
-                true
-            } else {
-                false
-            }
-        };
         if changed {
             self.modified.store(true, Ordering::Release);
         }
